@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from pyxsd.data_conversion.contracts import Fidelity, FormatName, JsonValue
     from pyxsd.dtd_declarations import DocumentDeclarations
     from pyxsd.schema import Schema
+    from pyxsd.xdm.nodes import XdmDocument
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ class Document:
         *,
         provenance: ParseProvenance | None = None,
         declarations: DocumentDeclarations | None = None,
+        xdm_capture: Any = None,
     ) -> None:
         self.schema = schema
         self.root = root
@@ -80,6 +82,7 @@ class Document:
         self._report = report
         self._provenance = provenance
         self._declarations = declarations
+        self._xdm_capture = xdm_capture
 
     def locate(self, location: IssueLocation) -> NodeLookup:
         """Resolve a source occurrence in this parse, not by value or local name.
@@ -124,6 +127,32 @@ class Document:
         output = StringIO()
         write_tree(self.root, output)
         return output.getvalue()
+
+    def to_xdm(self) -> XdmDocument:
+        """Returns the coherent XDM view captured by this parse.
+
+        Capture is opt-in: the document must have been parsed with
+        ``Schema.parse(..., capture_xdm=True)``.  The returned tree is
+        source-complete (comments, processing instructions, namespace
+        declarations, and occurrence annotations survive) and immutable.
+        If the bound tree was edited, replaced, or built by the caller, this
+        raises :class:`~pyxsd.xdm.errors.XdmInputError` instead of returning
+        a view that disagrees with the document.
+        """
+        from pyxsd.xdm.errors import XdmInputError
+
+        capture = self._xdm_capture
+        if capture is None:
+            raise XdmInputError(
+                "this document was parsed without XDM capture; "
+                "parse it with capture_xdm=True to obtain an XDM view"
+            )
+        if self.root is not capture.root:
+            raise XdmInputError(
+                "the bound tree changed since XDM capture; "
+                "parse the document again with capture_xdm=True"
+            )
+        return capture.validated_xdm()
 
     def to_dict(self, *, typed: bool = True, always_list: bool = False) -> dict:
         """Returns the bound tree as a plain dict with raw Python scalars.

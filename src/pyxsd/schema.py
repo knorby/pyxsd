@@ -14,7 +14,8 @@ import os.path
 import warnings
 import weakref
 from collections.abc import Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Literal
 from xml.etree import ElementTree as ET
@@ -664,6 +665,7 @@ class Schema:
         *,
         xml_policy: XmlParserPolicy | None = None,
         xml_limits: XmlLimits | None = None,
+        capture_xdm: bool = False,
     ) -> "Document":
         """Binds *xml* against this schema and returns a :class:`Document`.
 
@@ -682,6 +684,15 @@ class Schema:
           is trusted application code. A pre-parsed ``Element`` is also
           a caller-trusted boundary, so no parser option is applied.
 
+        - ``capture_xdm`` - opt-in coherent XDM capture. When true, the
+          same source revision is also parsed into a source-complete
+          :class:`~pyxsd.xdm.nodes.XdmDocument` and the document retains
+          an immutable bound-tree snapshot.
+          :meth:`~pyxsd.document.Document.to_xdm` returns that view and
+          rejects later edits to the bound tree.
+          The default keeps ordinary parsing's cost and behavior: no XDM
+          state is built or retained.
+
         Each parse binds with its own fresh instance report, so a
         schema may serve many documents without their findings mixing:
         the returned document's :attr:`~pyxsd.document.Document.report`
@@ -690,7 +701,12 @@ class Schema:
         when the document root matched no global element declaration
         (the ``unknown-root`` issue records why).
         """
-        return self._parse_instance(xml, xml_policy=xml_policy, xml_limits=xml_limits)
+        return self._parse_instance(
+            xml,
+            xml_policy=xml_policy,
+            xml_limits=xml_limits,
+            capture_xdm=capture_xdm,
+        )
 
     def from_data(
         self,
@@ -827,6 +843,7 @@ class Schema:
         xml_policy: XmlParserPolicy | None = None,
         xml_limits: XmlLimits | None = None,
         declarations: DocumentDeclarations | _CollectDeclarations | None = _COLLECT_DECLARATIONS,
+        capture_xdm: bool = False,
     ) -> "Document":
         """One instance bind; *declarations* is internal revalidation evidence.
 
@@ -836,6 +853,10 @@ class Schema:
         ``None`` -- because the serialized text has no DOCTYPE to
         recollect from. ``None`` therefore means lexical-only, never an
         empty, complete set.
+
+        ``capture_xdm`` builds a source-complete XDM tree and bound-tree
+        snapshot from this parse's exact source revision; it is only set by
+        the public opt-in path and never by revalidation.
         """
         _reject_parser_override(self.resource_policy, xml_policy, xml_limits)
         collection_policy = xml_policy if xml_policy is not None else XmlParserPolicy.default()
@@ -856,25 +877,48 @@ class Schema:
                 raise PyXSDError(f"the xml file is not well-formed XML: {exc}") from exc
             # A trusted policy parse is a caller boundary: no core-admitted
             # bytes, so declaration evidence stays unavailable.
-            return self._bind_tree(tree, xml, source_id=data.source_id)
+            xdm_source: Any = None
+            if capture_xdm:
+                from pyxsd.xdm.document import CaptureSource
+
+                xdm_source = CaptureSource.from_content(data.content, source_name=data.source_id)
+            return self._bind_tree(tree, xml, source_id=data.source_id, xdm_source=xdm_source)
         if isinstance(xml, ET.Element):
             if collect_declarations:
                 collected = self._collect_root_declarations(
                     xml, collection_policy, _max_bytes(xml_limits)
                 )
+            xdm_source = None
+            if capture_xdm:
+                from pyxsd.xdm.document import CaptureSource
+
+                xdm_source = CaptureSource.from_input(xml)
             return self._bind_tree(
                 xml,
                 xml,
                 source_id=source_identifier(xml),
                 declarations=collected,
+                xdm_source=xdm_source,
             )
         original = xml
         parse_source: Any = xml
+        xdm_source = None
+        if capture_xdm:
+            from pyxsd.xdm.document import CaptureSource
+
+            try:
+                xdm_source = CaptureSource.from_input(xml)
+            except OSError as exc:
+                raise PyXSDError(f"the xml input could not be read: {exc}") from exc
+            if isinstance(xdm_source.content, str):
+                parse_source = StringIO(xdm_source.content)
+            else:
+                parse_source = BytesIO(xdm_source.content)
         if (
             collect_declarations
             and self._needs_entity_declarations()
-            and not isinstance(xml, (str, os.PathLike))
-            and not _stream_is_seekable(xml)
+            and not isinstance(parse_source, (str, os.PathLike))
+            and not _stream_is_seekable(parse_source)
         ):
             # A non-seekable stream cannot be reopened or rewound, so the
             # collector runs first and the semantic parser then consumes
@@ -883,7 +927,7 @@ class Schema:
             # the prolog alone crosses it, collection stops (evidence
             # stays unavailable) and the semantic parser raises the
             # standard limit failure over the replayed bytes.
-            replay = _PrologReplay(xml)
+            replay = _PrologReplay(parse_source)
             try:
                 collected = collect_document_declarations(
                     _capped_for_collection(replay, _max_bytes(xml_limits)),
@@ -916,6 +960,7 @@ class Schema:
             original,
             source_id=source_identifier(original),
             declarations=collected,
+            xdm_source=xdm_source,
         )
 
     def _bind_tree(
@@ -925,12 +970,14 @@ class Schema:
         *,
         source_id: str | None,
         declarations: DocumentDeclarations | None = None,
+        xdm_source: Any = None,
     ) -> "Document":
         """Bind an already verified tree; public policy inputs cannot use this path.
 
         ``declarations`` is this parse's DTD declaration evidence (or
         ``None`` for lexical-only ENTITY/ENTITIES validation); it is
         installed around ``bind_instance`` only, never left behind.
+        ``xdm_source`` enables this parse's coherent XDM capture.
         """
 
         instance_report = new_validation_report(self.resource_policy)
@@ -970,20 +1017,26 @@ class Schema:
         # so this parse's fresh report is installed (and restored) around
         # the binding run; generated classes keep their ``cls.schema``
         # stamp, whose report is the frozen compilation report.
-        try:
-            with (
-                active_context(context),
-                context_report(context, instance_report),
-                context_provenance(context, provenance),
-                declaration_context(declarations) as entity_evidence,
-                instance_report._at(provenance.source_location(tree)),
-            ):
-                root = bind_instance(self, tree, instance_report)
-                provenance.bind(tree, root)
-        finally:
-            if host is not None:
-                host._elementParents.clear()
-                host._elementTypes.clear()
+        capture_context: Any = nullcontext()
+        if xdm_source is not None:
+            from pyxsd.xdm.annotations import capturing_occurrences
+
+            capture_context = capturing_occurrences(source_digest=xdm_source.digest)
+        with capture_context as capture:
+            try:
+                with (
+                    active_context(context),
+                    context_report(context, instance_report),
+                    context_provenance(context, provenance),
+                    declaration_context(declarations) as entity_evidence,
+                    instance_report._at(provenance.source_location(tree)),
+                ):
+                    root = bind_instance(self, tree, instance_report)
+                    provenance.bind(tree, root)
+            finally:
+                if host is not None:
+                    host._elementParents.clear()
+                    host._elementTypes.clear()
 
         # The report-owning layer turns "unavailable external declarations
         # could have declared a missing name" into exactly one advisory per
@@ -1007,6 +1060,12 @@ class Schema:
         merged = new_validation_report(self.resource_policy)
         merged.extend(self.report)
         merged.extend(instance_report)
+        xdm_capture = None
+        if capture is not None:
+            from pyxsd.xdm.document import capture_document
+
+            capture.finish(merged)
+            xdm_capture = capture_document(xdm_source, root, annotations=capture)
         return Document(
             schema=self,
             root=root,
@@ -1014,6 +1073,7 @@ class Schema:
             report=merged,
             provenance=provenance,
             declarations=declarations,
+            xdm_capture=xdm_capture,
         )
 
 
