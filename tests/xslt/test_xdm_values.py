@@ -44,6 +44,21 @@ class ExplodingString(str):
         raise AssertionError("a Python string must not be iterated as characters")
 
 
+class UnhashableAtomicPayload:
+    """A hashable-contract violator that otherwise looks like a datatype value."""
+
+    name = "unhashableAtomic"
+    __hash__ = None
+
+
+def _atomic(value: Any) -> XdmAtomic:
+    result = as_xdm(value)
+    assert len(result) == 1
+    item = result[0]
+    assert isinstance(item, XdmAtomic)
+    return item
+
+
 # ---------------------------------------------------------------------------
 # Sequences and host conversion
 
@@ -242,6 +257,36 @@ def test_typed_requires_a_datatype_with_a_type_name():
         XdmAtomic.typed("a", type("Nameless", (), {}))
 
 
+def test_typed_enforces_the_atomic_value_invariant():
+    with pytest.raises(TypeError, match="list"):
+        XdmAtomic.typed(xsd.TypeList(["a"]), xsd.TypeList)
+    with pytest.raises(TypeError, match="list"):
+        XdmAtomic.typed(xsd.NMTOKENS("a b"), xsd.NMTOKENS)
+    with pytest.raises(TypeError, match="None"):
+        XdmAtomic.typed(None, xsd.String)
+    with pytest.raises(TypeError, match="instance"):
+        XdmAtomic.typed("a", xsd.String)
+    payload = UnhashableAtomicPayload()
+    with pytest.raises(TypeError, match="hashable"):
+        XdmAtomic.typed(payload, UnhashableAtomicPayload)
+
+    token = XdmAtomic.typed(xsd.Token("a"), xsd.Token)
+    assert hash(token) == hash(XdmAtomic.string("a"))
+    mapping = XdmMap.empty().put(token, as_xdm(1))
+    assert mapping.get(XdmAtomic.string("a")) == as_xdm(1)
+
+
+def test_atomic_constructor_enforces_the_atomic_value_invariant():
+    with pytest.raises(TypeError, match="None"):
+        XdmAtomic(None, STRING)
+    with pytest.raises(TypeError, match="list"):
+        XdmAtomic(xsd.TypeList(["a"]), f"{{{XSD}}}List")
+    with pytest.raises(TypeError, match="list"):
+        XdmAtomic("a b", f"{{{XSD}}}NMTOKENS")
+    with pytest.raises(TypeError, match="hashable"):
+        XdmAtomic(UnhashableAtomicPayload(), "{urn:test}unhashable")
+
+
 @pytest.mark.parametrize("value", [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")])
 def test_decimal_factory_rejects_non_finite_values(value):
     with pytest.raises(TypeError, match="finite"):
@@ -288,6 +333,41 @@ def test_atomic_equality_across_temporal_and_binary_families():
     )
     assert XdmAtomic.typed(ep.Base64Binary("YWJj"), ep.Base64Binary) == XdmAtomic.typed(
         ep.Base64Binary("YWJj"), ep.Base64Binary
+    )
+
+
+def test_atomic_equality_uses_xsd_value_space_lexical_variants():
+    assert _atomic(xsd.Duration("P1Y")) == _atomic(xsd.Duration("P12M"))
+    assert _atomic(xsd.YearMonthDuration("P1Y")) == _atomic(xsd.YearMonthDuration("P12M"))
+    assert _atomic(xsd.DayTimeDuration("P1D")) == _atomic(xsd.DayTimeDuration("PT24H"))
+    assert _atomic(xsd.HexBinary("FF")) == _atomic(xsd.HexBinary("ff"))
+    assert _atomic(xsd.Date("2000-01-01Z")) == _atomic(xsd.Date("2000-01-01+00:00"))
+    assert _atomic(xsd.DateTime("1999-12-31T19:00:00-05:00")) == _atomic(
+        xsd.DateTime("2000-01-01T00:00:00Z")
+    )
+    assert hash(_atomic(xsd.Duration("P1Y"))) == hash(_atomic(xsd.Duration("P12M")))
+    assert hash(_atomic(xsd.HexBinary("FF"))) == hash(_atomic(xsd.HexBinary("ff")))
+    assert hash(_atomic(xsd.Date("2000-01-01Z"))) == hash(_atomic(xsd.Date("2000-01-01+00:00")))
+    assert _atomic(xsd.Duration("P1M")) != _atomic(xsd.Duration("P30D"))
+    assert _atomic(xsd.HexBinary("FF")) != _atomic(xsd.HexBinary("FE"))
+    assert _atomic(xsd.Date("2000-01-01")) != _atomic(xsd.Date("2000-01-01Z"))
+
+
+def test_atomic_numeric_equality_uses_xpath_numeric_promotion():
+    assert _atomic(XdmAtomic.decimal("1.1")) == _atomic(XdmAtomic.double(1.1))
+    assert _atomic(XdmAtomic.decimal("1.1")).same_key(_atomic(XdmAtomic.double(1.1)))
+    assert hash(_atomic(XdmAtomic.decimal("1.1"))) == hash(_atomic(XdmAtomic.double(1.1)))
+    assert _atomic(XdmAtomic.decimal("0.1")) != _atomic(XdmAtomic.decimal("0.10000000000000001"))
+    assert not _atomic(XdmAtomic.decimal("0.1")).same_key(
+        _atomic(XdmAtomic.decimal("0.10000000000000001"))
+    )
+    assert _atomic(XdmAtomic.integer(10**400)) == _atomic(XdmAtomic.double(float("inf")))
+    assert _atomic(XdmAtomic.integer(10**400)).same_key(_atomic(XdmAtomic.double(float("inf"))))
+    assert _atomic(XdmAtomic.integer(1)) != _atomic(XdmAtomic.double(float("nan")))
+    assert not _atomic(XdmAtomic.integer(1)).same_key(_atomic(XdmAtomic.double(float("nan"))))
+    assert not _atomic(XdmAtomic.double(float("nan"))).same_key(_atomic(XdmAtomic.integer(1)))
+    assert hash(_atomic(XdmAtomic.double(float("nan")))) == hash(
+        _atomic(XdmAtomic.double(float("nan")))
     )
 
 
@@ -343,6 +423,19 @@ def test_atomic_same_key_handles_nan_and_cross_family_values():
     assert not XdmAtomic.typed(xsd.AnySimpleType("a"), xsd.AnySimpleType).same_key(
         XdmAtomic.typed(xsd.AnyType("a"), xsd.AnyType)
     )
+
+
+def test_atomic_same_key_uses_xsd_value_space_lexical_variants():
+    assert _atomic(xsd.Duration("P1Y")).same_key(_atomic(xsd.Duration("P12M")))
+    assert _atomic(xsd.YearMonthDuration("P1Y")).same_key(_atomic(xsd.YearMonthDuration("P12M")))
+    assert _atomic(xsd.DayTimeDuration("P1D")).same_key(_atomic(xsd.DayTimeDuration("PT24H")))
+    assert _atomic(xsd.HexBinary("FF")).same_key(_atomic(xsd.HexBinary("ff")))
+    assert _atomic(xsd.Date("2000-01-01Z")).same_key(_atomic(xsd.Date("2000-01-01+00:00")))
+    assert _atomic(xsd.DateTime("1999-12-31T19:00:00-05:00")).same_key(
+        _atomic(xsd.DateTime("2000-01-01T00:00:00Z"))
+    )
+    assert not _atomic(xsd.Duration("P1M")).same_key(_atomic(xsd.Duration("P30D")))
+    assert not _atomic(xsd.Date("2000-01-01")).same_key(_atomic(xsd.Date("2000-01-01Z")))
 
 
 def test_atomic_nan_detection_for_decimal_and_non_numeric_values():
@@ -505,6 +598,47 @@ def test_map_key_equality_uses_same_key_semantics():
     )
     assert mapping.size == 3
     assert mapping.get(nan_key) == as_xdm("nan-2")
+
+
+def test_map_key_equality_uses_xsd_value_space_variants():
+    duration_key = _atomic(xsd.Duration("P1Y"))
+    mapping = (
+        XdmMap.empty()
+        .put(duration_key, as_xdm("year"))
+        .put(_atomic(xsd.Duration("P12M")), as_xdm("months"))
+    )
+    assert mapping.size == 1
+    assert mapping.get(duration_key) == as_xdm("months")
+
+    hex_key = _atomic(xsd.HexBinary("FF"))
+    mapping = XdmMap.empty().put(hex_key, as_xdm(1)).put(_atomic(xsd.HexBinary("ff")), as_xdm(2))
+    assert mapping.size == 1
+    assert mapping.get(hex_key) == as_xdm(2)
+
+    date_key = _atomic(xsd.Date("2000-01-01Z"))
+    mapping = (
+        XdmMap.empty()
+        .put(date_key, as_xdm(1))
+        .put(_atomic(xsd.Date("2000-01-01+00:00")), as_xdm(2))
+    )
+    assert mapping.size == 1
+    assert mapping.get(date_key) == as_xdm(2)
+
+    decimal_key = XdmAtomic.decimal("1.1")
+    mapping = (
+        XdmMap.empty()
+        .put(decimal_key, as_xdm("decimal"))
+        .put(XdmAtomic.double(1.1), as_xdm("double"))
+    )
+    assert mapping.size == 1
+    assert mapping.get(decimal_key) == as_xdm("double")
+
+    mapping = (
+        XdmMap.empty()
+        .put(XdmAtomic.decimal("0.1"), as_xdm(1))
+        .put(XdmAtomic.decimal("0.10000000000000001"), as_xdm(2))
+    )
+    assert mapping.size == 2
 
 
 def test_map_constructor_validation_and_identity_semantics():
@@ -696,6 +830,7 @@ def test_function_signature_coerces_arguments():
             XdmSequenceType("double", "one"),
             XdmSequenceType("integer", "one"),
             XdmSequenceType("string", "one"),
+            XdmSequenceType("double", "one"),
             XdmSequenceType("item()", "one"),
             XdmSequenceType("map(*)", "one"),
             XdmSequenceType("array(*)", "one"),
@@ -711,6 +846,7 @@ def test_function_signature_coerces_arguments():
             as_xdm(1),
             as_xdm(xsd.Int("3")),
             as_xdm(xsd.AnyURI("urn:x")),
+            as_xdm(xsd.Float("1.5")),
             as_xdm(mapping),
             as_xdm(mapping),
             as_xdm(array),
@@ -718,15 +854,111 @@ def test_function_signature_coerces_arguments():
         ],
         None,
     )
-    assert result[0] == XdmAtomic.integer(4)
-    assert result[1] == XdmAtomic.double(1.0)
-    assert result[2] == XdmAtomic.integer(3)
-    assert result[3] == XdmAtomic.string("urn:x")
-    assert result[4] == mapping
+    assert isinstance(result[0], XdmAtomic)
+    assert result[0].type_name == f"{{{XSD}}}integer"
+    assert result[0].datatype is xsd.Integer
+    assert isinstance(result[1], XdmAtomic)
+    assert result[1].type_name == f"{{{XSD}}}double"
+    assert result[1].datatype is xsd.Double
+    assert isinstance(result[2], XdmAtomic)
+    assert result[2].type_name == f"{{{XSD}}}int"
+    assert result[2].datatype is xsd.Int
+    assert isinstance(result[3], XdmAtomic)
+    assert result[3].type_name == f"{{{XSD}}}string"
+    assert result[3].datatype is xsd.String
+    assert isinstance(result[4], XdmAtomic)
+    assert result[4].type_name == f"{{{XSD}}}double"
+    assert result[4].datatype is xsd.Double
     assert result[5] == mapping
-    assert result[6] == array
-    assert result[7] == function
+    assert result[6] == mapping
+    assert result[7] == array
+    assert result[8] == function
     assert seen
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_type"),
+    [
+        (xsd.Int("7"), "long"),
+        (xsd.Short("7"), "int"),
+        (xsd.Language("en"), "token"),
+        (xsd.NCName("a"), "Name"),
+        (xsd.DateTimeStamp("2000-01-01T00:00:00Z"), "dateTime"),
+        (xsd.YearMonthDuration("P1Y"), "duration"),
+    ],
+)
+def test_function_accepts_xsd_subtype_substitutions(value, expected_type):
+    signature = XdmFunctionSignature((XdmSequenceType(expected_type, "one"),))
+    function = XdmFunction(lambda arguments, environment, closure: arguments, signature=signature)
+    result = function.invoke([as_xdm(value)], None)
+    asserted = result[0]
+    assert isinstance(asserted, XdmAtomic)
+    assert asserted.type_name == f"{{{XSD}}}{type(value).name}"
+    assert asserted.datatype is type(value)
+    assert asserted.value is value
+
+
+@pytest.mark.parametrize(
+    ("expected_type", "expected_type_name", "expected_datatype"),
+    [
+        ("long", f"{{{XSD}}}int", None),
+        ("decimal", f"{{{XSD}}}decimal", xsd.Decimal),
+    ],
+)
+def test_function_substitution_uses_type_name_when_datatype_is_none(
+    expected_type, expected_type_name, expected_datatype
+):
+    direct = XdmAtomic("1", f"{{{XSD}}}int")
+    signature = XdmFunctionSignature((XdmSequenceType(expected_type, "one"),))
+    function = XdmFunction(lambda arguments, environment, closure: arguments, signature=signature)
+    result = function.invoke([as_xdm(direct)], None)
+    asserted = result[0]
+    assert isinstance(asserted, XdmAtomic)
+    assert asserted.type_name == expected_type_name
+    assert asserted.datatype is expected_datatype
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_type", "expected_type_name", "expected_datatype"),
+    [
+        (XdmAtomic.integer(1), "decimal", f"{{{XSD}}}decimal", xsd.Decimal),
+        (XdmAtomic.integer(1), "float", f"{{{XSD}}}float", xsd.Float),
+        (XdmAtomic.integer(1), "double", f"{{{XSD}}}double", xsd.Double),
+        (XdmAtomic.decimal("1.5"), "float", f"{{{XSD}}}float", xsd.Float),
+        (XdmAtomic.decimal("1.5"), "double", f"{{{XSD}}}double", xsd.Double),
+        (XdmAtomic.float(1.5), "double", f"{{{XSD}}}double", xsd.Double),
+    ],
+)
+def test_function_numeric_promotion_converts_to_the_required_type(
+    value, expected_type, expected_type_name, expected_datatype
+):
+    signature = XdmFunctionSignature((XdmSequenceType(expected_type, "one"),))
+    function = XdmFunction(lambda arguments, environment, closure: arguments, signature=signature)
+    result = function.invoke([as_xdm(value)], None)
+    asserted = result[0]
+    assert isinstance(asserted, XdmAtomic)
+    assert asserted.type_name == expected_type_name
+    assert asserted.datatype is expected_datatype
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_type"),
+    [
+        (XdmAtomic.typed(xsd.Date("2000-01-01"), xsd.Date), "string"),
+        (XdmAtomic.typed(xsd.QName("p:a"), xsd.QName), "string"),
+        (XdmAtomic.typed(xsd.Base64Binary("YWJj"), xsd.Base64Binary), "string"),
+        (XdmAtomic.typed(xsd.Duration("P1Y"), xsd.Duration), "string"),
+        (XdmAtomic.boolean(True), "integer"),
+        (XdmAtomic.double(1.5), "float"),
+        (XdmAtomic.typed(xsd.HexBinary("FF"), xsd.HexBinary), "base64Binary"),
+        (XdmAtomic.typed(xsd.Int("1"), xsd.Int), "short"),
+    ],
+)
+def test_function_rejects_invalid_atomic_substitutions(value, expected_type):
+    signature = XdmFunctionSignature((XdmSequenceType(expected_type, "one"),))
+    function = XdmFunction(lambda arguments, environment, closure: arguments, signature=signature)
+    with pytest.raises(TypeError, match="coerce"):
+        function.invoke([as_xdm(value)], None)
 
 
 def test_function_signature_occurrence_and_type_errors():
@@ -771,7 +1003,12 @@ def test_function_signature_occurrence_and_type_errors():
 def test_function_accepts_elementpath_any_uri_for_a_string_parameter():
     signature = XdmFunctionSignature((XdmSequenceType("string", "one"),))
     function = XdmFunction(lambda arguments, environment, closure: arguments, signature=signature)
-    assert function.invoke([as_xdm(ep.AnyURI("urn:x"))], None) == as_xdm("urn:x")
+    result = function.invoke([as_xdm(ep.AnyURI("urn:x"))], None)
+    asserted = result[0]
+    assert isinstance(asserted, XdmAtomic)
+    assert asserted.type_name == f"{{{XSD}}}string"
+    assert asserted.datatype is xsd.String
+    assert asserted.lexical == "urn:x"
 
 
 @pytest.mark.parametrize("type_name", ["anyAtomicType", "anySimpleType"])
@@ -792,11 +1029,18 @@ def test_function_signature_coerces_and_checks_the_return_value():
         lambda arguments, environment, closure: as_xdm(ep.UntypedAtomic("5")),
         signature=signature,
     )
-    assert function.invoke([()], None) == as_xdm(5)
+    result = function.invoke([()], None)
+    asserted = result[0]
+    assert isinstance(asserted, XdmAtomic)
+    assert asserted.type_name == f"{{{XSD}}}integer"
+    assert asserted.datatype is xsd.Integer
     raw_item = XdmFunction(
         lambda arguments, environment, closure: XdmAtomic.integer(6), signature=signature
     )
-    assert raw_item.invoke([()], None) == as_xdm(6)
+    raw_result = raw_item.invoke([()], None)[0]
+    assert isinstance(raw_result, XdmAtomic)
+    assert raw_result.type_name == f"{{{XSD}}}integer"
+    assert raw_result.datatype is xsd.Integer
     wrong = XdmFunction(
         lambda arguments, environment, closure: "not-an-integer", signature=signature
     )
@@ -805,6 +1049,20 @@ def test_function_signature_coerces_and_checks_the_return_value():
     none = XdmFunction(lambda arguments, environment, closure: None, arity=0)
     with pytest.raises(TypeError, match="None"):
         none.invoke([], None)
+
+
+def test_function_rejects_a_non_string_atomic_for_a_string_return():
+    signature = XdmFunctionSignature(
+        (XdmSequenceType("item()", "one"),),
+        XdmSequenceType("string", "one"),
+    )
+    date = XdmAtomic.typed(xsd.Date("2000-01-01"), xsd.Date)
+    function = XdmFunction(
+        lambda arguments, environment, closure: as_xdm(date),
+        signature=signature,
+    )
+    with pytest.raises(TypeError, match="coerce"):
+        function.invoke([as_xdm(1)], None)
 
 
 def test_function_identity_and_immutability():

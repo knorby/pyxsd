@@ -116,6 +116,7 @@ _DURATION_LOCALS = frozenset({"dayTimeDuration", "duration", "yearMonthDuration"
 _BINARY_LOCALS = frozenset({"base64Binary", "hexBinary"})
 _QNAME_LOCALS = frozenset({"NOTATION", "QName"})
 _LIST_LOCALS = frozenset({"ENTITIES", "IDREFS", "List", "NMTOKENS"})
+_FLOAT_NUMERIC_LOCALS = frozenset({"float", "double"})
 
 _FAMILIES: dict[str, str] = {}
 _FAMILIES.update((local, "string") for local in _STRING_LOCALS)
@@ -143,6 +144,62 @@ _NUMERIC_PROMOTIONS = {
     "decimal": 1,
     "float": 2,
     "double": 3,
+}
+
+#: The built-in XSD derivation hierarchy, independent of Python storage
+#: inheritance.  ``xsd.Float`` inherits ``xsd.Double`` in Python but is not
+#: derived from ``xs:double`` in XSD, and the string-storage families
+#: (``Date``, ``QName``, ``Base64Binary``, ...) are unrelated to
+#: ``xs:string``.  Only names in this table participate in function
+#: conversion subtype substitution.
+_XSD_BASE_TYPES: dict[str, str] = {
+    "anySimpleType": "anyType",
+    "anyAtomicType": "anySimpleType",
+    "string": "anyAtomicType",
+    "normalizedString": "string",
+    "token": "normalizedString",
+    "language": "token",
+    "Name": "token",
+    "NCName": "Name",
+    "NMTOKEN": "token",
+    "ID": "NCName",
+    "IDREF": "NCName",
+    "ENTITY": "NCName",
+    "boolean": "anyAtomicType",
+    "decimal": "anyAtomicType",
+    "integer": "decimal",
+    "nonPositiveInteger": "integer",
+    "negativeInteger": "nonPositiveInteger",
+    "long": "integer",
+    "int": "long",
+    "short": "int",
+    "byte": "short",
+    "nonNegativeInteger": "integer",
+    "unsignedLong": "nonNegativeInteger",
+    "unsignedInt": "unsignedLong",
+    "unsignedShort": "unsignedInt",
+    "unsignedByte": "unsignedShort",
+    "positiveInteger": "nonNegativeInteger",
+    "float": "anyAtomicType",
+    "double": "anyAtomicType",
+    "duration": "anyAtomicType",
+    "yearMonthDuration": "duration",
+    "dayTimeDuration": "duration",
+    "dateTime": "anyAtomicType",
+    "dateTimeStamp": "dateTime",
+    "date": "anyAtomicType",
+    "time": "anyAtomicType",
+    "gYear": "anyAtomicType",
+    "gYearMonth": "anyAtomicType",
+    "gMonth": "anyAtomicType",
+    "gMonthDay": "anyAtomicType",
+    "gDay": "anyAtomicType",
+    "hexBinary": "anyAtomicType",
+    "base64Binary": "anyAtomicType",
+    "anyURI": "anyAtomicType",
+    "QName": "anyAtomicType",
+    "NOTATION": "anyAtomicType",
+    "untypedAtomic": "anyAtomicType",
 }
 
 
@@ -200,6 +257,18 @@ def _is_elementpath_atomic(value: Any) -> bool:
     )
 
 
+def _is_xsd_subtype(item_local: str, expected_local: str) -> bool:
+    """Whether *item_local* names the same XSD type as or a subtype of *expected_local*."""
+    current = item_local
+    while True:
+        if current == expected_local:
+            return True
+        parent = _XSD_BASE_TYPES.get(current)
+        if parent is None:
+            return False
+        current = parent
+
+
 def _is_nan(value: Any) -> bool:
     if isinstance(value, float):
         return math.isnan(value)
@@ -208,12 +277,38 @@ def _is_nan(value: Any) -> bool:
     return False
 
 
-def _numeric_value(value: Any) -> int | float | Decimal:
-    if isinstance(value, Decimal):
-        return value
-    if isinstance(value, float):
-        return value
-    return int(value)
+def _as_float(value: Any) -> float:
+    try:
+        return float(value)
+    except OverflowError:
+        return math.inf if value > 0 else -math.inf
+
+
+def _numeric_values_equal(
+    left_value: Any, left_local: str, right_value: Any, right_local: str
+) -> bool:
+    """Equality under XPath numeric type promotion.
+
+    Two exact integer/decimal values compare exactly.  If either operand is a
+    float or double, both are promoted to the binary64 value space, matching
+    XPath numeric promotion.  Normalising every number to float for storage
+    would incorrectly merge distinct decimal values, so the exact arm remains.
+    """
+    if left_local in _FLOAT_NUMERIC_LOCALS or right_local in _FLOAT_NUMERIC_LOCALS:
+        return _as_float(left_value) == _as_float(right_value)
+    return left_value == right_value
+
+
+def _validate_atomic_payload(value: Any, type_name: str) -> None:
+    """Enforce the public atomic invariant for a value and its type name."""
+    if value is None:
+        raise TypeError("None is not an XDM atomic value")
+    if isinstance(value, _xsd.TypeList) or _local_type_name(type_name) in _LIST_LOCALS:
+        raise TypeError("XSD list values are not atomic XDM items")
+    try:
+        hash(value)
+    except TypeError as exc:
+        raise TypeError("an XDM atomic value must be hashable") from exc
 
 
 def _qname_key(value: Any) -> tuple[str, str, str]:
@@ -241,6 +336,9 @@ class XdmAtomic(XdmItem):
     value: Any
     type_name: str
     datatype: type[Any] | None = None
+
+    def __post_init__(self) -> None:
+        _validate_atomic_payload(self.value, self.type_name)
 
     @classmethod
     def string(cls, value: str) -> XdmAtomic:
@@ -295,9 +393,20 @@ class XdmAtomic(XdmItem):
 
     @classmethod
     def typed(cls, value: Any, datatype: type[Any]) -> XdmAtomic:
+        """Wrap a value and its XSD datatype at the atomic invariant boundary.
+
+        List values are not atomic, the payload must be an instance of its
+        declared datatype, and the payload must be hashable so it can serve as
+        an XDM map key.  The function-item layer never constructs an atomic
+        from a mutable Python container.
+        """
         if not isinstance(datatype, type):
             raise TypeError("an XDM atomic datatype must be a type")
-        return cls(value, _xsd_type_name(datatype), datatype)
+        type_name = _xsd_type_name(datatype)
+        _validate_atomic_payload(value, type_name)
+        if not isinstance(value, datatype):
+            raise TypeError("an XDM atomic value must be an instance of its datatype")
+        return cls(value, type_name, datatype)
 
     @property
     def lexical(self) -> str:
@@ -317,46 +426,68 @@ class XdmAtomic(XdmItem):
     def __str__(self) -> str:
         return self.lexical
 
+    @property
+    def _is_numeric(self) -> bool:
+        return _FAMILIES.get(_local_type_name(self.type_name)) == "numeric"
+
     def _equality_key(self) -> tuple[Any, ...]:
         local = _local_type_name(self.type_name)
         family = _FAMILIES.get(local, "other")
         if family == "string":
             return ("string", str(self.value))
         if family == "numeric":
-            if _is_nan(self.value):
-                return ("nan",)
-            return ("numeric", _numeric_value(self.value))
+            return ("numeric",)
         if family == "boolean":
             return ("boolean", bool(self.value))
         if family == "qname":
             return ("qname", *_qname_key(self.value))
-        if family == "temporal":
-            return ("temporal", local, self.value)
-        if family == "duration":
-            return ("duration", local, self.value)
-        if family == "binary":
-            return ("binary", local, self.value)
+        if family in {"temporal", "duration", "binary"}:
+            if isinstance(self.value, _xsd.XsdDataType):
+                return ("xsd", _xsd.xsd_value_key(self.value))
+            return ("value", local, self.value)
         return ("other", self.type_name, self.value)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, XdmAtomic):
             return False
-        if _is_nan(self.value) or _is_nan(other.value):
-            return False
+        if self._is_numeric and other._is_numeric:
+            if _is_nan(self.value) or _is_nan(other.value):
+                return False
+            return _numeric_values_equal(
+                self.value,
+                _local_type_name(self.type_name),
+                other.value,
+                _local_type_name(other.type_name),
+            )
         return self._equality_key() == other._equality_key()
 
     def __hash__(self) -> int:
+        if self._is_numeric:
+            if _is_nan(self.value):
+                return hash(("numeric", "nan"))
+            return hash(("numeric", _as_float(self.value)))
         return hash(self._equality_key())
 
     def same_key(self, other: object) -> bool:
         """XDM ``op:same-key`` map-key equality.
 
-        Numeric values compare across numeric types, strings and their
-        derived types compare by value, QNames compare by expanded name, and
-        two NaNs are the same key even though ``NaN eq NaN`` is false.
+        Numeric values compare under XPath numeric promotion, strings and
+        their derived types compare by value, QNames compare by expanded name,
+        and two NaNs are the same key even though ``NaN eq NaN`` is false.
         """
         if not isinstance(other, XdmAtomic):
             return False
+        if self._is_numeric and other._is_numeric:
+            left_nan = _is_nan(self.value)
+            right_nan = _is_nan(other.value)
+            if left_nan or right_nan:
+                return left_nan and right_nan
+            return _numeric_values_equal(
+                self.value,
+                _local_type_name(self.type_name),
+                other.value,
+                _local_type_name(other.type_name),
+            )
         return self._equality_key() == other._equality_key()
 
     def cast(self, type_name: str) -> XdmAtomic:
@@ -604,19 +735,13 @@ def _coerce_atomic(item: XdmItem, local: str) -> XdmAtomic:
         return item
     if item_local == "anyURI" and local == "string":
         return XdmAtomic.string(str(item.value))
-    expected = _BUILTIN_DATATYPES.get(local)
-    if (
-        expected is not None
-        and item.datatype is not None
-        and item_local != "boolean"
-        and issubclass(item.datatype, expected)
-    ):
-        return item
-    if item_local == "untypedAtomic":
-        return item.cast(local)
     item_rank = _NUMERIC_PROMOTIONS.get(item_local)
     target_rank = _NUMERIC_PROMOTIONS.get(local)
     if item_rank is not None and target_rank is not None and item_rank < target_rank:
+        return item.cast(local)
+    if _is_xsd_subtype(item_local, local):
+        return item
+    if item_local == "untypedAtomic":
         return item.cast(local)
     raise TypeError(f"cannot coerce xs:{item_local} to xs:{local}")
 
