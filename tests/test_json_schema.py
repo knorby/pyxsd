@@ -11,6 +11,7 @@ elsewhere.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from io import StringIO
 
 import pytest
@@ -763,6 +764,41 @@ def test_unsafe_patterns_are_disclosed_instead_of_translated():
     assert _unvalidated(schema) == ["xsd-regex-dialect"]
 
 
+def test_digit_shorthand_patterns_are_disclosed():
+    # XSD ``\d`` is Unicode Nd; ECMAScript ``\d`` is ASCII-only, so the
+    # shorthand is not a tested equivalent even though Python accepts it.
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="coded"/>
+  <xs:simpleType name="coded">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="\\d{2}"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>""")
+
+    assert not _errors(schema, "r", {"r": "34"})
+    # Disclosed, not emitted: a string the shorthand would reject must
+    # pass, proving no tested-equivalent pattern was installed.
+    assert not _errors(schema, "r", {"r": "ab"})
+    assert _unvalidated(schema) == ["xsd-regex-dialect"]
+
+
+def test_complement_shorthand_patterns_are_disclosed():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="coded"/>
+  <xs:simpleType name="coded">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="\\D{2}"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>""")
+
+    assert not _errors(schema, "r", {"r": "ab"})
+    assert _unvalidated(schema) == ["xsd-regex-dialect"]
+
+
 def test_length_facets_are_emitted():
     schema = _compile(LENGTH_SCHEMA)
 
@@ -1317,6 +1353,123 @@ def test_qname_enumerations_are_disclosed():
 </xs:schema>""")
 
     assert _unvalidated(schema) == ["xsd-facet"]
+
+
+def test_boolean_enumerations_become_exact_enums():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="flag"/>
+  <xs:simpleType name="flag">
+    <xs:restriction base="xs:boolean">
+      <xs:enumeration value="false"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>""")
+
+    exported = _export(schema, "<r>0</r>")
+    assert exported == {"r": False}
+    assert not _errors(schema, "r", exported)
+    assert _errors(schema, "r", {"r": True})
+    assert _unvalidated(schema) == []
+
+
+def test_boolean_patterns_are_disclosed():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="flag"/>
+  <xs:simpleType name="flag">
+    <xs:restriction base="xs:boolean">
+      <xs:pattern value="true|false"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>""")
+
+    assert not _errors(schema, "r", {"r": True})
+    assert _errors(schema, "r", {"r": "true"})
+    assert _unvalidated(schema) == ["xsd-facet"]
+
+
+def test_decimal_enumerations_use_fixed_point_spellings():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="money"/>
+  <xs:simpleType name="money">
+    <xs:restriction base="xs:decimal">
+      <xs:enumeration value="1.20"/>
+      <xs:enumeration value="2.50"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>""")
+
+    exported = _export(schema, "<r>1.20</r>")
+    assert exported == {"r": "1.20"}
+    assert not _errors(schema, "r", exported)
+    assert not _errors(schema, "r", {"r": "2.50"})
+    assert _errors(schema, "r", {"r": "1.2"})
+    assert _errors(schema, "r", {"r": "3.00"})
+    assert _unvalidated(schema) == []
+
+
+def test_integer_enumerations_with_patterns_keep_both():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="coded"/>
+  <xs:simpleType name="coded">
+    <xs:restriction base="xs:int">
+      <xs:enumeration value="1"/>
+      <xs:enumeration value="2"/>
+      <xs:pattern value="[0-9]+"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>""")
+
+    assert not _errors(schema, "r", {"r": 1})
+    assert _errors(schema, "r", {"r": 3})
+    assert _errors(schema, "r", {"r": "1"})
+    assert _unvalidated(schema) == ["xsd-facet"]
+
+
+def test_out_of_family_enumeration_values_are_disclosed():
+    # The facet parser types enumeration values with the restriction's
+    # base, so a value outside the family cannot occur through a schema.
+    # Swapping one in pins the fallback: disclose rather than emit.
+    boolean_schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="flag"/>
+  <xs:simpleType name="flag">
+    <xs:restriction base="xs:boolean">
+      <xs:enumeration value="false"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>""")
+    integer_schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="sized"/>
+  <xs:simpleType name="sized">
+    <xs:restriction base="xs:int">
+      <xs:enumeration value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>""")
+    decimal_schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="money"/>
+  <xs:simpleType name="money">
+    <xs:restriction base="xs:decimal">
+      <xs:enumeration value="1.20"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>""")
+    for schema, type_name in (
+        (boolean_schema, "flag"),
+        (integer_schema, "sized"),
+        (decimal_schema, "money"),
+    ):
+        type_class = schema.classes[type_name]
+        type_class._facetConstraints_ = replace(
+            type_class._facetConstraints_, enumeration_values=(object(),)
+        )
+        assert _unvalidated(schema) == ["xsd-facet"], type_name
 
 
 def test_multiple_pattern_steps_are_disclosed():

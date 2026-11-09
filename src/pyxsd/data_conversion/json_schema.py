@@ -87,11 +87,13 @@ _NIL_MARKER: dict[str, Any] = {
 }
 
 # Python regex features whose ECMAScript meaning is not proven identical;
-# a pattern using any of them is disclosed rather than translated. ``\U``
-# is a Python-only eight-digit escape, ``\Z``/``\A``/``\b`` anchors and
-# boundaries, ``\p``/``\P`` property classes, and digits/``\g``/``\K``
-# backreferences.
-_UNSAFE_ECMASCRIPT = re.compile(r"\(\?|\\[1-9gKpPbBAZU]|\[:|[*+?}]\+")
+# a pattern using any of them is disclosed rather than translated. ``\d``
+# and ``\D`` differ outright (XSD is Unicode Nd, ECMAScript ASCII-only),
+# and ``\w``/``\W``/``\s``/``\S`` are kept defensively even though the
+# translator expands them today. ``\U`` is a Python-only eight-digit
+# escape, ``\Z``/``\A``/``\b`` anchors and boundaries, ``\p``/``\P``
+# property classes, and digits/``\g``/``\K`` backreferences.
+_UNSAFE_ECMASCRIPT = re.compile(r"\(\?|\\[1-9gKpPbBAZUdDwWsS]|\[:|[*+?}]\+")
 
 # The anchor elementpath's translated patterns carry: ``^(?:inner)$`` with
 # a Python-only newline guard. Only that exact shape is considered for
@@ -776,6 +778,18 @@ class _SchemaBuilder:
             }
         elif issubclass(scalar_class, Boolean):
             schema = {"type": "boolean", "x-pyxsd-type": name}
+            constraints = self._constraints(scalar_class)
+            if constraints is not None:
+                # A boolean restriction's enumeration is exactly the JSON
+                # booleans it admits; patterns over the lexical forms are
+                # not expressible and are disclosed.
+                values = constraints.enumeration_values
+                if values and all(isinstance(value, (bool, Boolean)) for value in values):
+                    schema["enum"] = [bool(int(value)) for value in values]
+                elif values:
+                    self.unvalidated.add("xsd-facet")
+                if constraints.patterns:
+                    self.unvalidated.add("xsd-facet")
         elif issubclass(scalar_class, (XsdList, TypeList, _ListString)):
             schema = self._list_schema(scalar_class, name)
         elif issubclass(scalar_class, int):
@@ -837,12 +851,16 @@ class _SchemaBuilder:
         if constraints is None:
             return schema
         self._numeric_bounds(schema, constraints)
+        # A pattern over the lexical form cannot apply to JSON numbers,
+        # so it is disclosed even when an enumeration is emitted.
+        if constraints.patterns:
+            self.unvalidated.add("xsd-facet")
         values = constraints.enumeration_values
         if values and all(
             isinstance(value, int) and not isinstance(value, bool) for value in values
         ):
             schema["enum"] = [int(value) for value in values]
-        elif constraints.patterns or values:
+        elif values:
             self.unvalidated.add("xsd-facet")
         return schema
 
@@ -855,6 +873,13 @@ class _SchemaBuilder:
         constraints = self._constraints(decimal_class)
         if constraints is None:
             return schema
+        # Enumeration values are emitted with the exporter's exact
+        # fixed-point spelling, so the enum matches the exported strings.
+        values = constraints.enumeration_values
+        if values and all(isinstance(value, decimal.Decimal) for value in values):
+            schema["enum"] = [f"{value:f}" for value in values]
+        elif values:
+            self.unvalidated.add("xsd-facet")
         # Decimal bounds and digit facets have no sound JSON Schema form:
         # the values are canonical strings, not JSON numbers.
         if (
