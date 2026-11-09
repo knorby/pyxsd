@@ -4255,7 +4255,7 @@ def test_split_position_export_reimports_only_with_an_order_warning(format, path
 
 @pytest.mark.parametrize("format", ["pyxsd", "parker", "badgerfish"])
 @pytest.mark.parametrize("fidelity", ["strict", "best-effort"])
-def test_repeatable_list_typed_child_array_is_ambiguous_in_every_mode(format, fidelity):
+def test_repeatable_list_typed_child_flat_array_is_rejected_in_every_mode(format, fidelity):
     schema = _schema(REPEATED_LIST_CHILD_SCHEMA)
     data: JsonValue = (
         {"root": {"refs": ["a", "b"]}} if format == "badgerfish" else {"refs": ["a", "b"]}

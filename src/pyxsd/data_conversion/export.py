@@ -30,7 +30,7 @@ from pyxsd.data_conversion.contracts import (
 )
 from pyxsd.data_conversion.layouts import Layout, LayoutPlan, known_expanded_names, plan_layout
 from pyxsd.data_conversion.names import PrefixAllocator, expanded_to_eqname
-from pyxsd.data_conversion.values import scalar_to_json
+from pyxsd.data_conversion.values import scalar_to_json, selected_value
 from pyxsd.dict_export import bound_to_dict
 from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import XSD_NS
@@ -139,6 +139,11 @@ def _check_native_strict(node: Any, path: tuple[str, ...]) -> None:
 
     children = _content_children(node)
     attributes = getattr(node, "_attribs_", None) or {}
+    _check_native_qnames(node, path)
+    for key in attributes:
+        declared = _declared_attribute(node, key)
+        if declared is not None:
+            _check_native_qnames(node.__dict__.get(declared[0]), (*path, "@" + key))
     nilled = _is_nil(node)
 
     if nilled and not _has_nil_marker(node):
@@ -657,6 +662,25 @@ def _parker_name_losses(
             )
 
 
+def _check_native_qnames(value: Any, path: tuple[str | int, ...]) -> None:
+    """Native lexical QName values have no namespace declarations in the data."""
+    value = selected_value(value)
+    if isinstance(value, QName):
+        try:
+            expanded = value.to_expanded_name(strict=True)
+        except ValueError:
+            expanded = "{unresolved}"
+        if expanded.startswith("{"):
+            raise_conversion(
+                "namespace-lost",
+                json_pointer(path),
+                f"native export cannot carry the namespace of xs:QName {str(value)!r}",
+            )
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _check_native_qnames(item, (*path, index))
+
+
 def _parker_scalar(
     value: Any,
     *,
@@ -664,6 +688,7 @@ def _parker_scalar(
     path: tuple[str | int, ...],
 ) -> JsonValue:
     """Convert a Parker scalar, reporting any QName namespace loss."""
+    value = selected_value(value)
     if isinstance(value, QName):
         return _parker_qname(value, fidelity=fidelity, path=path)
     if isinstance(value, list):
@@ -985,6 +1010,7 @@ def _reserve_jsonml_names(node: Any, names: _LexicalNames) -> None:
 
 def _reserve_jsonml_value_names(value: Any, names: _LexicalNames) -> None:
     """Reserve the namespace of every resolved QName in a scalar value."""
+    value = selected_value(value)
     if isinstance(value, QName):
         try:
             expanded = value.to_expanded_name(strict=True)
@@ -1215,6 +1241,7 @@ def _lexical_scalar(
     path: tuple[str | int, ...],
     names: _LexicalNames,
 ) -> JsonValue:
+    value = selected_value(value)
     if isinstance(value, QName):
         return _lexical_qname(value, path=path, names=names)
     if isinstance(value, list):

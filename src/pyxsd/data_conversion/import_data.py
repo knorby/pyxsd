@@ -22,6 +22,7 @@ arrays in document order.
 from __future__ import annotations
 
 import json
+import math
 from typing import TYPE_CHECKING, Any, TypeGuard
 from xml.etree import ElementTree as ET
 
@@ -43,7 +44,7 @@ from pyxsd.data_conversion.layouts import (
     plan_layout,
 )
 from pyxsd.data_conversion.names import eqname_to_expanded, expanded_to_eqname
-from pyxsd.data_conversion.values import scalar_to_lexical
+from pyxsd.data_conversion.values import scalar_to_lexical, selected_value
 from pyxsd.exceptions import PyXSDError
 from pyxsd.xsd_data_types import (
     AnyType,
@@ -152,6 +153,7 @@ def data_to_element(
     """
     requested_format = validate_format(format)
     requested_fidelity = validate_fidelity(fidelity)
+    _reject_nonfinite_data(data, ())
     root_frame = dict(namespaces) if namespaces else {}
     if requested_format == "pyxsd-json":
         return _Builder(schema, root_frame).build(data, element)
@@ -164,6 +166,20 @@ def data_to_element(
     if requested_format == "badgerfish":
         return _BadgerfishBuilder(schema, root_frame, requested_fidelity).build(data, element)
     return _JsonmlBuilder(schema, root_frame, requested_fidelity).build(data, element)
+
+
+def _reject_nonfinite_data(value: JsonValue, path: tuple[str | int, ...]) -> None:
+    """Apply the JSON finite-number boundary to direct Python input too."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise_conversion(
+            "json-invalid", json_pointer(path), "non-finite numbers require INF/-INF/NaN strings"
+        )
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _reject_nonfinite_data(item, (*path, key))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_nonfinite_data(item, (*path, index))
 
 
 def _repointed(exc: PyXSDError, path: str) -> PyXSDError:
@@ -533,6 +549,19 @@ class _Builder(_BuilderBase):
         path: str,
     ) -> JsonValue:
         """Translate EQName QName values to lexical QNames before binding."""
+        members = getattr(datatype, "_unionMembers", None)
+        if members:
+            for member in members:
+                candidate_frame = dict(frame)
+                try:
+                    candidate = self._translate_qnames(value, member, candidate_frame, path)
+                    lexical = scalar_to_lexical(candidate, datatype=member, format="pyxsd-json")
+                    member(lexical)
+                except (PyXSDError, TypeError, ValueError):
+                    continue
+                frame.update(candidate_frame)
+                return candidate
+            return value
         if issubclass(datatype, (XsdList, TypeList)):
             item_type = datatype.itemType if issubclass(datatype, XsdList) else None
             if item_type is not None and isinstance(value, list):
@@ -1255,7 +1284,7 @@ class _GroupedBuilder(_BuilderBase):
         """Raise in strict mode, or warn and continue best-effort."""
         if self.fidelity == "strict":
             raise_conversion(code, path, message)
-        warn_conversion(code, path, message)
+        warn_conversion(code, path, f"{message} (format={self.format!r})")
 
     @staticmethod
     def _validate_local(name: str, path: str) -> None:
@@ -1686,12 +1715,20 @@ class _GroupedBuilder(_BuilderBase):
         if isinstance(raw, list):
             if datatype is not None and _is_list_datatype(datatype):
                 if max_occurs is None or max_occurs > 1:
-                    raise_conversion(
-                        "container-invalid",
-                        json_pointer((*path, key)),
-                        f"the array-valued child {key!r} is ambiguous between an XSD list "
-                        "value and repeated child elements",
-                    )
+                    if not raw or not all(isinstance(item, (list, dict)) for item in raw):
+                        raise_conversion(
+                            "container-invalid",
+                            json_pointer((*path, key)),
+                            f"the array-valued child {key!r} is ambiguous between an XSD list "
+                            "value and repeated child elements",
+                        )
+                    for index, item in enumerate(raw):
+                        element.append(
+                            self._grouped_element(
+                                expanded, item, declaration, frame, (*path, key, index)
+                            )
+                        )
+                    return
                 value = raw
                 if self.format == "pyxsd" and len(raw) == 1 and isinstance(raw[0], list):
                     # ``always_list=True`` wraps a list-valued child in one
@@ -1838,7 +1875,7 @@ class _BadgerfishBuilder(_BuilderBase):
     def _fallback(self, code: str, path: str, message: str) -> None:
         if self.fidelity == "strict":
             raise_conversion(code, path, message)
-        warn_conversion(code, path, message)
+        warn_conversion(code, path, f"{message} (format='badgerfish')")
 
     def build(self, data: JsonValue, element: str | None) -> ET.Element:
         """Validate the root object and build its element tree."""
@@ -2179,6 +2216,8 @@ class _BadgerfishBuilder(_BuilderBase):
             child_frame = dict(frame)
             if isinstance(raw, dict):
                 self._merge_declarations(raw, child_frame, (*path, key))
+            elif isinstance(raw, list) and raw and isinstance(raw[0], dict):
+                self._merge_declarations(raw[0], child_frame, (*path, key, 0))
             expanded = self._element_name(key, child_frame, (*path, key))
             if expanded in groups:
                 raise_conversion(
@@ -2190,7 +2229,7 @@ class _BadgerfishBuilder(_BuilderBase):
             declarations[expanded] = self._plan_declaration(plan, expanded) or (
                 self.global_elements().get(expanded)
             )
-            child_frames[expanded] = child_frame
+            child_frames[expanded] = frame if isinstance(raw, list) else child_frame
 
         if not groups:
             return
@@ -2266,17 +2305,27 @@ class _BadgerfishBuilder(_BuilderBase):
         if isinstance(raw, list):
             if datatype is not None and _is_list_datatype(datatype):
                 if max_occurs is None or max_occurs > 1:
-                    raise_conversion(
-                        "container-invalid",
-                        json_pointer((*path, key)),
-                        f"the array-valued child {key!r} is ambiguous between an XSD list "
-                        "value and repeated child elements",
-                    )
-                element.append(self._element(expanded, raw, declaration, frame, (*path, key)))
-                return
+                    if any(not isinstance(item, (list, dict)) for item in raw):
+                        raise_conversion(
+                            "container-invalid",
+                            json_pointer((*path, key)),
+                            f"the array-valued child {key!r} requires nested XSD-list occurrences",
+                        )
+                else:
+                    element.append(self._element(expanded, raw, declaration, frame, (*path, key)))
+                    return
             for index, item in enumerate(raw):
+                item_frame = dict(frame)
+                if isinstance(item, dict):
+                    self._merge_declarations(item, item_frame, (*path, key, index))
+                item_name = self._element_name(key, item_frame, (*path, key, index))
+                item_declaration = self._plan_declaration(
+                    plan, item_name
+                ) or self.global_elements().get(item_name)
                 element.append(
-                    self._element(expanded, item, declaration, frame, (*path, key, index))
+                    self._element(
+                        item_name, item, item_declaration, item_frame, (*path, key, index)
+                    )
                 )
             return
         element.append(self._element(expanded, raw, declaration, frame, (*path, key)))
@@ -2302,7 +2351,7 @@ class _JsonmlBuilder(_BuilderBase):
     def _fallback(self, code: str, path: str, message: str) -> None:
         if self.fidelity == "strict":
             raise_conversion(code, path, message)
-        warn_conversion(code, path, message)
+        warn_conversion(code, path, f"{message} (format='jsonml')")
 
     def build(self, data: JsonValue, element: str | None) -> ET.Element:
         """Validate the root array and build its nested elements."""
@@ -2666,7 +2715,9 @@ def _child_max_occurs(plan: LayoutPlan | None, expanded: str) -> int | None:
 
 def _is_list_datatype(datatype: type) -> bool:
     """Whether the datatype's JSON value is an array of items."""
-    return issubclass(datatype, (XsdList, TypeList, _ListString))
+    return issubclass(datatype, (XsdList, TypeList, _ListString)) or any(
+        _is_list_datatype(member) for member in getattr(datatype, "_unionMembers", ())
+    )
 
 
 def _qname_tokens(datatype: type, lexical: str) -> list[str]:
@@ -2674,9 +2725,16 @@ def _qname_tokens(datatype: type, lexical: str) -> list[str]:
     if issubclass(datatype, QName):
         return [lexical] if lexical else []
     if issubclass(datatype, XsdList):
-        item_type = getattr(datatype, "itemType", None)
-        if isinstance(item_type, type) and issubclass(item_type, QName):
-            return lexical.split()
+        return [
+            token for item in lexical.split() for token in _qname_tokens(datatype.itemType, item)
+        ]
+    if getattr(datatype, "_unionMembers", None):
+        try:
+            constructor: Any = datatype
+            member = selected_value(constructor(lexical))
+        except (TypeError, ValueError):
+            return []
+        return _qname_tokens(type(member), lexical)
     return []
 
 

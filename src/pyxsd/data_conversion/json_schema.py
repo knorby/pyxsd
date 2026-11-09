@@ -18,6 +18,7 @@ from __future__ import annotations
 import decimal
 import math
 import re
+from copy import deepcopy
 from typing import Any, NamedTuple
 
 from pyxsd.data_conversion.contracts import (
@@ -344,6 +345,8 @@ class _SchemaBuilder:
                     "root, so element= must select one unambiguous global element"
                 )
             roots = self._declaration_roots(roots[0][1])
+        if not roots:
+            return {"not": {}}
         if roots[0][1] is None:
             # An unknown selection has no declaration to describe.
             return self._element_body_for(None, self._body_builder())
@@ -730,10 +733,10 @@ class _SchemaBuilder:
         """The single-entry root objects with lexical names."""
         if not roots:
             return {"not": {}}
-        self._prepare_lexical_names([descriptor for _, descriptor in roots])
-        alternatives = [
-            self._badgerfish_root_object(eqname, descriptor) for eqname, descriptor in roots
-        ]
+        alternatives = []
+        for eqname, descriptor in roots:
+            self._prepare_lexical_names([descriptor])
+            alternatives.append(self._badgerfish_root_object(eqname, descriptor))
         return alternatives[0] if len(alternatives) == 1 else {"anyOf": alternatives}
 
     def _badgerfish_root_object(self, eqname: str, descriptor: Any | None) -> dict[str, Any]:
@@ -878,8 +881,10 @@ class _SchemaBuilder:
         """The positional root arrays."""
         if not roots:
             return {"not": {}}
-        self._prepare_lexical_names([descriptor for _, descriptor in roots])
-        alternatives = [self._jsonml_root_array(eqname, descriptor) for eqname, descriptor in roots]
+        alternatives = []
+        for eqname, descriptor in roots:
+            self._prepare_lexical_names([descriptor])
+            alternatives.append(self._jsonml_root_array(eqname, descriptor))
         return alternatives[0] if len(alternatives) == 1 else {"anyOf": alternatives}
 
     def _jsonml_root_array(self, eqname: str, descriptor: Any | None) -> dict[str, Any]:
@@ -916,7 +921,7 @@ class _SchemaBuilder:
         for child in self._merged_children(types):
             items.append(self._element_value(child.declaration))
         if self._child_wildcard(types):
-            items.append(_GENERIC_JSONML_ARRAY)
+            items.append(deepcopy(_GENERIC_JSONML_ARRAY))
             self.unvalidated.add("xsd-wildcard-namespace")
         if bool(descriptor.isNillable()):
             items.append({"type": "null"})
@@ -974,7 +979,7 @@ class _SchemaBuilder:
         items: list[dict[str, Any]] = [
             {"type": "object"},
             {"type": "string"},
-            _GENERIC_JSONML_ARRAY,
+            deepcopy(_GENERIC_JSONML_ARRAY),
         ]
         if nillable:
             items.append({"type": "null"})
@@ -990,6 +995,10 @@ class _SchemaBuilder:
     def _prepare_lexical_names(self, descriptors: list[Any]) -> None:
         """Allocate the prefixes the exporter would allocate for these roots."""
         self._lexical = _SchemaLexicalNames(known_expanded_names(self.schema, descriptors))
+        # A shared child can receive different prefixes under another root's
+        # known-name closure. Keep definitions already emitted, but build fresh
+        # bodies and references for the new root's lexical context.
+        self._element_defs.clear()
 
     def _lexical_name(self, expanded_name: str) -> str:
         """The deterministic lexical QName the exporter emits."""
@@ -1030,7 +1039,7 @@ class _SchemaBuilder:
         undetermined = declared is None or self._undetermined(declared)
         if undetermined:
             branches.append(self._general_value(nillable))
-            branches.append(_MARKER_OBJECT)
+            branches.append(deepcopy(_MARKER_OBJECT))
         else:
             branches.append(self._type_schema(declared, explicit=False, nillable=nillable))
 
@@ -1114,12 +1123,12 @@ class _SchemaBuilder:
             {"type": "string"},
         ]
         if nillable:
-            items.append(_NIL_MARKER)
+            items.append(deepcopy(_NIL_MARKER))
         self.unvalidated.add("xsd-wildcard-namespace")
         return {
             "anyOf": [
                 {"type": "array", "items": {"anyOf": items}},
-                _MARKER_OBJECT,
+                deepcopy(_MARKER_OBJECT),
             ],
             "x-pyxsd-wildcard": True,
         }
@@ -1298,7 +1307,7 @@ class _SchemaBuilder:
         if mixed:
             items.append({"type": "string"})
         if nillable:
-            items.append(_NIL_MARKER)
+            items.append(deepcopy(_NIL_MARKER))
         return {"type": "array", "items": {"anyOf": items}}
 
     def _attribute_map_item(self, type_class: Any, explicit: bool) -> dict[str, Any]:
@@ -1391,9 +1400,8 @@ class _SchemaBuilder:
     def _declared_attributes(self, type_class: Any) -> dict[str, Any]:
         """Effective attribute descriptors by expanded instance name.
 
-        Walks the MRO collecting each class's own attribute uses, least
-        derived first, so a derived class's redeclaration shadows its
-        base's -- the same collection rule as the importer.
+        Walks the MRO most derived first, keeping the first declaration
+        for each name so redeclarations shadow base uses, as in import.
         """
         cache_key = id(type_class)
         cached = self._attribute_cache.get(cache_key)
@@ -1444,19 +1452,26 @@ class _SchemaBuilder:
         members = getattr(scalar_class, "_unionMembers", None)
         if members:
             schema = {
-                "anyOf": [self._member_schema(member) for member in members],
+                "anyOf": [self._scalar_schema(member) for member in members],
                 "x-pyxsd-type": name,
             }
         elif issubclass(scalar_class, Boolean):
-            schema = {"type": "boolean", "x-pyxsd-type": name}
+            schema = (
+                {"type": "integer", "enum": [0, 1], "x-pyxsd-type": name}
+                if self.format == "pyxsd"
+                else {"type": "boolean", "x-pyxsd-type": name}
+            )
             constraints = self._constraints(scalar_class)
             if constraints is not None:
-                # A boolean restriction's enumeration is exactly the JSON
-                # booleans it admits; patterns over the lexical forms are
+                # Enumerations use the format's Boolean representation;
+                # patterns over the lexical forms are
                 # not expressible and are disclosed.
                 values = constraints.enumeration_values
                 if values and all(isinstance(value, (bool, Boolean)) for value in values):
-                    schema["enum"] = [bool(int(value)) for value in values]
+                    schema["enum"] = [
+                        int(value) if self.format == "pyxsd" else bool(int(value))
+                        for value in values
+                    ]
                 elif values:
                     self.unvalidated.add("xsd-facet")
                 if constraints.patterns:
@@ -1493,19 +1508,6 @@ class _SchemaBuilder:
             # namespace is permanently outside the JSON document.
             self.unvalidated.add("namespace-lost")
         return schema
-
-    def _member_schema(self, member: Any) -> dict[str, Any]:
-        """The lexical string form one union member's values export as."""
-        if issubclass(member, Boolean):
-            return {"enum": ["true", "false"]}
-        if issubclass(member, int):
-            return {"type": "string", "pattern": _INTEGER_LEXICAL_PATTERN}
-        if issubclass(member, String) and not issubclass(member, (QName, _ListString)):
-            # String-family members export their own lexical value, so the
-            # member's facets still apply. QName and list members export
-            # differently inside a union and fall back to plain strings.
-            return self._string_schema(member, getattr(member, "name", member.__name__))
-        return {"type": "string"}
 
     def _list_schema(self, list_class: Any, name: str) -> dict[str, Any]:
         """XSD list values are arrays, with the list-level length facets."""

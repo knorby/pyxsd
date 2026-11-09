@@ -119,6 +119,7 @@ JSON parsing rejects duplicate object keys at any depth, malformed JSON,
 non-UTF-8 bytes, and bare `NaN`, `Infinity`, or `-Infinity` tokens. XSD
 non-finite values instead use the JSON strings `"NaN"`, `"INF"`, and
 `"-INF"`.
+Direct Python input rejects non-finite floats too, including nested values.
 
 Import defaults to `fidelity="strict"`, unlike export's `"best-effort"`.
 Only the [import fallbacks](#import-fidelity) below are permitted in best
@@ -231,7 +232,9 @@ booleans are not integers, and `1.0` is not integer input. Native lexical
 strings are the compatibility exception. Import adds these rules:
 
 - **Native:** accepts both typed values and `typed=False` lexical strings,
-  including integer/boolean strings and space-separated XSD lists. A simple
+  including integer/boolean strings and space-separated XSD lists. Boolean
+  content also accepts legacy integer `0`/`1`, which native export retains;
+  other integers are not boolean inputs. A simple
   root may be a bare scalar or `{"$": value}`. Grouped child arrays accept
   native `always_list=True` output, including one-item arrays. Local child
   and attribute names resolve through a unique schema declaration; ambiguous
@@ -265,11 +268,15 @@ strings are the compatibility exception. Import adds these rules:
   content item requests nil; combining nil with other content raises
   `marker-conflict`. The `xsi:type` attribute takes a lexical QName.
 
-In all three grouped formats, an array for a repeatable **list-valued**
-child is ambiguous between one XSD list and repeated elements, so it raises
-`container-invalid` in both modes. For a non-repeatable list-valued child,
-the array is one scalar value; native also accepts its one-item outer
-`always_list` wrapper.
+For a repeatable **list-valued** child, nested arrays separate occurrences
+from list items: `{"refs": [["a", "b"], ["c"]]}` represents two elements.
+BadgerFish always uses the outer occurrence array, including `[]` for zero
+occurrences. Native and Parker accept nonempty nested occurrence arrays;
+their flat arrays (including `[]`) remain ambiguous between one list value
+and repeated elements and raise `container-invalid` in both modes. Omit the
+property for zero occurrences. Native `always_list=True` supplies the outer
+array even for one occurrence. For a non-repeatable list-valued child, the
+array is one scalar value; native also accepts its one-item outer wrapper.
 
 Native element `null` needs special care: a non-nillable target becomes
 empty content; a nillable target becomes nil when empty content is not
@@ -321,7 +328,9 @@ is bound; an unresolved type prefix instead reaches the binder's
 BadgerFish merges `@xmlns` declarations (`$` denotes the default namespace);
 JsonML merges `xmlns` and `xmlns:prefix` from the attribute object. Nested
 declarations override inherited bindings and apply to the element carrying
-them, including its own tag, and its descendants. Unprefixed attributes
+them, including its own tag, and its descendants. Each BadgerFish occurrence
+in a repeated array has its own frame; sibling declarations do not leak.
+Unprefixed attributes
 never use the default namespace. Required bindings for names, QName values,
 and `xsi:type` must resolve in strict mode. Import accepts supplied prefixes
 and default namespaces; the deterministic explicit prefixes described
@@ -365,13 +374,17 @@ assert qname_reparsed.to_data(format="pyxsd-json") == qname_data
 
 QName JSON round trips retain expanded names (namespace URI and local name).
 In namespace-aware mode, `to_string()` also preserves resolved QName values
-in element content, declared attributes, and XSD lists, for both imported
+in element content, declared attributes, XSD lists, and selected union members, for both imported
 and XML-parsed documents. The writer declares namespaces used only by these
 values and re-spells the values with its selected prefixes, including values
 originally resolved through a default namespace. Prefixes and source bytes
 are not preserved; compare expanded names rather than lexical spellings.
 Unresolved QName values pass through unchanged; the writer does not invent
 missing namespace bindings.
+Actual types selected by `xsi:type` also contribute value-only namespaces;
+the XML writer declares those namespaces and re-spells the type marker.
+This also applies to redundant native markers equal to the declared type.
+An unresolved marker is retained, not repaired by guessing the bound class.
 
 The same schema must not import or parse concurrently or reentrantly.
 Separate `Schema` objects can compile and parse concurrently.
@@ -383,7 +396,7 @@ cannot be built: for example, duplicate JSON keys (`json-duplicate-key`),
 malformed JSON (`json-invalid`), invalid names (`name-invalid`), wrong containers
 (`container-invalid`), wrong scalar types (`scalar-type-invalid`), or
 conflicting nil/content markers (`marker-conflict`). Diagnostics include a
-reason code and JSON Pointer path; the empty pointer identifies the whole
+reason code, selected format, and JSON Pointer path; the empty pointer identifies the whole
 input. JSON parsing errors use that empty pointer. Best-effort warnings
 carry reason codes and paths too; they do not become validation issues.
 Ambiguous root selection, malformed names, wrong containers/scalar types,
@@ -519,9 +532,9 @@ With the default `typed=True`, all five formats use these JSON-safe values:
 
 | Bound value | JSON value |
 | --- | --- |
-| Boolean | `true` or `false` |
+| Boolean | Native: integer `1` or `0`; other formats: `true` or `false` |
 | Integer and integer-derived types | Integer number |
-| Decimal | Fixed-point string, never a binary float; `1.20` stays `"1.20"` |
+| Decimal | String, never a binary float; new formats use fixed-point; native retains legacy `str()` spelling |
 | Finite float or double | Number |
 | Non-finite float or double | `"INF"`, `"-INF"`, or `"NaN"` |
 | XSD list value | Array, including zero or one item |
@@ -530,12 +543,16 @@ With the default `typed=True`, all five formats use these JSON-safe values:
 
 Python data uses `bool` and `None` where JSON uses booleans and `null`.
 `to_json()` uses `allow_nan=False` and no fallback serializer.
+Unions follow the selected member's scalar contract recursively, including
+QName namespaces, list items, numeric values, and non-finite spellings.
+Import selects a member using its required JSON representation and XSD
+lexical validity; JSON Schema describes the member representations as alternatives.
 
 Native `typed=False` retains lexical text, including the space-separated
 string for an XSD list value. `to_dict()` remains the raw-value interface:
 it keeps bound Python/XSD scalar objects instead of normalizing them for
 JSON. Native JSON keeps its existing structure and decimal/date/QName
-strings, with two scalar changes: non-finite numbers use the strings above,
+strings and Boolean `0`/`1`, with two scalar changes: non-finite numbers use the strings above,
 and typed XSD list values use arrays rather than lexical strings.
 
 ## Native `pyxsd` structure
@@ -875,7 +892,10 @@ The following fidelity rules describe **export**; see
 - Native `strict` raises `PyXSDError` for empty/nil ambiguity
   (`empty-nil-ambiguous`), mixed text/element positions (`mixed-content`),
   interleaved repeated names (`order-ambiguous`), and namespaced elements
-  reduced to local names by legacy binding (`namespace-lost`). An explicit
+  reduced to local names by legacy binding (`namespace-lost`). Namespace-dependent
+  or unresolved QName values in content, lists, attributes, or selected union
+  members also raise `namespace-lost`: native data carries no bindings for them.
+  An explicit
   nil attribute is representable and need not raise.
 - `pyxsd-json` defines no best-effort fallback. Both modes return the same
   representable data and raise for content incompatible with the selected

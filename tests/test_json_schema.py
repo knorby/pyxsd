@@ -833,7 +833,13 @@ def test_union_values_validate_as_their_members():
 
     assert not _errors(schema, "root", {"root": "42"})
     assert not _errors(schema, "root", {"root": "hello"})
-    assert _errors(schema, "root", {"root": 42})
+    assert not _errors(schema, "root", {"root": 42})
+    document = schema.parse(StringIO("<root>42</root>"))
+    assert document.to_data(format="pyxsd-json") == {"root": 42}
+    restored = schema.from_data(document.to_data(format="pyxsd-json"))
+    restored.require_valid()
+    assert isinstance(restored.root.memberValue, int)
+    assert restored.root.memberValue == 42
 
 
 # ---------------------------------------------------------------------------
@@ -1176,7 +1182,7 @@ def test_prohibited_attributes_are_excluded_and_closed():
 # ---------------------------------------------------------------------------
 
 
-def test_union_members_export_their_lexical_forms():
+def test_union_members_use_boolean_and_expanded_qname_contracts():
     schema = _compile("""\
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <xs:element name="r" type="ut"/>
@@ -1187,8 +1193,9 @@ def test_union_members_export_their_lexical_forms():
 
     assert not _errors(schema, "r", {"r": "true"})
     assert not _errors(schema, "r", {"r": "false"})
-    assert not _errors(schema, "r", {"r": "pfx:local"})
-    assert _errors(schema, "r", {"r": True})
+    assert not _errors(schema, "r", {"r": "Q{urn:value}local"})
+    assert _errors(schema, "r", {"r": "pfx:local"})
+    assert not _errors(schema, "r", {"r": True})
     assert _errors(schema, "r", {"r": 42})
 
 

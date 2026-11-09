@@ -727,8 +727,8 @@ class Schema:
         # not needed for a cold XML-only import of this module.
         from pyxsd.data_conversion.import_data import data_to_element
 
-        return self.parse(
-            data_to_element(
+        try:
+            tree = data_to_element(
                 self,
                 data,
                 format=format,
@@ -736,7 +736,9 @@ class Schema:
                 namespaces=namespaces,
                 fidelity=fidelity,
             )
-        )
+        except PyXSDError as exc:
+            raise PyXSDError(f"{exc} (format={format!r})") from None
+        return self.parse(tree)
 
     def from_json(
         self,
@@ -757,19 +759,20 @@ class Schema:
         :meth:`from_data`.
         """
         from pyxsd.data_conversion.contracts import validate_fidelity, validate_format
-        from pyxsd.data_conversion.import_data import data_to_element, json_to_data
+        from pyxsd.data_conversion.import_data import json_to_data
 
         requested_format = validate_format(format)
         validate_fidelity(fidelity)
-        return self.parse(
-            data_to_element(
-                self,
-                json_to_data(source),
-                format=requested_format,
-                element=element,
-                namespaces=namespaces,
-                fidelity=fidelity,
-            )
+        try:
+            data = json_to_data(source)
+        except PyXSDError as exc:
+            raise PyXSDError(f"{exc} (format={requested_format!r})") from None
+        return self.from_data(
+            data,
+            format=requested_format,
+            element=element,
+            namespaces=namespaces,
+            fidelity=fidelity,
         )
 
     def json_schema(

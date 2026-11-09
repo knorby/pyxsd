@@ -39,20 +39,41 @@ dictionary the following variables:
 from typing import IO, Any
 
 from pyxsd import xsi
+from pyxsd.data_conversion.values import selected_value
 from pyxsd.namespaces import XML_NS
 from pyxsd.writers.xml_tag_writer import XmlTagWriter, _escape_text
-from pyxsd.xsd_data_types import QName, XsdList
+from pyxsd.xsd_data_types import QName, XsdDataType, XsdList, qname_context
 
 
-def _clark_uri(name: str) -> str | None:
+def _clark_uri(name: str | None) -> str | None:
     """Returns the namespace URI of a Clark name, or ``None``."""
     if isinstance(name, str) and name.startswith("{"):
         return name[1:].split("}", 1)[0]
     return None
 
 
+def _actual_type_name(element: Any) -> str | None:
+    """The type QName's original resolution, never a guess from the bound class.
+
+    Retain redundant and invalid markers too. A caller's later lexical edit
+    must not be overwritten with the previous type's namespace evidence.
+    """
+    evidence = getattr(element, "_xsi_type_context_", None)
+    if evidence is None:
+        return None
+    raw = element._attribs_.get("xsi:type", element._attribs_.get(xsi.XSI_TYPE))
+    if " ".join(str(raw).split()) != evidence[0]:
+        return None
+    try:
+        with qname_context(evidence[1]):
+            return QName(evidence[0]).to_expanded_name(strict=True)
+    except (TypeError, ValueError):
+        return None
+
+
 def _resolved_qname_uri(value: Any) -> str | None:
     """The namespace URI a resolved QName value carries, or ``None``."""
+    value = selected_value(value)
     if isinstance(value, QName) and value._resolved_ and value._uri_:
         return value._uri_
     return None
@@ -67,19 +88,19 @@ def _qname_value_uris(value: Any) -> list[str]:
     their namespace is unknown, not merely undeclared.
     """
     uris: list[str] = []
+    value = selected_value(value)
     uri = _resolved_qname_uri(value)
     if uri is not None:
         uris.append(uri)
     if isinstance(value, XsdList):
         for item in value:
-            uri = _resolved_qname_uri(item)
-            if uri is not None:
-                uris.append(uri)
+            uris.extend(_qname_value_uris(item))
     return uris
 
 
 def _respelled_qname(value: Any, prefix_map: dict[str, str]) -> str | None:
     """A writer-prefixed spelling for a resolved QName, or ``None``."""
+    value = selected_value(value)
     uri = _resolved_qname_uri(value)
     if uri is None:
         return None
@@ -96,6 +117,8 @@ def _respelled_lexical(value: Any, prefix_map: dict[str, str]) -> str | None:
     keep the recorded lexical content. An ``xs:list`` re-spells its
     resolved items and keeps unresolved ones verbatim.
     """
+    original = value
+    value = selected_value(value)
     spelled = _respelled_qname(value, prefix_map)
     if spelled is not None:
         return spelled
@@ -103,7 +126,7 @@ def _respelled_lexical(value: Any, prefix_map: dict[str, str]) -> str | None:
         parts: list[str] = []
         respelled = False
         for item in value:
-            item_spelling = _respelled_qname(item, prefix_map)
+            item_spelling = _respelled_lexical(item, prefix_map)
             if item_spelling is None:
                 parts.append(str(item))
             else:
@@ -111,6 +134,8 @@ def _respelled_lexical(value: Any, prefix_map: dict[str, str]) -> str | None:
                 respelled = True
         if respelled:
             return " ".join(parts)
+    if value is not original and isinstance(value, XsdDataType):
+        return value.lexical()
     return None
 
 
@@ -145,6 +170,12 @@ def _display_content(element: Any, value: Any, prefix_map: dict[str, str]) -> An
         return None
     if isinstance(value, list) and len(value) != 1:
         return value
+    if getattr(type(element), "_unionMembers", None):
+        recorded = str(value[0]) if isinstance(value, list) else str(value)
+        if recorded != str(element):
+            # A caller edited the lexical container. Do not replace that edit
+            # with the old bound member and thereby hide validation failures.
+            return value
     spelled = _respelled_lexical(element, prefix_map)
     if spelled is None:
         return value
@@ -154,6 +185,8 @@ def _display_content(element: Any, value: Any, prefix_map: dict[str, str]) -> An
 def _display_attribute_value(typed: Any, raw: Any, prefix_map: dict[str, str]) -> Any:
     """Re-spell a QName attribute value with the writer's prefixes."""
     if typed is None:
+        return raw
+    if getattr(type(typed), "_unionMembers", None) and str(raw) != str(typed):
         return raw
     spelled = _respelled_lexical(typed, prefix_map)
     return spelled if spelled is not None else raw
@@ -258,6 +291,10 @@ class XmlTreeWriter:
                 uri = _clark_uri(xsi.xsi_attr_key(key))
                 if uri and uri not in uris:
                     uris.append(uri)
+                if xsi.xsi_attr_key(key) == "xsi:type":
+                    type_uri = _clark_uri(_actual_type_name(element))
+                    if type_uri and type_uri not in uris:
+                        uris.append(type_uri)
                 for value_uri in _qname_value_uris(_typed_attribute(element, key)):
                     if value_uri not in uris:
                         uris.append(value_uri)
@@ -327,7 +364,15 @@ class XmlTreeWriter:
         attribs: dict[str, str] = {}
         for key, value in element._attribs_.items():
             if prefix_map is not None:
-                value = _display_attribute_value(_typed_attribute(element, key), value, prefix_map)
+                actual_type = (
+                    _actual_type_name(element) if xsi.xsi_attr_key(key) == "xsi:type" else None
+                )
+                if actual_type is not None:
+                    value = _display_name(actual_type, prefix_map)
+                else:
+                    value = _display_attribute_value(
+                        _typed_attribute(element, key), value, prefix_map
+                    )
             attribs[_display_attribute(key, prefix_map)] = value
 
         if tabs == 0:
@@ -344,8 +389,7 @@ class XmlTreeWriter:
                 attribs["xmlns:xsi"] = xsi.XSI_NAMESPACE
 
         value = element._value_
-        if prefix_map is not None:
-            value = _display_content(element, value, prefix_map)
+        value = _display_content(element, value, prefix_map or {})
         hasChildren = bool(children)
 
         if len(children) == 1 and children[0]._name_ == "_comment_":
@@ -438,14 +482,22 @@ class XmlTreeWriter:
 
 
 def _tree_is_namespaced(root: Any) -> bool:
-    """Returns True when any element name in the tree is a Clark name.
+    """Whether names or resolved values require namespace-aware output.
 
-    Element names are local in legacy mode even for documents that use
-    namespaces, so this only fires for strict namespace mode. Clark
-    *attributes* do not count: legacy mode has always keyed XSI and
-    namespaced attributes that way without implying namespaced output.
+    Value-only namespaces count even in an otherwise unqualified tree.
+    Ordinary Clark attributes count too; the conventional XSI keys alone
+    need only the historical implicit ``xsi`` declaration.
     """
     name = getattr(root, "_name_", "")
     if isinstance(name, str) and name.startswith("{"):
         return True
+    if _qname_value_uris(root):
+        return True
+    for key in getattr(root, "_attribs_", {}):
+        if _clark_uri(key) and not key.startswith("{" + xsi.XSI_NAMESPACE + "}"):
+            return True
+        if _qname_value_uris(_typed_attribute(root, key)):
+            return True
+        if xsi.xsi_attr_key(key) == "xsi:type" and _clark_uri(_actual_type_name(root)):
+            return True
     return any(_tree_is_namespaced(child) for child in getattr(root, "_children_", []))

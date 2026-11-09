@@ -3661,8 +3661,7 @@ def test_document_to_json_forwards_indentation():
     assert json.loads(text) == document.to_data()
 
 
-def test_export_cli_is_not_changed_here():
-    # Task 3 adds no CLI surface; ToDict JSON output remains the existing path.
+def test_native_json_matches_raw_dict_for_compatible_scalars():
     document = _compile(NATIVE_SCHEMA, NATIVE_INSTANCE)
     assert json.loads(document.to_json()) == document.to_dict()
 

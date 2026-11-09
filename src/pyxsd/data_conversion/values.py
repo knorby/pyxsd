@@ -8,6 +8,7 @@ from typing import Any, NoReturn
 
 from pyxsd.data_conversion.contracts import FormatName, JsonValue, raise_conversion
 from pyxsd.data_conversion.names import expanded_to_eqname
+from pyxsd.exceptions import PyXSDError
 from pyxsd.xsd_data_types import (
     Boolean,
     QName,
@@ -21,6 +22,14 @@ from pyxsd.xsd_data_types import (
 
 def _type_name(datatype: type[Any]) -> str:
     return getattr(datatype, "name", None) or datatype.__name__
+
+
+def selected_value(value: Any) -> Any:
+    """Unwrap the selected member, including nested restricted unions."""
+    while getattr(type(value), "_unionMembers", None):
+        # Nilled union shells have no selected scalar member.
+        value = getattr(value, "memberValue", None)
+    return value
 
 
 def _invalid_scalar(value: Any, datatype: type[Any], expected: str) -> NoReturn:
@@ -53,15 +62,16 @@ def scalar_to_json(value: Any, *, format: FormatName, typed: bool = True) -> Jso
             f"expected a lexical string, got {type(value).__name__}",
         )
 
+    value = selected_value(value)
     if isinstance(value, Boolean):
-        return bool(int(value))
+        return int(value) if format == "pyxsd" else bool(int(value))
     if isinstance(value, bool):
         return value
     if isinstance(value, int):
         return int(value)
     if isinstance(value, decimal.Decimal):
         # Fixed point, never binary float or exponent notation.
-        return f"{value:f}"
+        return str(value) if format == "pyxsd" else f"{value:f}"
     if isinstance(value, float):
         number = float(value)
         if math.isnan(number):
@@ -113,11 +123,33 @@ def scalar_to_lexical(
     if format == "pyxsd" and isinstance(value, str):
         return value
 
+    members = getattr(datatype, "_unionMembers", None)
+    if members:
+        fallback = None
+        for member in members:
+            try:
+                lexical = scalar_to_lexical(value, datatype=member, format=format)
+            except PyXSDError:
+                continue
+            if fallback is None:
+                fallback = lexical
+            try:
+                member(lexical)
+            except (TypeError, ValueError):
+                continue
+            return lexical
+        if fallback is not None:
+            # Correct representation, invalid XSD lexical value: let the binder report it.
+            return fallback
+        _invalid_scalar(value, datatype, "a value accepted by a union member")
+
     if issubclass(datatype, Boolean):
         if isinstance(value, bool):
             return "true" if value else "false"
         if isinstance(value, Boolean):
             return "true" if int(value) else "false"
+        if format == "pyxsd" and type(value) is int and value in (0, 1):
+            return "true" if value else "false"
         _invalid_scalar(value, datatype, "a JSON boolean")
 
     if issubclass(datatype, int):
@@ -148,10 +180,8 @@ def scalar_to_lexical(
                 _invalid_scalar(value, datatype, "a finite JSON number")
         if isinstance(value, float):
             number = float(value)
-            if math.isnan(number):
-                return "NaN"
-            if math.isinf(number):
-                return "INF" if number > 0 else "-INF"
+            if not math.isfinite(number):
+                _invalid_scalar(value, datatype, "a finite JSON number or INF/-INF/NaN string")
             return str(number)
         if isinstance(value, str):
             if value in ("INF", "-INF", "NaN"):

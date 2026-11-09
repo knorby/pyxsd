@@ -464,13 +464,14 @@ def test_scalar_to_lexical_converts_finite_and_non_finite_floats():
     assert scalar_to_lexical(1, datatype=Double, format="pyxsd-json") == "1.0"
     assert scalar_to_lexical(10**20, datatype=Double, format="pyxsd-json") == "1e+20"
     assert scalar_to_lexical(-0.0, datatype=Double, format="pyxsd-json") == "-0.0"
-    assert scalar_to_lexical(float("nan"), datatype=Double, format="pyxsd-json") == "NaN"
-    assert scalar_to_lexical(float("inf"), datatype=Double, format="pyxsd-json") == "INF"
-    assert scalar_to_lexical(float("-inf"), datatype=Double, format="pyxsd-json") == "-INF"
+    for value in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(PyXSDError, match="scalar-type-invalid"):
+            scalar_to_lexical(value, datatype=Double, format="pyxsd-json")
     assert scalar_to_lexical("INF", datatype=Double, format="pyxsd-json") == "INF"
     assert scalar_to_lexical("-INF", datatype=Double, format="pyxsd-json") == "-INF"
     assert scalar_to_lexical("NaN", datatype=Double, format="pyxsd-json") == "NaN"
-    assert scalar_to_lexical(Double("INF"), datatype=Double, format="pyxsd") == "INF"
+    with pytest.raises(PyXSDError, match="scalar-type-invalid"):
+        scalar_to_lexical(Double("INF"), datatype=Double, format="pyxsd")
 
 
 def test_scalar_to_lexical_rejects_wrong_float_types():
