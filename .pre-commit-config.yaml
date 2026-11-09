@@ -18,10 +18,13 @@ repos:
     hooks:
       - id: trailing-whitespace
         # Digest-pinned upstream documents must remain byte-for-byte unchanged.
-        exclude: ^tests/fixtures/healthcare/hl7-(discharge-summary|ccd-with-issues)\.xml$
+        # The packaged W3C stylesheet schemas are provenance-hashed and only
+        # their local schemaLocation identifiers may differ from upstream.
+        exclude: ^(tests/fixtures/healthcare/hl7-(discharge-summary|ccd-with-issues)\.xml|src/pyxsd/xslt/resources/.*\.xsd)$
       - id: mixed-line-ending
         args: [--fix=lf]
       - id: end-of-file-fixer
+        exclude: ^src/pyxsd/xslt/resources/.*\.xsd$
       - id: check-merge-conflict
       - id: check-case-conflict
       - id: check-symlinks

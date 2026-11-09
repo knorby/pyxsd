@@ -172,6 +172,7 @@ module = [
     "pyxsd.version_gates",
     "pyxsd.xpath_api",
     "pyxsd.xpath.*",
+    "pyxsd.xslt.*",
     "pyxsd.exceptions",
     "pyxsd.xsi",
     "pyxsd.compositors",

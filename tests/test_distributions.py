@@ -29,8 +29,19 @@ def test_built_distributions_have_complete_sources_and_bundled_skills(tmp_path):
         assert root + "server.json" in names
         assert root + "scripts/check_mcp_registry.py" in names
         assert root + "benchmarks/fixtures/mcp/catalog.xsd" in names
+        for resource in (
+            "src/pyxsd/xslt/resources/schema-for-xslt20.xsd",
+            "src/pyxsd/xslt/resources/schema-for-xslt30.xsd",
+            "src/pyxsd/xslt/resources/XMLSchema10.xsd",
+            "src/pyxsd/xslt/resources/XMLSchema11.xsd",
+            "src/pyxsd/xslt/resources/xml.xsd",
+            "src/pyxsd/xslt/resources/LICENSE-W3C.txt",
+            "src/pyxsd/xslt/resources/NOTICE.md",
+        ):
+            assert root + resource in names
         assert not any(name.startswith(root + "tests/xsts/corpus/") for name in names)
         assert not any(name.startswith(root + "tests/xpath/corpus/") for name in names)
+        assert not any(name.startswith(root + "tests/xslt/corpus/") for name in names)
         # All members come from our freshly built source archive. Manual
         # extraction keeps this check compatible with Python 3.11's tar API.
         for member in archive.getmembers():
@@ -59,6 +70,16 @@ def test_built_distributions_have_complete_sources_and_bundled_skills(tmp_path):
         names = wheel.namelist()
         for skill in ("pyxsd-cli", "pyxsd-development", "pyxsd-mcp", "pyxsd-xml-doctor"):
             assert f"pyxsd/skills/{skill}/SKILL.md" in names
+        for resource in (
+            "schema-for-xslt20.xsd",
+            "schema-for-xslt30.xsd",
+            "XMLSchema10.xsd",
+            "XMLSchema11.xsd",
+            "xml.xsd",
+            "LICENSE-W3C.txt",
+            "NOTICE.md",
+        ):
+            assert f"pyxsd/xslt/resources/{resource}" in names
         entries = wheel.read(f"pyxsd-{__version__}.dist-info/entry_points.txt").decode()
         assert "pyxsd = pyxsd.__main__:main" in entries
         assert "pyxsd-mcp = pyxsd.mcp.__main__:main" in entries
