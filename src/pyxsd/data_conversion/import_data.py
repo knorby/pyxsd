@@ -1610,7 +1610,7 @@ class _GroupedBuilder(_BuilderBase):
             return
 
         layout = None if plan is None else plan.layout
-        if self._grouped_order_is_ambiguous(layout, type_class, plan, list(groups), generic):
+        if _grouped_order_ambiguous(layout, type_class, plan, list(groups), generic=generic):
             self._fallback(
                 "order-ambiguous",
                 json_pointer(path),
@@ -1707,27 +1707,6 @@ class _GroupedBuilder(_BuilderBase):
                 )
             return
         element.append(self._grouped_element(expanded, raw, declaration, frame, (*path, key)))
-
-    def _grouped_order_is_ambiguous(
-        self,
-        layout: Layout | None,
-        type_class: type,
-        plan: LayoutPlan | None,
-        present: list[str],
-        generic: bool,
-    ) -> bool:
-        """Whether grouped properties cannot be placed in schema order."""
-        if len(present) <= 1:
-            return False
-        if generic or layout is Layout.MIXED:
-            return True
-        if layout is Layout.RECORD:
-            return False
-        if layout in (Layout.EMPTY, Layout.EMPTY_PLUS, Layout.SIMPLE, Layout.SIMPLE_PLUS):
-            return True
-        model = _compiled_model(type_class)
-        known = set() if plan is None else {child.name for child in plan.children}
-        return _has_ambiguous_interleaving(model, set(present), known)
 
     # ------------------------------------------------------------------
     # Native markers and null
@@ -2233,7 +2212,7 @@ class _BadgerfishBuilder(_BuilderBase):
                 )
             order = list(groups)
         elif layout is not None and _grouped_order_ambiguous(
-            layout, type_class, plan, list(groups)
+            layout, type_class, plan, list(groups), generic=False
         ):
             self._fallback(
                 "order-ambiguous",
@@ -2810,21 +2789,62 @@ def _has_ambiguous_interleaving(
 
 
 def _grouped_order_ambiguous(
-    layout: Layout,
+    layout: Layout | None,
     type_class: type,
     plan: LayoutPlan | None,
     present: list[str],
+    *,
+    generic: bool,
 ) -> bool:
-    """Whether schema order uniquely reconstructs the grouped properties."""
+    """Whether schema order uniquely reconstructs the grouped properties.
+
+    Grouped objects collapse each expanded child name into one key. A
+    model can therefore be ambiguous for two independent reasons: names
+    can interleave inside a repeated particle, or one name can occupy
+    more than one element particle (``a?, b, a?``). The second case is
+    rejected conservatively because the grouped property carries no
+    position for the individual values.
+    """
     if len(present) <= 1:
         return False
+    if generic or layout is Layout.MIXED:
+        return True
     if layout is Layout.RECORD:
         return False
     if layout in (Layout.EMPTY, Layout.EMPTY_PLUS, Layout.SIMPLE, Layout.SIMPLE_PLUS):
         return True
     model = _compiled_model(type_class)
     known = set() if plan is None else {child.name for child in plan.children}
-    return _has_ambiguous_interleaving(model, set(present), known)
+    names = set(present)
+    return _has_ambiguous_interleaving(model, names, known) or _has_name_at_multiple_positions(
+        model, names
+    )
+
+
+def _has_name_at_multiple_positions(model: Any, present: set[str]) -> bool:
+    """Whether any present name can occupy more than one element particle."""
+    positions: dict[str, int] = {}
+    _count_element_positions(model, positions)
+    return any(positions.get(name, 0) > 1 for name in present)
+
+
+def _count_element_positions(particle: Any, positions: dict[str, int]) -> None:
+    """Count distinct element-particle positions for each expanded name.
+
+    Repeated occurrences of one particle stay one position: ``a+`` is a
+    contiguous block and its grouped array is reconstructible. Two
+    separate ``a`` particles are not.
+    """
+    if particle.max_occurs == 0:
+        return
+    if particle.kind == "element":
+        for name, _declaration in _possible_element_names(particle.descriptor):
+            positions[name] = positions.get(name, 0) + 1
+        return
+    if particle.kind == "any":
+        return
+    for child in particle.children:
+        _count_element_positions(child, positions)
 
 
 def _empty_content_possible(

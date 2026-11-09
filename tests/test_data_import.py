@@ -4168,3 +4168,141 @@ def test_badgerfish_a_child_may_declare_the_prefix_in_its_own_name():
     assert leaf is not None and leaf.text == "v"
     assert schema.namespace_context.bindings_for(item) == {"p": "urn:p"}
     assert schema.namespace_context.bindings_for(leaf) == {"p": "urn:p", "q": "urn:q"}
+
+
+# ---------------------------------------------------------------------------
+# Names occupying more than one content-model position
+# ---------------------------------------------------------------------------
+
+MULTI_POSITION_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="a" type="xs:string" minOccurs="0"/>
+        <xs:element name="b" type="xs:string"/>
+        <xs:element name="a" type="xs:string" minOccurs="0"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"""
+
+
+def test_parker_rejects_a_name_at_multiple_sequence_positions():
+    schema = _schema(MULTI_POSITION_SCHEMA)
+
+    with pytest.raises(PyXSDError, match="order-ambiguous") as caught:
+        schema.from_data({"b": "B", "a": "A"}, format="parker")
+    assert str(caught.value).startswith("order-ambiguous at ''")
+
+    with pytest.warns(PyXSDWarning, match="order-ambiguous"):
+        imported = schema.from_data({"b": "B", "a": "A"}, format="parker", fidelity="best-effort")
+
+    assert imported.root is not None
+    assert [child._name_ for child in imported.root._children_] == ["b", "a"]
+    imported.require_valid()
+
+
+def test_native_rejects_a_name_at_multiple_sequence_positions():
+    schema = _schema(MULTI_POSITION_SCHEMA)
+
+    with pytest.raises(PyXSDError, match="order-ambiguous") as caught:
+        schema.from_data({"a": ["x", "y"], "b": "B"}, format="pyxsd")
+    assert str(caught.value).startswith("order-ambiguous at ''")
+
+    with pytest.warns(PyXSDWarning, match="order-ambiguous"):
+        imported = schema.from_data(
+            {"a": ["x", "y"], "b": "B"}, format="pyxsd", fidelity="best-effort"
+        )
+
+    assert imported.root is not None
+    assert [child._name_ for child in imported.root._children_] == ["a", "a", "b"]
+    assert imported.report.has_errors
+
+
+@pytest.mark.parametrize(
+    ("format", "path", "expected"),
+    [
+        ("pyxsd", "", {"a": ["A", "C"], "b": "B"}),
+        ("parker", "", {"a": ["A", "C"], "b": "B"}),
+        (
+            "badgerfish",
+            "/root",
+            {"root": {"a": ["A", "C"], "b": "B"}},
+        ),
+    ],
+)
+def test_split_position_export_reimports_only_with_an_order_warning(format, path, expected):
+    schema = _schema(MULTI_POSITION_SCHEMA)
+    document = schema.parse(StringIO("<root><a>A</a><b>B</b><a>C</a></root>"))
+    document.require_valid()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", PyXSDWarning)
+        exported = document.to_data(format=format, fidelity="best-effort")
+    assert exported == expected
+
+    with pytest.raises(PyXSDError, match="order-ambiguous") as caught:
+        schema.from_data(exported, format=format)
+    assert str(caught.value).startswith(f"order-ambiguous at {path!r}")
+
+    with pytest.warns(PyXSDWarning, match="order-ambiguous"):
+        imported = schema.from_data(exported, format=format, fidelity="best-effort")
+
+    assert imported.root is not None
+    assert [child._name_ for child in imported.root._children_] == ["a", "a", "b"]
+    assert imported.report.has_errors
+
+
+@pytest.mark.parametrize("format", ["pyxsd", "parker", "badgerfish"])
+@pytest.mark.parametrize("fidelity", ["strict", "best-effort"])
+def test_repeatable_list_typed_child_array_is_ambiguous_in_every_mode(format, fidelity):
+    schema = _schema(REPEATED_LIST_CHILD_SCHEMA)
+    data: JsonValue = (
+        {"root": {"refs": ["a", "b"]}} if format == "badgerfish" else {"refs": ["a", "b"]}
+    )
+
+    with pytest.raises(PyXSDError, match="container-invalid") as caught:
+        schema.from_data(data, format=format, fidelity=fidelity)  # type: ignore[arg-type]
+
+    assert "/refs" in str(caught.value)
+
+
+def test_a_zero_occurrence_particle_does_not_create_an_extra_position():
+    schema = _schema(
+        """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="a" type="xs:string"/>
+        <xs:element name="b" type="xs:string"/>
+        <xs:element name="a" type="xs:string" minOccurs="0" maxOccurs="0"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"""
+    )
+
+    imported = schema.from_data({"b": "B", "a": "A"}, format="pyxsd")
+
+    imported.require_valid()
+    assert [child._name_ for child in imported.root._children_] == ["a", "b"]
+
+
+def test_badgerfish_rejects_a_name_at_multiple_sequence_positions():
+    schema = _schema(MULTI_POSITION_SCHEMA)
+
+    with pytest.raises(PyXSDError, match="order-ambiguous") as caught:
+        schema.from_data({"root": {"b": "B", "a": "A"}}, format="badgerfish")
+    assert str(caught.value).startswith("order-ambiguous at '/root'")
+
+    with pytest.warns(PyXSDWarning, match="order-ambiguous"):
+        imported = schema.from_data(
+            {"root": {"b": "B", "a": "A"}},
+            format="badgerfish",
+            fidelity="best-effort",
+        )
+
+    assert imported.root is not None
+    assert [child._name_ for child in imported.root._children_] == ["b", "a"]
+    imported.require_valid()
