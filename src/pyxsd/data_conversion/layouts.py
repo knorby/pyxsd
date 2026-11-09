@@ -11,15 +11,23 @@ single-occurrence ``xs:choice`` of order-insignificant branches are the
 profile's order-insignificant models; ``record`` additionally requires
 every possible child maximum at most one. An ordered ``xs:sequence``
 remains ``sequence`` even when its child names are unique.
+
+This module also owns the effective-type closure -- the declared type, its
+conditional alternatives, and the named ``xsi:type`` targets the binder
+accepts -- plus the known-name walk over it. Export's deterministic prefix
+allocation and JSON Schema's projection consume these functions so the two
+walks cannot drift apart.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, NamedTuple
 
+from pyxsd import xsd_data_types as _xsd_data_types
 from pyxsd.data_conversion.contracts import raise_conversion
+from pyxsd.data_conversion.names import type_expanded_name
 from pyxsd.xsd_data_types import AnyType, XsdDataType
 
 
@@ -77,6 +85,22 @@ class _Facts:
 
     children: dict[str, _Occurrence]
     wildcard: bool = False
+
+
+class EffectiveTypes(NamedTuple):
+    """The types one element declaration can bind, split by selection.
+
+    ``bindings`` are the declared type and every conditional alternative;
+    they bind without an ``xsi:type`` marker. ``targets`` and ``builtins``
+    are the named ``xsi:type`` targets this schema's own types and the
+    built-in datatypes allow. ``alternatives`` lists the conditional
+    alternative types alone.
+    """
+
+    bindings: list[Any]
+    targets: list[Any]
+    builtins: list[Any]
+    alternatives: list[Any]
 
 
 def plan_layout(xsd_type: Any, *, explicit_type: bool = False) -> LayoutPlan:
@@ -384,3 +408,162 @@ def _substitution_members(declaration: Any) -> list[Any]:
     for key in dict.fromkeys(keys):
         members.extend(groups.get(key, ()))
     return members
+
+
+# ---------------------------------------------------------------------------
+# Effective-type closure shared by export and JSON Schema
+# ---------------------------------------------------------------------------
+
+
+def _schema_named_types(schema: Any) -> list[Any]:
+    """This schema's own named global types."""
+    collected: dict[int, Any] = {}
+    for key, type_class in schema.classes.items():
+        if key == "schema" or "|" in key or not isinstance(type_class, type):
+            continue
+        collected.setdefault(id(type_class), type_class)
+    return sorted(collected.values(), key=type_expanded_name)
+
+
+def _named_target_types(schema: Any, cache: dict[Any, Any]) -> list[Any]:
+    """Named global types and built-ins, the targets ``xsi:type`` allows."""
+    cached = cache.get("named")
+    if cached is not None:
+        return cached
+    collected: dict[int, Any] = {id(t): t for t in _schema_named_types(schema)}
+    for type_class in vars(_xsd_data_types).values():
+        # Only the named built-ins (``name`` is declared on the class
+        # itself), never the intermediate helper classes.
+        if (
+            isinstance(type_class, type)
+            and issubclass(type_class, XsdDataType)
+            and "name" in type_class.__dict__
+        ):
+            collected.setdefault(id(type_class), type_class)
+    result = sorted(collected.values(), key=type_expanded_name)
+    cache["named"] = result
+    return result
+
+
+def marker_target_types(
+    schema: Any,
+    declared: Any,
+    cta_types: list[Any],
+    *,
+    cache: dict[Any, Any] | None = None,
+) -> tuple[list[Any], list[Any]]:
+    """The ``xsi:type`` targets for *declared*, split by origin.
+
+    The first list holds this schema's own named types, which get precise
+    per-type treatment; the second holds built-in datatypes, which share
+    one compact branch. Conditional alternatives can also be re-marked by
+    ``xsi:type``, so each alternative's type contributes its own
+    derivations and is itself a marker target.
+    """
+    if cache is None:
+        cache = {}
+    is_valid_xsi_type = _marker_validator()
+    schema_ids = {id(type_class) for type_class in _schema_named_types(schema)}
+    generated: dict[int, Any] = {}
+    builtins: dict[int, Any] = {}
+    for base in (declared, *cta_types):
+        cache_key = id(base)
+        valid = cache.get(cache_key)
+        if valid is None:
+            valid = [
+                type_class
+                for type_class in _named_target_types(schema, cache)
+                if is_valid_xsi_type(type_class, base, None) is None
+            ]
+            cache[cache_key] = valid
+        skip_identity = base is declared
+        for type_class in valid:
+            if skip_identity and type_class is base:
+                continue
+            if id(type_class) in schema_ids:
+                generated.setdefault(id(type_class), type_class)
+            else:
+                builtins.setdefault(id(type_class), type_class)
+    return (
+        sorted(generated.values(), key=type_expanded_name),
+        sorted(builtins.values(), key=type_expanded_name),
+    )
+
+
+def _marker_validator() -> Any:
+    # Deferred: importing the derivation module before the parser stack is
+    # loaded re-enters the element-representative cycle.
+    from pyxsd.derivation import is_valid_xsi_type
+
+    return is_valid_xsi_type
+
+
+def effective_element_types(
+    schema: Any, descriptor: Any, *, cache: dict[Any, Any] | None = None
+) -> EffectiveTypes:
+    """The declared type, conditional types, and ``xsi:type`` targets.
+
+    Raises nothing for untyped or undetermined declarations; the bindings
+    list is simply empty or holds the undetermined class and callers
+    decide how to project it.
+    """
+    declared = descriptor.getType()
+    cta_types: list[Any] = []
+    for alternative in getattr(descriptor, "compiledAlternatives", None) or ():
+        type_class = getattr(alternative, "type_class", None)
+        if isinstance(type_class, type):
+            cta_types.append(type_class)
+    bindings = [type_class for type_class in (declared, *cta_types) if type_class is not None]
+    targets: list[Any] = []
+    builtins: list[Any] = []
+    if declared is not None and not is_undetermined(declared):
+        targets, builtins = marker_target_types(schema, declared, cta_types, cache=cache)
+    return EffectiveTypes(bindings, targets, builtins, cta_types)
+
+
+def is_undetermined(type_class: Any) -> bool:
+    """Whether the type leaves the content model open (anyType-like)."""
+    return getattr(type_class, "_contentKind_", None) is None and (
+        (isinstance(type_class, type) and issubclass(type_class, AnyType))
+        or _is_schema_base(type_class)
+    )
+
+
+def known_expanded_names(schema: Any, descriptors: list[Any]) -> list[str]:
+    """Every expanded name reachable from the given root declarations.
+
+    Mirrors the full effective-type closure: plan children (substitution
+    members included), conditional and ``xsi:type`` selections, and
+    inherited attribute declarations. Export seeds its prefix allocation
+    and JSON Schema seeds its lexical projection from this one walk, so
+    the same namespace URIs always receive the same ``nsN`` prefixes.
+    """
+    names: set[str] = set()
+    seen_types: set[int] = set()
+    pending_elements = [descriptor for descriptor in descriptors if descriptor is not None]
+    pending_types: list[Any] = []
+    while pending_elements or pending_types:
+        if pending_elements:
+            # Element declarations discovered mid-walk expand here too:
+            # one worklist keeps conditional branches reachable through
+            # later types.
+            descriptor = pending_elements.pop()
+            names.add(descriptor.expandedInstanceName())
+            effective = effective_element_types(schema, descriptor)
+            pending_types.extend(effective.bindings)
+            pending_types.extend(effective.targets)
+            continue
+        type_class = pending_types.pop()
+        if id(type_class) in seen_types:
+            continue
+        seen_types.add(id(type_class))
+        # Untyped children contribute their SchemaBase plan, which the
+        # walk follows as well.
+        for child in plan_layout(type_class).children:
+            names.add(child.name)
+            pending_elements.append(child.declaration)
+            pending_types.append(child.declaration.getType())
+        for klass in type_class.__mro__:
+            for key in klass.__dict__.get("_attributeNames_", ()):
+                names.add(klass.__dict__[key].expandedInstanceName(is_attribute=True))
+    return sorted(names)

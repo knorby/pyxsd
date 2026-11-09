@@ -20,7 +20,6 @@ import math
 import re
 from typing import Any, NamedTuple
 
-from pyxsd import xsd_data_types as _xsd_data_types
 from pyxsd.data_conversion.contracts import (
     Fidelity,
     FormatName,
@@ -28,19 +27,22 @@ from pyxsd.data_conversion.contracts import (
     validate_format,
 )
 from pyxsd.data_conversion.layouts import (
+    EffectiveTypes,
     Layout,
     LayoutPlan,
     _compiled_model,
-    _is_schema_base,
     _model_facts,
     _possible_element_names,
+    effective_element_types,
+    is_undetermined,
+    known_expanded_names,
+    marker_target_types,
     plan_layout,
 )
 from pyxsd.data_conversion.names import PrefixAllocator, eqname_to_expanded, expanded_to_eqname
 from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import XSD_NS
 from pyxsd.xsd_data_types import (
-    AnyType,
     Boolean,
     QName,
     String,
@@ -100,20 +102,6 @@ _NIL_MARKER: dict[str, Any] = {
     "properties": {CONTENT_KEY: {"type": "null"}},
     "additionalProperties": False,
 }
-
-
-class _EffectiveTypes(NamedTuple):
-    """The types one element can bind, split by how they are selected."""
-
-    #: The declared type and every conditional alternative: these bind
-    #: without an ``xsi:type`` marker, so they contribute bare values.
-    bindings: list[Any]
-
-    #: This schema's own named ``xsi:type`` targets.
-    targets: list[Any]
-
-    #: Built-in datatype ``xsi:type`` targets.
-    builtins: list[Any]
 
 
 class _TypeFacts(NamedTuple):
@@ -219,15 +207,12 @@ class _SchemaBuilder:
         self._element_cache: dict[int, dict[str, Any]] = {}
         self._element_defs: dict[int, str] = {}
         self._native_leaf_cache: dict[int, dict[str, Any] | None] = {}
-        self._marker_cache: dict[int, list[type]] = {}
+        self._marker_cache: dict[Any, Any] = {}
         self._attribute_cache: dict[int, dict[str, Any]] = {}
         self._scalar_cache: dict[int, dict[str, Any]] = {}
-        self._effective_cache: dict[int, _EffectiveTypes] = {}
+        self._effective_cache: dict[int, EffectiveTypes] = {}
         self._facts_cache: dict[int, _TypeFacts] = {}
         self._lexical: _SchemaLexicalNames | None = None
-        self._schema_named: list[type] | None = None
-        self._named: list[type] | None = None
-        self._is_valid_xsi_type: Any = None
         # The binder makes the same assumption: every compiled schema
         # generates the "schema" class that owns the root elements.
         self._globals: dict[str, Any] = {
@@ -417,26 +402,15 @@ class _SchemaBuilder:
             self.unvalidated.add("native-null-ambiguity")
         return {"anyOf": branches, "x-pyxsd-wildcard": True}
 
-    def _effective_types(self, descriptor: Any) -> _EffectiveTypes:
-        """The declared type, conditional types, and ``xsi:type`` targets."""
+    def _effective_types(self, descriptor: Any) -> EffectiveTypes:
+        """The shared effective-type closure for one element declaration."""
         cache_key = id(descriptor)
         cached = self._effective_cache.get(cache_key)
         if cached is not None:
             return cached
-        declared = descriptor.getType()
-        cta_types: list[Any] = []
-        for alternative in getattr(descriptor, "compiledAlternatives", None) or ():
-            type_class = getattr(alternative, "type_class", None)
-            if isinstance(type_class, type):
-                cta_types.append(type_class)
-        if cta_types:
+        result = effective_element_types(self.schema, descriptor, cache=self._marker_cache)
+        if result.alternatives:
             self.unvalidated.add("xsd-conditional-type")
-        bindings = [type_class for type_class in (declared, *cta_types) if type_class is not None]
-        targets: list[Any] = []
-        builtins: list[Any] = []
-        if declared is not None and not self._undetermined(declared):
-            targets, builtins = self._marker_targets(declared, cta_types)
-        result = _EffectiveTypes(bindings, targets, builtins)
         self._effective_cache[cache_key] = result
         return result
 
@@ -581,7 +555,7 @@ class _SchemaBuilder:
         return branches[0] if len(branches) == 1 else {"anyOf": branches}
 
     def _native_object_form(
-        self, types: list[Any], effective: _EffectiveTypes, nillable: bool
+        self, types: list[Any], effective: EffectiveTypes, nillable: bool
     ) -> dict[str, Any]:
         """The attribute, child, and text object the native exporter emits."""
         properties: dict[str, Any] = {}
@@ -605,7 +579,9 @@ class _SchemaBuilder:
                 array = {"type": "array", "items": value}
                 value = array if self.always_list else {"anyOf": [value, array]}
             properties[child.name] = value
-            if child.min_occurs >= 1:
+            if child.min_occurs >= 1 and not nillable:
+                # A nilled element carries no children, so a nillable
+                # parent cannot make a child unconditionally required.
                 required.append(child.name)
         if self._admits_text(types):
             # Inside an object the native exporter always writes the raw
@@ -852,7 +828,9 @@ class _SchemaBuilder:
                     array["maxItems"] = child.max_occurs
                 value = array
             properties[lexical] = value
-            if child.min_occurs >= 1:
+            if child.min_occurs >= 1 and not nillable:
+                # A nilled element carries no children, so a nillable
+                # parent cannot make a child unconditionally required.
                 required.append(lexical)
         dollar = self._badgerfish_dollar(types)
         if dollar is not None:
@@ -959,7 +937,7 @@ class _SchemaBuilder:
         return result
 
     def _jsonml_attrs_schema(
-        self, types: list[Any], effective: _EffectiveTypes, *, root: bool
+        self, types: list[Any], effective: EffectiveTypes, *, root: bool
     ) -> dict[str, Any]:
         """The optional attribute object with typed declared values."""
         properties: dict[str, Any] = {}
@@ -1011,44 +989,7 @@ class _SchemaBuilder:
 
     def _prepare_lexical_names(self, descriptors: list[Any]) -> None:
         """Allocate the prefixes the exporter would allocate for these roots."""
-        self._lexical = _SchemaLexicalNames(self._schema_known_names(descriptors))
-
-    def _schema_known_names(self, descriptors: list[Any]) -> list[str]:
-        """Every expanded name reachable from the selected root declarations.
-
-        Mirrors the exporter's instance walk over observed nodes and their
-        types: plan children cover substitution members, effective types
-        cover conditional and ``xsi:type`` selections, and the MRO covers
-        inherited attribute declarations.
-        """
-        names: set[str] = set()
-        seen_types: set[int] = set()
-        pending_elements = [descriptor for descriptor in descriptors if descriptor is not None]
-        pending_types: list[Any] = []
-        while pending_elements:
-            # Root declarations and plan-child declarations are distinct
-            # objects, so nothing dedupes here; the name set and the type
-            # walk below keep the result bounded and deterministic.
-            descriptor = pending_elements.pop()
-            names.add(descriptor.expandedInstanceName())
-            effective = self._effective_types(descriptor)
-            pending_types.extend(effective.bindings)
-            pending_types.extend(effective.targets)
-        while pending_types:
-            type_class = pending_types.pop()
-            if id(type_class) in seen_types:
-                continue
-            seen_types.add(id(type_class))
-            for child in self._type_facts(type_class).plan.children:
-                names.add(child.name)
-                pending_elements.append(child.declaration)
-                # Untyped children contribute their SchemaBase plan, which
-                # the exporter's walk also follows.
-                pending_types.append(child.declaration.getType())
-            for klass in type_class.__mro__:
-                for key in klass.__dict__.get("_attributeNames_", ()):
-                    names.add(klass.__dict__[key].expandedInstanceName(is_attribute=True))
-        return sorted(names)
+        self._lexical = _SchemaLexicalNames(known_expanded_names(self.schema, descriptors))
 
     def _lexical_name(self, expanded_name: str) -> str:
         """The deterministic lexical QName the exporter emits."""
@@ -1111,53 +1052,9 @@ class _SchemaBuilder:
         self._element_cache[cache_key] = value
         return value
 
-    def _marker_targets(
-        self, declared: Any, cta_types: list[type]
-    ) -> tuple[list[type], list[type]]:
-        """The ``xsi:type`` targets for *declared*, split by origin.
-
-        The first list holds this schema's own named types, which get their
-        own precise definitions; the second holds built-in datatypes, which
-        share one compact branch. Conditional alternatives can also be
-        re-marked by ``xsi:type``, so each alternative's type contributes
-        its own derivations (and is itself a marker target).
-        """
-        schema_ids = {id(type_class) for type_class in self._schema_types()}
-        generated: dict[int, type] = {}
-        builtins: dict[int, type] = {}
-        for base in (declared, *cta_types):
-            for type_class in self._marker_alternatives_for_base(
-                base, skip_identity=base is declared
-            ):
-                if id(type_class) in schema_ids:
-                    generated.setdefault(id(type_class), type_class)
-                else:
-                    builtins.setdefault(id(type_class), type_class)
-        return (
-            sorted(generated.values(), key=self._type_expanded_name),
-            sorted(builtins.values(), key=self._type_expanded_name),
-        )
-
-    def _marker_alternatives_for_base(self, base: Any, *, skip_identity: bool) -> list[type]:
-        """Named types the binder accepts as an ``xsi:type`` for *base*."""
-        cache_key = id(base)
-        cached = self._marker_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        if self._is_valid_xsi_type is None:
-            # Deferred: importing the derivation module before the parser
-            # stack is loaded re-enters the element-representative cycle.
-            from pyxsd.derivation import is_valid_xsi_type
-
-            self._is_valid_xsi_type = is_valid_xsi_type
-        result = [
-            type_class
-            for type_class in self._named_types()
-            if (not skip_identity or type_class is not base)
-            and self._is_valid_xsi_type(type_class, base, None) is None
-        ]
-        self._marker_cache[cache_key] = result
-        return result
+    def _marker_targets(self, declared: Any, cta_types: list[Any]) -> tuple[list[Any], list[Any]]:
+        """The ``xsi:type`` targets for *declared*, split by origin."""
+        return marker_target_types(self.schema, declared, cta_types, cache=self._marker_cache)
 
     def _generic_marker_branch(self, builtin_targets: list[type]) -> dict[str, Any]:
         """One compact branch covering every builtin ``xsi:type`` target.
@@ -1190,42 +1087,10 @@ class _SchemaBuilder:
             )
         return {"anyOf": branches}
 
-    def _schema_types(self) -> list[type]:
-        """This schema's own named global types."""
-        if self._schema_named is None:
-            collected: dict[int, type] = {}
-            for key, type_class in self.schema.classes.items():
-                if key == "schema" or "|" in key or not isinstance(type_class, type):
-                    continue
-                collected.setdefault(id(type_class), type_class)
-            self._schema_named = sorted(collected.values(), key=self._type_expanded_name)
-        return self._schema_named
-
-    def _named_types(self) -> list[type]:
-        """Named global types and built-ins, the targets ``xsi:type`` allows."""
-        if self._named is None:
-            collected: dict[int, type] = {
-                id(type_class): type_class for type_class in self._schema_types()
-            }
-            for type_class in vars(_xsd_data_types).values():
-                # Only the named built-ins (``name`` is declared on the class
-                # itself), never the intermediate helper classes.
-                if (
-                    isinstance(type_class, type)
-                    and issubclass(type_class, XsdDataType)
-                    and "name" in type_class.__dict__
-                ):
-                    collected.setdefault(id(type_class), type_class)
-            self._named = sorted(collected.values(), key=self._type_expanded_name)
-        return self._named
-
     @staticmethod
     def _undetermined(type_class: Any) -> bool:
         """Whether the type leaves the content model open (anyType-like)."""
-        return getattr(type_class, "_contentKind_", None) is None and (
-            (isinstance(type_class, type) and issubclass(type_class, AnyType))
-            or _is_schema_base(type_class)
-        )
+        return is_undetermined(type_class)
 
     def _general_value(self, nillable: bool) -> dict[str, Any]:
         """The sound general shape of an undetermined-typed element.

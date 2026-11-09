@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from pyxsd.data_conversion.contracts import raise_conversion
-from pyxsd.xsd_data_types import NCName
+from pyxsd.namespaces import XSD_NS
+from pyxsd.xsd_data_types import NCName, XsdDataType
 
 
 def _valid_ncname(text: str) -> bool:
@@ -53,6 +54,19 @@ def eqname_to_expanded(name: str) -> str:
     if not _valid_ncname(local):
         _invalid_name(name, "EQName")
     return f"{{{uri}}}{local}" if uri else local
+
+
+def type_expanded_name(type_class: Any) -> str:
+    """The Clark name of a compiled type or built-in datatype."""
+    name = getattr(type_class, "name", None) or type_class.__name__
+    namespace = getattr(type_class, "_targetNamespace_", None)
+    if (
+        not namespace
+        and issubclass(type_class, XsdDataType)
+        and type_class.__module__ == "pyxsd.xsd_data_types"
+    ):
+        namespace = XSD_NS
+    return f"{{{namespace}}}{name}" if namespace else name
 
 
 class PrefixAllocator:

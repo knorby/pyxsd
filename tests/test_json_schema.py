@@ -2596,6 +2596,203 @@ def test_jsonml_wildcard_attributes_stay_open():
     assert "xsd-wildcard-namespace" in _format_unvalidated(schema, "jsonml", "root")
 
 
+# ---------------------------------------------------------------------------
+# Conditional-type namespaces shared by export and JSON Schema
+# ---------------------------------------------------------------------------
+
+
+NILLABLE_REQUIRED_CHILD_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="e" nillable="true"><xs:complexType><xs:sequence>
+      <xs:element name="c" type="xs:string"/>
+    </xs:sequence></xs:complexType></xs:element>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+
+REQUIRED_CHILD_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="e"><xs:complexType><xs:sequence>
+      <xs:element name="c" type="xs:string"/>
+    </xs:sequence></xs:complexType></xs:element>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+
+
+def _write_two_namespace_schema(tmp_path, declared_uri, extension_uri):
+    """A schema whose declared branch and CTA branch use two namespaces.
+
+    ``Base`` holds one optional child in *declared_uri*; the conditional
+    ``Other`` type extends it with a child in *extension_uri*, so the full
+    schema closure always knows both namespaces while an instance may show
+    only one.
+    """
+    (tmp_path / "a.xsd").write_text(
+        f"""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="{declared_uri}">
+  <xs:element name="a" type="xs:string"/>
+</xs:schema>""",
+        encoding="utf-8",
+    )
+    (tmp_path / "z.xsd").write_text(
+        f"""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="{extension_uri}">
+  <xs:element name="z" type="xs:string"/>
+</xs:schema>""",
+        encoding="utf-8",
+    )
+    main = tmp_path / "main.xsd"
+    main.write_text(
+        f"""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+            xmlns:da="{declared_uri}" xmlns:ez="{extension_uri}">
+  <xs:import namespace="{declared_uri}" schemaLocation="a.xsd"/>
+  <xs:import namespace="{extension_uri}" schemaLocation="z.xsd"/>
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="v" type="Base">
+      <xs:alternative test="@k='o'" type="Other"/>
+    </xs:element>
+  </xs:sequence></xs:complexType></xs:element>
+  <xs:complexType name="Base"><xs:sequence>
+    <xs:element ref="da:a" minOccurs="0"/>
+  </xs:sequence></xs:complexType>
+  <xs:complexType name="Other"><xs:complexContent><xs:extension base="Base"><xs:sequence>
+    <xs:element ref="ez:z" minOccurs="0"/>
+  </xs:sequence></xs:extension></xs:complexContent></xs:complexType>
+</xs:schema>""",
+        encoding="utf-8",
+    )
+    return str(main)
+
+
+def test_cta_namespaces_agree_between_export_and_schema(tmp_path):
+    main = _write_two_namespace_schema(tmp_path, "urn:aaa", "urn:zzz")
+    schema = pyxsd.Schema.compile(main)
+
+    cta = schema.parse(StringIO('<root><v k="o"><z:z xmlns:z="urn:zzz">v</z:z></v></root>'))
+    exported = _export_quiet(cta, "badgerfish")
+    assert exported == {"root": {"@xmlns": {"ns1": "urn:zzz"}, "v": {"ns1:z": "v"}}}
+    assert not _format_errors(schema, "badgerfish", "root", exported)
+
+    jsonml_exported = _export_quiet(cta, "jsonml")
+    assert jsonml_exported == ["root", {"xmlns:ns1": "urn:zzz"}, ["v", ["ns1:z", "v"]]]
+    assert not _format_errors(schema, "jsonml", "root", jsonml_exported)
+
+    declared = schema.parse(StringIO('<root><v k="b"><a:a xmlns:a="urn:aaa">x</a:a></v></root>'))
+    declared_exported = _export_quiet(declared, "badgerfish")
+    assert declared_exported == {"root": {"@xmlns": {"ns0": "urn:aaa"}, "v": {"ns0:a": "x"}}}
+    assert not _format_errors(schema, "badgerfish", "root", declared_exported)
+    assert not _format_errors(schema, "jsonml", "root", _export_quiet(declared, "jsonml"))
+
+
+def test_cta_namespaces_agree_for_explicit_type_markers(tmp_path):
+    main = _write_two_namespace_schema(tmp_path, "urn:aaa", "urn:zzz")
+    schema = pyxsd.Schema.compile(main)
+
+    marked = schema.parse(
+        StringIO(
+            '<root><v xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Other">'
+            '<z:z xmlns:z="urn:zzz">v</z:z></v></root>'
+        )
+    )
+    exported = _export_quiet(marked, "badgerfish")
+
+    assert exported == {
+        "root": {
+            "@xmlns": {
+                "ns1": "urn:zzz",
+                "xsi": "http://www.w3.org/2001/XMLSchema-instance",
+            },
+            "v": {"@xsi:type": "Other", "ns1:z": "v"},
+        }
+    }
+    assert not _format_errors(schema, "badgerfish", "root", exported)
+    assert not _format_errors(schema, "jsonml", "root", _export_quiet(marked, "jsonml"))
+
+
+def test_declared_branch_prefixes_use_the_full_schema_closure(tmp_path):
+    main = _write_two_namespace_schema(tmp_path, "urn:zzz", "urn:aaa")
+    schema = pyxsd.Schema.compile(main)
+
+    declared = schema.parse(StringIO('<root><v k="b"><a:a xmlns:a="urn:zzz">x</a:a></v></root>'))
+    exported = _export_quiet(declared, "badgerfish")
+
+    # The schema-seeded closure knows urn:aaa sorts first, so this
+    # instance's only namespace is still ns1; the old observed-instance
+    # seed would have called it ns0 and disagreed with the schema.
+    assert exported == {"root": {"@xmlns": {"ns1": "urn:zzz"}, "v": {"ns1:a": "x"}}}
+    assert not _format_errors(schema, "badgerfish", "root", exported)
+    assert not _format_errors(schema, "jsonml", "root", _export_quiet(declared, "jsonml"))
+
+    cta = schema.parse(StringIO('<root><v k="o"><z:z xmlns:z="urn:aaa">v</z:z></v></root>'))
+    assert _export_quiet(cta, "badgerfish") == {
+        "root": {"@xmlns": {"ns0": "urn:aaa"}, "v": {"ns0:z": "v"}}
+    }
+    assert not _format_errors(schema, "badgerfish", "root", _export_quiet(cta, "badgerfish"))
+
+
+# ---------------------------------------------------------------------------
+# Nillable parents with required children
+# ---------------------------------------------------------------------------
+
+
+def test_native_nillable_required_children_are_not_unconditional():
+    schema = _compile(NILLABLE_REQUIRED_CHILD_SCHEMA)
+
+    document = schema.parse(
+        StringIO(
+            '<root><e xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true"/></root>'
+        )
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", PyXSDWarning)
+        exported = document.to_data(format="pyxsd", fidelity="strict")
+
+    assert exported == {"e": {"@xsi:nil": "true"}}
+    assert not _format_errors(schema, "pyxsd", "root", exported)
+    # The nil marker keeps its constraint and typed child content still
+    # rejects wrong scalar shapes.
+    assert _format_errors(schema, "pyxsd", "root", {"e": {"@xsi:nil": "false"}})
+    assert _format_errors(schema, "pyxsd", "root", {"e": {"@xsi:nil": "true", "c": 5}})
+    assert _format_errors(schema, "pyxsd", "root", {"e": {"c": 5}})
+
+
+def test_native_required_children_stay_required_without_nillability():
+    schema = _compile(REQUIRED_CHILD_SCHEMA)
+
+    assert not _format_errors(schema, "pyxsd", "root", {"e": {"c": "v"}})
+    assert _format_errors(schema, "pyxsd", "root", {"e": {}})
+
+
+def test_badgerfish_nillable_required_children_are_not_unconditional():
+    schema = _compile(NILLABLE_REQUIRED_CHILD_SCHEMA)
+
+    document = schema.parse(
+        StringIO(
+            '<root><e xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true"/></root>'
+        )
+    )
+    exported = _export_quiet(document, "badgerfish")
+
+    assert exported == {
+        "root": {
+            "@xmlns": {"xsi": "http://www.w3.org/2001/XMLSchema-instance"},
+            "e": {"@xsi:nil": True},
+        }
+    }
+    assert not _format_errors(schema, "badgerfish", "root", exported)
+    assert _format_errors(schema, "badgerfish", "root", {"root": {"e": {"@xsi:nil": True, "c": 5}}})
+    assert _format_errors(schema, "badgerfish", "root", {"root": {"e": {"c": 5}}})
+
+
+def test_badgerfish_required_children_stay_required_without_nillability():
+    schema = _compile(REQUIRED_CHILD_SCHEMA)
+
+    assert not _format_errors(schema, "badgerfish", "root", {"root": {"e": {"c": "v"}}})
+    assert _format_errors(schema, "badgerfish", "root", {"root": {"e": {}}})
+
+
 def test_native_undetermined_nillable_roots_disclose_the_ambiguity():
     schema = _compile("""\
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">

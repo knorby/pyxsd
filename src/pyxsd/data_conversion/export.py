@@ -28,7 +28,7 @@ from pyxsd.data_conversion.contracts import (
     validate_format,
     warn_conversion,
 )
-from pyxsd.data_conversion.layouts import Layout, LayoutPlan, plan_layout
+from pyxsd.data_conversion.layouts import Layout, LayoutPlan, known_expanded_names, plan_layout
 from pyxsd.data_conversion.names import PrefixAllocator, expanded_to_eqname
 from pyxsd.data_conversion.values import scalar_to_json
 from pyxsd.dict_export import bound_to_dict
@@ -1172,36 +1172,20 @@ class _LexicalNames:
 
 
 def _known_names(root: Any) -> list[str]:
-    """Schema-known element and attribute names used for prefix allocation."""
-    names: set[str] = {_element_expanded_name(root)}
-    pending: list[type] = [type(root)]
-    for node in _walk_nodes(root):
-        if getattr(node, "_descriptor_", None) is not None:
-            names.add(_element_expanded_name(node))
-            pending.append(type(node))
+    """Schema-known element and attribute names used for prefix allocation.
 
-    seen: set[type] = set()
-    while pending:
-        datatype = pending.pop()
-        if datatype in seen:
-            continue
-        seen.add(datatype)
-        plan = plan_layout(datatype)
-        for child_plan in plan.children:
-            names.add(child_plan.name)
-            pending.append(child_plan.declaration.getType())
-        for klass in datatype.__mro__:
-            for key in klass.__dict__.get("_attributeNames_", ()):
-                descriptor = klass.__dict__[key]
-                names.add(descriptor.expandedInstanceName(is_attribute=True))
-    return sorted(names)
-
-
-def _walk_nodes(node: Any) -> list[Any]:
-    nodes = [node]
-    for child in _content_children(node):
-        nodes.extend(_walk_nodes(child))
-    return nodes
+    The names come from the full effective-type closure of the root's
+    declaration -- declared, conditional, and ``xsi:type``-selectable
+    types alike -- independent of which types an instance actually
+    observed, so the JSON Schema projection allocates the same prefixes.
+    A root without a declaration contributes only its own name; observed
+    wildcard names still receive deterministic URI-derived prefixes
+    outside this seed.
+    """
+    descriptor = getattr(root, "_descriptor_", None)
+    if descriptor is None:
+        return [_element_expanded_name(root)]
+    return known_expanded_names(descriptor.getSchema().compiledSchema, [descriptor])
 
 
 def _global_elements(node: Any) -> tuple[Any, ...]:
