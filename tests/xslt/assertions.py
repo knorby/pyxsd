@@ -262,6 +262,23 @@ def _xpath_value(value: Any, parser: XPath31Parser) -> Any:
     return value
 
 
+def _rooted_path(ast: Any) -> bool:
+    """Whether an expression contains an absolute path step.
+
+    elementpath represents a rooted ``/`` step with at most one operand; a
+    relative path has two (the left and right steps).  The distinction lets the
+    assertion evaluator reject an absolute path that lacks a node context
+    instead of accepting elementpath's empty sequence in place of XPTY0020.
+    """
+    pending = [ast]
+    while pending:
+        token = pending.pop()
+        if getattr(token, "symbol", None) in ("/", "//") and len(token) <= 1:
+            return True
+        pending.extend(token)
+    return False
+
+
 def _context_root(item: Any) -> Any | None:
     """The root node required for absolute paths in an XPath assertion."""
     if isinstance(item, DocumentNode):
@@ -332,6 +349,11 @@ def _evaluate(
         ast = parser.parse(expression)
         context_item = _context_item(items, parser)
         root = _context_root(context_item)
+        if root is None and _rooted_path(ast):
+            raise AssertionGap(
+                "an absolute XPath path requires a node context item: "
+                "elementpath would return an empty sequence instead of XPTY0020"
+            )
         if root is None:
             return ast.evaluate(XPathContext(item=context_item, variables=variables))
         return ast.evaluate(XPathContext(root=root, item=context_item, variables=variables))
@@ -377,7 +399,14 @@ def _evaluate_expression(
     parser = _parser(declarations)
     try:
         ast = parser.parse(expression)
+        if _rooted_path(ast):
+            raise AssertionGap(
+                f"expected expression {expression!r} uses an absolute path "
+                "but no node context is available"
+            )
         return _as_expression_items(ast.evaluate(XPathContext(item="")))
+    except AssertionGap:
+        raise
     except Exception as exc:
         if _is_gap(exc):
             raise AssertionGap(

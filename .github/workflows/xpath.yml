@@ -1,0 +1,106 @@
+name: xpath
+
+# Substrate diagnostics, separate from every XSLT conformance job. The
+# capability matrix and the QT3 report are evidence about the installed
+# elementpath release; they never update XSLT baselines or pass counts.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".gitmodules"
+      - ".github/workflows/xpath.yml"
+      - "pyproject.toml"
+      - "src/pyxsd/xpath/**"
+      - "tests/xpath/**"
+      - "tests/xslt/probes/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xpath-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capabilities:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Sync environment
+        run: uv sync --group dev --python 3.11
+
+      - name: Run capability contract tests
+        run: uv run pytest tests/xslt/probes/test_xpath_capabilities.py -q
+
+      - name: Measure XPath 2.0 capabilities
+        run: uv run python -m pyxsd.xpath.capabilities --version 2.0 --json > xpath-capabilities-2.0.json
+
+      - name: Measure XPath 3.0 capabilities
+        run: uv run python -m pyxsd.xpath.capabilities --version 3.0 --json > xpath-capabilities-3.0.json
+
+      - name: Measure XPath 3.1 capabilities
+        run: uv run python -m pyxsd.xpath.capabilities --version 3.1 --json > xpath-capabilities-3.1.json
+
+      - name: Upload capability reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xpath-capabilities
+          path: xpath-capabilities-*.json
+          if-no-files-found: ignore
+
+  qt3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Resolve the pinned qt3tests corpus commit
+        id: corpus
+        run: echo "sha=$(git rev-parse HEAD:tests/xpath/corpus)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the qt3tests corpus submodule
+        uses: actions/cache@v6
+        with:
+          path: |
+            tests/xpath/corpus
+            .git/modules/tests/xpath/corpus
+          key: qt3tests-${{ runner.os }}-${{ steps.corpus.outputs.sha }}
+
+      - name: Check out the qt3tests corpus
+        run: git submodule update --init --depth 1 tests/xpath/corpus
+
+      - name: Sync environment
+        run: uv sync --group dev --python 3.11
+
+      - name: Run QT3 diagnostic contract tests
+        run: uv run pytest tests/xpath/test_qt3_diagnostics.py -q
+
+      - name: Generate the XPath 2.0/3.0/3.1 QT3 report
+        run: >
+          uv run python -m tests.xpath.qt3
+          --versions 2.0 3.0 3.1 --json > qt3-report.json
+
+      - name: Summarize QT3 outcomes
+        if: always()
+        run: uv run python -m tests.xpath.qt3 --versions 2.0 3.0 3.1 >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the QT3 report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qt3-report
+          path: qt3-report.json
+          if-no-files-found: ignore

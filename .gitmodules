@@ -4,3 +4,6 @@
 [submodule "tests/xslt/corpus"]
 	path = tests/xslt/corpus
 	url = https://github.com/w3c/xslt30-test.git
+[submodule "tests/xpath/corpus"]
+	path = tests/xpath/corpus
+	url = https://github.com/w3c/qt3tests.git

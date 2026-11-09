@@ -30,6 +30,7 @@ def test_built_distributions_have_complete_sources_and_bundled_skills(tmp_path):
         assert root + "scripts/check_mcp_registry.py" in names
         assert root + "benchmarks/fixtures/mcp/catalog.xsd" in names
         assert not any(name.startswith(root + "tests/xsts/corpus/") for name in names)
+        assert not any(name.startswith(root + "tests/xpath/corpus/") for name in names)
         # All members come from our freshly built source archive. Manual
         # extraction keeps this check compatible with Python 3.11's tar API.
         for member in archive.getmembers():

@@ -48,6 +48,7 @@ from tests.xslt.assertions import (
     _deep_equal,
     _is_gap,
     _namespace_map,
+    _rooted_path,
     _xml_namespace_scopes,
     assert_case,
     evaluate_assertion,
@@ -1078,6 +1079,47 @@ def test_absolute_xpath_paths_use_an_element_item_document_root() -> None:
 
     assert evaluate_assertion(AssertionXPath("/out"), raw_result=(element,))
     assert evaluate_assertion(AssertionXPath("count(//a) = 1"), raw_result=(element,))
+
+
+def test_rooted_path_detection_distinguishes_absolute_and_relative_paths() -> None:
+    parser = XPath31Parser()
+    for expression in ("/out", "/", "count(//a)", "(//a)[1]", "/out/a"):
+        assert _rooted_path(parser.parse(expression)), expression
+    for expression in ("out", "$result/a", "a/b", "1 + 2", "$result//a"):
+        assert not _rooted_path(parser.parse(expression)), expression
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        (1,),
+        ("atomic",),
+        (XPathMap(XPath31Parser(), {"a": 1}),),
+        (XPathArray(XPath31Parser(), [1, 2]),),
+    ],
+    ids=["integer", "string", "map", "array"],
+)
+def test_absolute_xpath_path_with_non_node_context_is_an_adapter_gap(
+    raw: tuple[Any, ...],
+) -> None:
+    with pytest.raises(AssertionGap, match="XPTY0020"):
+        evaluate_assertion(AssertionXPath("/out"), raw_result=raw)
+    with pytest.raises(AssertionGap, match="XPTY0020"):
+        evaluate_assertion(AssertionXPath("count(/out)"), raw_result=raw)
+
+
+def test_absolute_expected_expression_without_node_context_is_an_adapter_gap() -> None:
+    with pytest.raises(AssertionGap, match="absolute path"):
+        evaluate_assertion(AssertionEq("/out"), raw_result=(1,))
+
+
+def test_assert_case_reports_absolute_atomic_context_as_adapter_gap() -> None:
+    case = make_case("<result><assert>/out</assert></result>")
+
+    result = assert_case(case, raw_result=(1,))
+
+    assert result.outcome is Outcome.ADAPTER_GAP
+    assert "XPTY0020" in result.message
 
 
 def test_blank_xml_result_is_a_true_empty_document() -> None:
