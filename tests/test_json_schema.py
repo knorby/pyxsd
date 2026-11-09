@@ -1,4 +1,4 @@
-"""Tests for ``pyxsd-json`` Draft 2020-12 JSON Schema generation.
+"""Tests for Draft 2020-12 JSON Schema generation of every data format.
 
 Every exported fixture must validate against the schema generated for its
 root; negative fixtures pin the shapes the generated schema rejects; and
@@ -11,6 +11,7 @@ elsewhere.
 from __future__ import annotations
 
 import re
+import warnings
 from dataclasses import replace
 from io import StringIO
 
@@ -20,7 +21,7 @@ from tests.test_data_formats import FIXTURES
 
 import pyxsd
 from pyxsd.data_conversion.json_schema import build_json_schema
-from pyxsd.exceptions import PyXSDError
+from pyxsd.exceptions import PyXSDError, PyXSDWarning
 
 #: Each shared fixture's global root name.
 FIXTURE_ROOTS = {
@@ -518,12 +519,24 @@ def test_unknown_format_and_fidelity_raise_value_error():
         schema.json_schema(format="pyxsd-json", element="root", fidelity="loose")
 
 
-def test_remaining_formats_are_not_implemented_yet():
+def test_conventional_formats_reject_native_only_options():
     schema = _compile(SIMPLE_PLUS_SCHEMA)
 
-    for format in ("pyxsd", "parker", "badgerfish", "jsonml"):
-        with pytest.raises(NotImplementedError, match=format):
-            schema.json_schema(format=format, element="root")
+    for format in ("pyxsd-json", "parker", "badgerfish", "jsonml"):
+        with pytest.raises(ValueError, match="native-only"):
+            schema.json_schema(format=format, element="root", typed=False)
+        with pytest.raises(ValueError, match="native-only"):
+            schema.json_schema(format=format, element="root", always_list=True)
+
+
+@pytest.mark.parametrize("format", ("pyxsd", "parker", "badgerfish", "jsonml"))
+def test_every_format_fidelity_modes_generate_the_same_schema(format):
+    schema = _compile(RECORD_SCHEMA)
+
+    strict = schema.json_schema(format=format, element="root", fidelity="strict")
+    best_effort = schema.json_schema(format=format, element="root", fidelity="best-effort")
+
+    assert strict == best_effort
 
 
 def test_hybrid_fidelity_modes_generate_the_same_schema():
@@ -1553,3 +1566,1083 @@ def test_an_element_without_a_model_stays_open():
         pass
 
     assert _SchemaBuilder._element_wildcard(Bare) is True
+
+
+# ---------------------------------------------------------------------------
+# Native, Parker, BadgerFish, and JsonML projections
+# ---------------------------------------------------------------------------
+
+NATIVE_OPTIONS: tuple[dict[str, object], ...] = (
+    {},
+    {"typed": False},
+    {"always_list": True},
+    {"typed": False, "always_list": True},
+)
+
+CONVENTIONAL_FORMATS = ("pyxsd", "parker", "badgerfish", "jsonml")
+
+NATIVE_REPEAT_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" type="xs:int" minOccurs="0" maxOccurs="unbounded"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+
+NATIVE_LIST_ROOT_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:simpleType><xs:list itemType="xs:int"/></xs:simpleType>
+  </xs:element>
+</xs:schema>"""
+
+EMPTY_CHILD_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="e"><xs:complexType/></xs:element>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+
+NILLABLE_EMPTY_CHILD_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="e" nillable="true"><xs:complexType/></xs:element>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+
+NILLABLE_EMPTY_ROOT_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" nillable="true"><xs:complexType/></xs:element>
+</xs:schema>"""
+
+SIMPLE_NILLABLE_LEAF_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="xs:string" nillable="true"/>
+</xs:schema>"""
+
+LEXICAL_QNAME_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="xs:QName"/>
+</xs:schema>"""
+
+NATIVE_REQUIRED_ATTR_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:simpleContent>
+    <xs:extension base="xs:string">
+      <xs:attribute name="id" type="xs:string" use="required"/>
+    </xs:extension>
+  </xs:simpleContent></xs:complexType></xs:element>
+</xs:schema>"""
+
+MIXED_NO_CHILD_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r"><xs:complexType mixed="true"/></xs:element>
+</xs:schema>"""
+
+
+def _export_quiet(document: pyxsd.Document, fmt: str, **options: object) -> object:
+    """Export a fixture, silencing the exporter's documented loss warnings."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", PyXSDWarning)
+        return document.to_data(format=fmt, **options)  # type: ignore[arg-type]
+
+
+def _format_generated(
+    schema: pyxsd.Schema, fmt: str, element: str | None = None, **options: object
+) -> dict:
+    generated = schema.json_schema(format=fmt, element=element, **options)  # type: ignore[arg-type]
+    Draft202012Validator.check_schema(generated)
+    return generated
+
+
+def _format_errors(
+    schema: pyxsd.Schema, fmt: str, element: str | None, data: object, **options: object
+) -> list:
+    return list(
+        Draft202012Validator(_format_generated(schema, fmt, element, **options)).iter_errors(data)
+    )
+
+
+def _format_unvalidated(
+    schema: pyxsd.Schema, fmt: str, element: str | None = None, **options: object
+) -> list:
+    return _format_generated(schema, fmt, element, **options)["x-pyxsd-validation"]["unvalidated"]
+
+
+# ---------------------------------------------------------------------------
+# Conventional fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("options", NATIVE_OPTIONS)
+@pytest.mark.parametrize("name", sorted(FIXTURES))
+def test_native_fixture_exports_validate(name, options):
+    schema, document = _compiled(name)
+
+    exported = _export_quiet(document, "pyxsd", **options)
+    generated = _format_generated(schema, "pyxsd", FIXTURE_ROOTS[name], **options)
+
+    assert list(Draft202012Validator(generated).iter_errors(exported)) == []
+
+
+@pytest.mark.parametrize("fmt", ("parker", "badgerfish", "jsonml"))
+@pytest.mark.parametrize("name", sorted(FIXTURES))
+def test_conventional_fixture_exports_validate(name, fmt):
+    schema, document = _compiled(name)
+
+    exported = _export_quiet(document, fmt)
+    generated = _format_generated(schema, fmt, FIXTURE_ROOTS[name])
+
+    assert list(Draft202012Validator(generated).iter_errors(exported)) == []
+
+
+@pytest.mark.parametrize("fmt", CONVENTIONAL_FORMATS)
+def test_conventional_envelope(fmt):
+    schema = _compile(MULTIPLE_ROOTS_SCHEMA if fmt in ("badgerfish", "jsonml") else EMPTY_SCHEMA)
+    element = None if fmt in ("badgerfish", "jsonml") else "root"
+
+    generated = _format_generated(schema, fmt, element)
+
+    assert generated["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert generated["x-pyxsd-format"] == fmt
+    assert "x-pyxsd-profile-version" not in generated
+    assert generated["x-pyxsd-validation"]["level"] == "structural"
+    assert generated["x-pyxsd-validation"]["unvalidated"] == sorted(
+        generated["x-pyxsd-validation"]["unvalidated"]
+    )
+
+
+@pytest.mark.parametrize("fmt", CONVENTIONAL_FORMATS)
+def test_conventional_generation_is_deterministic(fmt):
+    source, _instance = FIXTURES["recursive"]
+
+    first = _compile(source).json_schema(format=fmt, element="node")
+    second = _compile(source).json_schema(format=fmt, element="node")
+
+    assert first == second
+
+
+@pytest.mark.parametrize("fmt", CONVENTIONAL_FORMATS)
+def test_a_fresh_conventional_compile_generates_the_same_schema(fmt):
+    source, _instance = FIXTURES["recursive"]
+
+    assert _compile(source).json_schema(format=fmt, element="node") == _compile(source).json_schema(
+        format=fmt, element="node"
+    )
+
+
+@pytest.mark.parametrize("fmt", CONVENTIONAL_FORMATS)
+def test_conventional_formats_reject_invalid_selections(fmt):
+    schema = _compile(SIMPLE_PLUS_SCHEMA)
+
+    with pytest.raises(PyXSDError, match="name-invalid"):
+        schema.json_schema(format=fmt, element="1bad")
+
+
+@pytest.mark.parametrize("fmt", ("pyxsd", "parker"))
+def test_absorbed_formats_require_one_root_selection(fmt):
+    schema = _compile(MULTIPLE_ROOTS_SCHEMA)
+
+    with pytest.raises(PyXSDError, match="root-ambiguous"):
+        schema.json_schema(format=fmt)
+    if fmt == "pyxsd":
+        assert not _format_errors(schema, fmt, "alpha", {"$": 1})
+    else:
+        assert not _format_errors(schema, fmt, "alpha", 1)
+
+
+def test_absorbed_formats_reject_a_schema_without_global_roots():
+    schema = _compile(NO_GLOBAL_ROOTS_SCHEMA)
+
+    with pytest.raises(PyXSDError, match="root-ambiguous"):
+        schema.json_schema(format="pyxsd")
+    with pytest.raises(PyXSDError, match="root-ambiguous"):
+        schema.json_schema(format="parker")
+
+
+@pytest.mark.parametrize("fmt", ("badgerfish", "jsonml"))
+def test_root_carrying_formats_describe_every_global_root(fmt):
+    schema = _compile(MULTIPLE_ROOTS_SCHEMA)
+
+    generated = _format_generated(schema, fmt, None)
+
+    assert "anyOf" in generated
+
+
+@pytest.mark.parametrize("fmt", ("badgerfish", "jsonml"))
+def test_root_carrying_formats_reject_a_schema_without_global_roots(fmt):
+    schema = _compile(NO_GLOBAL_ROOTS_SCHEMA)
+
+    generated = _format_generated(schema, fmt, None)
+
+    assert generated["not"] == {}
+
+
+@pytest.mark.parametrize("fmt", CONVENTIONAL_FORMATS)
+def test_unknown_selections_use_the_general_shape(fmt):
+    schema = _compile(SIMPLE_PLUS_SCHEMA)
+
+    if fmt == "pyxsd":
+        assert not _format_errors(schema, fmt, "missing", {"$": "text"})
+        assert not _format_errors(schema, fmt, "missing", "text")
+        assert _format_errors(schema, fmt, "missing", 5)
+    elif fmt == "parker":
+        assert not _format_errors(schema, fmt, "missing", "text")
+        assert _format_errors(schema, fmt, "missing", 5)
+    elif fmt == "badgerfish":
+        assert not _format_errors(schema, fmt, "missing", {"anything": {"a": 1}})
+        assert _format_errors(schema, fmt, "missing", 5)
+    else:
+        assert not _format_errors(schema, fmt, "missing", ["anything", "text"])
+        assert _format_errors(schema, fmt, "missing", "not-an-array")
+
+
+@pytest.mark.parametrize("fmt", CONVENTIONAL_FORMATS)
+def test_substitution_member_selections_are_valid_alternatives(fmt):
+    schema = _compile(SUBSTITUTION_SCHEMA)
+
+    for element, data in (
+        ("head", "h"),
+        ("member", 7),
+    ):
+        if fmt == "pyxsd":
+            expected = {"$": data} if not isinstance(data, int) else data
+        elif fmt == "parker":
+            expected = data
+        elif fmt == "badgerfish":
+            expected = {element: data}
+        else:
+            expected = [element, data]
+        assert not _format_errors(schema, fmt, element, expected)
+
+
+# ---------------------------------------------------------------------------
+# Native format specifics
+# ---------------------------------------------------------------------------
+
+
+def test_native_root_absorbs_and_wraps_primitive_roots():
+    schema, document = _compiled("simple")
+
+    exported = _export_quiet(document, "pyxsd")
+
+    assert exported == {"$": 42}
+    assert not _format_errors(schema, "pyxsd", "simple", {"$": 42})
+    assert _format_errors(schema, "pyxsd", "simple", {"simple": 42})
+    assert _format_errors(schema, "pyxsd", "simple", {"$": None})
+    assert _format_errors(schema, "pyxsd", "simple", {"$": True})
+
+
+def test_native_simple_content_in_an_object_keeps_the_raw_text():
+    schema = _compile(NATIVE_REQUIRED_ATTR_SCHEMA)
+
+    exported = _export_quiet(
+        _compile(SIMPLE_PLUS_SCHEMA).parse(StringIO('<root id="x">42</root>')), "pyxsd"
+    )
+
+    assert exported == {"@id": "x", "$": "42"}
+    assert not _format_errors(schema, "pyxsd", "root", {"@id": "x", "$": "42"})
+    assert _format_errors(schema, "pyxsd", "root", {"@id": "x", "$": 42})
+    assert _format_errors(schema, "pyxsd", "root", {"$": "42"})
+
+
+def test_native_typed_false_uses_lexical_strings():
+    schema = _compile(NATIVE_LIST_ROOT_SCHEMA)
+
+    assert not _format_errors(schema, "pyxsd", "r", {"$": "1 2 3"}, typed=False)
+    assert _format_errors(schema, "pyxsd", "r", {"$": [1, 2, 3]}, typed=False)
+    assert _format_errors(schema, "pyxsd", "r", {"$": 42}, typed=False)
+    assert not _format_errors(schema, "pyxsd", "r", {"$": [1, 2, 3]})
+
+
+def test_native_repeatable_children_allow_one_value_or_an_array():
+    schema = _compile(NATIVE_REPEAT_SCHEMA)
+
+    assert not _format_errors(schema, "pyxsd", "root", {"c": 1})
+    assert not _format_errors(schema, "pyxsd", "root", {"c": [1, 2]})
+    assert _format_errors(schema, "pyxsd", "root", {"c": "one"})
+    assert _format_errors(schema, "pyxsd", "root", {"c": [1, "two"]})
+
+
+def test_native_always_list_wraps_every_child():
+    schema = _compile(NATIVE_REPEAT_SCHEMA)
+
+    assert not _format_errors(schema, "pyxsd", "root", {"c": [1]}, always_list=True)
+    assert not _format_errors(schema, "pyxsd", "root", {"c": [1, 2]}, always_list=True)
+    assert _format_errors(schema, "pyxsd", "root", {"c": 1}, always_list=True)
+
+
+def test_native_null_covers_empty_and_nil_states():
+    non_nillable = _compile(EMPTY_CHILD_SCHEMA)
+    nillable = _compile(NILLABLE_EMPTY_CHILD_SCHEMA)
+
+    assert not _format_errors(non_nillable, "pyxsd", "root", {"e": None})
+    assert "native-null-ambiguity" not in _format_unvalidated(non_nillable, "pyxsd", "root")
+
+    assert not _format_errors(nillable, "pyxsd", "root", {"e": None})
+    assert "native-null-ambiguity" in _format_unvalidated(nillable, "pyxsd", "root")
+
+    # A nilled element that keeps its marker exports the attribute object.
+    document = nillable.parse(
+        StringIO(
+            '<root><e xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true"/></root>'
+        )
+    )
+    assert _export_quiet(document, "pyxsd") == {"e": {"@xsi:nil": "true"}}
+    assert not _format_errors(nillable, "pyxsd", "root", {"e": {"@xsi:nil": "true"}})
+    assert _format_errors(nillable, "pyxsd", "root", {"e": {"@xsi:nil": True}})
+    assert _format_errors(nillable, "pyxsd", "root", {"e": {"@xsi:nil": "false"}})
+
+
+def test_native_nillable_simple_leaves_allow_null_with_the_annotation():
+    schema = _compile(SIMPLE_NILLABLE_LEAF_SCHEMA)
+
+    assert not _format_errors(schema, "pyxsd", "r", {"$": "text"})
+    assert not _format_errors(schema, "pyxsd", "r", {"$": None})
+    assert "native-null-ambiguity" in _format_unvalidated(schema, "pyxsd", "r")
+
+
+def test_native_typed_false_keeps_null_for_nil_only():
+    schema = _compile(SIMPLE_NILLABLE_LEAF_SCHEMA)
+
+    assert not _format_errors(schema, "pyxsd", "r", {"$": ""}, typed=False)
+    assert not _format_errors(schema, "pyxsd", "r", {"$": None}, typed=False)
+    assert "native-null-ambiguity" not in _format_unvalidated(schema, "pyxsd", "r", typed=False)
+
+
+def test_native_xsi_type_marker_and_target_content():
+    schema = _compile(NESTED_XSITYPE_SCHEMA)
+
+    exported = _export_quiet(
+        schema.parse(
+            StringIO(
+                '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+                '<value xsi:type="Ext"><a>x</a><b>2</b></value></root>'
+            )
+        ),
+        "pyxsd",
+    )
+
+    assert exported == {"value": {"@xsi:type": "Ext", "a": "x", "b": 2}}
+    assert not _format_errors(schema, "pyxsd", "root", exported)
+    assert _format_errors(schema, "pyxsd", "root", {"value": {"@xsi:type": "Ext", "zzz": 1}})
+    assert _format_errors(
+        schema, "pyxsd", "root", {"value": {"@xsi:type": "Ext", "a": "x", "b": "two"}}
+    )
+
+
+def test_native_clark_child_names():
+    schema, document = _compiled("namespaced")
+
+    exported = _export_quiet(document, "pyxsd")
+
+    assert exported == {"@attr": "a", "{urn:example}child": "v"}
+    assert not _format_errors(schema, "pyxsd", "root", exported)
+    assert _format_errors(schema, "pyxsd", "root", {"@attr": "a", "child": "v"})
+
+
+def test_native_mixed_text_and_order_disclosures():
+    schema = _compile(MULTIPLE_ROOTS_SCHEMA)
+    ordered, _document = _compiled("ordered")
+    mixed, _mixed_document = _compiled("mixed")
+
+    assert _format_unvalidated(schema, "pyxsd", "alpha") == []
+    assert "xsd-particle-order" in _format_unvalidated(ordered, "pyxsd", "section")
+    assert "xsd-mixed-order" in _format_unvalidated(mixed, "pyxsd", "para")
+
+
+def test_native_wildcard_attributes_stay_open():
+    schema = _compile(WILDCARD_ATTRIBUTE_SCHEMA)
+
+    assert not _format_errors(schema, "pyxsd", "root", {"@custom": "c", "$": "v"})
+    assert _format_errors(schema, "pyxsd", "root", {"@custom": 5, "$": "v"})
+    assert "xsd-wildcard-namespace" in _format_unvalidated(schema, "pyxsd", "root")
+
+
+def test_native_wildcard_children_stay_open():
+    schema = _compile(WILDCARD_CHILD_SCHEMA)
+
+    assert not _format_errors(schema, "pyxsd", "root", {"c": "x", "{urn:other}w": "t"})
+    assert "xsd-wildcard-namespace" in _format_unvalidated(schema, "pyxsd", "root")
+
+
+def test_native_qname_scalars_are_lexical_strings():
+    schema = _compile(LEXICAL_QNAME_SCHEMA)
+
+    generated = _format_generated(schema, "pyxsd", "r")
+
+    assert not _format_errors(schema, "pyxsd", "r", {"$": "t:local"})
+    assert not _format_errors(schema, "pyxsd", "r", {"$": "local"})
+    assert _format_errors(schema, "pyxsd", "r", {"$": 5})
+    wrap = next(branch for branch in generated["anyOf"] if branch.get("properties"))
+    scalar = wrap["properties"]["$"]
+    assert scalar["x-pyxsd-type"] == "QName"
+    assert scalar["x-pyxsd-namespace-context"] is True
+
+
+def test_native_conditional_alternative_types_contribute_leaf_scalars():
+    schema = _compile(CTA_SCHEMA)
+
+    exported_int = _export_quiet(schema.parse(StringIO('<root k="i">42</root>')), "pyxsd")
+
+    assert exported_int == {"@k": "i", "$": "42"}
+    assert not _format_errors(schema, "pyxsd", "root", exported_int)
+    # Both branches can export bare leaves because ``k`` is optional, so
+    # the leaf union carries each alternative's scalar.
+    assert not _format_errors(schema, "pyxsd", "root", {"$": 42})
+    assert not _format_errors(schema, "pyxsd", "root", {"$": "text"})
+    assert _format_errors(schema, "pyxsd", "root", {"$": True})
+    assert _format_errors(schema, "pyxsd", "root", {"@k": "i", "$": 42})
+    assert "xsd-conditional-type" in _format_unvalidated(schema, "pyxsd", "root")
+
+
+def test_native_recursive_types_use_defs_and_refs():
+    schema, document = _compiled("recursive")
+
+    generated = _format_generated(schema, "pyxsd", "node")
+    exported = _export_quiet(document, "pyxsd")
+
+    assert "$defs" in generated
+    assert not _format_errors(schema, "pyxsd", "node", exported)
+    deeper = schema.parse(StringIO('<node name="a"><node name="b"><node name="c"/></node></node>'))
+    assert not _format_errors(schema, "pyxsd", "node", _export_quiet(deeper, "pyxsd"))
+
+
+def test_native_identity_and_assertion_disclosures():
+    assert "xsd-identity-constraints" in _format_unvalidated(
+        _compile(IDENTITY_SCHEMA), "pyxsd", "root"
+    )
+    assert "xsd-assertions" in _format_unvalidated(_compile(ASSERTION_SCHEMA), "pyxsd", "root")
+
+
+def test_native_undetermined_root_uses_the_general_shape():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r"/>
+</xs:schema>""")
+
+    exported = _export_quiet(schema.parse(StringIO("<r>hello <b>bold</b> tail</r>")), "pyxsd")
+
+    assert not _format_errors(schema, "pyxsd", "r", exported)
+    assert not _format_errors(schema, "pyxsd", "r", {"$": None})
+    assert not _format_errors(schema, "pyxsd", "r", {"$": "text"})
+    assert _format_errors(schema, "pyxsd", "r", 5)
+    assert "xsd-wildcard-namespace" in _format_unvalidated(schema, "pyxsd", "r")
+
+
+# ---------------------------------------------------------------------------
+# Parker specifics
+# ---------------------------------------------------------------------------
+
+
+def test_parker_absorbs_the_root_and_keeps_scalars_bare():
+    schema, document = _compiled("simple")
+
+    exported = _export_quiet(document, "parker")
+
+    assert exported == 42
+    assert not _format_errors(schema, "parker", "simple", 42)
+    assert _format_errors(schema, "parker", "simple", {"$": 42})
+    assert _format_errors(schema, "parker", "simple", "42")
+
+
+def test_parker_empty_and_nil_stay_distinct():
+    empty = _compile(EMPTY_CHILD_SCHEMA)
+    nillable = _compile(NILLABLE_EMPTY_CHILD_SCHEMA)
+    nillable_root = _compile(NILLABLE_EMPTY_ROOT_SCHEMA)
+    simple_nillable = _compile(SIMPLE_NILLABLE_LEAF_SCHEMA)
+
+    assert not _format_errors(empty, "parker", "root", {"e": {}})
+    assert _format_errors(empty, "parker", "root", {"e": None})
+
+    assert not _format_errors(nillable, "parker", "root", {"e": {}})
+    assert not _format_errors(nillable, "parker", "root", {"e": None})
+    # An empty element-only root stays {} where nil is null.
+    assert not _format_errors(nillable_root, "parker", "r", {})
+    assert not _format_errors(nillable_root, "parker", "r", None)
+    # Simple content never becomes {}; nil is null alone.
+    assert not _format_errors(simple_nillable, "parker", "r", None)
+    assert _format_errors(simple_nillable, "parker", "r", {})
+
+
+def test_parker_drops_attributes():
+    schema = _compile(SIMPLE_PLUS_SCHEMA)
+
+    assert _format_errors(schema, "parker", "root", {"@id": "x", "$": "text"})
+    assert _format_errors(schema, "parker", "root", {"#content": "text"})
+
+
+def test_parker_local_names_and_actual_repeat_arrays():
+    schema = _compile(NATIVE_REPEAT_SCHEMA)
+    namespaced, _document = _compiled("namespaced")
+
+    assert not _format_errors(schema, "parker", "root", {"c": 1})
+    assert not _format_errors(schema, "parker", "root", {"c": [1, 2]})
+    assert _format_errors(schema, "parker", "root", {"c": [1, "two"]})
+    exported = _export_quiet(
+        namespaced.parse(StringIO('<root xmlns="urn:example" attr="a"><child>v</child></root>')),
+        "parker",
+    )
+    assert exported == {"child": "v"}
+    assert not _format_errors(namespaced, "parker", "root", exported)
+
+
+def test_parker_grouped_content_discloses_order():
+    ordered, _document = _compiled("ordered")
+    mixed, _document = _compiled("mixed")
+
+    assert "xsd-particle-order" in _format_unvalidated(ordered, "parker", "section")
+    assert "xsd-mixed-order" in _format_unvalidated(mixed, "parker", "para")
+
+
+def test_parker_qname_namespace_loss_is_disclosed():
+    schema = _compile(LEXICAL_QNAME_SCHEMA)
+
+    generated = _format_generated(schema, "parker", "r")
+
+    assert not _format_errors(schema, "parker", "r", "t:local")
+    assert _format_errors(schema, "parker", "r", "Q{urn:x}local")
+    assert "namespace-lost" in generated["x-pyxsd-validation"]["unvalidated"]
+
+
+def test_parker_conditional_types_contribute_scalars():
+    schema = _compile(CTA_SCHEMA)
+
+    assert not _format_errors(schema, "parker", "root", 42)
+    assert not _format_errors(schema, "parker", "root", "text")
+    assert "xsd-conditional-type" in _format_unvalidated(schema, "parker", "root")
+
+
+def test_parker_wildcard_children_stay_open():
+    schema = _compile(WILDCARD_CHILD_SCHEMA)
+
+    assert not _format_errors(schema, "parker", "root", {"c": "x"})
+    assert not _format_errors(schema, "parker", "root", {"c": "x", "w": "t"})
+    assert "xsd-wildcard-namespace" in _format_unvalidated(schema, "parker", "root")
+
+
+def test_parker_colliding_local_names_stay_valid(tmp_path):
+    (tmp_path / "a.xsd").write_text(
+        """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+            targetNamespace="urn:a">
+  <xs:element name="c" type="xs:int"/>
+</xs:schema>""",
+        encoding="utf-8",
+    )
+    (tmp_path / "b.xsd").write_text(
+        """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+            targetNamespace="urn:b">
+  <xs:element name="c" type="xs:string"/>
+</xs:schema>""",
+        encoding="utf-8",
+    )
+    main = tmp_path / "main.xsd"
+    main.write_text(
+        """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+            xmlns:a="urn:a" xmlns:b="urn:b">
+  <xs:import namespace="urn:a" schemaLocation="a.xsd"/>
+  <xs:import namespace="urn:b" schemaLocation="b.xsd"/>
+  <xs:element name="root"><xs:complexType><xs:choice>
+    <xs:element ref="a:c"/>
+    <xs:element ref="b:c"/>
+  </xs:choice></xs:complexType></xs:element>
+</xs:schema>""",
+        encoding="utf-8",
+    )
+    schema = pyxsd.Schema.compile(str(main))
+
+    exported = _export_quiet(
+        schema.parse(StringIO('<root xmlns:a="urn:a"><a:c>5</a:c></root>')), "parker"
+    )
+
+    assert exported == {"c": 5}
+    assert not _format_errors(schema, "parker", "root", exported)
+    assert not _format_errors(schema, "parker", "root", {"c": "text"})
+    assert _format_errors(schema, "parker", "root", {"c": True})
+
+
+def test_parker_recursive_types_use_defs_and_refs():
+    schema, document = _compiled("recursive")
+
+    generated = _format_generated(schema, "parker", "node")
+
+    assert "$defs" in generated
+    assert not _format_errors(schema, "parker", "node", _export_quiet(document, "parker"))
+
+
+# ---------------------------------------------------------------------------
+# BadgerFish specifics
+# ---------------------------------------------------------------------------
+
+
+def test_badgerfish_root_object_and_lexical_names():
+    schema, document = _compiled("namespaced")
+
+    exported = _export_quiet(document, "badgerfish")
+
+    assert exported == {
+        "ns0:root": {"@xmlns": {"ns0": "urn:example"}, "@attr": "a", "ns0:child": "v"}
+    }
+    assert not _format_errors(schema, "badgerfish", "root", exported)
+    assert _format_errors(schema, "badgerfish", "root", {"root": exported["ns0:root"]})
+    assert _format_errors(
+        schema, "badgerfish", "root", {"ns0:root": {**exported["ns0:root"], "@xmlns": {"ns0": 5}}}
+    )
+
+
+def test_badgerfish_bare_scalar_roots_and_the_dollar_wrap():
+    simple, simple_document = _compiled("simple")
+    namespaced = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:example" targetNamespace="urn:example">
+  <xs:element name="r" type="xs:int"/>
+</xs:schema>""")
+
+    assert _export_quiet(simple_document, "badgerfish") == {"simple": 42}
+    assert not _format_errors(simple, "badgerfish", "simple", {"simple": 42})
+    # The wrapped "$" keeps the typed scalar, never its lexical spelling.
+    assert _format_errors(simple, "badgerfish", "simple", {"simple": {"$": "42"}})
+
+    exported = _export_quiet(
+        namespaced.parse(StringIO('<r xmlns="urn:example">7</r>')), "badgerfish"
+    )
+    assert exported == {"ns0:r": {"@xmlns": {"ns0": "urn:example"}, "$": 7}}
+    assert not _format_errors(namespaced, "badgerfish", "r", exported)
+
+
+def test_badgerfish_nil_marker_is_a_boolean():
+    schema, document = _compiled("nillable")
+
+    exported = _export_quiet(document, "badgerfish")
+
+    assert exported == {
+        "nillable": {
+            "@xmlns": {"xsi": "http://www.w3.org/2001/XMLSchema-instance"},
+            "@xsi:nil": True,
+        }
+    }
+    assert not _format_errors(schema, "badgerfish", "nillable", exported)
+    assert _format_errors(
+        schema,
+        "badgerfish",
+        "nillable",
+        {
+            "nillable": {
+                "@xsi:nil": "true",
+                "@xmlns": {"xsi": "http://www.w3.org/2001/XMLSchema-instance"},
+            }
+        },
+    )
+    non_nillable = _compile(SIMPLE_PLUS_SCHEMA)
+    assert _format_errors(non_nillable, "badgerfish", "root", {"root": {"@xsi:nil": True}})
+
+
+def test_badgerfish_schema_repeatable_children_are_arrays():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="many" type="xs:int" minOccurs="0" maxOccurs="unbounded"/>
+    <xs:element name="one" type="xs:int" minOccurs="0"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>""")
+
+    exported = _export_quiet(
+        schema.parse(StringIO("<root><many>1</many><one>2</one></root>")), "badgerfish"
+    )
+
+    assert exported == {"root": {"many": [1], "one": 2}}
+    assert not _format_errors(schema, "badgerfish", "root", exported)
+    assert _format_errors(schema, "badgerfish", "root", {"root": {"many": 1, "one": 2}})
+    assert _format_errors(schema, "badgerfish", "root", {"root": {"many": [1], "one": [2]}})
+
+
+def test_badgerfish_typed_dollar_and_attributes():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:simpleContent>
+    <xs:extension base="xs:int">
+      <xs:attribute name="a" type="xs:string" use="required"/>
+    </xs:extension>
+  </xs:simpleContent></xs:complexType></xs:element>
+</xs:schema>""")
+
+    exported = _export_quiet(schema.parse(StringIO('<root a="x">42</root>')), "badgerfish")
+
+    assert exported == {"root": {"@a": "x", "$": 42}}
+    assert not _format_errors(schema, "badgerfish", "root", exported)
+    assert _format_errors(schema, "badgerfish", "root", {"root": {"@a": "x", "$": "42"}})
+    assert _format_errors(schema, "badgerfish", "root", {"root": {"$": 42}})
+
+
+def test_badgerfish_xsi_type_marker_and_target_content():
+    schema = _compile(NESTED_XSITYPE_SCHEMA)
+
+    exported = _export_quiet(
+        schema.parse(
+            StringIO(
+                '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+                '<value xsi:type="Ext"><a>x</a><b>2</b></value></root>'
+            )
+        ),
+        "badgerfish",
+    )
+
+    assert exported == {
+        "root": {
+            "@xmlns": {"xsi": "http://www.w3.org/2001/XMLSchema-instance"},
+            "value": {"@xsi:type": "Ext", "a": "x", "b": 2},
+        }
+    }
+    assert not _format_errors(schema, "badgerfish", "root", exported)
+    assert _format_errors(
+        schema, "badgerfish", "root", {"root": {"value": {"@xsi:type": "Ext", "zzz": 1}}}
+    )
+
+
+def test_badgerfish_grouped_content_discloses_order():
+    ordered, _document = _compiled("ordered")
+
+    assert "xsd-particle-order" in _format_unvalidated(ordered, "badgerfish", "section")
+    assert "xsd-wildcard-namespace" in _format_unvalidated(
+        _compile(WILDCARD_CHILD_SCHEMA), "badgerfish", "root"
+    )
+
+
+def test_badgerfish_recursive_types_use_defs_and_refs():
+    schema, document = _compiled("recursive")
+
+    generated = _format_generated(schema, "badgerfish", "node")
+
+    assert "$defs" in generated
+    assert not _format_errors(schema, "badgerfish", "node", _export_quiet(document, "badgerfish"))
+
+
+# ---------------------------------------------------------------------------
+# JsonML specifics
+# ---------------------------------------------------------------------------
+
+
+def test_jsonml_tag_constants_reject_wrong_roots():
+    schema, document = _compiled("ordered")
+
+    exported = _export_quiet(document, "jsonml")
+
+    assert not _format_errors(schema, "jsonml", "section", exported)
+    assert _format_errors(schema, "jsonml", "section", ["wrong", {"head": "h"}])
+
+
+def test_jsonml_empty_elements_stop_at_the_attribute_object():
+    schema = _compile(EMPTY_SCHEMA)
+
+    assert not _format_errors(schema, "jsonml", "root", ["root"])
+    assert not _format_errors(schema, "jsonml", "root", ["root", {}])
+    assert _format_errors(schema, "jsonml", "root", ["root", "text"])
+    assert _format_errors(schema, "jsonml", "root", ["root", {}, "more"])
+
+
+def test_jsonml_simple_content_requires_the_scalar_item():
+    schema = _compile(BOOLEAN_SCHEMA)
+
+    assert not _format_errors(schema, "jsonml", "root", ["root", True])
+    assert _format_errors(schema, "jsonml", "root", ["root"])
+    assert _format_errors(schema, "jsonml", "root", ["root", "true"])
+
+
+def test_jsonml_attribute_object_carries_typed_values():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:simpleContent>
+    <xs:extension base="xs:int">
+      <xs:attribute name="a" type="xs:string" use="required"/>
+    </xs:extension>
+  </xs:simpleContent></xs:complexType></xs:element>
+</xs:schema>""")
+
+    exported = _export_quiet(schema.parse(StringIO('<root a="x">42</root>')), "jsonml")
+
+    assert exported == ["root", {"a": "x"}, 42]
+    assert not _format_errors(schema, "jsonml", "root", exported)
+    assert _format_errors(schema, "jsonml", "root", ["root", {"a": 5}, 42])
+    assert _format_errors(schema, "jsonml", "root", ["root"])
+    assert _format_errors(schema, "jsonml", "root", ["root", {"a": "x"}, 42, 42])
+
+
+def test_jsonml_root_namespace_declarations_are_prefix_items():
+    schema, document = _compiled("namespaced")
+
+    exported = _export_quiet(document, "jsonml")
+
+    assert exported == [
+        "ns0:root",
+        {"xmlns:ns0": "urn:example", "attr": "a"},
+        ["ns0:child", "v"],
+    ]
+    assert not _format_errors(schema, "jsonml", "root", exported)
+    # Nested attribute objects are closed against namespace declarations.
+    assert _format_errors(
+        schema,
+        "jsonml",
+        "root",
+        ["ns0:root", {"attr": "a"}, ["ns0:child", {"xmlns:ns0": "urn:example"}, "v"]],
+    )
+    assert _format_errors(schema, "jsonml", "root", ["root", {"attr": "a"}, ["ns0:child", "v"]])
+
+
+def test_jsonml_nil_uses_a_null_content_item():
+    schema, document = _compiled("nillable")
+
+    exported = _export_quiet(document, "jsonml")
+
+    assert exported == ["nillable", None]
+    assert not _format_errors(schema, "jsonml", "nillable", exported)
+    non_nillable = _compile(SIMPLE_PLUS_SCHEMA)
+    assert _format_errors(non_nillable, "jsonml", "root", ["root", {"id": "x"}, None])
+
+
+def test_jsonml_mixed_content_keeps_text_positions_without_disclosure():
+    schema, document = _compiled("mixed")
+
+    exported = _export_quiet(document, "jsonml")
+
+    assert exported == ["para", {"id": "p1"}, "This is a ", ["i", "fine"], " mess!"]
+    assert not _format_errors(schema, "jsonml", "para", exported)
+    assert _format_errors(schema, "jsonml", "para", ["para", {"id": "p1"}, 5])
+    assert "xsd-mixed-order" not in _format_unvalidated(schema, "jsonml", "para")
+    assert "xsd-particle-order" not in _format_unvalidated(schema, "jsonml", "para")
+
+
+def test_jsonml_element_only_content_rejects_text_items():
+    schema, _document = _compiled("ordered")
+
+    assert _format_errors(schema, "jsonml", "section", ["section", "text"])
+
+
+def test_jsonml_recursive_types_use_defs_and_refs():
+    schema, document = _compiled("recursive")
+
+    generated = _format_generated(schema, "jsonml", "node")
+
+    assert "$defs" in generated
+    assert not _format_errors(schema, "jsonml", "node", _export_quiet(document, "jsonml"))
+
+
+def test_jsonml_wildcard_children_stay_open():
+    schema = _compile(WILDCARD_CHILD_SCHEMA)
+
+    assert not _format_errors(schema, "jsonml", "root", ["root", ["c", "x"], ["w", "t"]])
+    assert "xsd-wildcard-namespace" in _format_unvalidated(schema, "jsonml", "root")
+
+
+# ---------------------------------------------------------------------------
+# Undetermined roots and wildcards in the conventional formats
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fmt", ("parker", "badgerfish", "jsonml"))
+def test_conventional_undetermined_roots_use_the_general_shape(fmt):
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r"/>
+</xs:schema>""")
+
+    exported = _export_quiet(schema.parse(StringIO("<r>hello <b>bold</b> tail</r>")), fmt)
+
+    assert not _format_errors(schema, fmt, "r", exported)
+    assert "xsd-wildcard-namespace" in _format_unvalidated(schema, fmt, "r")
+
+
+def test_badgerfish_undetermined_root_accepts_objects_and_strings():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r"/>
+</xs:schema>""")
+
+    assert not _format_errors(schema, "badgerfish", "r", {"r": "text"})
+    assert not _format_errors(schema, "badgerfish", "r", {"r": {"a": {"b": "c"}}})
+    assert _format_errors(schema, "badgerfish", "r", {"r": 5})
+
+
+def test_jsonml_undetermined_roots_stay_arrays():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r"/>
+</xs:schema>""")
+
+    exported = _export_quiet(schema.parse(StringIO("<r>hello <b>bold</b> tail</r>")), "jsonml")
+
+    # The untyped binding records the leading character data as an empty
+    # piece; the schema accepts whatever strings the exporter emits.
+    assert exported[0] == "r"
+    assert not _format_errors(schema, "jsonml", "r", exported)
+    assert not _format_errors(schema, "jsonml", "r", ["r"])
+    assert _format_errors(schema, "jsonml", "r", "not-an-array")
+
+
+def test_jsonml_undetermined_nillable_roots_accept_the_null_item():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" nillable="true"/>
+</xs:schema>""")
+
+    exported = _export_quiet(
+        schema.parse(
+            StringIO('<r xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true"/>')
+        ),
+        "jsonml",
+    )
+
+    assert exported == ["r", None]
+    assert not _format_errors(schema, "jsonml", "r", exported)
+
+
+def test_jsonml_undetermined_children_stay_arrays():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="u"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>""")
+
+    exported = _export_quiet(schema.parse(StringIO("<root><u>text</u></root>")), "jsonml")
+
+    # The untyped child keeps the array shape whatever text it recorded.
+    assert exported[0] == "root"
+    assert isinstance(exported[1], list)
+    assert not _format_errors(schema, "jsonml", "root", exported)
+
+
+def test_absorbed_formats_accept_a_single_global_root_without_element():
+    schema = _compile(EMPTY_SCHEMA)
+
+    for fmt in ("pyxsd", "parker"):
+        assert not _format_errors(schema, fmt, None, {} if fmt == "parker" else {"$": None})
+
+
+def test_native_prohibited_attributes_are_excluded_and_closed():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="derived"/>
+  <xs:complexType name="base">
+    <xs:sequence><xs:element name="c" type="xs:string"/></xs:sequence>
+    <xs:attribute name="a" type="xs:int"/>
+    <xs:attribute name="b" type="xs:string"/>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent><xs:restriction base="base">
+      <xs:sequence><xs:element name="c" type="xs:string"/></xs:sequence>
+      <xs:attribute name="a" use="prohibited"/>
+      <xs:attribute name="b" type="xs:string"/>
+    </xs:restriction></xs:complexContent>
+  </xs:complexType>
+</xs:schema>""")
+
+    exported = _export_quiet(schema.parse(StringIO('<r b="x"><c>v</c></r>')), "pyxsd")
+
+    assert exported == {"@b": "x", "c": "v"}
+    assert not _format_errors(schema, "pyxsd", "r", exported)
+    assert _format_errors(schema, "pyxsd", "r", {"@a": 1, "c": "v"})
+
+
+def test_native_conditional_cardinality_merges_to_repeatable():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="wide">
+    <xs:alternative test="@k='t'" type="tight"/>
+  </xs:element>
+  <xs:complexType name="wide"><xs:sequence>
+    <xs:element name="c" type="xs:int" minOccurs="0" maxOccurs="unbounded"/>
+  </xs:sequence></xs:complexType>
+  <xs:complexType name="tight"><xs:complexContent><xs:restriction base="wide">
+    <xs:sequence><xs:element name="c" type="xs:int" minOccurs="0" maxOccurs="1"/></xs:sequence>
+  </xs:restriction></xs:complexContent></xs:complexType>
+</xs:schema>""")
+
+    exported = _export_quiet(schema.parse(StringIO("<r><c>1</c><c>2</c></r>")), "pyxsd")
+
+    assert exported == {"c": [1, 2]}
+    assert not _format_errors(schema, "pyxsd", "r", exported)
+    assert not _format_errors(schema, "pyxsd", "r", {"c": 1})
+
+
+def test_xml_namespace_attributes_keep_their_prefix():
+    schema = _compile(
+        """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r"><xs:complexType>
+    <xs:sequence><xs:element name="c" type="xs:string"/></xs:sequence>
+    <xs:attribute ref="xml:lang"/>
+  </xs:complexType></xs:element>
+</xs:schema>"""
+    )
+
+    exported = _export_quiet(schema.parse(StringIO('<r xml:lang="en"><c>v</c></r>')), "badgerfish")
+
+    assert exported == {"r": {"@xml:lang": "en", "c": "v"}}
+    assert not _format_errors(schema, "badgerfish", "r", exported)
+    assert not _format_errors(schema, "jsonml", "r", ["r", {"xml:lang": "en"}, ["c", "v"]])
+    assert _format_errors(schema, "jsonml", "r", ["r", {"xml:lang": 5}, ["c", "v"]])
+
+
+def test_jsonml_wildcard_attributes_stay_open():
+    schema = _compile(WILDCARD_ATTRIBUTE_SCHEMA)
+
+    exported = _export_quiet(schema.parse(StringIO('<root custom="c">v</root>')), "jsonml")
+
+    assert exported == ["root", {"custom": "c"}, "v"]
+    assert not _format_errors(schema, "jsonml", "root", exported)
+    assert _format_errors(schema, "jsonml", "root", ["root", {"custom": 5}, "v"])
+    assert "xsd-wildcard-namespace" in _format_unvalidated(schema, "jsonml", "root")
+
+
+def test_native_undetermined_nillable_roots_disclose_the_ambiguity():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" nillable="true"/>
+</xs:schema>""")
+
+    assert not _format_errors(schema, "pyxsd", "r", {"$": None})
+    assert not _format_errors(schema, "pyxsd", "r", {"$": "text"})
+    assert "native-null-ambiguity" in _format_unvalidated(schema, "pyxsd", "r")
+
+
+def test_badgerfish_undetermined_children_use_the_general_shape():
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="u"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>""")
+
+    exported = _export_quiet(schema.parse(StringIO("<root><u>x<b>c</b></u></root>")), "badgerfish")
+
+    assert not _format_errors(schema, "badgerfish", "root", exported)
+    assert _format_errors(schema, "badgerfish", "root", {"root": {"u": 5}})
+
+
+@pytest.mark.parametrize("fmt", ("badgerfish", "jsonml"))
+def test_root_carrying_formats_walk_substitution_members_once(fmt):
+    schema = _compile(SUBSTITUTION_SCHEMA)
+
+    generated = _format_generated(schema, fmt, None)
+
+    assert not _format_errors(
+        schema, fmt, None, {"head": "h"} if fmt == "badgerfish" else ["head", "h"]
+    )
+    assert not _format_errors(
+        schema, fmt, None, {"member": 7} if fmt == "badgerfish" else ["member", 7]
+    )
+    assert generated["x-pyxsd-format"] == fmt
+
+
+@pytest.mark.parametrize("fmt", ("pyxsd", "parker", "badgerfish", "jsonml"))
+def test_conventional_formats_skip_unresolved_alternatives(fmt):
+    schema = _compile("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="xs:string">
+    <xs:alternative test="@k='x'" type="missing:type"/>
+  </xs:element>
+</xs:schema>""")
+
+    assert _format_generated(schema, fmt, "r")["x-pyxsd-format"] == fmt
