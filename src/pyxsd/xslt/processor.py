@@ -1507,9 +1507,10 @@ def _compile_instruction(
     if local == "sequence":
         select = instruction.attribute("select")
         children = _compile_sequence(instruction.children, context, module)
-        if select is not None and _has_plan_content(children):
+        if select is not None and _has_plan_content(children, allow_fallback=True):
             raise XsltStaticError(
-                "xsl:sequence with a select attribute must have empty content",
+                "xsl:sequence with a select attribute must have empty content except "
+                "for xsl:fallback",
                 code="XTSE3185",
                 uri=context.uri,
                 location=location,
@@ -2179,22 +2180,15 @@ def _assertion_error_code(value: str, namespaces: Mapping[str, str]) -> str:
         if not is_ncname(local):
             return default
         expanded = f"{{{namespace}}}{local}" if namespace else local
-    elif text.startswith("{"):
-        close = text.find("}")
-        if close < 0:
-            return default
-        namespace = text[1:close]
-        local = text[close + 1 :]
-        if not is_ncname(local):
-            return default
-        expanded = f"{{{namespace}}}{local}" if namespace else local
     else:
+        if text.startswith("{"):
+            return default
         prefix, separator, local = text.partition(":")
         if separator:
             if not is_ncname(prefix) or not is_ncname(local):
                 return default
             bound = namespaces.get(prefix)
-            if bound is None:
+            if not bound:
                 return default
             expanded = f"{{{bound}}}{local}"
         else:
@@ -4835,7 +4829,7 @@ class _Invocation(Transformation):
             message,
             code=code,
             location=plan.instruction.location,
-            cause=message_failure or failure,
+            cause=failure or message_failure,
         )
 
     def _dynamic_evaluate(

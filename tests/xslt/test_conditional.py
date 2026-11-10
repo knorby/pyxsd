@@ -793,11 +793,22 @@ def test_on_non_empty_select_permits_fallback_children() -> None:
     )
 
 
-def test_sequence_select_with_fallback_uses_the_sequence_error_code() -> None:
+def test_sequence_select_permits_fallback_children() -> None:
     source = stylesheet(
         """
         <xsl:template name="main">
           <xsl:sequence select="1"><xsl:fallback/></xsl:sequence>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main").principal == (XdmAtomic.integer(1),)
+
+
+def test_sequence_select_with_content_uses_the_sequence_error_code() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="1"><xsl:sequence select="2"/></xsl:sequence>
         </xsl:template>
         """
     )
@@ -844,9 +855,10 @@ def test_fallback_only_content_does_not_hide_real_content_errors() -> None:
         ("Q{{bad", "XTMM9001"),
         ("Q{{http://www.w3.org/2005/xqt-errors}}XTMM9002", "XTMM9002"),
         ("Q{{}}plain", "plain"),
-        ("{{urn:my}}bad", "{urn:my}bad"),
+        ("{{urn:my}}bad", "XTMM9001"),
         ("{{urn:my}}1bad", "XTMM9001"),
         ("{{urn:my", "XTMM9001"),
+        ("{{}}plain", "XTMM9001"),
         ("XTMM9002", "XTMM9002"),
     ],
 )
@@ -976,3 +988,25 @@ def test_assertion_error_code_failure_without_a_message_reports_it() -> None:
     assert caught.value.code == "XTMM9001"
     assert "message construction failed" in str(caught.value)
     assert caught.value.cause is not None
+
+
+def test_assertion_error_code_rejects_a_prefix_bound_to_an_empty_namespace() -> None:
+    from pyxsd.xslt.processor import _assertion_error_code
+
+    assert _assertion_error_code("p:bad", {"p": ""}) == "XTMM9001"
+
+
+def test_assertion_test_failure_takes_cause_precedence_over_error_code_failure() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:assert test="1 div 0" error-code="{xs:integer('bad')}"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        assert_transform(source)
+    assert caught.value.code == "XTMM9001"
+    assert "message construction failed" in str(caught.value)
+    assert caught.value.cause is not None
+    assert str(getattr(caught.value.cause, "code", None)).endswith("FOAR0001")
