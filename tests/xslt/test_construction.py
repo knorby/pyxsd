@@ -359,14 +359,27 @@ def test_copy_attribute_instruction_is_parentless() -> None:
 # Instruction execution into a builder
 
 
-def test_construct_into_returns_the_result_sequence() -> None:
+def test_construct_into_returns_the_appended_sequence() -> None:
     builder = ResultBuilder.document()
     sequence = construct_into(
         builder,
         (TextInstruction("head"), ElementInstruction("root")),
     )
-    assert sequence == builder.to_sequence()
     assert [item.kind for item in sequence] == [NodeKind.TEXT, NodeKind.ELEMENT]
+    assert [item.kind for item in builder.to_sequence()] == [
+        NodeKind.TEXT,
+        NodeKind.ELEMENT,
+    ]
+    assert builder.to_sequence()[1].name == sequence[1].name == "root"
+
+
+def test_construct_into_returns_only_the_new_sequence_from_a_nonempty_builder() -> None:
+    builder = ResultBuilder.document()
+    builder.append((XdmAtomic.string("existing"),))
+    appended = construct_into(builder, (TextInstruction("new"),))
+    assert len(appended) == 1
+    assert appended[0].string_value == "new"
+    assert builder.to_sequence()[0].string_value == "existingnew"
 
 
 def test_construct_into_rolls_back_failed_construction() -> None:

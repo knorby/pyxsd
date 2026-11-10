@@ -141,7 +141,7 @@ def test_build_result_tree_normalizes_atomics_documents_and_text() -> None:
     assert document.kind is NodeKind.DOCUMENT
     assert document.document_uri == OUT_URI
     assert document.base_uri == OUT_URI
-    assert root_string(document) == "1 2" + "a" + "b" + "tail"
+    assert root_string(document) == "1 2" + "a" + "b" + "tail "
     kinds = [child.kind for child in document.children]
     assert kinds == [NodeKind.TEXT, NodeKind.ELEMENT, NodeKind.TEXT]
     assert document.root_element.name == "root"
@@ -176,9 +176,8 @@ def test_build_result_tree_rejects_function_items_and_bad_nodes() -> None:
         _build_result_tree((XdmMap.from_mapping({"k": 1}),))
     assert _error_code(error.value) == "XTDE0450"
 
-    with pytest.raises(XsltError) as error:
-        _build_result_tree((XdmArray([1]),))
-    assert _error_code(error.value) == "XTDE0450"
+    flattened = _build_result_tree((XdmArray([1]),))
+    assert flattened.children[0].string_value == "1"
 
     attribute = _document(b"<x a='1'/>").root_element.attributes[0]
     with pytest.raises(XsltError) as error:
@@ -299,7 +298,9 @@ def test_comment_pi_and_namespace_content_branches() -> None:
         (namespace, comment, instruction),
         allow_attributes=True,
     )
-    assert element.namespace_nodes[0].prefix == "p"
+    p_namespace = element.namespace_node("p")
+    assert p_namespace is not None
+    assert p_namespace.prefix == "p"
     assert element.children[0].kind is NodeKind.COMMENT
     assert element.children[1].kind is NodeKind.PROCESSING_INSTRUCTION
 

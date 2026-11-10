@@ -80,6 +80,34 @@ def test_builder_commits_successful_transactions() -> None:
     assert builder.to_tree().base_uri == "http://example.com/out"
 
 
+def test_rollback_restores_the_open_element_stack() -> None:
+    builder = ResultBuilder.document()
+    root = builder.element("root")
+    with builder.transaction() as extent:
+        builder.end_element()
+        assert builder.current is builder.root
+        extent.rollback()
+    assert builder.current is root
+    attribute = builder.attribute("id", "1")
+    assert attribute.parent is root
+    builder.end_element()
+    assert builder.to_sequence() == (root,)
+
+
+def test_rollback_restores_nested_open_elements_and_current_parent() -> None:
+    builder = ResultBuilder.document()
+    root = builder.element("root")
+    child = builder.element("child")
+    with builder.transaction() as extent:
+        builder.end_element()
+        builder.end_element()
+        extent.rollback()
+    assert builder.current is child
+    assert child.parent is root
+    builder.attribute("id", "1")
+    assert child.attributes[0].string_value == "1"
+
+
 def test_nested_transactions_restore_text_and_structure() -> None:
     builder = ResultBuilder.document()
     builder.text("base")
@@ -207,6 +235,105 @@ def test_document_builder_creates_a_final_tree_directly() -> None:
     assert tree.base_uri == "http://example.com/base/"
     assert tree.root_element is root
     assert builder.to_sequence() == (root,)
+
+
+def test_imperative_construction_sets_parent_links_and_root() -> None:
+    builder = ResultBuilder.document()
+    root = builder.element("root")
+    child = builder.element("child")
+    text = builder.text("value")
+    assert text is not None
+
+    assert root.parent is builder.root
+    assert child.parent is root
+    assert text.parent is child
+    assert child.ancestors == (root, builder.root)
+    assert text.root is builder.root
+    assert builder.root.root_element is root
+    builder.end_element()
+    builder.end_element()
+    assert builder.to_tree().root_element is root
+
+
+def test_attribute_namespace_comment_and_pi_have_parent_links() -> None:
+    builder = ResultBuilder.document()
+    root = builder.element("root")
+    attribute = builder.attribute("id", "1")
+    namespace = builder.namespace("p", "urn:p")
+    comment = builder.comment("comment")
+    instruction = builder.processing_instruction("pi", "value")
+    for node in (attribute, namespace, comment, instruction):
+        assert node.parent is root
+        assert node.ancestors == (root, builder.root)
+        assert node.root is builder.root
+
+
+def test_constructed_elements_have_the_implicit_xml_namespace_node() -> None:
+    builder = ResultBuilder.document()
+    root = builder.element("root")
+    child = builder.element("child", inherit_namespaces=False)
+    for element in (root, child):
+        namespace = element.namespace_node("xml")
+        assert namespace is not None
+        assert namespace.name == "xml"
+        assert namespace.prefix == "xml"
+        assert namespace.namespace_binding == XML_NS
+
+
+def test_constructed_descendants_inherit_parent_namespaces() -> None:
+    builder = ResultBuilder.document()
+    root = builder.element("{urn:root}root", namespaces={"p": "urn:p", "": "urn:root"})
+    child = builder.element("child")
+    grandchild = builder.element("{urn:grand}grand")
+    builder.end_element()
+    overridden = builder.element("overridden", namespaces={"p": "urn:other"})
+    builder.end_element()
+    isolated = builder.element("isolated", inherit_namespaces=False)
+    builder.end_element()
+    builder.end_element()
+
+    assert child.parent is root
+    assert child.in_scope_namespaces["p"] == "urn:p"
+    assert "" not in child.in_scope_namespaces
+    assert child.namespace_node("p") is not None
+    assert grandchild.parent is child
+    assert grandchild.in_scope_namespaces["p"] == "urn:p"
+    assert grandchild.in_scope_namespaces[""] == "urn:grand"
+    assert overridden.in_scope_namespaces["p"] == "urn:other"
+    assert "p" not in isolated.in_scope_namespaces
+
+    detached_builder = ResultBuilder.temporary()
+    detached = detached_builder.element("detached")
+    detached_builder.end_element()
+    builder.append((detached,))
+    appended = root.children[-1]
+    assert appended.name == "detached"
+    assert appended.parent is root
+    assert appended.in_scope_namespaces["p"] == "urn:p"
+    assert appended.namespace_node("p") is not None
+
+    no_namespace_builder = ResultBuilder.temporary()
+    no_namespace = no_namespace_builder.element("plain")
+    no_namespace_builder.end_element()
+    builder.append((no_namespace,))
+    plain = root.children[-1]
+    assert plain.name == "plain"
+    assert "" not in plain.in_scope_namespaces
+    assert plain.in_scope_namespaces["p"] == "urn:p"
+
+
+def test_copied_namespaced_attribute_receives_namespace_fixup() -> None:
+    source = _xml(b"<s xmlns:p='urn:p' p:a='1'/>").root_element.attributes[0]
+    builder = ResultBuilder.document()
+    root = builder.element("root")
+    copied = builder.copy(source)
+
+    assert copied.parent is root
+    assert copied.prefix == "p"
+    assert copied.namespace_uri == "urn:p"
+    assert root.in_scope_namespaces["p"] == "urn:p"
+    assert root.namespace_node("p") is not None
+    assert copied.annotation is source.annotation
 
 
 def test_temporary_builder_preserves_temporary_output_state() -> None:
@@ -444,6 +571,29 @@ def test_adjacent_text_merges_and_zero_length_text_disappears() -> None:
     assert root.children[0].string_value == "ab1 2 z"
 
 
+def test_zero_length_atomic_strings_keep_their_separators() -> None:
+    middle = ResultBuilder.document()
+    middle_root = _element(middle)
+    middle.append((XdmAtomic.string("a"), XdmAtomic.string(""), XdmAtomic.string("b")))
+    assert middle_root.children[0].string_value == "a  b"
+
+    ending = ResultBuilder.document()
+    ending_root = _element(ending)
+    ending.append((XdmAtomic.string("a"), XdmAtomic.string("")))
+    assert ending_root.children[0].string_value == "a "
+
+    empties = ResultBuilder.document()
+    empties_root = _element(empties)
+    empties.append(
+        (
+            XdmAtomic.string(""),
+            XdmAtomic.string(""),
+            XdmAtomic.string(""),
+        )
+    )
+    assert empties_root.children[0].string_value == "  "
+
+
 def test_append_text_nodes_merges_with_existing_text() -> None:
     text = _xml(b"<s>source</s>").root_element.children[0]
     builder = ResultBuilder.document()
@@ -645,13 +795,19 @@ def test_wrap_rejects_attributes_namespaces_and_function_items() -> None:
     with pytest.raises(XsltDynamicError) as error:
         ResultBuilder.wrap((namespace,))
     assert _code(error.value) == "XTDE0420"
-    for function_item in (
-        XdmMap.from_mapping({"k": 1}),
-        XdmArray([1]),
-    ):
-        with pytest.raises(XsltDynamicError) as error:
-            ResultBuilder.wrap((function_item,))
-        assert _code(error.value) == "XTDE0450"
+    with pytest.raises(XsltDynamicError) as error:
+        ResultBuilder.wrap((XdmMap.from_mapping({"k": 1}),))
+    assert _code(error.value) == "XTDE0450"
+
+
+def test_wrap_flattens_arrays_in_complex_content() -> None:
+    tree = ResultBuilder.wrap(
+        (
+            XdmArray([XdmAtomic.string("a"), XdmArray([XdmAtomic.integer(1)])]),
+            XdmAtomic.string("b"),
+        )
+    )
+    assert tree.children[0].string_value == "a 1 b"
 
 
 def test_wrap_flattens_documents_without_reparsing() -> None:
@@ -672,13 +828,35 @@ def test_append_documents_flattens_children_in_order() -> None:
     assert [child.name for child in builder.to_sequence()] == ["one", "two"]
 
 
+def test_append_flattens_nested_arrays_of_nodes_atomics_and_maps() -> None:
+    source = _xml(b"<element/>").root_element
+    builder = ResultBuilder.document()
+    builder.append(
+        (
+            XdmArray(
+                [
+                    XdmAtomic.string("head"),
+                    XdmArray([source, XdmAtomic.integer(1)]),
+                    XdmAtomic.string("tail"),
+                ]
+            ),
+        )
+    )
+    sequence = builder.to_sequence()
+    assert sequence[0].string_value == "head"
+    assert sequence[1].name == "element"
+    assert sequence[1].parent is builder.root
+    assert sequence[2].string_value == "1 tail"
+
+    with pytest.raises(XsltDynamicError) as error:
+        builder.append((XdmArray([XdmMap.from_mapping({"k": 1})]),))
+    assert _code(error.value) == "XTDE0450"
+
+
 def test_append_function_items_is_rejected() -> None:
     builder = ResultBuilder.document()
     with pytest.raises(XsltDynamicError) as error:
         builder.append((XdmMap.from_mapping({"k": 1}),))
-    assert _code(error.value) == "XTDE0450"
-    with pytest.raises(XsltDynamicError) as error:
-        builder.append((XdmArray([1]),))
     assert _code(error.value) == "XTDE0450"
     with pytest.raises(XsltDynamicError):
         builder.append(("not an XDM item",))
@@ -795,16 +973,16 @@ def test_non_clark_malformed_element_name_is_rejected() -> None:
 
 
 def test_namespace_alias_validation_errors() -> None:
-    for namespaces, aliases in (
-        ({"p": "urn:p"}, {"p": "xmlns"}),
-        ({"p": "urn:p"}, {"p": "xml"}),
-        ({"p": XML_NS}, {}),
-        ({"xmlns": "urn:x"}, {}),
+    for namespaces, aliases, expected in (
+        ({"p": "urn:p"}, {"p": "xmlns"}, "XTDE0905"),
+        ({"p": "urn:p"}, {"p": "xml"}, "XTDE0925"),
+        ({"p": XML_NS}, {}, "XTDE0925"),
+        ({"xmlns": "urn:x"}, {}, "XTDE0905"),
     ):
         builder = ResultBuilder.document()
         with pytest.raises(XsltDynamicError) as error:
             builder.element("root", namespaces=namespaces, namespace_aliases=aliases)
-        assert _code(error.value) in {"XTDE0905", "XTDE0925"}
+        assert _code(error.value) == expected
 
 
 def test_element_with_an_occupied_default_namespace_gets_a_prefix() -> None:
@@ -874,10 +1052,37 @@ def test_namespace_fixup_reuses_an_alternate_prefix_for_the_element() -> None:
         "{urn:old}root",
         namespaces={"p": "urn:old", "alt": "urn:old"},
     )
+    attribute = builder.attribute("{urn:old}value", "1")
     assert root.prefix == "p"
     builder.copy(namespace)
     assert root.prefix == "alt"
     assert root.in_scope_namespaces["p"] == "urn:new"
+    assert attribute.prefix == "alt"
+    namespaces = [(node.prefix, node.name, node.string_value) for node in root.namespace_nodes]
+    assert ("alt", "alt", "urn:old") in namespaces
+    assert ("p", "p", "urn:new") in namespaces
+    assert len({prefix for prefix, _, _ in namespaces}) == len(namespaces)
+    for prefix, name, _ in namespaces:
+        assert name == (prefix or None)
+
+
+def test_namespace_fixup_generated_prefix_keeps_node_identity_consistent() -> None:
+    source = _xml(b"<s xmlns:p='urn:new'/>")
+    namespace = source.root_element.namespace_node("p")
+    assert namespace is not None
+
+    builder = ResultBuilder.document()
+    root = builder.element("{urn:old}root", namespaces={"p": "urn:old"})
+    attribute = builder.attribute("{urn:old}value", "1")
+    builder.copy(namespace)
+    renamed = root.namespace_node("ns1")
+    assert renamed is not None
+    assert renamed.name == "ns1"
+    assert renamed.string_value == "urn:old"
+    assert attribute.prefix == "ns1"
+    assert root.namespace_node("p") is not None
+    assert root.namespace_node("p").string_value == "urn:new"
+    assert len({node.prefix for node in root.namespace_nodes}) == len(root.namespace_nodes)
 
 
 def test_namespace_fixup_renames_a_conflicting_default_namespace() -> None:

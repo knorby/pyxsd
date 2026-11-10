@@ -381,7 +381,13 @@ def construct_into(
     builder: ResultBuilder,
     instructions: Iterable[ConstructionInstruction],
 ) -> XdmSequence:
-    """Append one sequence constructor to *builder* as a transaction."""
+    """Append one sequence constructor to *builder* and return that sequence.
+
+    The returned value is exactly the constructed sequence appended by this
+    call, not pre-existing builder content.  A failure rolls the builder back
+    and raises instead of returning a partial sequence.
+    """
+    sequence = construct_sequence(instructions)
     with builder.transaction():
-        builder.append(construct_sequence(instructions))
-    return builder.to_sequence()
+        builder.append(sequence)
+    return sequence

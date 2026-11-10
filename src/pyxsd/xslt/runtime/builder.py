@@ -27,7 +27,7 @@ from types import MappingProxyType
 from typing import Literal
 
 from pyxsd.source_spans import SourceIndex
-from pyxsd.xdm import XdmAtomic, XdmSequence
+from pyxsd.xdm import XdmArray, XdmAtomic, XdmSequence
 from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmDocument, XdmNode
 from pyxsd.xslt.errors import XsltDynamicError
 
@@ -321,6 +321,7 @@ class _NodeFactory:
             element._append_namespace_node(
                 self.namespace(declared_prefix, uri, parent=element, scope=scope)
             )
+        element._append_namespace_node(self.namespace("xml", XML_NS, parent=element, scope=scope))
         return element
 
     def attribute(
@@ -467,6 +468,7 @@ class _NodeFactory:
                     node._append_namespace_node(
                         self.namespace(declared_prefix, uri, parent=node, scope=scope)
                     )
+                node._append_namespace_node(self.namespace("xml", XML_NS, parent=node, scope=scope))
             if deep:
                 for child in source.children:
                     node._append_child(
@@ -558,6 +560,7 @@ class _NodeFactory:
         return self.document
 
     def _append(self, parent: XdmNode, child: XdmNode) -> None:
+        child._parent = parent
         parent._append_child(child)
         if (
             parent.kind is NodeKind.DOCUMENT
@@ -577,6 +580,14 @@ class _NodeFactory:
                 "an attribute node must precede other child content",
                 "XTDE0410",
             )
+        attribute._parent = parent
+        attribute._prefix = _ensure_attribute_namespace(
+            self,
+            parent,
+            attribute.namespace_uri,
+            attribute.prefix,
+        )
+        attribute._in_scope_namespaces = parent.in_scope_namespaces
         for index, existing in enumerate(parent._attributes):
             if existing.name == attribute.name:
                 parent._attributes[index] = attribute
@@ -598,13 +609,13 @@ class _NodeFactory:
         uri = namespace.namespace_binding
         assert uri is not None
         _validate_namespace(prefix, uri, element_namespace=parent.namespace_uri)
+        namespace._parent = parent
         existing_uri = parent.in_scope_namespaces.get(prefix)
         if existing_uri is not None:
             if existing_uri == uri:
                 existing_node = parent.namespace_node(prefix)
-                if existing_node is not None:
-                    return existing_node
-                return self._declare_namespace(parent, prefix, uri, node=namespace)
+                assert existing_node is not None
+                return existing_node
             if parent.prefix == prefix and parent.namespace_uri is not None:
                 self._fixup_element_prefix(parent)
                 return self._declare_namespace(parent, prefix, uri)
@@ -624,12 +635,26 @@ class _NodeFactory:
                 replacement = prefix
                 break
         scope = dict(parent.in_scope_namespaces)
+        replacement_existed = bool(replacement)
         if not replacement:
             replacement = _new_prefix(scope, namespace)
         scope.pop(old_prefix, None)
+        survivors: list[XdmNode] = []
+        renamed = False
         for namespace_node in parent._namespace_nodes:
-            if namespace_node.prefix == old_prefix:
-                namespace_node._prefix = replacement
+            if namespace_node.prefix != old_prefix:
+                survivors.append(namespace_node)
+                continue
+            if replacement_existed or renamed:
+                continue
+            namespace_node._prefix = replacement
+            namespace_node._name = replacement or None
+            survivors.append(namespace_node)
+            renamed = True
+        parent._namespace_nodes[:] = survivors
+        for attribute in parent._attributes:
+            if attribute.prefix == old_prefix and attribute.namespace_uri == namespace:
+                attribute._prefix = replacement
         parent._prefix = replacement
         parent._in_scope_namespaces = MappingProxyType(scope)
         parent._namespace_declarations = _declarations(scope)
@@ -649,6 +674,7 @@ class _NodeFactory:
         parent._namespace_declarations = _declarations(scope)
         if node is None:
             node = self.namespace(prefix, uri, parent=parent, scope=scope)
+        node._parent = parent
         parent._append_namespace_node(node)
         return node
 
@@ -663,6 +689,53 @@ def _append_text(factory: _NodeFactory, parent: XdmNode, value: str) -> XdmNode 
     text = factory.text(value, parent=parent, base_uri=parent.base_uri)
     factory._append(parent, text)
     return text
+
+
+def _flatten_arrays(sequence: Iterable[object]) -> Iterable[object]:
+    """Recursively replace arrays by their members, as XSLT 5.7.1 requires."""
+    for item in sequence:
+        if isinstance(item, XdmArray):
+            for member in item.members:
+                yield from _flatten_arrays(member)
+        else:
+            yield item
+
+
+def _inherit_namespaces(
+    factory: _NodeFactory,
+    element: XdmNode,
+    inherited: Mapping[str, str],
+) -> None:
+    """Copy inherited namespace nodes down one constructed subtree."""
+    scope = dict(element.in_scope_namespaces)
+    changed = False
+    for prefix, uri in inherited.items():
+        if prefix == "xml" or prefix in scope:
+            continue
+        if prefix == "" and element.namespace_uri is None:
+            continue
+        scope[prefix] = uri
+        element._append_namespace_node(factory.namespace(prefix, uri, parent=element, scope=scope))
+        changed = True
+    if changed:
+        element._in_scope_namespaces = MappingProxyType(scope)
+        element._namespace_declarations = _declarations(scope)
+    child_scope = element.in_scope_namespaces
+    for child in element.children:
+        if child.kind is NodeKind.ELEMENT:
+            _inherit_namespaces(factory, child, child_scope)
+
+
+def _attach_element(
+    factory: _NodeFactory,
+    parent: XdmNode,
+    element: XdmNode,
+    *,
+    inherit_namespaces: bool = True,
+) -> None:
+    if inherit_namespaces and parent.kind is NodeKind.ELEMENT:
+        _inherit_namespaces(factory, element, parent.in_scope_namespaces)
+    factory._append(parent, element)
 
 
 def _clone_for_content(
@@ -689,10 +762,10 @@ def _append_complex_content(
 ) -> None:
     """Apply XSLT complex-content construction to *sequence* under *parent*."""
     last_atomic = False
-    for item in sequence:
+    for item in _flatten_arrays(sequence):
         if isinstance(item, XdmAtomic):
             value = item.lexical
-            if last_atomic and value:
+            if last_atomic:
                 value = " " + value
             _append_text(factory, parent, value)
             last_atomic = True
@@ -724,13 +797,6 @@ def _append_complex_content(
                 )
             if item.kind is NodeKind.ATTRIBUTE:
                 clone = factory.clone(item, parent=parent)
-                prefix = _ensure_attribute_namespace(
-                    factory,
-                    parent,
-                    clone.namespace_uri,
-                    clone.prefix,
-                )
-                clone._prefix = prefix
                 factory.attach_attribute(parent, clone)
             else:
                 clone = factory.clone(item, parent=parent)
@@ -742,7 +808,10 @@ def _append_complex_content(
             last_atomic = False
             continue
         clone = _clone_for_content(factory, item, parent)
-        factory._append(parent, clone)
+        if clone.kind is NodeKind.ELEMENT:
+            _attach_element(factory, parent, clone)
+        else:
+            factory._append(parent, clone)
         last_atomic = False
 
 
@@ -834,7 +903,7 @@ class _ParentSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class _BuilderSnapshot:
-    depth: int
+    stack: tuple[XdmNode, ...]
     next_id: int
     root_element: XdmNode | None
     finalized: bool
@@ -927,19 +996,28 @@ class ResultBuilder:
         base_uri: str | None = None,
         annotation: XdmAnnotation | None = None,
         prefix: str | None = None,
+        inherit_namespaces: bool = True,
     ) -> XdmNode:
         """Construct an element under the current parent and open it."""
         parent = self.current
+        inherited: dict[str, str] = {}
+        if inherit_namespaces and parent.kind is NodeKind.ELEMENT:
+            inherited = {
+                declared_prefix: uri
+                for declared_prefix, uri in parent.in_scope_namespaces.items()
+                if declared_prefix != "xml"
+            }
+        inherited.update(namespaces or {})
         element = self._factory.element(
             name,
             attributes=attributes,
-            namespaces=namespaces,
+            namespaces=inherited,
             base_uri=base_uri,
             namespace_aliases=namespace_aliases,
             annotation=annotation,
             prefix=prefix,
         )
-        self._attach_existing(parent, element)
+        self._attach_existing(parent, element, inherit_namespaces=inherit_namespaces)
         self._stack.append(element)
         return element
 
@@ -1011,8 +1089,8 @@ class ResultBuilder:
             )
         if existing is not None:
             node = parent.namespace_node(prefix)
-            if node is not None:
-                return node
+            assert node is not None
+            return node
         node = self._factory.namespace(
             prefix,
             uri,
@@ -1202,7 +1280,7 @@ class ResultBuilder:
         parents = [self._snapshot_parent(self.root)]
         parents.extend(self._snapshot_parent(node) for node in self._stack)
         return _BuilderSnapshot(
-            depth=len(self._stack),
+            stack=tuple(self._stack),
             next_id=self._factory._next_id,
             root_element=self.root._root_element,
             finalized=self._finalized,
@@ -1247,11 +1325,17 @@ class ResultBuilder:
         self.root._root_element = snapshot.root_element
         self._factory._next_id = snapshot.next_id
         self._finalized = snapshot.finalized
-        del self._stack[snapshot.depth :]
+        self._stack[:] = snapshot.stack
 
     # -- attachment --------------------------------------------------------
 
-    def _attach_existing(self, parent: XdmNode, node: XdmNode) -> None:
+    def _attach_existing(
+        self,
+        parent: XdmNode,
+        node: XdmNode,
+        *,
+        inherit_namespaces: bool = True,
+    ) -> None:
         if node.kind is NodeKind.ATTRIBUTE:
             self._factory.attach_attribute(parent, node)
             return
@@ -1260,6 +1344,14 @@ class ResultBuilder:
             return
         if node.kind is NodeKind.TEXT:
             _append_text(self._factory, parent, node.string_value)
+            return
+        if node.kind is NodeKind.ELEMENT:
+            _attach_element(
+                self._factory,
+                parent,
+                node,
+                inherit_namespaces=inherit_namespaces,
+            )
             return
         self._factory._append(parent, node)
 
