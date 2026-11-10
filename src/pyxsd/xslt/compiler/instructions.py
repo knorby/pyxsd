@@ -169,6 +169,18 @@ class Instruction:
     def with_children(self, children: tuple[InstructionNode, ...]) -> Instruction:
         return replace(self, children=children)
 
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.name,
+                self.owner,
+                self.module,
+                self.base_uri,
+                self.literal,
+                self.location,
+            )
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class SequenceConstructor:

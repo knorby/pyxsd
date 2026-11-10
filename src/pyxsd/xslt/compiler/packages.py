@@ -74,10 +74,11 @@ _STYLESHEET = f"{_XSLT}stylesheet"
 _TRANSFORM = f"{_XSLT}transform"
 _PACKAGE = f"{_XSLT}package"
 _CONTEXT_ITEM = f"{_XSLT}context-item"
+_APPLY_TEMPLATES = f"{_XSLT}apply-templates"
 
 _COMPONENT_KINDS = frozenset({"template", "function", "variable", "attribute-set", "mode"})
 _DECLARATION_VISIBILITIES = frozenset({"public", "private", "final", "abstract"})
-_ACCEPT_VISIBILITIES = frozenset({"public", "private", "final", "abstract", "hidden", "absent"})
+_ACCEPT_VISIBILITIES = frozenset({"public", "private", "final", "abstract", "hidden"})
 _XPATH_REFERENCE_ATTRIBUTES = frozenset(
     {
         "select",
@@ -328,6 +329,8 @@ class _VersionRange:
     def _one_matches(self, part: str, version: PackageVersion) -> bool:
         if not part:
             raise ValueError("empty package version range")
+        if part == "*":
+            raise ValueError("'*' cannot be combined with another version range")
         if part.startswith("to "):
             return self._to_matches(version, part[3:].strip())
         if " to " in part:
@@ -363,10 +366,9 @@ def _parse_version_range(value: str) -> _VersionRange:
     parsed = _VersionRange(value)
     try:
         probe = PackageVersion.parse("1")
-        for part in value.split(","):
-            if part.strip() == "*":
-                continue
-            parsed._one_matches(part.strip(), probe)
+        if value.strip() != "*":
+            for part in value.split(","):
+                parsed._one_matches(part.strip(), probe)
     except (ValueError, XsltStaticError) as exc:
         raise XsltStaticError(str(exc), code="XTSE3000") from exc
     return parsed
@@ -436,6 +438,7 @@ class Component:
     declarations: tuple[Instruction, ...] = ()
     signature: Signature | None = None
     location: IssueLocation | None = None
+    original_abstract: bool = False
 
     @property
     def hidden(self) -> bool:
@@ -463,6 +466,7 @@ class ModeRule:
     name: str | None = None
     location: IssueLocation | None = None
     original: Component | None = None
+    original_abstract: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -541,6 +545,7 @@ class CompiledPackage:
     character_maps: tuple[PackageConstruct, ...] = ()
     originals: Mapping[ComponentKey, Component] = field(default_factory=dict)
     namespaces: Mapping[str, str] = field(default_factory=dict)
+    default_mode: str | None = None
     location: IssueLocation | None = None
 
     def __post_init__(self) -> None:
@@ -719,6 +724,13 @@ def _descriptor(module: EffectiveModule) -> PackageDescriptor:
         attribute="declared-modes",
     )
     default_mode = root.attribute("default-mode")
+    if default_mode == "#default":
+        raise _error(
+            "#default is not a valid default-mode value",
+            "XTSE0020",
+            element=root,
+            module=module,
+        )
     manifest = _manifest_modules(module)
     all_modules = tuple(current for current, _ in _walk_modules(module))
     return PackageDescriptor(
@@ -761,7 +773,7 @@ class PackageResolver:
         descriptor = module if isinstance(module, PackageDescriptor) else _descriptor(module)
         if descriptor.name is not None:
             versions = self._packages.setdefault(descriptor.name, [])
-            if any(existing.version == descriptor.version for existing in versions):
+            if any(existing.parsed_version == descriptor.parsed_version for existing in versions):
                 raise ValueError(
                     f"package {descriptor.name!r} version {descriptor.version!r} is already registered"
                 )
@@ -994,8 +1006,6 @@ class _NameToken:
         if self.kind == "local":
             return local == self.local
         if self.kind == "exact":
-            if kind == "function":
-                return False
             return name == self.name
         if kind != "function":
             return False
@@ -1065,6 +1075,7 @@ class _Local:
     decimal_formats: tuple[_Declaration, ...]
     character_maps: tuple[_Declaration, ...]
     constructs: tuple[_Declaration, ...]
+    mode_references: tuple[ModeKey, ...] = ()
 
 
 def _visibility(
@@ -1181,7 +1192,16 @@ def _parse_declaration(
         expanded = _expand_name(
             name_value, element.in_scope_namespaces, element=element, module=module
         )
-        _visibility(element, module)
+        if element.name == _PARAM:
+            if element.attribute("visibility") is not None:
+                raise _error(
+                    "xsl:param does not accept a visibility attribute",
+                    "XTSE0090",
+                    element=element,
+                    module=module,
+                )
+        else:
+            _visibility(element, module)
         return [
             _Declaration(
                 kind="variable",
@@ -1238,7 +1258,14 @@ def _parse_declaration(
                 module=module,
             )
         )
-        _visibility(element, module, mode=True)
+        declared_visibility = _visibility(element, module, mode=True)
+        if mode_name is None and declared_visibility not in (None, "private"):
+            raise _error(
+                "the unnamed mode must be private",
+                "XTSE0020",
+                element=element,
+                module=module,
+            )
         return [
             _Declaration(
                 kind="mode",
@@ -1263,7 +1290,13 @@ def _parse_declaration(
         expanded = _expand_name(
             name_value, element.in_scope_namespaces, element=element, module=module
         )
-        _visibility(element, module)
+        if element.attribute("visibility") is not None:
+            raise _error(
+                "xsl:accumulator does not accept a visibility attribute",
+                "XTSE0090",
+                element=element,
+                module=module,
+            )
         return [
             _Declaration(
                 kind="accumulator",
@@ -1292,6 +1325,13 @@ def _parse_declaration(
                 element=element,
                 module=module,
             )
+        if element.attribute("match") is None or element.attribute("use") is None:
+            raise _error(
+                "xsl:key requires match and use attributes",
+                "XTSE0010",
+                element=element,
+                module=module,
+            )
         expanded = _expand_name(
             name_value, element.in_scope_namespaces, element=element, module=module
         )
@@ -1309,6 +1349,13 @@ def _parse_declaration(
 
     if element.name in (_OUTPUT, _DECIMAL_FORMAT, _CHARACTER_MAP):
         name_value = element.attribute("name")
+        if element.name == _CHARACTER_MAP and not name_value:
+            raise _error(
+                "xsl:character-map requires a name",
+                "XTSE0010",
+                element=element,
+                module=module,
+            )
         construct_name: str | None = None
         if name_value:
             construct_name = _expand_name(
@@ -1350,55 +1397,85 @@ def _parse_name_token(
             element=element,
             module=module,
         )
-    if token.startswith("*:"):
-        return _NameToken("local", local=token[2:])
+    arity: int | None = None
+    name = token
     if token.startswith("Q{"):
         close = token.find("}")
         if close < 0:
             raise _error(f"invalid EQName {token!r}", code, element=element, module=module)
         uri = token[2:close]
-        local = token[close + 1 :]
-        if local == "*":
+        rest = token[close + 1 :]
+        if rest == "*":
             return _NameToken("namespace", namespace=uri)
-        return _NameToken("exact", name=local if not uri else f"{{{uri}}}{local}")
-    name = token
-    arity: int | None = None
-    if "#" in token:
-        name, _, arity_text = token.partition("#")
-        try:
-            arity = int(arity_text)
-        except ValueError as exc:
-            raise _error(
-                f"invalid function arity {arity_text!r}",
-                code,
-                element=element,
-                module=module,
-            ) from exc
-        if arity < 0:
-            raise _error(
-                "a function arity must be non-negative", code, element=element, module=module
-            )
-    if name.endswith(":*"):
-        prefix = name[:-2]
-        prefix_uri = element.in_scope_namespaces.get(prefix)
-        if prefix_uri is None:
-            raise _error(
-                f"the namespace prefix {prefix!r} is not bound",
-                "XTSE0020",
-                element=element,
-                module=module,
-            )
-        return _NameToken("namespace", namespace=prefix_uri)
-    expanded = _expand_name(
-        name,
-        element.in_scope_namespaces,
-        element=element,
-        module=module,
-        code="XTSE0020",
-    )
+        if "#" in rest:
+            local, _, arity_text = rest.partition("#")
+            arity = _parse_arity(arity_text, element, module, code)
+        else:
+            local = rest
+        if not local:
+            raise _error(f"invalid EQName {token!r}", code, element=element, module=module)
+        expanded = local if not uri else f"{{{uri}}}{local}"
+    else:
+        if "#" in token:
+            name, _, arity_text = token.partition("#")
+            arity = _parse_arity(arity_text, element, module, code)
+        if name.startswith("*:"):
+            if arity is not None:
+                raise _error(
+                    f"a wildcard name {name!r} cannot carry a function arity",
+                    code,
+                    element=element,
+                    module=module,
+                )
+            return _NameToken("local", local=name[2:])
+        if name.endswith(":*"):
+            prefix = name[:-2]
+            prefix_uri = element.in_scope_namespaces.get(prefix)
+            if prefix_uri is None:
+                raise _error(
+                    f"the namespace prefix {prefix!r} is not bound",
+                    "XTSE0020",
+                    element=element,
+                    module=module,
+                )
+            if arity is not None:
+                raise _error(
+                    f"a wildcard name {name!r} cannot carry a function arity",
+                    code,
+                    element=element,
+                    module=module,
+                )
+            return _NameToken("namespace", namespace=prefix_uri)
+        expanded = _expand_name(
+            name,
+            element.in_scope_namespaces,
+            element=element,
+            module=module,
+            code="XTSE0020",
+        )
     if arity is not None:
         return _NameToken("function", name=expanded, arity=arity)
     return _NameToken("exact", name=expanded)
+
+
+def _parse_arity(
+    arity_text: str,
+    element: EffectiveElement,
+    module: EffectiveModule,
+    code: str,
+) -> int:
+    try:
+        arity = int(arity_text)
+    except ValueError as exc:
+        raise _error(
+            f"invalid function arity {arity_text!r}",
+            code,
+            element=element,
+            module=module,
+        ) from exc
+    if arity < 0:
+        raise _error("a function arity must be non-negative", code, element=element, module=module)
+    return arity
 
 
 def _parse_selector(
@@ -1424,7 +1501,7 @@ def _parse_selector(
     allowed = (
         _ACCEPT_VISIBILITIES if accept else frozenset({"public", "private", "final", "abstract"})
     )
-    if visibility not in allowed:
+    if visibility not in allowed or (accept and "mode" in kinds and visibility == "abstract"):
         raise _error(
             f"invalid visibility value {visibility!r}",
             "XTSE0020",
@@ -1484,10 +1561,18 @@ def _validate_manifest_placement(module: EffectiveModule) -> None:
     root_name = root.local_name
 
     def visit(element: EffectiveElement, parent: str | None, root_child: bool) -> None:
-        if element.name in (_USE_PACKAGE, _EXPOSE):
+        if element.name == _USE_PACKAGE:
             if not (root_child and root_name in ("package", "stylesheet", "transform")):
                 raise _error(
-                    f"{element.local_name} is only permitted in a package manifest",
+                    "xsl:use-package is only permitted in a package manifest",
+                    "XTSE0010",
+                    element=element,
+                    module=module,
+                )
+        elif element.name == _EXPOSE:
+            if not (root_child and root_name == "package"):
+                raise _error(
+                    "xsl:expose is only permitted as a child of xsl:package",
                     "XTSE0010",
                     element=element,
                     module=module,
@@ -1514,6 +1599,7 @@ def _collect(descriptor: PackageDescriptor) -> _Local:
     outputs: list[_Declaration] = []
     decimal_formats: list[_Declaration] = []
     character_maps: list[_Declaration] = []
+    mode_references: set[ModeKey] = set()
     manifest_ids = {id(module) for module in descriptor.manifest_modules}
     order = 0
     for module, via_import in _walk_modules(descriptor.module):
@@ -1538,13 +1624,6 @@ def _collect(descriptor: PackageDescriptor) -> _Local:
                 order += 1
                 continue
             if element.name == _EXPOSE:
-                if via_import or id(module) not in manifest_ids:
-                    raise _error(
-                        "an xsl:expose declaration cannot be reached through xsl:import",
-                        "XTSE0010",
-                        element=element,
-                        module=module,
-                    )
                 exposes.append(_parse_expose(element, module, order=order))
                 order += 1
                 continue
@@ -1564,7 +1643,15 @@ def _collect(descriptor: PackageDescriptor) -> _Local:
                         element=element,
                         module=module,
                     )
-                mode_tokens = tuple((element.attribute("mode") or "").split())
+                mode_value = element.attribute("mode")
+                if mode_value is not None and not mode_value.split():
+                    raise _error(
+                        "the mode attribute must not be empty",
+                        "XTSE0550",
+                        element=element,
+                        module=module,
+                    )
+                mode_tokens = tuple(mode_value.split()) if mode_value is not None else ()
                 default_mode = _resolve_default_mode(descriptor.default_mode, element, module)
                 priority = _parse_priority(element, module)
                 rules.append(
@@ -1596,6 +1683,41 @@ def _collect(descriptor: PackageDescriptor) -> _Local:
                 else:
                     declarations.append(declaration)
             order += 1
+        for descendant in module.root.descendants:
+            if not isinstance(descendant, EffectiveElement):
+                continue
+            if descendant.name != _APPLY_TEMPLATES:
+                continue
+            if descendant.raw is not None and any(
+                ancestor.name == _USE_PACKAGE for ancestor in descendant.raw.ancestors
+            ):
+                continue
+            mode_value = descendant.attribute("mode")
+            if mode_value is None:
+                mode_references.add(
+                    _resolve_default_mode(descriptor.default_mode, descendant, module)
+                )
+                continue
+            for token in mode_value.split():
+                if token == "#current":
+                    continue
+                if token == "#default":
+                    mode_references.add(
+                        _resolve_default_mode(descriptor.default_mode, descendant, module)
+                    )
+                elif token == "#unnamed":
+                    mode_references.add(None)
+                elif token == "#all":
+                    continue
+                else:
+                    mode_references.add(
+                        _expand_name(
+                            token,
+                            descendant.in_scope_namespaces,
+                            element=descendant,
+                            module=module,
+                        )
+                    )
     return _Local(
         declarations=tuple(declarations),
         rules=tuple(rules),
@@ -1605,6 +1727,7 @@ def _collect(descriptor: PackageDescriptor) -> _Local:
         decimal_formats=tuple(decimal_formats),
         character_maps=tuple(character_maps),
         constructs=(),
+        mode_references=tuple(sorted(mode_references, key=lambda item: (item is None, item or ""))),
     )
 
 
@@ -1640,7 +1763,8 @@ def _parse_use_package(element: EffectiveElement, module: EffectiveModule) -> _U
             element=element,
             module=module,
         )
-    version = element.attribute("package-version") or "*"
+    version_value = element.attribute("package-version")
+    version = "*" if version_value is None else version_value
     accepts: list[EffectiveElement] = []
     overrides: list[EffectiveElement] = []
     for child in element.elements:
@@ -1730,11 +1854,19 @@ def _expand_mode_tokens(
                 module=module,
             )
         return (default_mode,)
+    if "#all" in tokens and (inside_override or len(tokens) != 1):
+        code = "XTSE3440" if inside_override else "XTSE0550"
+        raise _error(
+            "#all must appear alone and only on a local template rule",
+            code,
+            element=element,
+            module=module,
+        )
     resolved: list[str | None] = []
     seen: set[str | None] = set()
     for token in tokens:
-        if token in ("#unnamed", "#default", "#all", "#current"):
-            if inside_override and token in ("#unnamed", "#all"):
+        if token in ("#unnamed", "#default", "#current"):
+            if inside_override and token == "#unnamed":
                 raise _error(
                     f"{token} is not permitted in an xsl:override template rule",
                     "XTSE3440",
@@ -1748,9 +1880,7 @@ def _expand_mode_tokens(
                     element=element,
                     module=module,
                 )
-            value = default_mode if token in ("#default", "#all") else None
-            if token == "#all":
-                value = default_mode
+            value = default_mode if token == "#default" else None
         else:
             value = _expand_name(token, element.in_scope_namespaces, element=element, module=module)
         if inside_override and value is None and token in ("#default", "#unnamed"):
@@ -1928,8 +2058,7 @@ def _signature(declaration: _Declaration) -> Signature:
 
 
 def _type_key(value: CompiledSequenceType | None) -> Any:
-    if value is None:
-        return None
+    assert value is not None
     item = value.item_type
     if item is None:
         return ("empty", value.occurrence)
@@ -1959,23 +2088,10 @@ def _signatures_compatible(overridden: Signature, overriding: Signature) -> bool
         if _type_key(overridden.return_type) != _type_key(overriding.return_type):
             return False
         for left, right in zip(overridden.parameters, overriding.parameters, strict=False):
-            if left.name != right.name or _type_key(left.sequence_type) != _type_key(
-                right.sequence_type
-            ):
+            if _type_key(left.sequence_type) != _type_key(right.sequence_type):
                 return False
-        if (
-            overridden.flags.get("new-each-time", "yes") == "yes"
-            and overriding.flags.get("new-each-time", "yes") != "yes"
-        ):
-            return False
-        if (
-            overridden.flags.get("identity-sensitive") == "no"
-            and overriding.flags.get("identity-sensitive") != "no"
-        ):
-            return False
-        if (
-            overridden.flags.get("override-extension-functions") == "no"
-            and overriding.flags.get("override-extension-functions") != "no"
+        if overridden.flags.get("new-each-time", "maybe") != overriding.flags.get(
+            "new-each-time", "maybe"
         ):
             return False
         if overridden.flags.get("streamable") == "yes":
@@ -1995,6 +2111,8 @@ def _signatures_compatible(overridden: Signature, overriding: Signature) -> bool
         for name, parameter in left_params.items():
             other = right_params.get(name)
             if other is None:
+                if parameter.tunnel:
+                    continue
                 return False
             if _type_key(parameter.sequence_type) != _type_key(other.sequence_type):
                 return False
@@ -2005,13 +2123,7 @@ def _signatures_compatible(overridden: Signature, overriding: Signature) -> bool
                 return False
         return True
     if overridden.kind == "variable":
-        if _type_key(overridden.sequence_type) != _type_key(overriding.sequence_type):
-            return False
-        if overridden.variable_kind == "param" and overridden.required:
-            return overriding.variable_kind == "variable" or (
-                overriding.variable_kind == "param" and overriding.required
-            )
-        return True
+        return _type_key(overridden.sequence_type) == _type_key(overriding.sequence_type)
     return not (
         overridden.flags.get("streamable") == "yes" and overriding.flags.get("streamable") != "yes"
     )
@@ -2041,7 +2153,7 @@ class _PackageCompiler:
         if key in self._active:
             raise XsltStaticError(
                 f"cyclic package dependency involving {descriptor.name or '<unnamed>'!r}",
-                code="XTSE3000",
+                code="XTSE3005",
                 uri=descriptor.module.identity,
                 location=descriptor.module.root.source_location(),
             )
@@ -2065,7 +2177,6 @@ class _PackageCompiler:
         accepted_modes: dict[ModeKey, Mode] = {}
         originals: dict[ComponentKey, Component] = {}
         overrides: dict[ComponentKey, Component] = {}
-        accept_keys: set[ComponentKey] = set()
         override_rule_layers: dict[ModeKey, list[ModeRule]] = {}
         used: list[UsedPackage] = []
         dependencies: list[CompiledPackage] = []
@@ -2092,10 +2203,9 @@ class _PackageCompiler:
                 _parse_accept(element, site.module, order=index)
                 for index, element in enumerate(site.accepts)
             )
-            accepted_here, matched_keys, _matched_modes = self._apply_accepts(
+            accepted_here, specific_accept_keys = self._apply_accepts(
                 used_package, accepts, containing=descriptor.name
             )
-            accept_keys.update(matched_keys)
             for key, component in accepted_here.items():
                 existing = accepted_components.get(key)
                 if existing is not None:
@@ -2110,9 +2220,10 @@ class _PackageCompiler:
                         continue
                 accepted_components[key] = component
                 conflict_sites[key] = (component, site)
-            for mode_key, accepted_mode in self._apply_accepted_modes(
+            accepted_modes_here = self._apply_accepted_modes(
                 used_package, accepts, containing=descriptor.name
-            ).items():
+            )
+            for mode_key, accepted_mode in accepted_modes_here.items():
                 existing_mode = accepted_modes.get(mode_key)
                 if existing_mode is not None and (
                     existing_mode.visibility != "hidden" and accepted_mode.visibility != "hidden"
@@ -2124,6 +2235,7 @@ class _PackageCompiler:
                         module=site.module,
                     )
                 accepted_modes[mode_key] = accepted_mode
+            override_order = 0
             for override in site.overrides:
                 override_default = _resolve_default_mode(
                     override.attribute("default-mode") or descriptor.default_mode,
@@ -2161,8 +2273,13 @@ class _PackageCompiler:
                                     module=site.module,
                                 )
                     parsed = _parse_override_declaration(
-                        child, site.module, descriptor, override_default
+                        child,
+                        site.module,
+                        descriptor,
+                        override_default,
+                        order=override_order,
                     )
+                    override_order += 1
                     if parsed is None:
                         for mode_name in resolved_modes:
                             override_rule_layers.setdefault(mode_name, []).append(
@@ -2174,7 +2291,7 @@ class _PackageCompiler:
                                     owner=descriptor.name,
                                     containing=descriptor.name,
                                     original=None,
-                                    order=0,
+                                    order=override_order - 1,
                                 )
                             )
                         continue
@@ -2209,7 +2326,7 @@ class _PackageCompiler:
                             element=child,
                             module=site.module,
                         )
-                    if key in accept_keys:
+                    if key in specific_accept_keys:
                         raise _error(
                             f"the component {name!r} is both accepted and overridden",
                             "XTSE3051",
@@ -2225,14 +2342,17 @@ class _PackageCompiler:
                             element=child,
                             module=site.module,
                         )
+                    is_param = child.name == _PARAM
                     overrides[key] = _make_component(
                         parsed,
                         signature=signature,
-                        visibility=parsed_declared_visibility(parsed) or "private",
+                        visibility=parsed_declared_visibility(parsed)
+                        or ("public" if is_param else "private"),
                         declared_visibility=parsed_declared_visibility(parsed),
                         owner=descriptor.name,
                         containing=descriptor.name,
                         order=parsed.order,
+                        original_abstract=target.visibility == "abstract",
                     )
                     if target.visibility == "public":
                         originals[key] = _copy_component(
@@ -2264,6 +2384,9 @@ class _PackageCompiler:
                                         )
                                     ),
                                     order=parsed.order,
+                                    original_abstract=target.visibility == "abstract"
+                                    if child.attribute("name")
+                                    else False,
                                 )
                             )
         for key, component in accepted_components.items():
@@ -2281,7 +2404,7 @@ class _PackageCompiler:
             if group.kind == "mode":
                 continue
             key = _component_key(group.kind, group.name, group.arity)
-            signature = _signature(group.declarations[0])
+            signature = _signature(group.declarations[-1])
             components[key] = _make_component(
                 group,
                 signature=signature,
@@ -2316,6 +2439,7 @@ class _PackageCompiler:
         table = _Lookup(components, descriptor.name)
         originals = {key: _rebind_component(original, table) for key, original in originals.items()}
         modes = self._bind_modes(descriptor, components, modes)
+        self._check_declared_modes(descriptor, local, components, modes)
 
         outputs = _build_constructs(
             _group_constructs(local.outputs, descriptor, "output"), "output", descriptor
@@ -2353,6 +2477,13 @@ class _PackageCompiler:
             character_maps=character_maps,
             originals=originals,
             namespaces=descriptor.module.root.in_scope_namespaces,
+            default_mode=(
+                None
+                if descriptor.default_mode in (None, "#unnamed")
+                else _expand_name(
+                    descriptor.default_mode, descriptor.module.root.in_scope_namespaces
+                )
+            ),
             location=descriptor.module.root.source_location(),
         )
 
@@ -2364,19 +2495,26 @@ class _PackageCompiler:
         accepts: tuple[_AcceptRule, ...],
         *,
         containing: str | None,
-    ) -> tuple[dict[ComponentKey, Component], set[ComponentKey], set[ModeKey]]:
+    ) -> tuple[dict[ComponentKey, Component], set[ComponentKey]]:
         matched: set[tuple[int, int]] = set()
         result: dict[ComponentKey, Component] = {}
-        matched_keys: set[ComponentKey] = set()
+        specific_keys: set[ComponentKey] = set()
         for key, component in used.components.items():
-            if component.visibility not in ("public", "final", "abstract"):
-                continue
-            visibility = component.visibility
-            matches = _matching_tokens(accepts, component.kind, component.name, component.arity)
+            is_param = _is_parameter(component)
+            default_visibility = (
+                component.visibility
+                if is_param
+                else _default_accepted_visibility(component.visibility)
+            )
+            matches = (
+                []
+                if is_param or component.visibility == "hidden"
+                else _matching_tokens(accepts, component.kind, component.name, component.arity)
+            )
             matched.update((rule.order, index) for rule, index, _ in matches)
             selected: tuple[_AcceptRule, _NameToken] | None = None
             for rule, _, token in _ordered_matches(matches):
-                new_visibility = _accepted_visibility(rule.visibility, visibility)
+                new_visibility = _accepted_visibility(rule.visibility, component.visibility)
                 if new_visibility is None:
                     if token.specific:
                         raise _error(
@@ -2391,13 +2529,14 @@ class _PackageCompiler:
                 break
             if selected is None:
                 result[key] = _copy_component(
-                    component, containing=containing, visibility=visibility
+                    component, containing=containing, visibility=default_visibility
                 )
                 continue
             rule, token = selected
-            new_visibility = _accepted_visibility(rule.visibility, visibility)
+            new_visibility = _accepted_visibility(rule.visibility, component.visibility)
             assert new_visibility is not None
-            matched_keys.add(key)
+            if token.specific:
+                specific_keys.add(key)
             result[key] = _copy_component(
                 component, containing=containing, visibility=new_visibility
             )
@@ -2415,7 +2554,7 @@ class _PackageCompiler:
                         element=rule.element,
                         module=rule.module,
                     )
-        return result, matched_keys, set()
+        return result, specific_keys
 
     def _apply_accepted_modes(
         self,
@@ -2429,9 +2568,12 @@ class _PackageCompiler:
         for key, mode in used.modes.items():
             if mode.containing != used.name or key is None:
                 continue
-            if mode.visibility not in ("public", "final"):
-                continue
-            matches = _matching_tokens(accepts, "mode", mode.name, None)
+            default_visibility = _default_accepted_visibility(mode.visibility)
+            matches = (
+                []
+                if mode.visibility == "hidden"
+                else _matching_tokens(accepts, "mode", mode.name, None)
+            )
             matched.update((rule.order, index) for rule, index, _ in matches)
             selected: tuple[_AcceptRule, _NameToken] | None = None
             for rule, _, token in _ordered_matches(matches):
@@ -2449,7 +2591,7 @@ class _PackageCompiler:
                 selected = (cast(_AcceptRule, rule), token)
                 break
             if selected is None:
-                modes[key] = replace(mode, containing=containing)
+                modes[key] = replace(mode, containing=containing, visibility=default_visibility)
                 continue
             rule, token = selected
             new_visibility = _accepted_visibility(rule.visibility, mode.visibility)
@@ -2487,14 +2629,33 @@ class _PackageCompiler:
         mode_groups = [group for group in groups if group.kind == "mode"]
         local_modes: dict[ModeKey, Mode] = {}
         rules_by_mode: dict[ModeKey, list[ModeRule]] = {}
+        declared_mode_keys = {group.name for group in mode_groups}
+        all_mode_keys: set[ModeKey] = set(declared_mode_keys)
+        all_mode_keys.add(None)
+        all_mode_keys.update(local.mode_references)
+        for rule in local.rules:
+            if rule.mode_tokens == ("#all",):
+                continue
+            for mode_name in _expand_mode_tokens(
+                rule.mode_tokens,
+                rule.default_mode,
+                rule.element,
+                rule.module,
+                inside_override=False,
+            ):
+                all_mode_keys.add(mode_name)
         for group in mode_groups:
             key = group.name
-            elements = [declaration.element for declaration in group.declarations]
-            properties = _merge_mode_properties(elements, descriptor)
+            properties = _merge_mode_properties(group.declarations, descriptor)
             declared_visibility = group.declared_visibility
+            visibility = (
+                "private"
+                if key is None
+                else local_visibility[_component_key("mode", group.name, group.arity)]
+            )
             local_modes[key] = Mode(
                 name=key,
-                visibility=local_visibility[_component_key("mode", group.name, group.arity)],
+                visibility=visibility,
                 owner=descriptor.name,
                 containing=descriptor.name,
                 declared=True,
@@ -2504,13 +2665,16 @@ class _PackageCompiler:
                 location=group.declarations[0].element.source_location(),
             )
         for rule in local.rules:
-            tokens = _expand_mode_tokens(
-                rule.mode_tokens,
-                rule.default_mode,
-                rule.element,
-                rule.module,
-                inside_override=False,
-            )
+            if rule.mode_tokens == ("#all",):
+                tokens = tuple(sorted(all_mode_keys, key=lambda item: (item is None, item or "")))
+            else:
+                tokens = _expand_mode_tokens(
+                    rule.mode_tokens,
+                    rule.default_mode,
+                    rule.element,
+                    rule.module,
+                    inside_override=False,
+                )
             for mode_name in tokens:
                 if mode_name in accepted_modes and mode_name not in local_modes:
                     raise _error(
@@ -2549,7 +2713,9 @@ class _PackageCompiler:
                     ),
                 )
             else:
-                default_visibility = "public" if not descriptor.explicit else "private"
+                default_visibility = (
+                    "private" if mode_name is None or descriptor.explicit else "public"
+                )
                 local_modes[mode_name] = Mode(
                     name=mode_name,
                     visibility=default_visibility,
@@ -2576,6 +2742,59 @@ class _PackageCompiler:
         modes = dict(accepted_modes)
         modes.update(local_modes)
         return modes, {name: tuple(rules) for name, rules in rules_by_mode.items()}
+
+    def _check_declared_modes(
+        self,
+        descriptor: PackageDescriptor,
+        local: _Local,
+        components: Mapping[ComponentKey, Component],
+        modes: Mapping[ModeKey, Mode],
+    ) -> None:
+        if not descriptor.explicit or not descriptor.declared_modes:
+            return
+        available = {
+            key
+            for key, mode in modes.items()
+            if mode.containing == descriptor.name
+            and (mode.declared or mode.visibility in ("public", "final"))
+        }
+        available.update(
+            key
+            for key, mode in modes.items()
+            if mode.declared and mode.containing == descriptor.name
+        )
+        referenced: set[ModeKey] = set()
+        for rule in local.rules:
+            if rule.mode_tokens == ("#all",):
+                referenced.update(
+                    key
+                    for key, mode in modes.items()
+                    if mode.containing == descriptor.name and mode.owner == descriptor.name
+                )
+                continue
+            referenced.update(
+                _expand_mode_tokens(
+                    rule.mode_tokens,
+                    rule.default_mode,
+                    rule.element,
+                    rule.module,
+                    inside_override=False,
+                )
+            )
+        for component in components.values():
+            if component.owner != descriptor.name:
+                continue
+            referenced.update(
+                _instruction_mode_references(component.declaration, descriptor.default_mode)
+            )
+        for mode_name in referenced:
+            if mode_name not in available:
+                raise _error(
+                    f"the mode {mode_name!r} is not declared in this package",
+                    "XTSE3085",
+                    element=descriptor.module.root,
+                    module=descriptor.module,
+                )
 
     # -- binding ---------------------------------------------------------------
 
@@ -2628,14 +2847,11 @@ class _Lookup:
         arity: int | None = None,
         *,
         include_hidden: bool = False,
-        include_absent: bool = False,
     ) -> Component | None:
         component = self.components.get(_component_key(kind, name, arity))
         if component is None:
             return None
         if component.hidden and not include_hidden:
-            return None
-        if component.visibility == "absent" and not include_absent:
             return None
         return component
 
@@ -2671,9 +2887,22 @@ def _group_declarations(
                 element=at_highest[1].element,
                 module=at_highest[1].module,
             )
-        selected = tuple(sorted(at_highest, key=lambda entry: entry.order))
-        declared_visibility = _declared_visibility(selected, descriptor, kind)
-        default = _default_visibility(descriptor, kind)
+        if combining:
+            selected = tuple(
+                sorted(
+                    entries,
+                    key=cmp_to_key(_compare_declarations),
+                )
+            )
+        else:
+            selected = tuple(sorted(at_highest, key=lambda entry: entry.order))
+        declared_visibility = _declared_visibility(
+            tuple(sorted(at_highest, key=lambda entry: entry.order)),
+            descriptor,
+            kind,
+        )
+        is_param = kind == "variable" and selected[-1].element.name == _PARAM
+        default = _default_visibility(descriptor, kind, is_param=is_param)
         grouped.append(
             _GroupedDeclaration(
                 kind=kind,
@@ -2688,6 +2917,13 @@ def _group_declarations(
         )
     grouped.sort(key=lambda group: group.order)
     return tuple(grouped)
+
+
+def _compare_declarations(left: _Declaration, right: _Declaration) -> int:
+    precedence = _cmp_precedence(left.precedence, right.precedence)
+    if precedence:
+        return precedence
+    return left.order - right.order
 
 
 def _highest_precedence(entries: Sequence[_Declaration]) -> tuple[int, ...]:
@@ -2719,8 +2955,12 @@ def _declared_visibility(
     return next(iter(found), None)
 
 
-def _default_visibility(descriptor: PackageDescriptor, kind: str) -> str:
-    if not descriptor.explicit and kind in ("template", "mode"):
+def _default_visibility(descriptor: PackageDescriptor, kind: str, *, is_param: bool = False) -> str:
+    if kind == "variable" and is_param:
+        return "public"
+    if kind == "mode":
+        return "private" if descriptor.explicit else "public"
+    if not descriptor.explicit and kind == "template":
         return "public"
     return "private"
 
@@ -2738,7 +2978,8 @@ def _build_local_components(
                 "private" if group.kind in ("accumulator", "key") else group.default_visibility
             )
             continue
-        matches = _matching_tokens(exposes, group.kind, group.name, group.arity)
+        is_param = group.kind == "variable" and group.declarations[-1].element.name == _PARAM
+        matches = [] if is_param else _matching_tokens(exposes, group.kind, group.name, group.arity)
         matched.update((rule.order, index) for rule, index, _ in matches)
         visibility[_component_key(group.kind, group.name, group.arity)] = _exposed_visibility(
             group.kind,
@@ -2801,18 +3042,22 @@ def _exposed_visibility(
                 )
             return actual
         return visibility
-    if namespace_wild is not None and namespace_wild[0].visibility == "abstract":
+    if (
+        namespace_wild is not None
+        and namespace_wild[0].visibility == "abstract"
+        and declared != "abstract"
+    ):
         rule, _ = namespace_wild
         raise _error(
-            "a wildcard cannot expose a component as abstract",
+            "a wildcard cannot make a component abstract",
             "XTSE3025",
             element=rule.element,
             module=rule.module,
         )
-    if all_wild is not None and all_wild[0].visibility == "abstract":
+    if all_wild is not None and all_wild[0].visibility == "abstract" and declared != "abstract":
         rule, _ = all_wild
         raise _error(
-            "a wildcard cannot expose a component as abstract",
+            "a wildcard cannot make a component abstract",
             "XTSE3025",
             element=rule.element,
             module=rule.module,
@@ -2840,6 +3085,20 @@ def _exposed_visibility_allowed(exposed: str, declared: str) -> str | None:
     raise AssertionError("validated exposure visibility")  # pragma: no cover
 
 
+def _default_accepted_visibility(used: str) -> str:
+    if used in ("public", "final"):
+        return "private"
+    return "hidden"
+
+
+def _is_parameter(component: Component) -> bool:
+    return (
+        component.kind == "variable"
+        and component.signature is not None
+        and component.signature.variable_kind == "param"
+    )
+
+
 def _accepted_visibility(accepted: str, used: str) -> str | None:
     table = {
         ("public", "public"): "public",
@@ -2852,7 +3111,6 @@ def _accepted_visibility(accepted: str, used: str) -> str | None:
         ("hidden", "public"): "hidden",
         ("hidden", "final"): "hidden",
         ("hidden", "abstract"): "hidden",
-        ("absent", "abstract"): "absent",
     }
     return table.get((accepted, used))
 
@@ -2862,6 +3120,8 @@ def _parse_override_declaration(
     module: EffectiveModule,
     descriptor: PackageDescriptor,
     default_mode: str | None,
+    *,
+    order: int,
 ) -> _GroupedDeclaration | None:
     del default_mode
     if element.name == _TEMPLATE and element.attribute("name") is None:
@@ -2883,8 +3143,8 @@ def _parse_override_declaration(
         declarations=tuple(parsed),
         precedence=(),
         declared_visibility=declared,
-        default_visibility="private",
-        order=0,
+        default_visibility="public" if element.name == _PARAM else "private",
+        order=order,
     )
 
 
@@ -2901,6 +3161,7 @@ def _make_component(
     owner: str | None,
     containing: str | None,
     order: int,
+    original_abstract: bool = False,
 ) -> Component:
     declarations = tuple(
         normalize_element(
@@ -2936,6 +3197,7 @@ def _make_component(
         declarations=declarations,
         signature=signature,
         location=group.declarations[0].element.source_location(),
+        original_abstract=original_abstract,
     )
 
 
@@ -2963,6 +3225,7 @@ def _make_rule(
     original: Component | None,
     order: int,
     priority: Decimal | None = None,
+    original_abstract: bool = False,
 ) -> ModeRule:
     del default_mode
     declaration = normalize_element(element, owner=owner, module=module.identity)
@@ -2993,40 +3256,75 @@ def _make_rule(
         name=name,
         location=element.source_location(),
         original=original,
+        original_abstract=original_abstract,
     )
 
 
 def _merge_mode_properties(
-    elements: list[EffectiveElement], descriptor: PackageDescriptor
+    declarations: Sequence[_Declaration], descriptor: PackageDescriptor
 ) -> Mapping[str, str]:
     properties: dict[str, str] = {}
-    for element in elements:
-        module = _module_for_element(descriptor, element)
+    sources: dict[str, tuple[int, ...]] = {}
+    for declaration in declarations:
+        element = declaration.element
         for attribute in element.attributes:
             local = attribute.local_name
             assert local is not None
             if local in ("name", "visibility") or attribute.name.startswith("_"):
                 continue
-            previous = properties.get(local)
-            if previous is not None and previous != attribute.value:
+            previous_precedence = sources.get(local)
+            if (
+                previous_precedence is None
+                or _cmp_precedence(declaration.precedence, previous_precedence) > 0
+            ):
+                properties[local] = attribute.value
+                sources[local] = declaration.precedence
+                continue
+            if (
+                declaration.precedence == previous_precedence
+                and properties[local] != attribute.value
+            ):
                 raise _error(
                     f"mode declarations disagree about {local!r}",
                     "XTSE0545",
                     element=element,
-                    module=module,
+                    module=declaration.module,
                 )
-            properties[local] = attribute.value
     return MappingProxyType(properties)
 
 
-def _module_for_element(
-    descriptor: PackageDescriptor, element: EffectiveElement
-) -> EffectiveModule:
-    for module in descriptor.all_modules:
-        for descendant in module.root.descendants:
-            if descendant is element:
-                return module
-    raise AssertionError("an element must belong to one of its package modules")  # pragma: no cover
+def _instruction_mode_references(
+    node: InstructionNode, default_mode_text: str | None
+) -> set[ModeKey]:
+    result: set[ModeKey] = set()
+    if isinstance(node, TextNode):
+        return result
+    if default_mode_text in (None, "#unnamed"):
+        default_mode: ModeKey = None
+    elif default_mode_text == "#default":
+        raise AssertionError("a package default-mode cannot be #default")  # pragma: no cover
+    else:
+        default_mode = _expand_name(default_mode_text, node.namespaces, uri=node.module)
+    is_template_rule = node.local_name == "template" and node.attribute("match") is not None
+    if node.is_xslt and (node.local_name == "apply-templates" or is_template_rule):
+        value = node.attribute("mode")
+        if value is None:
+            result.add(default_mode)
+        else:
+            for token in value.split():
+                if token == "#current":
+                    continue
+                if token == "#default":
+                    result.add(default_mode)
+                elif token == "#unnamed":
+                    result.add(None)
+                elif token == "#all":
+                    continue
+                else:
+                    result.add(_expand_name(token, node.namespaces, uri=node.module))
+    for child in node.children:
+        result.update(_instruction_mode_references(child, default_mode_text))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -3039,7 +3337,13 @@ def _bind_component(
     original: Component | None,
 ) -> Component:
     declarations = tuple(
-        _bind_instruction(declaration, lookup, original) for declaration in component.declarations
+        _bind_instruction(
+            declaration,
+            lookup,
+            original,
+            original_abstract=component.original_abstract,
+        )
+        for declaration in component.declarations
     )
     children: list[InstructionNode] = []
     for declaration in declarations:
@@ -3063,8 +3367,10 @@ def _bind_instruction(
     node: Instruction,
     lookup: _Lookup,
     original: Component | None,
+    *,
+    original_abstract: bool = False,
 ) -> Instruction:
-    bound = _bind_node(node, lookup, original)
+    bound = _bind_node(node, lookup, original, original_abstract)
     assert isinstance(bound, Instruction)
     return bound
 
@@ -3079,6 +3385,7 @@ def _bind_node(
     node: InstructionNode,
     lookup: _Lookup,
     original: Component | None,
+    original_abstract: bool = False,
 ) -> InstructionNode:
     if isinstance(node, TextNode):
         return node
@@ -3089,6 +3396,12 @@ def _bind_node(
         if name:
             expanded = _expand_instruction_name(name, node)
             if expanded == f"{_XSLT}original":
+                if original_abstract:
+                    raise _error(
+                        "xsl:original cannot reference an abstract component",
+                        "XTSE3075",
+                        uri=node.module,
+                    )
                 if original is None or original.kind != "template":
                     raise _error(
                         "xsl:original is not available in this context",
@@ -3117,13 +3430,19 @@ def _bind_node(
                     visibility=target.visibility,
                 )
     for attribute in node.attributes:
-        if attribute.local_name == "use-attribute-sets" and attribute.namespace_uri in (
-            None,
-            XSLT_NS,
-        ):
+        is_xslt_attribute = (node.is_xslt and attribute.namespace_uri is None) or (
+            not node.is_xslt and attribute.namespace_uri == XSLT_NS
+        )
+        if attribute.local_name == "use-attribute-sets" and is_xslt_attribute:
             for token in attribute.value.split():
                 expanded = _expand_instruction_name(token, node)
                 if expanded == f"{_XSLT}original":
+                    if original_abstract:
+                        raise _error(
+                            "xsl:original cannot reference an abstract component",
+                            "XTSE3075",
+                            uri=node.module,
+                        )
                     if original is None or original.kind != "attribute-set":
                         raise _error(
                             "xsl:original is not available for this attribute set",
@@ -3155,9 +3474,13 @@ def _bind_node(
                         visibility=target.visibility,
                     )
                 )
-        if attribute.local_name in _XPATH_REFERENCE_ATTRIBUTES:
-            references.extend(_original_expression_references(attribute.value, node, original))
-    children = tuple(_bind_node(child, lookup, original) for child in node.children)
+        if node.is_xslt and attribute.local_name in _XPATH_REFERENCE_ATTRIBUTES:
+            references.extend(
+                _original_expression_references(attribute.value, node, original, original_abstract)
+            )
+    children = tuple(
+        _bind_node(child, lookup, original, original_abstract) for child in node.children
+    )
     return replace(node, children=children, reference=reference, references=tuple(references))
 
 
@@ -3174,9 +3497,16 @@ def _original_expression_references(
     source: str,
     node: Instruction,
     original: Component | None,
+    original_abstract: bool,
 ) -> tuple[ComponentReference, ...]:
     references: list[ComponentReference] = []
     for kind, _, _ in _scan_original_references(source, node.namespaces):
+        if original_abstract:
+            raise _error(
+                "xsl:original cannot reference an abstract component",
+                "XTSE3075",
+                uri=node.module,
+            )
         if original is None or original.kind != ("variable" if kind == "variable" else "function"):
             code = "XPST0008" if kind == "variable" else "XPST0017"
             raise _error(
@@ -3248,7 +3578,9 @@ def _scan_original_references(
                         result.append(("variable", index, end))
                     else:
                         suffix = source[end:].lstrip()
-                        if suffix.startswith("("):
+                        if suffix.startswith("(") or (
+                            suffix.startswith("#") and len(suffix) > 1 and suffix[1].isdigit()
+                        ):
                             result.append(("function", index, end))
                 index = end
                 continue
@@ -3319,7 +3651,12 @@ def _rebind_component(component: Component, lookup: _Lookup) -> Component:
 
 
 def _bind_rule(rule: ModeRule, lookup: _Lookup) -> ModeRule:
-    declaration = _bind_instruction(rule.declaration, lookup, rule.original)
+    declaration = _bind_instruction(
+        rule.declaration,
+        lookup,
+        rule.original,
+        original_abstract=rule.original_abstract,
+    )
     return replace(
         rule,
         declaration=declaration,
@@ -3362,7 +3699,6 @@ def _rebind_node(node: InstructionNode, lookup: _Lookup) -> InstructionNode:
             reference.name,
             reference.arity,
             include_hidden=True,
-            include_absent=True,
         )
         if target is None:  # pragma: no cover - public targets are always copied
             return reference
@@ -3397,23 +3733,32 @@ def _group_constructs(
     for name, entries in buckets.items():
         highest = _highest_precedence(entries)
         at_highest = [entry for entry in entries if entry.precedence == highest]
-        if kind == "character-map" and len(at_highest) > 1:
-            raise _error(
-                f"the character map {name!r} is declared more than once",
-                "XTSE1580",
-                element=at_highest[1].element,
-                module=at_highest[1].module,
+        if kind == "character-map":
+            if len(at_highest) > 1:
+                raise _error(
+                    f"the character map {name!r} is declared more than once",
+                    "XTSE1580",
+                    element=at_highest[1].element,
+                    module=at_highest[1].module,
+                )
+            selected = tuple(sorted(at_highest, key=lambda entry: entry.order))
+        else:
+            selected = tuple(
+                sorted(
+                    entries,
+                    key=cmp_to_key(_compare_declarations),
+                )
             )
         groups.append(
             _GroupedDeclaration(
                 kind=kind,
                 name=name,
                 arity=None,
-                declarations=tuple(sorted(at_highest, key=lambda entry: entry.order)),
+                declarations=selected,
                 precedence=highest,
                 declared_visibility=None,
                 default_visibility="private",
-                order=at_highest[0].order,
+                order=selected[0].order,
             )
         )
     groups.sort(key=lambda group: group.order)
@@ -3428,6 +3773,7 @@ def _build_constructs(
     result: list[PackageConstruct] = []
     for group in groups:
         attributes: dict[str, str] = {}
+        attribute_precedence: dict[str, tuple[int, ...]] = {}
         declarations: list[Instruction] = []
         for declaration in group.declarations:
             normalized = normalize_element(
@@ -3441,8 +3787,27 @@ def _build_constructs(
                 assert local is not None
                 if attribute.name.startswith("_") or local == "name":
                     continue
-                value = attributes.get(local)
-                if value is not None and value != attribute.value:
+                if kind == "output" and local in (
+                    "cdata-section-elements",
+                    "suppress-indentation",
+                ):
+                    existing = attributes.get(local, "").split()
+                    merged = list(existing)
+                    for token in attribute.value.split():
+                        if token not in merged:
+                            merged.append(token)
+                    attributes[local] = " ".join(merged)
+                    continue
+                if kind == "output" and local == "use-character-maps":
+                    existing = attributes.get(local, "").split()
+                    attributes[local] = " ".join((*existing, *attribute.value.split()))
+                    continue
+                previous = attribute_precedence.get(local)
+                if previous is None or _cmp_precedence(declaration.precedence, previous) > 0:
+                    attributes[local] = attribute.value
+                    attribute_precedence[local] = declaration.precedence
+                    continue
+                if declaration.precedence == previous and attributes[local] != attribute.value:
                     code = {
                         "output": "XTSE1560",
                         "decimal-format": "XTSE1290",
@@ -3454,7 +3819,6 @@ def _build_constructs(
                         element=declaration.element,
                         module=declaration.module,
                     )
-                attributes[local] = attribute.value
         result.append(
             PackageConstruct(
                 kind=kind,

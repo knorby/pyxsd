@@ -47,6 +47,8 @@ def _package(
 ) -> str:
     name_attr = "" if name is None else f' name="{name}"'
     version_attr = "" if package_version is None else f' package-version="{package_version}"'
+    if "declared-modes" not in attributes:
+        attributes += ' declared-modes="no"'
     return (
         f'<xsl:package{name_attr}{version_attr} version="{version}" '
         f'xmlns:xsl="{XSLT_NS}" xmlns:app="{APP_NS}" xmlns:doc="{DOC_NS}" '
@@ -104,6 +106,7 @@ USING_OVERRIDE = _package(
     USING,
     """
     <xsl:use-package name="urn:example:base" package-version="1.0.0">
+      <xsl:accept component="mode" names="app:process" visibility="public"/>
       <xsl:override>
         <xsl:template name="app:start" visibility="public">
           <using><xsl:call-template name="xsl:original"/></using>
@@ -148,6 +151,7 @@ def test_package_visibility() -> None:
 def test_private_override_target_is_rejected() -> None:
     base = _package(
         BASE,
+        '<xsl:mode name="app:process" visibility="public"/>'
         '<xsl:template name="app:start" visibility="private"><base/></xsl:template>',
     )
     assert _raise_code(lambda: compile_package_set(base, USING_OVERRIDE)) == "XTSE3060"
@@ -156,6 +160,7 @@ def test_private_override_target_is_rejected() -> None:
 def test_final_override_target_is_rejected() -> None:
     base = _package(
         BASE,
+        '<xsl:mode name="app:process" visibility="public"/>'
         '<xsl:template name="app:start" visibility="final"><base/></xsl:template>',
     )
     assert _raise_code(lambda: compile_package_set(base, USING_OVERRIDE)) == "XTSE3060"
@@ -259,7 +264,7 @@ def test_invalid_or_missing_package_version_is_a_static_error() -> None:
 def test_package_use_cycles_are_rejected() -> None:
     first = _package(BASE, '<xsl:use-package name="urn:example:using"/>')
     second = _package(USING, '<xsl:use-package name="urn:example:base"/>')
-    assert _raise_code(lambda: compile_package_set(first, second)) == "XTSE3000"
+    assert _raise_code(lambda: compile_package_set(first, second)) == "XTSE3005"
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +288,11 @@ def test_expose_sets_visibility_and_reduces_it() -> None:
     using = _package(
         USING,
         """
-        <xsl:use-package name="urn:example:base"/>
+        <xsl:use-package name="urn:example:base">
+          <xsl:accept component="template" names="app:a" visibility="public"/>
+          <xsl:accept component="template" names="app:b" visibility="final"/>
+          <xsl:accept component="function" names="app:f#0" visibility="public"/>
+        </xsl:use-package>
         <xsl:template name="app:main" visibility="public">
           <xsl:call-template name="app:a"/>
           <xsl:call-template name="app:b"/>
@@ -356,7 +365,17 @@ def test_abstract_expose_requires_explicit_abstract_declaration() -> None:
         '<xsl:function name="app:f" visibility="abstract"/>'
         '<xsl:expose component="function" names="app:*" visibility="abstract"/>',
     )
-    assert _raise_code(lambda: compile_package_set(wildcard)) == "XTSE3025"
+    resolver = PackageResolver.from_sources(wildcard)
+    assert (
+        resolver.compile_library("urn:example:base").function("app:f", 0).visibility == "abstract"
+    )
+
+    non_abstract = _package(
+        BASE,
+        '<xsl:function name="app:f"/>'
+        '<xsl:expose component="function" names="app:*" visibility="abstract"/>',
+    )
+    assert _raise_code(lambda: compile_package_set(non_abstract)) == "XTSE3025"
 
     mode = _package(
         BASE,
@@ -404,7 +423,7 @@ def test_expose_syntax_errors() -> None:
         '<xsl:function name="app:f"/>'
         '<xsl:expose component="function" names="app:f" visibility="public"/>',
     )
-    assert _raise_code(lambda: compile_package_set(function_without_arity)) == "XTSE3020"
+    assert compile_package_set(function_without_arity).function("app:f", 0).visibility == "public"
 
     template_with_arity = _package(
         BASE,
@@ -464,7 +483,7 @@ def test_accept_incompatible_visibility_is_an_error_but_wildcards_fall_back() ->
         "</xsl:use-package>",
     )
     compiled = compile_package_set(base, wildcard)
-    assert compiled.named_template("app:a").visibility == "final"
+    assert compiled.named_template("app:a").visibility == "private"
 
 
 def test_accept_unknown_name_is_an_error() -> None:
@@ -478,7 +497,7 @@ def test_accept_unknown_name_is_an_error() -> None:
     assert _raise_code(lambda: compile_package_set(base, using)) == "XTSE3030"
 
 
-def test_accept_absent_abstract_component() -> None:
+def test_accept_absent_is_not_a_visibility_value() -> None:
     base = _package(
         BASE,
         '<xsl:function name="app:f" visibility="abstract"/>',
@@ -487,13 +506,9 @@ def test_accept_absent_abstract_component() -> None:
         USING,
         '<xsl:use-package name="urn:example:base">'
         '<xsl:accept component="function" names="app:f#0" visibility="absent"/>'
-        "</xsl:use-package>"
-        '<xsl:template name="app:main" visibility="public"/>',
+        "</xsl:use-package>",
     )
-    compiled = compile_package_set(base, using)
-    component = compiled.function("app:f", 0)
-    assert component is not None
-    assert component.visibility == "absent"
+    assert _raise_code(lambda: compile_package_set(base, using)) == "XTSE0020"
 
 
 def test_two_used_packages_with_conflicting_components_are_an_error() -> None:
@@ -735,32 +750,41 @@ def test_override_signature_compatibility() -> None:
     )
 
 
-def test_required_parameter_may_not_be_replaced_by_optional_parameter() -> None:
+def test_parameter_override_is_public_and_type_checked_only() -> None:
     base = _package(
         BASE,
         """
-        <xsl:param name="app:p" required="yes" visibility="public"/>
-        <xsl:variable name="app:v" visibility="public"/>
+        <xsl:param name="app:p" required="yes"/>
+        <xsl:param name="app:q" as="xs:integer"/>
         """,
         package_version="1.0.0",
     )
-    bad = _package(
+    override = _package(
         USING,
         '<xsl:use-package name="urn:example:base"><xsl:override>'
-        '<xsl:param name="app:p" visibility="public"/>'
+        '<xsl:param name="app:p"/>'
+        '<xsl:param name="app:q" as="xs:integer"/>'
         "</xsl:override></xsl:use-package>",
         package_version="1.0.0",
     )
-    assert _raise_code(lambda: compile_package_set(base, bad)) == "XTSE3070"
+    compiled = compile_package_set(base, override)
+    assert compiled.variable("app:p").visibility == "public"
+    assert compiled.variable("app:q").visibility == "public"
 
-    good = _package(
+    invalid_visibility = _package(
+        BASE,
+        '<xsl:param name="app:p" visibility="public"/>',
+    )
+    assert _raise_code(lambda: compile_package_set(invalid_visibility)) == "XTSE0090"
+
+    wrong_type = _package(
         USING,
         '<xsl:use-package name="urn:example:base"><xsl:override>'
-        '<xsl:variable name="app:p" visibility="public"/>'
+        '<xsl:param name="app:q" as="xs:string"/>'
         "</xsl:override></xsl:use-package>",
         package_version="1.0.0",
     )
-    assert compile_package_set(base, good).variable("app:p") is not None
+    assert _raise_code(lambda: compile_package_set(base, wrong_type)) == "XTSE3070"
 
 
 def test_override_children_are_restricted() -> None:
@@ -813,7 +837,7 @@ def test_xsl_original_is_unavailable_for_abstract_targets() -> None:
         '<xsl:template name="app:main" visibility="public"/>',
         package_version="1.0.0",
     )
-    assert _raise_code(lambda: compile_package_set(base, using)) == "XTSE0650"
+    assert _raise_code(lambda: compile_package_set(base, using)) == "XTSE3075"
 
 
 # ---------------------------------------------------------------------------
@@ -840,19 +864,30 @@ def test_abstract_components_are_completed_by_override() -> None:
     assert compiled.original_target("app:f", kind="function", arity=1) is None
 
 
-def test_unresolved_abstract_component_in_top_level_package_is_an_error() -> None:
+def test_abstract_default_is_hidden_and_public_accept_is_not_executable() -> None:
     base = _package(
         BASE,
         '<xsl:function name="app:f" visibility="abstract"/>',
         package_version="1.0.0",
     )
-    using = _package(
+    default = _package(
         USING,
         '<xsl:use-package name="urn:example:base"/>'
         '<xsl:template name="app:main" visibility="public"/>',
         package_version="1.0.0",
     )
-    assert _raise_code(lambda: compile_package_set(base, using)) == "XTSE3080"
+    compiled = compile_package_set(base, default)
+    assert compiled.function("app:f", 0) is None
+
+    public = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:accept component="function" names="app:f#0" visibility="abstract"/>'
+        "</xsl:use-package>"
+        '<xsl:template name="app:main" visibility="public"/>',
+        package_version="1.0.0",
+    )
+    assert _raise_code(lambda: compile_package_set(base, public)) == "XTSE3080"
 
 
 def test_hidden_abstract_component_allows_an_executable_package() -> None:
@@ -894,9 +929,10 @@ def test_mode_rule_layers_and_special_modes() -> None:
     def override(mode: str) -> str:
         return _package(
             USING,
-            f'<xsl:use-package name="urn:example:base"><xsl:override>'
-            f'<xsl:template match="doc:a" mode="{mode}"/>'
-            "</xsl:override></xsl:use-package>",
+            f'<xsl:use-package name="urn:example:base">'
+            '<xsl:accept component="mode" names="app:public" visibility="public"/>'
+            f'<xsl:override><xsl:template match="doc:a" mode="{mode}"/></xsl:override>'
+            "</xsl:use-package>",
             package_version="1.0.0",
         )
 
@@ -918,6 +954,7 @@ def test_mode_override_without_explicit_mode_uses_default_mode() -> None:
     using = _package(
         USING,
         '<xsl:use-package name="urn:example:base">'
+        '<xsl:accept component="mode" names="app:m" visibility="public"/>'
         '<xsl:override default-mode="app:m">'
         '<xsl:template match="doc:a"/>'
         "</xsl:override></xsl:use-package>",
@@ -1260,6 +1297,7 @@ def test_inspection_does_not_change_package_acceptance_or_errors(tmp_path: Path)
 
 BASE_PRIVATE_SOURCE = _package(
     BASE,
+    '<xsl:mode name="app:process" visibility="public"/>'
     '<xsl:template name="app:start" visibility="private"/>',
     package_version="1.0.0",
 )
@@ -1455,8 +1493,6 @@ def test_package_version_dunder_and_range_edges() -> None:
 
 
 def test_loaders_and_resolver_api_paths(tmp_path: Path) -> None:
-    from pyxsd.xslt.compiler.packages import _load_sources
-
     effective = _effective(tmp_path, "one.xsl", BASE_PUBLIC)
     compiled = compile_package_set(effective)
     assert compiled.name == BASE
@@ -1482,7 +1518,6 @@ def test_loaders_and_resolver_api_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         resolver.register(effective)
 
-    assert _load_sources((), static_parameters=None) == ()
     with pytest.raises(ValueError):
         compile_package_set()
 
@@ -1756,7 +1791,7 @@ def test_accept_and_expose_selector_edges() -> None:
         '<xsl:accept component="mode" names="app:m" visibility="absent"/>'
         "</xsl:use-package>",
     )
-    assert _raise_code(lambda: compile_package_set(base, incompatible_mode)) == "XTSE3040"
+    assert _raise_code(lambda: compile_package_set(base, incompatible_mode)) == "XTSE0020"
 
     unknown_mode = _package(
         USING,
@@ -1769,10 +1804,10 @@ def test_accept_and_expose_selector_edges() -> None:
     wildcard_fallback = _package(
         USING,
         '<xsl:use-package name="urn:example:base">'
-        '<xsl:accept component="mode" names="app:*" visibility="absent"/>'
+        '<xsl:accept component="mode" names="app:*" visibility="final"/>'
         "</xsl:use-package>",
     )
-    assert compile_package_set(base, wildcard_fallback).mode("app:m").visibility == "public"
+    assert compile_package_set(base, wildcard_fallback).mode("app:m").visibility == "final"
 
 
 def test_accept_override_conflict_and_local_accept_conflict() -> None:
@@ -1811,7 +1846,7 @@ def test_accept_override_conflict_and_local_accept_conflict() -> None:
     assert _raise_code(lambda: compile_package_set(base, hidden_reference)) == "XTSE0650"
 
 
-def test_absent_reference_is_rejected() -> None:
+def test_accept_absent_is_rejected_in_selector_parsing() -> None:
     base = _package(
         BASE,
         '<xsl:template name="app:t" visibility="abstract"/>',
@@ -1821,12 +1856,10 @@ def test_absent_reference_is_rejected() -> None:
         USING,
         '<xsl:use-package name="urn:example:base">'
         '<xsl:accept component="template" names="app:t" visibility="absent"/>'
-        "</xsl:use-package>"
-        '<xsl:template name="app:main" visibility="public">'
-        '<xsl:call-template name="app:t"/></xsl:template>',
+        "</xsl:use-package>",
         package_version="1.0.0",
     )
-    assert _raise_code(lambda: compile_package_set(base, using)) == "XTSE0650"
+    assert _raise_code(lambda: compile_package_set(base, using)) == "XTSE0020"
 
 
 def test_two_used_packages_with_same_mode_conflict() -> None:
@@ -1903,17 +1936,20 @@ def test_original_scanner_handles_strings_comments_and_eqnames() -> None:
             "XPST0017",
         )
 
-    from pyxsd.xslt.compiler.packages import _scan_original_references
-
-    namespaces = {"xsl": XSLT_NS}
-    assert _scan_original_references("$Q{unterminated", namespaces) == []
-    assert _scan_original_references("$-bad", namespaces) == []
-    assert _scan_original_references("$", namespaces) == []
-    assert _scan_original_references("$xsl:original", namespaces)
-    assert _scan_original_references("(: nested (: x :) $xsl:original :)", namespaces) == []
-    assert _scan_original_references("'$xsl:original'", namespaces) == []
-    assert _scan_original_references("'it''s $xsl:original'", namespaces) == []
-    assert _scan_original_references("$xsl:other", namespaces) == []
+    for source in (
+        "&quot;xsl:original&quot;, (: nested (: x :) $xsl:original :)",
+        "'it''s $xsl:original'",
+        "xsl:original",
+        "$xsl:",
+        "$Q{unterminated",
+        "$-bad",
+        "$xsl:other",
+    ):
+        package = _package(
+            BASE,
+            f'<xsl:variable name="app:x" select="{source}"/>',
+        )
+        assert compile_package_set(package).variable("app:x").declaration.references == ()
 
 
 def test_transitive_rebinding_of_overridden_references() -> None:
@@ -1933,7 +1969,9 @@ def test_transitive_rebinding_of_overridden_references() -> None:
     )
     top = _package(
         USING,
-        '<xsl:use-package name="urn:example:other"/>',
+        '<xsl:use-package name="urn:example:other">'
+        '<xsl:accept component="template" names="app:a" visibility="private"/>'
+        "</xsl:use-package>",
         package_version="1.0.0",
     )
     compiled = compile_package_set(base, middle, top)
@@ -2087,8 +2125,8 @@ def test_function_signature_flag_incompatibilities() -> None:
     base = _package(
         BASE,
         '<xsl:function name="app:f" visibility="public" new-each-time="yes" '
-        'identity-sensitive="no" override-extension-functions="no" streamable="yes" '
-        'posture="striding" sweep="yes"><xsl:sequence select="1"/></xsl:function>',
+        'streamable="yes" posture="striding" sweep="yes">'
+        '<xsl:sequence select="1"/></xsl:function>',
         package_version="1.0.0",
     )
 
@@ -2104,11 +2142,9 @@ def test_function_signature_flag_incompatibilities() -> None:
 
     for attributes in (
         'new-each-time="no"',
-        'identity-sensitive="yes"',
-        'override-extension-functions="yes"',
-        'streamable="no"',
-        'streamable="yes" posture="sweeping" sweep="yes"',
-        'streamable="yes" posture="striding" sweep="no"',
+        'new-each-time="yes" streamable="no"',
+        'new-each-time="yes" streamable="yes" posture="sweeping" sweep="yes"',
+        'new-each-time="yes" streamable="yes" posture="striding" sweep="no"',
     ):
         assert (
             _raise_code(
@@ -2117,14 +2153,11 @@ def test_function_signature_flag_incompatibilities() -> None:
             == "XTSE3070"
         )
 
-    compatible = override(
-        'new-each-time="yes" identity-sensitive="no" '
-        'override-extension-functions="no" streamable="yes" posture="striding" sweep="yes"'
-    )
+    compatible = override('new-each-time="yes" streamable="yes" posture="striding" sweep="yes"')
     assert compile_package_set(base, compatible).function("app:f", 0) is not None
 
 
-def test_template_signature_more_parameter_mismatches() -> None:
+def test_template_signature_parameter_rules() -> None:
     base = _package(
         BASE,
         '<xsl:template name="app:t" as="xs:string" visibility="public">'
@@ -2144,12 +2177,24 @@ def test_template_signature_more_parameter_mismatches() -> None:
             package_version="1.0.0",
         )
 
+    # A non-tunnel parameter cannot be omitted.
     assert (
         _raise_code(
-            lambda: compile_package_set(base, override('<xsl:param name="a" as="xs:string"/>'))
+            lambda: compile_package_set(
+                base,
+                override('<xsl:param name="b" as="xs:string" tunnel="yes"/>'),
+            )
         )
         == "XTSE3070"
     )
+    # A tunnel parameter may be omitted.
+    assert (
+        compile_package_set(base, override('<xsl:param name="a" as="xs:string"/>')).named_template(
+            "app:t"
+        )
+        is not None
+    )
+    # A present tunnel parameter must remain tunnel.
     assert (
         _raise_code(
             lambda: compile_package_set(
@@ -2174,22 +2219,6 @@ def test_template_signature_more_parameter_mismatches() -> None:
         )
         == "XTSE3070"
     )
-
-
-def test_internal_name_helpers_and_output_lookup() -> None:
-    from pyxsd.xslt.compiler.packages import _expand_name, _namespace_of
-
-    assert _namespace_of("plain") is None
-    assert _namespace_of("{urn:x}plain") == "urn:x"
-    with pytest.raises(XsltStaticError):
-        _expand_name(" ", {})
-    with pytest.raises(XsltStaticError):
-        _expand_name("Q{unterminated", {})
-
-    output_package = _package(BASE, '<xsl:output method="xml"/>')
-    compiled = compile_package_set(output_package)
-    assert compiled.output(None) is not None
-    assert compiled.output(None).attribute("method") == "xml"
 
 
 def test_declared_modes_no_and_principal_outside_sources(tmp_path: Path) -> None:
@@ -2247,77 +2276,6 @@ def test_expose_reached_through_import_is_rejected(tmp_path: Path) -> None:
     assert _raise_code(lambda: compile_package_set(path)) == "XTSE0010"
 
 
-def test_signature_compatibility_flag_matrix() -> None:
-    from pyxsd.xslt.compiler.packages import (
-        ParameterSignature,
-        Signature,
-        _signatures_compatible,
-        _type_key,
-    )
-
-    compiled = compile_package_set(BASE_PUBLIC)
-    sequence_type = compiled.variable("app:greeting").signature.sequence_type
-    assert sequence_type is not None
-    assert _type_key(None) is None
-    empty_package = _package(
-        BASE,
-        '<xsl:accumulator name="app:a" as="empty-sequence()" initial-value="()"/>',
-    )
-    empty = compile_package_set(empty_package).accumulator("app:a").signature.sequence_type
-    assert _type_key(empty) == ("empty", "")
-
-    base = Signature(
-        "function",
-        return_type=sequence_type,
-        parameters=(ParameterSignature("p", sequence_type),),
-    )
-    # Parameter name/type mismatch.
-    other_type = (
-        compile_package_set(
-            _package(BASE, '<xsl:variable name="app:v" as="xs:integer" select="1"/>')
-        )
-        .variable("app:v")
-        .signature.sequence_type
-    )
-    assert other_type is not None
-    assert not _signatures_compatible(
-        base,
-        Signature(
-            "function",
-            return_type=sequence_type,
-            parameters=(ParameterSignature("p", other_type),),
-        ),
-    )
-    # Each restrictive flag is checked independently.
-    for base_flags, override_flags in (
-        ({"identity-sensitive": "no"}, {"identity-sensitive": "yes"}),
-        ({"override-extension-functions": "no"}, {"override-extension-functions": "yes"}),
-        ({"streamable": "yes"}, {"streamable": "no"}),
-        (
-            {"streamable": "yes", "posture": "striding", "sweep": "yes"},
-            {"streamable": "yes", "posture": "sweeping", "sweep": "yes"},
-        ),
-        (
-            {"streamable": "yes", "posture": "striding", "sweep": "yes"},
-            {"streamable": "yes", "posture": "striding", "sweep": "no"},
-        ),
-    ):
-        assert not _signatures_compatible(
-            Signature(
-                "function",
-                return_type=sequence_type,
-                parameters=(ParameterSignature("p", sequence_type),),
-                flags=base_flags,
-            ),
-            Signature(
-                "function",
-                return_type=sequence_type,
-                parameters=(ParameterSignature("p", sequence_type),),
-                flags=override_flags,
-            ),
-        )
-
-
 def test_named_template_and_mode_rule_override_together() -> None:
     base = _package(
         BASE,
@@ -2328,7 +2286,9 @@ def test_named_template_and_mode_rule_override_together() -> None:
     )
     using = _package(
         USING,
-        '<xsl:use-package name="urn:example:base"><xsl:override>'
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:accept component="mode" names="app:m" visibility="public"/>'
+        "<xsl:override>"
         '<xsl:template name="app:t" match="doc:a" mode="app:m" visibility="public">'
         "<using/></xsl:template>"
         "</xsl:override></xsl:use-package>",
@@ -2379,7 +2339,7 @@ def test_attribute_set_original_unavailable_for_abstract_target() -> None:
         '<xsl:template name="app:main" visibility="public"/>',
         package_version="1.0.0",
     )
-    assert _raise_code(lambda: compile_package_set(base, using)) == "XTSE0710"
+    assert _raise_code(lambda: compile_package_set(base, using)) == "XTSE3075"
 
 
 def test_rebinding_text_private_and_original_references() -> None:
@@ -2403,7 +2363,9 @@ def test_rebinding_text_private_and_original_references() -> None:
     )
     top = _package(
         USING,
-        '<xsl:use-package name="urn:example:other"/>',
+        '<xsl:use-package name="urn:example:other">'
+        '<xsl:accept component="template" names="app:a app:b" visibility="private"/>'
+        "</xsl:use-package>",
         package_version="1.0.0",
     )
     compiled = compile_package_set(base, middle, top)
@@ -2497,7 +2459,7 @@ def test_mode_declaration_in_included_module(tmp_path: Path) -> None:
     assert compiled.mode("app:m") is not None
 
 
-def test_remaining_expose_and_scanner_branches() -> None:
+def test_remaining_expose_wildcard_precedence() -> None:
     package = _package(
         BASE,
         '<xsl:template name="app:t"/>'
@@ -2508,12 +2470,6 @@ def test_remaining_expose_and_scanner_branches() -> None:
     )
     compiled = compile_package_set(package)
     assert compiled.named_template("app:t").visibility == "private"
-
-    from pyxsd.xslt.compiler.packages import _scan_original_references
-
-    namespaces = {"xsl": XSLT_NS}
-    assert _scan_original_references("xsl:original", namespaces) == []
-    assert _scan_original_references("$xsl:", namespaces) == []
 
 
 def test_importing_a_package_root_is_rejected(tmp_path: Path) -> None:
@@ -2563,3 +2519,778 @@ def test_package_manifest_rejects_nested_stylesheet_and_rule_visibility() -> Non
         package_version="1.0.0",
     )
     assert _raise_code(lambda: compile_package_set(base, using)) == "XTSE0500"
+
+
+# ---------------------------------------------------------------------------
+# Review round 1: normative package semantics
+
+
+def test_default_accepted_components_are_private_or_hidden() -> None:
+    base = _package(
+        BASE,
+        '<xsl:template name="app:t" visibility="public"/>'
+        '<xsl:template name="app:private" visibility="private"/>'
+        '<xsl:function name="app:f" visibility="final"/>'
+        '<xsl:function name="app:a" visibility="abstract"/>',
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"/>',
+        package_version="1.0.0",
+    )
+    compiled = compile_package_set(base, using)
+    assert compiled.named_template("app:t").visibility == "private"
+    assert compiled.named_template("app:private") is None
+    assert compiled.function("app:f", 0).visibility == "private"
+    assert compiled.function("app:a", 0) is None
+
+    third = _package(
+        OTHER,
+        '<xsl:use-package name="urn:example:using"/>',
+        package_version="1.0.0",
+    )
+    # P's private copies become hidden in the next package.
+    isolated = compile_package_set(base, using, third)
+    assert isolated.named_template("app:t") is None
+
+
+def test_private_component_chain_is_copied_and_rebound() -> None:
+    base = _package(
+        BASE,
+        '<xsl:template name="app:a" visibility="public">'
+        '<xsl:call-template name="app:b"/></xsl:template>'
+        '<xsl:template name="app:b" visibility="private">'
+        '<xsl:call-template name="app:c"/></xsl:template>'
+        '<xsl:template name="app:c" visibility="public"><base/></xsl:template>',
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:override><xsl:template name="app:c" visibility="public"><using/></xsl:template>'
+        "</xsl:override></xsl:use-package>",
+        package_version="1.0.0",
+    )
+    compiled = compile_package_set(base, using)
+    hidden_b = compiled.components[("template", f"{{{APP_NS}}}b", None)]
+    assert hidden_b.visibility == "hidden"
+    assert hidden_b.body.children[0].reference.owner == USING
+    a = compiled.named_template("app:a")
+    assert a.body.children[0].reference.visibility == "private"
+
+
+def test_xsl_param_is_public_and_never_selected_by_expose_or_accept() -> None:
+    base = _package(
+        BASE,
+        '<xsl:param name="app:p" required="yes"/>',
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"/>',
+        package_version="1.0.0",
+    )
+    compiled = compile_package_set(base, using)
+    assert compiled.variable("app:p").visibility == "public"
+
+    override = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"><xsl:override>'
+        '<xsl:param name="app:p"/>'
+        "</xsl:override></xsl:use-package>",
+        package_version="1.0.0",
+    )
+    overridden = compile_package_set(base, override)
+    assert overridden.variable("app:p").visibility == "public"
+
+    exposed = _package(
+        BASE,
+        '<xsl:param name="app:p"/>'
+        '<xsl:expose component="variable" names="app:p" visibility="public"/>',
+    )
+    assert _raise_code(lambda: compile_package_set(exposed)) == "XTSE3020"
+
+    accepted = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:accept component="variable" names="app:p" visibility="public"/>'
+        "</xsl:use-package>",
+        package_version="1.0.0",
+    )
+    assert _raise_code(lambda: compile_package_set(base, accepted)) == "XTSE3030"
+
+    wildcard_expose = _package(
+        BASE,
+        '<xsl:param name="app:p"/><xsl:expose component="variable" names="*" visibility="public"/>',
+    )
+    assert compile_package_set(wildcard_expose).variable("app:p").visibility == "public"
+
+    wildcard_accept = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:accept component="variable" names="*" visibility="hidden"/>'
+        "</xsl:use-package>",
+        package_version="1.0.0",
+    )
+    assert compile_package_set(base, wildcard_accept).variable("app:p").visibility == "public"
+
+
+def test_import_precedence_combines_sets_keys_and_formats(tmp_path: Path) -> None:
+    imported = _write(
+        tmp_path,
+        "back.xsl",
+        _stylesheet(
+            '<xsl:attribute-set name="app:a"><xsl:attribute name="first" select="1"/></xsl:attribute-set>'
+            '<xsl:key name="app:k" match="doc:a" use="@first"/>'
+            '<xsl:decimal-format name="app:df" decimal-separator=","/>'
+            '<xsl:mode name="app:m" on-no-match="fail"/>'
+            '<xsl:output cdata-section-elements="doc:one" use-character-maps="app:one"/>'
+        ),
+    )
+    principal = _package(
+        BASE,
+        f'<xsl:import href="{imported.name}"/>'
+        '<xsl:attribute-set name="app:a"><xsl:attribute name="second" select="2"/></xsl:attribute-set>'
+        '<xsl:key name="app:k" match="doc:b" use="@second"/>'
+        '<xsl:decimal-format name="app:df" grouping-separator=" "/>'
+        '<xsl:mode name="app:m" visibility="public" on-multiple-match="fail"/>'
+        '<xsl:output cdata-section-elements="doc:two" use-character-maps="app:two"/>',
+    )
+    path = _write(tmp_path, "principal-combine.xsl", principal)
+    compiled = compile_package_set(path)
+
+    attribute_set = compiled.attribute_set("app:a")
+    assert len(attribute_set.declarations) == 2
+    assert len(compiled.key("app:k").declarations) == 2
+    decimal = compiled.decimal_format("app:df")
+    assert decimal.attribute("decimal-separator") == ","
+    assert decimal.attribute("grouping-separator") == " "
+    mode = compiled.mode("app:m")
+    assert mode.properties["on-no-match"] == "fail"
+    assert mode.properties["on-multiple-match"] == "fail"
+    assert mode.visibility == "public"
+    output = compiled.output(None)
+    assert output.attribute("cdata-section-elements") == "doc:one doc:two"
+    assert output.attribute("use-character-maps") == "app:one app:two"
+
+
+def test_function_signature_parameter_names_and_new_each_time() -> None:
+    base = _package(
+        BASE,
+        '<xsl:function name="app:f" visibility="public" new-each-time="no">'
+        '<xsl:param name="x" as="xs:integer"/><xsl:sequence select="$x"/>'
+        "</xsl:function>",
+        package_version="1.0.0",
+    )
+    renamed = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"><xsl:override>'
+        '<xsl:function name="app:f" visibility="public" new-each-time="no">'
+        '<xsl:param name="y" as="xs:integer"/><xsl:sequence select="$y"/>'
+        "</xsl:function></xsl:override></xsl:use-package>",
+        package_version="1.0.0",
+    )
+    assert compile_package_set(base, renamed).function("app:f", 1) is not None
+
+    flipped = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"><xsl:override>'
+        '<xsl:function name="app:f" visibility="public" new-each-time="yes">'
+        '<xsl:param name="y" as="xs:integer"/><xsl:sequence select="$y"/>'
+        "</xsl:function></xsl:override></xsl:use-package>",
+        package_version="1.0.0",
+    )
+    assert _raise_code(lambda: compile_package_set(base, flipped)) == "XTSE3070"
+
+    yes_base = _package(
+        BASE,
+        '<xsl:function name="app:g" visibility="public" new-each-time="yes">'
+        '<xsl:sequence select="1"/></xsl:function>',
+        package_version="1.0.0",
+    )
+    no_override = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"><xsl:override>'
+        '<xsl:function name="app:g" visibility="public" new-each-time="no">'
+        '<xsl:sequence select="1"/></xsl:function>'
+        "</xsl:override></xsl:use-package>",
+        package_version="1.0.0",
+    )
+    assert _raise_code(lambda: compile_package_set(yes_base, no_override)) == "XTSE3070"
+
+
+def test_function_name_tests_and_eqname_arity_refs() -> None:
+    base = _package(
+        BASE,
+        '<xsl:function name="app:f" visibility="final"><xsl:sequence select="1"/></xsl:function>'
+        '<xsl:function name="app:f" visibility="final">'
+        '<xsl:param name="x"/><xsl:sequence select="$x"/></xsl:function>',
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:accept component="function" names="app:f" visibility="private"/>'
+        "</xsl:use-package>",
+        package_version="1.0.0",
+    )
+    compiled = compile_package_set(base, using)
+    assert compiled.function("app:f", 0).visibility == "private"
+    assert compiled.function("app:f", 1).visibility == "private"
+
+    eqname = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        f'<xsl:accept component="function" names="Q{{{APP_NS}}}f#0" visibility="private"/>'
+        "</xsl:use-package>",
+        package_version="1.0.0",
+    )
+    selected = compile_package_set(base, eqname)
+    assert selected.function("app:f", 0).visibility == "private"
+    assert selected.function("app:f", 1).visibility == "private"
+
+
+def test_abstract_wildcard_expose_only_keeps_existing_abstract() -> None:
+    base = _package(
+        BASE,
+        '<xsl:function name="app:f" visibility="abstract"/>'
+        '<xsl:function name="app:g"/>'
+        '<xsl:expose component="function" names="app:f app:g" visibility="abstract"/>',
+    )
+    # Explicit names: f stays abstract, g would be made abstract.
+    assert _raise_code(lambda: compile_package_set(base)) == "XTSE3025"
+
+    only_abstract = _package(
+        BASE,
+        '<xsl:function name="app:f" visibility="abstract"/>'
+        '<xsl:expose component="function" names="app:*" visibility="abstract"/>',
+    )
+    resolver = PackageResolver.from_sources(only_abstract)
+    assert (
+        resolver.compile_library("urn:example:base").function("app:f", 0).visibility == "abstract"
+    )
+
+
+def test_xsl_original_named_function_reference_and_literal_attributes() -> None:
+    base = _package(
+        BASE,
+        '<xsl:function name="app:f" visibility="public"><xsl:sequence select="1"/></xsl:function>',
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"><xsl:override>'
+        '<xsl:function name="app:f" visibility="public">'
+        '<xsl:sequence select="xsl:original#0"/>'
+        "</xsl:function></xsl:override></xsl:use-package>",
+        package_version="1.0.0",
+    )
+    compiled = compile_package_set(base, using)
+    function = compiled.function("app:f", 0)
+    reference = function.body.children[0].references[0]
+    assert reference.original is True
+    assert reference.arity == 0
+
+    literal = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"><xsl:override>'
+        '<xsl:template name="app:t" visibility="public">'
+        '<out use-attribute-sets="literal-name" select="$xsl:original"/>'
+        "</xsl:template></xsl:override></xsl:use-package>",
+        package_version="1.0.0",
+    )
+    base_template = _package(
+        BASE,
+        '<xsl:template name="app:t" visibility="public"/>',
+        package_version="1.0.0",
+    )
+    assert compile_package_set(base_template, literal).named_template("app:t") is not None
+
+
+def test_xsl_original_abstract_expression_and_attribute_set() -> None:
+    base = _package(
+        BASE,
+        '<xsl:variable name="app:v" visibility="abstract"/>'
+        '<xsl:attribute-set name="app:a" visibility="abstract"/>',
+        package_version="1.0.0",
+    )
+    variable = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"><xsl:override>'
+        '<xsl:variable name="app:v" visibility="public" select="$xsl:original"/>'
+        "</xsl:override></xsl:use-package>"
+        '<xsl:template name="app:main" visibility="public"/>',
+        package_version="1.0.0",
+    )
+    assert _raise_code(lambda: compile_package_set(base, variable)) == "XTSE3075"
+
+    attribute_set = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"><xsl:override>'
+        '<xsl:attribute-set name="app:a" visibility="public" use-attribute-sets="xsl:original"/>'
+        "</xsl:override></xsl:use-package>"
+        '<xsl:template name="app:main" visibility="public"/>',
+        package_version="1.0.0",
+    )
+    assert _raise_code(lambda: compile_package_set(base, attribute_set)) == "XTSE3075"
+
+
+def test_hash_all_expands_to_declared_and_unnamed_modes() -> None:
+    package = _package(
+        BASE,
+        '<xsl:mode name="app:m"/><xsl:template match="doc:a" mode="#all"><out/></xsl:template>',
+    )
+    compiled = compile_package_set(package)
+    assert compiled.mode(None).rule_layers[0].rules[0].pattern == "doc:a"
+    assert compiled.mode("app:m").rule_layers[0].rules[0].pattern == "doc:a"
+
+
+def test_unnamed_mode_is_always_private() -> None:
+    implicit = _stylesheet('<xsl:mode/><xsl:template match="doc:a"/>')
+    assert compile_package_set(implicit).mode(None).visibility == "private"
+
+    explicit = _package(BASE, '<xsl:mode visibility="public"/>')
+    assert _raise_code(lambda: compile_package_set(explicit)) == "XTSE0020"
+
+
+def test_declared_modes_xtse3085() -> None:
+    missing = _package(
+        BASE,
+        '<xsl:template match="doc:a" mode="app:m"/>',
+        attributes="",
+    )
+    # The helper normally opts out; this package deliberately uses the default.
+    missing = missing.replace(' declared-modes="no"', "")
+    assert _raise_code(lambda: compile_package_set(missing)) == "XTSE3085"
+
+    declared = missing.replace(
+        '<xsl:template match="doc:a" mode="app:m"/>',
+        '<xsl:mode name="app:m"/><xsl:template match="doc:a" mode="app:m"/>',
+    )
+    assert compile_package_set(declared).mode("app:m") is not None
+
+    base = _package(
+        BASE,
+        '<xsl:mode name="app:m" visibility="public"/>',
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:accept component="mode" names="app:m" visibility="public"/>'
+        "</xsl:use-package>"
+        '<xsl:template name="app:main"><xsl:apply-templates mode="app:m"/></xsl:template>',
+        attributes="",
+    )
+    using = using.replace(' declared-modes="no"', "")
+    assert compile_package_set(base, using).mode("app:m") is not None
+
+
+def test_override_rule_declaration_order_is_retained() -> None:
+    base = _package(
+        BASE,
+        '<xsl:mode name="app:m" visibility="public"/>',
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:accept component="mode" names="app:m" visibility="public"/>'
+        "<xsl:override>"
+        '<xsl:template match="doc:a" mode="app:m"><first/></xsl:template>'
+        '<xsl:template match="doc:a" mode="app:m"><second/></xsl:template>'
+        "</xsl:override></xsl:use-package>",
+        package_version="1.0.0",
+    )
+    rules = compile_package_set(base, using).mode("app:m").rule_layers[0].rules
+    assert rules[0].declaration_order < rules[1].declaration_order
+    assert rules[1].body.children[0].local_name == "second"
+
+
+def test_wildcard_accept_and_override_are_not_xtse3051() -> None:
+    base = _package(
+        BASE,
+        '<xsl:template name="app:t" visibility="public"/>',
+        package_version="1.0.0",
+    )
+    wildcard = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:accept component="template" names="app:*" visibility="private"/>'
+        '<xsl:override><xsl:template name="app:t" visibility="public"/></xsl:override>'
+        "</xsl:use-package>",
+        package_version="1.0.0",
+    )
+    assert compile_package_set(base, wildcard).named_template("app:t").visibility == "public"
+
+
+def test_expose_requires_xsl_package_root(tmp_path: Path) -> None:
+    implicit = _stylesheet(
+        '<xsl:template name="app:t"/>'
+        '<xsl:expose component="template" names="app:t" visibility="public"/>'
+    )
+    assert _raise_code(lambda: compile_package_set(implicit)) == "XTSE0010"
+
+    included = _write(
+        tmp_path,
+        "included-expose.xsl",
+        _stylesheet('<xsl:expose component="template" names="*" visibility="public"/>'),
+    )
+    principal = _package(BASE, f'<xsl:include href="{included.name}"/>')
+    path = _write(tmp_path, "principal-include-expose.xsl", principal)
+    assert _raise_code(lambda: compile_package_set(path)) == "XTSE0010"
+
+
+def test_parameter_names_do_not_affect_function_compatibility() -> None:
+    base = _package(
+        BASE,
+        '<xsl:function name="app:f" visibility="public">'
+        '<xsl:param name="x" as="xs:integer"/><xsl:sequence select="$x"/>'
+        "</xsl:function>",
+        package_version="1.0.0",
+    )
+    override = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"><xsl:override>'
+        '<xsl:function name="app:f" visibility="public">'
+        '<xsl:param name="y" as="xs:integer"/><xsl:sequence select="$y"/>'
+        "</xsl:function></xsl:override></xsl:use-package>",
+        package_version="1.0.0",
+    )
+    assert compile_package_set(base, override).function("app:f", 1) is not None
+
+
+def test_signature_minor_validation_errors() -> None:
+    unnamed_mode = _package(BASE, '<xsl:mode visibility="public"/>')
+    assert _raise_code(lambda: compile_package_set(unnamed_mode)) == "XTSE0020"
+
+    accumulator = _package(
+        BASE, '<xsl:accumulator name="app:a" visibility="public" initial-value="0"/>'
+    )
+    assert _raise_code(lambda: compile_package_set(accumulator)) == "XTSE0090"
+
+    key = _package(BASE, '<xsl:key name="app:k" match="*"/>')
+    assert _raise_code(lambda: compile_package_set(key)) == "XTSE0010"
+
+    character_map = _package(BASE, "<xsl:character-map/>")
+    assert _raise_code(lambda: compile_package_set(character_map)) == "XTSE0010"
+
+    empty_version = _package(
+        BASE,
+        '<xsl:use-package name="urn:example:base" package-version=""/>',
+    )
+    assert _raise_code(lambda: compile_package_set(empty_version)) == "XTSE3000"
+
+    comma_star = _package(
+        BASE,
+        '<xsl:use-package name="urn:example:base" package-version="*,1.0"/>',
+    )
+    assert _raise_code(lambda: compile_package_set(comma_star)) == "XTSE3000"
+
+    first = _package(BASE, "", package_version="1")
+    second = _package(BASE, "", package_version="1.0")
+    with pytest.raises(ValueError):
+        compile_package_set(first, second)
+
+
+def test_selector_edge_tokens_and_placement() -> None:
+    empty_local = _package(
+        BASE,
+        '<xsl:template name="app:t"/>'
+        '<xsl:expose component="template" names="Q{urn:example:app}" visibility="public"/>',
+    )
+    assert _raise_code(lambda: compile_package_set(empty_local)) == "XTSE3020"
+
+    wildcard_arity = _package(
+        BASE,
+        '<xsl:template name="app:t"/>'
+        '<xsl:expose component="template" names="app:*#0" visibility="public"/>',
+    )
+    assert _raise_code(lambda: compile_package_set(wildcard_arity)) == "XTSE3020"
+
+    local_wildcard_arity = _package(
+        BASE,
+        '<xsl:template name="app:t"/>'
+        '<xsl:expose component="template" names="*:t#0" visibility="public"/>',
+    )
+    assert _raise_code(lambda: compile_package_set(local_wildcard_arity)) == "XTSE3020"
+
+    nested_use_package = _package(
+        BASE,
+        '<xsl:template name="app:t"><xsl:use-package name="urn:example:base"/></xsl:template>',
+    )
+    assert _raise_code(lambda: compile_package_set(nested_use_package)) == "XTSE0010"
+
+    empty_mode = _package(
+        BASE,
+        '<xsl:template match="doc:a" mode=""/>',
+    )
+    assert _raise_code(lambda: compile_package_set(empty_mode)) == "XTSE0550"
+
+
+def test_mode_accept_specific_incompatibility() -> None:
+    base = _package(
+        BASE,
+        '<xsl:mode name="app:m" visibility="final"/>',
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:accept component="mode" names="app:m" visibility="public"/>'
+        "</xsl:use-package>",
+        package_version="1.0.0",
+    )
+    assert _raise_code(lambda: compile_package_set(base, using)) == "XTSE3040"
+
+
+def test_declared_modes_all_reference_forms() -> None:
+    package = _package(
+        BASE,
+        "<xsl:mode/>"
+        '<xsl:mode name="app:m"/>'
+        '<xsl:template match="doc:a" mode="#all"/>'
+        '<xsl:template name="app:main">'
+        '<xsl:apply-templates mode="#current"/>'
+        '<xsl:apply-templates mode="#default"/>'
+        '<xsl:apply-templates mode="#unnamed"/>'
+        '<xsl:apply-templates mode="app:m"/>'
+        "<xsl:text>x</xsl:text>"
+        "</xsl:template>",
+        attributes="",
+    )
+    package = package.replace(' declared-modes="no"', "")
+    compiled = compile_package_set(package)
+    assert compiled.mode("app:m").visibility == "private"
+    # The unnamed mode is private even though it is declared.
+    assert compiled.mode(None).visibility == "private"
+
+    accepted = _package(
+        BASE,
+        '<xsl:template name="app:t" visibility="public"/>',
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"/>'
+        '<xsl:template name="app:main"><xsl:apply-templates/></xsl:template>',
+        attributes="",
+    )
+    using = using.replace(' declared-modes="no"', "")
+    assert _raise_code(lambda: compile_package_set(accepted, using)) == "XTSE3085"
+
+
+def test_package_default_mode_named_and_unnamed_forms() -> None:
+    named = _package(
+        BASE,
+        '<xsl:mode name="app:m"/>'
+        '<xsl:template name="app:main"><xsl:apply-templates/></xsl:template>',
+        attributes=' default-mode="app:m"',
+    )
+    assert compile_package_set(named).default_mode is not None
+
+    unnamed = _package(
+        BASE,
+        '<xsl:mode/><xsl:template name="app:main"><xsl:apply-templates/></xsl:template>',
+        attributes=' default-mode="#unnamed"',
+    )
+    assert compile_package_set(unnamed).mode(None) is not None
+
+    invalid = _package(BASE, "", attributes=' default-mode="#default"')
+    assert _raise_code(lambda: compile_package_set(invalid)) == "XTSE0020"
+
+
+def test_xsl_original_attribute_set_outside_override_is_rejected() -> None:
+    package = _package(
+        BASE,
+        '<xsl:attribute-set name="app:a" use-attribute-sets="xsl:original"/>',
+    )
+    assert _raise_code(lambda: compile_package_set(package)) == "XTSE0710"
+
+
+def test_output_duplicate_merge_tokens() -> None:
+    package = _package(
+        BASE,
+        '<xsl:output cdata-section-elements="doc:a doc:a" use-character-maps="app:one app:one"/>'
+        '<xsl:output cdata-section-elements="doc:a doc:b" use-character-maps="app:two"/>',
+    )
+    output = compile_package_set(package).output(None)
+    assert output.attribute("cdata-section-elements") == "doc:a doc:b"
+    assert output.attribute("use-character-maps") == "app:one app:one app:two"
+
+
+def test_mode_wildcard_incompatible_falls_back_and_default_named_mode() -> None:
+    base = _package(
+        BASE,
+        '<xsl:mode name="app:m" visibility="final"/>',
+        package_version="1.0.0",
+    )
+    wildcard = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:accept component="mode" names="app:*" visibility="public"/>'
+        "</xsl:use-package>",
+        package_version="1.0.0",
+    )
+    assert compile_package_set(base, wildcard).mode("app:m").visibility == "private"
+
+    named_default = _package(
+        BASE,
+        '<xsl:mode name="app:m"/>'
+        '<xsl:template name="app:main">'
+        "<xsl:apply-templates/>"
+        '<xsl:apply-templates mode="#all"/>'
+        "</xsl:template>",
+        attributes=' default-mode="app:m"',
+    )
+    named_default = named_default.replace(' declared-modes="no"', "")
+    assert compile_package_set(named_default).default_mode == f"{{{APP_NS}}}m"
+
+
+def test_output_same_value_repeats_are_merged() -> None:
+    package = _package(
+        BASE,
+        '<xsl:output method="xml"/><xsl:output method="xml"/>',
+    )
+    assert compile_package_set(package).output(None).attribute("method") == "xml"
+
+    modes = _package(
+        BASE,
+        '<xsl:mode name="app:m" on-no-match="fail"/><xsl:mode name="app:m" on-no-match="fail"/>',
+    )
+    assert compile_package_set(modes).mode("app:m").properties["on-no-match"] == "fail"
+
+
+def test_hash_all_includes_apply_templates_modes() -> None:
+    package = _package(
+        BASE,
+        '<xsl:mode name="app:m"/>'
+        '<xsl:template name="app:main">'
+        '<xsl:apply-templates mode="app:m"/>'
+        "</xsl:template>"
+        '<xsl:template match="doc:a" mode="#all"><out/></xsl:template>',
+    )
+    compiled = compile_package_set(package)
+    assert compiled.mode("app:m").rule_layers[0].rules[0].pattern == "doc:a"
+    assert compiled.mode(None).rule_layers[0].rules[0].pattern == "doc:a"
+
+
+def test_specific_accept_and_override_in_different_use_packages() -> None:
+    first = _package(
+        BASE, '<xsl:template name="app:t" visibility="public"/>', package_version="1.0.0"
+    )
+    second = _package(
+        OTHER,
+        '<xsl:template name="app:t" visibility="public"/>',
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:accept component="template" names="app:t" visibility="hidden"/>'
+        "</xsl:use-package>"
+        '<xsl:use-package name="urn:example:other">'
+        '<xsl:override><xsl:template name="app:t" visibility="public"/></xsl:override>'
+        "</xsl:use-package>",
+        package_version="1.0.0",
+    )
+    compiled = compile_package_set(first, second, using)
+    assert compiled.named_template("app:t").visibility == "public"
+
+
+def test_instruction_is_hashable() -> None:
+    package = _package(
+        BASE,
+        '<xsl:template name="app:t" visibility="public"><out/></xsl:template>',
+    )
+    node = compile_package_set(package).named_template("app:t").body.children[0]
+    assert isinstance(hash(node), int)
+
+
+def test_declared_modes_requires_unnamed_mode() -> None:
+    package = _package(
+        BASE,
+        '<xsl:template match="doc:a"/>',
+        attributes="",
+    )
+    package = package.replace(' declared-modes="no"', "")
+    assert _raise_code(lambda: compile_package_set(package)) == "XTSE3085"
+
+    declared = package.replace(
+        '<xsl:template match="doc:a"/>',
+        '<xsl:mode/><xsl:template match="doc:a"/>',
+    )
+    assert compile_package_set(declared).mode(None) is not None
+
+
+def test_apply_templates_inside_override_does_not_contribute_to_hash_all() -> None:
+    base = _package(
+        BASE,
+        '<xsl:mode name="app:m" visibility="public"/>',
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:accept component="mode" names="app:m" visibility="public"/>'
+        '<xsl:override><xsl:template match="doc:a" mode="app:m">'
+        '<xsl:apply-templates mode="app:other"/>'
+        "</xsl:template></xsl:override></xsl:use-package>",
+        package_version="1.0.0",
+    )
+    assert compile_package_set(base, using).mode("app:m") is not None
+
+
+def test_no_namespace_names_and_eqname_errors() -> None:
+    no_namespace = _package(
+        BASE,
+        '<xsl:template name="plain"/>'
+        '<xsl:expose component="template" names="plain" visibility="public"/>',
+    )
+    assert compile_package_set(no_namespace).named_template("plain").visibility == "public"
+
+    invalid_eqname = _package(BASE, '<xsl:template name="Q{unterminated"/>')
+    assert _raise_code(lambda: compile_package_set(invalid_eqname)) == "XTSE0010"
+
+    empty_default = _package(
+        BASE,
+        '<xsl:template name="app:main"><xsl:apply-templates/></xsl:template>',
+        attributes=' default-mode=" "',
+    )
+    assert _raise_code(lambda: compile_package_set(empty_default)) == "XTSE0010"
+
+
+def test_function_parameter_type_only_mismatch() -> None:
+    base = _package(
+        BASE,
+        '<xsl:function name="app:f" as="xs:string" visibility="public">'
+        '<xsl:param name="x" as="xs:integer"/><xsl:sequence select="string($x)"/>'
+        "</xsl:function>",
+        package_version="1.0.0",
+    )
+    override = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"><xsl:override>'
+        '<xsl:function name="app:f" as="xs:string" visibility="public">'
+        '<xsl:param name="x" as="xs:string"/><xsl:sequence select="$x"/>'
+        "</xsl:function></xsl:override></xsl:use-package>",
+        package_version="1.0.0",
+    )
+    assert _raise_code(lambda: compile_package_set(base, override)) == "XTSE3070"
+
+
+def test_empty_sequence_type_signature_identity() -> None:
+    base = _package(
+        BASE,
+        '<xsl:variable name="app:v" as="empty-sequence()" visibility="public"/>',
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"><xsl:override>'
+        '<xsl:variable name="app:v" as="empty-sequence()" visibility="public"/>'
+        "</xsl:override></xsl:use-package>",
+        package_version="1.0.0",
+    )
+    assert compile_package_set(base, using).variable("app:v") is not None
