@@ -2116,7 +2116,9 @@ def _signatures_compatible(overridden: Signature, overriding: Signature) -> bool
                 return False
             if _type_key(parameter.sequence_type) != _type_key(other.sequence_type):
                 return False
-            if parameter.required != other.required or parameter.tunnel != other.tunnel:
+            if parameter.tunnel != other.tunnel:
+                return False
+            if not parameter.tunnel and parameter.required != other.required:
                 return False
         for name, parameter in right_params.items():
             if name not in left_params and parameter.required:
@@ -2177,6 +2179,7 @@ class _PackageCompiler:
         accepted_modes: dict[ModeKey, Mode] = {}
         originals: dict[ComponentKey, Component] = {}
         overrides: dict[ComponentKey, Component] = {}
+        override_sites: dict[ComponentKey, _UsePackageSite] = {}
         override_rule_layers: dict[ModeKey, list[ModeRule]] = {}
         used: list[UsedPackage] = []
         dependencies: list[CompiledPackage] = []
@@ -2234,7 +2237,8 @@ class _PackageCompiler:
                         element=site.element,
                         module=site.module,
                     )
-                accepted_modes[mode_key] = accepted_mode
+                if accepted_mode.visibility != "hidden":
+                    accepted_modes[mode_key] = accepted_mode
             override_order = 0
             for override in site.overrides:
                 override_default = _resolve_default_mode(
@@ -2343,6 +2347,7 @@ class _PackageCompiler:
                             module=site.module,
                         )
                     is_param = child.name == _PARAM
+                    override_sites[key] = site
                     overrides[key] = _make_component(
                         parsed,
                         signature=signature,
@@ -2398,6 +2403,21 @@ class _PackageCompiler:
                     element=site.element,
                     module=site.module,
                 )
+        for key, override_component in overrides.items():
+            accepted_component = accepted_components.get(key)
+            if (
+                accepted_component is not None
+                and accepted_component.visibility != "hidden"
+                and conflict_sites[key][1] is not override_sites.get(key)
+            ):
+                site = conflict_sites[key][1]
+                raise _error(
+                    f"the override declaration {override_component.name!r} conflicts "
+                    "with a component accepted from another used package",
+                    "XTSE3050",
+                    element=site.element,
+                    module=site.module,
+                )
         components: dict[ComponentKey, Component] = dict(accepted_components)
         components.update(overrides)
         for group in groups:
@@ -2419,8 +2439,8 @@ class _PackageCompiler:
             descriptor, local, groups, accepted_modes, local_visibility
         )
         for mode_name, rules in override_rule_layers.items():
-            current_mode = modes[mode_name]
-            if current_mode.visibility != "public":
+            current_mode = modes.get(mode_name)
+            if current_mode is None or current_mode.visibility != "public":
                 raise _error(
                     f"the mode {mode_name!r} is not public after acceptance",
                     "XTSE3060",
@@ -2614,8 +2634,6 @@ class _PackageCompiler:
         mode = package.modes.get(name)
         if mode is None or mode.containing != package.name:
             return None
-        if mode.visibility == "hidden":
-            return None
         return mode
 
     def _build_local_modes(
@@ -2632,7 +2650,7 @@ class _PackageCompiler:
         declared_mode_keys = {group.name for group in mode_groups}
         all_mode_keys: set[ModeKey] = set(declared_mode_keys)
         all_mode_keys.add(None)
-        all_mode_keys.update(local.mode_references)
+        all_mode_keys.update(key for key in local.mode_references if key not in accepted_modes)
         for rule in local.rules:
             if rule.mode_tokens == ("#all",):
                 continue
@@ -2756,13 +2774,11 @@ class _PackageCompiler:
             key
             for key, mode in modes.items()
             if mode.containing == descriptor.name
-            and (mode.declared or mode.visibility in ("public", "final"))
+            and (
+                (mode.owner == descriptor.name and mode.declared)
+                or (mode.owner != descriptor.name and mode.visibility in ("public", "final"))
+            )
         }
-        available.update(
-            key
-            for key, mode in modes.items()
-            if mode.declared and mode.containing == descriptor.name
-        )
         referenced: set[ModeKey] = set()
         for rule in local.rules:
             if rule.mode_tokens == ("#all",):
@@ -2786,6 +2802,20 @@ class _PackageCompiler:
                 continue
             referenced.update(
                 _instruction_mode_references(component.declaration, descriptor.default_mode)
+            )
+        for mode in modes.values():
+            for mode_rule in mode.rules:
+                if mode_rule.owner == descriptor.name:
+                    referenced.update(
+                        _instruction_mode_references(mode_rule.declaration, descriptor.default_mode)
+                    )
+        if descriptor.default_mode is not None:
+            referenced.add(
+                _resolve_default_mode(
+                    descriptor.default_mode,
+                    descriptor.module.root,
+                    descriptor.module,
+                )
             )
         for mode_name in referenced:
             if mode_name not in available:
@@ -2896,10 +2926,14 @@ def _group_declarations(
             )
         else:
             selected = tuple(sorted(at_highest, key=lambda entry: entry.order))
-        declared_visibility = _declared_visibility(
-            tuple(sorted(at_highest, key=lambda entry: entry.order)),
-            descriptor,
-            kind,
+        declared_visibility = (
+            _declared_mode_visibility(entries)
+            if kind == "mode"
+            else _declared_visibility(
+                tuple(sorted(at_highest, key=lambda entry: entry.order)),
+                descriptor,
+                kind,
+            )
         )
         is_param = kind == "variable" and selected[-1].element.name == _PARAM
         default = _default_visibility(descriptor, kind, is_param=is_param)
@@ -2924,6 +2958,27 @@ def _compare_declarations(left: _Declaration, right: _Declaration) -> int:
     if precedence:
         return precedence
     return left.order - right.order
+
+
+def _declared_mode_visibility(entries: Sequence[_Declaration]) -> str | None:
+    chosen: str | None = None
+    chosen_precedence: tuple[int, ...] | None = None
+    for entry in entries:
+        value = _visibility(entry.element, entry.module, mode=True)
+        if value is None:
+            continue
+        if chosen_precedence is None or _cmp_precedence(entry.precedence, chosen_precedence) > 0:
+            chosen = value
+            chosen_precedence = entry.precedence
+            continue
+        if entry.precedence == chosen_precedence and value != chosen:
+            raise _error(
+                "mode declarations disagree about visibility",
+                "XTSE0545",
+                element=entry.element,
+                module=entry.module,
+            )
+    return chosen
 
 
 def _highest_precedence(entries: Sequence[_Declaration]) -> tuple[int, ...]:
@@ -3103,7 +3158,6 @@ def _accepted_visibility(accepted: str, used: str) -> str | None:
     table = {
         ("public", "public"): "public",
         ("private", "public"): "private",
-        ("private", "private"): "private",
         ("private", "final"): "private",
         ("final", "public"): "final",
         ("final", "final"): "final",
@@ -3412,6 +3466,7 @@ def _bind_node(
                     kind="template",
                     name=original.name,
                     owner=original.owner,
+                    containing=original.containing,
                     visibility=original.visibility,
                     original=True,
                 )
@@ -3427,6 +3482,7 @@ def _bind_node(
                     kind="template",
                     name=target.name,
                     owner=target.owner,
+                    containing=target.containing,
                     visibility=target.visibility,
                 )
     for attribute in node.attributes:
@@ -3454,6 +3510,7 @@ def _bind_node(
                             kind="attribute-set",
                             name=original.name,
                             owner=original.owner,
+                            containing=original.containing,
                             visibility=original.visibility,
                             original=True,
                         )
@@ -3471,10 +3528,14 @@ def _bind_node(
                         kind="attribute-set",
                         name=target.name,
                         owner=target.owner,
+                        containing=target.containing,
                         visibility=target.visibility,
                     )
                 )
-        if node.is_xslt and attribute.local_name in _XPATH_REFERENCE_ATTRIBUTES:
+        is_expression_attribute = (
+            node.is_xslt and attribute.local_name in _XPATH_REFERENCE_ATTRIBUTES
+        ) or (not node.is_xslt and attribute.namespace_uri != XSLT_NS)
+        if is_expression_attribute:
             references.extend(
                 _original_expression_references(attribute.value, node, original, original_abstract)
             )
@@ -3520,6 +3581,7 @@ def _original_expression_references(
                 name=original.name,
                 arity=original.arity,
                 owner=original.owner,
+                containing=original.containing,
                 visibility=original.visibility,
                 original=True,
             )
@@ -3692,21 +3754,20 @@ def _rebind_node(node: InstructionNode, lookup: _Lookup) -> InstructionNode:
     def rebind(reference: ComponentReference) -> ComponentReference:
         if reference.original:
             return reference
-        if reference.visibility not in ("public", "abstract"):
-            return reference
         target = lookup.component(
             reference.kind,
             reference.name,
             reference.arity,
             include_hidden=True,
         )
-        if target is None:  # pragma: no cover - public targets are always copied
+        if target is None:  # pragma: no cover - every component is copied
             return reference
         return ComponentReference(
             kind=target.kind,
             name=target.name,
             arity=target.arity,
             owner=target.owner,
+            containing=target.containing,
             visibility=target.visibility,
             original=False,
         )

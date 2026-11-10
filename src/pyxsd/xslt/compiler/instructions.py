@@ -84,6 +84,7 @@ class ComponentReference:
     name: str | None
     arity: int | None = None
     owner: str | None = None
+    containing: str | None = None
     visibility: str | None = None
     original: bool = False
 
