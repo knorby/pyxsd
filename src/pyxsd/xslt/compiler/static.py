@@ -22,7 +22,6 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, Literal, TypeAlias
 
@@ -216,121 +215,192 @@ _KNOWN_XSD_TYPES = frozenset(
     }
 )
 
-_KNOWN_FUNCTIONS = frozenset(
+_FN_FUNCTIONS: Mapping[str, int | tuple[int, int | None]] = MappingProxyType(
     {
-        "available-system-properties",
-        "boolean",
-        "codepoints-to-string",
-        "concat",
-        "contains",
-        "count",
-        "current",
-        "current-date",
-        "current-dateTime",
-        "current-group",
-        "current-grouping-key",
-        "current-time",
-        "element-available",
-        "empty",
-        "ends-with",
-        "exists",
-        "false",
-        "format-date",
-        "format-dateTime",
-        "format-number",
-        "format-time",
-        "function-available",
-        "generate-id",
-        "key",
-        "local-name",
-        "lower-case",
-        "matches",
-        "name",
-        "namespace-uri",
-        "normalize-space",
-        "not",
-        "number",
-        "position",
-        "replace",
-        "reverse",
-        "root",
-        "round",
-        "starts-with",
-        "string",
-        "string-length",
-        "string-to-codepoints",
-        "subsequence",
-        "substring",
-        "substring-after",
-        "substring-before",
-        "sum",
-        "system-property",
-        "tokenize",
-        "translate",
-        "true",
-        "type-available",
-        "unparsed-entity-uri",
-        "upper-case",
+        "available-system-properties": 0,
+        "base-uri": (0, 1),
+        "boolean": 1,
+        "codepoint-equal": 2,
+        "codepoints-to-string": 1,
+        "collection": (0, 1),
+        "compare": (2, 3),
+        "concat": (2, None),
+        "contains": (2, 3),
+        "contains-token": (2, 3),
+        "count": 1,
+        "current": 0,
+        "current-date": 0,
+        "current-dateTime": 0,
+        "current-group": 0,
+        "current-grouping-key": 0,
+        "current-time": 0,
+        "data": (0, 1),
+        "doc": (1, 2),
+        "document": (1, 2),
+        "document-uri": (0, 1),
+        "element-available": 1,
+        "empty": 1,
+        "ends-with": (2, 3),
+        "error": (0, 3),
+        "exists": 1,
+        "false": 0,
+        "format-date": (2, 5),
+        "format-dateTime": (2, 5),
+        "format-number": (2, 3),
+        "format-time": (2, 5),
+        "function-available": (1, 2),
+        "generate-id": (0, 1),
+        "json-to-xml": (1, 2),
+        "key": (2, 3),
+        "last": 0,
+        "local-name": (0, 1),
+        "lower-case": 1,
+        "matches": (2, 3),
+        "name": (0, 1),
+        "namespace-uri": (0, 1),
+        "node-name": (0, 1),
+        "nilled": (0, 1),
+        "normalize-space": (0, 1),
+        "not": 1,
+        "number": (0, 1),
+        "parse-xml": 1,
+        "parse-xml-fragment": 1,
+        "position": 0,
+        "replace": (3, 4),
+        "resolve-uri": (1, 2),
+        "reverse": 1,
+        "root": (0, 1),
+        "round": (1, 2),
+        "serialize": (1, 2),
+        "static-base-uri": 0,
+        "starts-with": (2, 3),
+        "string": (0, 1),
+        "string-join": (1, 2),
+        "string-length": (0, 1),
+        "string-to-codepoints": 1,
+        "subsequence": (2, 3),
+        "substring": (2, 3),
+        "substring-after": (2, 3),
+        "substring-before": (2, 3),
+        "sum": (1, 2),
+        "system-property": 1,
+        "tokenize": (1, 3),
+        "translate": 3,
+        "true": 0,
+        "type-available": 1,
+        "unparsed-entity-uri": 1,
+        "unparsed-text": (1, 2),
+        "unparsed-text-available": (1, 2),
+        "upper-case": 1,
+        "uri-collection": (0, 1),
+        "xml-to-json": (1, 2),
     }
 )
-
 
 _MAP_NS = "http://www.w3.org/2005/xpath-functions/map"
 _ARRAY_NS = "http://www.w3.org/2005/xpath-functions/array"
 _MATH_NS = "http://www.w3.org/2005/xpath-functions/math"
 
-_KNOWN_MAP_FUNCTIONS = frozenset(
+_MAP_FUNCTIONS: Mapping[str, int | tuple[int, int | None]] = MappingProxyType(
     {
-        "contains",
-        "entry",
-        "find",
-        "for-each",
-        "get",
-        "keys",
-        "merge",
-        "put",
-        "remove",
-        "size",
+        "contains": 2,
+        "entry": 2,
+        "find": 2,
+        "for-each": 2,
+        "get": 2,
+        "keys": 1,
+        "merge": (1, 2),
+        "put": 3,
+        "remove": 2,
+        "size": 1,
     }
 )
-_KNOWN_ARRAY_FUNCTIONS = frozenset(
+_ARRAY_FUNCTIONS: Mapping[str, int | tuple[int, int | None]] = MappingProxyType(
     {
-        "append",
-        "filter",
-        "flatten",
-        "fold-left",
-        "fold-right",
-        "for-each",
-        "for-each-pair",
-        "get",
-        "head",
-        "insert-before",
-        "join",
-        "put",
-        "remove",
-        "reverse",
-        "size",
-        "sort",
-        "subarray",
-        "tail",
+        "append": 2,
+        "filter": 2,
+        "flatten": (1, 2),
+        "fold-left": 3,
+        "fold-right": 3,
+        "for-each": 2,
+        "for-each-pair": 3,
+        "get": 2,
+        "head": 1,
+        "insert-before": 3,
+        "join": 1,
+        "put": 3,
+        "remove": 2,
+        "reverse": 1,
+        "size": 1,
+        "sort": (1, 3),
+        "subarray": (2, 3),
+        "tail": 1,
     }
 )
-_KNOWN_MATH_FUNCTIONS = frozenset(
+_MATH_FUNCTIONS: Mapping[str, int | tuple[int, int | None]] = MappingProxyType(
     {
-        "acos",
-        "asin",
-        "atan",
-        "atan2",
-        "cos",
-        "exp",
-        "exp10",
-        "log",
-        "log10",
-        "pi",
-        "pow",
-        "sin",
-        "sqrt",
-        "tan",
+        "acos": 1,
+        "asin": 1,
+        "atan": 1,
+        "atan2": 2,
+        "cos": 1,
+        "exp": 1,
+        "exp10": 1,
+        "log": 1,
+        "log10": 1,
+        "pi": 0,
+        "pow": 2,
+        "sin": 1,
+        "sqrt": 1,
+        "tan": 1,
+    }
+)
+
+_FUNCTION_TABLES: Mapping[str, Mapping[str, int | tuple[int, int | None]]] = MappingProxyType(
+    {
+        FN_NS: _FN_FUNCTIONS,
+        _MAP_NS: _MAP_FUNCTIONS,
+        _ARRAY_NS: _ARRAY_FUNCTIONS,
+        _MATH_NS: _MATH_FUNCTIONS,
+    }
+)
+
+_EBV_STRING_TYPES = frozenset(
+    {
+        "ENTITY",
+        "ID",
+        "IDREF",
+        "IDREFS",
+        "ENTITIES",
+        "NCName",
+        "NMTOKEN",
+        "NMTOKENS",
+        "Name",
+        "language",
+        "normalizedString",
+        "string",
+        "token",
+        "untypedAtomic",
+    }
+)
+_EBV_NUMERIC_TYPES = frozenset(
+    {
+        "byte",
+        "decimal",
+        "double",
+        "float",
+        "int",
+        "integer",
+        "long",
+        "negativeInteger",
+        "nonNegativeInteger",
+        "nonPositiveInteger",
+        "positiveInteger",
+        "short",
+        "unsignedByte",
+        "unsignedInt",
+        "unsignedLong",
+        "unsignedShort",
     }
 )
 
@@ -404,12 +474,42 @@ def _ebv(sequence: XdmSequence, element: XdmNode) -> bool:
             uri=element.document.document_uri,
             location=element.source_location(),
         )
+    local = _local_name(first.type_name)
     value = first.value
-    if isinstance(value, (int, float, Decimal)):
+    if local == "boolean":
+        return bool(value)
+    if local in _EBV_NUMERIC_TYPES:
         if isinstance(value, float) and math.isnan(value):
             return False
         return value != 0
-    return bool(value)
+    if local in _EBV_STRING_TYPES:
+        return bool(value)
+    raise XsltStaticError(
+        "the effective boolean value of this atomic type is not defined",
+        code="FORG0006",
+        uri=element.document.document_uri,
+        location=element.source_location(),
+    )
+
+
+_XML_WHITESPACE = frozenset(" \t\r\n")
+
+
+def _is_xml_whitespace(value: str) -> bool:
+    """Whether *value* contains only XML whitespace characters."""
+    return all(character in _XML_WHITESPACE for character in value)
+
+
+def _xml_space_state(element: XdmNode, inherited: bool) -> bool:
+    """Return the effective ``xml:space`` preserve state for one element."""
+    explicit = element.attribute(_XML_SPACE)
+    if explicit is None:
+        return inherited
+    if explicit.string_value == "preserve":
+        return True
+    if explicit.string_value == "default":
+        return False
+    return inherited
 
 
 def _string_value(sequence: XdmSequence, element: XdmNode) -> str:
@@ -598,6 +698,26 @@ class EffectiveElement:
         return None
 
 
+@dataclass(frozen=True, slots=True)
+class SpaceRule:
+    """One strip-space/preserve-space declaration with its own prefix context."""
+
+    elements: tuple[str, ...]
+    namespaces: Mapping[str, str]
+    preserve: bool
+    module: str | None
+    base_uri: str | None
+    precedence: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.namespaces, MappingProxyType):
+            object.__setattr__(
+                self,
+                "namespaces",
+                MappingProxyType(dict(self.namespaces)),
+            )
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class EffectiveModule:
     """The preprocessed view of one source module and its direct graph edges."""
@@ -608,6 +728,7 @@ class EffectiveModule:
     imports: tuple[EffectiveModule, ...]
     static_variables: Mapping[str, XdmSequence]
     simplified: bool
+    precedence: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.static_variables, MappingProxyType):
@@ -676,15 +797,15 @@ class EffectiveModule:
         return None if element is None else element.source_location()
 
     @property
-    def strip_space(self) -> tuple[str, ...]:
-        return self._space_values("strip-space")
+    def strip_space(self) -> tuple[SpaceRule, ...]:
+        return self._space_rules("strip-space", preserve=False)
 
     @property
-    def preserve_space(self) -> tuple[str, ...]:
-        return self._space_values("preserve-space")
+    def preserve_space(self) -> tuple[SpaceRule, ...]:
+        return self._space_rules("preserve-space", preserve=True)
 
-    def _space_values(self, local: str) -> tuple[str, ...]:
-        values: list[str] = []
+    def _space_rules(self, local: str, *, preserve: bool) -> tuple[SpaceRule, ...]:
+        rules: list[SpaceRule] = []
         seen: set[int] = set()
 
         def visit(module: EffectiveModule) -> None:
@@ -696,19 +817,40 @@ class EffectiveModule:
                 if declaration.name != declaration_name:
                     continue
                 value = declaration.attribute("elements")
-                if value:
-                    values.extend(value.split())
+                if not value:
+                    continue
+                rules.append(
+                    SpaceRule(
+                        elements=tuple(value.split()),
+                        namespaces=declaration.in_scope_namespaces,
+                        preserve=preserve,
+                        module=module.identity,
+                        base_uri=declaration.base_uri,
+                        precedence=module.precedence,
+                    )
+                )
             for dependent in (*module.includes, *module.imports):
                 visit(dependent)
 
         visit(self)
-        return tuple(values)
+        return tuple(rules)
 
 
 @dataclass(frozen=True, slots=True)
 class _Binding:
     kind: Literal["variable", "param"]
     value: XdmSequence
+    precedence: tuple[int, ...]
+
+
+def _precedence_compare(left: tuple[int, ...], right: tuple[int, ...]) -> int:
+    """Compare import precedence: a shorter prefix is higher; later imports win."""
+    if left == right:
+        return 0
+    limit = min(len(left), len(right))
+    if left[:limit] == right[:limit]:
+        return 1 if len(left) < len(right) else -1
+    return 1 if left > right else -1
 
 
 class _Scope:
@@ -723,16 +865,23 @@ class _Scope:
         kind: Literal["variable", "param"],
         value: XdmSequence,
         element: XdmNode,
+        precedence: tuple[int, ...],
     ) -> None:
         previous = self._bindings.get(name)
-        if previous is not None and (previous.kind != kind or previous.value != value):
-            raise XsltStaticError(
-                f"the static {kind} ${name} is inconsistent with its earlier declaration",
-                code="XTSE3450",
-                uri=element.document.document_uri,
-                location=element.source_location(),
-            )
-        self._bindings[name] = _Binding(kind, value)
+        if previous is not None:
+            comparison = _precedence_compare(precedence, previous.precedence)
+            if comparison < 0:
+                return
+            if comparison == 0 and previous.kind == kind and previous.value == value:
+                return
+            if previous.kind != kind or previous.value != value:
+                raise XsltStaticError(
+                    f"the static {kind} ${name} is inconsistent with its earlier declaration",
+                    code="XTSE3450",
+                    uri=element.document.document_uri,
+                    location=element.source_location(),
+                )
+        self._bindings[name] = _Binding(kind, value, precedence)
 
     def visible(self, element: XdmNode) -> dict[str, XdmSequence]:
         namespaces = element.in_scope_namespaces
@@ -750,6 +899,24 @@ class _Scope:
 
 def _system_property(name: str) -> str:
     return _SYSTEM_PROPERTIES.get(name, "")
+
+
+_VARIADIC_ARITY_CEILING = 32
+
+
+def _arity_matches(
+    spec: int | tuple[int, int | None] | None,
+    arity: int | None,
+) -> bool:
+    if spec is None:
+        return False
+    if arity is None:
+        return True
+    if isinstance(spec, int):
+        return arity == spec
+    minimum, maximum = spec
+    effective_maximum = _VARIADIC_ARITY_CEILING if maximum is None else maximum
+    return minimum <= arity <= effective_maximum
 
 
 class _StaticEvaluator:
@@ -781,8 +948,12 @@ class _StaticEvaluator:
             "fn:function-available": lambda name, arity=None: self._function_available(
                 name, element, arity
             ),
-            "fn:element-available": lambda name: self._element_available(name, element),
-            "fn:type-available": lambda name: self._type_available(name, element),
+            "fn:element-available": lambda name: self._element_available(
+                name, element, default_namespace
+            ),
+            "fn:type-available": lambda name: self._type_available(
+                name, element, default_namespace
+            ),
             "fn:available-system-properties": lambda: tuple(_SYSTEM_PROPERTIES),
         }
         environment = ExpressionEnvironment(
@@ -804,27 +975,21 @@ class _StaticEvaluator:
             ) from exc
 
     def _function_available(self, name: str, element: XdmNode, arity: int | None = None) -> bool:
-        del arity
         expanded = self._resolve_name(name, element, FN_NS)
         if expanded is None:
             return False
-        if expanded.startswith(f"{{{FN_NS}}}"):
-            return _local_name(expanded) in _KNOWN_FUNCTIONS
         if expanded.startswith(f"{{{XSD_NS}}}"):
-            return _local_name(expanded) in _KNOWN_XSD_TYPES
-        for namespace, names in (
-            (_MAP_NS, _KNOWN_MAP_FUNCTIONS),
-            (_ARRAY_NS, _KNOWN_ARRAY_FUNCTIONS),
-            (_MATH_NS, _KNOWN_MATH_FUNCTIONS),
-        ):
+            return _local_name(expanded) in _KNOWN_XSD_TYPES and arity in (None, 1)
+        for namespace, table in _FUNCTION_TABLES.items():
             if expanded.startswith(f"{{{namespace}}}"):
-                return _local_name(expanded) in names
+                return _arity_matches(table.get(_local_name(expanded)), arity)
         return False
 
-    def _element_available(self, name: str, element: XdmNode) -> bool:
+    def _element_available(
+        self, name: str, element: XdmNode, default_namespace: str | None
+    ) -> bool:
         if ":" not in name and not name.startswith(("{", "Q{")):
-            default = element.in_scope_namespaces.get("")
-            if default != XSLT_NS:
+            if default_namespace != XSLT_NS:
                 return False
             return name in _KNOWN_XSLT_ELEMENTS
         expanded = self._resolve_name(name, element, None)
@@ -834,8 +999,8 @@ class _StaticEvaluator:
             and _local_name(expanded) in _KNOWN_XSLT_ELEMENTS
         )
 
-    def _type_available(self, name: str, element: XdmNode) -> bool:
-        expanded = self._resolve_name(name, element, element.in_scope_namespaces.get(""))
+    def _type_available(self, name: str, element: XdmNode, default_namespace: str | None) -> bool:
+        expanded = self._resolve_name(name, element, default_namespace)
         return (
             expanded is not None
             and expanded.startswith(f"{{{XSD_NS}}}")
@@ -884,6 +1049,8 @@ def _static_avt(
                 index += 2
                 continue
             expression, index = _expression_body(template, index + 1, element)
+            if not expression.strip():
+                continue
             value = evaluator.evaluate(
                 expression,
                 element,
@@ -968,7 +1135,7 @@ class _Apply:
         self._active: list[tuple[str | None, ModuleKind | None]] = []
 
     def run(self) -> EffectiveModule:
-        return self._process_module(self._module, None, None, None)
+        return self._process_module(self._module, None, None, None, ())
 
     def _process_module(
         self,
@@ -976,6 +1143,7 @@ class _Apply:
         via: ModuleKind | None,
         owner_uri: str | None,
         location: IssueLocation | None,
+        precedence: tuple[int, ...],
     ) -> EffectiveModule:
         key = source.identity
         if key is not None:
@@ -1000,7 +1168,7 @@ class _Apply:
                 includes: tuple[EffectiveModule, ...] = ()
                 imports: tuple[EffectiveModule, ...] = ()
             else:
-                root, includes, imports = self._process_ordinary(source)
+                root, includes, imports = self._process_ordinary(source, precedence)
             return EffectiveModule(
                 source=source,
                 root=root,
@@ -1008,33 +1176,39 @@ class _Apply:
                 imports=imports,
                 static_variables=self._scope.snapshot(),
                 simplified=source.simplified,
+                precedence=precedence,
             )
         finally:
             if key is not None:
                 self._active.pop()
 
     def _process_ordinary(
-        self, source: SourceModule
+        self, source: SourceModule, precedence: tuple[int, ...]
     ) -> tuple[EffectiveElement, tuple[EffectiveModule, ...], tuple[EffectiveModule, ...]]:
         raw_root = source.root
         graph = _Graph()
-        prepared = self._prepared_shadow_values(raw_root)
-        include = self._use_when(raw_root, prepared)
+        prepared = self._prepared_shadow_values(raw_root, None)
+        include = self._use_when(raw_root, prepared, None)
+        effective_default = self._default_namespace(raw_root, prepared, None)
         values = self._attribute_values(raw_root, prepared)
-        attributes = self._effective_attributes(raw_root, values, prepared)
+        attributes = self._effective_attributes(raw_root, values, prepared, effective_default)
         if include:
             children = self._process_children(
                 raw_root.children,
                 source,
                 top_level=True,
                 parent=raw_root,
-                xml_space=False,
+                xml_space=_xml_space_state(raw_root, False),
                 graph=graph,
+                precedence=precedence,
+                default_namespace=effective_default,
+                import_counter=[0],
             )
         else:
             children = ()
         if any(
-            isinstance(child, EffectiveText) and not child.value.isspace() for child in children
+            isinstance(child, EffectiveText) and not _is_xml_whitespace(child.value)
+            for child in children
         ):
             raise XsltStaticError(
                 "an xsl:stylesheet, xsl:transform, or xsl:package element "
@@ -1062,6 +1236,7 @@ class _Apply:
             top_level=False,
             parent=None,
             xml_space=False,
+            default_namespace=None,
         )
         template_children: tuple[EffectiveNode, ...] = () if literal is None else (literal,)
         template = EffectiveElement(
@@ -1096,33 +1271,38 @@ class _Apply:
         top_level: bool,
         parent: XdmNode | None,
         xml_space: bool,
+        default_namespace: str | None,
     ) -> EffectiveElement | None:
-        prepared = self._prepared_shadow_values(raw)
-        if not self._use_when(raw, prepared):
+        prepared = self._prepared_shadow_values(raw, default_namespace)
+        if not self._use_when(raw, prepared, default_namespace):
             return None
+        effective_default = self._default_namespace(raw, prepared, default_namespace)
         values = self._attribute_values(raw, prepared)
-        attributes = self._effective_attributes(raw, values, prepared)
-        if (
-            not top_level
-            and raw.name in (f"{{{XSLT_NS}}}variable", f"{{{XSLT_NS}}}param")
-            and any(
-                attribute.name == "static" and attribute.value in ("yes", "true", "1")
-                for attribute in attributes
-            )
+        attributes = self._effective_attributes(raw, values, prepared, effective_default)
+        if not top_level and raw.name in (
+            f"{{{XSLT_NS}}}variable",
+            f"{{{XSLT_NS}}}param",
         ):
-            raise XsltStaticError(
-                "the static attribute is permitted only on a top-level declaration",
-                code="XTSE0010",
-                uri=raw.document.document_uri,
-                location=raw.source_location(),
+            static_value = next(
+                (attribute.value for attribute in attributes if attribute.name == "static"),
+                None,
             )
-        state = xml_space
-        explicit = raw.attribute(_XML_SPACE)
-        if explicit is not None:
-            if explicit.string_value == "preserve":
-                state = True
-            elif explicit.string_value == "default":
-                state = False
+            if static_value is not None:
+                if static_value not in ("yes", "true", "1", "no", "false", "0"):
+                    raise XsltStaticError(
+                        "the static attribute has an invalid value",
+                        code="XTSE0020",
+                        uri=raw.document.document_uri,
+                        location=raw.source_location(),
+                    )
+                if static_value in ("yes", "true", "1"):
+                    raise XsltStaticError(
+                        "the static attribute is permitted only on a global declaration",
+                        code="XTSE0020",
+                        uri=raw.document.document_uri,
+                        location=raw.source_location(),
+                    )
+        state = _xml_space_state(raw, xml_space)
         children = self._process_children(
             raw.children,
             source,
@@ -1130,6 +1310,9 @@ class _Apply:
             parent=raw,
             xml_space=state,
             graph=None,
+            precedence=(),
+            default_namespace=effective_default,
+            import_counter=None,
         )
         return EffectiveElement(
             name=_name_of(raw),
@@ -1150,6 +1333,9 @@ class _Apply:
         parent: XdmNode,
         xml_space: bool,
         graph: _Graph | None,
+        precedence: tuple[int, ...],
+        default_namespace: str | None,
+        import_counter: list[int] | None,
     ) -> tuple[EffectiveNode, ...]:
         candidates: list[EffectiveNode] = []
         for raw in raw_children:
@@ -1169,17 +1355,30 @@ class _Apply:
                 top_level=top_level,
                 parent=parent,
                 xml_space=xml_space,
+                default_namespace=default_namespace,
             )
             if element is None:
                 continue
             candidates.append(element)
             if top_level:
-                self._declare_static(raw, element)
+                self._declare_static(
+                    raw,
+                    element,
+                    precedence,
+                    default_namespace,
+                )
                 if graph is not None and raw.name in {
                     f"{{{XSLT_NS}}}include",
                     f"{{{XSLT_NS}}}import",
                 }:
-                    self._attach_graph(raw, element, source, graph)
+                    self._attach_graph(
+                        raw,
+                        element,
+                        source,
+                        graph,
+                        precedence,
+                        import_counter,
+                    )
 
         return self._strip_whitespace(
             candidates,
@@ -1201,7 +1400,7 @@ class _Apply:
             if not isinstance(node, EffectiveText) or parent_is_text:
                 result.append(node)
                 continue
-            if not node.value.isspace():
+            if not _is_xml_whitespace(node.value):
                 result.append(node)
                 continue
             if parent_name in _ALWAYS_STRIP_PARENTS:
@@ -1219,7 +1418,9 @@ class _Apply:
 
     # -- attributes and conditional inclusion ----------------------------------
 
-    def _prepared_shadow_values(self, raw: XdmNode) -> dict[str, str]:
+    def _prepared_shadow_values(
+        self, raw: XdmNode, inherited_default: str | None
+    ) -> dict[str, str]:
         prepared: dict[str, str] = {}
         if raw.namespace_uri != XSLT_NS:
             return prepared
@@ -1227,7 +1428,7 @@ class _Apply:
             attribute = raw.attribute(name)
             if attribute is None:
                 continue
-            default = self._default_namespace(raw, prepared)
+            default = self._default_namespace(raw, prepared, inherited_default)
             prepared[name[1:]] = _static_avt(
                 attribute.string_value,
                 raw,
@@ -1236,7 +1437,12 @@ class _Apply:
             )
         return prepared
 
-    def _use_when(self, raw: XdmNode, prepared: Mapping[str, str]) -> bool:
+    def _use_when(
+        self,
+        raw: XdmNode,
+        prepared: Mapping[str, str],
+        inherited_default: str | None,
+    ) -> bool:
         expression: str | None = None
         if raw.namespace_uri == XSLT_NS:
             expression = prepared.get("use-when")
@@ -1252,7 +1458,7 @@ class _Apply:
                 expression = attribute.string_value
         if expression is None:
             return True
-        default = self._default_namespace(raw, prepared)
+        default = self._default_namespace(raw, prepared, inherited_default)
         value = self._evaluator.evaluate(
             expression,
             raw,
@@ -1260,13 +1466,18 @@ class _Apply:
         )
         return _ebv(value, raw)
 
-    def _default_namespace(self, raw: XdmNode, prepared: Mapping[str, str]) -> str | None:
+    def _default_namespace(
+        self,
+        raw: XdmNode,
+        prepared: Mapping[str, str],
+        inherited_default: str | None,
+    ) -> str | None:
         value = prepared.get("xpath-default-namespace")
         if value is None:
             attribute = raw.attribute("xpath-default-namespace")
             if attribute is None:
                 attribute = raw.attribute(_XPATH_DEFAULT)
-            value = None if attribute is None else attribute.string_value
+            value = inherited_default if attribute is None else attribute.string_value
         return value or None
 
     def _attribute_values(self, raw: XdmNode, prepared: Mapping[str, str]) -> dict[str, str]:
@@ -1279,6 +1490,7 @@ class _Apply:
         raw: XdmNode,
         values: Mapping[str, str],
         prepared: Mapping[str, str],
+        default_namespace: str | None,
     ) -> tuple[EffectiveAttribute, ...]:
         shadow: dict[str, tuple[str, XdmNode]] = {}
         if raw.namespace_uri == XSLT_NS:
@@ -1291,6 +1503,8 @@ class _Apply:
                     and not name[1:].startswith("_")
                 ):
                     target = name[1:]
+                    if target == "use-when":
+                        continue
                     if target in prepared:
                         value = prepared[target]
                     else:
@@ -1298,7 +1512,7 @@ class _Apply:
                             attribute.string_value,
                             raw,
                             self._evaluator,
-                            values.get("xpath-default-namespace"),
+                            default_namespace,
                         )
                     shadow[target] = (value, attribute)
 
@@ -1306,7 +1520,7 @@ class _Apply:
         emitted: set[str] = set()
         for attribute in raw.attributes:
             name = _name_of(attribute)
-            if name in ("use-when", _USE_WHEN):
+            if name == _USE_WHEN or (name == "use-when" and raw.namespace_uri == XSLT_NS):
                 continue
             if (
                 raw.namespace_uri == XSLT_NS
@@ -1341,11 +1555,25 @@ class _Apply:
 
     # -- static variables and graph edges --------------------------------------
 
-    def _declare_static(self, raw: XdmNode, element: EffectiveElement) -> None:
+    def _declare_static(
+        self,
+        raw: XdmNode,
+        element: EffectiveElement,
+        precedence: tuple[int, ...],
+        default_namespace: str | None,
+    ) -> None:
         if raw.name not in (f"{{{XSLT_NS}}}variable", f"{{{XSLT_NS}}}param"):
             return
-        if element.attribute("static") not in ("yes", "true", "1"):
+        static_value = element.attribute("static")
+        if static_value is None or static_value in ("no", "false", "0"):
             return
+        if static_value not in ("yes", "true", "1"):
+            raise XsltStaticError(
+                "the static attribute has an invalid value",
+                code="XTSE0020",
+                uri=raw.document.document_uri,
+                location=raw.source_location(),
+            )
         kind: Literal["variable", "param"] = (
             "param" if raw.name == f"{{{XSLT_NS}}}param" else "variable"
         )
@@ -1358,24 +1586,58 @@ class _Apply:
                 location=raw.source_location(),
             )
         expanded = _expand_name(name, raw.in_scope_namespaces, raw)
-        if kind == "variable" and element.attribute("visibility") not in (None, "private"):
+        visibility = element.attribute("visibility")
+        if kind == "param" and visibility is not None:
+            raise XsltStaticError(
+                "visibility is not permitted on xsl:param",
+                code="XTSE0090",
+                uri=raw.document.document_uri,
+                location=raw.source_location(),
+            )
+        if kind == "variable" and visibility not in (None, "private"):
             raise XsltStaticError(
                 "a static variable must have private visibility",
-                code="XTSE0010",
+                code="XTSE0020",
                 uri=raw.document.document_uri,
                 location=raw.source_location(),
             )
-        if kind == "param" and element.attribute("visibility") not in (None, "private"):
+        select = element.attribute("select")
+        external: XdmSequence | None = None
+        required = element.attribute("required")
+        if kind == "variable" and required is not None:
             raise XsltStaticError(
-                "a static parameter must have private visibility",
-                code="XTSE0010",
+                "required is not permitted on xsl:variable",
+                code="XTSE0090",
                 uri=raw.document.document_uri,
                 location=raw.source_location(),
             )
+        if kind == "param" and required is not None:
+            if required not in ("yes", "true", "1", "no", "false", "0"):
+                raise XsltStaticError(
+                    "the required attribute has an invalid value",
+                    code="XTSE0020",
+                    uri=raw.document.document_uri,
+                    location=raw.source_location(),
+                )
+            if required in ("yes", "true", "1") and select is not None:
+                raise XsltStaticError(
+                    "a required static parameter must not have a select attribute",
+                    code="XTSE0010",
+                    uri=raw.document.document_uri,
+                    location=raw.source_location(),
+                )
+            external = self._external_parameter(name, expanded, raw)
+            if required in ("yes", "true", "1") and external is None:
+                raise XsltStaticError(
+                    "no value was supplied for the required static parameter",
+                    code="XTDE0050",
+                    uri=raw.document.document_uri,
+                    location=raw.source_location(),
+                )
         content = [
             child
             for child in element.children
-            if not (isinstance(child, EffectiveText) and child.value.isspace())
+            if not (isinstance(child, EffectiveText) and _is_xml_whitespace(child.value))
         ]
         if content:
             raise XsltStaticError(
@@ -1384,25 +1646,26 @@ class _Apply:
                 uri=raw.document.document_uri,
                 location=raw.source_location(),
             )
-        external = self._external_parameter(name, expanded, raw)
-        select = element.attribute("select")
-        if external is None and select is None:
+        if kind == "param" and external is None:
+            external = self._external_parameter(name, expanded, raw)
+        if external is not None:
+            value = external
+        elif select is not None:
+            value = self._evaluator.evaluate(
+                select,
+                raw,
+                default_namespace=default_namespace,
+            )
+        elif kind == "param":
+            value = (XdmAtomic.string(""),)
+        else:
             raise XsltStaticError(
-                "a static variable or parameter requires a select attribute",
+                "a static variable requires a select attribute",
                 code="XTSE0010",
                 uri=raw.document.document_uri,
                 location=raw.source_location(),
             )
-        if external is not None:
-            value = external
-        else:
-            assert select is not None
-            value = self._evaluator.evaluate(
-                select,
-                raw,
-                default_namespace=element.attribute("xpath-default-namespace"),
-            )
-        self._scope.declare(expanded, kind, value, raw)
+        self._scope.declare(expanded, kind, value, raw, precedence)
 
     def _external_parameter(self, name: str, expanded: str, raw: XdmNode) -> XdmSequence | None:
         for key in (expanded, name, _local_name(expanded) or ""):
@@ -1416,6 +1679,8 @@ class _Apply:
         element: EffectiveElement,
         source: SourceModule,
         graph: _Graph,
+        precedence: tuple[int, ...],
+        import_counter: list[int] | None,
     ) -> None:
         child = source.resolved_references.get(raw.node_id)
         if child is None:
@@ -1436,7 +1701,19 @@ class _Apply:
                 location=raw.source_location(),
             )
         kind = "include" if raw.name == f"{{{XSLT_NS}}}include" else "import"
-        effective = self._process_module(child, kind, source.identity, raw.source_location())
+        if kind == "import":
+            assert import_counter is not None
+            import_counter[0] += 1
+            child_precedence = (*precedence, import_counter[0])
+        else:
+            child_precedence = precedence
+        effective = self._process_module(
+            child,
+            kind,
+            source.identity,
+            raw.source_location(),
+            child_precedence,
+        )
         if kind == "include":
             graph.includes.append(effective)
         else:
@@ -1463,5 +1740,6 @@ __all__ = [
     "EffectiveModule",
     "EffectiveNode",
     "EffectiveText",
+    "SpaceRule",
     "StaticPreprocessor",
 ]

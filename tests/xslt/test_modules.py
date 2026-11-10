@@ -490,3 +490,113 @@ def test_malformed_included_module_reports_the_target_uri(tmp_path: Path) -> Non
     assert caught.value.code == "XTSE0165"
     assert caught.value.uri == broken.resolve().as_uri()
     assert caught.value.location is not None
+
+
+def test_explicit_file_uri_include_is_denied_without_a_policy(tmp_path: Path) -> None:
+    library = _write(tmp_path, "lib.xsl", _stylesheet('<xsl:template name="lib"/>'))
+    main = _write(
+        tmp_path,
+        "main.xsl",
+        _stylesheet(f'<xsl:include href="{library.resolve().as_uri()}"/>'),
+    )
+
+    with pytest.raises(XsltStaticError) as caught:
+        ModuleLoader().load(main)
+
+    assert caught.value.code == "XTSE0165"
+    assert isinstance(caught.value.cause, ResourcePolicyError)
+
+    with pytest.raises(XsltStaticError) as caught:
+        ModuleLoader().load(library.resolve().as_uri())
+    assert caught.value.code == "XTSE0165"
+    assert isinstance(caught.value.cause, ResourcePolicyError)
+
+
+def test_explicit_file_uri_include_can_be_admitted_by_policy(tmp_path: Path) -> None:
+    library = _write(tmp_path, "lib.xsl", _stylesheet('<xsl:template name="lib"/>'))
+    main = _write(
+        tmp_path,
+        "main.xsl",
+        _stylesheet(f'<xsl:include href="{library.resolve().as_uri()}"/>'),
+    )
+    uri = library.resolve().as_uri()
+    policy = _MappingPolicy({str(main): main.read_text(), uri: library.read_text()})
+
+    module = ModuleLoader(policy).load(main)
+
+    assert module.includes[0].identity == uri
+    assert module.includes[0].find("lib") is not None
+
+
+class _ChunkedReader:
+    def __init__(self, text: str, chunk_size: int = 5) -> None:
+        self._text = text
+        self._index = 0
+        self._chunk_size = chunk_size
+        self.requests: list[int] = []
+        self.name = "chunked.xsl"
+
+    def read(self, size: int = -1) -> str:
+        self.requests.append(size)
+        if self._index >= len(self._text):
+            return ""
+        limit = self._chunk_size if size < 0 else min(size, self._chunk_size)
+        chunk = self._text[self._index : self._index + limit]
+        self._index += len(chunk)
+        return chunk
+
+
+def test_chunked_stream_is_read_to_eof() -> None:
+    stream = _ChunkedReader(_stylesheet('<xsl:template name="last-template"/>'))
+
+    module = ModuleLoader().load(stream)
+
+    assert module.find("last-template") is not None
+    assert len(stream.requests) > 1
+
+
+def test_text_stream_encoding_declaration_is_normalized() -> None:
+    text = '<?xml version="1.0" encoding="iso-8859-1"?>' + _stylesheet('<xsl:template name="t"/>')
+    stream = io.StringIO(text)
+    stream.name = "text.xsl"  # type: ignore[attr-defined]
+
+    module = ModuleLoader().load(stream)
+
+    assert module.find("t") is not None
+
+
+def test_stream_byte_budget_bounds_reads() -> None:
+    from pyxsd.xml_policy import XmlLimits
+
+    stream = _ChunkedReader(_stylesheet(), chunk_size=64)
+
+    with pytest.raises(XsltStaticError) as caught:
+        ModuleLoader(xml_limits=XmlLimits(max_bytes=20)).load(stream)
+
+    assert caught.value.code == "XTSE0165"
+    assert isinstance(caught.value.cause, ResourcePolicyError)
+    assert max(stream.requests) <= 21
+
+
+def test_relative_include_against_remote_base_stays_remote(tmp_path: Path) -> None:
+    main = _write(
+        tmp_path,
+        "main.xsl",
+        _stylesheet('<xsl:include href="lib.xsl"/>'),
+    )
+    remote_lib = _stylesheet('<xsl:template name="lib"/>')
+
+    class RemotePolicy(_MappingPolicy):
+        def read(self, source: str, *, base: str | None, purpose: str) -> ResourceData:
+            if source.endswith("main.xsl"):
+                return ResourceData(
+                    "https://example.invalid/main.xsl",
+                    main.read_text().encode("utf-8"),
+                )
+            if source == "https://example.invalid/lib.xsl":
+                return ResourceData(source, remote_lib.encode("utf-8"))
+            raise FileNotFoundError(source)
+
+    module = ModuleLoader(RemotePolicy({})).load(main)
+
+    assert module.includes[0].identity == "https://example.invalid/lib.xsl"

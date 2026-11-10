@@ -282,16 +282,30 @@ def test_static_variable_inconsistency_reports_xtse3450(tmp_path: Path) -> None:
     ("body", "code"),
     [
         ('<xsl:param name="p" static="yes">content</xsl:param>', "XTSE0010"),
-        ('<xsl:param name="p" static="yes"/>', "XTSE0010"),
         (
             '<xsl:template name="t"><xsl:variable name="v" static="yes" '
             'select="1"/></xsl:template>',
-            "XTSE0010",
+            "XTSE0020",
         ),
         (
             '<xsl:variable name="v" static="yes" select="1" visibility="public"/>',
-            "XTSE0010",
+            "XTSE0020",
         ),
+        (
+            '<xsl:variable name="v" static="yes" select="1" visibility="final"/>',
+            "XTSE0020",
+        ),
+        (
+            '<xsl:param name="p" static="yes" select="1" visibility="private"/>',
+            "XTSE0090",
+        ),
+        (
+            '<xsl:param name="p" static="yes" select="1" visibility="invalid"/>',
+            "XTSE0090",
+        ),
+        ('<xsl:param name="p" static="YES" select="1"/>', "XTSE0020"),
+        ('<xsl:param name="p" static="yes" select="1" required="yes"/>', "XTSE0010"),
+        ('<xsl:param name="p" static="yes" required="yes"/>', "XTDE0050"),
     ],
 )
 def test_invalid_static_declarations(tmp_path: Path, body: str, code: str) -> None:
@@ -396,8 +410,14 @@ def test_source_space_rules_are_collected_not_applied_to_stylesheet(
 
     effective = _effective(tmp_path, xml)
 
-    assert effective.strip_space == ("doc:item",)
-    assert effective.preserve_space == ("doc:keep",)
+    strip = effective.strip_space
+    preserve = effective.preserve_space
+    assert len(strip) == 1
+    assert strip[0].elements == ("doc:item",)
+    assert strip[0].namespaces["doc"] == DOC_NS
+    assert strip[0].preserve is False
+    assert preserve[0].elements == ("doc:keep",)
+    assert preserve[0].preserve is True
     out = effective.find("t").children[0]
     assert _texts(out) == []
 
@@ -441,6 +461,7 @@ def test_literal_result_use_when_is_not_unprefixed(tmp_path: Path) -> None:
 
     literal = _effective(tmp_path, xml).find("t").children[0]
     assert literal.name == "out"
+    assert literal.attribute("use-when") == "false()"
 
 
 def test_static_processing_does_not_load_inspection_schema(tmp_path: Path) -> None:
@@ -484,6 +505,11 @@ def test_static_helpers_cover_ebv_and_string_values(tmp_path: Path) -> None:
     with pytest.raises(XsltStaticError) as caught:
         _ebv((XdmMap.empty(),), node)
     assert caught.value.code == "XPTY0004"
+    from pyxsd import xsd_data_types as _xsd
+
+    with pytest.raises(XsltStaticError) as caught:
+        _ebv((XdmAtomic.typed(_xsd.Date("2020-01-01"), _xsd.Date),), node)
+    assert caught.value.code == "FORG0006"
 
     assert _string_value((XdmAtomic.integer(2), XdmAtomic.string("x")), node) == "2 x"
     assert _string_value((node,), node) == ""
@@ -575,7 +601,7 @@ def test_static_variable_declaration_edge_cases(tmp_path: Path) -> None:
             _stylesheet('<xsl:param name="p" static="yes" select="1" visibility="public"/>'),
             name="public-param.xsl",
         )
-    assert caught.value.code == "XTSE0010"
+    assert caught.value.code == "XTSE0090"
 
 
 def test_static_variable_without_bound_prefix(tmp_path: Path) -> None:
@@ -607,7 +633,10 @@ def test_duplicate_include_traversal_and_space_rules(tmp_path: Path) -> None:
     assert effective.find("lib-template") is not None
     assert effective.find("absent") is None
     assert effective.strip_space == ()
-    assert effective.preserve_space == ("doc:keep", "doc:keep")
+    assert [rule.elements for rule in effective.preserve_space] == [
+        ("doc:keep",),
+        ("doc:keep",),
+    ]
 
 
 def test_conditional_module_cycle_reports_include_and_import_codes(tmp_path: Path) -> None:
@@ -772,9 +801,10 @@ def test_system_and_capability_static_functions(tmp_path: Path) -> None:
 
 def test_element_available_with_default_xslt_namespace(tmp_path: Path) -> None:
     xml = (
-        f'<stylesheet version="3.0" xmlns="{XSLT_NS}">'
-        '<template name="t" use-when="element-available(\'template\')"/>'
-        "</stylesheet>"
+        f'<xsl:stylesheet version="3.0" xmlns:xsl="{XSLT_NS}" '
+        f'xpath-default-namespace="{XSLT_NS}" xmlns="urn:xml-default">'
+        '<xsl:template name="t" use-when="element-available(\'template\')"/>'
+        "</xsl:stylesheet>"
     )
 
     effective = _effective(tmp_path, xml, name="default-ns.xsl")
@@ -958,9 +988,307 @@ def test_stylesheet_root_text_is_xtse0120(tmp_path: Path) -> None:
 def test_type_available_uses_default_element_namespace(tmp_path: Path) -> None:
     xml = (
         f'<xsl:stylesheet version="3.0" xmlns:xsl="{XSLT_NS}" '
-        'xmlns="http://www.w3.org/2001/XMLSchema">'
+        'xmlns="urn:xml-default" xpath-default-namespace="http://www.w3.org/2001/XMLSchema">'
         '<xsl:template name="t" use-when="type-available(\'string\')"/>'
         "</xsl:stylesheet>"
     )
 
     assert _effective(tmp_path, xml, name="default-type-ns.xsl").find("t") is not None
+
+
+def test_static_parameter_without_select_defaults_to_empty(tmp_path: Path) -> None:
+    xml = _stylesheet(
+        '<xsl:param name="p" static="yes"/><xsl:template name="t" use-when="$p = \'\'"/>'
+    )
+
+    effective = _effective(tmp_path, xml)
+
+    assert effective.find("t") is not None
+    assert effective.static_variables["p"][0].lexical == ""
+
+
+def test_shadow_use_when_is_consumed_not_kept(tmp_path: Path) -> None:
+    xml = _stylesheet(
+        '<xsl:template name="keep" _use-when="true()"/>'
+        '<xsl:template name="skip" _use-when="false()"/>'
+    )
+
+    effective = _effective(tmp_path, xml)
+    kept = effective.find("keep")
+
+    assert kept is not None
+    assert kept.attribute("use-when") is None
+    assert effective.find("skip") is None
+
+
+def test_empty_static_avt_contributes_empty_string(tmp_path: Path) -> None:
+    xml = _stylesheet(
+        '<xsl:variable name="N" static="yes" select="\'x\'"/>'
+        '<xsl:template name="t" _select="${}{$N}"/>'
+    )
+
+    template = _effective(tmp_path, xml).find("t")
+
+    assert template.attribute("select") == "$x"
+
+
+def test_ancestor_xpath_default_namespace_is_inherited(tmp_path: Path) -> None:
+    xml = _stylesheet(
+        '<xsl:template name="t" use-when="\'abc\' instance of string"/>',
+        attributes=' xpath-default-namespace="http://www.w3.org/2001/XMLSchema"',
+    )
+
+    assert _effective(tmp_path, xml).find("t") is not None
+
+
+def test_root_xml_space_preserve_is_inherited(tmp_path: Path) -> None:
+    xml = _stylesheet(
+        '<xsl:template name="t"><out>  </out></xsl:template>',
+        attributes=' xml:space="preserve"',
+    )
+
+    out = _effective(tmp_path, xml).find("t").children[0]
+
+    assert _texts(out) == ["  "]
+
+
+def test_nbsp_is_not_xml_whitespace(tmp_path: Path) -> None:
+    xml = _stylesheet('<xsl:template name="t"><out>&#160;</out></xsl:template>')
+    out = _effective(tmp_path, xml).find("t").children[0]
+    assert _texts(out) == ["\u00a0"]
+
+    with pytest.raises(XsltStaticError) as caught:
+        _effective(
+            tmp_path,
+            _stylesheet('\u00a0<xsl:template name="t"/>'),
+            name="nbsp-root.xsl",
+        )
+    assert caught.value.code == "XTSE0120"
+
+
+def test_import_precedence_ignores_later_lower_declaration(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "base.xsl",
+        _stylesheet('<xsl:variable name="inc" static="yes" select="false()"/>'),
+    )
+    xml = _stylesheet(
+        '<xsl:variable name="inc" static="yes" select="true()"/>'
+        '<xsl:import href="base.xsl"/>'
+        '<xsl:template name="t" use-when="$inc"/>'
+    )
+
+    effective = _effective(tmp_path, xml)
+
+    assert effective.find("t") is not None
+
+
+def test_import_precedence_higher_first_wins_even_when_inconsistent(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "base.xsl",
+        _stylesheet('<xsl:variable name="p" static="yes" select="2"/>'),
+    )
+    xml = _stylesheet(
+        '<xsl:param name="p" static="yes" select="1"/>'
+        '<xsl:import href="base.xsl"/>'
+        '<xsl:template name="t" use-when="$p = 1"/>'
+    )
+
+    effective = _effective(tmp_path, xml)
+
+    assert effective.find("t") is not None
+    assert effective.static_variables["p"][0].lexical == "1"
+
+
+def test_import_precedence_later_higher_inconsistent_is_xtse3450(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "base.xsl",
+        _stylesheet('<xsl:variable name="p" static="yes" select="1"/>'),
+    )
+    xml = _stylesheet(
+        '<xsl:import href="base.xsl"/><xsl:variable name="p" static="yes" select="0"/>'
+    )
+
+    with pytest.raises(XsltStaticError) as caught:
+        _effective(tmp_path, xml)
+
+    assert caught.value.code == "XTSE3450"
+
+
+def test_import_precedence_between_imports_inconsistent_is_xtse3450(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "a.xsl",
+        _stylesheet('<xsl:variable name="flip" static="yes" select="true()"/>'),
+    )
+    _write(
+        tmp_path,
+        "b.xsl",
+        _stylesheet('<xsl:variable name="flip" static="yes" select="false()"/>'),
+    )
+    xml = _stylesheet('<xsl:import href="a.xsl"/><xsl:import href="b.xsl"/>')
+
+    with pytest.raises(XsltStaticError) as caught:
+        _effective(tmp_path, xml)
+
+    assert caught.value.code == "XTSE3450"
+
+
+def test_import_precedence_consistent_imports_are_accepted(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "base.xsl",
+        _stylesheet('<xsl:variable name="p" static="yes" select="1"/>'),
+    )
+    xml = _stylesheet(
+        '<xsl:import href="base.xsl"/>'
+        '<xsl:import href="base.xsl"/>'
+        '<xsl:template name="t" use-when="$p = 1"/>'
+    )
+
+    effective = _effective(tmp_path, xml)
+
+    assert effective.find("t") is not None
+
+
+def test_external_parameter_does_not_override_static_variable(tmp_path: Path) -> None:
+    xml = _stylesheet(
+        '<xsl:variable name="p" static="yes" select="\'declared\'"/>'
+        '<xsl:template name="t" use-when="$p = \'declared\'"/>'
+    )
+
+    effective = _effective(tmp_path, xml, {"p": "external"})
+
+    assert effective.find("t") is not None
+    assert effective.static_variables["p"][0].lexical == "declared"
+
+
+def test_function_available_checks_arity_and_added_functions(tmp_path: Path) -> None:
+    xml = _stylesheet(
+        '<xsl:template name="t" use-when="'
+        "function-available('fn:concat', 2) "
+        "and not(function-available('fn:concat', 99)) "
+        "and not(function-available('fn:true', 1)) "
+        "and function-available('fn:static-base-uri') "
+        "and function-available('fn:parse-xml') "
+        "and function-available('fn:json-to-xml')"
+        '"/>'
+    )
+
+    assert _effective(tmp_path, xml).find("t") is not None
+
+
+def test_ebv_rejects_date_in_use_when(tmp_path: Path) -> None:
+    xml = _stylesheet('<xsl:template name="t" use-when="xs:date(\'2020-01-01\')"/>')
+
+    with pytest.raises(XsltStaticError) as caught:
+        _effective(tmp_path, xml)
+
+    assert caught.value.code == "FORG0006"
+
+
+def test_space_rules_keep_module_local_namespace_context(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "base.xsl",
+        _stylesheet(
+            '<xsl:preserve-space elements="p:keep"/>',
+            attributes=' xmlns:p="urn:imported"',
+        ),
+    )
+    xml = _stylesheet(
+        '<xsl:import href="base.xsl"/><xsl:strip-space elements="p:item"/>',
+        attributes=' xmlns:p="urn:main"',
+    )
+
+    effective = _effective(tmp_path, xml)
+
+    assert effective.strip_space[0].namespaces["p"] == "urn:main"
+    assert effective.preserve_space[0].namespaces["p"] == "urn:imported"
+
+
+def test_space_rule_freezes_plain_namespace_mapping() -> None:
+    from pyxsd.xslt.compiler.static import SpaceRule
+
+    rule = SpaceRule(
+        elements=("p:item",),
+        namespaces={"p": DOC_NS},
+        preserve=False,
+        module=None,
+        base_uri=None,
+    )
+
+    assert rule.namespaces["p"] == DOC_NS
+    from types import MappingProxyType
+
+    rule = SpaceRule(
+        elements=(),
+        namespaces=MappingProxyType({}),
+        preserve=True,
+        module=None,
+        base_uri=None,
+    )
+    assert rule.namespaces == {}
+
+
+def test_non_global_invalid_static_flag_reports_xtse0020(tmp_path: Path) -> None:
+    xml = _stylesheet(
+        '<xsl:template name="t"><xsl:param name="p" static="YES" select="1"/></xsl:template>'
+    )
+
+    with pytest.raises(XsltStaticError) as caught:
+        _effective(tmp_path, xml)
+
+    assert caught.value.code == "XTSE0020"
+
+
+def test_non_global_static_no_is_accepted(tmp_path: Path) -> None:
+    xml = _stylesheet('<xsl:template name="t"><xsl:param name="p" static="no"/></xsl:template>')
+
+    assert _effective(tmp_path, xml).find("t") is not None
+
+
+def test_required_on_static_variable_is_xtse0090(tmp_path: Path) -> None:
+    xml = _stylesheet('<xsl:variable name="v" static="yes" select="1" required="yes"/>')
+
+    with pytest.raises(XsltStaticError) as caught:
+        _effective(tmp_path, xml)
+
+    assert caught.value.code == "XTSE0090"
+
+
+def test_invalid_required_value_is_xtse0020(tmp_path: Path) -> None:
+    xml = _stylesheet('<xsl:param name="p" static="yes" required="maybe"/>')
+
+    with pytest.raises(XsltStaticError) as caught:
+        _effective(tmp_path, xml)
+
+    assert caught.value.code == "XTSE0020"
+
+
+def test_required_static_parameter_accepts_external_value(tmp_path: Path) -> None:
+    xml = _stylesheet(
+        '<xsl:param name="p" static="yes" required="yes"/>'
+        '<xsl:template name="t" use-when="$p = \'supplied\'"/>'
+    )
+
+    effective = _effective(tmp_path, xml, {"p": "supplied"})
+
+    assert effective.find("t") is not None
+
+
+def test_static_variable_without_select_is_xtse0010(tmp_path: Path) -> None:
+    xml = _stylesheet('<xsl:variable name="v" static="yes"/>')
+
+    with pytest.raises(XsltStaticError) as caught:
+        _effective(tmp_path, xml)
+
+    assert caught.value.code == "XTSE0010"

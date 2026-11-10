@@ -36,6 +36,7 @@ from pyxsd.resource_policy import (
 )
 from pyxsd.resource_refs import MEMORY_SOURCE, classify_resource, require_local_reference
 from pyxsd.source_spans import SourceIndex
+from pyxsd.xdm.document import CaptureSource
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 from pyxsd.xslt.errors import XsltStaticError
@@ -76,10 +77,19 @@ def _conditional(element: XdmNode) -> bool:
 
 
 def _resolve_reference(href: str, base_uri: str | None) -> str:
-    """Resolve one include/import href against the containing element base."""
+    """Resolve one include/import href without laundering an explicit URI.
+
+    A relative reference is resolved against the containing module's base: a
+    local module therefore keeps ordinary local-file include behavior.  An
+    authored absolute URI, including an explicit ``file:`` URI, is preserved
+    so the resource policy decides whether it may be read; it is never
+    silently reinterpreted as an ungated local path.
+    """
     target = href.strip()
     if not target:
         raise ResourcePolicyError("a stylesheet reference must not be empty")
+    if classify_resource(target).kind == "remote":
+        return urlunsplit(urlsplit(target)._replace(fragment=""))
     joined = urljoin(base_uri, target) if base_uri else target
     parts = urlsplit(joined)
     if parts.scheme == "file":
@@ -260,20 +270,23 @@ class ModuleLoader:
         return f"{MEMORY_SOURCE}:{self._anonymous}"
 
     def _read(self, source: Any, *, source_id: str) -> tuple[bytes, str]:
+        max_bytes = None if self._xml_limits is None else self._xml_limits.max_bytes
         if self.resource_policy is not None:
             target = os.fspath(source) if isinstance(source, (str, os.PathLike)) else source
             data = self.resource_policy.read(target, base=None, purpose="schema")
             if not isinstance(data, ResourceData):  # pragma: no cover - policy contract
                 raise TypeError("a resource policy read must return ResourceData")
-            return data.content, data.source_id or source_id
+            captured = CaptureSource.from_content(
+                data.content,
+                source_name=data.source_id or source_id,
+            )
+            return captured.data, captured.source_name
         if isinstance(source, (str, os.PathLike)):
             path = require_local_reference(os.fspath(source), purpose="schema")
-            with open(path, "rb") as stream:
-                return stream.read(), path
-        content = source.read()
-        if isinstance(content, str):
-            return content.encode("utf-8"), source_id
-        return bytes(content), source_id
+            captured = CaptureSource.from_input(path, max_bytes=max_bytes)
+            return captured.data, path
+        captured = CaptureSource.from_input(source, max_bytes=max_bytes)
+        return captured.data, captured.source_name or source_id
 
     def _load_module(
         self,
