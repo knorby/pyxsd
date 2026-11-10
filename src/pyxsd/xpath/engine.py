@@ -142,7 +142,10 @@ class _XdmElementAdapter(ElementNode, _NodeAdapterMixin):
     __slots__ = ("_xdm",)
 
     def __init__(
-        self, xdm: XdmNode, parent: DocumentNode | ElementNode, factory: _ValueBridge
+        self,
+        xdm: XdmNode,
+        parent: DocumentNode | ElementNode | None,
+        factory: _ValueBridge,
     ) -> None:
         self._xdm = xdm
         self.name = xdm.name
@@ -150,7 +153,15 @@ class _XdmElementAdapter(ElementNode, _NodeAdapterMixin):
         self.parent = parent
         self.position = xdm.document_order
         self.children = []
-        self.tree = parent.tree
+        self.tree = (
+            parent.tree
+            if parent is not None
+            else XPathNodeTree(
+                self,
+                uri=xdm.document_uri,
+                namespaces=dict(xdm.in_scope_namespaces),
+            )
+        )
         self.xsd_type = None
         self.xsd_element = None
         self._nsmap = dict(xdm.in_scope_namespaces)
@@ -191,7 +202,7 @@ class _XdmElementAdapter(ElementNode, _NodeAdapterMixin):
 class _XdmAttributeAdapter(AttributeNode, _NodeAdapterMixin):
     __slots__ = ("_xdm",)
 
-    def __init__(self, xdm: XdmNode, parent: ElementNode, factory: _ValueBridge) -> None:
+    def __init__(self, xdm: XdmNode, parent: ElementNode | None, factory: _ValueBridge) -> None:
         del factory
         self._xdm = xdm
         self.name = xdm.name
@@ -221,12 +232,14 @@ class _XdmAttributeAdapter(AttributeNode, _NodeAdapterMixin):
 class _XdmTextAdapter(TextNode, _NodeAdapterMixin):
     __slots__ = ("_xdm",)
 
-    def __init__(self, xdm: XdmNode, parent: ElementNode, factory: _ValueBridge) -> None:
+    def __init__(
+        self, xdm: XdmNode, parent: DocumentNode | ElementNode | None, factory: _ValueBridge
+    ) -> None:
         del factory
         self._xdm = xdm
         self.name = None
         self.value = xdm.string_value
-        self.parent = parent
+        self.parent = cast(ElementNode | None, parent)
         self.position = xdm.document_order
 
 
@@ -234,7 +247,10 @@ class _XdmCommentAdapter(CommentNode, _NodeAdapterMixin):
     __slots__ = ("_xdm",)
 
     def __init__(
-        self, xdm: XdmNode, parent: DocumentNode | ElementNode, factory: _ValueBridge
+        self,
+        xdm: XdmNode,
+        parent: DocumentNode | ElementNode | None,
+        factory: _ValueBridge,
     ) -> None:
         del factory
         self._xdm = xdm
@@ -246,7 +262,10 @@ class _XdmProcessingInstructionAdapter(ProcessingInstructionNode, _NodeAdapterMi
     __slots__ = ("_xdm",)
 
     def __init__(
-        self, xdm: XdmNode, parent: DocumentNode | ElementNode, factory: _ValueBridge
+        self,
+        xdm: XdmNode,
+        parent: DocumentNode | ElementNode | None,
+        factory: _ValueBridge,
     ) -> None:
         del factory
         self._xdm = xdm
@@ -371,9 +390,7 @@ class _ValueBridge:
         if parent is None:
             if node.kind is NodeKind.ELEMENT:
                 return self.adapt_node(node.document)
-            raise ValueError(  # pragma: no cover - other nodes share a parent
-                f"a {node.kind.value} node requires a parent adapter"
-            )
+            raise ValueError(f"a {node.kind.value} node requires a parent adapter")
         if node.kind is NodeKind.ELEMENT:
             adapter: Any = _XdmElementAdapter(node, parent, self)
         elif node.kind is NodeKind.ATTRIBUTE:
@@ -391,12 +408,30 @@ class _ValueBridge:
         self._adapters[id(node)] = adapter
         return adapter
 
+    def _adapt_rootless_node(self, node: XdmNode) -> Any:
+        """Adapt a parentless node used as an expression focus or value."""
+        if node.kind is NodeKind.ELEMENT:
+            return _XdmElementAdapter(node, None, self)
+        if node.kind is NodeKind.ATTRIBUTE:
+            return _XdmAttributeAdapter(node, None, self)
+        if node.kind is NodeKind.TEXT:
+            return _XdmTextAdapter(node, None, self)
+        if node.kind is NodeKind.COMMENT:
+            return _XdmCommentAdapter(node, None, self)
+        if node.kind is NodeKind.PROCESSING_INSTRUCTION:
+            return _XdmProcessingInstructionAdapter(node, None, self)
+        raise ValueError(f"a detached {node.kind.value} node has no parent")
+
     def adapt_item(self, item: XdmItem) -> Any:
         if isinstance(item, XdmNode):
             if item.kind is NodeKind.DOCUMENT:
                 return self.adapt_document(cast(XdmDocument, item))
-            if item.parent is None:  # pragma: no cover - XDM nodes share a document
-                raise ValueError(f"a detached {item.kind.value} node has no parent")
+            if item.parent is None:
+                adapter = self._adapters.get(id(item))
+                if adapter is None:
+                    adapter = self._adapt_rootless_node(item)
+                    self._adapters[id(item)] = adapter
+                return adapter
             self.adapt_document(item.document)
             adapter = self._adapters.get(id(item))
             assert adapter is not None
