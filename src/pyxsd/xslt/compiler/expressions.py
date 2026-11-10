@@ -141,7 +141,6 @@ class ItemType:
     kind: ItemKind
     name: str | None = None
     lexical: str | None = None
-    namespace_uri: str | None = None
     type_name: str | None = None
     type_lexical: str | None = None
     nillable: bool = False
@@ -189,10 +188,10 @@ class ItemType:
             target = self.target if self.target_is_name else _quote_literal(self.target)
             return f"processing-instruction({target})"
         if kind in ("element", "attribute"):
-            if self.wildcard:
-                name = self.lexical or "*"
-            elif self.name is not None:
+            if self.name is not None:
                 name = self.lexical or self.name
+            elif self.wildcard:
+                name = "*"
             else:
                 name = ""
             if self.type_name is not None:
@@ -255,7 +254,7 @@ def _quote_literal(value: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class _Token:
-    kind: Literal["name", "qname", "wildcard", "string", "punct", "eof"]
+    kind: Literal["name", "qname", "string", "punct", "eof"]
     value: str
     offset: int
 
@@ -290,17 +289,7 @@ class _SequenceTypeCompiler:
             if source.startswith("(:", index):
                 index = self._skip_comment(index)
                 continue
-            if character == "*":
-                if index + 1 < length and source[index + 1] == ":":
-                    local = _NCNAME.match(source, index + 2)
-                    if local is not None:
-                        tokens.append(_Token("wildcard", source[index : local.end()], index))
-                        index = local.end()
-                        continue
-                tokens.append(_Token("punct", "*", index))
-                index += 1
-                continue
-            if character in "(),?+":
+            if character in "(),?*+":
                 tokens.append(_Token("punct", character, index))
                 index += 1
                 continue
@@ -315,19 +304,13 @@ class _SequenceTypeCompiler:
             match = _NCNAME.match(source, index)
             if match is not None:
                 end = match.end()
-                if end < length and source[end] == ":":
-                    if end + 1 < length and source[end + 1] == "*":
-                        tokens.append(_Token("wildcard", source[index : end + 2], index))
-                        index = end + 2
-                        continue
-                    if _NAME_START.match(source, end + 1):
-                        local = _NCNAME.match(source, end + 1)
-                        assert local is not None
-                        end = local.end()
-                        tokens.append(_Token("qname", source[index:end], index))
-                        index = end
-                        continue
-                tokens.append(_Token("name", source[index:end], index))
+                if end < length and source[end] == ":" and _NAME_START.match(source, end + 1):
+                    local = _NCNAME.match(source, end + 1)
+                    assert local is not None
+                    end = local.end()
+                    tokens.append(_Token("qname", source[index:end], index))
+                else:
+                    tokens.append(_Token("name", source[index:end], index))
                 index = end
                 continue
             self._fail("XPST0003", f"unexpected character {character!r} at offset {index}")
@@ -373,8 +356,6 @@ class _SequenceTypeCompiler:
         close = self.source.find("}", start + 2)
         if close < 0:
             self._fail("XPST0003", "unterminated EQName in sequence type")
-        if close + 1 < len(self.source) and self.source[close + 1] == "*":
-            return _Token("wildcard", self.source[start : close + 2], start), close + 2
         local = _NCNAME.match(self.source, close + 1)
         if local is None:
             self._fail("XPST0003", "an EQName requires a local name")
@@ -548,7 +529,7 @@ class _SequenceTypeCompiler:
         if self._is_punct(")"):
             self._next()
             return ItemType("element")
-        name, lexical, wildcard, namespace_uri = self._name_or_wildcard(element=True)
+        name, lexical, wildcard = self._name_or_wildcard(element=True)
         type_name: str | None = None
         type_lexical: str | None = None
         nillable = False
@@ -565,7 +546,6 @@ class _SequenceTypeCompiler:
             "element",
             name=name,
             lexical=lexical,
-            namespace_uri=namespace_uri,
             type_name=type_name,
             type_lexical=type_lexical,
             nillable=nillable,
@@ -578,7 +558,7 @@ class _SequenceTypeCompiler:
         if self._is_punct(")"):
             self._next()
             return ItemType("attribute")
-        name, lexical, wildcard, namespace_uri = self._name_or_wildcard(element=False)
+        name, lexical, wildcard = self._name_or_wildcard(element=False)
         type_name: str | None = None
         type_lexical: str | None = None
         if self._is_punct(","):
@@ -591,7 +571,6 @@ class _SequenceTypeCompiler:
             "attribute",
             name=name,
             lexical=lexical,
-            namespace_uri=namespace_uri,
             type_name=type_name,
             type_lexical=type_lexical,
             wildcard=wildcard,
@@ -701,17 +680,11 @@ class _SequenceTypeCompiler:
         self._validate_type(name, atomic=True)
         return ItemType("atomic", name=name, lexical=lexical)
 
-    def _name_or_wildcard(
-        self, *, element: bool
-    ) -> tuple[str | None, str | None, bool, str | None]:
+    def _name_or_wildcard(self, *, element: bool) -> tuple[str | None, str | None, bool]:
         if self._is_punct("*"):
             self._next()
-            return None, None, True, None
+            return None, None, True
         token = self._peek()
-        if token.kind == "wildcard":
-            self._next()
-            name, namespace_uri = self._expand_wildcard(token.value)
-            return name, token.value, True, namespace_uri
         if token.kind not in ("name", "qname"):
             self._fail(
                 "XPST0003",
@@ -719,24 +692,7 @@ class _SequenceTypeCompiler:
             )
         self._next()
         name, lexical = self._expand_qname(token.value, kind="element" if element else "attribute")
-        return name, lexical, False, None
-
-    def _expand_wildcard(self, raw: str) -> tuple[str | None, str | None]:
-        if raw.startswith("Q{"):
-            self._require_xpath("3.0", "EQNames")
-            close = raw.find("}")
-            eqname_uri = raw[2:close]
-            return None, eqname_uri
-        if raw.startswith("*:"):
-            return raw[2:], None
-        prefix, _, _ = raw.partition(":")
-        uri = self.context.namespaces.get(prefix)
-        if uri is None:
-            self._fail(
-                "XPST0081",
-                f"the namespace prefix {prefix!r} is not bound in the static context",
-            )
-        return None, uri
+        return name, lexical, False
 
     def _type_name(self) -> tuple[str, str]:
         token = self._peek()

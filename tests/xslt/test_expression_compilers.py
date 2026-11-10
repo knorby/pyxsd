@@ -308,10 +308,6 @@ def test_sequence_type_element_and_attribute_tests(tmp_path: Path) -> None:
     cases = {
         "element()": "element()",
         "element(*)": "element(*)",
-        "element(doc:*)": "element(doc:*)",
-        "element(*:item)": "element(*:item)",
-        "element(Q{urn:example}*)": "element(Q{urn:example}*)",
-        "element(Q{}*)": "element(Q{}*)",
         "element(doc:item)": "element(doc:item)",
         "element(item)": "element(item)",
         "element(*, xs:untyped)": "element(*, xs:untyped)",
@@ -320,9 +316,6 @@ def test_sequence_type_element_and_attribute_tests(tmp_path: Path) -> None:
         "element(doc:item, xs:untyped)?": "element(doc:item, xs:untyped)?",
         "attribute()": "attribute()",
         "attribute(*)": "attribute(*)",
-        "attribute(doc:*)": "attribute(doc:*)",
-        "attribute(*:code)": "attribute(*:code)",
-        "attribute(Q{urn:example}*)": "attribute(Q{urn:example}*)",
         "attribute(doc:code)": "attribute(doc:code)",
         "attribute(code)": "attribute(code)",
         "attribute(doc:code, xs:int)": "attribute(doc:code, xs:int)",
@@ -344,19 +337,17 @@ def test_sequence_type_element_and_attribute_tests(tmp_path: Path) -> None:
     assert defaulted_attribute is not None
     assert defaulted_attribute.name == "code"
 
-    namespace_wildcard = compile_sequence_type("element(doc:*)", context).item_type
-    assert namespace_wildcard is not None
-    assert namespace_wildcard.wildcard is True
-    assert namespace_wildcard.name is None
-    assert namespace_wildcard.namespace_uri == DOC_NS
-    local_wildcard = compile_sequence_type("element(*:item)", context).item_type
-    assert local_wildcard is not None
-    assert local_wildcard.wildcard is True
-    assert local_wildcard.name == "item"
-    assert local_wildcard.namespace_uri is None
-    eqname_wildcard = compile_sequence_type("element(Q{urn:example}*)", context).item_type
-    assert eqname_wildcard is not None
-    assert eqname_wildcard.namespace_uri == "urn:example"
+    for source in (
+        "element(doc:*)",
+        "element(*:item)",
+        "attribute(*:code)",
+        "element(Q{urn:example}*)",
+        "attribute(Q{urn:example}*)",
+        "element(Q{}*)",
+    ):
+        with pytest.raises(XsltStaticError) as caught:
+            compile_sequence_type(source, context)
+        assert _code(caught.value) == "XPST0003"
 
     for source in (
         "attribute(doc:code, xs:anyType)",
@@ -367,9 +358,6 @@ def test_sequence_type_element_and_attribute_tests(tmp_path: Path) -> None:
         with pytest.raises(XsltStaticError) as caught:
             compile_sequence_type(source, context)
         assert _code(caught.value) in {"XPST0003", "XPST0051"}
-    with pytest.raises(XsltStaticError) as caught:
-        compile_sequence_type("element(nope:*)", context)
-    assert _code(caught.value) == "XPST0081"
 
 
 def test_sequence_type_document_and_schema_tests(tmp_path: Path) -> None:
@@ -491,7 +479,6 @@ def test_sequence_type_version_gating(tmp_path: Path) -> None:
         "namespace-node()",
         "(item())",
         "Q{urn:example}item",
-        "element(Q{urn:example}*)",
     ):
         with pytest.raises(XsltStaticError) as caught:
             compile_sequence_type(source, legacy)
