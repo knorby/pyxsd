@@ -37,6 +37,7 @@ __all__ = [
     "SequenceInstruction",
     "TemporaryTreeInstruction",
     "TextInstruction",
+    "construct_attribute",
     "construct_instruction",
     "construct_into",
     "construct_sequence",
@@ -367,6 +368,31 @@ def construct_instruction(instruction: ConstructionInstruction) -> XdmSequence:
             schema_pool=instruction.schema_pool,
         )
     raise TypeError(f"unknown construction instruction {type(instruction).__name__}")
+
+
+def construct_attribute(
+    name: str,
+    value: str,
+    *,
+    prefix: str | None = None,
+    annotation: XdmAnnotation | None = None,
+) -> XdmSequence:
+    """Construct one parentless attribute for a dynamic ``xsl:attribute``.
+
+    Attribute sets and dynamic attribute instructions both evaluate to
+    attribute nodes; the caller appends the returned sequence to an element
+    through the complex-content rules, where duplicate names keep the last
+    value.
+    """
+    builder = ResultBuilder.temporary()
+    return (
+        builder.attribute_node(
+            name,
+            value,
+            prefix=prefix,
+            annotation=annotation,
+        ),
+    )
 
 
 def construct_sequence(instructions: Iterable[ConstructionInstruction]) -> XdmSequence:

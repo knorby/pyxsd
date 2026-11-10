@@ -667,6 +667,7 @@ class XPathEngine:
         holder = parser._pyxsd_bridge_holder
         assert holder is not None
         holder.bridge = bridge
+        _install_function_overrides(parser, holder, environment)
 
         if compiled.continuation_plan is not None:
             variables = _continuation_variables(environment, bridge)
@@ -880,6 +881,59 @@ def _register_key_function(parser: Any, holder: _BridgeHolder) -> None:
         sequence_types=("xs:string", "xs:anyAtomicType*", "element()*"),
     )
     token_class.nargs = 2
+
+
+def _install_function_overrides(
+    parser: Any,
+    holder: _BridgeHolder,
+    environment: ExpressionEnvironment,
+) -> None:
+    """Replace built-in callbacks with invocation-local XSLT-aware behavior.
+
+    Each override target receives the context item (or ``None``) and a tuple of
+    XDM argument sequences.  Installing the override on this parser instance
+    only avoids a process-global callback slot, so concurrent evaluations of the
+    same compiled expression stay independent.
+    """
+    for name, target in environment.function_overrides.items():
+        symbol = name.rpartition("}")[2] if name.startswith("{") else name.rpartition(":")[2]
+        base = parser.symbol_table.get(symbol)
+        if base is None:
+            # XPath 2.0 has no generate-id(); a stylesheet that calls it fails
+            # at compile time, so there is nothing to override here.
+            continue
+        class_name = f"_PyxsdOverride_{symbol.replace('-', '_')}"
+
+        def evaluate(
+            self: Any,
+            context: Any = None,
+            _base: Any = base,
+            _target: Any = target,
+        ) -> Any:
+            bridge = holder.bridge
+            if bridge is None:  # pragma: no cover - the bridge is installed first
+                raise RuntimeError("a function override has no evaluation context")
+            active = context if context is not None else self.context
+            arguments: list[Any] = []
+            for index in range(len(self)):
+                token = self._items[index]
+                arguments.append(bridge.to_xdm_sequence(list(token.select(active))))
+            item = None
+            raw_item = getattr(active, "item", None) if active is not None else None
+            if raw_item is not None:
+                item = next(iter(bridge.to_xdm_sequence(raw_item)), None)
+            result = _target(item, tuple(arguments))
+            return bridge.sequence_to_elementpath(as_xdm(result))
+
+        parser._register(
+            symbol,
+            class_name,
+            bases=(base,),
+            label=base.label,
+            nargs=base.nargs,
+            sequence_types=base.sequence_types,
+            evaluate=evaluate,
+        )
 
 
 class _BridgeHolder:

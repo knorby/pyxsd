@@ -21,6 +21,7 @@ from decimal import Decimal
 from typing import Any
 
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmItem, XdmSequence, as_xdm
+from pyxsd.xdm.nodes import XdmDocument, XdmNode
 from pyxsd.xpath import continuation
 from pyxsd.xpath.continuation import CompiledExpression as ContinuationPlan
 from pyxsd.xpath.continuation import ContinuationMachine, HostFunction, XPathClosure
@@ -114,11 +115,19 @@ class Transformation:
         self.budget = ExecutionBudget(self.limits)
         self.scheduler = Scheduler(self.limits, budget=self.budget)
         self._xpath_plans: dict[int, ContinuationPlan | None] = {}
-        self._function_table: dict[tuple[str, int], HostFunction] | None = None
-        self._fallback_function_table: dict[str, Any] | None = None
+        self._function_tables: dict[str | None, dict[tuple[str, int], HostFunction]] = {}
+        self._fallback_function_tables: dict[str | None, dict[str, Any]] = {}
         self.last_error: tuple[BaseException, tuple[FrameDiagnostic, ...]] | None = None
         self.xpath_machines = 0
         self.max_python_depth = 0
+        # Every cache below belongs to exactly one invocation.  Including the
+        # item itself keeps a generated identity unique even if Python reuses
+        # an earlier object's address after garbage collection.
+        self.generated_ids: dict[int, tuple[XdmItem, str]] = {}
+        self.generated_id_count = 0
+        self.key_indexes: dict[tuple[int, str | None, str], Mapping[Any, tuple[XdmNode, ...]]] = {}
+        self.key_index_documents: dict[int, XdmDocument] = {}
+        self.evaluating_attribute_sets: list[tuple[str | None, str | None]] = []
 
     def _read_output_attributes(self) -> Mapping[str, str]:
         if self.package is None:
@@ -323,13 +332,24 @@ class Transformation:
             closure=closure,
         )
 
-    def stylesheet_functions(self) -> Mapping[tuple[str, int], HostFunction]:
-        """Scheduler-aware host items for every visible stylesheet function."""
-        if self._function_table is not None:
-            return self._function_table
+    def stylesheet_functions(
+        self,
+        package_name: str | None = None,
+    ) -> Mapping[tuple[str, int], HostFunction]:
+        """Scheduler-aware host items for every visible stylesheet function.
+
+        One table belongs to each package scope.  A private function in a
+        library package is callable from that package's own templates while
+        remaining invisible to the principal package; selecting a table by the
+        current component's package preserves that static decision at run time.
+        """
+        cached = self._function_tables.get(package_name)
+        if cached is not None:
+            return cached
         table: dict[tuple[str, int], HostFunction] = {}
-        if self.package is not None:
-            for component in self.package.components.values():
+        package = self._package_for(package_name)
+        if package is not None:
+            for component in package.components.values():
                 name = component.name
                 arity = component.arity
                 if (
@@ -346,10 +366,10 @@ class Transformation:
                     arity=arity,
                     suspend=True,
                 )
-        self._function_table = table
+        self._function_tables[package_name] = table
         return table
 
-    def fallback_functions(self) -> Mapping[str, Any]:
+    def fallback_functions(self, package_name: str | None = None) -> Mapping[str, Any]:
         """Host callables for the full evaluator when scheduling is unavailable.
 
         The standalone engine needs a target for every declared stylesheet
@@ -357,11 +377,13 @@ class Transformation:
         they are used only when the scheduler path has already declined an
         expression (for example because a node-valued variable is referenced).
         """
-        if self._fallback_function_table is not None:
-            return self._fallback_function_table
+        cached = self._fallback_function_tables.get(package_name)
+        if cached is not None:
+            return cached
         components: dict[str, list[Any]] = {}
-        if self.package is not None:
-            for component in self.package.components.values():
+        package = self._package_for(package_name)
+        if package is not None:
+            for component in package.components.values():
                 name = component.name
                 if (
                     component.kind != "function"
@@ -371,11 +393,18 @@ class Transformation:
                 ):
                     continue
                 components.setdefault(name, []).append(component)
-        self._fallback_function_table = {
+        table = {
             name: self._component_dispatcher(name, overloads)
             for name, overloads in components.items()
         }
-        return self._fallback_function_table
+        self._fallback_function_tables[package_name] = table
+        return table
+
+    def _package_for(self, package_name: str | None) -> Any:
+        stylesheet = self.stylesheet
+        if stylesheet is None:
+            return None
+        return stylesheet._packages.get(package_name)
 
     def _component_dispatcher(self, name: str, components: list[Any]) -> Any:
         by_arity = {
@@ -411,3 +440,20 @@ class Transformation:
     def note_machine(self, machine: ContinuationMachine) -> None:
         """Record the deepest Python frame a scheduled machine reached."""
         self.max_python_depth = max(self.max_python_depth, machine.max_python_depth)
+
+    # -- invocation-local node identities ----------------------------------
+
+    def generated_id(self, item: XdmItem) -> str:
+        """Return a stable, unique identifier for *item* in this invocation.
+
+        The cache retains the item so Python cannot recycle an address into a
+        duplicate identifier.  Two invocations never share values because the
+        map and counter live on this object.
+        """
+        cached = self.generated_ids.get(id(item))
+        if cached is not None and cached[0] is item:
+            return cached[1]
+        self.generated_id_count += 1
+        identifier = f"ID{self.generated_id_count}"
+        self.generated_ids[id(item)] = (item, identifier)
+        return identifier

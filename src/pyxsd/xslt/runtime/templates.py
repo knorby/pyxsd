@@ -5,7 +5,9 @@ normative alternatives, orders candidates by import precedence, priority, and
 declaration order, and applies cheap kind/name filters before asking a
 :class:`~pyxsd.xslt.compiler.patterns.PatternMatcher` to evaluate a pattern.
 Package visibility, modes, ``on-multiple-match``, ``apply-imports``, and
-``next-match`` belong to the runtime layer that consumes this index.
+``next-match`` are expressed by :class:`RuleDispatcher`, which composes one
+index per package layer using only the compiled component graph.  Runtime
+dispatch never changes package visibility or patches a component.
 """
 
 from __future__ import annotations
@@ -23,8 +25,9 @@ from pyxsd.xslt.compiler.patterns import (
     PatternMatcher,
     PatternStatistics,
 )
+from pyxsd.xslt.errors import XsltDynamicError
 
-__all__ = ["PatternIndex", "TemplateRule"]
+__all__ = ["PatternIndex", "RuleDispatcher", "RuleMatch", "TemplateRule"]
 
 
 def _precedence_compare(left: tuple[int, ...], right: tuple[int, ...]) -> int:
@@ -100,6 +103,153 @@ class _IndexedRule:
     alternative_index: int
     priority: Decimal
     alternative_order: int
+
+
+@dataclass(frozen=True, slots=True)
+class RuleMatch:
+    """One matching template-rule alternative in conflict-resolution order.
+
+    ``layer_index`` identifies the package layer that contributed the rule;
+    ``priority`` is the operative priority of this alternative (explicit when
+    present, otherwise the pattern alternative's normative default).
+    """
+
+    rule: TemplateRule
+    alternative_index: int
+    priority: Decimal
+    layer_index: int = -1
+
+
+class RuleDispatcher:
+    """Package-aware selection, conflict resolution, and rule continuations.
+
+    The dispatcher owns one :class:`PatternIndex` per mode layer, in
+    precedence order.  A rule in an earlier layer always outranks one in a
+    later layer; within a layer the index applies import precedence, priority,
+    and declaration order.  The compiled component graph is fixed: selection
+    exposes no override hook and never mutates a rule or package.
+    """
+
+    def __init__(
+        self,
+        layers: Iterable[tuple[int, PatternIndex]],
+        *,
+        on_multiple_match: str = "use-last",
+    ) -> None:
+        if on_multiple_match not in ("use-last", "fail"):
+            raise ValueError(f"unknown on-multiple-match value {on_multiple_match!r}")
+        self.on_multiple_match = on_multiple_match
+        self.layers = tuple((layer_index, index) for layer_index, index in layers)
+        for layer_index, index in self.layers:
+            if isinstance(layer_index, bool) or not isinstance(layer_index, int):
+                raise TypeError("a rule layer index must be an integer")
+            if not isinstance(index, PatternIndex):
+                raise TypeError("a rule layer requires a PatternIndex")
+
+    def matches(
+        self,
+        item: XdmItem,
+        mode: str | None,
+        environment: ExpressionEnvironment,
+    ) -> tuple[RuleMatch, ...]:
+        """Return every candidate in full conflict-resolution order."""
+        matches: list[RuleMatch] = []
+        for layer_index, index in self.layers:
+            for match in index.matching(mode, layer_index, item, environment):
+                matches.append(
+                    RuleMatch(
+                        rule=match.rule,
+                        alternative_index=match.alternative_index,
+                        priority=match.priority,
+                        layer_index=layer_index,
+                    )
+                )
+        return tuple(matches)
+
+    def select(
+        self,
+        item: XdmItem,
+        mode: str | None,
+        environment: ExpressionEnvironment,
+    ) -> RuleMatch | None:
+        """Return the best candidate, applying ``on-multiple-match``."""
+        for layer_index, index in self.layers:
+            matches = tuple(
+                RuleMatch(
+                    rule=match.rule,
+                    alternative_index=match.alternative_index,
+                    priority=match.priority,
+                    layer_index=layer_index,
+                )
+                for match in index.matching(mode, layer_index, item, environment)
+            )
+            if not matches:
+                continue
+            selected = matches[0]
+            if self.on_multiple_match == "fail":
+                tied = {
+                    id(match.rule)
+                    for match in matches
+                    if match.rule.precedence == selected.rule.precedence
+                    and match.priority == selected.priority
+                }
+                if len(tied) > 1:
+                    raise XsltDynamicError(
+                        "more than one template rule matches with equal precedence and priority",
+                        code="XTDE0540",
+                    )
+            return selected
+        return None
+
+    def next_match(
+        self,
+        item: XdmItem,
+        current: RuleMatch,
+        mode: str | None,
+        environment: ExpressionEnvironment,
+    ) -> RuleMatch | None:
+        """Return the next candidate after *current* in conflict order."""
+        matches = self.matches(item, mode, environment)
+        position = _position(matches, current)
+        if position + 1 >= len(matches):
+            return None
+        return matches[position + 1]
+
+    def apply_imports(
+        self,
+        item: XdmItem,
+        current: RuleMatch,
+        mode: str | None,
+        environment: ExpressionEnvironment,
+    ) -> RuleMatch | None:
+        """Return the best candidate below the current rule's precedence.
+
+        Candidates in a later package layer are always lower precedence.  In
+        the current layer only rules whose import precedence is strictly lower
+        are eligible; equal-precedence rules with lower priority are skipped.
+        """
+        matches = self.matches(item, mode, environment)
+        position = _position(matches, current)
+        for match in matches[position + 1 :]:
+            if match.layer_index > current.layer_index:
+                return match
+            if _precedence_compare(match.rule.precedence, current.rule.precedence) < 0:
+                return match
+        return None
+
+
+def _position(matches: tuple[RuleMatch, ...], current: RuleMatch) -> int:
+    for position, match in enumerate(matches):
+        if (
+            match.rule is current.rule
+            and match.alternative_index == current.alternative_index
+            and match.layer_index == current.layer_index
+        ):
+            return position
+    raise XsltDynamicError(
+        "the current template rule is not a candidate for this item",
+        code="XTDE0560",
+    )
 
 
 class PatternIndex:
@@ -187,6 +337,40 @@ class PatternIndex:
             if matcher.matches_alternative(entry.alternative_index, item, environment):
                 return entry.rule
         return None
+
+    def matching(
+        self,
+        mode: str | None,
+        package_layer: Hashable | None,
+        item: XdmItem,
+        environment: ExpressionEnvironment,
+    ) -> tuple[RuleMatch, ...]:
+        """Return every matching alternative in conflict-resolution order.
+
+        A union rule with no explicit priority is semantically a set of
+        adjacent template rules, so a matching rule can occur once per
+        alternative.  ``next-match`` needs those entries rather than the
+        deduplicated rule list returned by :meth:`candidates`.
+        """
+        if not isinstance(environment, ExpressionEnvironment):
+            raise TypeError("environment must be an ExpressionEnvironment")
+        matches: list[RuleMatch] = []
+        for entry in self._groups.get((mode, package_layer), ()):
+            alternative = entry.rule.pattern.alternatives[entry.alternative_index]
+            if not alternative.filter.matches(item):
+                self.statistics.candidate_filters += 1
+                continue
+            self.statistics.candidate_tests += 1
+            matcher = self._matchers[id(entry.rule.pattern)]
+            if matcher.matches_alternative(entry.alternative_index, item, environment):
+                matches.append(
+                    RuleMatch(
+                        rule=entry.rule,
+                        alternative_index=entry.alternative_index,
+                        priority=entry.priority,
+                    )
+                )
+        return tuple(matches)
 
     def __len__(self) -> int:
         return len(self.rules)

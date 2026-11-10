@@ -254,6 +254,7 @@ class ExpressionEnvironment:
 
     variables: Mapping[str, Any] = field(default_factory=dict)
     functions: Mapping[str, Any] = field(default_factory=dict)
+    function_overrides: Mapping[str, Any] = field(default_factory=dict)
     key_indexes: Mapping[str, Mapping[Any, Sequence[XdmNode]]] = field(default_factory=dict)
     documents: Mapping[str, XdmDocument] = field(default_factory=dict)
     collections: Mapping[str, Sequence[XdmNode]] = field(default_factory=dict)
@@ -273,6 +274,12 @@ class ExpressionEnvironment:
             _require_name(name, "function")
             if not callable(function) and not isinstance(function, XdmFunction):
                 raise TypeError(f"function {name!r} is not callable")
+
+        overrides = dict(_freeze_mapping(self.function_overrides, "function overrides"))
+        for name, function in overrides.items():
+            _require_name(name, "function override")
+            if not callable(function):
+                raise TypeError(f"function override {name!r} is not callable")
 
         key_indexes: dict[str, Mapping[Any, Sequence[XdmNode]]] = {}
         for name, index in self.key_indexes.items():
@@ -338,6 +345,7 @@ class ExpressionEnvironment:
 
         object.__setattr__(self, "variables", MappingProxyType(variables))
         object.__setattr__(self, "functions", MappingProxyType(functions))
+        object.__setattr__(self, "function_overrides", MappingProxyType(overrides))
         object.__setattr__(self, "key_indexes", MappingProxyType(key_indexes))
         object.__setattr__(self, "documents", MappingProxyType(documents))
         object.__setattr__(self, "collections", MappingProxyType(collections))
