@@ -525,3 +525,79 @@ def test_original_function_and_variable_in_overrides(tmp_path: Path) -> None:
     out, number = element_children(result.principal_tree)
     assert out.string_value == "over:base:x"
     assert number.string_value == "2"
+
+
+def test_key_match_predicate_resolves_lazy_global_before_or_after_use() -> None:
+    plain = stylesheet(
+        """
+        <xsl:variable name="flag" select="true()"/>
+        <xsl:key name="k" match="item[$flag]" use="@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key('k', 'a'))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(plain, b'<doc><item id="a"/></doc>', initial_template="main").principal == (
+        XdmAtomic.integer(1),
+    )
+
+    evaluated_first = stylesheet(
+        """
+        <xsl:variable name="flag" select="true()"/>
+        <xsl:key name="k" match="item[$flag]" use="@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="boolean($flag)"/>
+          <xsl:sequence select="count(key('k', 'a'))"/>
+          <xsl:sequence select="count(key('k', 'a'))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(
+        evaluated_first,
+        b'<doc><item id="a"/></doc>',
+        initial_template="main",
+    ).principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(1),
+    )
+
+
+def test_library_key_match_predicate_uses_library_lazy_global(tmp_path: Path) -> None:
+    library = tmp_path / "library.xsl"
+    library.write_text(
+        _package(
+            "urn:library",
+            """
+            <xsl:variable name="my:flag" select="true()" visibility="private"/>
+            <xsl:key name="my:k" match="item[$my:flag]" use="@id"/>
+            <xsl:template name="my:start" visibility="public">
+              <out><xsl:sequence select="count(key('my:k', 'a'))"/></out>
+            </xsl:template>
+            """,
+        ),
+        encoding="utf-8",
+    )
+    principal = tmp_path / "principal.xsl"
+    principal.write_text(
+        _package(
+            "urn:principal",
+            """
+            <xsl:use-package name="urn:library" package-version="1.0">
+              <xsl:accept component="template" names="my:start" visibility="public"/>
+            </xsl:use-package>
+            <xsl:template name="xsl:initial-template" visibility="public">
+              <xsl:call-template name="my:start"/>
+            </xsl:template>
+            """,
+        ),
+        encoding="utf-8",
+    )
+    compiled = XsltProcessor(resolver=PackageResolver.from_sources(library)).compile(principal)
+    result = compiled.transform(
+        source=b'<doc><item id="a"/></doc>',
+        initial_template="xsl:initial-template",
+        delivery="document",
+    )
+    out = element_children(result.principal_tree)[0]
+    assert out.string_value == "1"

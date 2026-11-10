@@ -2915,14 +2915,21 @@ class _Invocation(Transformation):
         return declaration.properties
 
     def _pattern_environment(self, rule: TemplateRule) -> ExpressionEnvironment:
-        key = id(rule)
+        body = cast(_BodyPlan, rule.template)
+        return self._pattern_environment_for(rule.pattern, body.owner)
+
+    def _pattern_environment_for(
+        self,
+        pattern: CompiledPattern,
+        package_name: str | None,
+    ) -> ExpressionEnvironment:
+        key = id(pattern)
         environment = self._pattern_environments.get(key)
         if environment is None:
-            body = cast(_BodyPlan, rule.template)
             environment = self._environment(
                 {},
-                body.owner,
-                referenced=_pattern_variable_names(rule.pattern),
+                package_name,
+                referenced=_pattern_variable_names(pattern),
             )
             self._pattern_environments[key] = environment
         return environment
@@ -4394,9 +4401,9 @@ class _Invocation(Transformation):
         if cached is not None and self.key_index_documents.get(id(document)) is document:
             return cached
         index: dict[Any, list[XdmNode]] = {}
-        environment = self._environment({}, package_name)
         for definition in definitions:
             matcher = PatternMatcher(definition.match)
+            environment = self._pattern_environment_for(definition.match, definition.owner)
             for node in _document_nodes(document):
                 if not matcher.matches(node, environment):
                     continue
