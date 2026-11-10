@@ -626,15 +626,18 @@ class _Parser:
         union = self._union_expr_p()
         if self._peek().kind != "eof":
             self._fail(f"unexpected token {self._peek().value!r} at offset {self._peek().offset}")
+        flattened: list[IntersectExceptExpr] = []
+        for alternative in union.alternatives:
+            flattened.extend(_flatten_alternative(alternative))
         alternatives: list[PatternAlternative] = []
-        for index, alternative in enumerate(union.alternatives):
+        for index, alternative in enumerate(flattened):
             alternatives.append(
                 PatternAlternative(
                     index=index,
                     priority=_priority_for_intersect_except(alternative),
                     path=alternative,
                     filter=_candidate_filter(alternative),
-                    requires_forward=_contains_postfix(alternative),
+                    requires_forward=_requires_forward(alternative),
                 )
             )
         return tuple(alternatives)
@@ -1006,7 +1009,7 @@ def _rewrite_current(source: str, context: StaticContext, location: IssueLocatio
     for index, token in enumerate(tokens[:-1]):
         if token.kind != "name":
             continue
-        if token.value not in {"current", "fn:current", f"Q{{{FN_NS}}}current"}:
+        if not _is_current_function_name(token.value, context):
             continue
         if index + 1 >= len(tokens) or tokens[index + 1].value != "(":
             continue
@@ -1023,6 +1026,18 @@ def _rewrite_current(source: str, context: StaticContext, location: IssueLocatio
         cursor = end
     pieces.append(source[cursor:])
     return "".join(pieces)
+
+
+def _is_current_function_name(name: str, context: StaticContext) -> bool:
+    if name == "current":
+        return True
+    if name.startswith("Q{"):
+        close = name.find("}")
+        return close >= 0 and name[2:close] == FN_NS and name[close + 1 :] == "current"
+    prefix, separator, local = name.partition(":")
+    if not separator:
+        return False
+    return local == "current" and context.namespaces.get(prefix) == FN_NS
 
 
 def _compile_expression(
@@ -1084,12 +1099,11 @@ def _priority_for_path(path: PathExpr) -> Decimal:
 
 
 def _priority_for_postfix(step: PostfixStep) -> Decimal:
-    if step.predicates:
-        return Decimal("0.5")
-    priorities = [
-        _priority_for_intersect_except(alternative) for alternative in step.union.alternatives
-    ]
-    return max(priorities)
+    # An empty, predicate-free top-level parenthesized union is flattened into
+    # its alternatives by :func:`_flatten_alternative`, so a surviving postfix
+    # step is a genuine selection expression and has the generic priority.
+    del step
+    return Decimal("0.5")
 
 
 def _priority_for_step(step: AxisStep) -> Decimal:
@@ -1134,26 +1148,27 @@ def _candidate_filter(expr: IntersectExceptExpr) -> CandidateFilter:
 
 def _shapes_for_path(path: PathExpr) -> tuple[CandidateShape, ...]:
     if isinstance(path, RelativePath):
-        return _shapes_for_step(path.steps[-1][1])
+        return _shapes_for_step(path.steps[-1][1], top=len(path.steps) == 1)
     if isinstance(path, AbsoluteOnly):
         return (CandidateShape(frozenset({NodeKind.DOCUMENT})),)
     if isinstance(path, (AbsolutePath, DescendantPath)):
-        return _shapes_for_step(path.relative.steps[-1][1])
+        return _shapes_for_step(path.relative.steps[-1][1], top=False)
     return (CandidateShape(_NODE_KINDS),)
 
 
-def _shapes_for_step(step: StepExpr) -> tuple[CandidateShape, ...]:
+def _shapes_for_step(step: StepExpr, *, top: bool) -> tuple[CandidateShape, ...]:
     if isinstance(step, PostfixStep):
         shapes: list[CandidateShape] = []
         for alternative in step.union.alternatives:
             shapes.extend(_shapes_for_path(alternative.first))
         return tuple(shapes)
-    possible = _AXIS_KINDS[step.axis]
+    axis = step.top_axis if top else step.axis
+    possible = _AXIS_KINDS[axis]
     node_test = step.node_test
     if isinstance(node_test, NameTest):
         shapes = [
             CandidateShape(
-                frozenset({_principal_kind_node(step.axis)}),
+                frozenset({_principal_kind_node(axis)}),
                 name=node_test.name,
                 local=node_test.local,
                 namespace=node_test.namespace,
@@ -1197,10 +1212,37 @@ _AXIS_KINDS: dict[str, frozenset[NodeKind]] = {
 }
 
 
-def _contains_postfix(expr: IntersectExceptExpr) -> bool:
-    return _path_contains_postfix(expr.first) or any(
-        _path_contains_postfix(path) for _, path in expr.rest
-    )
+def _flatten_alternative(expr: IntersectExceptExpr) -> tuple[IntersectExceptExpr, ...]:
+    """Strip grouping parentheses and split a top-level union alternative.
+
+    XSLT 3.0 section 6.5 rules 1 and 2 strip a top-level ParenthesizedExprP and
+    then treat each union alternative as an adjacent template rule.  A postfix
+    step with predicates is a genuine selection and is not split.
+    """
+    if expr.rest:
+        return (expr,)
+    path = expr.first
+    if isinstance(path, RelativePath) and len(path.steps) == 1:
+        step = path.steps[0][1]
+        if isinstance(step, PostfixStep) and not step.predicates:
+            flattened: list[IntersectExceptExpr] = []
+            for alternative in step.union.alternatives:
+                flattened.extend(_flatten_alternative(alternative))
+            return tuple(flattened)
+    return (expr,)
+
+
+def _requires_forward(expr: IntersectExceptExpr) -> bool:
+    """Whether only the formal whole-tree plan is safely equivalent.
+
+    ``intersect`` and ``except`` must evaluate both operands in the same
+    ``root(.)//EE`` context, so they use the formal plan rather than the
+    right-to-left parent/ancestor optimization.  Parenthesized postfix steps
+    likewise use the formal plan.
+    """
+    if expr.rest:
+        return True
+    return _path_contains_postfix(expr.first)
 
 
 def _path_contains_postfix(path: PathExpr) -> bool:
@@ -1262,7 +1304,7 @@ class PatternMatcher:
         self.strategy = strategy
         self.statistics = statistics or PatternStatistics()
         self._environment: ExpressionEnvironment | None = None
-        self._matches: dict[tuple[int, XdmItem], bool] = {}
+        self._matches: dict[tuple[int, object], bool] = {}
 
     def matches(self, item: XdmItem, environment: ExpressionEnvironment) -> bool:
         """Whether any alternative of the pattern matches *item*."""
@@ -1282,7 +1324,7 @@ class PatternMatcher:
             raise TypeError("environment must be an ExpressionEnvironment")
         self._select_environment(environment)
         alternative = self.pattern.alternatives[index]
-        key = (index, item)
+        key = (index, _pattern_cache_key(item))
         cached = self._matches.get(key)
         if cached is not None:
             self.statistics.cache_hits += 1
@@ -1311,7 +1353,7 @@ class PatternMatcher:
         assert path is not None
         if self.strategy == "forward" or alternative.requires_forward:
             return self._forward_match(alternative, path, item, environment)
-        return self._reverse_intersect_except(path, item, environment)
+        return self._reverse_path(path.first, item, environment)
 
     def _select_environment(self, environment: ExpressionEnvironment) -> None:
         if environment is self._environment:
@@ -1346,22 +1388,6 @@ class PatternMatcher:
         return item in nodes
 
     # -- optimized right-to-left plan -----------------------------------------
-
-    def _reverse_intersect_except(
-        self,
-        expr: IntersectExceptExpr,
-        item: XdmNode,
-        environment: ExpressionEnvironment,
-    ) -> bool:
-        if not self._reverse_path(expr.first, item, environment):
-            return False
-        for operator, path in expr.rest:
-            matched = self._reverse_path(path, item, environment)
-            if operator == "intersect" and not matched:
-                return False
-            if operator == "except" and matched:
-                return False
-        return True
 
     def _reverse_path(
         self, path: PathExpr, item: XdmNode, environment: ExpressionEnvironment
@@ -2070,11 +2096,11 @@ def _key_nodes(
         for key in keys:
             for node in index.get(key, ()):
                 nodes[node] = None
-    top: XdmNode | None = None
+    ordered = sorted(nodes, key=lambda node: (id(node.root), node.document_order))
     if len(arguments) > 2:
         top = _singleton_node(arguments[2])
-    ordered = sorted(nodes, key=lambda node: (id(node.root), node.document_order))
-    if top is not None:
+        if top is None:
+            raise TypeError("the third key() argument must be a singleton node")
         ordered = [node for node in ordered if node.root is top.root]
     return tuple(ordered)
 
@@ -2104,6 +2130,19 @@ def _evaluate(
         base_uri=environment.base_uri,
     )
     return XPathEngine(expression.version).evaluate(expression, local, focus=focus)
+
+
+def _pattern_cache_key(item: XdmItem) -> object:
+    """A complete identity key for one candidate item.
+
+    XDM atomic equality is XPath value equality, so ``xs:integer(1)`` and
+    ``xs:decimal("1")`` compare equal.  Predicate patterns are type-sensitive,
+    so the type annotation is part of the key.  Nodes and other items use their
+    identity-based equality.
+    """
+    if isinstance(item, XdmAtomic):
+        return "atomic", item.type_name, item
+    return "node" if isinstance(item, XdmNode) else "item", item
 
 
 def _predicate_true(value: XdmSequence, position: int) -> bool:
@@ -2143,9 +2182,12 @@ def _effective_boolean_value(value: XdmSequence) -> bool:
 def _is_descendant_or_self(node: XdmNode, start: XdmNode) -> bool:
     if node is start:
         return True
-    if node.root is not start.root:
+    # descendant-or-self::node() never reaches attributes or namespaces from a
+    # different context node, and document order alone would accept later
+    # sibling subtrees.  Use the actual ancestor relation.
+    if node.kind in {NodeKind.ATTRIBUTE, NodeKind.NAMESPACE}:
         return False
-    return node.document_order > start.document_order
+    return any(ancestor is start for ancestor in node.ancestors)
 
 
 # ---------------------------------------------------------------------------

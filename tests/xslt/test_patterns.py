@@ -53,6 +53,7 @@ XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 DOC_NS = "urn:example:doc"
 OTHER_NS = "urn:example:other"
+FN_NS = "http://www.w3.org/2005/xpath-functions"
 STRICT = ParseModes.LAX.replace(namespaces="strict")
 
 
@@ -311,13 +312,22 @@ def test_attribute_axis_and_attributes_are_not_children() -> None:
     assert not _matches("attribute(*, xs:string)", root_code)
     assert not _matches("node()", root_code)
     assert not _matches("self::code", root_code)
-    assert _matches("self::attribute(code)", root_code)
+    assert not _matches("self::attribute(code)", root_code)
+    assert not _matches("self::node()", root_code)
 
     parentless = _parentless_attribute("code")
     assert _matches("@code", parentless)
     assert _matches("@attribute()", parentless)
+    assert _matches("self::attribute(code)", parentless)
+    assert _matches("self::node()", parentless)
     assert not _matches("node()", parentless)
     assert not _matches("child::code", parentless)
+
+    namespace = _parentless_namespace()
+    assert not _matches(
+        "self::node()", _document("<r xmlns:p='urn:p'/>").root_element.namespace_node("p")
+    )
+    assert _matches("self::node()", namespace)
 
 
 def test_name_tests_default_namespace_and_wildcards() -> None:
@@ -435,6 +445,24 @@ def test_current_is_the_candidate_item() -> None:
     assert not _matches("item[current()/self::item]", XdmAtomic.integer(1))
 
 
+def test_current_accepts_any_prefix_bound_to_the_function_namespace() -> None:
+    context = StaticContext(namespaces={"f": FN_NS}, version="3.0")
+    cand = _element_children(_document("<r><a/></r>").root_element)[0]
+    assert _matches(".[f:current() instance of node()]", cand, context=context)
+    assert _matches(".[f:current() instance of xs:integer]", XdmAtomic.integer(1), context=context)
+    assert _matches(
+        f".[Q{{{FN_NS}}}current() instance of xs:integer]",
+        XdmAtomic.integer(1),
+        context=context,
+    )
+    assert not _matches(
+        ".[f:current() instance of xs:integer]", XdmAtomic.decimal("1"), context=context
+    )
+    with pytest.raises(XsltStaticError) as caught:
+        compile_pattern(".[missing:current() instance of item()]", context)
+    assert _code(caught.value) == "XPST0081"
+
+
 # ---------------------------------------------------------------------------
 # Union, intersect, and except
 
@@ -458,6 +486,38 @@ def test_union_intersect_except() -> None:
     assert not _matches("a except a", a)
     assert _matches("a | a", a)
     assert not _matches("b | c", outer_d)
+
+
+def test_intersect_and_except_use_one_formal_context() -> None:
+    nested = _document("<r><a><x><b/></x></a></r>")
+    nested_b = _element_children(_element_children(nested.root_element)[0])[0]
+    nested_b = _element_children(nested_b)[0]
+    assert not _matches("a//b intersect b", nested_b)
+    assert _matches("a//b except *", nested_b)
+
+    direct = _document("<r><a><b/></a></r>")
+    direct_b = _element_children(_element_children(direct.root_element)[0])[0]
+    assert _matches("descendant::b except b", direct_b)
+    assert _matches("descendant::b intersect b", direct_b)
+
+
+def test_rooted_descendant_uses_real_ancestry_not_document_order() -> None:
+    document = _document("<r><a><i/></a><b><x/></b></r>")
+    a, b = _element_children(document.root_element)
+    i = _element_children(a)[0]
+    x = _element_children(b)[0]
+    context = _context(variables=("base",))
+    environment = ExpressionEnvironment(
+        variables={"base": (a,)},
+        key_indexes={"k": {"v": (a,)}},
+    )
+    assert _matches("$base//i", i, context=context, environment=environment)
+    assert not _matches("$base//x", x, context=context, environment=environment)
+    assert not _matches("key('k', 'v')//x", x, context=context, environment=environment)
+    assert _is_descendant_or_self(i, a)
+    assert not _is_descendant_or_self(x, a)
+    assert not _is_descendant_or_self(_parentless_attribute("z"), a)
+    assert not _is_descendant_or_self(_parentless_namespace(), document)
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +645,9 @@ def test_schema_element_and_attribute_tests(tmp_path: Path) -> None:
     with pytest.raises(XsltStaticError) as caught:
         compile_pattern("schema-attribute(doc:missing)", context)
     assert _code(caught.value) == "XPST0008"
+    with pytest.raises(XsltStaticError) as caught:
+        compile_pattern("element(doc:item, doc:Missing)", context)
+    assert _code(caught.value) == "XPST0051"
 
     # An unvalidated node has no governing declaration.
     untyped = _standalone_element(f'<t:item xmlns:t="{DOC_NS}" t:code="c"/>')
@@ -753,6 +816,46 @@ def test_pattern_index_predicate_patterns_match_non_nodes() -> None:
     assert index.select(XdmAtomic.integer(1)) is None
 
 
+def test_pattern_index_dispatches_document_node_rules() -> None:
+    document = _document("<r/>")
+    environment = ExpressionEnvironment()
+    for source in (
+        "document-node()",
+        "document-node(element(r))",
+        "document-node()[true()]",
+    ):
+        rule = _rule(source)
+        index = PatternIndex([rule])
+        assert index.candidates(None, None, document) == (rule,), source
+        assert index.select(document, environment=environment) is rule, source
+        assert index.candidates(None, None, document.root_element) == (), source
+        assert index.select(document.root_element, environment=environment) is None, source
+
+
+def test_parenthesized_union_is_split_and_priorities_apply() -> None:
+    context = _context()
+    compiled = compile_pattern("(a[1] | a)", context)
+    assert len(compiled.alternatives) == 2
+    assert compiled.default_priorities == (Decimal("0.5"), Decimal("0"))
+    assert compile_pattern("((a | b))", context).default_priorities == (
+        Decimal("0"),
+        Decimal("0"),
+    )
+    assert compile_pattern("(a | b)[1]", context).default_priorities == (Decimal("0.5"),)
+
+    document = _document("<r><a/><a/></r>")
+    first, second = _element_children(document.root_element)
+    environment = ExpressionEnvironment()
+    split = _rule("(a[1] | a)", order=2)
+    wildcard = _rule("*", order=1, priority="0.4")
+    index = PatternIndex([wildcard, split])
+    assert index.select(first, environment=environment) is split
+    assert index.select(second, environment=environment) is wildcard
+
+    assert _matches("(a[1] | a)", first)
+    assert _matches("(a[1] | a)", second)
+
+
 def test_pattern_index_statistics_and_cache() -> None:
     document = _document("<r><item/><item/></r>")
     first, second = _element_children(document.root_element)
@@ -771,6 +874,23 @@ def test_pattern_index_statistics_and_cache() -> None:
     assert statistics.cache_invalidations == 1
 
     assert index.candidates(None, None, first)[0].pattern.source == "item[1]"
+
+
+def test_cache_preserves_atomic_type_identity() -> None:
+    integer_rule = TemplateRule(compile_pattern(".[. instance of xs:integer]", _context()))
+    index = PatternIndex([integer_rule])
+    environment = ExpressionEnvironment()
+    assert index.select(XdmAtomic.integer(1), environment=environment) is integer_rule
+    assert index.select(XdmAtomic.decimal("1"), environment=environment) is None
+    # Re-selecting the same typed value is a cache hit; the decimal result was
+    # not served from the integer result.
+    assert index.select(XdmAtomic.integer(1), environment=environment) is integer_rule
+    assert index.statistics.cache_hits == 1
+
+    string_rule = TemplateRule(compile_pattern(".[. instance of xs:string]", _context()))
+    strings = PatternIndex([string_rule])
+    assert strings.select(XdmAtomic.string("1"), environment=environment) is string_rule
+    assert strings.select(XdmAtomic.untyped_atomic("1"), environment=environment) is None
 
 
 def test_template_rule_validation_and_immutability() -> None:
@@ -907,6 +1027,9 @@ def test_optimized_matchers_agree_with_formal_whole_tree_plan() -> None:
         "$v",
         "$v/b",
         "$v/b[2]",
+        "$v//b",
+        "root()",
+        "root()/self::r",
         "doc('urn:other')//product",
         "doc('urn:other')/catalog/item",
         "key('k', '2')",
@@ -916,8 +1039,14 @@ def test_optimized_matchers_agree_with_formal_whole_tree_plan() -> None:
         "element()",
         "attribute()",
         "self::a",
+        "self::attribute(code)",
+        "self::node()",
+        "self::namespace-node()",
         "descendant-or-self::b",
         "namespace::*",
+        "a//b intersect b",
+        "a//b except *",
+        "descendant::b except b",
     ]
     candidates = (*_candidates(document), *_candidates(other_document), XdmAtomic.integer(1))
     for pattern in patterns:
@@ -929,6 +1058,42 @@ def test_optimized_matchers_agree_with_formal_whole_tree_plan() -> None:
                 pattern,
                 item.kind if isinstance(item, XdmNode) else type(item).__name__,
             )
+
+
+def test_id_and_schema_differential_against_formal_plan(tmp_path: Path) -> None:
+    compiled, schema = _schema_pool(tmp_path)
+    context = _context(default_namespace=DOC_NS, schema=schema, variables=("ids", "node"))
+    document = _annotated(
+        compiled,
+        schema,
+        f'<t:item xmlns:t="{DOC_NS}" t:code="x"/>',
+    )
+    outer = document.root_element
+    environment = ExpressionEnvironment(
+        variables={
+            "ids": (XdmAtomic.string("x"),),
+            "node": (outer,),
+        }
+    )
+    patterns = [
+        "id('x')",
+        "id($ids)",
+        "id('x', $node)",
+        "element-with-id('x')",
+        "id('x')/self::item",
+        "schema-element(doc:item)",
+        "document-node(schema-element(doc:item))",
+    ]
+    for pattern in patterns:
+        compiled_pattern = compile_pattern(pattern, context)
+        optimized = PatternMatcher(compiled_pattern)
+        formal = PatternMatcher(compiled_pattern, strategy="forward")
+        for item in (*_candidates(document), XdmAtomic.string("x")):
+            assert optimized.matches(item, environment) == formal.matches(item, environment), (
+                pattern
+            )
+    assert _matches("id('x')", outer, context=context, environment=environment)
+    assert _matches("id('x', $node)", outer, context=context, environment=environment)
 
 
 def test_forward_plan_reports_whole_tree_operations() -> None:
@@ -1225,6 +1390,19 @@ def test_id_key_and_document_edge_branches(tmp_path: Path) -> None:
             key_indexes=key_indexes,
         ),
     )
+    invalid_top = PatternMatcher(compile_pattern("key('k', 'x', $ids)", context))
+    assert not invalid_top.matches(
+        item,
+        ExpressionEnvironment(
+            variables={"ids": (XdmAtomic.string("x"),)},
+            key_indexes=key_indexes,
+        ),
+    )
+    assert invalid_top.statistics.errors_ignored >= 1
+    empty_top = PatternMatcher(compile_pattern("key('k', 'x', $missing)", context))
+    assert not empty_top.matches(item, ExpressionEnvironment(key_indexes=key_indexes))
+    literal_top = PatternMatcher(compile_pattern("key('k', 'x', 1)", context))
+    assert not literal_top.matches(item, ExpressionEnvironment(key_indexes=key_indexes))
 
     # doc() resolves against the environment base URI and document URIs.
     relative = ExpressionEnvironment(

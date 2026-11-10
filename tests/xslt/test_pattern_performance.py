@@ -82,16 +82,13 @@ def test_descendant_walk_is_bounded_by_tree_depth() -> None:
     for _ in range(depth):
         leaf = _element_children(leaf)[0]
 
-    index = PatternIndex([_rule("root//leaf", 0), _rule("other//leaf", 1)])
-    # The pattern names do not match; replace with the real one.
-    real = PatternIndex([_rule(f"n0//n{depth - 1}", 0), _rule("other//leaf", 1)])
-    selected = real.select(leaf, environment=ExpressionEnvironment())
+    index = PatternIndex([_rule(f"n0//n{depth - 1}", 0), _rule("other//leaf", 1)])
+    selected = index.select(leaf, environment=ExpressionEnvironment())
 
     assert selected is not None
     assert selected.pattern.source == f"n0//n{depth - 1}"
-    assert real.statistics.equivalent_expression_evaluations == 0
-    assert real.statistics.ancestor_steps <= depth * 2 + 2
     assert index.statistics.equivalent_expression_evaluations == 0
+    assert index.statistics.ancestor_steps <= depth * 2 + 2
 
 
 def test_sibling_positional_focus_counts_only_predicate_work() -> None:
