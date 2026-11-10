@@ -294,11 +294,14 @@ class CompiledExpression:
     parser_class: type[Any] = XPath31Parser
     parser_version: str = "3.1"
     default_collation: str | None = None
+    variable_names: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.source:
             raise ValueError("a compiled expression requires source text")
         object.__setattr__(self, "variable_types", MappingProxyType(dict(self.variable_types)))
+        names = self.variable_names or _collect_variable_names(self.plan)
+        object.__setattr__(self, "variable_names", frozenset(names))
 
 
 @dataclass(frozen=True)
@@ -465,6 +468,38 @@ def _split_static_function(
     return prefix, local
 
 
+def _collect_variable_names(plan: Plan) -> frozenset[str]:
+    """Return every variable name referenced by one compiled plan."""
+    names: set[str] = set()
+
+    def visit(current: Plan) -> None:
+        if isinstance(current, VariablePlan):
+            names.add(current.name)
+        elif isinstance(current, OperatorPlan):
+            for operand in current.operands:
+                visit(operand)
+        elif isinstance(current, IfPlan):
+            visit(current.condition)
+            visit(current.then)
+            visit(current.otherwise)
+        elif isinstance(current, LetPlan):
+            for _, binding in current.bindings:
+                visit(binding)
+            visit(current.body)
+        elif isinstance(current, InlineFunctionPlan):
+            visit(current.body)
+        elif isinstance(current, CallPlan):
+            visit(current.callee)
+            for argument in current.arguments:
+                visit(argument)
+        elif isinstance(current, FunctionCallPlan):
+            for argument in current.arguments:
+                visit(argument)
+
+    visit(plan)
+    return frozenset(names)
+
+
 def _register_static_functions(
     parser: Any,
     functions: Mapping[str, object] | None,
@@ -512,11 +547,13 @@ def compile_expression(
     )
     _register_static_functions(parser, functions, namespace_map)
     token = parser.parse(source)
+    plan = _Compiler(parser).compile(token)
     return CompiledExpression(
         source=source,
-        plan=_Compiler(parser).compile(token),
+        plan=plan,
         variable_types=types,
         default_collation=default_collation,
+        variable_names=_collect_variable_names(plan),
     )
 
 

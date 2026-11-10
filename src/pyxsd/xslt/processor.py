@@ -33,6 +33,7 @@ from pyxsd.xdm import (
     XdmSequence,
     as_xdm,
 )
+from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath.continuation import ContinuationMachine, Suspension
@@ -1779,6 +1780,31 @@ _EBV_NUMERIC_TYPES = frozenset(
         "unsignedShort",
     }
 )
+_BUILTIN_TYPE_NAMES: dict[type[Any], str] | None = None
+
+
+def _builtin_class_names() -> Mapping[type[Any], str]:
+    """Map every canonical built-in datatype class to its XSD local name."""
+    global _BUILTIN_TYPE_NAMES
+    if _BUILTIN_TYPE_NAMES is None:
+        _BUILTIN_TYPE_NAMES = {value: name for name, value in builtin_type_classes().items()}
+    return _BUILTIN_TYPE_NAMES
+
+
+def _primitive_local_name(item: XdmAtomic) -> str:
+    """Classify an atomic value by its nearest built-in datatype ancestor."""
+    names = _builtin_class_names()
+    datatype = item.datatype
+    if datatype is not None:
+        for base in datatype.__mro__:
+            name = names.get(base)
+            if name is not None:
+                return name
+    for base in type(item.value).__mro__:
+        name = names.get(base)
+        if name is not None:
+            return name
+    return item.type_name.rpartition("}")[2]
 
 
 def _effective_boolean(sequence: XdmSequence) -> bool:
@@ -1804,7 +1830,7 @@ def _effective_boolean(sequence: XdmSequence) -> bool:
             "the effective boolean value of a multi-item atomic sequence is not defined",
             code="FORG0006",
         )
-    local = first.type_name.rpartition("}")[2]
+    local = _primitive_local_name(first)
     if local == "boolean":
         return bool(first.value)
     if local in _EBV_STRING_TYPES:
@@ -2124,11 +2150,11 @@ class _Invocation(Transformation):
         cursor: int,
     ) -> FrameResult:
         environment = self._environment(self._frame_variables(frame), frame.package)
-        referenced = _referenced_variables(expression.source)
-        variables = {
-            name: value for name, value in environment.variables.items() if name in referenced
-        }
-        machine = self.xpath_machine(expression, variables, self.stylesheet_functions())
+        machine = self.xpath_machine(
+            expression,
+            environment.variables,
+            self.stylesheet_functions(),
+        )
         if machine is None:
             value = self._evaluate(
                 expression, frame.focus, self._frame_variables(frame), frame.package
@@ -3114,8 +3140,9 @@ class _Invocation(Transformation):
         return _item_string(item)
 
 
-_VARIABLE_REFERENCE = re.compile(r"\$([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)")
-_EQNAME_VARIABLE_REFERENCE = re.compile(r"\$Q\{([^{}]*)\}([A-Za-z_][\w.-]*)")
+_NCNAME = r"[^\W\d][\w.\-\u00B7\u0300-\u036F\u203F-\u2040]*"
+_VARIABLE_REFERENCE = re.compile(rf"\$({_NCNAME}(?::{_NCNAME})?)")
+_EQNAME_VARIABLE_REFERENCE = re.compile(rf"\$Q\{{([^{{}}]*)\}}({_NCNAME})")
 
 
 def _referenced_variables(source: str) -> set[str]:

@@ -75,6 +75,49 @@ XSD_NS = "http://www.w3.org/2001/XMLSchema"
 MY_NS = "urn:my"
 
 
+class _CustomString(xsd.String):
+    name = "myString"
+    _targetNamespace_ = "urn:test"
+
+
+class _CustomInteger(xsd.Integer):
+    name = "myInteger"
+    _targetNamespace_ = "urn:test"
+
+
+class _CustomBoolean(xsd.Boolean):
+    name = "myBoolean"
+    _targetNamespace_ = "urn:test"
+
+
+class _StringNamedInteger(xsd.String):
+    name = "integer"
+    _targetNamespace_ = "urn:test"
+
+
+class _IntegerNamedString(xsd.Integer):
+    name = "string"
+    _targetNamespace_ = "urn:test"
+
+
+class _BooleanNamedString(xsd.Boolean):
+    name = "string"
+    _targetNamespace_ = "urn:test"
+
+
+class _BareAtomic:
+    name = "bare"
+    _targetNamespace_ = "urn:test"
+
+
+_CustomString.__name__ = "myString"
+_CustomInteger.__name__ = "myInteger"
+_CustomBoolean.__name__ = "myBoolean"
+_StringNamedInteger.__name__ = "integer"
+_IntegerNamedString.__name__ = "string"
+_BooleanNamedString.__name__ = "string"
+
+
 def _stylesheet(body: str) -> bytes:
     return (
         f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
@@ -560,6 +603,154 @@ def test_current_mode_survives_named_templates_and_literal_construction() -> Non
     assert _text(result.principal_tree) == "M"
 
 
+def test_unicode_variable_names_reach_the_scheduled_machine() -> None:
+    literal = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:variable name="é" select="1"/>
+            <xsl:template name="xsl:initial-template">
+              <xsl:sequence select="$é + 1"/>
+            </xsl:template>
+            """
+        )
+    )
+    assert literal.transform(delivery="raw").principal == (XdmAtomic.integer(2),)
+
+    prefixed = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:variable name="my:é" select="2"/>
+            <xsl:template name="xsl:initial-template">
+              <xsl:sequence select="$my:é + 1"/>
+            </xsl:template>
+            """
+        )
+    )
+    assert prefixed.transform(delivery="raw").principal == (XdmAtomic.integer(3),)
+
+    eqname = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:variable name="my:é" select="3"/>
+            <xsl:template name="xsl:initial-template">
+              <xsl:sequence select="$Q{urn:my}é + 1"/>
+            </xsl:template>
+            """
+        )
+    )
+    assert eqname.transform(delivery="raw").principal == (XdmAtomic.integer(4),)
+
+    middle_dot = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:variable name="a·b" select="4"/>
+            <xsl:template name="xsl:initial-template">
+              <xsl:sequence select="$a·b + 1"/>
+            </xsl:template>
+            """
+        )
+    )
+    assert middle_dot.transform(delivery="raw").principal == (XdmAtomic.integer(5),)
+
+
+def test_fallback_function_dispatch_selects_the_declared_arity() -> None:
+    one_then_zero = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:variable name="doc" select="/*"/>
+            <xsl:function name="my:f" as="xs:string">
+              <xsl:param name="x" as="xs:string"/>
+              <xsl:sequence select="'one:' || $x"/>
+            </xsl:function>
+            <xsl:function name="my:f" as="xs:string">
+              <xsl:sequence select="'zero'"/>
+            </xsl:function>
+            <xsl:template name="xsl:initial-template">
+              <xsl:value-of select="count($doc/*) + string-length(my:f('x'))"/>
+            </xsl:template>
+            """
+        )
+    )
+    result = one_then_zero.transform(
+        source=b"<r><a/></r>",
+        initial_template="xsl:initial-template",
+        delivery="document",
+    )
+    assert _text(result.principal_tree) == "6"
+
+    zero_then_one = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:variable name="doc" select="/*"/>
+            <xsl:function name="my:f" as="xs:string">
+              <xsl:sequence select="'zero'"/>
+            </xsl:function>
+            <xsl:function name="my:f" as="xs:string">
+              <xsl:param name="x" as="xs:string"/>
+              <xsl:sequence select="'one:' || $x"/>
+            </xsl:function>
+            <xsl:template name="xsl:initial-template">
+              <xsl:value-of select="count($doc/*) + string-length(my:f())"/>
+            </xsl:template>
+            """
+        )
+    )
+    result = zero_then_one.transform(
+        source=b"<r><a/></r>",
+        initial_template="xsl:initial-template",
+        delivery="document",
+    )
+    assert _text(result.principal_tree) == "5"
+
+
+def test_effective_boolean_uses_primitive_bases_for_custom_atomic_types() -> None:
+    compiled = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:template name="xsl:initial-template">
+              <xsl:param name="x"/>
+              <xsl:choose>
+                <xsl:when test="$x"><xsl:text>T</xsl:text></xsl:when>
+                <xsl:otherwise><xsl:text>F</xsl:text></xsl:otherwise>
+              </xsl:choose>
+            </xsl:template>
+            """
+        )
+    )
+
+    def evaluate(value: XdmAtomic) -> str:
+        result = compiled.transform(
+            initial_template="xsl:initial-template",
+            template_parameters={"x": value},
+            delivery="document",
+        )
+        return _text(result.principal_tree)
+
+    custom_string = _CustomString("value")
+    custom_empty = _CustomString("")
+    assert evaluate(XdmAtomic(custom_string, "{urn:test}myString", _CustomString)) == "T"
+    assert evaluate(XdmAtomic(custom_empty, "{urn:test}myString", _CustomString)) == "F"
+
+    assert evaluate(XdmAtomic(_CustomInteger(0), "{urn:test}myInteger", _CustomInteger)) == "F"
+    assert evaluate(XdmAtomic(_CustomInteger(1), "{urn:test}myInteger", _CustomInteger)) == "T"
+
+    assert evaluate(XdmAtomic(_CustomBoolean(False), "{urn:test}myBoolean", _CustomBoolean)) == "F"
+    assert evaluate(XdmAtomic(_CustomBoolean(True), "{urn:test}myBoolean", _CustomBoolean)) == "T"
+
+    # Local names deliberately lie about the primitive base.
+    assert (
+        evaluate(XdmAtomic(_StringNamedInteger("0"), "{urn:test}integer", _StringNamedInteger))
+        == "T"
+    )
+    assert (
+        evaluate(XdmAtomic(_IntegerNamedString(0), "{urn:test}string", _IntegerNamedString)) == "F"
+    )
+    assert (
+        evaluate(XdmAtomic(_BooleanNamedString(False), "{urn:test}string", _BooleanNamedString))
+        == "F"
+    )
+
+
 def test_unused_node_variables_do_not_disable_scheduler_and_fallback_functions_work() -> None:
     unused = compile_stylesheet(
         _stylesheet(
@@ -719,6 +910,23 @@ def test_choose_effective_boolean_edges_and_builtin_empty_elements() -> None:
                 ),
             )
         )
+    assert _effective_boolean((XdmAtomic(1, "integer", None),)) is True
+    assert (
+        _effective_boolean(
+            (
+                XdmAtomic(
+                    xsd.String("value"),
+                    f"{{{XSD_NS}}}string",
+                    None,
+                ),
+            )
+        )
+        is True
+    )
+    with pytest.raises(XsltError, match="custom"):
+        _effective_boolean((XdmAtomic("value", "{urn:test}custom", None),))
+    with pytest.raises(XsltError, match="bare"):
+        _effective_boolean((XdmAtomic("value", "{urn:test}bare", _BareAtomic),))
 
 
 def test_literal_construction_uses_synchronous_nested_component_branches() -> None:
@@ -1535,6 +1743,19 @@ def test_host_request_and_suspension_contracts() -> None:
         FunctionCallPlan("f", 1, ())
 
 
+def test_compiled_expression_variable_names_cover_nested_plans() -> None:
+    compiled = compile_expression(
+        "if ($a) then (let $b := $c return (function($d) { $d + $b })($a)) else $e"
+    )
+    assert {"a", "b", "c", "d", "e"} <= compiled.variable_names
+
+    direct = continuation.CompiledExpression(
+        "$x",
+        continuation.VariablePlan("x"),
+    )
+    assert direct.variable_names == frozenset({"x"})
+
+
 def test_static_function_calls_suspend_and_resume() -> None:
     compiled = compile_expression(
         "f:count($n - 1)",
@@ -1810,6 +2031,9 @@ def test_transformation_uses_compiled_stylesheet_state_and_functions() -> None:
     assert f"{{{MY_NS}}}next" in fallback
     assert transformation.fallback_functions() is fallback
     assert callable(fallback[f"{{{MY_NS}}}next"])
+    with pytest.raises(XsltError) as caught:
+        fallback[f"{{{MY_NS}}}next"]()
+    assert caught.value.code == "XPTY0004"
     entry = next(iter(table.values()))
     assert isinstance(entry, HostFunction)
     assert entry.suspend is True

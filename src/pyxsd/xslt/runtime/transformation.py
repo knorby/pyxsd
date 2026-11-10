@@ -216,7 +216,9 @@ class Transformation:
         plan = self.xpath_plan(expression)
         if plan is None:
             return None
-        native = self.variables_to_native(variables)
+        referenced = plan.variable_names
+        selected = {name: value for name, value in variables.items() if name in referenced}
+        native = self.variables_to_native(selected)
         if native is None:
             return None
         machine = ContinuationMachine(plan, native, functions)
@@ -357,7 +359,7 @@ class Transformation:
         """
         if self._fallback_function_table is not None:
             return self._fallback_function_table
-        table: dict[str, Any] = {}
+        components: dict[str, list[Any]] = {}
         if self.package is not None:
             for component in self.package.components.values():
                 name = component.name
@@ -368,16 +370,30 @@ class Transformation:
                     or component.abstract
                 ):
                     continue
-                table[name] = self._component_callable(component)
-        self._fallback_function_table = table
-        return table
+                components.setdefault(name, []).append(component)
+        self._fallback_function_table = {
+            name: self._component_dispatcher(name, overloads)
+            for name, overloads in components.items()
+        }
+        return self._fallback_function_table
 
-    def _component_callable(self, component: Any) -> Any:
-        def call(*arguments: object) -> XdmSequence:
+    def _component_dispatcher(self, name: str, components: list[Any]) -> Any:
+        by_arity = {
+            component.arity: component for component in components if component.arity is not None
+        }
+
+        def dispatch(*arguments: object) -> XdmSequence:
+            component = by_arity.get(len(arguments))
+            if component is None:
+                raise XsltError(
+                    f"the stylesheet function {name!r} is not available with "
+                    f"arity {len(arguments)}",
+                    code="XPTY0004",
+                )
             converted = tuple(as_xdm(argument) for argument in arguments)
             return self._invoke_component_callable(component, converted)
 
-        return call
+        return dispatch
 
     def _invoke_component_callable(
         self,
