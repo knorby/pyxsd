@@ -28,6 +28,7 @@ from pyxsd.xpath.environment import FunctionArity, XPathStaticContext
 from pyxsd.xslt.compiler.expressions import CompiledSequenceType, compile_sequence_type
 from pyxsd.xslt.compiler.static import EffectiveElement, EffectiveModule
 from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.profiles import LanguageProfile
 from pyxsd.xslt.runtime.functions import xslt_function_declarations
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -390,7 +391,7 @@ class StaticContext:
     def compatibility_mode(self) -> bool:
         if self.profile.compatibility_mode is not None:
             return self.profile.compatibility_mode
-        return Decimal(self.version) < Decimal("2.0")
+        return LanguageProfile.from_options(self.profile, self.version).compatibility_mode
 
     def variable(self, name: str) -> StaticVariable | None:
         return self.variables.get(name)

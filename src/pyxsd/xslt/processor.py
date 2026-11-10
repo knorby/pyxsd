@@ -73,6 +73,7 @@ from pyxsd.xslt.compiler.patterns import (
 )
 from pyxsd.xslt.compiler.static import EffectiveModule, StaticPreprocessor
 from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltStaticError
+from pyxsd.xslt.profiles import RecoveryPolicy
 from pyxsd.xslt.results import (
     ResultEntry,
     ResultShapeError,
@@ -173,6 +174,7 @@ class _ValueOfPlan:
     expression: CompiledExpression | None
     children: tuple[_Plan, ...]
     separator: str | CompiledValueTemplate
+    explicit_separator: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,6 +394,7 @@ class XsltProcessor:
     xml_limits: Any = None
     resolver: PackageResolver | None = None
     static_options: Mapping[str, Any] = field(default_factory=dict)
+    recovery_policy: RecoveryPolicy | None = None
 
     def __post_init__(self) -> None:
         if self.language != "3.0":
@@ -402,6 +405,10 @@ class XsltProcessor:
             raise TypeError("schema_aware must be a boolean")
         if self.default_collation is not None and not isinstance(self.default_collation, str):
             raise TypeError("default_collation must be a string or None")
+        if self.recovery_policy is not None and not isinstance(
+            self.recovery_policy, RecoveryPolicy
+        ):
+            raise TypeError("recovery_policy must be a RecoveryPolicy or None")
         if not isinstance(self.static_options, Mapping):
             raise TypeError("static options must be a mapping")
         options: dict[str, Any] = {}
@@ -1277,6 +1284,7 @@ def _compile_instruction(
                 if separator is not None
                 else separator_default
             ),
+            explicit_separator=separator is not None,
         )
     if local == "text":
         text = "".join(child.value for child in instruction.children if isinstance(child, TextNode))
@@ -3702,6 +3710,10 @@ class _Invocation(Transformation):
                     rule_context=rule_context,
                     original_functions=original_functions,
                 )
+            if plan.expression is not None and not plan.explicit_separator:
+                profile = self.profile_for(plan.expression.static_context.xslt_version)
+                if profile.compatibility_mode:
+                    return (self._text_node(profile.string_sequence(values)),)
             separator = self._value_source(plan.separator, focus, locals_, package_name)
             text = _simple_content_string(values, separator)
             return (self._text_node(text),)
@@ -4509,6 +4521,11 @@ class _Invocation(Transformation):
                 continue
             assert part.expression is not None
             values = self._evaluate(part.expression, focus, locals_, package_name)
+            if not template.text_value_template:
+                profile = self.profile_for(part.expression.static_context.xslt_version)
+                if profile.compatibility_mode:
+                    parts.append(profile.string_sequence(values))
+                    continue
             parts.append(" ".join(self._string_value(item) for item in values))
         return "".join(parts)
 

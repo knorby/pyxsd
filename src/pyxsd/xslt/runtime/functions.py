@@ -766,8 +766,9 @@ class XsltContextBridge:
                             "document() node atomization must yield atomic values",
                             code="XPTY0004",
                         )
-                    document = self._resolve_document(_document_uri(atomic), base)
-                    resolved[id(document)] = document
+                    document = self._resolve_document_or_recover(_document_uri(atomic), base)
+                    if document is not None:
+                        resolved[id(document)] = document
                 continue
             if not isinstance(item, XdmAtomic):
                 raise XsltDynamicError(
@@ -775,9 +776,22 @@ class XsltContextBridge:
                     code="XPTY0004",
                 )
             base = base_node_uri if node is not None else self.base_uri
-            document = self._resolve_document(_document_uri(item), base)
-            resolved[id(document)] = document
+            document = self._resolve_document_or_recover(_document_uri(item), base)
+            if document is not None:
+                resolved[id(document)] = document
         return tuple(sorted(resolved.values(), key=lambda document: document.document_order))
+
+    def _resolve_document_or_recover(self, uri: str, base: str | None) -> XdmDocument | None:
+        """Resolve one URI, applying only an explicitly selected recovery rule."""
+        try:
+            return self._resolve_document(uri, base)
+        except XsltDynamicError as exc:
+            recover = getattr(self.transformation, "recover", None)
+            if not callable(recover) or exc.code is None or not recover(exc, exc.code):
+                raise
+            if str(exc.code).rsplit(":", 1)[-1] == "XTDE1160":
+                return self._resolve_document(uri.split("#", 1)[0], base)
+            return None
 
     def _resolve_document(self, uri: str, base: str | None) -> XdmDocument:
         if "#" in uri:

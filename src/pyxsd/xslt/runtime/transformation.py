@@ -20,6 +20,7 @@ from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 
+from pyxsd.locations import IssueLocation
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmItem, XdmSequence, as_xdm
 from pyxsd.xdm.nodes import XdmDocument, XdmNode
 from pyxsd.xpath import continuation
@@ -28,7 +29,8 @@ from pyxsd.xpath.continuation import ContinuationMachine, HostFunction, XPathClo
 from pyxsd.xpath.engine import CompiledExpression
 from pyxsd.xpath.environment import ExpressionEnvironment
 from pyxsd.xpath.functions import atomic_to_elementpath
-from pyxsd.xslt.errors import XsltDynamicError, XsltError
+from pyxsd.xslt.errors import XsltDynamicError, XsltError, error_code_from_exception
+from pyxsd.xslt.profiles import LanguageProfile, RecoveryPolicy, RecoveryRule
 from pyxsd.xslt.runtime.frames import (
     ExecutionBudget,
     ExecutionLimits,
@@ -96,7 +98,17 @@ class Transformation:
         options: Any = None,
         *,
         limits: ExecutionLimits | None = None,
+        recovery_policy: RecoveryPolicy | None = None,
     ) -> None:
+        if recovery_policy is None:
+            processor = getattr(stylesheet, "processor", None)
+            configured = getattr(processor, "recovery_policy", None)
+            recovery_policy = (
+                configured if isinstance(configured, RecoveryPolicy) else RecoveryPolicy()
+            )
+        if not isinstance(recovery_policy, RecoveryPolicy):
+            raise TypeError("recovery_policy must be a RecoveryPolicy or None")
+        self.recovery_policy = recovery_policy
         self.stylesheet: Any = stylesheet
         self.package: Any = None if stylesheet is None else stylesheet.package
         self.options: Any = options
@@ -147,6 +159,28 @@ class Transformation:
             return stack
         return getattr(self, "_nested_diagnostics", ())
 
+    # -- language profile and recovery -------------------------------------
+
+    def profile_for(self, effective_version: str | None = None) -> LanguageProfile:
+        """Return the active language profile for one element's effective version."""
+        profile = getattr(self.stylesheet, "profile", None)
+        return LanguageProfile.from_options(profile, effective_version)
+
+    def recover(self, error: BaseException, rule: RecoveryRule | str) -> bool:
+        """Whether *error* may use the profile rule selected by *rule*.
+
+        Only a deliberately converted dynamic error with a code is eligible.  A
+        raw Python callback failure never becomes recoverable merely because the
+        surrounding transformation is executing under a recovery policy.
+        """
+        if not isinstance(error, XsltDynamicError) or not error.catchable:
+            return False
+        profile = self.profile_for()
+        resolved = profile.recovery_rule_for(rule)
+        if resolved is None or not resolved.matches(error.code):
+            return False
+        return self.recovery_policy.allows(resolved, profile)
+
     def execute_frame(self, frame: Frame) -> object:
         """Execute one frame with this transformation's step function.
 
@@ -154,15 +188,85 @@ class Transformation:
         construction) receives its own scheduler so it cannot corrupt the
         active heap stack.  Suspension/resumption still uses the same
         transformation state and step function.
+
+        Every scheduler exit is an XSLT error boundary for errors the XSLT layer
+        already owns: frame-derived context is attached to an existing
+        :class:`~pyxsd.xslt.errors.XsltError` without replacing it.  Parser,
+        resource, XPath, and Python exceptions outside the XSLT error hierarchy
+        keep their own identity here; an extension boundary that deliberately
+        converts one calls :meth:`boundary_error` explicitly.
         """
         if self.scheduler.active:
             self._nested_diagnostics = self.scheduler.diagnostics
             nested = Scheduler(self.limits, budget=self.budget)
             try:
-                return nested.run(frame, self.step)
+                return self._run_scheduler(nested, frame)
             finally:
                 self._nested_diagnostics = nested.diagnostics
-        return self.scheduler.run(frame, self.step)
+        return self._run_scheduler(self.scheduler, frame)
+
+    def _run_scheduler(self, scheduler: Scheduler, frame: Frame) -> object:
+        try:
+            return scheduler.run(frame, self.step)
+        except XsltError as error:
+            self.boundary_error(error, stack=scheduler.diagnostics)
+            raise
+
+    def boundary_error(
+        self,
+        error: BaseException,
+        *,
+        stack: tuple[FrameDiagnostic, ...] | None = None,
+        catchable: bool = False,
+    ) -> XsltError:
+        """Attach XSLT context to *error*, wrapping only at this boundary.
+
+        A foreign exception is wrapped with its identity preserved as the
+        cause.  ``catchable`` is an explicit caller decision: only an error the
+        conversion site deliberately treats as an XSLT dynamic error may enter
+        a coded ``xsl:catch`` or an implementation recovery rule.
+        """
+        if not isinstance(catchable, bool):
+            raise TypeError("catchable must be a boolean")
+        frames = self.diagnostics if stack is None else tuple(stack)
+        _, package = self._stylesheet_identity()
+        if isinstance(error, XsltError):
+            error.attach_diagnostics(frames, package=package)
+            return error
+        module, effective_package, location = self._boundary_identity(frames)
+        return XsltDynamicError(
+            str(error) or type(error).__name__,
+            code=error_code_from_exception(error),
+            uri=module,
+            module=module,
+            package=effective_package,
+            location=location,
+            stack=frames,
+            cause=error,
+            allow_catch=catchable,
+        )
+
+    def _stylesheet_identity(self) -> tuple[str | None, str | None]:
+        stylesheet = self.stylesheet
+        if stylesheet is None:
+            return None, None
+        package = getattr(stylesheet, "package", None)
+        return None, getattr(package, "name", None)
+
+    def _boundary_identity(
+        self,
+        frames: tuple[FrameDiagnostic, ...],
+    ) -> tuple[str | None, str | None, IssueLocation | None]:
+        module, package = self._stylesheet_identity()
+        location = None
+        if frames:
+            last = frames[-1]
+            location = last.location
+            if location is not None:
+                module = location.source
+            if last.package is not None:
+                package = last.package
+        return module, package, location
 
     def frame_boundary(self, frame: Frame) -> Frame:
         """Attach production rollback and diagnostic boundaries to *frame*.
