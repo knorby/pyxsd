@@ -292,8 +292,9 @@ def test_entry_point_conflicts_are_rejected() -> None:
             initial_function="my:f",
             template_parameters={"x": 1},
         )
-    with pytest.raises(ValueError, match="initial_function_arguments"):
+    with pytest.raises(XsltError) as error:
         compiled.transform(initial_function="my:f", initial_function_arguments=(1, 2))
+    assert error.value.code == "XTDE0041"
 
 
 def test_initial_mode_dispatch_and_validation() -> None:
@@ -843,7 +844,11 @@ def test_compiled_accessors_and_mode_rule_counts() -> None:
             "XTSE0620",
         ),
         (
-            '<xsl:template match="doc"><xsl:value-of/></xsl:template>',
+            '<xsl:template match="doc"><xsl:value-of select="1">text</xsl:value-of></xsl:template>',
+            "XTSE0010",
+        ),
+        (
+            '<xsl:template match="doc"><xsl:sequence select="1">text</xsl:sequence></xsl:template>',
             "XTSE0010",
         ),
         (
@@ -910,7 +915,11 @@ def test_literal_result_exclude_all_and_default_namespaces() -> None:
         default_compiled.transform(initial_template="main").principal_tree
     )[0]
     assert default_element.name == "{urn:default}out"
-    assert all(node.prefix != "" for node in default_element.namespace_nodes)
+    assert any(
+        node.prefix == "" and node.string_value == "urn:default"
+        for node in default_element.namespace_nodes
+    )
+    assert default_element.in_scope_namespaces[""] == "urn:default"
 
 
 def test_literal_text_uses_effective_expand_text() -> None:
@@ -1299,6 +1308,20 @@ def test_exclude_all_keeps_namespaces_that_are_used() -> None:
     assert element.name == "{urn:p}out"
     assert any(node.prefix == "p" for node in element.namespace_nodes)
 
+    explicitly_excluded = compile_bytes(
+        xsl(
+            '<xsl:template name="main"><p:out xmlns:p="urn:p" p:a="1"/></xsl:template>',
+            attributes='exclude-result-prefixes="p"',
+        )
+    )
+    excluded_element = _element_children(
+        explicitly_excluded.transform(initial_template="main").principal_tree
+    )[0]
+    assert excluded_element.name == "{urn:p}out"
+    assert excluded_element.prefix == "p"
+    assert excluded_element.attributes[0].prefix == "p"
+    assert any(node.prefix == "p" for node in excluded_element.namespace_nodes)
+
 
 def test_package_override_exposes_hidden_original_and_accepted_symbols(tmp_path: Path) -> None:
     library = tmp_path / "library.xsl"
@@ -1429,3 +1452,534 @@ def test_processor_default_collation_is_used() -> None:
         compiled.transform(initial_template="main", delivery="raw").principal[0].string_value
         == "-1"
     )
+
+
+def test_package_mode_layers_dispatch_in_order(tmp_path: Path) -> None:
+    library = tmp_path / "library.xsl"
+    library.write_text(
+        f"""<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:app="urn:app"
+              name="urn:library" package-version="1.0" version="3.0">
+              <xsl:mode name="app:m" visibility="public"/>
+              <xsl:template match="doc" mode="app:m"><from-library/></xsl:template>
+            </xsl:package>""",
+        encoding="utf-8",
+    )
+    principal = tmp_path / "principal.xsl"
+    principal.write_text(
+        f"""<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:app="urn:app"
+              name="urn:principal" version="3.0">
+              <xsl:use-package name="urn:library" package-version="1.0">
+                <xsl:accept component="mode" names="app:m" visibility="public"/>
+                <xsl:override>
+                  <xsl:template match="other" mode="app:m"><from-override/></xsl:template>
+                </xsl:override>
+              </xsl:use-package>
+              <xsl:template name="xsl:initial-template" visibility="public"><done/></xsl:template>
+            </xsl:package>""",
+        encoding="utf-8",
+    )
+    compiled = XsltProcessor(resolver=PackageResolver.from_sources(library)).compile(principal)
+
+    from_library = compiled.transform(source=b"<doc/>", initial_mode="app:m", delivery="document")
+    from_override = compiled.transform(
+        source=b"<other/>", initial_mode="app:m", delivery="document"
+    )
+
+    assert compiled.mode_rule_count("app:m") == 2
+    assert _element_children(from_library.principal_tree)[0].local_name == "from-library"
+    assert _element_children(from_override.principal_tree)[0].local_name == "from-override"
+
+
+def test_private_library_globals_are_primed_in_package_scope(tmp_path: Path) -> None:
+    library = tmp_path / "library.xsl"
+    library.write_text(
+        f"""<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:lib="urn:lib" xmlns:app="urn:app"
+              name="urn:lib" package-version="1.0" version="3.0">
+              <xsl:variable name="lib:private" select="'private'" visibility="private"/>
+              <xsl:variable name="lib:public" select="$lib:private" visibility="public"/>
+              <xsl:mode name="app:m" visibility="public"/>
+              <xsl:template match="doc" mode="app:m">
+                <xsl:value-of select="$lib:private"/>
+              </xsl:template>
+            </xsl:package>""",
+        encoding="utf-8",
+    )
+    principal = tmp_path / "principal.xsl"
+    principal.write_text(
+        f"""<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:lib="urn:lib" xmlns:app="urn:app"
+              name="urn:principal" version="3.0">
+              <xsl:use-package name="urn:lib" package-version="1.0">
+                <xsl:accept component="mode" names="app:m" visibility="public"/>
+                <xsl:accept component="variable" names="lib:public" visibility="public"/>
+              </xsl:use-package>
+              <xsl:template name="xsl:initial-template" visibility="public">
+                <xsl:sequence select="$lib:public"/>
+              </xsl:template>
+            </xsl:package>""",
+        encoding="utf-8",
+    )
+    compiled = XsltProcessor(resolver=PackageResolver.from_sources(library)).compile(principal)
+
+    public = compiled.transform(delivery="raw")
+    mode = compiled.transform(source=b"<doc/>", initial_mode="app:m", delivery="document")
+
+    assert public.principal == (XdmAtomic.string("private"),)
+    assert _text(mode.principal_tree) == "private"
+
+
+def test_initial_function_arguments_and_results_are_converted() -> None:
+    compiled = compile_bytes(
+        xsl(
+            '<xsl:function name="my:integer" visibility="public">'
+            '<xsl:param name="x" as="xs:integer"/>'
+            '<xsl:sequence select="$x instance of xs:integer"/>'
+            "</xsl:function>"
+            '<xsl:function name="my:return-integer" as="xs:integer" visibility="public">'
+            '<xsl:param name="x"/>'
+            '<xsl:sequence select="$x"/>'
+            "</xsl:function>"
+            '<xsl:function name="my:bad-return" as="xs:integer" visibility="public">'
+            '<xsl:sequence select="true()"/>'
+            "</xsl:function>"
+            '<xsl:function name="my:element-only" visibility="public">'
+            '<xsl:param name="x" as="element()"/>'
+            '<xsl:sequence select="$x"/>'
+            "</xsl:function>"
+        )
+    )
+
+    assert compiled.transform(
+        initial_function="my:integer",
+        initial_function_arguments=("5",),
+        delivery="raw",
+    ).principal == (XdmAtomic.boolean(True),)
+    assert compiled.transform(
+        initial_function="my:integer",
+        initial_function_arguments=(XdmAtomic.untyped_atomic("5"),),
+        delivery="raw",
+    ).principal == (XdmAtomic.boolean(True),)
+    assert compiled.transform(
+        initial_function="my:return-integer",
+        initial_function_arguments=(5,),
+        delivery="raw",
+    ).principal == (XdmAtomic.integer(5),)
+
+    with pytest.raises(XsltError) as error:
+        compiled.transform(
+            initial_function="my:bad-return",
+            initial_function_arguments=(),
+            delivery="raw",
+        )
+    assert error.value.code == "XTTE0780"
+
+    with pytest.raises(XsltError) as error:
+        compiled.transform(
+            initial_function="my:element-only",
+            initial_function_arguments=("not-an-element",),
+            delivery="raw",
+        )
+    assert error.value.code == "XTTE0790"
+
+
+def test_template_and_global_parameter_and_variable_conversion() -> None:
+    compiled = compile_bytes(
+        xsl(
+            '<xsl:param name="global" as="xs:integer"/>'
+            '<xsl:variable name="converted" as="xs:integer" select="\'9\'"/>'
+            '<xsl:template name="main">'
+            '<xsl:param name="local" as="xs:integer"/>'
+            '<xsl:sequence select="$global instance of xs:integer,'
+            ' $converted instance of xs:integer, $local instance of xs:integer"/>'
+            "</xsl:template>"
+        )
+    )
+
+    result = compiled.transform(
+        initial_template="main",
+        parameters={"global": "7"},
+        template_parameters={"local": "8"},
+        delivery="raw",
+    )
+
+    assert result.principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+    )
+
+    with pytest.raises(XsltError) as error:
+        compiled.transform(
+            initial_template="main",
+            parameters={"global": "7"},
+            template_parameters={"local": "not-an-integer"},
+            delivery="raw",
+        )
+    assert error.value.code == "XTTE0590"
+
+
+def test_initial_function_arity_mismatch_uses_xtde0041() -> None:
+    compiled = compile_bytes(
+        xsl(
+            '<xsl:function name="my:f" visibility="public">'
+            '<xsl:param name="x"/>'
+            '<xsl:sequence select="$x"/>'
+            "</xsl:function>"
+        )
+    )
+
+    with pytest.raises(XsltError) as error:
+        compiled.transform(
+            initial_function="my:f",
+            initial_function_arguments=(1, 2),
+            delivery="raw",
+        )
+    assert error.value.code == "XTDE0041"
+
+    with pytest.raises(XsltError) as error:
+        compiled.transform(
+            initial_function="my:missing",
+            initial_function_arguments=(),
+            delivery="raw",
+        )
+    assert error.value.code == "XTDE0041"
+
+
+def test_context_item_declaration_is_consumed_and_enforced() -> None:
+    optional = compile_bytes(
+        xsl('<xsl:template name="main"><xsl:context-item use="optional"/><out/></xsl:template>')
+    )
+    assert (
+        _element_children(optional.transform(initial_template="main").principal_tree)[0].local_name
+        == "out"
+    )
+
+    required = compile_bytes(
+        xsl('<xsl:template name="main"><xsl:context-item use="required"/><out/></xsl:template>')
+    )
+    with pytest.raises(XsltError) as error:
+        required.transform(initial_template="main")
+    assert error.value.code == "XTTE3090"
+    assert (
+        _element_children(
+            required.transform(
+                initial_template="main",
+                global_context_item=XdmAtomic.integer(1),
+            ).principal_tree
+        )[0].local_name
+        == "out"
+    )
+
+    with pytest.raises(XsltStaticError) as error:
+        compile_bytes(
+            xsl(
+                '<xsl:template name="main"><xsl:context-item use="absent" as="item()"/>'
+                "<out/></xsl:template>"
+            )
+        )
+    assert error.value.code == "XTSE3088"
+
+
+def test_temporary_output_state_survives_literal_result_elements() -> None:
+    compiled = compile_bytes(
+        xsl(
+            '<xsl:function name="my:f" visibility="public">'
+            '<out><xsl:result-document href="http://example.com/x"><x/></xsl:result-document></out>'
+            "</xsl:function>"
+        )
+    )
+
+    with pytest.raises(XsltError) as error:
+        compiled.transform(initial_function="my:f", delivery="raw")
+    assert error.value.code == "XTDE1480"
+
+
+def test_secondary_results_use_the_unnamed_output_definition() -> None:
+    text = compile_bytes(
+        xsl(
+            '<xsl:template name="main">'
+            '<xsl:result-document href="http://example.com/s">secondary</xsl:result-document>'
+            "</xsl:template>",
+            output='<xsl:output method="text" build-tree="no"/>',
+        )
+    )
+    text_entry = text.transform(initial_template="main").secondary["http://example.com/s"]
+    assert text_entry.tree is None
+    assert text_entry.serialization["method"] == "text"
+    assert text_entry.serialization["build-tree"] == "no"
+
+    json_output = compile_bytes(
+        xsl(
+            '<xsl:template name="main">'
+            '<xsl:result-document href="http://example.com/s">'
+            "<xsl:sequence select=\"map{'k':1}\"/>"
+            "</xsl:result-document>"
+            "</xsl:template>",
+            output='<xsl:output method="json"/>',
+        )
+    )
+    json_entry = json_output.transform(initial_template="main").secondary["http://example.com/s"]
+    assert json_entry.tree is None
+    assert isinstance(json_entry.raw[0], XdmMap)
+
+    overridden = compile_bytes(
+        xsl(
+            '<xsl:template name="main">'
+            '<xsl:result-document href="http://example.com/s" method="xml">'
+            "<secondary/>"
+            "</xsl:result-document>"
+            "</xsl:template>",
+            output='<xsl:output method="text"/>',
+        )
+    )
+    overridden_entry = overridden.transform(initial_template="main").secondary[
+        "http://example.com/s"
+    ]
+    assert overridden_entry.tree is not None
+    assert overridden_entry.serialization["method"] == "xml"
+
+
+def test_value_of_content_forms_and_simple_content_separators() -> None:
+    content = compile_bytes(
+        xsl('<xsl:template name="main"><xsl:value-of>abc</xsl:value-of></xsl:template>')
+    )
+    assert _text(content.transform(initial_template="main").principal_tree) == "abc"
+
+    empty = compile_bytes(xsl('<xsl:template name="main"><xsl:value-of/></xsl:template>'))
+    assert empty.transform(initial_template="main").principal_tree.children == ()
+
+    separated = compile_bytes(
+        xsl(
+            '<xsl:template name="main">'
+            '<xsl:value-of separator="-"><xsl:sequence select="1,2"/></xsl:value-of>'
+            "</xsl:template>"
+        )
+    )
+    assert _text(separated.transform(initial_template="main").principal_tree) == "1-2"
+
+    adjacent = compile_bytes(
+        xsl(
+            '<xsl:template name="main">'
+            "<xsl:value-of><xsl:text>a</xsl:text><xsl:text>b</xsl:text></xsl:value-of>"
+            "</xsl:template>"
+        )
+    )
+    assert _text(adjacent.transform(initial_template="main").principal_tree) == "ab"
+
+
+def test_context_item_absent_and_default_forms() -> None:
+    absent = compile_bytes(
+        xsl('<xsl:template name="main"><xsl:context-item use="absent"/><out/></xsl:template>')
+    )
+    assert (
+        _element_children(
+            absent.transform(
+                initial_template="main",
+                global_context_item=XdmAtomic.integer(1),
+            ).principal_tree
+        )[0].local_name
+        == "out"
+    )
+
+    default = compile_bytes(
+        xsl('<xsl:template name="main"><xsl:context-item/><out/></xsl:template>')
+    )
+    assert (
+        _element_children(default.transform(initial_template="main").principal_tree)[0].local_name
+        == "out"
+    )
+
+
+def test_sequence_type_conversion_and_matching_arms(tmp_path: Path) -> None:
+    from pyxsd.xdm import XdmArray
+    from pyxsd.xslt.compiler.context import StaticContext
+    from pyxsd.xslt.compiler.expressions import compile_sequence_type
+    from pyxsd.xslt.processor import _coerce_sequence
+
+    schema_path = tmp_path / "types.xsd"
+    schema_path.write_text(
+        f'<xs:schema xmlns:xs="{XSD_NS}">'
+        '<xs:element name="child" type="xs:string"/>'
+        '<xs:attribute name="a" type="xs:string"/>'
+        "</xs:schema>",
+        encoding="utf-8",
+    )
+    pool = SchemaPool.from_schema(Schema.compile(schema_path))
+    context = StaticContext(namespaces={"xs": XSD_NS}, schema=pool)
+    source = XdmDocument.parse(b"<root a='1'>text<!--c--><?pi?><child>text</child></root>")
+    root = source.root_element
+    text = root.children[0]
+    comment = root.children[1]
+    instruction = root.children[2]
+    child = root.children[3]
+    attribute = root.attributes[0]
+    namespace = XdmDocument.parse(b"<x xmlns:p='urn:p'/>").root_element.namespace_nodes[0]
+    mapping = XdmMap.from_mapping({"k": 1})
+    array = XdmArray([1])
+
+    def check(type_source: str, item: Any, expected: Any = None) -> None:
+        sequence_type = compile_sequence_type(type_source, context)
+        result = _coerce_sequence((item,), sequence_type, code="XTTE0790", label="test")
+        assert result == ((item,) if expected is None else (expected,))
+
+    check("node()", root)
+    check("text()", text)
+    check("comment()", comment)
+    check("processing-instruction(pi)", instruction)
+    check("attribute()", attribute)
+    check("element()", child)
+    check("schema-element(child)", child)
+    check("schema-attribute(a)", attribute)
+    check("document-node()", source)
+    check("namespace-node()", namespace)
+    check("function(*)", mapping)
+    check("map(*)", mapping)
+    check("array(*)", array)
+    check("item()", XdmAtomic.string("x"))
+    check("xs:anyAtomicType", XdmAtomic.string("x"))
+    check("xs:string", child, XdmAtomic.string("text"))
+    check("xs:string", XdmAtomic.string("x"))
+
+    with pytest.raises(XsltError) as error:
+        _coerce_sequence(
+            (XdmAtomic.integer(1),),
+            compile_sequence_type("empty-sequence()", context),
+            code="XTTE0790",
+            label="test",
+        )
+    assert error.value.code == "XTTE0790"
+
+    assert (
+        _coerce_sequence(
+            (),
+            compile_sequence_type("empty-sequence()", context),
+            code="XTTE0790",
+            label="test",
+        )
+        == ()
+    )
+
+    with pytest.raises(XsltError) as error:
+        _coerce_sequence(
+            (),
+            compile_sequence_type("xs:integer+", context),
+            code="XTTE0790",
+            label="test",
+        )
+    assert error.value.code == "XTTE0790"
+
+    with pytest.raises(XsltError) as error:
+        _coerce_sequence(
+            (mapping,),
+            compile_sequence_type("xs:string", context),
+            code="XTTE0790",
+            label="test",
+        )
+    assert error.value.code == "FOTY0013"
+
+
+def test_value_of_flushes_pending_text_before_atomics() -> None:
+    compiled = compile_bytes(
+        xsl(
+            '<xsl:template name="main">'
+            '<xsl:value-of separator="-"><xsl:text>a</xsl:text>'
+            '<xsl:sequence select="1"/></xsl:value-of>'
+            "</xsl:template>"
+        )
+    )
+
+    assert _text(compiled.transform(initial_template="main").principal_tree) == "a-1"
+
+
+def test_template_parameter_name_validation_and_unknown_prefixes() -> None:
+    from pyxsd.xslt.processor import _expanded_name
+
+    compiled = compile_bytes(xsl('<xsl:template name="main"><out/></xsl:template>'))
+
+    with pytest.raises(TypeError, match="parameter names"):
+        compiled.transform(
+            initial_template="main",
+            template_parameters={1: "x"},  # type: ignore[dict-item]
+        )
+    result = compiled.transform(
+        initial_template="main",
+        template_parameters={"missing:p": "ignored"},
+        delivery="document",
+    )
+    assert _element_children(result.principal_tree)[0].local_name == "out"
+
+    assert _expanded_name("{urn:x}p", {}) == "{urn:x}p"
+    assert _expanded_name("missing:p", {}) == "missing:p"
+
+
+def test_literal_namespaces_skip_unused_default_even_when_excluded() -> None:
+    from pyxsd.xslt.compiler.instructions import Instruction
+    from pyxsd.xslt.processor import _literal_namespaces
+
+    instruction = Instruction(
+        name="out",
+        namespaces={
+            "": "urn:unused",
+            "p": "urn:p",
+            "xml": "http://www.w3.org/XML/1998/namespace",
+            "xsl": XSLT_NS,
+        },
+    )
+
+    assert _literal_namespaces(instruction, (), ("#default",)) == (("p", "urn:p"),)
+
+
+def test_mode_rule_context_item_constraints() -> None:
+    compiled = compile_bytes(
+        xsl(
+            '<xsl:template match="doc" mode="m">'
+            '<xsl:context-item use="required" as="element()"/>'
+            "<matched/>"
+            "</xsl:template>"
+        )
+    )
+    result = compiled.transform(source=b"<doc/>", initial_mode="m", delivery="document")
+    assert _element_children(result.principal_tree)[0].local_name == "matched"
+
+    with pytest.raises(XsltStaticError) as error:
+        compile_bytes(
+            xsl(
+                '<xsl:template match="doc" mode="m">'
+                '<xsl:context-item use="invalid"/>'
+                "</xsl:template>"
+            )
+        )
+    assert error.value.code == "XTSE0020"
+
+    with pytest.raises(XsltStaticError) as error:
+        compile_bytes(
+            xsl(
+                '<xsl:template match="doc" mode="m">'
+                '<xsl:context-item use="absent" as="item()"/>'
+                "</xsl:template>"
+            )
+        )
+    assert error.value.code == "XTSE3088"
+
+
+def test_mode_rule_result_types_are_converted() -> None:
+    good = compile_bytes(
+        xsl(
+            '<xsl:template match="doc" mode="m" as="xs:integer">'
+            "<xsl:sequence select=\"'5'\"/>"
+            "</xsl:template>"
+        )
+    )
+    assert good.transform(source=b"<doc/>", initial_mode="m", delivery="raw").principal == (
+        XdmAtomic.integer(5),
+    )
+
+    bad = compile_bytes(
+        xsl(
+            '<xsl:template match="doc" mode="m" as="xs:integer">'
+            '<xsl:sequence select="true()"/>'
+            "</xsl:template>"
+        )
+    )
+    with pytest.raises(XsltError) as error:
+        bad.transform(source=b"<doc/>", initial_mode="m", delivery="raw")
+    assert error.value.code == "XTTE0505"

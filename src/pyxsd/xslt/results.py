@@ -193,6 +193,24 @@ def _prefix_for(namespace: str | None, namespaces: Mapping[str, str]) -> str:
     return ""
 
 
+def _attribute_prefix(namespace: str | None, namespaces: Mapping[str, str]) -> str:
+    if namespace is None:
+        return ""
+    for prefix, uri in namespaces.items():
+        if uri == namespace and prefix:
+            return prefix
+    return ""
+
+
+def _new_prefix(namespaces: dict[str, str], namespace: str) -> str:
+    index = 1
+    while f"ns{index}" in namespaces:
+        index += 1
+    prefix = f"ns{index}"
+    namespaces[prefix] = namespace
+    return prefix
+
+
 class _NodeFactory:
     """One constructed document and the nodes that belong to it."""
 
@@ -258,10 +276,24 @@ class _NodeFactory:
         namespaces: Mapping[str, str] | None = None,
         base_uri: str | None = None,
     ) -> XdmNode:
-        """Create one detached element in this factory's document."""
+        """Create one detached element with namespace fixup applied."""
+        attributes = tuple(attributes)
         scope = dict(namespaces or {})
         scope.setdefault("xml", _XML_NS)
         namespace = _namespace(name)
+        if namespace is None:
+            scope.pop("", None)
+        elif not any(uri == namespace for uri in scope.values()):
+            if "" not in scope:
+                scope[""] = namespace
+            else:
+                _new_prefix(scope, namespace)
+        attribute_namespaces = {_namespace(attribute_name) for attribute_name, _ in attributes}
+        for attribute_namespace in attribute_namespaces:
+            if attribute_namespace is None:
+                continue
+            if _attribute_prefix(attribute_namespace, scope) == "":
+                _new_prefix(scope, attribute_namespace)
         prefix = _prefix_for(namespace, scope)
         declarations = tuple(
             (declared_prefix, uri)
@@ -287,7 +319,7 @@ class _NodeFactory:
                 value=value,
                 base_uri=base_uri,
                 in_scope_namespaces=scope,
-                prefix=_prefix_for(attribute_namespace, scope),
+                prefix=_attribute_prefix(attribute_namespace, scope),
                 namespace_uri=attribute_namespace,
             )
             element._append_attribute(attribute)

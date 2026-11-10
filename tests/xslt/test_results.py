@@ -264,8 +264,10 @@ def test_namespace_prefixes_and_namespace_nodes_are_preserved() -> None:
         attributes=(("{urn:default}attr", "v"),),
     )
     assert namespaced.prefix == ""
-    assert namespaced.attributes[0].prefix == ""
-    assert namespaced.namespace_nodes
+    assert namespaced.attributes[0].prefix == "ns1"
+    assert {node.prefix: node.string_value for node in namespaced.namespace_nodes}[
+        "ns1"
+    ] == "urn:default"
 
     factory = _factory()
     prefixed = factory.element(
@@ -302,11 +304,15 @@ def test_comment_pi_and_namespace_content_branches() -> None:
     assert element.children[1].kind is NodeKind.PROCESSING_INSTRUCTION
 
 
-def test_namespaced_element_without_a_bound_prefix_uses_no_prefix() -> None:
+def test_namespaced_element_without_a_bound_prefix_gets_a_default_binding() -> None:
     factory = _factory()
     element = factory.element("{urn:unbound}name")
 
     assert element.prefix == ""
+    assert element.in_scope_namespaces[""] == "urn:unbound"
+    assert any(
+        node.prefix == "" and node.string_value == "urn:unbound" for node in element.namespace_nodes
+    )
 
 
 def test_constructed_and_cloned_annotations_are_preserved() -> None:
@@ -326,3 +332,25 @@ def test_constructed_and_cloned_annotations_are_preserved() -> None:
     source._apply_occurrence_annotation(XdmAnnotation("urn:type", False))
     clone = _build_result_tree((source,)).root_element
     assert clone.annotation is source.annotation
+
+
+def test_namespace_prefix_generation_and_collision() -> None:
+    from pyxsd.xslt.results import _prefix_for
+
+    assert _prefix_for("urn:missing", {}) == ""
+
+    factory = _factory()
+    collided = factory.element(
+        "{urn:new}element",
+        namespaces={"": "urn:other", "ns1": "urn:other-two"},
+    )
+    assert collided.prefix == "ns2"
+    assert collided.in_scope_namespaces["ns2"] == "urn:new"
+
+    factory = _factory()
+    occupied_default = factory.element(
+        "{urn:new}element",
+        namespaces={"": "urn:occupied"},
+    )
+    assert occupied_default.prefix == "ns1"
+    assert occupied_default.in_scope_namespaces["ns1"] == "urn:new"

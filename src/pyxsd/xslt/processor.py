@@ -24,7 +24,15 @@ from urllib.parse import urljoin, urlsplit
 from pyxsd.document import Document
 from pyxsd.resource_policy import ResourcePolicyError
 from pyxsd.schema import Schema
-from pyxsd.xdm import XdmAtomic, XdmItem, XdmSequence, as_xdm
+from pyxsd.xdm import (
+    XdmArray,
+    XdmAtomic,
+    XdmFunction,
+    XdmItem,
+    XdmMap,
+    XdmSequence,
+    as_xdm,
+)
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath.engine import CompiledExpression, XPathEngine
@@ -36,8 +44,11 @@ from pyxsd.xslt.compiler.context import (
     StaticVariable,
 )
 from pyxsd.xslt.compiler.expressions import (
+    CompiledSequenceType,
     CompiledValueTemplate,
+    ItemType,
     compile_avt,
+    compile_sequence_type,
     compile_tvt,
     compile_xpath,
 )
@@ -46,7 +57,7 @@ from pyxsd.xslt.compiler.modules import ModuleLoader, SourceModule
 from pyxsd.xslt.compiler.packages import (
     CompiledPackage,
     Component,
-    ComponentKey,
+    ContextItemSignature,
     Mode,
     ModeKey,
     ModeRule,
@@ -136,7 +147,8 @@ class _SequencePlan:
 @dataclass(frozen=True, slots=True)
 class _ValueOfPlan:
     instruction: Instruction
-    expression: CompiledExpression
+    expression: CompiledExpression | None
+    children: tuple[_Plan, ...]
     separator: str | CompiledValueTemplate
 
 
@@ -157,6 +169,7 @@ class _ParamPlan:
     expression: CompiledExpression | None
     children: tuple[_Plan, ...]
     has_as: bool
+    sequence_type: CompiledSequenceType | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +204,15 @@ _Plan: TypeAlias = (
 class _BodyPlan:
     context: StaticContext
     body: tuple[_Plan, ...]
+    owner: str | None
+    context_item: ContextItemSignature | None
+    result_type: CompiledSequenceType | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ModeLayerPlan:
+    owner: str | None
+    rules: tuple[TemplateRule, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +222,7 @@ class _ComponentPlan:
     select: CompiledExpression | None
     body: tuple[_Plan, ...]
     has_as: bool
+    sequence_type: CompiledSequenceType | None
 
 
 # ---------------------------------------------------------------------------
@@ -329,10 +352,12 @@ class CompiledStylesheet:
     schema_pool: SchemaPool | None
     profile: ProfileOptions
     static_parameters: Mapping[str, Any]
-    _components: Mapping[ComponentKey, _ComponentPlan]
-    _modes: Mapping[ModeKey, tuple[tuple[TemplateRule, ...], ...]]
+    _components: Mapping[tuple[str | None, str, str | None, int | None], _ComponentPlan]
+    _modes: Mapping[ModeKey, tuple[_ModeLayerPlan, ...]]
     _globals: tuple[Component, ...]
-    _static_variables: Mapping[str, XdmSequence]
+    _package_variables: Mapping[str | None, tuple[Component, ...]]
+    _static_variables: Mapping[str | None, Mapping[str, XdmSequence]]
+    _packages: Mapping[str | None, CompiledPackage]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_components", MappingProxyType(dict(self._components)))
@@ -341,8 +366,21 @@ class CompiledStylesheet:
             self, "static_parameters", MappingProxyType(dict(self.static_parameters))
         )
         object.__setattr__(
-            self, "_static_variables", MappingProxyType(dict(self._static_variables))
+            self,
+            "_package_variables",
+            MappingProxyType(dict(self._package_variables)),
         )
+        object.__setattr__(
+            self,
+            "_static_variables",
+            MappingProxyType(
+                {
+                    name: MappingProxyType(dict(values))
+                    for name, values in self._static_variables.items()
+                }
+            ),
+        )
+        object.__setattr__(self, "_packages", MappingProxyType(dict(self._packages)))
 
     @property
     def language(self) -> str:
@@ -367,7 +405,7 @@ class CompiledStylesheet:
     def mode_rule_count(self, mode: str | None = None) -> int:
         """Number of compiled template rules in *mode*, including package layers."""
         name = None if mode in (None, "#unnamed") else _expanded_name(mode, self.package.namespaces)
-        return sum(len(layer) for layer in self._modes.get(name, ()))
+        return sum(len(layer.rules) for layer in self._modes.get(name, ()))
 
     def function_available(self, name: str, arity: int) -> bool:
         return self.package.function(name, arity) is not None
@@ -419,57 +457,65 @@ def _compile_stylesheet(
     static_parameters: Mapping[str, Any],
 ) -> CompiledStylesheet:
     modules = _module_map(package)
+    packages = _package_map(package)
     profile = processor._profile()
     collation = processor.default_collation
-    components: dict[ComponentKey, _ComponentPlan] = {}
-    modes: dict[ModeKey, tuple[tuple[TemplateRule, ...], ...]] = {}
-    for component in package.components.values():
-        module = _component_module(component, modules, principal)
-        context = _context_for(
-            module,
-            component.declaration,
-            package,
-            schema,
-            profile,
-            collation,
-            include_package_symbols=component.owner == package.name,
-        )
-        attributes = component.declaration
-        select_source = attributes.attribute("select")
-        if select_source is not None and component.kind != "variable":
-            raise XsltStaticError(
-                "select is not permitted on this component declaration",
-                code="XTSE0010",
-                uri=module.identity,
-                location=component.location,
+    components: dict[tuple[str | None, str, str | None, int | None], _ComponentPlan] = {}
+    for package_name, current_package in packages.items():
+        for component in current_package.components.values():
+            if component.owner != package_name:
+                continue
+            module = _component_module(component, modules, principal)
+            owner_package = packages.get(component.owner, package)
+            context = _context_for(
+                module,
+                component.declaration,
+                owner_package,
+                schema,
+                profile,
+                collation,
             )
-        select = (
-            compile_xpath(select_source, context, location=component.location)
-            if select_source is not None
-            else None
-        )
-        body = _compile_sequence(
-            component.body.children,
-            context,
-            module,
-        )
-        if select is not None and _has_plan_content(body):
-            raise XsltStaticError(
-                "a variable with a select attribute must have empty content",
-                code="XTSE0620",
-                uri=module.identity,
-                location=component.location,
+            attributes = component.declaration
+            select_source = attributes.attribute("select")
+            if select_source is not None and component.kind != "variable":
+                raise XsltStaticError(
+                    "select is not permitted on this component declaration",
+                    code="XTSE0010",
+                    uri=module.identity,
+                    location=component.location,
+                )
+            select = (
+                compile_xpath(select_source, context, location=component.location)
+                if select_source is not None
+                else None
             )
-        components[(component.kind, component.name, component.arity)] = _ComponentPlan(
-            component=component,
-            context=context,
-            select=select,
-            body=body,
-            has_as=attributes.attribute("as") is not None,
-        )
+            body = _compile_sequence(component.body.children, context, module)
+            if select is not None and _has_plan_content(body):
+                raise XsltStaticError(
+                    "a variable with a select attribute must have empty content",
+                    code="XTSE0620",
+                    uri=module.identity,
+                    location=component.location,
+                )
+            as_source = attributes.attribute("as")
+            components[(component.owner, component.kind, component.name, component.arity)] = (
+                _ComponentPlan(
+                    component=component,
+                    context=context,
+                    select=select,
+                    body=body,
+                    has_as=as_source is not None,
+                    sequence_type=(
+                        compile_sequence_type(as_source, context, location=component.location)
+                        if as_source is not None and component.kind == "variable"
+                        else None
+                    ),
+                )
+            )
 
+    modes: dict[ModeKey, tuple[_ModeLayerPlan, ...]] = {}
     for mode_name, mode in package.modes.items():
-        layers: list[tuple[TemplateRule, ...]] = []
+        layers: list[_ModeLayerPlan] = []
         for layer_index, layer in enumerate(mode.rule_layers):
             rules: list[TemplateRule] = []
             for rule in layer.rules:
@@ -481,17 +527,18 @@ def _compile_stylesheet(
                         uri=module.identity,
                         location=rule.location,
                     )
+                owner_package = packages.get(rule.owner, package)
                 context = _context_for(
                     module,
                     rule.declaration,
-                    package,
+                    owner_package,
                     schema,
                     profile,
                     collation,
-                    include_package_symbols=rule.owner == package.name,
                 )
                 pattern = compile_pattern(rule.pattern, context, location=rule.location)
                 body = _compile_sequence(rule.body.children, context, module)
+                as_source = rule.declaration.attribute("as")
                 rules.append(
                     TemplateRule(
                         pattern=pattern,
@@ -501,27 +548,57 @@ def _compile_stylesheet(
                         declaration_order=rule.declaration_order,
                         priority=rule.priority,
                         name=rule.name,
-                        template=_BodyPlan(context=context, body=body),
+                        template=_BodyPlan(
+                            context=context,
+                            body=body,
+                            owner=rule.owner,
+                            context_item=_context_item_signature(rule.declaration, context),
+                            result_type=(
+                                compile_sequence_type(
+                                    as_source,
+                                    context,
+                                    location=rule.location,
+                                )
+                                if as_source is not None
+                                else None
+                            ),
+                        ),
                         module=rule.module,
                     )
                 )
-            layers.append(tuple(rules))
+            layers.append(_ModeLayerPlan(owner=layer.owner, rules=tuple(rules)))
         modes[mode_name] = tuple(layers)
 
-    globals_ = tuple(
-        sorted(
-            (
-                component
-                for component in package.components.values()
-                if component.kind == "variable" and not component.hidden
-            ),
-            key=lambda component: component.declaration_order,
+    globals_: list[Component] = []
+    package_variables: dict[str | None, tuple[Component, ...]] = {}
+    static_variables: dict[str | None, dict[str, XdmSequence]] = {}
+    for package_name, current_package in packages.items():
+        package_variables[package_name] = tuple(
+            component
+            for component in current_package.components.values()
+            if component.kind == "variable" and not component.hidden
+        )
+        values: dict[str, XdmSequence] = {}
+        for module in current_package.modules:
+            for name, value in module.static_variables.items():
+                values.setdefault(name, value)
+        static_variables[package_name] = values
+        for component in current_package.components.values():
+            if (
+                component.kind != "variable"
+                or component.hidden
+                or component.owner != package_name
+                or component.name is None
+            ):
+                continue
+            globals_.append(component)
+    globals_.sort(
+        key=lambda component: (
+            component.owner is None,
+            component.owner or "",
+            component.declaration_order,
         )
     )
-    static_variables: dict[str, XdmSequence] = {}
-    for module in package.modules:
-        for name, value in module.static_variables.items():
-            static_variables.setdefault(name, value)
     return CompiledStylesheet(
         processor=processor,
         package=package,
@@ -530,8 +607,10 @@ def _compile_stylesheet(
         static_parameters=static_parameters,
         _components=components,
         _modes=modes,
-        _globals=globals_,
+        _globals=tuple(globals_),
+        _package_variables=package_variables,
         _static_variables=static_variables,
+        _packages=packages,
     )
 
 
@@ -542,6 +621,18 @@ def _module_map(package: CompiledPackage) -> dict[str, EffectiveModule]:
         for module in current.modules:
             if module.identity is not None:
                 result[module.identity] = module
+        for dependency in current.dependencies:
+            visit(dependency)
+
+    visit(package)
+    return result
+
+
+def _package_map(package: CompiledPackage) -> dict[str | None, CompiledPackage]:
+    result: dict[str | None, CompiledPackage] = {}
+
+    def visit(current: CompiledPackage) -> None:
+        result.setdefault(current.name, current)
         for dependency in current.dependencies:
             visit(dependency)
 
@@ -576,13 +667,11 @@ def _context_for(
     schema: SchemaPool | None,
     profile: ProfileOptions,
     default_collation: str | None,
-    *,
-    include_package_symbols: bool,
 ) -> StaticContext:
     base = StaticContext.for_module(module, schema=schema, profile=profile)
     variables = dict(base.variables)
     functions = dict(base.functions)
-    for component in package.components.values() if include_package_symbols else ():
+    for component in package.components.values():
         if component.kind == "variable" and component.name is not None:
             if component.name not in variables:
                 kind = (
@@ -626,6 +715,39 @@ def _context_for(
     return context
 
 
+def _context_item_signature(
+    declaration: Instruction,
+    context: StaticContext,
+) -> ContextItemSignature | None:
+    for child in declaration.elements:
+        if child.namespace_uri == XSLT_NS and child.local_name == "context-item":
+            use = child.attribute("use") or "optional"
+            if use not in ("required", "optional", "absent"):
+                raise XsltStaticError(
+                    f"invalid context-item use {use!r}",
+                    code="XTSE0020",
+                    uri=context.uri,
+                    location=child.location,
+                )
+            as_source = child.attribute("as")
+            if use == "absent" and as_source is not None:
+                raise XsltStaticError(
+                    "xsl:context-item with use='absent' must not have an as attribute",
+                    code="XTSE3088",
+                    uri=context.uri,
+                    location=child.location,
+                )
+            return ContextItemSignature(
+                use,
+                compile_sequence_type(
+                    as_source or "item()",
+                    context,
+                    location=child.location,
+                ),
+            )
+    return None
+
+
 def _compile_sequence(
     children: Iterable[Any],
     context: StaticContext,
@@ -633,6 +755,8 @@ def _compile_sequence(
 ) -> tuple[_Plan, ...]:
     plans: list[_Plan] = []
     for child in children:
+        if isinstance(child, Instruction) and child.is_xslt and child.local_name == "context-item":
+            continue
         if isinstance(child, TextNode):
             if context.expand_text:
                 plans.append(
@@ -690,18 +814,27 @@ def _compile_instruction(
     local = instruction.local_name
     if local == "sequence":
         select = instruction.attribute("select")
+        children = _compile_sequence(instruction.children, context, module)
+        if select is not None and _has_plan_content(children):
+            raise XsltStaticError(
+                "xsl:sequence with a select attribute must have empty content",
+                code="XTSE0010",
+                uri=context.uri,
+                location=location,
+            )
         return _SequencePlan(
             instruction=instruction,
             expression=(
                 compile_xpath(select, context, location=location) if select is not None else None
             ),
-            children=_compile_sequence(instruction.children, context, module),
+            children=children,
         )
     if local == "value-of":
         select = instruction.attribute("select")
-        if select is None:
+        children = _compile_sequence(instruction.children, context, module)
+        if select is not None and _has_plan_content(children):
             raise XsltStaticError(
-                "xsl:value-of requires a select attribute",
+                "xsl:value-of with a select attribute must have empty content",
                 code="XTSE0010",
                 uri=context.uri,
                 location=location,
@@ -709,7 +842,10 @@ def _compile_instruction(
         separator = instruction.attribute("separator")
         return _ValueOfPlan(
             instruction=instruction,
-            expression=compile_xpath(select, context, location=location),
+            expression=(
+                compile_xpath(select, context, location=location) if select is not None else None
+            ),
+            children=children,
             separator=(
                 compile_avt(separator, context, location=location) if separator is not None else " "
             ),
@@ -752,6 +888,7 @@ def _compile_instruction(
                 uri=context.uri,
                 location=location,
             )
+        as_source = instruction.attribute("as")
         return _ParamPlan(
             instruction=instruction,
             name=_expanded_name(name, instruction.namespaces),
@@ -761,7 +898,12 @@ def _compile_instruction(
                 compile_xpath(select, context, location=location) if select is not None else None
             ),
             children=children,
-            has_as=instruction.attribute("as") is not None,
+            has_as=as_source is not None,
+            sequence_type=(
+                compile_sequence_type(as_source, context, location=location)
+                if as_source is not None
+                else None
+            ),
         )
     if local == "result-document":
         href = instruction.attribute("href")
@@ -827,12 +969,12 @@ def _literal_namespaces(
     for prefix, uri in instruction.namespaces.items():
         if prefix in ("xml", "xsl"):
             continue
+        if uri in used:
+            result.append((prefix, uri))
+            continue
         if prefix == "" and "#default" in excluded:
             continue
-        if exclude_all:
-            if uri not in used:
-                continue
-        elif prefix in excluded:
+        if exclude_all or prefix in excluded:
             continue
         result.append((prefix, uri))
     return tuple(result)
@@ -910,7 +1052,7 @@ class _InvocationOptions:
     function_arguments: tuple[XdmSequence, ...]
     template_parameters: Mapping[str, XdmSequence]
     tunnel_parameters: Mapping[str, XdmSequence]
-    parameters: Mapping[str, XdmSequence]
+    parameters: Mapping[tuple[str | None, str], XdmSequence]
     output_uri: str | None
     delivery: str
     entry: Literal["template", "function", "mode"]
@@ -988,7 +1130,7 @@ def _prepare_invocation(
 
     template_params = _parameter_sequences(package, template_parameters)
     tunnel = _parameter_sequences(package, tunnel_parameters)
-    global_parameters = _parameter_sequences(package, parameters)
+    global_parameters = _global_parameter_sequences(package, parameters)
 
     template_component: Component | None = None
     function_component: Component | None = None
@@ -1001,17 +1143,6 @@ def _prepare_invocation(
         ):
             function_component = None
         if function_component is None:
-            expanded = _expanded_name(initial_function, package.namespaces)
-            if any(
-                candidate.kind == "function"
-                and candidate.name == expanded
-                and not candidate.hidden
-                and candidate.visibility in ("public", "final")
-                for candidate in package.components.values()
-            ):
-                raise ValueError(
-                    "initial_function_arguments do not match the initial function arity"
-                )
             raise XsltError(
                 f"the initial function {initial_function!r} with arity {len(arguments)} "
                 "is not a public or final stylesheet function",
@@ -1144,6 +1275,27 @@ def _parameter_sequences(
     return MappingProxyType(result)
 
 
+def _global_parameter_sequences(
+    package: CompiledPackage,
+    mapping: Mapping[str, Any] | None,
+) -> Mapping[tuple[str | None, str], XdmSequence]:
+    if mapping is None:
+        return MappingProxyType({})
+    if not isinstance(mapping, Mapping):
+        raise TypeError("parameters must be a mapping or None")
+    result: dict[tuple[str | None, str], XdmSequence] = {}
+    for name, value in mapping.items():
+        if not isinstance(name, str):
+            raise TypeError("parameter names must be strings")
+        try:
+            component = package.variable(name)
+        except XsltStaticError:
+            component = None
+        if component is not None and component.name is not None:
+            result[(component.owner, component.name)] = as_xdm(value)
+    return MappingProxyType(result)
+
+
 def _initial_mode(package: CompiledPackage, name: str) -> Mode:
     wanted = None if name == "#unnamed" else name
     mode = package.mode(wanted)
@@ -1159,6 +1311,189 @@ def _default_mode(package: CompiledPackage) -> Mode | None:
     if package.default_mode is None:
         return package.mode(None)
     return package.mode(package.default_mode)
+
+
+_XSD_NS = "http://www.w3.org/2001/XMLSchema"
+
+
+def _type_error(code: str, message: str) -> XsltError:
+    return XsltError(message, code=code)
+
+
+def _coerce_sequence(
+    sequence: XdmSequence,
+    sequence_type: CompiledSequenceType,
+    *,
+    code: str,
+    label: str,
+) -> XdmSequence:
+    """Apply a narrow but normative function-conversion boundary.
+
+    The implementation atomizes for atomic required types, casts
+    untyped/atomic values to the required built-in atomic type, and enforces
+    cardinality.  It does not pretend to be the full F&O function conversion
+    algorithm; unsupported conversions raise the specification's type error
+    rather than passing an untyped value through.
+    """
+    if sequence_type.item_type is None:
+        if sequence:
+            raise _type_error(
+                code,
+                f"{label} requires empty-sequence(), got {len(sequence)} item(s)",
+            )
+        return ()
+    item_type = sequence_type.item_type
+    items = (
+        _atomize_items(sequence, code=code, label=label)
+        if item_type.kind == "atomic"
+        else tuple(sequence)
+    )
+    _check_cardinality(items, sequence_type, code=code, label=label)
+    if item_type.kind == "atomic":
+        converted: list[XdmItem] = []
+        for item in items:
+            assert isinstance(item, XdmAtomic)
+            converted.append(_coerce_atomic(item, item_type, code=code, label=label))
+        return tuple(converted)
+    for item in items:
+        if not _matches_item_type(item, item_type):
+            raise _type_error(
+                code,
+                f"{label} requires {sequence_type}, got {type(item).__name__}",
+            )
+    return tuple(items)
+
+
+def _atomize_items(
+    sequence: XdmSequence,
+    *,
+    code: str,
+    label: str,
+) -> tuple[XdmAtomic, ...]:
+    atomized: list[XdmAtomic] = []
+    for item in sequence:
+        if isinstance(item, XdmAtomic):
+            atomized.append(item)
+            continue
+        if isinstance(item, XdmNode):
+            atomized.extend(value for value in item.typed_value if isinstance(value, XdmAtomic))
+            continue
+        raise _type_error(
+            "FOTY0013",
+            f"{label} cannot atomize a function item",
+        )
+    return tuple(atomized)
+
+
+def _coerce_atomic(
+    item: XdmAtomic,
+    item_type: ItemType,
+    *,
+    code: str,
+    label: str,
+) -> XdmAtomic:
+    required = item_type.name
+    if required is None or required == f"{{{_XSD_NS}}}anyAtomicType":
+        return item
+    if item.type_name == required:
+        return item
+    try:
+        return item.cast(required)
+    except (TypeError, ValueError) as exc:
+        raise _type_error(
+            code,
+            f"{label} requires {item_type}, cannot convert {item.lexical!r}",
+        ) from exc
+
+
+def _check_cardinality(
+    items: Sequence[XdmItem],
+    sequence_type: CompiledSequenceType,
+    *,
+    code: str,
+    label: str,
+) -> None:
+    count = len(items)
+    occurrence = sequence_type.occurrence
+    valid = (
+        (occurrence == "" and count == 1)
+        or (occurrence == "?" and count <= 1)
+        or (occurrence == "+" and count >= 1)
+        or occurrence == "*"
+    )
+    if not valid:
+        raise _type_error(
+            code,
+            f"{label} requires {sequence_type}, got {count} item(s)",
+        )
+
+
+def _matches_item_type(item: XdmItem, item_type: ItemType) -> bool:
+    kind = item_type.kind
+    if kind == "item":
+        return True
+    if kind == "node":
+        return isinstance(item, XdmNode)
+    if kind == "text":
+        return isinstance(item, XdmNode) and item.kind is NodeKind.TEXT
+    if kind == "comment":
+        return isinstance(item, XdmNode) and item.kind is NodeKind.COMMENT
+    if kind == "namespace-node":
+        return isinstance(item, XdmNode) and item.kind is NodeKind.NAMESPACE
+    if kind == "processing-instruction":
+        return (
+            isinstance(item, XdmNode)
+            and item.kind is NodeKind.PROCESSING_INSTRUCTION
+            and (item_type.target is None or item.target == item_type.target)
+        )
+    if kind in ("element", "schema-element"):
+        return (
+            isinstance(item, XdmNode)
+            and item.kind is NodeKind.ELEMENT
+            and (item_type.wildcard or item_type.name is None or item.name == item_type.name)
+        )
+    if kind in ("attribute", "schema-attribute"):
+        return (
+            isinstance(item, XdmNode)
+            and item.kind is NodeKind.ATTRIBUTE
+            and (item_type.wildcard or item_type.name is None or item.name == item_type.name)
+        )
+    if kind == "document-node":
+        return isinstance(item, XdmNode) and item.kind is NodeKind.DOCUMENT
+    if kind == "function":
+        return isinstance(item, (XdmFunction, XdmMap, XdmArray))
+    if kind == "map":
+        return isinstance(item, XdmMap)
+    if kind == "array":
+        return isinstance(item, XdmArray)
+    return False  # pragma: no cover - every ItemType kind is handled above
+
+
+def _item_string(item: XdmItem) -> str:
+    if isinstance(item, XdmAtomic):
+        return item.lexical
+    if isinstance(item, XdmNode):
+        return item.string_value
+    raise XsltError(
+        "atomization of a function item is not permitted here",
+        code="FOTY0013",
+    )
+
+
+def _simple_content_string(sequence: XdmSequence, separator: str) -> str:
+    values: list[str] = []
+    pending_text = ""
+    for item in sequence:
+        if isinstance(item, XdmNode) and item.kind is NodeKind.TEXT:
+            pending_text += item.string_value
+            continue
+        if pending_text:
+            values.append(pending_text)
+            pending_text = ""
+        values.append(_item_string(item))
+    if pending_text:
+        values.append(pending_text)
+    return separator.join(values)
 
 
 def _require_absolute(uri: str, label: str) -> str:
@@ -1178,8 +1513,8 @@ class _Invocation:
         self.stylesheet = stylesheet
         self.package = stylesheet.package
         self.options = options
-        self.globals: dict[str, XdmSequence] = {}
-        self._evaluating: list[str] = []
+        self.globals: dict[tuple[str | None, str], XdmSequence] = {}
+        self._evaluating: list[tuple[str | None, str]] = []
         self.secondary: dict[str, ResultEntry] = {}
         self.final_uris: set[str] = set()
         if options.output_uri is not None:
@@ -1250,7 +1585,9 @@ class _Invocation:
     # -- components and parameters ----------------------------------------
 
     def _component_plan(self, component: Component) -> _ComponentPlan:
-        return self.stylesheet._components[(component.kind, component.name, component.arity)]
+        return self.stylesheet._components[
+            (component.owner, component.kind, component.name, component.arity)
+        ]
 
     def _execute_component(
         self,
@@ -1262,12 +1599,16 @@ class _Invocation:
         final_output: bool,
     ) -> XdmSequence:
         plan = self._component_plan(component)
+        package_name = component.owner
         if component.kind == "function":
             focus = Focus.absent()
-        elif self.options.global_context_item is not None:
-            focus = Focus.singleton(self.options.global_context_item)
         else:
-            focus = Focus.absent()
+            if self.options.global_context_item is not None:
+                focus = Focus.singleton(self.options.global_context_item)
+            else:
+                focus = Focus.absent()
+            signature = component.signature.context_item if component.signature else None
+            focus = self._apply_context_item(signature, focus)
         locals_: dict[str, XdmSequence] = {}
         body = plan.body
         index = 0
@@ -1286,22 +1627,91 @@ class _Invocation:
                 value = (
                     supplied
                     if supplied is not None
-                    else self._parameter_default(parameter, focus, locals_)
+                    else self._parameter_default(parameter, focus, locals_, package_name)
                 )
+            value = self._coerce_parameter(
+                parameter,
+                value,
+                code=("XTTE0790" if component.kind == "function" else "XTTE0590"),
+            )
             self._bind(locals_, parameter.name, value)
             index += 1
-        return self._execute_plans(
-            body[index:], focus=focus, locals_=locals_, final_output=final_output
+        result = self._execute_plans(
+            body[index:],
+            focus=focus,
+            locals_=locals_,
+            final_output=final_output,
+            package_name=package_name,
         )
+        return self._coerce_component_result(component, result)
+
+    def _apply_context_item(
+        self,
+        signature: ContextItemSignature | None,
+        focus: Focus,
+    ) -> Focus:
+        if signature is None:
+            return focus
+        if signature.use == "absent":
+            return Focus.absent()
+        if focus.is_absent:
+            if signature.use == "required":
+                raise XsltError(
+                    "the template requires a context item but none was supplied",
+                    code="XTTE3090",
+                )
+            return focus
+        assert focus.item is not None
+        sequence = _coerce_sequence(
+            (focus.item,),
+            signature.sequence_type,
+            code="XTTE0590",
+            label="context item",
+        )
+        return Focus.singleton(
+            sequence[0],
+            position=focus.position,
+            size=focus.size,
+        )
+
+    def _coerce_parameter(
+        self,
+        parameter: _ParamPlan,
+        value: XdmSequence,
+        *,
+        code: str,
+    ) -> XdmSequence:
+        if parameter.sequence_type is None:
+            return value
+        return _coerce_sequence(
+            value,
+            parameter.sequence_type,
+            code=code,
+            label=f"parameter {parameter.name!r}",
+        )
+
+    def _coerce_component_result(
+        self,
+        component: Component,
+        value: XdmSequence,
+    ) -> XdmSequence:
+        declaration_as = component.declaration.attribute("as")
+        signature = component.signature
+        if declaration_as is None or signature is None or signature.return_type is None:
+            return value
+        code = "XTTE0780" if component.kind == "function" else "XTTE0505"
+        label = "function result" if component.kind == "function" else "template result"
+        return _coerce_sequence(value, signature.return_type, code=code, label=label)
 
     def _parameter_default(
         self,
         parameter: _ParamPlan,
         focus: Focus,
         locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
     ) -> XdmSequence:
         if parameter.expression is not None:
-            return self._evaluate(parameter.expression, focus, locals_)
+            return self._evaluate(parameter.expression, focus, locals_, package_name)
         if parameter.children:
             if parameter.has_as:
                 return self._execute_plans(
@@ -1309,12 +1719,14 @@ class _Invocation:
                     focus=focus,
                     locals_=locals_,
                     final_output=False,
+                    package_name=package_name,
                 )
             sequence = self._execute_plans(
                 parameter.children,
                 focus=focus,
                 locals_=locals_,
                 final_output=False,
+                package_name=package_name,
             )
             return (_build_result_tree(sequence),)
         if parameter.required:
@@ -1328,66 +1740,88 @@ class _Invocation:
 
     def _global_value(self, component: Component) -> XdmSequence:
         assert component.name is not None
-        key = component.name
+        key = (component.owner, component.name)
         cached = self.globals.get(key)
         if cached is not None:
             return cached
         if key in self._evaluating:
             raise XsltError(
-                f"circular dependency in the global variable {key!r}",
+                f"circular dependency in the global variable {component.name!r}",
                 code="XTDE0640",
             )
         self._evaluating.append(key)
         try:
             declaration = component.declaration
             plan = self._component_plan(component)
-            if plan.select is not None:
+            owner_package = self.stylesheet._packages.get(component.owner)
+            if plan.select is not None and owner_package is not None:
                 for name in _referenced_variables(plan.select.source):
-                    referenced = self.package.variable(name)
+                    referenced = owner_package.variable(name)
                     if referenced is not None:
                         self._global_value(referenced)
             static = declaration.attribute("static")
             if static is not None and _yes_no_runtime(static):
-                static_value = self.stylesheet._static_variables[key]
-                assert static_value is not None
+                static_values = self.stylesheet._static_variables.get(component.owner, {})
+                static_value = static_values[component.name]
                 self.globals[key] = static_value
                 return static_value
             is_param = declaration.local_name == "param"
             if is_param and key in self.options.parameters:
                 value = self.options.parameters[key]
+                value = self._coerce_global(plan, component, value)
                 self.globals[key] = value
                 return value
             if is_param and _yes_no_runtime(declaration.attribute("required")):
                 raise XsltError(
-                    f"the required global parameter {key!r} was not supplied",
+                    f"the required global parameter {component.name!r} was not supplied",
                     code="XTDE0050",
                 )
+            focus = self._global_focus(component)
             if plan.select is not None:
-                value = self._evaluate(plan.select, self._global_focus(component), {})
+                value = self._evaluate(plan.select, focus, {}, component.owner)
             elif plan.body:
                 if plan.has_as:
                     value = self._execute_plans(
                         plan.body,
-                        focus=self._global_focus(component),
+                        focus=focus,
                         locals_={},
                         final_output=False,
+                        package_name=component.owner,
                     )
                 else:
                     sequence = self._execute_plans(
                         plan.body,
-                        focus=self._global_focus(component),
+                        focus=focus,
                         locals_={},
                         final_output=False,
+                        package_name=component.owner,
                     )
                     value = (_build_result_tree(sequence),)
             elif plan.has_as:
                 value = ()
             else:
                 value = (XdmAtomic.string(""),)
+            value = self._coerce_global(plan, component, value)
             self.globals[key] = value
             return value
         finally:
             self._evaluating.pop()
+
+    def _coerce_global(
+        self,
+        plan: _ComponentPlan,
+        component: Component,
+        value: XdmSequence,
+    ) -> XdmSequence:
+        if plan.sequence_type is None:
+            return value
+        code = "XTTE0590" if component.declaration.local_name == "param" else "XTTE0570"
+        return _coerce_sequence(
+            value,
+            plan.sequence_type,
+            code=code,
+            label=f"global variable {component.name!r}",
+        )
 
     def _global_focus(self, component: Component) -> Focus:
         if component.owner != self.package.name:
@@ -1404,6 +1838,7 @@ class _Invocation:
         focus: Focus,
         locals_: Mapping[str, XdmSequence],
         final_output: bool,
+        package_name: str | None,
     ) -> XdmSequence:
         result: list[XdmItem] = []
         local_scope = dict(locals_)
@@ -1415,7 +1850,11 @@ class _Invocation:
                 )
             result.extend(
                 self._execute_plan(
-                    plan, focus=focus, locals_=local_scope, final_output=final_output
+                    plan,
+                    focus=focus,
+                    locals_=local_scope,
+                    final_output=final_output,
+                    package_name=package_name,
                 )
             )
         return tuple(result)
@@ -1427,26 +1866,42 @@ class _Invocation:
         focus: Focus,
         locals_: Mapping[str, XdmSequence],
         final_output: bool,
+        package_name: str | None,
     ) -> XdmSequence:
         if isinstance(plan, _TextPlan):
             return (self._text_node(plan.value),)
         if isinstance(plan, _TvtPlan):
-            return (self._text_node(self._value_template(plan.template, focus, locals_)),)
+            return (
+                self._text_node(self._value_template(plan.template, focus, locals_, package_name)),
+            )
         if isinstance(plan, _SequencePlan):
             if plan.expression is not None:
-                return self._evaluate(plan.expression, focus, locals_)
+                return self._evaluate(plan.expression, focus, locals_, package_name)
             return self._execute_plans(
-                plan.children, focus=focus, locals_=locals_, final_output=final_output
+                plan.children,
+                focus=focus,
+                locals_=locals_,
+                final_output=final_output,
+                package_name=package_name,
             )
         if isinstance(plan, _ValueOfPlan):
-            values = self._evaluate(plan.expression, focus, locals_)
-            separator = self._value_source(plan.separator, focus, locals_)
-            text = separator.join(self._string_value(item) for item in values)
+            if plan.expression is not None:
+                values = self._evaluate(plan.expression, focus, locals_, package_name)
+            else:
+                values = self._execute_plans(
+                    plan.children,
+                    focus=focus,
+                    locals_=locals_,
+                    final_output=final_output,
+                    package_name=package_name,
+                )
+            separator = self._value_source(plan.separator, focus, locals_, package_name)
+            text = _simple_content_string(values, separator)
             return (self._text_node(text),)
         if isinstance(plan, _LiteralPlan):
-            return (self._literal_element(plan, focus, locals_),)
+            return (self._literal_element(plan, focus, locals_, final_output, package_name),)
         if isinstance(plan, _ResultDocumentPlan):
-            self._result_document(plan, focus, locals_, final_output)
+            self._result_document(plan, focus, locals_, final_output, package_name)
             return ()
         if isinstance(plan, _UnsupportedPlan):
             raise XsltError(
@@ -1463,10 +1918,13 @@ class _Invocation:
         plan: _LiteralPlan,
         focus: Focus,
         locals_: Mapping[str, XdmSequence],
+        final_output: bool,
+        package_name: str | None,
     ) -> XdmNode:
         factory = _NodeFactory()
         attributes = tuple(
-            (name, self._value_source(value, focus, locals_)) for name, value in plan.attributes
+            (name, self._value_source(value, focus, locals_, package_name))
+            for name, value in plan.attributes
         )
         element = factory.element(
             plan.instruction.name,
@@ -1475,7 +1933,11 @@ class _Invocation:
             base_uri=plan.instruction.base_uri,
         )
         content = self._execute_plans(
-            plan.children, focus=focus, locals_=locals_, final_output=True
+            plan.children,
+            focus=focus,
+            locals_=locals_,
+            final_output=final_output,
+            package_name=package_name,
         )
         _append_complex_content(factory, element, content, allow_attributes=True)
         return element
@@ -1486,20 +1948,25 @@ class _Invocation:
         focus: Focus,
         locals_: Mapping[str, XdmSequence],
         final_output: bool,
+        package_name: str | None,
     ) -> None:
         if not final_output:
             raise XsltError(
                 "xsl:result-document is not permitted in temporary output state",
                 code="XTDE1480",
             )
-        href = self._value_source(plan.href, focus, locals_)
+        href = self._value_source(plan.href, focus, locals_, package_name)
         method = (
-            self._value_source(plan.method, focus, locals_) if plan.method is not None else None
+            self._value_source(plan.method, focus, locals_, package_name)
+            if plan.method is not None
+            else None
         )
         format_name = (
-            self._value_source(plan.format, focus, locals_) if plan.format is not None else None
+            self._value_source(plan.format, focus, locals_, package_name)
+            if plan.format is not None
+            else None
         )
-        format_attributes: dict[str, str] = {}
+        base_attributes: dict[str, str] = {}
         if format_name is not None:
             declaration = self.package.output(format_name)
             if declaration is None:
@@ -1507,15 +1974,20 @@ class _Invocation:
                     f"the named output format {format_name!r} is not declared",
                     code="XTDE1460",
                 )
-            format_attributes.update(declaration.attributes)
+            base_attributes.update(declaration.attributes)
+        else:
+            declaration = self.package.output(None)
+            if declaration is not None:
+                base_attributes.update(declaration.attributes)
         evaluated = {
-            name: self._value_source(value, focus, locals_) for name, value in plan.attributes
+            name: self._value_source(value, focus, locals_, package_name)
+            for name, value in plan.attributes
         }
-        effective_method = method or format_attributes.get("method", "xml")
+        effective_method = method or base_attributes.get("method", "xml")
         build_tree = (
-            self._value_source(plan.build_tree, focus, locals_)
+            self._value_source(plan.build_tree, focus, locals_, package_name)
             if plan.build_tree is not None
-            else format_attributes.get("build-tree")
+            else base_attributes.get("build-tree")
         )
         uri = self._secondary_uri(href)
         if uri in self.final_uris:
@@ -1525,12 +1997,16 @@ class _Invocation:
             )
         self.final_uris.add(uri)
         sequence = self._execute_plans(
-            plan.children, focus=focus, locals_=locals_, final_output=True
+            plan.children,
+            focus=focus,
+            locals_=locals_,
+            final_output=True,
+            package_name=package_name,
         )
         tree = None
         if self._build_tree(build_tree, effective_method):
             tree = _build_result_tree(sequence, output_uri=uri)
-        serialization = dict(format_attributes)
+        serialization = dict(base_attributes)
         serialization.update(evaluated)
         serialization["method"] = effective_method
         if build_tree is not None:
@@ -1578,7 +2054,7 @@ class _Invocation:
         tunnel_parameters: Mapping[str, XdmSequence],
     ) -> XdmSequence:
         layers = self.stylesheet._modes.get(mode, ())
-        indexes = tuple(PatternIndex(layer) for layer in layers)
+        indexes = tuple((layer.owner, PatternIndex(layer.rules)) for layer in layers)
         result: list[XdmItem] = []
         size = len(items)
         for position, item in enumerate(items, 1):
@@ -1588,6 +2064,7 @@ class _Invocation:
                 result.extend(self._builtin(item, mode, tunnel_parameters))
                 continue
             body = cast(_BodyPlan, rule.template)
+            rule_focus = self._apply_context_item(body.context_item, focus)
             locals_: dict[str, XdmSequence] = {}
             index = 0
             while index < len(body.body) and isinstance(body.body[index], _ParamPlan):
@@ -1600,29 +2077,40 @@ class _Invocation:
                 value = (
                     supplied
                     if supplied is not None
-                    else self._parameter_default(parameter, focus, locals_)
+                    else self._parameter_default(parameter, rule_focus, locals_, body.owner)
                 )
+                value = self._coerce_parameter(parameter, value, code="XTTE0590")
                 self._bind(locals_, parameter.name, value)
                 index += 1
-            result.extend(
-                self._execute_plans(
-                    body.body[index:], focus=focus, locals_=locals_, final_output=True
-                )
+            rule_result = self._execute_plans(
+                body.body[index:],
+                focus=rule_focus,
+                locals_=locals_,
+                final_output=True,
+                package_name=body.owner,
             )
+            if body.result_type is not None:
+                rule_result = _coerce_sequence(
+                    rule_result,
+                    body.result_type,
+                    code="XTTE0505",
+                    label="template rule result",
+                )
+            result.extend(rule_result)
         return tuple(result)
 
     def _select_rule(
         self,
-        indexes: tuple[PatternIndex, ...],
+        indexes: tuple[tuple[str | None, PatternIndex], ...],
         item: XdmItem,
         mode: str | None,
     ) -> TemplateRule | None:
-        environment = self._environment({})
-        for index in indexes:
+        for layer_index, (owner, index) in enumerate(indexes):
+            environment = self._environment({}, owner)
             rule = index.select(
                 item,
                 mode=mode,
-                package_layer=0,
+                package_layer=layer_index,
                 environment=environment,
             )
             if rule is not None:
@@ -1655,18 +2143,26 @@ class _Invocation:
         expression: CompiledExpression,
         focus: Focus,
         locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
     ) -> XdmSequence:
         engine = XPathEngine(expression.version)
         return engine.evaluate(
             expression,
-            self._environment(locals_),
+            self._environment(locals_, package_name),
             focus=focus,
         )
 
-    def _environment(self, locals_: Mapping[str, XdmSequence]) -> ExpressionEnvironment:
+    def _environment(
+        self,
+        locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
+    ) -> ExpressionEnvironment:
         variables: dict[str, Any] = {}
-        for key, value in self.globals.items():
-            self._bind(variables, key, value)
+        for component in self.stylesheet._package_variables.get(package_name, ()):
+            assert component.name is not None
+            value = self.globals.get((component.owner, component.name))
+            if value is not None:
+                self._bind(variables, component.name, value)
         for key, value in locals_.items():
             self._bind(variables, key, value)
         return ExpressionEnvironment(
@@ -1690,16 +2186,18 @@ class _Invocation:
         source: str | CompiledValueTemplate,
         focus: Focus,
         locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
     ) -> str:
         if isinstance(source, str):
             return source
-        return self._value_template(source, focus, locals_)
+        return self._value_template(source, focus, locals_, package_name)
 
     def _value_template(
         self,
         template: CompiledValueTemplate,
         focus: Focus,
         locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
     ) -> str:
         parts: list[str] = []
         for part in template.parts:
@@ -1707,19 +2205,12 @@ class _Invocation:
                 parts.append(part.text)
                 continue
             assert part.expression is not None
-            values = self._evaluate(part.expression, focus, locals_)
+            values = self._evaluate(part.expression, focus, locals_, package_name)
             parts.append(" ".join(self._string_value(item) for item in values))
         return "".join(parts)
 
     def _string_value(self, item: XdmItem) -> str:
-        if isinstance(item, XdmAtomic):
-            return item.lexical
-        if isinstance(item, XdmNode):
-            return item.string_value
-        raise XsltError(
-            "atomization of a function item is not permitted here",
-            code="FOTY0013",
-        )
+        return _item_string(item)
 
 
 _VARIABLE_REFERENCE = re.compile(r"\$([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)")

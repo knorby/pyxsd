@@ -18,7 +18,7 @@ from tests.xslt.assertions import ResultSnapshot
 from tests.xslt.catalog import load_catalog
 from tests.xslt.model import Param, TestCase
 from tests.xslt.outcomes import Outcome
-from tests.xslt.runner import run_cases
+from tests.xslt.runner import CaseExecutionError, run_cases
 from tests.xslt.selection import XSLT30_NON_STREAMING
 
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmMap
@@ -26,6 +26,7 @@ from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xpath.engine import XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, XPathStaticContext
 from pyxsd.xslt import TransformationResult, XsltProcessor
+from pyxsd.xslt.errors import XsltError
 
 CORPUS = Path(__file__).parent / "corpus"
 
@@ -35,6 +36,10 @@ SELECTED = {
     "initial-template/initial-template-002": frozenset({"xml"}),
     "initial-function/initial-function-002": frozenset({"count", "value"}),
     "initial-function/initial-function-100e": frozenset({"count", "type"}),
+    "initial-function/initial-function-901": frozenset({"expected-error"}),
+    "initial-function/initial-function-902": frozenset({"expected-error"}),
+    "initial-function/initial-function-903": frozenset({"expected-error"}),
+    "initial-function/initial-function-905": frozenset({"expected-error"}),
     "seqtor/seqtor-001": frozenset({"string"}),
     "seqtor/seqtor-002": frozenset({"string"}),
 }
@@ -182,22 +187,29 @@ def _execute(case: TestCase) -> ResultSnapshot:
         stylesheet,
         static_parameters=static_parameters,
     )
-    result = compiled.transform(
-        parameters=parameters,
-        template_parameters=template_parameters,
-        tunnel_parameters=tunnel_parameters,
-        initial_template=(
-            invocation.initial_template.name if invocation.initial_template is not None else None
-        ),
-        initial_mode=(
-            invocation.initial_mode.name if invocation.initial_mode is not None else None
-        ),
-        initial_function=(
-            invocation.initial_function.name if invocation.initial_function is not None else None
-        ),
-        initial_function_arguments=arguments,
-        delivery=_delivery(case),
-    )
+    try:
+        result = compiled.transform(
+            parameters=parameters,
+            template_parameters=template_parameters,
+            tunnel_parameters=tunnel_parameters,
+            initial_template=(
+                invocation.initial_template.name
+                if invocation.initial_template is not None
+                else None
+            ),
+            initial_mode=(
+                invocation.initial_mode.name if invocation.initial_mode is not None else None
+            ),
+            initial_function=(
+                invocation.initial_function.name
+                if invocation.initial_function is not None
+                else None
+            ),
+            initial_function_arguments=arguments,
+            delivery=_delivery(case),
+        )
+    except XsltError as exc:
+        raise CaseExecutionError(exc.code or "", str(exc)) from exc
     return _snapshot(result)
 
 
