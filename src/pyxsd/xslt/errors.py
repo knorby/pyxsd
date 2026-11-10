@@ -90,3 +90,32 @@ class XsltStaticError(XsltError):
             location=location,
             cause=cause,
         )
+
+
+class XsltDynamicError(XsltError):
+    """A dynamic error raised while executing a transformation.
+
+    ``code`` is normally an XSLT ``XTDE``/``XTTE`` code or an XPath error code.
+    The execution runtime's own resource limits use the stable implementation
+    code ``PYXSD-XSLT-001``; callers can test it exactly without depending on
+    message text.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        phase: str = "dynamic",
+        uri: str | None = None,
+        location: IssueLocation | None = None,
+        cause: BaseException | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            code=code,
+            phase=phase,
+            uri=uri,
+            location=location,
+            cause=cause,
+        )

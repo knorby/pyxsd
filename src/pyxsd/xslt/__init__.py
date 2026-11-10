@@ -6,7 +6,7 @@ binding of the packaged XSLT schemas; it never decides acceptance or compiles
 the stylesheet.
 """
 
-from pyxsd.xslt.errors import XsltInspectionError
+from pyxsd.xslt.errors import XsltDynamicError, XsltInspectionError
 from pyxsd.xslt.inspection import (
     InspectionDiagnostic,
     StylesheetInspection,
@@ -23,15 +23,18 @@ from pyxsd.xslt.results import (
     ResultShapeError,
     TransformationResult,
 )
+from pyxsd.xslt.runtime.frames import ExecutionLimits
 
 __all__ = [
     "CompiledStylesheet",
+    "ExecutionLimits",
     "InspectionDiagnostic",
     "Message",
     "ResultEntry",
     "ResultShapeError",
     "StylesheetInspection",
     "TransformationResult",
+    "XsltDynamicError",
     "XsltInspectionError",
     "XsltInvocationError",
     "XsltProcessor",

@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Literal, TypeAlias, cast
 from urllib.parse import urljoin, urlsplit
@@ -35,6 +35,7 @@ from pyxsd.xdm import (
 )
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
+from pyxsd.xpath.continuation import ContinuationMachine, Suspension
 from pyxsd.xpath.engine import CompiledExpression, XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus
 from pyxsd.xslt.compiler.context import (
@@ -75,7 +76,16 @@ from pyxsd.xslt.results import (
     _build_result_tree,
     _NodeFactory,
 )
+from pyxsd.xslt.runtime.frames import (
+    NO_INPUT,
+    Call,
+    Continue,
+    Frame,
+    FrameResult,
+    Return,
+)
 from pyxsd.xslt.runtime.templates import PatternIndex, TemplateRule
+from pyxsd.xslt.runtime.transformation import ComponentCall, Transformation
 
 __all__ = [
     "CompiledStylesheet",
@@ -173,6 +183,40 @@ class _ParamPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class _WithParamPlan:
+    name: str
+    tunnel: bool
+    expression: CompiledExpression | None
+    children: tuple[_Plan, ...]
+    has_as: bool
+    sequence_type: CompiledSequenceType | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CallTemplatePlan:
+    instruction: Instruction
+    reference: Any
+    parameters: tuple[_WithParamPlan, ...]
+    tail: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _ApplyTemplatesPlan:
+    instruction: Instruction
+    expression: CompiledExpression
+    mode: str | None
+    parameters: tuple[_WithParamPlan, ...]
+    tail: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _ChoosePlan:
+    instruction: Instruction
+    branches: tuple[tuple[CompiledExpression, tuple[_Plan, ...]], ...]
+    otherwise: tuple[_Plan, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
 class _ResultDocumentPlan:
     instruction: Instruction
     href: str | CompiledValueTemplate
@@ -195,6 +239,10 @@ _Plan: TypeAlias = (
     | _ValueOfPlan
     | _LiteralPlan
     | _ParamPlan
+    | _WithParamPlan
+    | _CallTemplatePlan
+    | _ApplyTemplatesPlan
+    | _ChoosePlan
     | _ResultDocumentPlan
     | _UnsupportedPlan
 )
@@ -223,6 +271,20 @@ class _ComponentPlan:
     body: tuple[_Plan, ...]
     has_as: bool
     sequence_type: CompiledSequenceType | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ApplyState:
+    items: XdmSequence
+    mode: str | None
+    template_parameters: Mapping[str, XdmSequence]
+    tunnel_parameters: Mapping[str, XdmSequence]
+    index: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _XPathState:
+    machine: ContinuationMachine
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +487,7 @@ class CompiledStylesheet:
         initial_function_arguments: Sequence[Any] = (),
         output_uri: str | None = None,
         delivery: str = "stylesheet",
+        limits: Any = None,
     ) -> TransformationResult:
         """Run one fresh invocation of this compiled stylesheet."""
         options = _prepare_invocation(
@@ -442,7 +505,7 @@ class CompiledStylesheet:
             output_uri=output_uri,
             delivery=delivery,
         )
-        return _Invocation(self, options).run()
+        return _Invocation(self, options, limits=limits).run()
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +552,7 @@ def _compile_stylesheet(
                 if select_source is not None
                 else None
             )
-            body = _compile_sequence(component.body.children, context, module)
+            body = _mark_tail(_compile_sequence(component.body.children, context, module))
             if select is not None and _has_plan_content(body):
                 raise XsltStaticError(
                     "a variable with a select attribute must have empty content",
@@ -537,7 +600,7 @@ def _compile_stylesheet(
                     collation,
                 )
                 pattern = compile_pattern(rule.pattern, context, location=rule.location)
-                body = _compile_sequence(rule.body.children, context, module)
+                body = _mark_tail(_compile_sequence(rule.body.children, context, module))
                 as_source = rule.declaration.attribute("as")
                 rules.append(
                     TemplateRule(
@@ -775,6 +838,105 @@ def _compile_sequence(
     return tuple(plans)
 
 
+def _compile_with_params(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> tuple[_WithParamPlan, ...]:
+    result: list[_WithParamPlan] = []
+    for child in instruction.children:
+        if isinstance(child, TextNode):
+            raise XsltStaticError(
+                "xsl:with-param is the only permitted content here",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        if not (child.is_xslt and child.local_name == "with-param"):
+            raise XsltStaticError(
+                "xsl:with-param is the only permitted content here",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        name = child.attribute("name")
+        if not name:
+            raise XsltStaticError(
+                "xsl:with-param requires a name",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        select = child.attribute("select")
+        children = _compile_sequence(child.children, context, module)
+        if select is not None and _has_plan_content(children):
+            raise XsltStaticError(
+                "a parameter with a select attribute must have empty content",
+                code="XTSE0620",
+                uri=context.uri,
+                location=child.location,
+            )
+        as_source = child.attribute("as")
+        result.append(
+            _WithParamPlan(
+                name=_expanded_name(name, child.namespaces),
+                tunnel=_attribute_yes_no(child, "tunnel", context),
+                expression=(
+                    compile_xpath(select, context, location=child.location)
+                    if select is not None
+                    else None
+                ),
+                children=children,
+                has_as=as_source is not None,
+                sequence_type=(
+                    compile_sequence_type(as_source, context, location=child.location)
+                    if as_source is not None
+                    else None
+                ),
+            )
+        )
+    return tuple(result)
+
+
+def _instruction_mode(instruction: Instruction) -> str | None:
+    value = instruction.attribute("mode")
+    if value is None or value.strip() == "#unnamed":
+        return None
+    normalized = value.strip()
+    if normalized in ("#current", "#default"):
+        return normalized
+    return _expanded_name(normalized, instruction.namespaces)
+
+
+def _mark_tail(plans: tuple[_Plan, ...]) -> tuple[_Plan, ...]:
+    """Mark semantically safe tail calls in one sequence constructor.
+
+    Only the final plan of a sequence is eligible.  The marker is propagated
+    through control-flow and nested sequence constructors, but never through a
+    literal result element, value template, parameter default, or result
+    document because those have pending construction or conversion work.
+    """
+    if not plans:
+        return plans
+    body = list(plans)
+    body[-1] = _tail_marked_plan(body[-1])
+    return tuple(body)
+
+
+def _tail_marked_plan(plan: _Plan) -> _Plan:
+    if isinstance(plan, (_CallTemplatePlan, _ApplyTemplatesPlan)):
+        return replace(plan, tail=True)
+    if isinstance(plan, _ChoosePlan):
+        return replace(
+            plan,
+            branches=tuple((test, _mark_tail(branch)) for test, branch in plan.branches),
+            otherwise=(None if plan.otherwise is None else _mark_tail(plan.otherwise)),
+        )
+    if isinstance(plan, _SequencePlan) and plan.expression is None and plan.children:
+        return replace(plan, children=_mark_tail(plan.children))
+    return plan
+
+
 def _exclusions(module: EffectiveModule) -> tuple[str, ...]:
     value = module.root.attribute("exclude-result-prefixes") or ""
     return tuple(value.split())
@@ -948,6 +1110,88 @@ def _compile_instruction(
             ),
             attributes=tuple(extra_attributes),
             children=_compile_sequence(instruction.children, context, module),
+        )
+    if local == "choose":
+        branches: list[tuple[CompiledExpression, tuple[_Plan, ...]]] = []
+        otherwise: tuple[_Plan, ...] | None = None
+        for child in instruction.children:
+            if isinstance(child, TextNode):
+                raise XsltStaticError(
+                    "xsl:choose permits only xsl:when and xsl:otherwise children",
+                    code="XTSE0010",
+                    uri=context.uri,
+                    location=child.location,
+                )
+            if child.is_xslt and child.local_name == "when":
+                test = child.attribute("test")
+                if test is None:
+                    raise XsltStaticError(
+                        "xsl:when requires a test attribute",
+                        code="XTSE0010",
+                        uri=context.uri,
+                        location=child.location,
+                    )
+                branches.append(
+                    (
+                        compile_xpath(test, context, location=child.location),
+                        _compile_sequence(child.children, context, module),
+                    )
+                )
+                continue
+            if child.is_xslt and child.local_name == "otherwise":
+                if otherwise is not None:
+                    raise XsltStaticError(
+                        "xsl:choose permits at most one xsl:otherwise",
+                        code="XTSE0010",
+                        uri=context.uri,
+                        location=child.location,
+                    )
+                otherwise = _compile_sequence(child.children, context, module)
+                continue
+            raise XsltStaticError(
+                "xsl:choose permits only xsl:when and xsl:otherwise children",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        return _ChoosePlan(
+            instruction=instruction,
+            branches=tuple(branches),
+            otherwise=otherwise,
+        )
+    if local == "call-template":
+        reference = instruction.reference
+        if reference is None:
+            raise XsltStaticError(
+                "xsl:call-template requires a visible named template",
+                code="XTSE0650",
+                uri=context.uri,
+                location=location,
+            )
+        return _CallTemplatePlan(
+            instruction=instruction,
+            reference=reference,
+            parameters=_compile_with_params(instruction, context, module),
+        )
+    if local == "apply-templates":
+        select = instruction.attribute("select")
+        expression = (
+            compile_xpath(select, context, location=location)
+            if select is not None
+            else compile_xpath("child::node()", context, location=location)
+        )
+        return _ApplyTemplatesPlan(
+            instruction=instruction,
+            expression=expression,
+            mode=_instruction_mode(instruction),
+            parameters=_compile_with_params(instruction, context, module),
+        )
+    if local == "with-param":
+        raise XsltStaticError(
+            "xsl:with-param is only permitted inside a call or apply instruction",
+            code="XTSE0010",
+            uri=context.uri,
+            location=location,
         )
     select = instruction.attribute("select")
     if select is not None:
@@ -1499,6 +1743,24 @@ def _simple_content_string(sequence: XdmSequence, separator: str) -> str:
     return separator.join(values)
 
 
+def _effective_boolean(sequence: XdmSequence) -> bool:
+    """Evaluate an XDM effective boolean value for control-flow tests."""
+    if not sequence:
+        return False
+    first = sequence[0]
+    if isinstance(first, XdmNode):
+        return True
+    if isinstance(first, XdmAtomic):
+        try:
+            return bool(first.cast(f"{{{_XSD_NS}}}boolean").value)
+        except (TypeError, ValueError):
+            return first.lexical != ""
+    raise XsltError(
+        "the effective boolean value of a function item is not defined",
+        code="FORG0006",
+    )
+
+
 def _require_absolute(uri: str, label: str) -> str:
     if not isinstance(uri, str) or not uri or not urlsplit(uri).scheme:
         raise XsltInvocationError(f"{label} must be a non-empty absolute URI, got {uri!r}")
@@ -1509,23 +1771,18 @@ def _require_absolute(uri: str, label: str) -> str:
 # Invocation execution
 
 
-class _Invocation:
-    """One transformation's complete dynamic state."""
+class _Invocation(Transformation):
+    """One transformation's complete dynamic state and instruction runtime."""
 
-    def __init__(self, stylesheet: CompiledStylesheet, options: _InvocationOptions) -> None:
-        self.stylesheet = stylesheet
-        self.package = stylesheet.package
-        self.options = options
-        self.globals: dict[tuple[str | None, str], XdmSequence] = {}
-        self._evaluating: list[tuple[str | None, str]] = []
-        self.secondary: dict[str, ResultEntry] = {}
-        self.final_uris: set[str] = set()
-        if options.output_uri is not None:
-            self.final_uris.add(options.output_uri)
-        base = ExpressionEnvironment()
-        self.current_datetime = base.current_datetime
-        self.implicit_timezone = base.implicit_timezone
-        self.output_attributes = self._output_attributes()
+    def __init__(
+        self,
+        stylesheet: CompiledStylesheet,
+        options: _InvocationOptions,
+        *,
+        limits: Any = None,
+    ) -> None:
+        super().__init__(stylesheet, options, limits=limits)
+        self._mode_index_cache: dict[str | None, tuple[tuple[str | None, PatternIndex], ...]] = {}
 
     # -- top level ---------------------------------------------------------
 
@@ -1553,12 +1810,6 @@ class _Invocation:
             secondary=self.secondary,
             messages=(),
         )
-
-    def _output_attributes(self) -> Mapping[str, str]:
-        output = self.package.output(None)
-        if output is None:
-            return MappingProxyType({})
-        return MappingProxyType(dict(output.attributes))
 
     def _execute_entry(self) -> XdmSequence:
         options = self.options
@@ -1600,20 +1851,95 @@ class _Invocation:
         template_parameters: Mapping[str, XdmSequence] | None = None,
         tunnel_parameters: Mapping[str, XdmSequence] | None = None,
         final_output: bool,
+        focus: Focus | None = None,
     ) -> XdmSequence:
+        frame = self._component_frame(
+            component,
+            arguments=arguments,
+            template_parameters=template_parameters,
+            tunnel_parameters=tunnel_parameters,
+            final_output=final_output,
+            focus=focus,
+        )
+        return cast(XdmSequence, self.execute_frame(frame))
+
+    def _component_identity(self, component: Component) -> str:
+        name = component.name or "<unnamed>"
+        if component.kind == "function":
+            return f"function {name}#{component.arity}"
+        return f"template {name}"
+
+    def _component_frame(
+        self,
+        component: Component,
+        *,
+        arguments: tuple[XdmSequence, ...] = (),
+        template_parameters: Mapping[str, XdmSequence] | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
+        final_output: bool,
+        focus: Focus | None = None,
+    ) -> Frame:
         plan = self._component_plan(component)
         package_name = component.owner
         if component.kind == "function":
-            focus = Focus.absent()
+            resolved_focus = Focus.absent()
         else:
-            if self.options.global_context_item is not None:
-                focus = Focus.singleton(self.options.global_context_item)
+            if focus is None:
+                resolved_focus = (
+                    Focus.singleton(self.options.global_context_item)
+                    if self.options.global_context_item is not None
+                    else Focus.absent()
+                )
             else:
-                focus = Focus.absent()
-            signature = component.signature.context_item if component.signature else None
-            focus = self._apply_context_item(signature, focus)
+                resolved_focus = focus
+            context_signature = component.signature.context_item if component.signature else None
+            resolved_focus = self._apply_context_item(context_signature, resolved_focus)
+        locals_, index = self._bind_component_parameters(
+            component,
+            plan.body,
+            arguments=arguments,
+            template_parameters=template_parameters,
+            tunnel_parameters=tunnel_parameters,
+            focus=resolved_focus,
+            package_name=package_name,
+        )
+        conversion = None
+        declaration_as = component.declaration.attribute("as")
+        signature = component.signature
+        if (
+            declaration_as is not None
+            and signature is not None
+            and signature.return_type is not None
+        ):
+            conversion = lambda value: self._coerce_component_result(  # noqa: E731
+                component, cast(XdmSequence, value)
+            )
+        return Frame(
+            kind="component",
+            component=component,
+            identity=self._component_identity(component),
+            program=plan.body[index:],
+            variables=locals_,
+            focus=resolved_focus,
+            continuation=None,
+            package=package_name,
+            location=component.location,
+            final_output=final_output,
+            conversion=conversion,
+        )
+
+    def _bind_component_parameters(
+        self,
+        component: Component,
+        body: tuple[_Plan, ...],
+        *,
+        arguments: tuple[XdmSequence, ...],
+        template_parameters: Mapping[str, XdmSequence] | None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None,
+        focus: Focus,
+        package_name: str | None,
+    ) -> tuple[dict[str, XdmSequence], int]:
         locals_: dict[str, XdmSequence] = {}
-        body = plan.body
         index = 0
         positional = 0
         while index < len(body) and isinstance(body[index], _ParamPlan):
@@ -1639,14 +1965,419 @@ class _Invocation:
             )
             self._bind(locals_, parameter.name, value)
             index += 1
-        result = self._execute_plans(
-            body[index:],
-            focus=focus,
-            locals_=locals_,
-            final_output=final_output,
-            package_name=package_name,
+        return locals_, index
+
+    # -- frame dispatch ----------------------------------------------------
+
+    def step(self, frame: Frame) -> FrameResult:
+        if frame.kind == "xpath":
+            return self._step_xpath(frame)
+        if frame.kind == "apply":
+            return self._step_apply(frame)
+        return self._step_instruction(frame)
+
+    def _consume_input(self, frame: Frame) -> Frame:
+        if frame.input is NO_INPUT:
+            return frame
+        value = frame.input
+        materialized = value if isinstance(value, tuple) else (value,)
+        return replace(
+            frame,
+            input=NO_INPUT,
+            values=frame.values + tuple(materialized),
         )
-        return self._coerce_component_result(component, result)
+
+    def _frame_variables(self, frame: Frame) -> Mapping[str, XdmSequence]:
+        return cast(Mapping[str, XdmSequence], frame.variables)
+
+    def _return_frame(self, frame: Frame) -> Return:
+        value: object = tuple(frame.values)
+        if frame.conversion is not None:
+            value = frame.conversion(value)
+        return Return(value)
+
+    def _step_instruction(self, frame: Frame) -> FrameResult:
+        frame = self._consume_input(frame)
+        program = cast(tuple[_Plan, ...], frame.program or ())
+        cursor = cast(int, frame.cursor)
+        if cursor >= len(program):
+            return self._return_frame(frame)
+        plan = program[cursor]
+        if isinstance(plan, _ParamPlan):
+            raise XsltError(
+                "xsl:param is only supported at the start of a template or function",
+                code="XTDE0000",
+            )
+        if isinstance(plan, _SequencePlan):
+            if plan.expression is not None:
+                return self._start_expression(plan.expression, frame, cursor)
+            return Continue(
+                replace(
+                    frame,
+                    program=plan.children + program[cursor + 1 :],
+                    cursor=0,
+                )
+            )
+        if isinstance(plan, _ChoosePlan):
+            branch = self._choose_branch(plan, frame)
+            if branch is None:
+                return Continue(replace(frame, cursor=cursor + 1))
+            return Continue(replace(frame, program=branch + program[cursor + 1 :], cursor=0))
+        if isinstance(plan, _CallTemplatePlan):
+            return self._call_template_step(plan, frame, cursor)
+        if isinstance(plan, _ApplyTemplatesPlan):
+            return self._apply_templates_step(plan, frame, cursor)
+        value = self._execute_plan(
+            plan,
+            focus=frame.focus,
+            locals_=self._frame_variables(frame),
+            final_output=frame.final_output,
+            package_name=frame.package,
+        )
+        return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
+
+    def _start_expression(
+        self,
+        expression: CompiledExpression,
+        frame: Frame,
+        cursor: int,
+    ) -> FrameResult:
+        environment = self._environment(self._frame_variables(frame), frame.package)
+        machine = self.xpath_machine(expression, environment.variables, self.stylesheet_functions())
+        if machine is None:
+            value = self._evaluate(
+                expression, frame.focus, self._frame_variables(frame), frame.package
+            )
+            return Continue(
+                replace(
+                    frame,
+                    cursor=cursor + 1,
+                    values=frame.values + tuple(value),
+                )
+            )
+        xpath_frame = Frame(
+            kind="xpath",
+            identity=f"xpath {expression.source}",
+            program=_XPathState(machine),
+            focus=frame.focus,
+            package=frame.package,
+            location=getattr(expression.static_context, "location", None),
+        )
+        return Call(
+            xpath_frame,
+            resume=replace(frame, cursor=cursor + 1),
+            tail=False,
+        )
+
+    def _choose_branch(
+        self,
+        plan: _ChoosePlan,
+        frame: Frame,
+    ) -> tuple[_Plan, ...] | None:
+        for test, branch in plan.branches:
+            if _effective_boolean(
+                self._evaluate(test, frame.focus, self._frame_variables(frame), frame.package)
+            ):
+                return branch
+        return plan.otherwise
+
+    def _plan_parameters(
+        self,
+        parameters: tuple[_WithParamPlan, ...],
+        frame: Frame,
+    ) -> tuple[Mapping[str, XdmSequence], Mapping[str, XdmSequence]]:
+        return self._plan_parameters_for(
+            parameters,
+            frame.focus,
+            self._frame_variables(frame),
+            frame.package,
+        )
+
+    def _plan_parameters_for(
+        self,
+        parameters: tuple[_WithParamPlan, ...],
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
+    ) -> tuple[Mapping[str, XdmSequence], Mapping[str, XdmSequence]]:
+        template: dict[str, XdmSequence] = {}
+        tunnel: dict[str, XdmSequence] = {}
+        for parameter in parameters:
+            if parameter.expression is not None:
+                value = self._evaluate(parameter.expression, focus, locals_, package_name)
+            elif parameter.children:
+                value = self._execute_plans(
+                    parameter.children,
+                    focus=focus,
+                    locals_=locals_,
+                    final_output=False,
+                    package_name=package_name,
+                )
+            else:
+                value = ()
+            (tunnel if parameter.tunnel else template)[parameter.name] = value
+        return MappingProxyType(template), MappingProxyType(tunnel)
+
+    def _resolve_template(self, reference: Any) -> Component:
+        if getattr(reference, "original", False):
+            target = self.package.original_target(
+                reference.name,
+                kind="template",
+            )
+            if target is not None:
+                return target
+        component = self.package.component("template", reference.name)
+        if component is None:
+            raise XsltError(
+                f"the named template {reference.name!r} is not visible at run time",
+                code="XTDE0040",
+            )
+        return component
+
+    def _call_template_step(
+        self,
+        plan: _CallTemplatePlan,
+        frame: Frame,
+        cursor: int,
+    ) -> FrameResult:
+        template, tunnel = self._plan_parameters(plan.parameters, frame)
+        component = self._resolve_template(plan.reference)
+        child = self._component_frame(
+            component,
+            template_parameters=template,
+            tunnel_parameters=tunnel,
+            final_output=frame.final_output,
+            focus=frame.focus,
+        )
+        return Call(
+            child,
+            resume=replace(frame, cursor=cursor + 1),
+            tail=plan.tail,
+        )
+
+    def _resolve_mode(self, mode: str | None, current: str | None) -> str | None:
+        if mode == "#current":
+            return current
+        if mode == "#default":
+            return self.package.default_mode
+        return mode
+
+    def _apply_templates_step(
+        self,
+        plan: _ApplyTemplatesPlan,
+        frame: Frame,
+        cursor: int,
+    ) -> FrameResult:
+        items = self._evaluate(
+            plan.expression,
+            frame.focus,
+            self._frame_variables(frame),
+            frame.package,
+        )
+        template, tunnel = self._plan_parameters(plan.parameters, frame)
+        child = self._apply_frame(
+            items,
+            self._resolve_mode(plan.mode, frame.mode),
+            template,
+            tunnel,
+            tail=plan.tail,
+        )
+        return Call(
+            child,
+            resume=replace(frame, cursor=cursor + 1),
+            tail=plan.tail,
+        )
+
+    def _apply_frame(
+        self,
+        items: XdmSequence,
+        mode: str | None,
+        template_parameters: Mapping[str, XdmSequence],
+        tunnel_parameters: Mapping[str, XdmSequence],
+        *,
+        tail: bool = False,
+    ) -> Frame:
+        state = _ApplyState(
+            items=items,
+            mode=mode,
+            template_parameters=template_parameters,
+            tunnel_parameters=tunnel_parameters,
+        )
+        return Frame(
+            kind="apply",
+            identity=f"apply-templates mode={mode!r}",
+            program=state,
+            mode=mode,
+            tail=tail,
+        )
+
+    def _mode_indexes(
+        self,
+        mode: str | None,
+    ) -> tuple[tuple[str | None, PatternIndex], ...]:
+        indexes = self._mode_index_cache.get(mode)
+        if indexes is None:
+            layers = self.stylesheet._modes.get(mode, ())
+            indexes = tuple((layer.owner, PatternIndex(layer.rules)) for layer in layers)
+            self._mode_index_cache[mode] = indexes
+        return indexes
+
+    def _rule_frame(
+        self,
+        rule: TemplateRule,
+        focus: Focus,
+        template_parameters: Mapping[str, XdmSequence],
+        tunnel_parameters: Mapping[str, XdmSequence],
+    ) -> Frame:
+        body = cast(_BodyPlan, rule.template)
+        rule_focus = self._apply_context_item(body.context_item, focus)
+        locals_, index = self._bind_template_parameters(
+            body.body,
+            template_parameters,
+            tunnel_parameters,
+            rule_focus,
+            body.owner,
+        )
+        conversion = None
+        if body.result_type is not None:
+            conversion = lambda value: _coerce_sequence(  # noqa: E731
+                cast(XdmSequence, value),
+                body.result_type,
+                code="XTTE0505",
+                label="template rule result",
+            )
+        return Frame(
+            kind="rule",
+            component=rule,
+            identity=f"rule {rule.name or rule.pattern}",
+            program=body.body[index:],
+            variables=locals_,
+            focus=rule_focus,
+            package=body.owner,
+            mode=rule.mode,
+            location=rule.pattern.context.location,
+            final_output=True,
+            conversion=conversion,
+        )
+
+    def _bind_template_parameters(
+        self,
+        body: tuple[_Plan, ...],
+        template_parameters: Mapping[str, XdmSequence],
+        tunnel_parameters: Mapping[str, XdmSequence],
+        focus: Focus,
+        package_name: str | None,
+    ) -> tuple[dict[str, XdmSequence], int]:
+        locals_: dict[str, XdmSequence] = {}
+        index = 0
+        while index < len(body) and isinstance(body[index], _ParamPlan):
+            parameter = cast(_ParamPlan, body[index])
+            supplied = (
+                tunnel_parameters.get(parameter.name)
+                if parameter.tunnel
+                else template_parameters.get(parameter.name)
+            )
+            value = (
+                supplied
+                if supplied is not None
+                else self._parameter_default(parameter, focus, locals_, package_name)
+            )
+            value = self._coerce_parameter(parameter, value, code="XTTE0590")
+            self._bind(locals_, parameter.name, value)
+            index += 1
+        return locals_, index
+
+    def _step_apply(self, frame: Frame) -> FrameResult:
+        frame = self._consume_input(frame)
+        state = cast(_ApplyState, frame.program)
+        if state.index >= len(state.items):
+            return self._return_frame(frame)
+        item = state.items[state.index]
+        focus = Focus.singleton(item, position=state.index + 1, size=len(state.items))
+        rule = self._select_rule(self._mode_indexes(state.mode), item, state.mode)
+        next_state = replace(state, index=state.index + 1)
+        resume = replace(frame, program=next_state)
+        last = state.index + 1 == len(state.items)
+        tail = frame.tail and last
+        if rule is None:
+            builtin = self._builtin_step(item, state, resume, tail)
+            if builtin is not None:
+                return builtin
+            return Continue(replace(frame, program=next_state))
+        rule_frame = self._rule_frame(
+            rule,
+            focus,
+            state.template_parameters,
+            state.tunnel_parameters,
+        )
+        return Call(rule_frame, resume=resume, tail=tail)
+
+    def _builtin_step(
+        self,
+        item: XdmItem,
+        state: _ApplyState,
+        resume: Frame,
+        tail: bool,
+    ) -> FrameResult | None:
+        if isinstance(item, XdmNode):
+            if item.kind in (NodeKind.DOCUMENT, NodeKind.ELEMENT):
+                if not item.children:
+                    return None
+                child = self._apply_frame(
+                    item.children,
+                    state.mode,
+                    MappingProxyType({}),
+                    state.tunnel_parameters,
+                    tail=tail,
+                )
+                return Call(child, resume=resume, tail=tail)
+            if item.kind in (NodeKind.TEXT, NodeKind.ATTRIBUTE):
+                return Continue(
+                    replace(
+                        resume,
+                        values=(*resume.values, self._text_node(item.string_value)),
+                    )
+                )
+            return None
+        return Continue(
+            replace(
+                resume,
+                values=(*resume.values, self._text_node(self._string_value(item))),
+            )
+        )
+
+    def _step_xpath(self, frame: Frame) -> FrameResult:
+        state = cast(_XPathState, frame.program)
+        machine = state.machine
+        if frame.input is NO_INPUT:
+            outcome = machine.run_until_suspension()
+        else:
+            native = self.sequence_to_native(frame.input)
+            if native is None:
+                raise XsltError(
+                    "a stylesheet function returned a value outside the scheduler bridge",
+                    code=None,
+                )
+            outcome = machine.resume(native)
+        self.note_machine(machine)
+        if isinstance(outcome, Suspension):
+            return self._suspend_xpath(frame, outcome)
+        return Return(self.native_to_xdm(outcome))
+
+    def _suspend_xpath(self, frame: Frame, suspension: Suspension) -> Call:
+        target = suspension.request.target
+        if not isinstance(target, ComponentCall) or target.kind != "function":
+            raise XsltError(
+                "XPath requested host work that is not a stylesheet function",
+                code=None,
+            )
+        arguments = self.component_arguments(suspension.request.arguments)
+        child = self._component_frame(
+            cast(Component, target.component),
+            arguments=arguments,
+            final_output=False,
+        )
+        return Call(child, resume=frame, tail=False)
 
     def _apply_context_item(
         self,
@@ -1903,6 +2634,46 @@ class _Invocation:
             return (self._text_node(text),)
         if isinstance(plan, _LiteralPlan):
             return (self._literal_element(plan, focus, locals_, final_output, package_name),)
+        if isinstance(plan, _ChoosePlan):
+            branch = None
+            for test, candidate in plan.branches:
+                if _effective_boolean(self._evaluate(test, focus, locals_, package_name)):
+                    branch = candidate
+                    break
+            if branch is None:
+                branch = plan.otherwise
+            if branch is None:
+                return ()
+            return self._execute_plans(
+                branch,
+                focus=focus,
+                locals_=locals_,
+                final_output=final_output,
+                package_name=package_name,
+            )
+        if isinstance(plan, _CallTemplatePlan):
+            template, tunnel = self._plan_parameters_for(
+                plan.parameters, focus, locals_, package_name
+            )
+            component = self._resolve_template(plan.reference)
+            return self._execute_component(
+                component,
+                template_parameters=template,
+                tunnel_parameters=tunnel,
+                final_output=final_output,
+                focus=focus,
+            )
+        if isinstance(plan, _ApplyTemplatesPlan):
+            items = self._evaluate(plan.expression, focus, locals_, package_name)
+            template, tunnel = self._plan_parameters_for(
+                plan.parameters, focus, locals_, package_name
+            )
+            return self._apply_templates(
+                items,
+                self._resolve_mode(plan.mode, None),
+                template,
+                tunnel,
+            )
         if isinstance(plan, _ResultDocumentPlan):
             self._result_document(plan, focus, locals_, final_output, package_name)
             return ()
@@ -2056,51 +2827,13 @@ class _Invocation:
         template_parameters: Mapping[str, XdmSequence],
         tunnel_parameters: Mapping[str, XdmSequence],
     ) -> XdmSequence:
-        layers = self.stylesheet._modes.get(mode, ())
-        indexes = tuple((layer.owner, PatternIndex(layer.rules)) for layer in layers)
-        result: list[XdmItem] = []
-        size = len(items)
-        for position, item in enumerate(items, 1):
-            focus = Focus.singleton(item, position=position, size=size)
-            rule = self._select_rule(indexes, item, mode)
-            if rule is None:
-                result.extend(self._builtin(item, mode, tunnel_parameters))
-                continue
-            body = cast(_BodyPlan, rule.template)
-            rule_focus = self._apply_context_item(body.context_item, focus)
-            locals_: dict[str, XdmSequence] = {}
-            index = 0
-            while index < len(body.body) and isinstance(body.body[index], _ParamPlan):
-                parameter = cast(_ParamPlan, body.body[index])
-                supplied = (
-                    tunnel_parameters.get(parameter.name)
-                    if parameter.tunnel
-                    else template_parameters.get(parameter.name)
-                )
-                value = (
-                    supplied
-                    if supplied is not None
-                    else self._parameter_default(parameter, rule_focus, locals_, body.owner)
-                )
-                value = self._coerce_parameter(parameter, value, code="XTTE0590")
-                self._bind(locals_, parameter.name, value)
-                index += 1
-            rule_result = self._execute_plans(
-                body.body[index:],
-                focus=rule_focus,
-                locals_=locals_,
-                final_output=True,
-                package_name=body.owner,
-            )
-            if body.result_type is not None:
-                rule_result = _coerce_sequence(
-                    rule_result,
-                    body.result_type,
-                    code="XTTE0505",
-                    label="template rule result",
-                )
-            result.extend(rule_result)
-        return tuple(result)
+        frame = self._apply_frame(
+            items,
+            mode,
+            template_parameters,
+            tunnel_parameters,
+        )
+        return cast(XdmSequence, self.execute_frame(frame))
 
     def _select_rule(
         self,
@@ -2119,25 +2852,6 @@ class _Invocation:
             if rule is not None:
                 return rule
         return None
-
-    def _builtin(
-        self,
-        item: XdmItem,
-        mode: str | None,
-        tunnel_parameters: Mapping[str, XdmSequence],
-    ) -> XdmSequence:
-        if isinstance(item, XdmNode):
-            if item.kind in (NodeKind.DOCUMENT, NodeKind.ELEMENT):
-                return self._apply_templates(
-                    item.children,
-                    mode,
-                    MappingProxyType({}),
-                    tunnel_parameters,
-                )
-            if item.kind in (NodeKind.TEXT, NodeKind.ATTRIBUTE):
-                return (self._text_node(item.string_value),)
-            return ()
-        return (self._text_node(self._string_value(item)),)
 
     # -- expressions and values -------------------------------------------
 

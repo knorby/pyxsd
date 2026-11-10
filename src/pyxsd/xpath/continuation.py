@@ -17,13 +17,19 @@ consumes before any value reaches XPath.  Tail-control values are rejected if
 they are nested in a host result.
 
 Supported constructs are literals, variable references, arithmetic and
-comparison operators, ``if``, ``let``, inline functions, and dynamic calls.
-Operator semantics are delegated to the same elementpath operator classes the
-parser produced, so the supported subset evaluates identically to elementpath.
-Node paths, predicates, FLWOR expressions, sequence constructors, and static
-function calls are rejected at compile time instead of being approximated; the
-production compiler (later stages) must extend this subset before the engine
-uses the seam for those expressions.
+comparison operators, ``if``, ``let``, inline functions, dynamic calls, and
+static calls to host-declared functions.  Operator semantics are delegated to
+the same elementpath operator classes the parser produced, so the supported
+subset evaluates identically to elementpath.  Node paths, predicates, FLWOR
+expressions, and sequence constructors are rejected at compile time instead of
+being approximated; the production compiler (later stages) must extend this
+subset before the engine uses the seam for those expressions.
+
+A host function may be marked ``suspend=True``.  The machine then stops before
+calling it and exposes a :class:`HostRequest`; a scheduler performs the host
+work and resumes the same machine through :meth:`ContinuationMachine.resume`.
+That keeps mixed XPath/XSLT recursion on heap-resident frames instead of
+nesting another machine synchronously.
 
 ``probe_mixed_recursion()`` exercises the seam at 10,000 mixed steps and
 reports the result as a Task 4 :class:`CapabilityOutcome` subtype.
@@ -52,7 +58,9 @@ __all__ = [
     "ContinuationError",
     "ContinuationMachine",
     "ContinuationProbe",
+    "FunctionCallPlan",
     "HostFunction",
+    "HostRequest",
     "IfPlan",
     "InlineFunctionPlan",
     "Invoke",
@@ -60,6 +68,7 @@ __all__ = [
     "LiteralPlan",
     "OperatorPlan",
     "Plan",
+    "Suspension",
     "TailCall",
     "TailControlLeak",
     "UnsupportedContinuationExpression",
@@ -104,17 +113,24 @@ class HostFunction:
     frame.  It returns either an XDM value, a :class:`TailCall`, or an
     :class:`Invoke`.  It must never call back into a machine synchronously;
     request nested work through the control values instead.
+
+    ``suspend=True`` marks work that a scheduler must perform.  The machine
+    exposes a :class:`HostRequest` without calling the callback, and the
+    scheduler resumes the machine with the host result.
     """
 
     callback: Callable[..., object]
     name: str = ""
     arity: int | None = None
+    suspend: bool = False
 
     def __post_init__(self) -> None:
         if not callable(self.callback):
             raise TypeError("a host function callback must be callable")
         if self.arity is not None and self.arity < 0:
             raise ValueError("a host function arity must be non-negative")
+        if not isinstance(self.suspend, bool):
+            raise TypeError("a host function suspend flag must be a boolean")
 
 
 @dataclass(frozen=True)
@@ -140,6 +156,37 @@ class Invoke:
         object.__setattr__(self, "arguments", tuple(self.arguments))
         if not callable(self.then):
             raise TypeError("an invocation continuation must be callable")
+
+
+@dataclass(frozen=True)
+class HostRequest:
+    """One suspended host call requested by a continuation machine.
+
+    ``tail`` is true when the machine has no pending operand, conversion, or
+    invocation work, so a scheduler may treat the host call as a tail call.
+    The machine itself still resumes to deliver the result; the marker lets a
+    scheduler account for genuinely eliminable work.
+    """
+
+    target: object
+    arguments: tuple[object, ...] = ()
+    tail: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "arguments", tuple(self.arguments))
+        if not isinstance(self.tail, bool):
+            raise TypeError("a host request tail flag must be a boolean")
+
+
+@dataclass(frozen=True)
+class Suspension:
+    """A machine stopped before performing scheduler-owned host work."""
+
+    request: HostRequest
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, HostRequest):
+            raise TypeError("a suspension requires a HostRequest")
 
 
 class Plan:
@@ -218,6 +265,23 @@ class CallPlan(Plan):
 
     callee: Plan
     arguments: tuple[Plan, ...]
+
+
+@dataclass(frozen=True)
+class FunctionCallPlan(Plan):
+    """A static call to a host-declared function."""
+
+    name: str
+    arity: int
+    arguments: tuple[Plan, ...]
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("a static function call requires a name")
+        if isinstance(self.arity, bool) or not isinstance(self.arity, int) or self.arity < 0:
+            raise ValueError("a static function call requires a non-negative arity")
+        if self.arity != len(self.arguments):
+            raise ValueError("a static function call arity must match its arguments")
 
 
 @dataclass(frozen=True)
@@ -316,6 +380,9 @@ class _Compiler:
             return self._compile_inline(token)
         if class_name == "_LeftParenthesisExpression":
             return self._compile_parenthesized(token)
+        static_call = self._compile_static_call(token)
+        if static_call is not None:
+            return static_call
         if symbol in _OPERATOR_SYMBOLS and len(token) in (1, 2):
             return OperatorPlan(
                 type(token), str(symbol), token.label, tuple(self.compile(t) for t in token)
@@ -323,6 +390,25 @@ class _Compiler:
         raise UnsupportedContinuationExpression(
             f"unsupported XPath construct {class_name} ({symbol!r})"
         )
+
+    def _compile_static_call(self, token: Any) -> FunctionCallPlan | None:
+        """Lower a resolved call to an external (host-declared) function."""
+        if len(token) == 0:
+            return None
+        candidate = token[len(token) - 1]
+        if getattr(candidate, "label", None) != "external function":
+            return None
+        name = getattr(candidate, "name", None)
+        if not isinstance(name, str) or not name:
+            value = getattr(candidate, "value", None)
+            namespace = getattr(candidate, "namespace", None)
+            if not isinstance(value, str) or not value:
+                raise UnsupportedContinuationExpression(
+                    "an external function call requires a resolvable name"
+                )
+            name = f"{{{namespace}}}{value}" if namespace else value
+        arguments = tuple(self.compile(argument) for argument in candidate)
+        return FunctionCallPlan(name, len(arguments), arguments)
 
     def _compile_let(self, token: Any) -> Plan:
         bindings: list[tuple[str, Plan]] = []
@@ -362,17 +448,69 @@ class _Compiler:
         return [self.compile(token)]
 
 
+def _split_static_function(
+    name: str,
+    namespaces: Mapping[str, str],
+) -> tuple[str, str] | None:
+    """Return the lexical ``(prefix, local)`` parts for a declared function."""
+    if name.startswith("{"):
+        namespace, _, local = name[1:].partition("}")
+        for prefix, uri in namespaces.items():
+            if prefix and uri == namespace:
+                return prefix, local
+        return None
+    prefix, separator, local = name.partition(":")
+    if not separator or not prefix or prefix not in namespaces or not local:
+        return None
+    return prefix, local
+
+
+def _register_static_functions(
+    parser: Any,
+    functions: Mapping[str, object] | None,
+    namespaces: Mapping[str, str],
+) -> None:
+    """Declare host functions on one parser instance so their calls parse."""
+    for name, arity in (functions or {}).items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("a static function name must be a non-empty string")
+        parts = _split_static_function(name, namespaces)
+        if parts is None:
+            continue
+        prefix, local = parts
+        token_class = parser.external_function(
+            lambda *arguments: arguments,
+            name=local,
+            prefix=prefix,
+        )
+        token_class.nargs = arity
+
+
 def compile_expression(
     source: str,
     *,
     variable_types: Mapping[str, str] | None = None,
     default_collation: str | None = None,
+    namespaces: Mapping[str, str] | None = None,
+    functions: Mapping[str, object] | None = None,
 ) -> CompiledExpression:
-    """Compile *source* with elementpath and lower it to a continuation plan."""
+    """Compile *source* with elementpath and lower it to a continuation plan.
+
+    ``functions`` declares static host functions by expanded name, with the
+    declared arity as the value.  Such calls lower to
+    :class:`FunctionCallPlan`; the machine receives the callable implementations
+    separately, so a compiled expression remains invocation-independent.
+    """
     if not isinstance(source, str) or not source.strip():
         raise ValueError("an expression source must be a non-empty string")
     types = dict(variable_types or {})
-    parser = XPath31Parser(variable_types=types, default_collation=default_collation)
+    namespace_map = dict(namespaces or {})
+    parser = XPath31Parser(
+        namespaces=namespace_map,
+        variable_types=types,
+        default_collation=default_collation,
+    )
+    _register_static_functions(parser, functions, namespace_map)
     token = parser.parse(source)
     return CompiledExpression(
         source=source,
@@ -439,6 +577,15 @@ class _CallArgumentsFrame(_Frame):
 
 
 @dataclass(frozen=True)
+class _FunctionArgumentsFrame(_Frame):
+    name: str
+    arity: int
+    remaining: tuple[Plan, ...]
+    values: tuple[object, ...]
+    environment: Mapping[str, object]
+
+
+@dataclass(frozen=True)
 class _ResumeTarget:
     frame: _Frame
 
@@ -474,6 +621,7 @@ class ContinuationMachine:
         self,
         compiled: CompiledExpression,
         variables: Mapping[str, object] | None = None,
+        functions: Mapping[tuple[str, int], object] | None = None,
     ) -> None:
         self._compiled = compiled
         self._parser: Any = compiled.parser_class(default_collation=compiled.default_collation)
@@ -481,8 +629,10 @@ class ContinuationMachine:
         self._actions: list[object] = [
             _EvalAction(compiled.plan, dict(variables or {})),
         ]
+        self._functions = MappingProxyType(dict(functions or {}))
         self._result: object = None
         self._started = False
+        self._suspended: HostRequest | None = None
         self.max_python_depth = 0
 
     @classmethod
@@ -498,14 +648,41 @@ class ContinuationMachine:
 
     @property
     def started(self) -> bool:
-        """Whether :meth:`run` has already been called."""
+        """Whether evaluation has already been started."""
         return self._started
+
+    @property
+    def suspended(self) -> bool:
+        """Whether the machine is waiting for a scheduler-owned host result."""
+        return self._suspended is not None
 
     def run(self) -> object:
         """Run the machine to completion, returning one XDM result value."""
+        outcome = self.run_until_suspension()
+        if isinstance(outcome, Suspension):
+            raise ContinuationError(
+                "the continuation machine suspended for scheduler-owned host work"
+            )
+        return outcome
+
+    def run_until_suspension(self) -> object:
+        """Start or continue the machine until completion or host suspension."""
         if self._started:
             raise ContinuationError("a continuation machine can run only once")
         self._started = True
+        return self._drain()
+
+    def resume(self, value: object) -> object:
+        """Deliver one scheduler-owned host result and continue evaluation."""
+        if not self._started:
+            raise ContinuationError("a continuation machine has not started")
+        if self._suspended is None:
+            raise ContinuationError("a continuation machine is not suspended")
+        self._suspended = None
+        self._deliver_host_result(value)
+        return self._drain()
+
+    def _drain(self) -> object:
         while self._actions:
             action = self._actions.pop()
             if isinstance(action, _EvalAction):
@@ -515,6 +692,8 @@ class ContinuationMachine:
             else:
                 assert isinstance(action, _DeliverAction)
                 self._deliver_to(action.target, action.value)
+            if self._suspended is not None:
+                return Suspension(self._suspended)
         result = self._result
         _reject_nested_control(result, "XDM result")
         return result
@@ -537,6 +716,8 @@ class ContinuationMachine:
         elif isinstance(plan, CallPlan):
             self._actions.append(_ResumeTarget(_CallCalleeFrame(plan.arguments, environment)))
             self._actions.append(_EvalAction(plan.callee, environment))
+        elif isinstance(plan, FunctionCallPlan):
+            self._start_function_arguments(plan, environment)
         else:
             assert isinstance(plan, OperatorPlan)
             first, *remaining = plan.operands
@@ -555,6 +736,8 @@ class ContinuationMachine:
             self._resume_let(frame, value)
         elif isinstance(frame, _CallCalleeFrame):
             self._resume_callee(frame, value)
+        elif isinstance(frame, _FunctionArgumentsFrame):
+            self._resume_function_arguments(frame, value)
         else:
             assert isinstance(frame, _CallArgumentsFrame)
             self._resume_call_arguments(frame, value)
@@ -615,10 +798,65 @@ class ContinuationMachine:
         else:
             self._invoke(frame.callee, values)
 
+    def _start_function_arguments(
+        self,
+        plan: FunctionCallPlan,
+        environment: Mapping[str, object],
+    ) -> None:
+        if not plan.arguments:
+            self._invoke_function(plan.name, plan.arity, ())
+            return
+        self._actions.append(
+            _ResumeTarget(
+                _FunctionArgumentsFrame(
+                    plan.name,
+                    plan.arity,
+                    plan.arguments[1:],
+                    (),
+                    environment,
+                )
+            )
+        )
+        self._actions.append(_EvalAction(plan.arguments[0], environment))
+
+    def _resume_function_arguments(
+        self,
+        frame: _FunctionArgumentsFrame,
+        value: object,
+    ) -> None:
+        values = (*frame.values, value)
+        if frame.remaining:
+            self._actions.append(
+                _ResumeTarget(
+                    _FunctionArgumentsFrame(
+                        frame.name,
+                        frame.arity,
+                        frame.remaining[1:],
+                        values,
+                        frame.environment,
+                    )
+                )
+            )
+            self._actions.append(_EvalAction(frame.remaining[0], frame.environment))
+        else:
+            self._invoke_function(frame.name, frame.arity, values)
+
+    def _invoke_function(self, name: str, arity: int, arguments: tuple[object, ...]) -> None:
+        target = self._functions.get((name, arity))
+        if target is None:
+            raise XPathEvaluationError(
+                "XPST0017",
+                f"the host function {name!r} with arity {arity} is not available",
+            )
+        self._invoke(target, arguments)
+
     def _invoke(self, target: object, arguments: tuple[object, ...]) -> None:
         self._sample_depth()
         if isinstance(target, HostFunction):
             self._check_arity(target.arity, len(arguments), target.name or "host function")
+            if target.suspend:
+                self._suspended = HostRequest(target.callback, arguments, not self._actions)
+                return
             self._deliver_host_result(target.callback(*arguments))
         elif isinstance(target, XPathClosure):
             self._check_arity(target.arity, len(arguments), "inline function")
