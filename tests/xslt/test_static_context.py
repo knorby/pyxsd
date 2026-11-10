@@ -114,7 +114,8 @@ def test_context_reads_element_defaults(tmp_path: Path) -> None:
     assert xpath.base_uri == context.base_uri
     assert xpath.default_collation == "urn:example:collation"
     assert xpath.variable_types == {}
-    assert xpath.functions == {}
+    assert xpath.functions["fn:current"] == 0
+    assert "f" not in xpath.functions
 
 
 def test_context_version_scoping_and_validation(tmp_path: Path) -> None:
@@ -902,7 +903,7 @@ def test_literal_result_standard_spellings_are_ordinary_attributes(tmp_path: Pat
 def test_context_symbol_helpers_and_unqualified_function_skip() -> None:
     context = StaticContext()
     context = context.with_function(StaticFunction(name="f", arity=1))
-    assert context.xpath_static_context().functions == {}
+    assert "f" not in context.xpath_static_context().functions
     variadic = StaticContext(namespaces={"t": "urn:test"}).with_function(
         StaticFunction(name="{urn:test}variadic", arity=(1, None))
     )
@@ -944,5 +945,5 @@ def test_unprefixed_function_namespace_is_not_registered_lexically(tmp_path: Pat
     )
     context = StaticContext.for_module(module)
     assert context.function("{urn:no-prefix}f", 0) is not None
-    assert context.xpath_static_context().functions == {}
+    assert "{urn:no-prefix}f" not in context.xpath_static_context().functions
     assert compile_xpath("1 + 1", context).source == "1 + 1"

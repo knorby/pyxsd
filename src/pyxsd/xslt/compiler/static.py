@@ -28,7 +28,6 @@ from typing import Any, Literal, TypeAlias
 
 from elementpath.xpath3 import XPath31Parser
 
-from pyxsd import __version__
 from pyxsd.locations import IssueLocation
 from pyxsd.xdm import XdmAtomic, XdmSequence, as_xdm
 from pyxsd.xdm.nodes import NodeKind, XdmNode
@@ -36,6 +35,15 @@ from pyxsd.xpath.engine import XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
 from pyxsd.xslt.compiler.modules import ModuleKind, SourceModule
 from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.runtime.functions import (
+    KNOWN_XSLT_ELEMENTS as _KNOWN_XSLT_ELEMENTS,
+)
+from pyxsd.xslt.runtime.functions import (
+    SYSTEM_PROPERTIES as _SYSTEM_PROPERTIES,
+)
+from pyxsd.xslt.runtime.functions import (
+    XSLT_FUNCTION_ARITIES as _XSLT_FUNCTION_ARITIES,
+)
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
@@ -80,89 +88,6 @@ _STRIP_BEFORE = frozenset(
     f"{{{XSLT_NS}}}{name}" for name in ("param", "sort", "context-item", "on-completion")
 )
 _STRIP_AFTER_CATCH = f"{{{XSLT_NS}}}catch"
-
-_KNOWN_XSLT_ELEMENTS = frozenset(
-    {
-        "accept",
-        "accumulator",
-        "accumulator-rule",
-        "analysis",
-        "analyze-string",
-        "apply-imports",
-        "apply-templates",
-        "assert",
-        "attribute",
-        "attribute-set",
-        "break",
-        "call-template",
-        "catch",
-        "character-map",
-        "choose",
-        "comment",
-        "context-item",
-        "copy",
-        "copy-of",
-        "decimal-format",
-        "document",
-        "element",
-        "evaluate",
-        "expose",
-        "fallback",
-        "for-each",
-        "for-each-group",
-        "fork",
-        "function",
-        "global-context-item",
-        "if",
-        "import",
-        "import-schema",
-        "include",
-        "iterate",
-        "key",
-        "map",
-        "map-entry",
-        "matching-substring",
-        "merge",
-        "merge-action",
-        "merge-key",
-        "merge-source",
-        "message",
-        "mode",
-        "namespace",
-        "namespace-alias",
-        "next-iteration",
-        "next-match",
-        "non-matching-substring",
-        "number",
-        "on-completion",
-        "on-empty",
-        "on-non-empty",
-        "otherwise",
-        "output",
-        "override",
-        "package",
-        "param",
-        "perform-sort",
-        "preserve-space",
-        "processing-instruction",
-        "result-document",
-        "sequence",
-        "sort",
-        "source-document",
-        "stream",
-        "strip-space",
-        "stylesheet",
-        "template",
-        "text",
-        "transform",
-        "try",
-        "use-package",
-        "value-of",
-        "variable",
-        "when",
-        "where-populated",
-    }
-)
 
 _KNOWN_XSD_TYPES = frozenset(
     {
@@ -218,22 +143,6 @@ _KNOWN_XSD_TYPES = frozenset(
         "untyped",
         "untypedAtomic",
         "yearMonthDuration",
-    }
-)
-
-_XSLT_FUNCTION_ARITIES: Mapping[str, int | tuple[int, int | None]] = MappingProxyType(
-    {
-        "available-system-properties": 0,
-        "current": 0,
-        "current-group": 0,
-        "current-grouping-key": 0,
-        "document": (1, 2),
-        "element-available": 1,
-        "function-available": (1, 2),
-        "key": (2, 3),
-        "system-property": 1,
-        "type-available": 1,
-        "unparsed-entity-uri": 1,
     }
 )
 
@@ -305,26 +214,6 @@ _EBV_NUMERIC_TYPES = frozenset(
         "unsignedInt",
         "unsignedLong",
         "unsignedShort",
-    }
-)
-
-_SYSTEM_PROPERTIES = MappingProxyType(
-    {
-        "xsl:version": "3.0",
-        "xsl:vendor": "pyxsd",
-        "xsl:vendor-url": "https://pyxsd.knorby.com",
-        "xsl:product-name": "pyxsd",
-        "xsl:product-version": __version__,
-        "xsl:is-schema-aware": "yes",
-        "xsl:supports-serialization": "yes",
-        "xsl:supports-backwards-compatibility": "yes",
-        "xsl:supports-namespace-axis": "yes",
-        "xsl:supports-streaming": "no",
-        "xsl:supports-dynamic-evaluation": "yes",
-        "xsl:supports-higher-order-functions": "yes",
-        "xsl:supports-xpath-3.1": "yes",
-        "xsl:xpath-version": "3.1",
-        "xsl:xsd-version": "1.1",
     }
 )
 

@@ -28,6 +28,7 @@ from pyxsd.xpath.environment import FunctionArity, XPathStaticContext
 from pyxsd.xslt.compiler.expressions import CompiledSequenceType, compile_sequence_type
 from pyxsd.xslt.compiler.static import EffectiveElement, EffectiveModule
 from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.runtime.functions import xslt_function_declarations
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
@@ -445,6 +446,8 @@ class StaticContext:
             # XPathStaticContext carries one arity per name; exact overloads
             # are represented by the smallest covering range.
             functions[name] = _arity_range(arities)
+        for name, arity in xslt_function_declarations(self.version).items():
+            functions.setdefault(name, arity)
         variable_types = {
             name: str(variable.sequence_type)
             for name, variable in self.variables.items()

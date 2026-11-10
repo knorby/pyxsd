@@ -59,6 +59,8 @@ from pyxsd.xpath.environment import (
     XPathStaticContext,
 )
 from pyxsd.xpath.functions import (
+    ContextFunction,
+    ContextFunctionToken,
     HostFunctionToken,
     atomic_to_elementpath,
     call_host_function,
@@ -695,6 +697,7 @@ class XPathEngine:
             functions=environment.functions,
             key=True,
             base_uri=environment.base_uri,
+            decimal_formats=environment.decimal_formats,
         )
         bridge = _ValueBridge(parser, compiled.static_context, environment)
         context = _build_context(compiled.static_context, environment, resolved, bridge)
@@ -725,17 +728,23 @@ def _build_parser(
     functions: Mapping[str, Any] | None,
     key: bool,
     base_uri: str | None = None,
+    decimal_formats: Mapping[str | None, Mapping[str, str]] | None = None,
 ) -> Any:
     parser_class = _PARSERS[version]
     holder = _BridgeHolder()
-    parser = parser_class(
-        namespaces=dict(static_context.namespaces),
-        default_namespace=static_context.default_namespace,
-        variable_types=dict(static_context.variable_types),
-        base_uri=base_uri if base_uri is not None else static_context.base_uri,
-        default_collation=static_context.default_collation,
-        xsd_version=static_context.xsd_version,
-    )
+    options: dict[str, Any] = {
+        "namespaces": dict(static_context.namespaces),
+        "default_namespace": static_context.default_namespace,
+        "variable_types": dict(static_context.variable_types),
+        "base_uri": base_uri if base_uri is not None else static_context.base_uri,
+        "default_collation": static_context.default_collation,
+        "xsd_version": static_context.xsd_version,
+    }
+    if decimal_formats and version != "2.0":
+        options["decimal_formats"] = {
+            name: dict(attributes) for name, attributes in decimal_formats.items()
+        }
+    parser = parser_class(**options)
     parser._pyxsd_bridge_holder = holder
     _install_syntax_only_parse(parser)
     _install_focus_token(parser)
@@ -844,7 +853,13 @@ def _register_declared_function(
             )
         )
 
-    token_class = parser.external_function(callback, name=local, prefix=prefix)
+    token_class = parser.external_function(
+        callback,
+        name=local,
+        prefix=prefix,
+        sequence_types=("item()*",),
+    )
+    token_class.label = "function"
     token_class.nargs = arity
 
 
@@ -887,7 +902,11 @@ def _split_function_name(
 
 
 def _register_key_function(parser: Any, holder: _BridgeHolder) -> None:
-    def key(name_argument: Any, value_argument: Any) -> Any:
+    def key(
+        name_argument: Any,
+        value_argument: Any,
+        top_argument: Any = None,
+    ) -> Any:
         bridge = holder.bridge
         assert bridge is not None
         name_sequence = bridge.to_xdm_sequence(name_argument)
@@ -900,6 +919,8 @@ def _register_key_function(parser: Any, holder: _BridgeHolder) -> None:
         if index is None:
             return []
         values = bridge.to_xdm_sequence(value_argument)
+        if top_argument is not None:
+            del top_argument
         nodes: list[XdmNode] = []
         for item in values:
             value = cast(XdmAtomic, item)
@@ -913,9 +934,10 @@ def _register_key_function(parser: Any, holder: _BridgeHolder) -> None:
     token_class = parser.external_function(
         key,
         name="key",
-        sequence_types=("xs:string", "xs:anyAtomicType*", "element()*"),
+        sequence_types=("xs:string", "xs:anyAtomicType*", "node()", "element()*"),
     )
-    token_class.nargs = 2
+    token_class.label = "function"
+    token_class.nargs = (2, 3)
 
 
 def _install_function_overrides(
@@ -936,6 +958,34 @@ def _install_function_overrides(
         if base is None:
             # XPath 2.0 has no generate-id(); a stylesheet that calls it fails
             # at compile time, so there is nothing to override here.
+            continue
+        if isinstance(target, ContextFunction):
+
+            def read_sequence(value: Any) -> Any:
+                active_bridge = holder.bridge
+                if active_bridge is None:  # pragma: no cover - installed first
+                    raise RuntimeError("a context function has no evaluation context")
+                return active_bridge.to_xdm_sequence(value)
+
+            def adapt_item(value: Any) -> Any:
+                active_bridge = holder.bridge
+                if active_bridge is None:  # pragma: no cover - installed first
+                    raise RuntimeError("a context function has no evaluation context")
+                return active_bridge.adapt_item(value)
+
+            parser._register(
+                symbol,
+                f"_PyxsdContext_{symbol.replace('-', '_')}",
+                bases=(ContextFunctionToken,),
+                label="function",
+                nargs=base.nargs,
+                sequence_types=base.sequence_types,
+                namespace=base.namespace,
+                direct=staticmethod(target.direct),
+                dynamic=staticmethod(target.dynamic) if target.dynamic is not None else None,
+                sequence_reader=staticmethod(read_sequence),
+                item_converter=staticmethod(adapt_item),
+            )
             continue
         class_name = f"_PyxsdOverride_{symbol.replace('-', '_')}"
 

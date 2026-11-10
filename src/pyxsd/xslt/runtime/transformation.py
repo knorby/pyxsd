@@ -37,6 +37,7 @@ from pyxsd.xslt.runtime.frames import (
     FrameResult,
     Scheduler,
 )
+from pyxsd.xslt.runtime.functions import XSLT_CONTEXT_FUNCTION_NAMES
 
 __all__ = ["ComponentCall", "Transformation"]
 
@@ -127,6 +128,7 @@ class Transformation:
         self.generated_id_count = 0
         self.key_indexes: dict[tuple[int, str | None, str], Mapping[Any, tuple[XdmNode, ...]]] = {}
         self.key_index_documents: dict[int, XdmDocument] = {}
+        self.documents: dict[str, XdmDocument] = {}
         self.evaluating_attribute_sets: list[tuple[str | None, str | None]] = []
 
     def _read_output_attributes(self) -> Mapping[str, str]:
@@ -208,7 +210,11 @@ class Transformation:
                 variable_types=static.variable_types,
                 default_collation=static.default_collation,
                 namespaces=static.namespaces,
-                functions=dict(static.functions),
+                functions={
+                    name: arity
+                    for name, arity in static.functions.items()
+                    if name not in XSLT_CONTEXT_FUNCTION_NAMES
+                },
             )
         except Exception:
             plan = None

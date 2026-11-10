@@ -38,7 +38,7 @@ from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath.continuation import ContinuationMachine, HostFunction, Suspension
 from pyxsd.xpath.engine import CompiledExpression, XPathEngine
-from pyxsd.xpath.environment import ExpressionEnvironment, Focus
+from pyxsd.xpath.environment import ExpressionEnvironment, Focus, FocusKind
 from pyxsd.xslt.compiler.context import (
     ProfileOptions,
     StaticContext,
@@ -89,6 +89,7 @@ from pyxsd.xslt.runtime.frames import (
     FrameResult,
     Return,
 )
+from pyxsd.xslt.runtime.functions import XsltContextBridge
 from pyxsd.xslt.runtime.instructions import construct_attribute
 from pyxsd.xslt.runtime.templates import (
     PatternIndex,
@@ -4215,6 +4216,8 @@ class _Invocation(Transformation):
                         locals_,
                         package_name,
                         original_functions=original_functions,
+                        focus=focus,
+                        expression=expression,
                     ),
                     focus=focus,
                 )
@@ -4257,6 +4260,8 @@ class _Invocation(Transformation):
         *,
         referenced: set[str] | None = None,
         original_functions: Mapping[int, Component] | None = None,
+        focus: Focus | None = None,
+        expression: CompiledExpression | None = None,
     ) -> ExpressionEnvironment:
         variables: dict[str, Any] = {}
         package = self.stylesheet._packages.get(package_name) or self.package
@@ -4286,47 +4291,51 @@ class _Invocation(Transformation):
                     f"{{{XSLT_NS}}}original",
                     [component],
                 )
+        bridge = self._context_bridge(
+            package_name,
+            Focus.absent() if focus is None else focus,
+            expression,
+        )
+        overrides: dict[str, Any] = dict(bridge.function_overrides())
         return ExpressionEnvironment(
             variables=variables,
             functions=functions,
-            function_overrides={
-                f"{{{FN_NS}}}generate-id": self._generate_id_override,
-                f"{{{FN_NS}}}key": self._key_override_for(package_name),
-            },
+            function_overrides=overrides,
+            decimal_formats=self._decimal_formats(package_name),
             current_datetime=self.current_datetime,
             implicit_timezone=self.implicit_timezone,
             base_uri=None,
         )
 
-    def _generate_id_override(
+    def _decimal_formats(
         self,
-        context_item: XdmItem | None,
-        arguments: tuple[XdmSequence, ...],
-    ) -> XdmSequence:
-        if arguments:
-            value = arguments[0]
-            if len(value) > 1:
-                raise XsltDynamicError(
-                    "generate-id requires at most one node",
-                    code="XPTY0004",
-                )
-            if not value:
-                return (XdmAtomic.string(""),)
-            item = value[0]
-            if not isinstance(item, XdmNode):
-                raise XsltDynamicError(
-                    "generate-id requires a node",
-                    code="XPTY0004",
-                )
-            return (XdmAtomic.string(self.generated_id(item)),)
-        if context_item is None:
-            return (XdmAtomic.string(""),)
-        if not isinstance(context_item, XdmNode):
-            raise XsltDynamicError(
-                "generate-id requires a node context item",
-                code="XPTY0004",
-            )
-        return (XdmAtomic.string(self.generated_id(context_item)),)
+        package_name: str | None,
+    ) -> Mapping[str | None, Mapping[str, str]]:
+        package = self.stylesheet._packages.get(package_name) or self.package
+        formats: dict[str | None, Mapping[str, str]] = {}
+        for definition in package.decimal_formats:
+            formats[definition.name] = dict(definition.attributes)
+        return formats
+
+    def _context_bridge(
+        self,
+        package_name: str | None,
+        focus: Focus,
+        expression: CompiledExpression | None,
+    ) -> XsltContextBridge:
+        package = self.stylesheet._packages.get(package_name) or self.package
+        static = None if expression is None else expression.static_context
+        return XsltContextBridge(
+            self,
+            package_name=package_name,
+            focus=focus,
+            current_item=focus.item if focus.kind is FocusKind.ITEM else None,
+            namespaces=package.namespaces if static is None else static.namespaces,
+            default_namespace=None if static is None else static.default_namespace,
+            base_uri=None if static is None else static.base_uri,
+            xpath_version="3.1" if expression is None else expression.version,
+            key_lookup=self._key_override_for(package_name),
+        )
 
     def _key_override_for(self, package_name: str | None) -> Callable[..., XdmSequence]:
         def override(
@@ -4359,7 +4368,9 @@ class _Invocation(Transformation):
                 f"the key {lexical!r} is not declared in this package",
                 code="XTDE1260",
             )
-        document = self._key_document(context_item)
+        if len(arguments) > 2 and not arguments[2]:
+            return ()
+        document = self._key_document(context_item, arguments)
         composite = any(definition.composite for definition in definitions)
         index = self._key_index(definitions, document, package_name)
         nodes: list[XdmNode] = []
@@ -4375,7 +4386,19 @@ class _Invocation(Transformation):
         ordered = sorted(unique.values(), key=lambda node: node.document_order)
         return tuple(ordered)
 
-    def _key_document(self, context_item: XdmItem | None) -> XdmDocument:
+    def _key_document(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...] = (),
+    ) -> XdmDocument:
+        if len(arguments) > 2:
+            top = arguments[2]
+            if len(top) != 1 or not isinstance(top[0], XdmNode):
+                raise XsltDynamicError(
+                    "key() requires a single node as its third argument",
+                    code="XPTY0004",
+                )
+            return top[0].document
         if not isinstance(context_item, XdmNode):
             raise XsltDynamicError(
                 "key() with two arguments requires a context node",

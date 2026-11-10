@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import inspect
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from types import MethodType
 from typing import Any, cast
 
@@ -23,6 +24,8 @@ from elementpath.xpath_tokens.functions import XPathFunction
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmItem, XdmSequence, as_xdm
 
 __all__ = [
+    "ContextFunction",
+    "ContextFunctionToken",
     "HostFunctionToken",
     "atomic_to_elementpath",
     "call_host_function",
@@ -30,6 +33,51 @@ __all__ = [
     "function_arity",
     "sequence_to_elementpath",
 ]
+
+
+ContextFunctionCallback = Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence]
+
+
+@dataclass(frozen=True)
+class ContextFunction:
+    """One XSLT-defined function with direct and dynamic-call behavior.
+
+    XSLT context components are available to a direct call in the instruction
+    that contains the expression.  XSLT 3.0 section 5.3.4 clears those
+    components for a dynamic function call, so a function item such as
+    ``current#0`` must not retain the caller's current item, current group, or
+    regex captures.  ``dynamic`` supplies that absent-context behavior; when it
+    is omitted the direct callback is used with an absent context item.
+    """
+
+    direct: ContextFunctionCallback
+    dynamic: ContextFunctionCallback | None = None
+
+    def __post_init__(self) -> None:
+        if not callable(self.direct):
+            raise TypeError("a context function requires a direct callback")
+        if self.dynamic is not None and not callable(self.dynamic):
+            raise TypeError("a context function dynamic callback must be callable")
+
+    def __call__(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        return self.direct(context_item, arguments)
+
+    def invoke(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+        *,
+        dynamic: bool = False,
+    ) -> XdmSequence:
+        """Invoke the direct or dynamic arm with XDM argument sequences."""
+        if dynamic:
+            callback = self.dynamic or self.direct
+            return callback(None, arguments)
+        return self.direct(context_item, arguments)
 
 
 def _local_type_name(type_name: str) -> str:
@@ -199,6 +247,88 @@ def _evaluate_token(value: Any, context: Any) -> Any:
     if callable(evaluate) and not isinstance(value, (str, bytes, bytearray)):
         return evaluate(context)
     return value
+
+
+class ContextFunctionToken(XPathFunction):
+    """An invocation-local token for one XSLT context-dependent function.
+
+    Direct calls use the active XPath context and pass its context item to the
+    ``direct`` callback.  Dynamic calls (including ``function-lookup`` results
+    and function references) pass an absent context item and use the ``dynamic``
+    callback, which makes XSLT's context-clearing rule explicit instead of
+    silently reusing the caller's state.
+
+    The token class is registered on one evaluation's parser instance.  Its
+    callbacks close over that evaluation's bridge, so no process-global
+    transformation lookup exists and concurrent evaluations stay independent.
+    """
+
+    symbol = "context-function"
+    lookup_name = "context-function"
+    label = "XSLT-defined function"
+    namespace: str | None = None
+
+    direct: ContextFunctionCallback | None = None
+    dynamic: ContextFunctionCallback | None = None
+    sequence_reader: Callable[[Any], XdmSequence] | None = None
+    item_converter: Callable[[XdmItem], Any] | None = None
+
+    def __init__(self, parser: Any, nargs: int | None = None) -> None:
+        super().__init__(parser, nargs)
+
+    def _require_callbacks(
+        self,
+    ) -> tuple[ContextFunctionCallback, Callable[[Any], XdmSequence], Callable[[XdmItem], Any]]:
+        direct = self.direct
+        reader = self.sequence_reader
+        converter = self.item_converter
+        if direct is None or reader is None or converter is None:
+            raise RuntimeError(f"the XSLT function {self.lookup_name!r} has no evaluation context")
+        return direct, reader, converter
+
+    def _context_item(self, context: Any, reader: Callable[[Any], XdmSequence]) -> XdmItem | None:
+        raw = getattr(context, "item", None) if context is not None else None
+        if raw is None:
+            return None
+        sequence = reader(raw)
+        return sequence[0] if sequence else None
+
+    def _arguments(
+        self, context: Any, reader: Callable[[Any], XdmSequence]
+    ) -> tuple[XdmSequence, ...]:
+        arguments: list[XdmSequence] = []
+        for index in range(len(self)):
+            token = self._items[index]
+            evaluate = getattr(token, "evaluate", None)
+            value = evaluate(context) if callable(evaluate) else token
+            arguments.append(reader(value))
+        return tuple(arguments)
+
+    def _finish(
+        self,
+        result: XdmSequence,
+        converter: Callable[[XdmItem], Any],
+    ) -> Any:
+        return sequence_to_elementpath(as_xdm(result), item_converter=converter)
+
+    def evaluate(self, context: Any = None) -> Any:
+        direct, reader, converter = self._require_callbacks()
+        active = context if context is not None else self.context
+        arguments = self._arguments(active, reader)
+        result = direct(self._context_item(active, reader), arguments)
+        return self._finish(result, converter)
+
+    def __call__(self, *args: Any, context: Any = None) -> Any:
+        _, _reader, converter = self._require_callbacks()
+        dynamic = self.dynamic
+        if dynamic is None:
+            direct, _, _ = self._require_callbacks()
+            dynamic = direct
+        arguments = tuple(as_xdm(_evaluate_token(value, context)) for value in args)
+        return self._finish(dynamic(None, arguments), converter)
+
+    def __repr__(self) -> str:
+        return f"<ContextFunctionToken {self.lookup_name}>"
 
 
 def clone_function_token(token: Any) -> Any:

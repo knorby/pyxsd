@@ -260,6 +260,7 @@ class ExpressionEnvironment:
     collections: Mapping[str, Sequence[XdmNode]] = field(default_factory=dict)
     default_collection: Sequence[XdmNode] = ()
     text_resources: Mapping[str, str] = field(default_factory=dict)
+    decimal_formats: Mapping[str | None, Mapping[str, str]] = field(default_factory=dict)
     current_datetime: _datetime.datetime | None = None
     implicit_timezone: Timezone | str | _datetime.tzinfo | _datetime.timedelta | None = None
     base_uri: str | None = None
@@ -321,6 +322,21 @@ class ExpressionEnvironment:
             if not isinstance(text, str):
                 raise TypeError(f"text resource {uri!r} must be a string")
 
+        decimal_formats: dict[str | None, Mapping[str, str]] = {}
+        for name, attributes in self.decimal_formats.items():
+            if name is not None and (not isinstance(name, str) or not name):
+                raise TypeError("decimal format names must be non-empty strings or None")
+            if not isinstance(attributes, Mapping):
+                raise TypeError(f"decimal format {name!r} must be a mapping")
+            values: dict[str, str] = {}
+            for attribute, value in attributes.items():
+                if not isinstance(attribute, str) or not isinstance(value, str):
+                    raise TypeError(
+                        f"decimal format {name!r} attributes must map strings to strings"
+                    )
+                values[attribute] = value
+            decimal_formats[name] = MappingProxyType(values)
+
         if self.current_datetime is not None and not isinstance(
             self.current_datetime, _datetime.datetime
         ):
@@ -351,6 +367,7 @@ class ExpressionEnvironment:
         object.__setattr__(self, "collections", MappingProxyType(collections))
         object.__setattr__(self, "default_collection", default_collection)
         object.__setattr__(self, "text_resources", MappingProxyType(text_resources))
+        object.__setattr__(self, "decimal_formats", MappingProxyType(decimal_formats))
         object.__setattr__(self, "current_datetime", current)
         object.__setattr__(self, "implicit_timezone", timezone)
 
