@@ -1743,20 +1743,80 @@ def _simple_content_string(sequence: XdmSequence, separator: str) -> str:
     return separator.join(values)
 
 
+_EBV_STRING_TYPES = frozenset(
+    {
+        "anyURI",
+        "ENTITY",
+        "ID",
+        "IDREF",
+        "language",
+        "Name",
+        "NCName",
+        "NMTOKEN",
+        "normalizedString",
+        "string",
+        "token",
+        "untypedAtomic",
+    }
+)
+_EBV_NUMERIC_TYPES = frozenset(
+    {
+        "byte",
+        "decimal",
+        "double",
+        "float",
+        "int",
+        "integer",
+        "long",
+        "negativeInteger",
+        "nonNegativeInteger",
+        "nonPositiveInteger",
+        "positiveInteger",
+        "short",
+        "unsignedByte",
+        "unsignedInt",
+        "unsignedLong",
+        "unsignedShort",
+    }
+)
+
+
 def _effective_boolean(sequence: XdmSequence) -> bool:
-    """Evaluate an XDM effective boolean value for control-flow tests."""
+    """Evaluate the XPath effective boolean value of one XDM sequence.
+
+    Nodes are true by their presence.  A single boolean, string-family, or
+    numeric atomic follows the specification's value rules.  A multi-item
+    atomic sequence, a function item, or an unsupported atomic type raises
+    ``FORG0006`` instead of guessing from the first item.
+    """
     if not sequence:
         return False
     first = sequence[0]
     if isinstance(first, XdmNode):
         return True
-    if isinstance(first, XdmAtomic):
-        try:
-            return bool(first.cast(f"{{{_XSD_NS}}}boolean").value)
-        except (TypeError, ValueError):
-            return first.lexical != ""
+    if not isinstance(first, XdmAtomic):
+        raise XsltError(
+            "the effective boolean value of a function item is not defined",
+            code="FORG0006",
+        )
+    if len(sequence) != 1:
+        raise XsltError(
+            "the effective boolean value of a multi-item atomic sequence is not defined",
+            code="FORG0006",
+        )
+    local = first.type_name.rpartition("}")[2]
+    if local == "boolean":
+        return bool(first.value)
+    if local in _EBV_STRING_TYPES:
+        return first.lexical != ""
+    if local in _EBV_NUMERIC_TYPES:
+        value = first.value
+        # NaN is the only numeric value not equal to itself.
+        if value != value:
+            return False
+        return value != 0
     raise XsltError(
-        "the effective boolean value of a function item is not defined",
+        f"the effective boolean value of {local or 'this atomic type'} is not defined",
         code="FORG0006",
     )
 
@@ -1852,6 +1912,7 @@ class _Invocation(Transformation):
         tunnel_parameters: Mapping[str, XdmSequence] | None = None,
         final_output: bool,
         focus: Focus | None = None,
+        mode: str | None = None,
     ) -> XdmSequence:
         frame = self._component_frame(
             component,
@@ -1860,6 +1921,7 @@ class _Invocation(Transformation):
             tunnel_parameters=tunnel_parameters,
             final_output=final_output,
             focus=focus,
+            mode=mode,
         )
         return cast(XdmSequence, self.execute_frame(frame))
 
@@ -1878,6 +1940,7 @@ class _Invocation(Transformation):
         tunnel_parameters: Mapping[str, XdmSequence] | None = None,
         final_output: bool,
         focus: Focus | None = None,
+        mode: str | None = None,
     ) -> Frame:
         plan = self._component_plan(component)
         package_name = component.owner
@@ -1894,14 +1957,16 @@ class _Invocation(Transformation):
                 resolved_focus = focus
             context_signature = component.signature.context_item if component.signature else None
             resolved_focus = self._apply_context_item(context_signature, resolved_focus)
+        effective_tunnel = tunnel_parameters or {}
         locals_, index = self._bind_component_parameters(
             component,
             plan.body,
             arguments=arguments,
             template_parameters=template_parameters,
-            tunnel_parameters=tunnel_parameters,
+            tunnel_parameters=effective_tunnel,
             focus=resolved_focus,
             package_name=package_name,
+            mode=mode,
         )
         conversion = None
         declaration_as = component.declaration.attribute("as")
@@ -1914,19 +1979,22 @@ class _Invocation(Transformation):
             conversion = lambda value: self._coerce_component_result(  # noqa: E731
                 component, cast(XdmSequence, value)
             )
-        return Frame(
+        frame = Frame(
             kind="component",
             component=component,
             identity=self._component_identity(component),
             program=plan.body[index:],
             variables=locals_,
+            tunnel_parameters=effective_tunnel,
             focus=resolved_focus,
             continuation=None,
             package=package_name,
+            mode=mode,
             location=component.location,
             final_output=final_output,
             conversion=conversion,
         )
+        return self.frame_boundary(frame) if conversion is not None else frame
 
     def _bind_component_parameters(
         self,
@@ -1938,6 +2006,7 @@ class _Invocation(Transformation):
         tunnel_parameters: Mapping[str, XdmSequence] | None,
         focus: Focus,
         package_name: str | None,
+        mode: str | None = None,
     ) -> tuple[dict[str, XdmSequence], int]:
         locals_: dict[str, XdmSequence] = {}
         index = 0
@@ -1956,7 +2025,14 @@ class _Invocation(Transformation):
                 value = (
                     supplied
                     if supplied is not None
-                    else self._parameter_default(parameter, focus, locals_, package_name)
+                    else self._parameter_default(
+                        parameter,
+                        focus,
+                        locals_,
+                        package_name,
+                        mode=mode,
+                        tunnel_parameters=tunnel_parameters,
+                    )
                 )
             value = self._coerce_parameter(
                 parameter,
@@ -1989,6 +2065,9 @@ class _Invocation(Transformation):
 
     def _frame_variables(self, frame: Frame) -> Mapping[str, XdmSequence]:
         return cast(Mapping[str, XdmSequence], frame.variables)
+
+    def _frame_tunnel(self, frame: Frame) -> Mapping[str, XdmSequence]:
+        return cast(Mapping[str, XdmSequence], frame.tunnel_parameters)
 
     def _return_frame(self, frame: Frame) -> Return:
         value: object = tuple(frame.values)
@@ -2033,6 +2112,8 @@ class _Invocation(Transformation):
             locals_=self._frame_variables(frame),
             final_output=frame.final_output,
             package_name=frame.package,
+            mode=frame.mode,
+            tunnel_parameters=self._frame_tunnel(frame),
         )
         return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
 
@@ -2043,7 +2124,11 @@ class _Invocation(Transformation):
         cursor: int,
     ) -> FrameResult:
         environment = self._environment(self._frame_variables(frame), frame.package)
-        machine = self.xpath_machine(expression, environment.variables, self.stylesheet_functions())
+        referenced = _referenced_variables(expression.source)
+        variables = {
+            name: value for name, value in environment.variables.items() if name in referenced
+        }
+        machine = self.xpath_machine(expression, variables, self.stylesheet_functions())
         if machine is None:
             value = self._evaluate(
                 expression, frame.focus, self._frame_variables(frame), frame.package
@@ -2091,6 +2176,8 @@ class _Invocation(Transformation):
             frame.focus,
             self._frame_variables(frame),
             frame.package,
+            mode=frame.mode,
+            tunnel_parameters=self._frame_tunnel(frame),
         )
 
     def _plan_parameters_for(
@@ -2099,6 +2186,9 @@ class _Invocation(Transformation):
         focus: Focus,
         locals_: Mapping[str, XdmSequence],
         package_name: str | None,
+        *,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
     ) -> tuple[Mapping[str, XdmSequence], Mapping[str, XdmSequence]]:
         template: dict[str, XdmSequence] = {}
         tunnel: dict[str, XdmSequence] = {}
@@ -2112,9 +2202,18 @@ class _Invocation(Transformation):
                     locals_=locals_,
                     final_output=False,
                     package_name=package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
                 )
             else:
                 value = ()
+            if parameter.sequence_type is not None:
+                value = _coerce_sequence(
+                    value,
+                    parameter.sequence_type,
+                    code="XTTE0590",
+                    label=f"parameter {parameter.name!r}",
+                )
             (tunnel if parameter.tunnel else template)[parameter.name] = value
         return MappingProxyType(template), MappingProxyType(tunnel)
 
@@ -2141,13 +2240,15 @@ class _Invocation(Transformation):
         cursor: int,
     ) -> FrameResult:
         template, tunnel = self._plan_parameters(plan.parameters, frame)
+        effective_tunnel = {**self._frame_tunnel(frame), **tunnel}
         component = self._resolve_template(plan.reference)
         child = self._component_frame(
             component,
             template_parameters=template,
-            tunnel_parameters=tunnel,
+            tunnel_parameters=effective_tunnel,
             final_output=frame.final_output,
             focus=frame.focus,
+            mode=frame.mode,
         )
         return Call(
             child,
@@ -2179,7 +2280,7 @@ class _Invocation(Transformation):
             items,
             self._resolve_mode(plan.mode, frame.mode),
             template,
-            tunnel,
+            {**self._frame_tunnel(frame), **tunnel},
             tail=plan.tail,
         )
         return Call(
@@ -2207,6 +2308,7 @@ class _Invocation(Transformation):
             kind="apply",
             identity=f"apply-templates mode={mode!r}",
             program=state,
+            tunnel_parameters=tunnel_parameters,
             mode=mode,
             tail=tail,
         )
@@ -2237,6 +2339,7 @@ class _Invocation(Transformation):
             tunnel_parameters,
             rule_focus,
             body.owner,
+            mode=rule.mode,
         )
         conversion = None
         if body.result_type is not None:
@@ -2246,12 +2349,13 @@ class _Invocation(Transformation):
                 code="XTTE0505",
                 label="template rule result",
             )
-        return Frame(
+        frame = Frame(
             kind="rule",
             component=rule,
             identity=f"rule {rule.name or rule.pattern}",
             program=body.body[index:],
             variables=locals_,
+            tunnel_parameters=tunnel_parameters,
             focus=rule_focus,
             package=body.owner,
             mode=rule.mode,
@@ -2259,6 +2363,7 @@ class _Invocation(Transformation):
             final_output=True,
             conversion=conversion,
         )
+        return self.frame_boundary(frame) if conversion is not None else frame
 
     def _bind_template_parameters(
         self,
@@ -2267,6 +2372,8 @@ class _Invocation(Transformation):
         tunnel_parameters: Mapping[str, XdmSequence],
         focus: Focus,
         package_name: str | None,
+        *,
+        mode: str | None = None,
     ) -> tuple[dict[str, XdmSequence], int]:
         locals_: dict[str, XdmSequence] = {}
         index = 0
@@ -2280,7 +2387,14 @@ class _Invocation(Transformation):
             value = (
                 supplied
                 if supplied is not None
-                else self._parameter_default(parameter, focus, locals_, package_name)
+                else self._parameter_default(
+                    parameter,
+                    focus,
+                    locals_,
+                    package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
+                )
             )
             value = self._coerce_parameter(parameter, value, code="XTTE0590")
             self._bind(locals_, parameter.name, value)
@@ -2443,6 +2557,9 @@ class _Invocation(Transformation):
         focus: Focus,
         locals_: Mapping[str, XdmSequence],
         package_name: str | None,
+        *,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
     ) -> XdmSequence:
         if parameter.expression is not None:
             return self._evaluate(parameter.expression, focus, locals_, package_name)
@@ -2454,6 +2571,8 @@ class _Invocation(Transformation):
                     locals_=locals_,
                     final_output=False,
                     package_name=package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
                 )
             sequence = self._execute_plans(
                 parameter.children,
@@ -2461,6 +2580,8 @@ class _Invocation(Transformation):
                 locals_=locals_,
                 final_output=False,
                 package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
             )
             return (_build_result_tree(sequence),)
         if parameter.required:
@@ -2573,6 +2694,8 @@ class _Invocation(Transformation):
         locals_: Mapping[str, XdmSequence],
         final_output: bool,
         package_name: str | None,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
     ) -> XdmSequence:
         result: list[XdmItem] = []
         local_scope = dict(locals_)
@@ -2589,6 +2712,8 @@ class _Invocation(Transformation):
                     locals_=local_scope,
                     final_output=final_output,
                     package_name=package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
                 )
             )
         return tuple(result)
@@ -2601,6 +2726,8 @@ class _Invocation(Transformation):
         locals_: Mapping[str, XdmSequence],
         final_output: bool,
         package_name: str | None,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
     ) -> XdmSequence:
         if isinstance(plan, _TextPlan):
             return (self._text_node(plan.value),)
@@ -2617,6 +2744,8 @@ class _Invocation(Transformation):
                 locals_=locals_,
                 final_output=final_output,
                 package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
             )
         if isinstance(plan, _ValueOfPlan):
             if plan.expression is not None:
@@ -2628,12 +2757,24 @@ class _Invocation(Transformation):
                     locals_=locals_,
                     final_output=final_output,
                     package_name=package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
                 )
             separator = self._value_source(plan.separator, focus, locals_, package_name)
             text = _simple_content_string(values, separator)
             return (self._text_node(text),)
         if isinstance(plan, _LiteralPlan):
-            return (self._literal_element(plan, focus, locals_, final_output, package_name),)
+            return (
+                self._literal_element(
+                    plan,
+                    focus,
+                    locals_,
+                    final_output,
+                    package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
+                ),
+            )
         if isinstance(plan, _ChoosePlan):
             branch = None
             for test, candidate in plan.branches:
@@ -2650,32 +2791,53 @@ class _Invocation(Transformation):
                 locals_=locals_,
                 final_output=final_output,
                 package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
             )
         if isinstance(plan, _CallTemplatePlan):
             template, tunnel = self._plan_parameters_for(
-                plan.parameters, focus, locals_, package_name
+                plan.parameters,
+                focus,
+                locals_,
+                package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
             )
             component = self._resolve_template(plan.reference)
             return self._execute_component(
                 component,
                 template_parameters=template,
-                tunnel_parameters=tunnel,
+                tunnel_parameters={**(tunnel_parameters or {}), **tunnel},
                 final_output=final_output,
                 focus=focus,
+                mode=mode,
             )
         if isinstance(plan, _ApplyTemplatesPlan):
             items = self._evaluate(plan.expression, focus, locals_, package_name)
             template, tunnel = self._plan_parameters_for(
-                plan.parameters, focus, locals_, package_name
+                plan.parameters,
+                focus,
+                locals_,
+                package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
             )
             return self._apply_templates(
                 items,
-                self._resolve_mode(plan.mode, None),
+                self._resolve_mode(plan.mode, mode),
                 template,
-                tunnel,
+                {**(tunnel_parameters or {}), **tunnel},
             )
         if isinstance(plan, _ResultDocumentPlan):
-            self._result_document(plan, focus, locals_, final_output, package_name)
+            self._result_document(
+                plan,
+                focus,
+                locals_,
+                final_output,
+                package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+            )
             return ()
         if isinstance(plan, _UnsupportedPlan):
             raise XsltError(
@@ -2694,6 +2856,9 @@ class _Invocation(Transformation):
         locals_: Mapping[str, XdmSequence],
         final_output: bool,
         package_name: str | None,
+        *,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
     ) -> XdmNode:
         factory = _NodeFactory()
         attributes = tuple(
@@ -2712,6 +2877,8 @@ class _Invocation(Transformation):
             locals_=locals_,
             final_output=final_output,
             package_name=package_name,
+            mode=mode,
+            tunnel_parameters=tunnel_parameters,
         )
         _append_complex_content(factory, element, content, allow_attributes=True)
         return element
@@ -2723,6 +2890,9 @@ class _Invocation(Transformation):
         locals_: Mapping[str, XdmSequence],
         final_output: bool,
         package_name: str | None,
+        *,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
     ) -> None:
         if not final_output:
             raise XsltError(
@@ -2776,6 +2946,8 @@ class _Invocation(Transformation):
             locals_=locals_,
             final_output=True,
             package_name=package_name,
+            mode=mode,
+            tunnel_parameters=tunnel_parameters,
         )
         tree = None
         if self._build_tree(build_tree, effective_method):
@@ -2884,9 +3056,21 @@ class _Invocation(Transformation):
             self._bind(variables, key, value)
         return ExpressionEnvironment(
             variables=variables,
+            functions=self.fallback_functions(),
             current_datetime=self.current_datetime,
             implicit_timezone=self.implicit_timezone,
             base_uri=None,
+        )
+
+    def _invoke_component_callable(
+        self,
+        component: Any,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        return self._execute_component(
+            cast(Component, component),
+            arguments=arguments,
+            final_output=False,
         )
 
     def _bind(self, variables: dict[str, Any], name: str, value: XdmSequence) -> None:
@@ -2931,10 +3115,16 @@ class _Invocation(Transformation):
 
 
 _VARIABLE_REFERENCE = re.compile(r"\$([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)")
+_EQNAME_VARIABLE_REFERENCE = re.compile(r"\$Q\{([^{}]*)\}([A-Za-z_][\w.-]*)")
 
 
-def _referenced_variables(source: str) -> tuple[str, ...]:
-    return tuple(_VARIABLE_REFERENCE.findall(source))
+def _referenced_variables(source: str) -> set[str]:
+    names = set(_VARIABLE_REFERENCE.findall(source))
+    names.update(
+        f"{{{uri}}}{local}" if uri else local
+        for uri, local in _EQNAME_VARIABLE_REFERENCE.findall(source)
+    )
+    return names
 
 
 def _method_local(method: str) -> str:

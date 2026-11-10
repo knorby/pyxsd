@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 from elementpath.exceptions import MissingContextError
 
+from pyxsd import xsd_data_types as xsd
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.xdm import XdmAtomic, XdmFunction, as_xdm
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
@@ -46,7 +47,12 @@ from pyxsd.xslt import (
     XsltProcessor,
 )
 from pyxsd.xslt.errors import XsltError
-from pyxsd.xslt.processor import _effective_boolean, _Invocation
+from pyxsd.xslt.processor import (
+    _ABSENT,
+    _effective_boolean,
+    _Invocation,
+    _prepare_invocation,
+)
 from pyxsd.xslt.runtime.frames import (
     NO_INPUT,
     PYXSD_FRAME_EXHAUSTED,
@@ -54,6 +60,7 @@ from pyxsd.xslt.runtime.frames import (
     CatchResult,
     Continuation,
     Continue,
+    ExecutionBudget,
     Frame,
     FrameDiagnostic,
     Raise,
@@ -340,6 +347,323 @@ def test_type_conversion_across_scheduled_function_calls() -> None:
     assert run_stylesheet("type-conversion.xsl") == "41"
 
 
+def test_typed_tail_callee_conversion_does_not_consume_caller_output() -> None:
+    named = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:template name="inner" as="xs:integer">
+              <xsl:sequence select="1"/>
+            </xsl:template>
+            <xsl:template name="outer">
+              <xsl:text>prefix</xsl:text>
+              <xsl:call-template name="inner"/>
+            </xsl:template>
+            <xsl:template name="xsl:initial-template">
+              <xsl:call-template name="outer"/>
+            </xsl:template>
+            """
+        )
+    )
+    assert _text(named.transform(delivery="document").principal_tree) == "prefix1"
+
+    trailing = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:template name="inner" as="xs:integer">
+              <xsl:sequence select="1"/>
+            </xsl:template>
+            <xsl:template name="outer">
+              <xsl:text>prefix</xsl:text>
+              <xsl:call-template name="inner"/>
+              <xsl:text>suffix</xsl:text>
+            </xsl:template>
+            <xsl:template name="xsl:initial-template">
+              <xsl:call-template name="outer"/>
+            </xsl:template>
+            """
+        )
+    )
+    assert _text(trailing.transform(delivery="document").principal_tree) == "prefix1suffix"
+
+    applied = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:template name="xsl:initial-template">
+              <xsl:text>prefix</xsl:text>
+              <xsl:apply-templates select="/*/*" mode="m"/>
+            </xsl:template>
+            <xsl:template match="a" mode="m" as="xs:integer">
+              <xsl:sequence select="1"/>
+            </xsl:template>
+            """
+        )
+    )
+    result = applied.transform(
+        source=b"<r><a/></r>",
+        initial_template="xsl:initial-template",
+        delivery="document",
+    )
+    assert _text(result.principal_tree) == "prefix1"
+
+
+def test_tunnel_parameters_inherit_through_named_templates_and_apply_templates() -> None:
+    named = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:template name="outer">
+              <xsl:call-template name="middle">
+                <xsl:with-param name="t" select="'T'" tunnel="yes"/>
+              </xsl:call-template>
+            </xsl:template>
+            <xsl:template name="middle">
+              <xsl:call-template name="inner"/>
+            </xsl:template>
+            <xsl:template name="inner">
+              <xsl:param name="t" tunnel="yes" select="'missing'"/>
+              <xsl:value-of select="$t"/>
+            </xsl:template>
+            <xsl:template name="xsl:initial-template">
+              <xsl:call-template name="outer"/>
+            </xsl:template>
+            """
+        )
+    )
+    assert _text(named.transform(delivery="document").principal_tree) == "T"
+
+    applied = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:template name="xsl:initial-template">
+              <xsl:apply-templates select="/*/*" mode="m">
+                <xsl:with-param name="t" select="'T'" tunnel="yes"/>
+              </xsl:apply-templates>
+            </xsl:template>
+            <xsl:template match="a" mode="m">
+              <xsl:apply-templates select="." mode="n"/>
+            </xsl:template>
+            <xsl:template match="a" mode="n">
+              <xsl:param name="t" tunnel="yes" select="'missing'"/>
+              <xsl:value-of select="$t"/>
+            </xsl:template>
+            """
+        )
+    )
+    result = applied.transform(
+        source=b"<r><a/></r>",
+        initial_template="xsl:initial-template",
+        delivery="document",
+    )
+    assert _text(result.principal_tree) == "T"
+
+
+def test_with_param_as_conversion_is_applied_before_target_binding() -> None:
+    compiled = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:template name="inner">
+              <xsl:param name="x"/>
+              <xsl:sequence select="$x instance of xs:integer"/>
+              <xsl:sequence select="$x + 0.5"/>
+            </xsl:template>
+            <xsl:template name="xsl:initial-template">
+              <xsl:call-template name="inner">
+                <xsl:with-param name="x" select="'5'" as="xs:integer"/>
+              </xsl:call-template>
+            </xsl:template>
+            """
+        )
+    )
+    principal = compiled.transform(delivery="raw").principal
+
+    assert principal[0] == XdmAtomic.boolean(True)
+    assert principal[1].value == 5.5
+
+
+def test_effective_boolean_strings_and_multi_item_atomic_sequences() -> None:
+    for value in ("'false'", "'0'", "'text'"):
+        compiled = compile_stylesheet(
+            _stylesheet(
+                f"""
+                <xsl:template name="xsl:initial-template">
+                  <xsl:choose>
+                    <xsl:when test="{value}"><xsl:text>true-branch</xsl:text></xsl:when>
+                    <xsl:otherwise><xsl:text>false-branch</xsl:text></xsl:otherwise>
+                  </xsl:choose>
+                </xsl:template>
+                """
+            )
+        )
+        result = compiled.transform(delivery="document")
+        assert _text(result.principal_tree) == "true-branch"
+
+    empty = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:template name="xsl:initial-template">
+              <xsl:choose>
+                <xsl:when test="''"><xsl:text>true-branch</xsl:text></xsl:when>
+                <xsl:otherwise><xsl:text>false-branch</xsl:text></xsl:otherwise>
+              </xsl:choose>
+            </xsl:template>
+            """
+        )
+    )
+    assert _text(empty.transform(delivery="document").principal_tree) == "false-branch"
+
+    multi = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:template name="xsl:initial-template">
+              <xsl:choose>
+                <xsl:when test="('a', 'b')"><xsl:text>true-branch</xsl:text></xsl:when>
+                <xsl:otherwise><xsl:text>false-branch</xsl:text></xsl:otherwise>
+              </xsl:choose>
+            </xsl:template>
+            """
+        )
+    )
+    with pytest.raises(XsltError) as caught:
+        multi.transform(delivery="document")
+    assert caught.value.code == "FORG0006"
+
+
+def test_current_mode_survives_named_templates_and_literal_construction() -> None:
+    literal = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:template match="/" mode="m">
+              <out><xsl:apply-templates select="/*/a" mode="#current"/></out>
+            </xsl:template>
+            <xsl:template match="a" mode="m"><xsl:text>M</xsl:text></xsl:template>
+            <xsl:template match="a"><xsl:text>U</xsl:text></xsl:template>
+            """
+        )
+    )
+    result = literal.transform(source=b"<doc><a/></doc>", initial_mode="m", delivery="document")
+    assert _text(result.principal_tree) == "M"
+
+    named = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:template match="/" mode="m">
+              <xsl:call-template name="wrap"/>
+            </xsl:template>
+            <xsl:template name="wrap">
+              <out><xsl:apply-templates select="/*/a" mode="#current"/></out>
+            </xsl:template>
+            <xsl:template match="a" mode="m"><xsl:text>M</xsl:text></xsl:template>
+            <xsl:template match="a"><xsl:text>U</xsl:text></xsl:template>
+            """
+        )
+    )
+    result = named.transform(source=b"<doc><a/></doc>", initial_mode="m", delivery="document")
+    assert _text(result.principal_tree) == "M"
+
+
+def test_unused_node_variables_do_not_disable_scheduler_and_fallback_functions_work() -> None:
+    unused = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:variable name="doc" select="/*"/>
+            <xsl:function name="my:done" as="xs:string">
+              <xsl:sequence select="'done'"/>
+            </xsl:function>
+            <xsl:template name="xsl:initial-template">
+              <xsl:sequence select="my:done()"/>
+            </xsl:template>
+            """
+        )
+    )
+    result = unused.transform(
+        source=b"<r><a/></r>",
+        initial_template="xsl:initial-template",
+        delivery="document",
+    )
+    assert _text(result.principal_tree) == "done"
+
+    fallback = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:variable name="doc" select="/*"/>
+            <xsl:function name="my:one" as="xs:integer">
+              <xsl:sequence select="1"/>
+            </xsl:function>
+            <xsl:template name="xsl:initial-template">
+              <xsl:value-of select="count($doc/*) + my:one()"/>
+            </xsl:template>
+            """
+        )
+    )
+    result = fallback.transform(
+        source=b"<r><a/><a/></r>",
+        initial_template="xsl:initial-template",
+        delivery="document",
+    )
+    assert _text(result.principal_tree) == "3"
+
+
+def test_nested_schedulers_share_the_configured_frame_budget() -> None:
+    compiled = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:template name="loop">
+              <x><xsl:call-template name="loop"/></x>
+            </xsl:template>
+            <xsl:template name="xsl:initial-template">
+              <xsl:call-template name="loop"/>
+            </xsl:template>
+            """
+        )
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(delivery="document", limits=ExecutionLimits(max_frames=50))
+
+    assert caught.value.code == PYXSD_FRAME_EXHAUSTED
+    assert "frame budget" in str(caught.value)
+    assert "RecursionError" not in str(caught.value)
+
+
+def test_production_typed_frame_rolls_back_secondary_output_and_records_error() -> None:
+    compiled = compile_stylesheet(
+        _stylesheet(
+            """
+            <xsl:template match="/" mode="m" as="xs:integer">
+              <xsl:result-document href="http://example.com/secondary"><one/></xsl:result-document>
+              <xsl:sequence select="'not-an-integer'"/>
+            </xsl:template>
+            """
+        )
+    )
+    options = _prepare_invocation(
+        compiled,
+        source=b"<doc/>",
+        parameters=None,
+        global_context_item=_ABSENT,
+        initial_match_selection=_ABSENT,
+        template_parameters=None,
+        tunnel_parameters=None,
+        initial_template=None,
+        initial_mode="m",
+        initial_function=None,
+        initial_function_arguments=(),
+        output_uri=None,
+        delivery="document",
+    )
+    invocation = _Invocation(compiled, options)
+
+    with pytest.raises(XsltError) as caught:
+        invocation.run()
+
+    assert caught.value.code == "XTTE0505"
+    assert invocation.secondary == {}
+    assert "http://example.com/secondary" not in invocation.final_uris
+    assert invocation.last_error is not None
+    recorded, stack = invocation.last_error
+    assert recorded is caught.value
+    assert stack and stack[-1].kind == "rule"
+    assert invocation.diagnostics
+
+
 def test_choose_effective_boolean_edges_and_builtin_empty_elements() -> None:
     choose = compile_stylesheet(
         _stylesheet(
@@ -380,8 +704,21 @@ def test_choose_effective_boolean_edges_and_builtin_empty_elements() -> None:
 
     node = XdmDocument.parse(b"<doc/>").children[0]
     assert _effective_boolean((node,)) is True
+    assert _effective_boolean((XdmAtomic.integer(0),)) is False
+    assert _effective_boolean((XdmAtomic.integer(1),)) is True
+    assert _effective_boolean((XdmAtomic.double(float("nan")),)) is False
     with pytest.raises(XsltError, match="FORG0006"):
         _effective_boolean((XdmFunction(lambda arguments, environment, captured: (), arity=0),))
+    with pytest.raises(XsltError, match="FORG0006"):
+        _effective_boolean(
+            (
+                XdmAtomic(
+                    xsd.Date("2020-01-01"),
+                    f"{{{XSD_NS}}}date",
+                    xsd.Date,
+                ),
+            )
+        )
 
 
 def test_literal_construction_uses_synchronous_nested_component_branches() -> None:
@@ -1051,6 +1388,18 @@ def test_resource_budgets_and_python_recursion_are_documented_errors() -> None:
     assert "RecursionError" not in str(caught.value)
 
 
+def test_scheduler_budget_contract_and_frame_release() -> None:
+    budget = ExecutionBudget(ExecutionLimits(max_frames=1))
+    with pytest.raises(TypeError, match="ExecutionBudget"):
+        Scheduler(budget=object())  # type: ignore[arg-type]
+    assert budget.take_step() is True
+    assert budget.acquire_frame() is True
+    assert budget.acquire_frame() is False
+    budget.release_frame()
+    budget.release_frame()
+    assert budget.frames == 0
+
+
 def test_scheduler_rejects_invalid_configuration_and_reentrancy() -> None:
     with pytest.raises(TypeError, match="ExecutionLimits"):
         Scheduler(object())  # type: ignore[arg-type]
@@ -1096,6 +1445,8 @@ def test_frame_and_continuation_contracts() -> None:
         Frame(kind="")
     with pytest.raises(TypeError, match="variables"):
         Frame(variables=[])  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="tunnel parameters"):
+        Frame(tunnel_parameters=[])  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="focus"):
         Frame(focus="focus")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="error handler"):
@@ -1342,8 +1693,11 @@ def test_transformation_default_state_and_step_contract() -> None:
     assert isinstance(transformation.limits, ExecutionLimits)
     assert transformation.diagnostics == ()
     assert transformation.stylesheet_functions() == {}
+    assert transformation.fallback_functions() == {}
     with pytest.raises(NotImplementedError, match="step"):
         transformation.step(Frame())
+    with pytest.raises(NotImplementedError, match="component_callable"):
+        transformation._invoke_component_callable(None, ())
 
 
 def test_transformation_scheduled_xpath_and_fallbacks() -> None:
@@ -1452,6 +1806,10 @@ def test_transformation_uses_compiled_stylesheet_state_and_functions() -> None:
     table = transformation.stylesheet_functions()
     assert (f"{{{MY_NS}}}next", 1) in table
     assert transformation.stylesheet_functions() is table
+    fallback = transformation.fallback_functions()
+    assert f"{{{MY_NS}}}next" in fallback
+    assert transformation.fallback_functions() is fallback
+    assert callable(fallback[f"{{{MY_NS}}}next"])
     entry = next(iter(table.values()))
     assert isinstance(entry, HostFunction)
     assert entry.suspend is True
@@ -1480,6 +1838,21 @@ class _SteppingTransformation(Transformation):
 
     def step(self, frame: Frame) -> Any:
         return self._step(frame)
+
+
+def test_secondary_extent_rollback_preserves_earlier_entries() -> None:
+    transformation = Transformation()
+    transformation.secondary["keep"] = object()
+    transformation.final_uris.add("http://example.com/keep")
+    frame = transformation.frame_boundary(Frame(kind="rule"))
+
+    transformation.secondary["added"] = object()
+    transformation.final_uris.add("http://example.com/added")
+    assert frame.extent is not None
+    frame.extent.rollback()
+
+    assert tuple(transformation.secondary) == ("keep",)
+    assert transformation.final_uris == {"http://example.com/keep"}
 
 
 def test_transformation_nested_execution_tracks_nested_diagnostics() -> None:

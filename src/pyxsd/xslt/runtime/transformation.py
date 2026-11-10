@@ -16,6 +16,7 @@ caller can use the full elementpath evaluator with unchanged semantics.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 
@@ -28,6 +29,7 @@ from pyxsd.xpath.environment import ExpressionEnvironment
 from pyxsd.xpath.functions import atomic_to_elementpath
 from pyxsd.xslt.errors import XsltDynamicError, XsltError
 from pyxsd.xslt.runtime.frames import (
+    ExecutionBudget,
     ExecutionLimits,
     Frame,
     FrameDiagnostic,
@@ -57,6 +59,32 @@ class ComponentCall:
         return f"ComponentCall({self.component!r}, {self.kind!r})"
 
 
+class _SecondaryExtent:
+    """A production rollback boundary for one typed frame.
+
+    A frame that performs an ``as`` conversion is already a non-eliminable
+    boundary.  This extent snapshots secondary results and final URIs when the
+    frame starts, and discards entries added by that frame if it unwinds.
+    """
+
+    __slots__ = ("_final_uri_keys", "_final_uris", "_secondary", "_secondary_keys")
+
+    def __init__(self, transformation: Transformation) -> None:
+        self._secondary = transformation.secondary
+        self._final_uris = transformation.final_uris
+        self._secondary_keys = frozenset(transformation.secondary)
+        self._final_uri_keys = frozenset(transformation.final_uris)
+
+    def rollback(self) -> None:
+        """Discard secondary entries and final URIs created by this frame."""
+        for key in tuple(self._secondary):
+            if key not in self._secondary_keys:
+                del self._secondary[key]
+        for uri in tuple(self._final_uris):
+            if uri not in self._final_uri_keys:
+                self._final_uris.discard(uri)
+
+
 class Transformation:
     """One transformation's complete dynamic state and frame scheduler."""
 
@@ -83,9 +111,12 @@ class Transformation:
         self.implicit_timezone = base.implicit_timezone
         self.output_attributes = self._read_output_attributes()
         self.limits = limits if limits is not None else ExecutionLimits()
-        self.scheduler = Scheduler(self.limits)
+        self.budget = ExecutionBudget(self.limits)
+        self.scheduler = Scheduler(self.limits, budget=self.budget)
         self._xpath_plans: dict[int, ContinuationPlan | None] = {}
         self._function_table: dict[tuple[str, int], HostFunction] | None = None
+        self._fallback_function_table: dict[str, Any] | None = None
+        self.last_error: tuple[BaseException, tuple[FrameDiagnostic, ...]] | None = None
         self.xpath_machines = 0
         self.max_python_depth = 0
 
@@ -115,12 +146,34 @@ class Transformation:
         """
         if self.scheduler.active:
             self._nested_diagnostics = self.scheduler.diagnostics
-            nested = Scheduler(self.limits)
+            nested = Scheduler(self.limits, budget=self.budget)
             try:
                 return nested.run(frame, self.step)
             finally:
                 self._nested_diagnostics = nested.diagnostics
         return self.scheduler.run(frame, self.step)
+
+    def frame_boundary(self, frame: Frame) -> Frame:
+        """Attach production rollback and diagnostic boundaries to *frame*.
+
+        Typed frames already cannot be tail-eliminated.  Code paths that
+        install an ``as`` conversion call this so secondary-result rollback and
+        diagnostic capture are exercised by the real XSLT instruction bridge,
+        not only by the scheduler protocol tests.  ``xsl:try`` remains Task 26.
+        """
+        return replace(
+            frame,
+            extent=_SecondaryExtent(self),
+            error_handler=self._record_error,
+        )
+
+    def _record_error(
+        self,
+        error: BaseException,
+        stack: tuple[FrameDiagnostic, ...],
+    ) -> None:
+        self.last_error = (error, stack)
+        return None
 
     def step(self, frame: Frame) -> FrameResult:
         """Advance one frame; the processor subclass implements this."""
@@ -293,6 +346,47 @@ class Transformation:
                 )
         self._function_table = table
         return table
+
+    def fallback_functions(self) -> Mapping[str, Any]:
+        """Host callables for the full evaluator when scheduling is unavailable.
+
+        The standalone engine needs a target for every declared stylesheet
+        function.  These callables enter the same production component bridge;
+        they are used only when the scheduler path has already declined an
+        expression (for example because a node-valued variable is referenced).
+        """
+        if self._fallback_function_table is not None:
+            return self._fallback_function_table
+        table: dict[str, Any] = {}
+        if self.package is not None:
+            for component in self.package.components.values():
+                name = component.name
+                if (
+                    component.kind != "function"
+                    or name is None
+                    or component.hidden
+                    or component.abstract
+                ):
+                    continue
+                table[name] = self._component_callable(component)
+        self._fallback_function_table = table
+        return table
+
+    def _component_callable(self, component: Any) -> Any:
+        def call(*arguments: object) -> XdmSequence:
+            converted = tuple(as_xdm(argument) for argument in arguments)
+            return self._invoke_component_callable(component, converted)
+
+        return call
+
+    def _invoke_component_callable(
+        self,
+        component: Any,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        raise NotImplementedError(
+            "a Transformation subclass must implement _invoke_component_callable()"
+        )
 
     def component_arguments(self, arguments: tuple[object, ...]) -> tuple[XdmSequence, ...]:
         """Convert scheduler-native arguments into XDM argument sequences."""

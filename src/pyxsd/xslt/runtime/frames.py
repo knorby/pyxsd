@@ -35,6 +35,7 @@ __all__ = [
     "CatchResult",
     "Continuation",
     "Continue",
+    "ExecutionBudget",
     "ExecutionLimits",
     "Frame",
     "FrameDiagnostic",
@@ -76,6 +77,47 @@ class ExecutionLimits:
                 raise TypeError("max_steps must be an integer or None")
             if self.max_steps < 1:
                 raise ValueError("max_steps must be at least 1")
+
+
+class ExecutionBudget:
+    """Live frame and step counters shared by nested schedulers.
+
+    One budget belongs to a transformation.  Top-level and nested schedulers
+    acquire and release frames from the same counters, so a nested execution
+    cannot reset a caller's configured limits.
+    """
+
+    __slots__ = ("frames", "limits", "max_frame_depth", "steps")
+
+    def __init__(self, limits: ExecutionLimits | None = None) -> None:
+        if limits is None:
+            limits = ExecutionLimits()
+        if not isinstance(limits, ExecutionLimits):
+            raise TypeError("limits must be an ExecutionLimits value")
+        self.limits = limits
+        self.steps = 0
+        self.frames = 0
+        self.max_frame_depth = 0
+
+    def take_step(self) -> bool:
+        """Consume one dispatch step, returning whether it was within budget."""
+        if self.limits.max_steps is not None and self.steps >= self.limits.max_steps:
+            return False
+        self.steps += 1
+        return True
+
+    def acquire_frame(self) -> bool:
+        """Acquire one live frame slot, returning whether it was within budget."""
+        if self.frames >= self.limits.max_frames:
+            return False
+        self.frames += 1
+        self.max_frame_depth = max(self.max_frame_depth, self.frames)
+        return True
+
+    def release_frame(self) -> None:
+        """Release one live frame slot after a frame leaves every stack."""
+        if self.frames > 0:
+            self.frames -= 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +184,7 @@ class Frame:
     program: object | None = None
     cursor: object = 0
     variables: Mapping[str, object] = field(default_factory=dict)
+    tunnel_parameters: Mapping[str, object] = field(default_factory=dict)
     focus: Focus = field(default_factory=Focus.absent)
     continuation: Continuation | None = None
     extent: object | None = None
@@ -161,6 +204,13 @@ class Frame:
         if not isinstance(self.variables, Mapping):
             raise TypeError("frame variables must be a mapping")
         object.__setattr__(self, "variables", MappingProxyType(dict(self.variables)))
+        if not isinstance(self.tunnel_parameters, Mapping):
+            raise TypeError("frame tunnel parameters must be a mapping")
+        object.__setattr__(
+            self,
+            "tunnel_parameters",
+            MappingProxyType(dict(self.tunnel_parameters)),
+        )
         if not isinstance(self.focus, Focus):
             raise TypeError("a frame focus must be a Focus")
         if self.error_handler is not None and not callable(self.error_handler):
@@ -258,18 +308,22 @@ class SchedulerViolation(RuntimeError):
 class Scheduler:
     """Execute frames on one explicit heap stack until a value is returned."""
 
-    def __init__(self, limits: ExecutionLimits | None = None) -> None:
-        if limits is None:
-            limits = ExecutionLimits()
-        if not isinstance(limits, ExecutionLimits):
-            raise TypeError("limits must be an ExecutionLimits value")
-        self.limits = limits
+    def __init__(
+        self,
+        limits: ExecutionLimits | None = None,
+        *,
+        budget: ExecutionBudget | None = None,
+    ) -> None:
+        if budget is None:
+            budget = ExecutionBudget(limits)
+        elif not isinstance(budget, ExecutionBudget):
+            raise TypeError("budget must be an ExecutionBudget value")
+        self.limits = budget.limits
+        self.budget = budget
         self._frames: list[Frame] = []
         self._active = False
         self._result: object = None
         self._has_result = False
-        self.steps = 0
-        self.max_frame_depth = 0
         self.replaced_frames = 0
         self.diagnostics: tuple[FrameDiagnostic, ...] = ()
 
@@ -282,6 +336,16 @@ class Scheduler:
     def frame_depth(self) -> int:
         """The number of live frames during a run."""
         return len(self._frames)
+
+    @property
+    def steps(self) -> int:
+        """Dispatch steps consumed by this scheduler's shared budget."""
+        return self.budget.steps
+
+    @property
+    def max_frame_depth(self) -> int:
+        """Deepest live frame count observed by this scheduler's budget."""
+        return self.budget.max_frame_depth
 
     def run(self, entry: Frame, step: Callable[[Frame], FrameResult]) -> object:
         """Run *entry* to completion with *step* producing frame transitions."""
@@ -300,9 +364,8 @@ class Scheduler:
             self._push(entry)
             while self._frames:
                 frame = self._frames[-1]
-                if self.limits.max_steps is not None and self.steps >= self.limits.max_steps:
+                if not self.budget.take_step():
                     raise self._resource_error("the transformation exceeded its step budget")
-                self.steps += 1
                 try:
                     outcome = step(frame)
                 except RecursionError as exc:
@@ -316,15 +379,19 @@ class Scheduler:
             return self._result
         finally:
             self._active = False
-            self._frames = []
+            self._release_all_frames()
 
     def _push(self, frame: Frame) -> None:
         if not isinstance(frame, Frame):  # pragma: no cover - callers validate
             raise TypeError("a scheduler frame must be a Frame")
-        if len(self._frames) >= self.limits.max_frames:
+        if not self.budget.acquire_frame():
             raise self._resource_error("the transformation exceeded its frame budget")
         self._frames.append(frame)
-        self.max_frame_depth = max(self.max_frame_depth, len(self._frames))
+
+    def _release_all_frames(self) -> None:
+        for _ in self._frames:
+            self.budget.release_frame()
+        self._frames = []
 
     def _handle_outcome(self, frame: Frame, outcome: FrameResult) -> None:
         if isinstance(outcome, Continue):
@@ -332,6 +399,7 @@ class Scheduler:
             return
         if isinstance(outcome, Return):
             self._frames.pop()
+            self.budget.release_frame()
             self._finish(frame, outcome.value)
             return
         if isinstance(outcome, Raise):
@@ -347,7 +415,7 @@ class Scheduler:
         caller = outcome.resume if outcome.resume is not None else frame
         if (
             outcome.tail
-            and self._tail_safe(caller)
+            and self._tail_safe(caller, child)
             and not (child.continuation is not None and caller.continuation is not None)
         ):
             continuation = caller.continuation if child.continuation is None else child.continuation
@@ -373,13 +441,15 @@ class Scheduler:
             )
         self._push(child)
 
-    def _tail_safe(self, frame: Frame) -> bool:
+    def _tail_safe(self, frame: Frame, child: Frame) -> bool:
         """Whether a tail call may discard *frame* instead of keeping it."""
         if frame.error_handler is not None:
             return False
         if frame.extent is not None:
             return False
         if frame.conversion is not None:
+            return False
+        if child.conversion is not None and (frame.values or child.values):
             return False
         continuation = frame.continuation
         return continuation is None or continuation.kind == "resume"
@@ -424,6 +494,7 @@ class Scheduler:
         self.diagnostics = stack
         while self._frames:
             frame = self._frames.pop()
+            self.budget.release_frame()
             self._rollback(frame)
             if frame.error_handler is None:
                 continue
