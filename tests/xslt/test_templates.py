@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from pyxsd.xdm import XdmAtomic, XdmFunction
+from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus
 from pyxsd.xslt import XsltProcessor
@@ -54,7 +54,7 @@ def package(name: str, body: str, *, version: str = "1.0", attributes: str = "")
     return (
         f'<xsl:package name="{name}" package-version="{version}" '
         f'xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" xmlns:my="{MY_NS}" '
-        f'xmlns:app="{APP_NS}" version="3.0"{attributes}>{body}</xsl:package>'
+        f'xmlns:app="{APP_NS}" xmlns:lib="urn:lib" version="3.0"{attributes}>{body}</xsl:package>'
     )
 
 
@@ -631,12 +631,17 @@ def test_builtin_value_covers_every_on_no_match_variant() -> None:
     assert invocation._builtin_value(document, "shallow-skip", {}, {}) == ()
     function_item = XdmFunction(lambda arguments, environment, captured: (), arity=0)
     assert invocation._builtin_value(function_item, "shallow-skip", {}, {}) == ()
+    array = XdmArray((XdmAtomic.integer(1), XdmAtomic.integer(2)))
+    assert [
+        item.string_value for item in invocation._builtin_value(array, "text-only-copy", {}, {})
+    ] == ["1", "2"]
+    assert invocation._builtin_value(array, "shallow-skip", {}, {}) == ()
+    assert invocation._builtin_value(array, "copy", {}, {}) == (array,)
+    assert invocation._builtin_value(array, "shallow", {}, {}) == (array,)
+    assert invocation._builtin_value(array, "deep-skip", {}, {}) == ()
     assert invocation._builtin_value(doc, "deep-skip", {}, {}) == ()
     assert invocation._builtin_value(child, "shallow-skip", {}, {}) == ()
-    assert (
-        invocation._builtin_value(XdmAtomic.integer(3), "shallow-skip", {}, {})[0].string_value
-        == "3"
-    )
+    assert invocation._builtin_value(XdmAtomic.integer(3), "shallow-skip", {}, {}) == ()
     assert invocation._builtin_value(XdmAtomic.integer(3), "shallow", {}, {}) == (
         XdmAtomic.integer(3),
     )
@@ -947,7 +952,7 @@ def test_builtin_rules_flatten_arrays_and_ignore_function_items() -> None:
         <xsl:template match="/"><xsl:apply-templates select="([1, 2])"/></xsl:template>
         """
     )
-    assert transform(shallow_arrays, b"<doc/>").principal_tree.string_value == "12"
+    assert transform(shallow_arrays, b"<doc/>").principal == ()
 
     functions = stylesheet(
         """
@@ -1031,6 +1036,7 @@ def test_private_library_mode_and_library_default_mode(tmp_path: Path) -> None:
         """
         <xsl:mode name="my:hidden"/>
         <xsl:mode name="my:default"/>
+        <xsl:mode/>
         <xsl:template name="my:private" visibility="public">
           <out><xsl:apply-templates select="/*/item" mode="my:hidden"/></out>
         </xsl:template>
@@ -1040,8 +1046,12 @@ def test_private_library_mode_and_library_default_mode(tmp_path: Path) -> None:
         <xsl:template name="my:explicit-default" visibility="public">
           <out><xsl:apply-templates select="/*/item" mode="#default"/></out>
         </xsl:template>
+        <xsl:template name="my:unnamed" visibility="public">
+          <out><xsl:apply-templates select="/*/item" mode="#unnamed"/></out>
+        </xsl:template>
         <xsl:template match="item" mode="my:hidden"><hidden/></xsl:template>
         <xsl:template match="item" mode="my:default"><defaulted/></xsl:template>
+        <xsl:template match="item" mode="#unnamed"><library-unnamed/></xsl:template>
         """,
         attributes=' default-mode="my:default"',
     )
@@ -1049,12 +1059,13 @@ def test_private_library_mode_and_library_default_mode(tmp_path: Path) -> None:
         "urn:principal",
         """
         <xsl:use-package name="urn:library" package-version="1.0">
-          <xsl:accept component="template" names="my:private my:defaulted my:explicit-default" visibility="public"/>
+          <xsl:accept component="template" names="my:private my:defaulted my:explicit-default my:unnamed" visibility="public"/>
         </xsl:use-package>
         <xsl:template name="xsl:initial-template" visibility="public">
           <xsl:call-template name="my:private"/>
           <xsl:call-template name="my:defaulted"/>
           <xsl:call-template name="my:explicit-default"/>
+          <xsl:call-template name="my:unnamed"/>
         </xsl:template>
         """,
     )
@@ -1072,11 +1083,12 @@ def test_private_library_mode_and_library_default_mode(tmp_path: Path) -> None:
         "out",
         "out",
         "out",
+        "out",
     ]
     assert [
         [child.local_name for child in element_children(out)]
         for out in element_children(result.principal_tree)
-    ] == [["hidden"], ["defaulted"], ["defaulted"]]
+    ] == [["hidden"], ["defaulted"], ["defaulted"], ["library-unnamed"]]
 
 
 def test_unnamed_mode_selector_and_environment_global_lookup() -> None:
@@ -1104,3 +1116,112 @@ def test_unnamed_mode_selector_and_environment_global_lookup() -> None:
     invocation._global_value(component)
     environment = invocation._environment({}, None)
     assert environment.variables["g"] == (XdmAtomic.integer(1),)
+    shadowed = invocation._environment(
+        {"g": (XdmAtomic.string("local"),)},
+        None,
+        referenced={"g"},
+    )
+    assert shadowed.variables["g"] == (XdmAtomic.string("local"),)
+
+
+def test_array_items_are_selected_before_builtin_flattening() -> None:
+    once = stylesheet(
+        """
+        <xsl:template match="."><seen/></xsl:template>
+        <xsl:template match="/">
+          <xsl:apply-templates select="([1, 2])"/>
+        </xsl:template>
+        """
+    )
+    selected = transform(once, b"<doc/>")
+    assert [child.local_name for child in element_children(selected.principal_tree)] == ["seen"]
+
+    for mode in ("deep-copy", "shallow-copy"):
+        copied = stylesheet(
+            f"""
+            <xsl:mode on-no-match="{mode}"/>
+            <xsl:template match="/">
+              <xsl:apply-templates select="([1, 2])"/>
+            </xsl:template>
+            """
+        )
+        result = transform(copied, b"<doc/>", delivery="raw")
+        assert len(result.principal) == 1
+        assert isinstance(result.principal[0], XdmArray)
+
+
+def test_pattern_predicate_resolves_lazy_global_deterministically() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="flag" select="true()"/>
+        <xsl:template match="item[$flag]"><matched/></xsl:template>
+        <xsl:template match="/"><xsl:apply-templates select="/*/item"/></xsl:template>
+        """
+    )
+    result = transform(source, b"<doc><item/></doc>")
+    assert [child.local_name for child in element_children(result.principal_tree)] == ["matched"]
+
+
+def test_package_pattern_predicate_uses_library_global_and_namespaces(tmp_path: Path) -> None:
+    library = package(
+        "urn:library",
+        """
+        <xsl:variable name="lib:flag" select="true()" visibility="private"/>
+        <xsl:mode name="my:m" visibility="public"/>
+        <xsl:template match="item[$lib:flag]" mode="my:m"><from-library/></xsl:template>
+        """,
+    )
+    principal = package(
+        "urn:principal",
+        """
+        <xsl:use-package name="urn:library" package-version="1.0">
+          <xsl:accept component="mode" names="my:m" visibility="public"/>
+        </xsl:use-package>
+        """,
+    )
+    library_path = _write(tmp_path, "library.xsl", library)
+    principal_path = _write(tmp_path, "principal.xsl", principal)
+    compiled = XsltProcessor(resolver=PackageResolver.from_sources(library_path)).compile(
+        principal_path
+    )
+    result = compiled.transform(
+        source=b"<doc><item/></doc>",
+        initial_mode="my:m",
+        delivery="document",
+    )
+    assert [child.local_name for child in element_children(result.principal_tree)] == [
+        "from-library"
+    ]
+
+
+def test_key_context_root_must_be_a_document() -> None:
+    invocation = _invocation(
+        stylesheet(
+            """
+            <xsl:key name="k" match="item" use="@id"/>
+            <xsl:template name="main"><out/></xsl:template>
+            """
+        )
+    )
+    node = object.__new__(XdmNode)
+    object.__setattr__(node, "_document", None)
+    with pytest.raises(XsltError) as caught:
+        invocation._key_document(node)
+    assert caught.value.code == "XTDE1270"
+
+
+def test_builtin_array_rules_cover_empty_and_deep_skip() -> None:
+    empty = stylesheet(
+        """
+        <xsl:template match="/"><xsl:apply-templates select="[]"/></xsl:template>
+        """
+    )
+    assert transform(empty, b"<doc/>").principal == ()
+
+    deep_skip = stylesheet(
+        """
+        <xsl:mode on-no-match="deep-skip"/>
+        <xsl:template match="/"><xsl:apply-templates select="([1, 2])"/></xsl:template>
+        """
+    )
+    assert transform(deep_skip, b"<doc/>").principal == ()

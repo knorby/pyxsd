@@ -382,8 +382,23 @@ def test_key_error_arms_composite_keys_and_function_values() -> None:
 
 
 def test_environment_function_overrides_are_validated_and_contextual() -> None:
-    from pyxsd.xpath.engine import XPathEngine
-    from pyxsd.xpath.environment import ExpressionEnvironment
+    from pyxsd.xpath.engine import XPathEngine, _expanded_variable_name
+    from pyxsd.xpath.environment import ExpressionEnvironment, XPathStaticContext
+
+    parsed = XPathEngine("3.1").compile("if (false()) then $broken else '$not-a-reference'")
+    assert parsed.variable_names == frozenset({"broken"})
+    prefixed = XPathEngine("3.1").compile(
+        "$my:value",
+        XPathStaticContext(namespaces={"my": MY_NS}),
+    )
+    assert prefixed.variable_names == frozenset({f"{{{MY_NS}}}value"})
+    eqname = XPathEngine("3.1").compile("$Q{urn:my}value")
+    assert eqname.variable_names == frozenset({"{urn:my}value"})
+    no_namespace = XPathEngine("3.1").compile("$Q{}value")
+    assert no_namespace.variable_names == frozenset({"value"})
+    static = XPathStaticContext(namespaces={"my": MY_NS})
+    assert _expanded_variable_name("Q{urn:my}value", static) == "{urn:my}value"
+    assert _expanded_variable_name("Q{}value", static) == "value"
 
     with pytest.raises(TypeError, match="function override"):
         ExpressionEnvironment(function_overrides={"fn:x": 1})  # type: ignore[dict-item]

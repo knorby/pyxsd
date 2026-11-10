@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from types import MappingProxyType
 from typing import Any, Literal, TypeAlias, cast
 from urllib.parse import urljoin, urlsplit
@@ -2196,6 +2196,7 @@ class _Invocation(Transformation):
     ) -> None:
         super().__init__(stylesheet, options, limits=limits)
         self._mode_dispatchers: dict[tuple[str | None, str | None], RuleDispatcher] = {}
+        self._pattern_environments: dict[int, ExpressionEnvironment] = {}
 
     # -- top level ---------------------------------------------------------
 
@@ -2552,7 +2553,9 @@ class _Invocation(Transformation):
         cursor: int,
     ) -> FrameResult:
         originals = self._original_functions(frame)
-        functions: dict[tuple[str, int], object] = dict(self.stylesheet_functions(frame.package))
+        functions: dict[tuple[str, int], HostFunction] = dict(
+            self.stylesheet_functions(frame.package)
+        )
         for arity, component in originals.items():
             functions[(f"{{{XSLT_NS}}}original", arity)] = HostFunction(
                 ComponentCall(component),
@@ -2560,17 +2563,18 @@ class _Invocation(Transformation):
                 arity=arity,
                 suspend=True,
             )
-        environment = self._environment(
-            self._frame_variables(frame),
-            frame.package,
-            referenced=_referenced_variables(expression.source),
-            original_functions=originals,
-        )
-        machine = self.xpath_machine(
-            expression,
-            environment.variables,
-            functions,
-        )
+        machine: ContinuationMachine | None = None
+        if not self._expression_references_global(expression, frame.package):
+            environment = self._environment(
+                self._frame_variables(frame),
+                frame.package,
+                original_functions=originals,
+            )
+            machine = self.xpath_machine(
+                expression,
+                environment.variables,
+                functions,
+            )
         if machine is None:
             value = self._evaluate(
                 expression,
@@ -2761,12 +2765,14 @@ class _Invocation(Transformation):
                 rule_context.match,
                 rule_context.mode,
                 environment,
+                self._pattern_environment,
             )
         return dispatcher.apply_imports(
             item,
             rule_context.match,
             rule_context.mode,
             environment,
+            self._pattern_environment,
         )
 
     def _overriding_step(
@@ -2846,7 +2852,7 @@ class _Invocation(Transformation):
         package_name: str | None = None,
     ) -> Frame:
         state = _ApplyState(
-            items=_flatten_apply_items(items),
+            items=items,
             mode=mode,
             template_parameters=template_parameters,
             tunnel_parameters=tunnel_parameters,
@@ -2868,7 +2874,7 @@ class _Invocation(Transformation):
         package_name: str | None,
     ) -> tuple[_ModeLayerPlan, ...]:
         principal = self.stylesheet._package_modes.get(self.package.name, {})
-        if mode in principal:
+        if mode is not None and mode in principal:
             return principal.get(mode, ())
         package_modes = self.stylesheet._package_modes.get(package_name, {})
         return package_modes.get(mode, ())
@@ -2894,6 +2900,10 @@ class _Invocation(Transformation):
         mode: str | None,
         package_name: str | None = None,
     ) -> Mapping[str, str]:
+        if mode is None:
+            package = self.stylesheet._packages[package_name]
+            declaration = package.mode(mode)
+            return {} if declaration is None else declaration.properties
         principal = self.stylesheet._packages[self.package.name]
         declaration = principal.mode(mode)
         if declaration is not None:
@@ -2903,6 +2913,19 @@ class _Invocation(Transformation):
         if declaration is None:
             return {}
         return declaration.properties
+
+    def _pattern_environment(self, rule: TemplateRule) -> ExpressionEnvironment:
+        key = id(rule)
+        environment = self._pattern_environments.get(key)
+        if environment is None:
+            body = cast(_BodyPlan, rule.template)
+            environment = self._environment(
+                {},
+                body.owner,
+                referenced=_pattern_variable_names(rule.pattern),
+            )
+            self._pattern_environments[key] = environment
+        return environment
 
     def _rule_frame(
         self,
@@ -3000,6 +3023,7 @@ class _Invocation(Transformation):
             item,
             state.mode,
             self._environment({}, state.package_name),
+            self._pattern_environment,
         )
         next_state = replace(state, index=state.index + 1)
         resume = replace(frame, program=next_state)
@@ -3031,6 +3055,30 @@ class _Invocation(Transformation):
                 "no template rule matches and the mode forbids the built-in rule",
                 code="XTDE0555",
             )
+        if isinstance(item, XdmArray):
+            if variant in ("deep-copy", "shallow-copy"):
+                return Continue(
+                    replace(
+                        resume,
+                        values=(
+                            *resume.values,
+                            self._copy_item(item, deep=variant == "deep-copy"),
+                        ),
+                    )
+                )
+            if variant in ("text-only-copy", "shallow-skip"):
+                if not item.members:
+                    return None
+                child = self._apply_frame(
+                    _array_member_items(item),
+                    state.mode,
+                    state.template_parameters,
+                    state.tunnel_parameters,
+                    tail=tail,
+                    package_name=state.package_name,
+                )
+                return Call(child, resume=resume, tail=tail)
+            return None
         if variant == "text-only-copy":
             if isinstance(item, XdmNode) and item.kind in (
                 NodeKind.DOCUMENT,
@@ -3075,13 +3123,6 @@ class _Invocation(Transformation):
                 return Call(child, resume=resume, tail=tail)
             return None
         if variant == "shallow-skip":
-            if isinstance(item, XdmAtomic):
-                return Continue(
-                    replace(
-                        resume,
-                        values=(*resume.values, self._text_node(item.lexical)),
-                    )
-                )
             if isinstance(item, XdmNode) and item.kind in (
                 NodeKind.DOCUMENT,
                 NodeKind.ELEMENT,
@@ -3161,6 +3202,18 @@ class _Invocation(Transformation):
                 "no template rule matches and the mode forbids the built-in rule",
                 code="XTDE0555",
             )
+        if isinstance(item, XdmArray):
+            if variant in ("deep-copy", "shallow-copy"):
+                return (item,)
+            if variant in ("text-only-copy", "shallow-skip"):
+                return self._apply_templates(
+                    _array_member_items(item),
+                    mode,
+                    template_parameters,
+                    tunnel_parameters,
+                    package_name=package_name,
+                )
+            return ()
         if variant == "text-only-copy":
             if isinstance(item, XdmNode):
                 if item.kind in (NodeKind.DOCUMENT, NodeKind.ELEMENT):
@@ -3188,8 +3241,6 @@ class _Invocation(Transformation):
                 )
             return ()
         if variant == "shallow-skip":
-            if isinstance(item, XdmAtomic):
-                return (self._text_node(item.lexical),)
             if isinstance(item, XdmNode) and item.kind in (
                 NodeKind.DOCUMENT,
                 NodeKind.ELEMENT,
@@ -4148,16 +4199,49 @@ class _Invocation(Transformation):
         original_functions: Mapping[int, Component] | None = None,
     ) -> XdmSequence:
         engine = XPathEngine(expression.version)
-        return engine.evaluate(
-            expression,
-            self._environment(
-                locals_,
-                package_name,
-                referenced=_referenced_variables(expression.source),
-                original_functions=original_functions,
-            ),
-            focus=focus,
-        )
+        attempted: set[str] = set()
+        while True:
+            try:
+                return engine.evaluate(
+                    expression,
+                    self._environment(
+                        locals_,
+                        package_name,
+                        original_functions=original_functions,
+                    ),
+                    focus=focus,
+                )
+            except Exception as exc:
+                if not str(getattr(exc, "code", "")).endswith("XPST0008"):
+                    raise
+                name = _unknown_variable_name(exc)
+                component = self._global_component(package_name, name)
+                if component is None or name in attempted:
+                    raise
+                attempted.add(name)
+                self._global_value(component)
+
+    def _expression_references_global(
+        self,
+        expression: CompiledExpression,
+        package_name: str | None,
+    ) -> bool:
+        for component in self.stylesheet._package_variables.get(package_name, ()):
+            if component.name is not None and component.name in expression.variable_names:
+                return True
+        return False
+
+    def _global_component(
+        self,
+        package_name: str | None,
+        name: str,
+    ) -> Component | None:
+        package = self.stylesheet._packages.get(package_name) or self.package
+        for component in self.stylesheet._package_variables.get(package_name, ()):
+            assert component.name is not None
+            if component.name == name or _lexical_name(component.name, package.namespaces) == name:
+                return component
+        return None
 
     def _environment(
         self,
@@ -4168,18 +4252,19 @@ class _Invocation(Transformation):
         original_functions: Mapping[int, Component] | None = None,
     ) -> ExpressionEnvironment:
         variables: dict[str, Any] = {}
+        package = self.stylesheet._packages.get(package_name) or self.package
         for component in self.stylesheet._package_variables.get(package_name, ()):
             assert component.name is not None
+            lexical = _lexical_name(component.name, package.namespaces)
             if referenced is None:
                 value = self.globals.get((component.owner, component.name))
                 if value is None:
                     continue
             else:
-                lexical = self._lexical(component.name)
                 if component.name not in referenced and lexical not in referenced:
                     continue
                 if any(
-                    name == component.name or self._lexical(name) == self._lexical(component.name)
+                    name == component.name or _lexical_name(name, package.namespaces) == lexical
                     for name in locals_
                 ):
                     continue
@@ -4290,7 +4375,11 @@ class _Invocation(Transformation):
                 code="XTDE1270",
             )
         document = context_item.document
-        assert isinstance(document, XdmDocument)
+        if not isinstance(document, XdmDocument):
+            raise XsltDynamicError(
+                "the key context node must have a document root",
+                code="XTDE1270",
+            )
         return document
 
     def _key_index(
@@ -4382,17 +4471,32 @@ class _Invocation(Transformation):
         return _item_string(item)
 
 
-_NCNAME = r"[^\W\d][\w.\-\u00B7\u0300-\u036F\u203F-\u2040]*"
-_VARIABLE_REFERENCE = re.compile(rf"\$({_NCNAME}(?::{_NCNAME})?)")
-_EQNAME_VARIABLE_REFERENCE = re.compile(rf"\$Q\{{([^{{}}]*)\}}({_NCNAME})")
+def _unknown_variable_name(error: BaseException) -> str:
+    match = re.search(r"unknown variable ['\"]?\$?([^'\"\s]+)", str(error))
+    assert match is not None
+    return match.group(1)
 
 
-def _referenced_variables(source: str) -> set[str]:
-    names = set(_VARIABLE_REFERENCE.findall(source))
-    names.update(
-        f"{{{uri}}}{local}" if uri else local
-        for uri, local in _EQNAME_VARIABLE_REFERENCE.findall(source)
-    )
+def _pattern_variable_names(pattern: CompiledPattern) -> set[str]:
+    names: set[str] = set()
+
+    def visit(value: object) -> None:
+        if isinstance(value, CompiledExpression):
+            names.update(value.variable_names)
+            return
+        if isinstance(value, CompiledPattern):
+            for alternative in value.alternatives:
+                visit(alternative)
+            return
+        if is_dataclass(value) and not isinstance(value, type):
+            for item in fields(value):
+                visit(getattr(value, item.name))
+            return
+        if isinstance(value, (tuple, list)):
+            for item in value:
+                visit(item)
+
+    visit(pattern)
     return names
 
 
@@ -4430,6 +4534,10 @@ def _key_atomics(sequence: XdmSequence) -> tuple[XdmAtomic, ...]:
     return tuple(atomics)
 
 
+def _array_member_items(item: XdmArray) -> XdmSequence:
+    return tuple(member for sequence in item.members for member in sequence)
+
+
 def _key_value(item: XdmAtomic) -> object:
     value = item.value
     try:
@@ -4437,22 +4545,6 @@ def _key_value(item: XdmAtomic) -> object:
     except TypeError:  # pragma: no cover - atomic values are hashable
         return item.lexical
     return value
-
-
-def _flatten_apply_items(items: XdmSequence) -> XdmSequence:
-    """Flatten arrays before applying templates, as XSLT 3.0 sequence flattening does."""
-    result: list[XdmItem] = []
-
-    def visit(sequence: XdmSequence) -> None:
-        for item in sequence:
-            if isinstance(item, XdmArray):
-                for member in item.members:
-                    visit(member)
-                continue
-            result.append(item)
-
-    visit(items)
-    return tuple(result)
 
 
 def _method_local(method: str) -> str:

@@ -12,7 +12,7 @@ dispatch never changes package visibility or patches a component.
 
 from __future__ import annotations
 
-from collections.abc import Hashable, Iterable, Iterator
+from collections.abc import Callable, Hashable, Iterable, Iterator
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from functools import cmp_to_key
@@ -159,11 +159,18 @@ class RuleDispatcher:
         item: XdmItem,
         mode: str | None,
         environment: ExpressionEnvironment,
+        environment_for: Callable[[TemplateRule], ExpressionEnvironment] | None = None,
     ) -> tuple[RuleMatch, ...]:
         """Return every candidate in full conflict-resolution order."""
         matches: list[RuleMatch] = []
         for layer_index, index in self.layers:
-            for match in index.matching(mode, layer_index, item, environment):
+            for match in index.matching(
+                mode,
+                layer_index,
+                item,
+                environment,
+                environment_for=environment_for,
+            ):
                 matches.append(
                     RuleMatch(
                         rule=match.rule,
@@ -179,6 +186,7 @@ class RuleDispatcher:
         item: XdmItem,
         mode: str | None,
         environment: ExpressionEnvironment,
+        environment_for: Callable[[TemplateRule], ExpressionEnvironment] | None = None,
     ) -> RuleMatch | None:
         """Return the best candidate, applying ``on-multiple-match``."""
         for layer_index, index in self.layers:
@@ -189,7 +197,13 @@ class RuleDispatcher:
                     priority=match.priority,
                     layer_index=layer_index,
                 )
-                for match in index.matching(mode, layer_index, item, environment)
+                for match in index.matching(
+                    mode,
+                    layer_index,
+                    item,
+                    environment,
+                    environment_for=environment_for,
+                )
             )
             if not matches:
                 continue
@@ -218,9 +232,10 @@ class RuleDispatcher:
         current: RuleMatch,
         mode: str | None,
         environment: ExpressionEnvironment,
+        environment_for: Callable[[TemplateRule], ExpressionEnvironment] | None = None,
     ) -> RuleMatch | None:
         """Return the next candidate after *current* in conflict order."""
-        matches = self.matches(item, mode, environment)
+        matches = self.matches(item, mode, environment, environment_for)
         position = _position(matches, current)
         if position + 1 >= len(matches):
             return None
@@ -232,6 +247,7 @@ class RuleDispatcher:
         current: RuleMatch,
         mode: str | None,
         environment: ExpressionEnvironment,
+        environment_for: Callable[[TemplateRule], ExpressionEnvironment] | None = None,
     ) -> RuleMatch | None:
         """Return the best rule in a stylesheet level imported by the current one.
 
@@ -241,7 +257,7 @@ class RuleDispatcher:
         Package layers below the current one are dependency levels and are
         likewise eligible; sibling imports and equal-precedence rules are not.
         """
-        matches = self.matches(item, mode, environment)
+        matches = self.matches(item, mode, environment, environment_for)
         position = _position(matches, current)
         for match in matches[position + 1 :]:
             if match.layer_index > current.layer_index:
@@ -360,6 +376,8 @@ class PatternIndex:
         package_layer: Hashable | None,
         item: XdmItem,
         environment: ExpressionEnvironment,
+        *,
+        environment_for: Callable[[TemplateRule], ExpressionEnvironment] | None = None,
     ) -> tuple[RuleMatch, ...]:
         """Return every matching alternative in conflict-resolution order.
 
@@ -379,7 +397,14 @@ class PatternIndex:
                 continue
             self.statistics.candidate_tests += 1
             matcher = self._matchers[id(entry.rule.pattern)]
-            if not matcher.matches_alternative(entry.alternative_index, item, environment):
+            selected_environment = (
+                environment_for(entry.rule) if environment_for is not None else environment
+            )
+            if not matcher.matches_alternative(
+                entry.alternative_index,
+                item,
+                selected_environment,
+            ):
                 continue
             if entry.rule.priority is not None:
                 if id(entry.rule) in seen_explicit:

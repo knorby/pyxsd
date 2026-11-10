@@ -308,3 +308,52 @@ def test_unused_broken_global_is_not_evaluated() -> None:
     )
     result = transform(source, initial_template="main")
     assert element_children(result.principal_tree)[0].local_name == "out"
+
+
+def test_lazy_global_reference_scan_is_expression_aware() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="broken" select="error()"/>
+        <xsl:template name="main">
+          <xsl:value-of select="if (false()) then $broken else 'ok'"/>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="'$broken'"/>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="(: $broken :) 'comment'"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        transform(source, initial_template="main").principal_tree.string_value
+        == "ok|$broken|comment"
+    )
+
+
+def test_local_variable_scope_ends_at_sequence_and_choose() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="x" select="'global'"/>
+        <xsl:variable name="y" select="'global'"/>
+        <xsl:template name="main">
+          <xsl:sequence>
+            <xsl:variable name="x" select="'local'"/>
+            <xsl:value-of select="$x"/>
+          </xsl:sequence>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="$x"/>
+          <xsl:text>|</xsl:text>
+          <xsl:choose>
+            <xsl:when test="true()">
+              <xsl:variable name="y" select="'branch'"/>
+              <xsl:value-of select="$y"/>
+            </xsl:when>
+          </xsl:choose>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="$y"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        transform(source, initial_template="main").principal_tree.string_value
+        == "local|global|branch|global"
+    )

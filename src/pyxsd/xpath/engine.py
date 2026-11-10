@@ -43,7 +43,7 @@ from elementpath.xpath_nodes import (
 )
 from elementpath.xpath_tokens import XPathArray, XPathMap
 from elementpath.xpath_tokens.functions import XPathFunction
-from elementpath.xpath_tokens.tokens import ContextItemToken
+from elementpath.xpath_tokens.tokens import ContextItemToken, VariableToken
 
 from pyxsd import xsd_data_types as _xsd
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmItem, XdmMap, XdmSequence, as_xdm
@@ -575,6 +575,7 @@ class CompiledExpression:
     static_context: XPathStaticContext
     version: str
     continuation_plan: continuation.CompiledExpression | None = field(default=None)
+    variable_names: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.source or not self.source.strip():
@@ -583,6 +584,38 @@ class CompiledExpression:
             raise TypeError("static_context must be an XPathStaticContext")
         if self.version not in _PARSERS:
             raise ValueError(f"unsupported XPath version: {self.version!r}")
+        object.__setattr__(self, "variable_names", frozenset(self.variable_names))
+
+
+def _expression_variable_names(
+    root: Any,
+    static_context: XPathStaticContext,
+) -> frozenset[str]:
+    """Return expanded variable names referenced by one parsed expression."""
+    names: set[str] = set()
+    stack = [root]
+    while stack:
+        token = stack.pop()
+        if isinstance(token, VariableToken):
+            names.add(_expanded_variable_name(token.value, static_context))
+        stack.extend(getattr(token, "_items", ()) or ())
+    return frozenset(names)
+
+
+def _expanded_variable_name(value: str, static_context: XPathStaticContext) -> str:
+    if value.startswith("Q{"):
+        close = value.find("}")
+        assert close >= 0
+        uri = value[2:close]
+        local = value[close + 1 :]
+        return local if not uri else f"{{{uri}}}{local}"
+    if value.startswith("{"):
+        return value
+    prefix, separator, local = value.partition(":")
+    if not separator:
+        return value
+    bound_uri = static_context.namespaces.get(prefix)
+    return value if bound_uri is None else f"{{{bound_uri}}}{local}"
 
 
 class XPathEngine:
@@ -614,7 +647,8 @@ class XPathEngine:
             raise ValueError("an XPath expression requires non-empty source")
 
         parser = _build_parser(self._version, static_context, functions=None, key=True)
-        parser.parse(source)
+        root_token = parser.parse(source)
+        variable_names = _expression_variable_names(root_token, static_context)
 
         plan: continuation.CompiledExpression | None = None
         if self._version == "3.1":
@@ -633,6 +667,7 @@ class XPathEngine:
             static_context=static_context,
             version=self._version,
             continuation_plan=plan,
+            variable_names=variable_names,
         )
 
     def evaluate(
