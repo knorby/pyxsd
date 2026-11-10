@@ -528,9 +528,18 @@ class UsedPackage:
     requested_version: str
 
 
+HiddenModeKey = tuple[ModeKey, str | None]
+
+
 @dataclass(frozen=True, slots=True)
 class CompiledPackage:
-    """One completely composed, immutable package."""
+    """One completely composed, immutable package.
+
+    ``modes`` holds the modes that are visible inside the package.  Hidden
+    copies accepted from used packages are retained in ``hidden_modes`` so the
+    component graph remains complete without making their names visible or
+    preventing a local mode from reusing the name.
+    """
 
     name: str | None
     version: str
@@ -538,6 +547,7 @@ class CompiledPackage:
     modules: tuple[EffectiveModule, ...]
     components: Mapping[ComponentKey, Component]
     modes: Mapping[ModeKey, Mode]
+    hidden_modes: Mapping[HiddenModeKey, Mode] = field(default_factory=dict)
     used_packages: tuple[UsedPackage, ...] = ()
     dependencies: tuple[CompiledPackage, ...] = ()
     outputs: tuple[PackageConstruct, ...] = ()
@@ -551,6 +561,7 @@ class CompiledPackage:
     def __post_init__(self) -> None:
         object.__setattr__(self, "components", MappingProxyType(dict(self.components)))
         object.__setattr__(self, "modes", MappingProxyType(dict(self.modes)))
+        object.__setattr__(self, "hidden_modes", MappingProxyType(dict(self.hidden_modes)))
         object.__setattr__(self, "originals", MappingProxyType(dict(self.originals)))
         object.__setattr__(self, "namespaces", MappingProxyType(dict(self.namespaces)))
 
@@ -2177,6 +2188,7 @@ class _PackageCompiler:
 
         accepted_components: dict[ComponentKey, Component] = {}
         accepted_modes: dict[ModeKey, Mode] = {}
+        hidden_accepted_modes: dict[HiddenModeKey, Mode] = {}
         originals: dict[ComponentKey, Component] = {}
         overrides: dict[ComponentKey, Component] = {}
         override_sites: dict[ComponentKey, _UsePackageSite] = {}
@@ -2223,22 +2235,20 @@ class _PackageCompiler:
                         continue
                 accepted_components[key] = component
                 conflict_sites[key] = (component, site)
-            accepted_modes_here = self._apply_accepted_modes(
+            accepted_modes_here, hidden_modes_here = self._apply_accepted_modes(
                 used_package, accepts, containing=descriptor.name
             )
             for mode_key, accepted_mode in accepted_modes_here.items():
                 existing_mode = accepted_modes.get(mode_key)
-                if existing_mode is not None and (
-                    existing_mode.visibility != "hidden" and accepted_mode.visibility != "hidden"
-                ):
+                if existing_mode is not None:
                     raise _error(
                         f"the mode {mode_key!r} is accepted from more than one package",
                         "XTSE3050",
                         element=site.element,
                         module=site.module,
                     )
-                if accepted_mode.visibility != "hidden":
-                    accepted_modes[mode_key] = accepted_mode
+                accepted_modes[mode_key] = accepted_mode
+            hidden_accepted_modes.update(hidden_modes_here)
             override_order = 0
             for override in site.overrides:
                 override_default = _resolve_default_mode(
@@ -2436,7 +2446,12 @@ class _PackageCompiler:
             )
 
         modes, _local_mode_rules = self._build_local_modes(
-            descriptor, local, groups, accepted_modes, local_visibility
+            descriptor,
+            local,
+            groups,
+            accepted_modes,
+            hidden_accepted_modes,
+            local_visibility,
         )
         for mode_name, rules in override_rule_layers.items():
             current_mode = modes.get(mode_name)
@@ -2458,7 +2473,9 @@ class _PackageCompiler:
         components = self._bind_components(descriptor, components, originals)
         table = _Lookup(components, descriptor.name)
         originals = {key: _rebind_component(original, table) for key, original in originals.items()}
-        modes = self._bind_modes(descriptor, components, modes)
+        modes, hidden_accepted_modes = self._bind_modes(
+            descriptor, components, modes, hidden_accepted_modes
+        )
         self._check_declared_modes(descriptor, local, components, modes)
 
         outputs = _build_constructs(
@@ -2490,6 +2507,7 @@ class _PackageCompiler:
             modules=descriptor.all_modules,
             components=components,
             modes=dict(modes),
+            hidden_modes=dict(hidden_accepted_modes),
             used_packages=tuple(used),
             dependencies=tuple(dependencies),
             outputs=outputs,
@@ -2582,10 +2600,13 @@ class _PackageCompiler:
         accepts: tuple[_AcceptRule, ...],
         *,
         containing: str | None,
-    ) -> dict[ModeKey, Mode]:
+    ) -> tuple[dict[ModeKey, Mode], dict[HiddenModeKey, Mode]]:
         modes: dict[ModeKey, Mode] = {}
+        hidden_modes: dict[HiddenModeKey, Mode] = {}
         matched: set[tuple[int, int]] = set()
-        for key, mode in used.modes.items():
+        candidates: list[tuple[ModeKey, Mode]] = list(used.modes.items())
+        candidates.extend((mode.name, mode) for mode in used.hidden_modes.values())
+        for key, mode in candidates:
             if mode.containing != used.name or key is None:
                 continue
             default_visibility = _default_accepted_visibility(mode.visibility)
@@ -2611,12 +2632,16 @@ class _PackageCompiler:
                 selected = (cast(_AcceptRule, rule), token)
                 break
             if selected is None:
-                modes[key] = replace(mode, containing=containing, visibility=default_visibility)
-                continue
-            rule, token = selected
-            new_visibility = _accepted_visibility(rule.visibility, mode.visibility)
-            assert new_visibility is not None
-            modes[key] = replace(mode, containing=containing, visibility=new_visibility)
+                accepted = replace(mode, containing=containing, visibility=default_visibility)
+            else:
+                rule, token = selected
+                new_visibility = _accepted_visibility(rule.visibility, mode.visibility)
+                assert new_visibility is not None
+                accepted = replace(mode, containing=containing, visibility=new_visibility)
+            if accepted.visibility == "hidden":
+                hidden_modes[(key, accepted.owner)] = accepted
+            else:
+                modes[key] = accepted
         for rule in accepts:
             for index, token in enumerate(rule.tokens):
                 if token.specific and "mode" in rule.kinds and (rule.order, index) not in matched:
@@ -2626,7 +2651,7 @@ class _PackageCompiler:
                         element=rule.element,
                         module=rule.module,
                     )
-        return modes
+        return modes, hidden_modes
 
     # -- local modes -----------------------------------------------------------
 
@@ -2642,6 +2667,7 @@ class _PackageCompiler:
         local: _Local,
         groups: tuple[_GroupedDeclaration, ...],
         accepted_modes: dict[ModeKey, Mode],
+        hidden_accepted_modes: Mapping[HiddenModeKey, Mode],
         local_visibility: Mapping[ComponentKey, str],
     ) -> tuple[dict[ModeKey, Mode], dict[ModeKey, tuple[ModeRule, ...]]]:
         mode_groups = [group for group in groups if group.kind == "mode"]
@@ -2650,7 +2676,12 @@ class _PackageCompiler:
         declared_mode_keys = {group.name for group in mode_groups}
         all_mode_keys: set[ModeKey] = set(declared_mode_keys)
         all_mode_keys.add(None)
-        all_mode_keys.update(key for key in local.mode_references if key not in accepted_modes)
+        hidden_mode_keys = {name for name, _owner in hidden_accepted_modes}
+        all_mode_keys.update(
+            key
+            for key in local.mode_references
+            if key not in accepted_modes and key not in hidden_mode_keys
+        )
         for rule in local.rules:
             if rule.mode_tokens == ("#all",):
                 continue
@@ -2848,10 +2879,11 @@ class _PackageCompiler:
         descriptor: PackageDescriptor,
         components: dict[ComponentKey, Component],
         modes: dict[ModeKey, Mode],
-    ) -> dict[ModeKey, Mode]:
+        hidden_modes: Mapping[HiddenModeKey, Mode],
+    ) -> tuple[dict[ModeKey, Mode], dict[HiddenModeKey, Mode]]:
         table = _Lookup(components, descriptor.name)
-        result: dict[ModeKey, Mode] = {}
-        for key, mode in modes.items():
+
+        def bind(mode: Mode) -> Mode:
             layers: list[ModeRuleLayer] = []
             for layer in mode.rule_layers:
                 rules: list[ModeRule] = []
@@ -2861,8 +2893,12 @@ class _PackageCompiler:
                     else:
                         rules.append(_rebind_rule(rule, table))
                 layers.append(replace(layer, rules=tuple(rules)))
-            result[key] = replace(mode, rule_layers=tuple(layers))
-        return result
+            return replace(mode, rule_layers=tuple(layers))
+
+        return (
+            {key: bind(mode) for key, mode in modes.items()},
+            {key: bind(mode) for key, mode in hidden_modes.items()},
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3314,36 +3350,52 @@ def _make_rule(
     )
 
 
+def _merged_attribute_value(
+    entries: Sequence[tuple[tuple[int, ...], str, _Declaration]],
+    *,
+    code: str,
+    message: str,
+) -> str:
+    highest = max((entry[0] for entry in entries), key=cmp_to_key(_cmp_precedence))
+    chosen: tuple[str, _Declaration] | None = None
+    for precedence, value, declaration in entries:
+        if precedence != highest:
+            continue
+        if chosen is None:
+            chosen = (value, declaration)
+            continue
+        if chosen[0] != value:
+            raise _error(
+                message,
+                code,
+                element=declaration.element,
+                module=declaration.module,
+            )
+    assert chosen is not None
+    return chosen[0]
+
+
 def _merge_mode_properties(
     declarations: Sequence[_Declaration], descriptor: PackageDescriptor
 ) -> Mapping[str, str]:
-    properties: dict[str, str] = {}
-    sources: dict[str, tuple[int, ...]] = {}
+    entries: dict[str, list[tuple[tuple[int, ...], str, _Declaration]]] = {}
     for declaration in declarations:
-        element = declaration.element
-        for attribute in element.attributes:
+        for attribute in declaration.element.attributes:
             local = attribute.local_name
             assert local is not None
             if local in ("name", "visibility") or attribute.name.startswith("_"):
                 continue
-            previous_precedence = sources.get(local)
-            if (
-                previous_precedence is None
-                or _cmp_precedence(declaration.precedence, previous_precedence) > 0
-            ):
-                properties[local] = attribute.value
-                sources[local] = declaration.precedence
-                continue
-            if (
-                declaration.precedence == previous_precedence
-                and properties[local] != attribute.value
-            ):
-                raise _error(
-                    f"mode declarations disagree about {local!r}",
-                    "XTSE0545",
-                    element=element,
-                    module=declaration.module,
-                )
+            entries.setdefault(local, []).append(
+                (declaration.precedence, attribute.value, declaration)
+            )
+    properties = {
+        local: _merged_attribute_value(
+            values,
+            code="XTSE0545",
+            message=f"mode declarations disagree about {local!r}",
+        )
+        for local, values in entries.items()
+    }
     return MappingProxyType(properties)
 
 
@@ -3534,7 +3586,11 @@ def _bind_node(
                 )
         is_expression_attribute = (
             node.is_xslt and attribute.local_name in _XPATH_REFERENCE_ATTRIBUTES
-        ) or (not node.is_xslt and attribute.namespace_uri != XSLT_NS)
+        ) or (
+            not node.is_xslt
+            and attribute.namespace_uri != XSLT_NS
+            and _has_attribute_value_template(attribute.value)
+        )
         if is_expression_attribute:
             references.extend(
                 _original_expression_references(attribute.value, node, original, original_abstract)
@@ -3552,6 +3608,20 @@ def _expand_instruction_name(name: str, node: Instruction) -> str:
         uri=node.module,
         code="XTSE0280",
     )
+
+
+def _has_attribute_value_template(source: str) -> bool:
+    """Whether an attribute value contains an unescaped value-template expression."""
+    index = 0
+    while index < len(source):
+        if source[index] != "{":
+            index += 1
+            continue
+        if index + 1 < len(source) and source[index + 1] == "{":
+            index += 2
+            continue
+        return True
+    return False
 
 
 def _original_expression_references(
@@ -3834,7 +3904,7 @@ def _build_constructs(
     result: list[PackageConstruct] = []
     for group in groups:
         attributes: dict[str, str] = {}
-        attribute_precedence: dict[str, tuple[int, ...]] = {}
+        attribute_entries: dict[str, list[tuple[tuple[int, ...], str, _Declaration]]] = {}
         declarations: list[Instruction] = []
         for declaration in group.declarations:
             normalized = normalize_element(
@@ -3863,23 +3933,20 @@ def _build_constructs(
                     existing = attributes.get(local, "").split()
                     attributes[local] = " ".join((*existing, *attribute.value.split()))
                     continue
-                previous = attribute_precedence.get(local)
-                if previous is None or _cmp_precedence(declaration.precedence, previous) > 0:
-                    attributes[local] = attribute.value
-                    attribute_precedence[local] = declaration.precedence
-                    continue
-                if declaration.precedence == previous and attributes[local] != attribute.value:
-                    code = {
-                        "output": "XTSE1560",
-                        "decimal-format": "XTSE1290",
-                        "character-map": "XTSE1580",
-                    }[kind]
-                    raise _error(
-                        f"conflicting {kind} attribute {local!r}",
-                        code,
-                        element=declaration.element,
-                        module=declaration.module,
-                    )
+                attribute_entries.setdefault(local, []).append(
+                    (declaration.precedence, attribute.value, declaration)
+                )
+        code = {
+            "output": "XTSE1560",
+            "decimal-format": "XTSE1290",
+            "character-map": "XTSE1580",
+        }[kind]
+        for local, entries in attribute_entries.items():
+            attributes[local] = _merged_attribute_value(
+                entries,
+                code=code,
+                message=f"conflicting {kind} attribute {local!r}",
+            )
         result.append(
             PackageConstruct(
                 kind=kind,
@@ -3900,6 +3967,7 @@ __all__ = [
     "Component",
     "ComponentKey",
     "ContextItemSignature",
+    "HiddenModeKey",
     "Mode",
     "ModeRule",
     "ModeRuleLayer",

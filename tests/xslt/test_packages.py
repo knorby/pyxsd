@@ -3573,3 +3573,183 @@ def test_literal_result_avt_binds_contained_xsl_original() -> None:
     out = compiled.variable("app:v").body.children[0]
     assert out.references[0].kind == "variable"
     assert out.references[0].original is True
+
+
+def test_plain_literal_result_attributes_are_not_expressions() -> None:
+    base = _package(
+        BASE,
+        '<xsl:template name="app:t" visibility="public"/>',
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"><xsl:override>'
+        '<xsl:template name="app:t" visibility="public">'
+        '<out use-attribute-sets="literal-name" select="$xsl:original" '
+        'escaped="{{$xsl:original}}"/>'
+        "</xsl:template></xsl:override></xsl:use-package>",
+        package_version="1.0.0",
+    )
+    compiled = compile_package_set(base, using)
+    out = compiled.named_template("app:t").body.children[0]
+    assert out.attribute("use-attribute-sets") == "literal-name"
+    assert out.attribute("select") == "$xsl:original"
+    assert out.attribute("escaped") == "{{$xsl:original}}"
+    assert out.references == ()
+
+
+def test_hidden_accepted_mode_is_retained_without_exposing_its_name() -> None:
+    base = _package(
+        BASE,
+        '<xsl:mode name="app:m" visibility="private"/>'
+        '<xsl:template match="doc:a" mode="app:m"/>'
+        '<xsl:template name="app:run" visibility="public">'
+        '<xsl:apply-templates mode="app:m"/>'
+        "</xsl:template>",
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"/>',
+        package_version="1.0.0",
+    )
+    compiled = compile_package_set(base, using)
+    hidden_key = (f"{{{APP_NS}}}m", BASE)
+    hidden = compiled.hidden_modes[hidden_key]
+    assert hidden.visibility == "hidden"
+    assert hidden.containing == USING
+    assert hidden.rules
+    assert compiled.mode("app:m") is None
+    assert compiled.named_template("app:run").body.children[0].attribute("mode") == "app:m"
+
+    reused = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base"/><xsl:mode name="app:m" visibility="public"/>',
+        package_version="1.0.0",
+    )
+    compiled_reused = compile_package_set(base, reused)
+    assert compiled_reused.mode("app:m").visibility == "public"
+    assert compiled_reused.hidden_modes[hidden_key].visibility == "hidden"
+
+    middle = _package(
+        OTHER,
+        '<xsl:use-package name="urn:example:base"/>',
+        package_version="1.0.0",
+    )
+    top = _package(
+        USING,
+        '<xsl:use-package name="urn:example:other"/>',
+        package_version="1.0.0",
+    )
+    nested = compile_package_set(base, middle, top)
+    nested_hidden = nested.hidden_modes[hidden_key]
+    assert nested_hidden.visibility == "hidden"
+    assert nested_hidden.containing == USING
+
+
+def test_higher_precedence_resolves_conflicting_mode_properties(tmp_path: Path) -> None:
+    first = _write(
+        tmp_path,
+        "mode-first.xsl",
+        _stylesheet('<xsl:mode name="app:m" on-no-match="fail"/>'),
+    )
+    second = _write(
+        tmp_path,
+        "mode-second.xsl",
+        _stylesheet('<xsl:mode name="app:m" on-no-match="deep-copy"/>'),
+    )
+    wrapper = _write(
+        tmp_path,
+        "mode-conflict.xsl",
+        _stylesheet(f'<xsl:include href="{first.name}"/><xsl:include href="{second.name}"/>'),
+    )
+    assert _raise_code(lambda: compile_package_set(wrapper)) == "XTSE0545"
+
+    principal = _package(
+        BASE,
+        f'<xsl:import href="{wrapper.name}"/><xsl:mode name="app:m" on-no-match="shallow-copy"/>',
+    )
+    path = _write(tmp_path, "mode-resolved.xsl", principal)
+    mode = compile_package_set(path).mode("app:m")
+    assert mode.properties["on-no-match"] == "shallow-copy"
+
+
+def test_higher_precedence_resolves_conflicting_mode_visibility(tmp_path: Path) -> None:
+    first = _write(
+        tmp_path,
+        "mode-visibility-first.xsl",
+        _stylesheet('<xsl:mode name="app:m" visibility="final"/>'),
+    )
+    second = _write(
+        tmp_path,
+        "mode-visibility-second.xsl",
+        _stylesheet('<xsl:mode name="app:m" visibility="private"/>'),
+    )
+    wrapper = _write(
+        tmp_path,
+        "mode-visibility-conflict.xsl",
+        _stylesheet(f'<xsl:include href="{first.name}"/><xsl:include href="{second.name}"/>'),
+    )
+    assert _raise_code(lambda: compile_package_set(wrapper)) == "XTSE0545"
+
+    principal = _package(
+        BASE,
+        f'<xsl:import href="{wrapper.name}"/><xsl:mode name="app:m" visibility="public"/>',
+    )
+    path = _write(tmp_path, "mode-visibility-resolved.xsl", principal)
+    assert compile_package_set(path).mode("app:m").visibility == "public"
+
+
+def test_higher_precedence_resolves_conflicting_output_attributes(tmp_path: Path) -> None:
+    first = _write(
+        tmp_path,
+        "output-first.xsl",
+        _stylesheet('<xsl:output method="xml"/>'),
+    )
+    second = _write(
+        tmp_path,
+        "output-second.xsl",
+        _stylesheet('<xsl:output method="text"/>'),
+    )
+    wrapper = _write(
+        tmp_path,
+        "output-conflict.xsl",
+        _stylesheet(f'<xsl:include href="{first.name}"/><xsl:include href="{second.name}"/>'),
+    )
+    assert _raise_code(lambda: compile_package_set(wrapper)) == "XTSE1560"
+
+    principal = _package(
+        BASE,
+        f'<xsl:import href="{wrapper.name}"/><xsl:output method="html"/>',
+    )
+    path = _write(tmp_path, "output-resolved.xsl", principal)
+    assert compile_package_set(path).output(None).attribute("method") == "html"
+
+
+def test_higher_precedence_resolves_conflicting_decimal_format_attributes(
+    tmp_path: Path,
+) -> None:
+    first = _write(
+        tmp_path,
+        "decimal-first.xsl",
+        _stylesheet('<xsl:decimal-format name="app:d" decimal-separator=","/>'),
+    )
+    second = _write(
+        tmp_path,
+        "decimal-second.xsl",
+        _stylesheet('<xsl:decimal-format name="app:d" decimal-separator="."/>'),
+    )
+    wrapper = _write(
+        tmp_path,
+        "decimal-conflict.xsl",
+        _stylesheet(f'<xsl:include href="{first.name}"/><xsl:include href="{second.name}"/>'),
+    )
+    assert _raise_code(lambda: compile_package_set(wrapper)) == "XTSE1290"
+
+    principal = _package(
+        BASE,
+        f'<xsl:import href="{wrapper.name}"/>'
+        '<xsl:decimal-format name="app:d" decimal-separator=";"/>',
+    )
+    path = _write(tmp_path, "decimal-resolved.xsl", principal)
+    assert compile_package_set(path).decimal_format("app:d").attribute("decimal-separator") == ";"
