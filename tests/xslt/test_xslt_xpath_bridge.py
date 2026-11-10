@@ -1083,8 +1083,6 @@ def test_key_three_argument_forms_and_dynamic_invocation() -> None:
         """
         <xsl:key name="by-id" match="item" use="@id"/>
         <xsl:template name="main">
-          <xsl:sequence select="count(key('by-id', 'a', ()))"/>
-          <xsl:sequence select="key#3('by-id', 'a', /*)/@id/string()"/>
           <xsl:sequence select="key#2('by-id', 'a')"/>
         </xsl:template>
         """
@@ -1098,17 +1096,15 @@ def test_key_three_argument_forms_and_dynamic_invocation() -> None:
         """
         <xsl:key name="by-id" match="item" use="@id"/>
         <xsl:template name="main">
-          <xsl:sequence select="count(key('by-id', 'a', ()))"/>
           <xsl:sequence select="string-join(key('by-id', 'a', /*)/@id, ',')"/>
         </xsl:template>
         """
     )
     assert transform(explicit, b'<doc><item id="a"/></doc>', initial_template="main").principal == (
-        XdmAtomic.integer(0),
         XdmAtomic.string("a"),
     )
 
-    for third in ("('x', 'y')", "'x'"):
+    for third in ("()", "('x', 'y')", "'x'"):
         bad = stylesheet(
             f"""
             <xsl:key name="by-id" match="item" use="@id"/>
@@ -1651,3 +1647,149 @@ def test_inline_function_calls_clear_group_merge_and_regex_state() -> None:
     assert f"{{{FN_NS}}}type-available" in overrides
     assert f"{{{FN_NS}}}current-merge-group" not in overrides
     assert f"{{{FN_NS}}}accumulator-before" not in overrides
+
+
+# ---------------------------------------------------------------------------
+# Fix round 2 regressions
+
+
+def test_standalone_key_three_argument_filters_the_top_tree() -> None:
+    first = XdmDocument.parse(b'<doc><item id="a"/></doc>')
+    second = XdmDocument.parse(b'<doc><item id="a"/></doc>')
+    first_item = first.root_element.children[0]
+    engine = XPathEngine("3.1")
+    compiled = engine.compile("count(key('by-id', 'a', /*))")
+    environment = ExpressionEnvironment(key_indexes={"by-id": {"a": (first_item,)}})
+
+    assert engine.evaluate(compiled, environment, focus=first) == (XdmAtomic.integer(1),)
+    assert engine.evaluate(compiled, environment, focus=second) == (XdmAtomic.integer(0),)
+    assert (
+        error_code(
+            lambda: engine.evaluate(
+                engine.compile("count(key('by-id', 'a', ()))"),
+                environment,
+                focus=first,
+            )
+        )
+        == "XPTY0004"
+    )
+
+
+def test_low_version_patterns_use_their_own_function_surface() -> None:
+    for version in ("1.0", "2.0"):
+        source = stylesheet(
+            """
+            <xsl:template match="/"><xsl:apply-templates select="doc/item"/></xsl:template>
+            <xsl:template match="item[not(function-available('random-number-generator'))]">
+              <xsl:sequence select="'hit'"/>
+            </xsl:template>
+            """,
+            version=version,
+        )
+        assert transform(source, b"<doc><item/><item/></doc>").principal == (
+            XdmAtomic.string("hit"),
+            XdmAtomic.string("hit"),
+        )
+
+    one = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="element-available('xsl:next-match')"/>
+        </xsl:template>
+        """,
+        version="1.0",
+    )
+    assert transform(one, b"<doc/>", initial_template="main").principal == (
+        XdmAtomic.boolean(False),
+    )
+    two = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="element-available('xsl:next-match')"/>
+        </xsl:template>
+        """,
+        version="2.0",
+    )
+    assert transform(two, b"<doc/>", initial_template="main").principal == (
+        XdmAtomic.boolean(True),
+    )
+
+    for version, match in (
+        ("1.0", "item[current-group()]"),
+        ("1.0", "item[current-merge-key()]"),
+        ("2.0", "item[current-merge-group()]"),
+    ):
+        source = stylesheet(f'<xsl:template match="{match}"/>', version=version)
+        with pytest.raises(XsltStaticError) as caught:
+            XsltProcessor().compile(io.BytesIO(source))
+        assert caught.value.code == "XPST0017"
+
+
+def test_standard_system_properties_are_available() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="system-property('xsl:supports-higher-order-functions')"/>
+          <xsl:sequence select="system-property('xsl:xsd-version')"/>
+          <xsl:sequence
+            select="some $name in available-system-properties()
+                    satisfies local-name-from-QName($name)
+                              = 'supports-higher-order-functions'"/>
+          <xsl:sequence
+            select="some $name in available-system-properties()
+                    satisfies local-name-from-QName($name) = 'xsd-version'"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, b"<doc/>", initial_template="main").principal == (
+        XdmAtomic.string("yes"),
+        XdmAtomic.string("1.1"),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+    )
+
+
+def test_literal_result_version_does_not_change_the_profile() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <html version="1.0">
+            <xsl:sequence select="'kept'"
+              use-when="function-available('current-group')"/>
+          </html>
+        </xsl:template>
+        """,
+        version="2.0",
+    )
+    result = transform(source, b"<doc/>", initial_template="main", delivery="document")
+    assert result.principal_tree.string_value == "kept"
+
+
+def test_inline_scope_marker_does_not_collide_with_user_variables() -> None:
+    direct = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="__pyxsd_function_scope" select="true()"/>
+          <xsl:sequence select="string(current()/doc/@id)"/>
+          <xsl:sequence select="$__pyxsd_function_scope"/>
+        </xsl:template>
+        """
+    )
+    assert transform(direct, b'<doc id="outer"/>', initial_template="main").principal == (
+        XdmAtomic.string("outer"),
+        XdmAtomic.boolean(True),
+    )
+
+    inline = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence
+            select="let $f := function($__pyxsd_function_scope) { current() }
+                    return $f(false())"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        error_code(lambda: transform(inline, b'<doc id="outer"/>', initial_template="main"))
+        == "XTDE1360"
+    )

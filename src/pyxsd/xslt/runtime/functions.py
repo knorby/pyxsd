@@ -83,7 +83,9 @@ SYSTEM_PROPERTIES: Mapping[str, str] = MappingProxyType(
         "xsl:supports-namespace-axis": "yes",
         "xsl:supports-streaming": "no",
         "xsl:supports-dynamic-evaluation": "no",
+        "xsl:supports-higher-order-functions": "yes",
         "xsl:xpath-version": "3.1",
+        "xsl:xsd-version": "1.1",
     }
 )
 
@@ -174,6 +176,7 @@ _XSLT_2_ONLY_ELEMENTS = frozenset(
         "function",
         "import-schema",
         "matching-substring",
+        "next-match",
         "non-matching-substring",
         "perform-sort",
         "result-document",

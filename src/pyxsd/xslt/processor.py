@@ -4341,7 +4341,11 @@ class _Invocation(Transformation):
             namespaces=package.namespaces if static is None else static.namespaces,
             default_namespace=None if static is None else static.default_namespace,
             base_uri=None if static is None else static.base_uri,
-            xpath_version="3.1" if expression is None else expression.version,
+            xpath_version=(
+                expression.version
+                if expression is not None
+                else getattr(static, "xpath_version", self.stylesheet.xpath)
+            ),
             xslt_version=(
                 None
                 if static is None
@@ -4381,8 +4385,6 @@ class _Invocation(Transformation):
                 f"the key {lexical!r} is not declared in this package",
                 code="XTDE1260",
             )
-        if len(arguments) > 2 and not arguments[2]:
-            return ()
         document = self._key_document(context_item, arguments)
         composite = any(definition.composite for definition in definitions)
         index = self._key_index(definitions, document, package_name)

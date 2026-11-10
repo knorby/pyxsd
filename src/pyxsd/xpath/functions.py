@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import copy
 import inspect
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from types import MethodType
 from typing import Any, cast
@@ -24,7 +24,7 @@ from elementpath.xpath_tokens.functions import XPathFunction
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmItem, XdmSequence, as_xdm
 
 __all__ = [
-    "FUNCTION_SCOPE_VARIABLE",
+    "FUNCTION_SCOPE_ATTRIBUTE",
     "ContextFunction",
     "ContextFunctionToken",
     "HostFunctionToken",
@@ -36,11 +36,10 @@ __all__ = [
 ]
 
 
-#: Reserved context variable marking the body of an inline/higher-order
-#: function call.  XSLT context components are absent while this marker is in
-#: scope, while ordinary XPath focus remains available to context-item
-#: expressions such as ``.`` and to ``generate-id#0``'s argument default.
-FUNCTION_SCOPE_VARIABLE = "__pyxsd_function_scope"
+#: Private dynamic-context attribute marking the body of an inline/higher-order
+#: function call.  It is an attribute rather than a variable so a legal user
+#: variable or parameter can never shadow or forge it.
+FUNCTION_SCOPE_ATTRIBUTE = "_pyxsd_function_scope"
 
 ContextFunctionCallback = Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence]
 
@@ -257,8 +256,7 @@ def _evaluate_token(value: Any, context: Any) -> Any:
 
 
 def _in_function_scope(context: Any) -> bool:
-    variables = getattr(context, "variables", None)
-    return isinstance(variables, Mapping) and bool(variables.get(FUNCTION_SCOPE_VARIABLE))
+    return bool(getattr(context, FUNCTION_SCOPE_ATTRIBUTE, False))
 
 
 class ContextFunctionToken(XPathFunction):

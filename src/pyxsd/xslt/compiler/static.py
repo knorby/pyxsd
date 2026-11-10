@@ -156,9 +156,15 @@ def _effective_stylesheet_version(element: XdmNode) -> str:
     """The nearest in-scope ``version`` attribute, or the 3.0 default."""
     current: XdmNode | None = element
     while current is not None:
-        attribute = current.attribute("version")
-        if attribute is None:
-            attribute = current.attribute(f"{{{XSLT_NS}}}version")
+        attribute = current.attribute(f"{{{XSLT_NS}}}version")
+        name = current.name
+        if (
+            attribute is None
+            and name is not None
+            and _namespace_of(name) == XSLT_NS
+            and _local_name(name) in ("stylesheet", "transform", "package")
+        ):
+            attribute = current.attribute("version")
         value = attribute.string_value if isinstance(attribute, XdmNode) else attribute
         if value is not None and value.strip():
             version = value.strip()

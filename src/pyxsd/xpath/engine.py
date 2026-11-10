@@ -60,7 +60,7 @@ from pyxsd.xpath.environment import (
     XPathStaticContext,
 )
 from pyxsd.xpath.functions import (
-    FUNCTION_SCOPE_VARIABLE,
+    FUNCTION_SCOPE_ATTRIBUTE,
     ContextFunction,
     ContextFunctionToken,
     HostFunctionToken,
@@ -833,9 +833,7 @@ def _install_function_scope(parser: Any) -> None:
         if active is None:  # pragma: no cover - XPath supplies a context
             return base.__call__(self, *args, context=context)
         marked = copy.copy(active)
-        variables = dict(getattr(marked, "variables", {}) or {})
-        variables[FUNCTION_SCOPE_VARIABLE] = True
-        marked.variables = variables
+        setattr(marked, FUNCTION_SCOPE_ATTRIBUTE, True)
         return base.__call__(self, *args, context=marked)
 
     parser._register(
@@ -954,8 +952,14 @@ def _register_key_function(parser: Any, holder: _BridgeHolder) -> None:
         if index is None:
             return []
         values = bridge.to_xdm_sequence(value_argument)
+        top_root: XdmNode | None = None
         if top_argument is not None:
-            del top_argument
+            top = bridge.to_xdm_sequence(top_argument)
+            if not top:  # pragma: no cover - elementpath enforces node()
+                return []
+            if len(top) != 1 or not isinstance(top[0], XdmNode):  # pragma: no cover
+                raise ValueError("the third key() argument must be a single node")
+            top_root = top[0].root
         nodes: list[XdmNode] = []
         for item in values:
             value = cast(XdmAtomic, item)
@@ -964,6 +968,8 @@ def _register_key_function(parser: Any, holder: _BridgeHolder) -> None:
             nodes.extend(index.get(value, ()))
         unique: dict[int, XdmNode] = {id(node): node for node in nodes}
         ordered = sorted(unique.values(), key=lambda node: node.document_order)
+        if top_root is not None:
+            ordered = [node for node in ordered if node.root is top_root]
         return [bridge.adapt_item(node) for node in ordered]
 
     token_class = parser.external_function(

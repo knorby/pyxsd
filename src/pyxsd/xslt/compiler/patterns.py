@@ -1041,12 +1041,12 @@ def _function_local_name(name: str, context: StaticContext) -> str | None:
     return local if context.namespaces.get(prefix) == FN_NS else None
 
 
-_PATTERN_FORBIDDEN_FUNCTIONS: Mapping[str, str] = MappingProxyType(
+_PATTERN_FORBIDDEN_FUNCTIONS: Mapping[str, tuple[str, str]] = MappingProxyType(
     {
-        "current-group": "XTSE1060",
-        "current-grouping-key": "XTSE1070",
-        "current-merge-group": "XTSE3470",
-        "current-merge-key": "XTSE3500",
+        "current-group": ("XTSE1060", "2.0"),
+        "current-grouping-key": ("XTSE1070", "2.0"),
+        "current-merge-group": ("XTSE3470", "3.0"),
+        "current-merge-key": ("XTSE3500", "3.0"),
     }
 )
 
@@ -1062,8 +1062,11 @@ def _reject_pattern_context_functions(
         if token.kind != "name":
             continue
         local = _function_local_name(token.value, context)
-        code = _PATTERN_FORBIDDEN_FUNCTIONS.get(local or "")
-        if code is None or tokens[index + 1].value not in ("(", "#"):
+        forbidden = _PATTERN_FORBIDDEN_FUNCTIONS.get(local or "")
+        if forbidden is None or tokens[index + 1].value not in ("(", "#"):
+            continue
+        code, minimum = forbidden
+        if Decimal(context.version) < Decimal(minimum):
             continue
         raise _static_error(
             context,
