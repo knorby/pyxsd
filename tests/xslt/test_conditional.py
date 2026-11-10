@@ -741,3 +741,238 @@ def test_vacuous_and_deemed_empty_follow_the_specification() -> None:
     assert is_vacuous(XdmArray([(XdmAtomic.integer(1),)])) is False
     assert is_deemed_empty(XdmArray([(XdmAtomic.integer(1),)])) is False
     assert is_deemed_empty(XdmMap.from_mapping({"a": 1})) is False
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1: fallback-aware mutual exclusion
+
+
+def test_map_entry_select_permits_fallback_children() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="m" as="map(*)">
+            <xsl:map>
+              <xsl:map-entry key="'a'" select="1"><xsl:fallback/></xsl:map-entry>
+            </xsl:map>
+          </xsl:variable>
+          <xsl:sequence select="$m('a')"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main").principal == (XdmAtomic.integer(1),)
+
+
+def test_on_empty_select_permits_fallback_children() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence>
+            <xsl:on-empty select="'empty'"><xsl:fallback/></xsl:on-empty>
+          </xsl:sequence>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main").principal == (XdmAtomic.string("empty"),)
+
+
+def test_on_non_empty_select_permits_fallback_children() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence>
+            <xsl:on-non-empty select="'header'"><xsl:fallback/></xsl:on-non-empty>
+            <xsl:sequence select="'body'"/>
+          </xsl:sequence>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main").principal == (
+        XdmAtomic.string("header"),
+        XdmAtomic.string("body"),
+    )
+
+
+def test_sequence_select_with_fallback_uses_the_sequence_error_code() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="1"><xsl:fallback/></xsl:sequence>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: compiled(source)) == "XTSE3185"
+
+
+def test_fallback_only_content_does_not_hide_real_content_errors() -> None:
+    map_entry = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:map>
+            <xsl:map-entry key="'a'" select="1"><xsl:sequence select="2"/></xsl:map-entry>
+          </xsl:map>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: compiled(map_entry)) == "XTSE3280"
+
+    on_empty = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence>
+            <xsl:on-empty select="'empty'"><xsl:sequence select="2"/></xsl:on-empty>
+          </xsl:sequence>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: compiled(on_empty)) == "XTSE3185"
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1: assertion error-code EQName handling
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", "XTMM9001"),
+        ("not a qname", "XTMM9001"),
+        ("missing:bad", "XTMM9001"),
+        ("a:b:c", "XTMM9001"),
+        ("Q{{urn:my}}bad", "{urn:my}bad"),
+        ("Q{{urn:my}}1bad", "XTMM9001"),
+        ("Q{{bad", "XTMM9001"),
+        ("Q{{http://www.w3.org/2005/xqt-errors}}XTMM9002", "XTMM9002"),
+        ("Q{{}}plain", "plain"),
+        ("{{urn:my}}bad", "{urn:my}bad"),
+        ("{{urn:my}}1bad", "XTMM9001"),
+        ("{{urn:my", "XTMM9001"),
+        ("XTMM9002", "XTMM9002"),
+    ],
+)
+def test_assertion_error_code_is_an_eqname_or_the_default(value: str, expected: str) -> None:
+    source = stylesheet(
+        f"""
+        <xsl:template name="main">
+          <xsl:assert test="false()" select="'message'" error-code="{value}"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        assert_transform(source)
+    assert caught.value.code == expected
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1: assertion message construction failures
+
+
+def test_assertion_select_failure_becomes_the_assertion_diagnostic() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:assert test="false()" select="1 div 0"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        assert_transform(source)
+    assert caught.value.code == "XTMM9001"
+    assert "message construction failed" in str(caught.value)
+    assert caught.value.cause is not None
+    assert str(getattr(caught.value.cause, "code", None)).endswith("FOAR0001")
+
+
+def test_assertion_content_failure_becomes_the_assertion_diagnostic() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:assert test="false()">
+            <xsl:sequence select="1 div 0"/>
+          </xsl:assert>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        assert_transform(source)
+    assert caught.value.code == "XTMM9001"
+    assert "message construction failed" in str(caught.value)
+    assert caught.value.cause is not None
+    assert str(getattr(caught.value.cause, "code", None)).endswith("FOAR0001")
+
+
+def test_assertion_message_tree_failure_becomes_the_assertion_diagnostic() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:assert test="false()" select="true#0"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        assert_transform(source)
+    assert caught.value.code == "XTMM9001"
+    assert "message construction failed" in str(caught.value)
+    assert caught.value.cause is not None
+
+
+def test_assertion_message_failure_keeps_a_custom_error_code() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:assert test="false()" select="1 div 0" error-code="my:bad"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        assert_transform(source)
+    assert caught.value.code == "{urn:my}bad"
+    assert caught.value.cause is not None
+    assert str(getattr(caught.value.cause, "code", None)).endswith("FOAR0001")
+
+
+def test_assertion_error_code_failure_keeps_a_message_failure() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:assert test="false()" select="1 div 0" error-code="{1 div 0}"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        assert_transform(source)
+    assert caught.value.code == "XTMM9001"
+    assert "message construction failed" in str(caught.value)
+    assert caught.value.cause is not None
+    assert str(getattr(caught.value.cause, "code", None)).endswith("FOAR0001")
+
+
+def test_assertion_error_code_failure_keeps_a_successful_message() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:assert test="false()" select="'message'" error-code="{1 div 0}"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        assert_transform(source)
+    assert caught.value.code == "XTMM9001"
+    assert "message" in str(caught.value)
+    assert "message construction failed" not in str(caught.value)
+    assert caught.value.cause is not None
+
+
+def test_assertion_error_code_failure_without_a_message_reports_it() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:assert test="false()" error-code="{1 div 0}"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        assert_transform(source)
+    assert caught.value.code == "XTMM9001"
+    assert "message construction failed" in str(caught.value)
+    assert caught.value.cause is not None

@@ -22,6 +22,8 @@ from types import MappingProxyType
 from typing import Any, Literal, TypeAlias, cast
 from urllib.parse import urljoin, urlsplit
 
+from elementpath.helpers import is_ncname
+
 from pyxsd.document import Document
 from pyxsd.resource_policy import ResourcePolicyError
 from pyxsd.schema import Schema
@@ -1508,7 +1510,7 @@ def _compile_instruction(
         if select is not None and _has_plan_content(children):
             raise XsltStaticError(
                 "xsl:sequence with a select attribute must have empty content",
-                code="XTSE0010",
+                code="XTSE3185",
                 uri=context.uri,
                 location=location,
             )
@@ -1796,9 +1798,10 @@ def _compile_instruction(
             )
         select = instruction.attribute("select")
         children = _compile_sequence(instruction.children, context, module)
-        if select is not None and _has_plan_content(children):
+        if select is not None and _has_plan_content(children, allow_fallback=True):
             raise XsltStaticError(
-                "xsl:map-entry with a select attribute must have empty content",
+                "xsl:map-entry with a select attribute must have empty content except "
+                "for xsl:fallback",
                 code="XTSE3280",
                 uri=context.uri,
                 location=location,
@@ -1853,9 +1856,10 @@ def _compile_instruction(
     if local in ("on-empty", "on-non-empty"):
         select = instruction.attribute("select")
         children = _compile_sequence(instruction.children, context, module)
-        if select is not None and _has_plan_content(children):
+        if select is not None and _has_plan_content(children, allow_fallback=True):
             raise XsltStaticError(
-                f"xsl:{local} with a select attribute must have empty content",
+                f"xsl:{local} with a select attribute must have empty content except "
+                "for xsl:fallback",
                 code="XTSE3185",
                 uri=context.uri,
                 location=location,
@@ -2155,6 +2159,54 @@ def _namespace(name: str) -> str | None:
     return name[1:].partition("}")[0]
 
 
+def _assertion_error_code(value: str, namespaces: Mapping[str, str]) -> str:
+    """Resolve one effective ``xsl:assert/@error-code`` EQName.
+
+    An invalid EQName defaults to the assertion code XTMM9001 as XSLT 3.0
+    section 23.2 requires.  Standard error-namespace names are stored in their
+    familiar local form, while a custom namespace keeps its expanded form.
+    """
+    text = value.strip()
+    default = "XTMM9001"
+    if not text:
+        return default
+    if text.startswith("Q{"):
+        close = text.find("}")
+        if close < 0:
+            return default
+        namespace = text[2:close]
+        local = text[close + 1 :]
+        if not is_ncname(local):
+            return default
+        expanded = f"{{{namespace}}}{local}" if namespace else local
+    elif text.startswith("{"):
+        close = text.find("}")
+        if close < 0:
+            return default
+        namespace = text[1:close]
+        local = text[close + 1 :]
+        if not is_ncname(local):
+            return default
+        expanded = f"{{{namespace}}}{local}" if namespace else local
+    else:
+        prefix, separator, local = text.partition(":")
+        if separator:
+            if not is_ncname(prefix) or not is_ncname(local):
+                return default
+            bound = namespaces.get(prefix)
+            if bound is None:
+                return default
+            expanded = f"{{{bound}}}{local}"
+        else:
+            if not is_ncname(text):
+                return default
+            expanded = text
+    standard = f"{{{ERROR_NAMESPACE}}}"
+    if expanded.startswith(standard):
+        return expanded[len(standard) :]
+    return expanded
+
+
 def _boolean_avt(value: str, attribute: str) -> bool:
     normalized = value.strip()
     if normalized in ("yes", "true", "1"):
@@ -2185,8 +2237,14 @@ def _dynamic_variable_names(
     return result
 
 
-def _has_plan_content(plans: Iterable[_Plan]) -> bool:
+def _has_plan_content(
+    plans: Iterable[_Plan],
+    *,
+    allow_fallback: bool = False,
+) -> bool:
     for plan in plans:
+        if allow_fallback and isinstance(plan, _FallbackPlan):
+            continue
         if isinstance(plan, _TextPlan):
             if plan.value.strip():
                 return True
@@ -4725,41 +4783,50 @@ class _Invocation(Transformation):
             failure = exc
         if satisfied:
             return
-        message_values: list[XdmItem] = []
-        if plan.select is not None:
+        message_failure: BaseException | None = None
+        detail = ""
+        try:
+            message_values: list[XdmItem] = []
+            if plan.select is not None:
+                message_values.extend(
+                    self._evaluate(
+                        plan.select,
+                        focus,
+                        locals_,
+                        package_name,
+                        original_functions=original_functions,
+                    )
+                )
             message_values.extend(
-                self._evaluate(
-                    plan.select,
-                    focus,
-                    locals_,
-                    package_name,
+                self._execute_plans(
+                    plan.children,
+                    focus=focus,
+                    locals_=locals_,
+                    final_output=False,
+                    package_name=package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
+                    rule_context=rule_context,
                     original_functions=original_functions,
                 )
             )
-        message_values.extend(
-            self._execute_plans(
-                plan.children,
-                focus=focus,
-                locals_=locals_,
-                final_output=False,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
-        )
-        detail = ""
-        if message_values:
-            document = _build_result_tree(message_values)
-            detail = document.string_value.strip()
+            if message_values:
+                document = _build_result_tree(message_values)
+                detail = document.string_value.strip()
+        except Exception as exc:
+            message_failure = exc
+            detail = f"message construction failed: {exc}"
         code = "XTMM9001"
         if plan.error_code is not None:
-            selected = self._value_source(plan.error_code, focus, locals_, package_name).strip()
-            expanded = _expanded_name(selected, plan.instruction.namespaces)
-            if expanded.startswith(f"{{{ERROR_NAMESPACE}}}"):
-                expanded = expanded.rpartition("}")[2]
-            code = expanded or "XTMM9001"
+            try:
+                selected = self._value_source(plan.error_code, focus, locals_, package_name)
+                code = _assertion_error_code(selected, plan.instruction.namespaces)
+            except Exception as exc:
+                if message_failure is None:
+                    message_failure = exc
+                    if not detail:
+                        detail = f"message construction failed: {exc}"
+                code = "XTMM9001"
         if detail:
             message = f"assertion failed: {detail} (test: {plan.test.source})"
         else:
@@ -4768,7 +4835,7 @@ class _Invocation(Transformation):
             message,
             code=code,
             location=plan.instruction.location,
-            cause=failure,
+            cause=message_failure or failure,
         )
 
     def _dynamic_evaluate(

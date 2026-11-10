@@ -849,7 +849,7 @@ def test_compiled_accessors_and_mode_rule_counts() -> None:
         ),
         (
             '<xsl:template match="doc"><xsl:sequence select="1">text</xsl:sequence></xsl:template>',
-            "XTSE0010",
+            "XTSE3185",
         ),
         (
             '<xsl:template match="doc"><xsl:param select="1"/></xsl:template>',
