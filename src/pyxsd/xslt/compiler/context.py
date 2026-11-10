@@ -52,7 +52,7 @@ BUILT_IN_NAMESPACES: Mapping[str, str] = MappingProxyType(
 )
 
 _VISIBILITIES = frozenset({"public", "private", "final", "abstract", "hidden"})
-_VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
+_VALIDATION_MODES = frozenset({"preserve", "strip"})
 _INPUT_TYPE_ANNOTATIONS = frozenset({"strip", "preserve", "unspecified"})
 _PROFILES = frozenset({"xslt-1.0", "xslt-2.0", "xslt-3.0", "xslt-3.1"})
 _VARIABLE = f"{{{XSLT_NS}}}variable"
@@ -880,16 +880,12 @@ def _expand_declared_name(
     return f"{{{namespace_uri}}}{local}"
 
 
-def _default_visibility(module: EffectiveModule) -> str:
-    return "private" if module.root.local_name == "package" else "public"
-
-
 def _declaration_visibility(
     element: EffectiveElement,
-    module: EffectiveModule,
+    default_visibility: str,
 ) -> str:
     declared = element.attribute("visibility")
-    visibility = _default_visibility(module) if declared is None else declared
+    visibility = default_visibility if declared is None else declared
     if visibility not in _VISIBILITIES:
         raise XsltStaticError(
             f"invalid visibility value {visibility!r}",
@@ -898,10 +894,6 @@ def _declaration_visibility(
             location=_source_location(element),
         )
     return visibility
-
-
-def _visible_outside(visibility: str) -> bool:
-    return visibility not in ("private", "hidden")
 
 
 def _declaration_context(
@@ -948,6 +940,7 @@ def _variable_symbol(
     *,
     schema: SchemaPool | None,
     profile: ProfileOptions,
+    default_visibility: str,
 ) -> StaticVariable | None:
     name = element.attribute("name")
     if not name:
@@ -957,13 +950,18 @@ def _variable_symbol(
     static_value = element.attribute("static")
     static = bool(static_value in ("yes", "true", "1"))
     kind: VariableKind = "param" if element.name == _PARAM else "variable"
+    if kind == "param":
+        # A static stylesheet parameter is implicitly private; an ordinary
+        # global parameter is not a visibility-bearing component and remains
+        # public.
+        visibility = "private" if static else "public"
+    else:
+        visibility = _declaration_visibility(element, default_visibility)
     return StaticVariable(
         name=expanded,
         kind=kind,
         static=static,
-        # Global xsl:param is not a visibility-bearing component; unlike
-        # functions and variables it stays public even in an explicit package.
-        visibility=("public" if kind == "param" else _declaration_visibility(element, module)),
+        visibility=visibility,
         sequence_type=sequence_type,
         declared_type=element.attribute("as"),
         precedence=module.precedence,
@@ -977,6 +975,7 @@ def _function_symbol(
     *,
     schema: SchemaPool | None,
     profile: ProfileOptions,
+    default_visibility: str,
 ) -> StaticFunction | None:
     name = element.attribute("name")
     if not name:
@@ -994,7 +993,7 @@ def _function_symbol(
     return StaticFunction(
         name=expanded,
         arity=len(parameters),
-        visibility=_declaration_visibility(element, module),
+        visibility=_declaration_visibility(element, default_visibility),
         parameters=parameters,
         return_type=return_type,
         precedence=module.precedence,
@@ -1012,13 +1011,22 @@ def _collect_symbols(
     functions: dict[FunctionKey, StaticFunction] = {}
     visited: set[int] = set()
 
-    def record(module: EffectiveModule, include_private: bool) -> None:
-        for child in module.root.elements:
+    # A stylesheet module graph is one implicit package assembled through
+    # xsl:include and xsl:import, so private declarations remain visible here.
+    # An explicit xsl:package root starts a package whose own graph defaults
+    # to private.  Only xsl:use-package creates an external package boundary
+    # (Task 15).
+    def record(current: EffectiveModule, default_visibility: str) -> None:
+        for child in current.root.elements:
             if child.name in (_VARIABLE, _PARAM):
-                variable = _variable_symbol(child, module, schema=schema, profile=profile)
-                if variable is not None and (
-                    include_private or _visible_outside(variable.visibility)
-                ):
+                variable = _variable_symbol(
+                    child,
+                    current,
+                    schema=schema,
+                    profile=profile,
+                    default_visibility=default_visibility,
+                )
+                if variable is not None:
                     previous = variables.get(variable.name)
                     if (
                         previous is None
@@ -1026,10 +1034,14 @@ def _collect_symbols(
                     ):
                         variables[variable.name] = variable
             elif child.name == _FUNCTION:
-                function = _function_symbol(child, module, schema=schema, profile=profile)
-                if function is not None and (
-                    include_private or _visible_outside(function.visibility)
-                ):
+                function = _function_symbol(
+                    child,
+                    current,
+                    schema=schema,
+                    profile=profile,
+                    default_visibility=default_visibility,
+                )
+                if function is not None:
                     key = (function.name, function.arity)
                     previous_function = functions.get(key)
                     if (
@@ -1039,17 +1051,19 @@ def _collect_symbols(
                     ):
                         functions[key] = function
 
-    def visit(current: EffectiveModule, include_private: bool) -> None:
+    def visit(current: EffectiveModule, default_visibility: str) -> None:
         if id(current) in visited:
             return
         visited.add(id(current))
-        record(current, include_private)
+        if current.root.local_name == "package":
+            default_visibility = "private"
+        record(current, default_visibility)
         for included in current.includes:
-            visit(included, include_private)
+            visit(included, default_visibility)
         for imported in current.imports:
-            visit(imported, False)
+            visit(imported, default_visibility)
 
-    visit(module, True)
+    visit(module, "private" if module.root.local_name == "package" else "public")
     return MappingProxyType(variables), MappingProxyType(functions)
 
 

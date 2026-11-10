@@ -21,6 +21,7 @@ from pyxsd.xslt.compiler.context import (
     StaticFunction,
     StaticVariable,
 )
+from pyxsd.xslt.compiler.expressions import compile_avt
 from pyxsd.xslt.compiler.modules import ModuleLoader
 from pyxsd.xslt.compiler.static import (
     EffectiveAttribute,
@@ -78,7 +79,7 @@ def test_context_reads_element_defaults(tmp_path: Path) -> None:
             attributes=(
                 ' xpath-default-namespace="urn:example:elements"'
                 ' default-collation="urn:example:collation"'
-                ' expand-text="yes" default-validation="strict"'
+                ' expand-text="yes" default-validation="preserve"'
                 ' input-type-annotations="preserve"'
             ),
         ),
@@ -97,7 +98,7 @@ def test_context_reads_element_defaults(tmp_path: Path) -> None:
     assert context.base_uri == Path(module.source.source_id).resolve().as_uri()
     assert context.default_collation == "urn:example:collation"
     assert context.expand_text is True
-    assert context.default_validation == "strict"
+    assert context.default_validation == "preserve"
     assert context.input_type_annotations == "preserve"
     assert context.uri == context.base_uri
     assert context.location is not None
@@ -196,7 +197,7 @@ def test_context_default_collation_and_validation_scoping(tmp_path: Path) -> Non
         tmp_path,
         _stylesheet(
             '<xsl:template match="/">'
-            '<a xsl:default-collation="urn:a urn:b" xsl:default-validation="lax" '
+            '<a xsl:default-collation="urn:a urn:b" xsl:default-validation="strip" '
             'xsl:input-type-annotations="strip"/>'
             "</xsl:template>",
             attributes=' default-collation="urn:root"',
@@ -206,10 +207,12 @@ def test_context_default_collation_and_validation_scoping(tmp_path: Path) -> Non
     child = StaticContext.for_element(_element(module.root, "a"))
     assert root.default_collation == "urn:root"
     assert child.default_collation == "urn:a"
-    assert child.default_validation == "lax"
+    assert child.default_validation == "strip"
     assert child.input_type_annotations == "strip"
 
     for attribute, value, code in (
+        ("xsl:default-validation", "strict", "XTSE0020"),
+        ("xsl:default-validation", "lax", "XTSE0020"),
         ("xsl:default-validation", "sometimes", "XTSE0020"),
         ("xsl:input-type-annotations", "maybe", "XTSE0020"),
     ):
@@ -308,7 +311,8 @@ def test_imported_module_keeps_its_own_context(tmp_path: Path) -> None:
     principal = _module(
         tmp_path,
         f'<xsl:stylesheet version="3.0" xmlns:xsl="{XSLT_NS}" '
-        f'xmlns:doc="{DOC_NS}" xpath-default-namespace="urn:principal">'
+        f'xmlns:doc="{DOC_NS}" xmlns:other="{OTHER_NS}" '
+        f'xpath-default-namespace="urn:principal">'
         '<xsl:import href="imported.xsl"/>'
         '<xsl:include href="included.xsl"/>'
         '<xsl:variable name="principal" select="1"/>'
@@ -329,10 +333,12 @@ def test_imported_module_keeps_its_own_context(tmp_path: Path) -> None:
     assert context.variable("principal") is not None
     assert context.variable("included_private") is not None
     assert context.variable("imported_public") is not None
-    assert context.variable("imported_private") is None
+    assert context.variable("imported_private") is not None
     assert context.function(f"{{{OTHER_NS}}}included", 0) is not None
     assert context.function(f"{{{OTHER_NS}}}imported", 0) is not None
-    assert context.function(f"{{{OTHER_NS}}}hidden", 0) is None
+    assert context.function(f"{{{OTHER_NS}}}hidden", 0) is not None
+    private_call = compile_avt("{other:hidden()}", context)
+    assert private_call.parts[0].kind == "expression"
 
     assert imported.variable("imported_private") is not None
     assert imported.variable("principal") is None
@@ -343,9 +349,18 @@ def test_imported_module_keeps_its_own_context(tmp_path: Path) -> None:
 def test_package_components_default_to_private(tmp_path: Path) -> None:
     _write(
         tmp_path,
+        "plain.xsl",
+        f'<xsl:stylesheet version="3.0" xmlns:xsl="{XSLT_NS}" xmlns:doc="{OTHER_NS}">'
+        '<xsl:function name="doc:plain"><xsl:sequence select="3"/></xsl:function>'
+        '<xsl:variable name="plain_variable" select="3"/>'
+        "</xsl:stylesheet>",
+    )
+    _write(
+        tmp_path,
         "library.xsl",
         f'<xsl:package version="3.0" name="urn:library" '
         f'xmlns:xsl="{XSLT_NS}" xmlns:doc="{OTHER_NS}">'
+        '<xsl:include href="plain.xsl"/>'
         '<xsl:function name="doc:internal">'
         '<xsl:sequence select="1"/>'
         "</xsl:function>"
@@ -354,6 +369,7 @@ def test_package_components_default_to_private(tmp_path: Path) -> None:
         "</xsl:function>"
         '<xsl:variable name="private_variable" select="1"/>'
         '<xsl:param name="public_param" select="1"/>'
+        '<xsl:param name="static_param" select="1" static="yes"/>'
         "</xsl:package>",
     )
     principal = _module(
@@ -366,10 +382,21 @@ def test_package_components_default_to_private(tmp_path: Path) -> None:
     context = StaticContext.for_module(principal)
     library = StaticContext.for_module(principal.imports[0])
 
-    assert context.function(f"{{{OTHER_NS}}}internal", 0) is None
+    internal = context.function(f"{{{OTHER_NS}}}internal", 0)
+    assert internal is not None
+    assert internal.visibility == "private"
     assert context.function(f"{{{OTHER_NS}}}public", 0) is not None
-    assert context.variable("private_variable") is None
+    plain = context.function(f"{{{OTHER_NS}}}plain", 0)
+    assert plain is not None
+    assert plain.visibility == "private"
+    assert context.variable("private_variable") is not None
+    assert context.variable("private_variable").visibility == "private"
+    assert context.variable("plain_variable") is not None
+    assert context.variable("plain_variable").visibility == "private"
     assert context.variable("public_param") is not None
+    assert context.variable("public_param").visibility == "public"
+    assert context.variable("static_param") is not None
+    assert context.variable("static_param").visibility == "private"
     assert library.function(f"{{{OTHER_NS}}}internal", 0) is not None
 
 
@@ -566,6 +593,10 @@ def test_context_validation_paths() -> None:
     with pytest.raises(XsltStaticError) as caught:
         StaticContext(default_validation="sometimes")
     assert _code(caught.value) == "XTSE0020"
+    for invalid_validation in ("strict", "lax"):
+        with pytest.raises(XsltStaticError) as caught:
+            StaticContext(default_validation=invalid_validation)
+        assert _code(caught.value) == "XTSE0020"
     with pytest.raises(XsltStaticError) as caught:
         StaticContext(input_type_annotations="sometimes")
     assert _code(caught.value) == "XTSE0020"
@@ -664,7 +695,7 @@ def test_context_source_nodes_synthetic_fallbacks(tmp_path: Path) -> None:
         xpath_default_namespace="urn:default",
         base_uri="urn:base",
         default_collation="urn:collation",
-        default_validation="lax",
+        default_validation="strip",
         input_type_annotations="strip",
         uri="urn:fallback",
         module="urn:module",
@@ -674,7 +705,7 @@ def test_context_source_nodes_synthetic_fallbacks(tmp_path: Path) -> None:
     assert inherited.xpath_default_namespace == "urn:default"
     assert inherited.base_uri == "urn:base"
     assert inherited.default_collation == "urn:collation"
-    assert inherited.default_validation == "lax"
+    assert inherited.default_validation == "strip"
     assert inherited.input_type_annotations == "strip"
     assert inherited.uri == "urn:fallback"
     assert inherited.module == "urn:module"
@@ -719,7 +750,7 @@ def test_context_module_symbol_precedence_and_declaration_edges(tmp_path: Path) 
         f'<xsl:stylesheet version="3.0" xmlns:xsl="{XSLT_NS}" xmlns:doc="{DOC_NS}">'
         '<xsl:variable name="imported" select="3" as="xs:string"/>'
         '<xsl:variable name="shared" select="3" as="xs:string"/>'
-        '<xsl:function name="doc:hidden" visibility="hidden">'
+        '<xsl:function name="doc:hidden" visibility="private">'
         '<xsl:sequence select="3"/>'
         "</xsl:function>"
         "</xsl:stylesheet>",
@@ -751,7 +782,9 @@ def test_context_module_symbol_precedence_and_declaration_edges(tmp_path: Path) 
     assert context.variable("imported") is not None
     assert str(context.variable("imported").sequence_type) == "xs:integer"
     assert str(context.variable("shared").sequence_type) == "xs:boolean"
-    assert context.function(f"{{{DOC_NS}}}hidden", 0) is None
+    hidden = context.function(f"{{{DOC_NS}}}hidden", 0)
+    assert hidden is not None
+    assert hidden.visibility == "private"
 
 
 def test_context_declarations_with_names_edge_cases(tmp_path: Path) -> None:
@@ -843,8 +876,8 @@ def test_context_expand_text_no_and_empty_defaults(tmp_path: Path) -> None:
     assert StaticContext.for_element(_element(module.root, "a")).default_collation is None
 
     context = StaticContext.for_module(module)
-    changed = context.with_default_validation("strict").with_input_type_annotations("preserve")
-    assert changed.default_validation == "strict"
+    changed = context.with_default_validation("preserve").with_input_type_annotations("preserve")
+    assert changed.default_validation == "preserve"
     assert changed.input_type_annotations == "preserve"
 
 

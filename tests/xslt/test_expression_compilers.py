@@ -29,7 +29,11 @@ from pyxsd.xslt.compiler.expressions import (
     compile_xpath,
 )
 from pyxsd.xslt.compiler.modules import ModuleLoader
-from pyxsd.xslt.compiler.static import EffectiveModule, StaticPreprocessor
+from pyxsd.xslt.compiler.static import (
+    EffectiveElement,
+    EffectiveModule,
+    StaticPreprocessor,
+)
 from pyxsd.xslt.errors import XsltStaticError
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -69,6 +73,13 @@ def _context(
             _stylesheet(body, attributes=attributes, doc_namespace=doc_namespace),
         )
     )
+
+
+def _element(root: EffectiveElement, local_name: str) -> EffectiveElement:
+    for descendant in root.descendants:
+        if isinstance(descendant, EffectiveElement) and descendant.local_name == local_name:
+            return descendant
+    raise AssertionError(f"no element {local_name!r}")
 
 
 def _code(exc: BaseException) -> str | None:
@@ -161,6 +172,10 @@ def test_avt_nested_braces_quotes_and_comments(tmp_path: Path) -> None:
 
     assert compile_avt("{}", context).parts == ()
     assert compile_avt("a{}b", context).parts == (TemplatePart(kind="text", text="ab"),)
+    assert compile_avt("{ (: :) }", context).parts == ()
+    assert compile_avt("a{ (: x (: y :) :) }b", context).parts == (
+        TemplatePart(kind="text", text="ab"),
+    )
     assert compile_avt("", context).parts == ()
 
 
@@ -195,12 +210,49 @@ def test_tvt_expand_text_semantics(tmp_path: Path) -> None:
     assert compile_tvt("{{2+2}}", context.with_expand_text(True)).parts[0].text == "{2+2}"
     assert compile_tvt("{{2+2}}", context, expand_text=False).parts[0].text == "{{2+2}}"
     assert compile_tvt("", context, expand_text=True).parts == ()
+    assert compile_tvt("{ (: :) }", context, expand_text=True).parts == ()
+    assert compile_tvt("{ (: a (: b :) c :) }", context, expand_text=True).parts == ()
 
     effective = compile_tvt("x", context, expand_text=True).with_expand_text(False)
     assert effective.expand_text is False
     with pytest.raises(XsltStaticError) as caught:
         compile_tvt("{$price", context.with_expand_text(True))
     assert _code(caught.value) == "XTSE0350"
+
+
+def test_xsl_text_content_follows_effective_expand_text(tmp_path: Path) -> None:
+    expanded = _module(
+        tmp_path,
+        _stylesheet(
+            '<xsl:template match="/" expand-text="yes"><xsl:text>{1 + 2}</xsl:text></xsl:template>'
+        ),
+    )
+    text_element = _element(expanded.root, "text")
+    content = text_element.children[0]
+    assert not isinstance(content, EffectiveElement)
+    expanded_context = StaticContext.for_element(
+        text_element, parent=StaticContext.for_module(expanded)
+    )
+    assert expanded_context.expand_text is True
+    compiled = compile_tvt(content.value, expanded_context)
+    assert compiled.parts[0].kind == "expression"
+    assert compiled.parts[0].text == "1 + 2"
+
+    literal = _module(
+        tmp_path,
+        _stylesheet(
+            '<xsl:template match="/" expand-text="no"><xsl:text>{1 + 2}</xsl:text></xsl:template>'
+        ),
+        name="literal.xsl",
+    )
+    literal_element = _element(literal.root, "text")
+    literal_content = literal_element.children[0]
+    assert not isinstance(literal_content, EffectiveElement)
+    literal_context = StaticContext.for_element(
+        literal_element, parent=StaticContext.for_module(literal)
+    )
+    assert literal_context.expand_text is False
+    assert compile_tvt(literal_content.value, literal_context).parts[0].text == "{1 + 2}"
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +308,10 @@ def test_sequence_type_element_and_attribute_tests(tmp_path: Path) -> None:
     cases = {
         "element()": "element()",
         "element(*)": "element(*)",
+        "element(doc:*)": "element(doc:*)",
+        "element(*:item)": "element(*:item)",
+        "element(Q{urn:example}*)": "element(Q{urn:example}*)",
+        "element(Q{}*)": "element(Q{}*)",
         "element(doc:item)": "element(doc:item)",
         "element(item)": "element(item)",
         "element(*, xs:untyped)": "element(*, xs:untyped)",
@@ -264,6 +320,9 @@ def test_sequence_type_element_and_attribute_tests(tmp_path: Path) -> None:
         "element(doc:item, xs:untyped)?": "element(doc:item, xs:untyped)?",
         "attribute()": "attribute()",
         "attribute(*)": "attribute(*)",
+        "attribute(doc:*)": "attribute(doc:*)",
+        "attribute(*:code)": "attribute(*:code)",
+        "attribute(Q{urn:example}*)": "attribute(Q{urn:example}*)",
         "attribute(doc:code)": "attribute(doc:code)",
         "attribute(code)": "attribute(code)",
         "attribute(doc:code, xs:int)": "attribute(doc:code, xs:int)",
@@ -285,14 +344,32 @@ def test_sequence_type_element_and_attribute_tests(tmp_path: Path) -> None:
     assert defaulted_attribute is not None
     assert defaulted_attribute.name == "code"
 
+    namespace_wildcard = compile_sequence_type("element(doc:*)", context).item_type
+    assert namespace_wildcard is not None
+    assert namespace_wildcard.wildcard is True
+    assert namespace_wildcard.name is None
+    assert namespace_wildcard.namespace_uri == DOC_NS
+    local_wildcard = compile_sequence_type("element(*:item)", context).item_type
+    assert local_wildcard is not None
+    assert local_wildcard.wildcard is True
+    assert local_wildcard.name == "item"
+    assert local_wildcard.namespace_uri is None
+    eqname_wildcard = compile_sequence_type("element(Q{urn:example}*)", context).item_type
+    assert eqname_wildcard is not None
+    assert eqname_wildcard.namespace_uri == "urn:example"
+
     for source in (
         "attribute(doc:code, xs:anyType)",
         "element(doc:item,)",
         "attribute(doc:code, xs:int?)",
+        "element(*:*)",
     ):
         with pytest.raises(XsltStaticError) as caught:
             compile_sequence_type(source, context)
         assert _code(caught.value) in {"XPST0003", "XPST0051"}
+    with pytest.raises(XsltStaticError) as caught:
+        compile_sequence_type("element(nope:*)", context)
+    assert _code(caught.value) == "XPST0081"
 
 
 def test_sequence_type_document_and_schema_tests(tmp_path: Path) -> None:
@@ -414,6 +491,7 @@ def test_sequence_type_version_gating(tmp_path: Path) -> None:
         "namespace-node()",
         "(item())",
         "Q{urn:example}item",
+        "element(Q{urn:example}*)",
     ):
         with pytest.raises(XsltStaticError) as caught:
             compile_sequence_type(source, legacy)
@@ -570,6 +648,7 @@ def test_sequence_type_tokenizer_edges(tmp_path: Path) -> None:
         "(empty-sequence())",
         "map((item()), xs:string)",
         "element(,)",
+        "element(doc:)",
     ):
         with pytest.raises(XsltStaticError) as caught:
             compile_sequence_type(source, context)
