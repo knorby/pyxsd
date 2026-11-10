@@ -110,10 +110,6 @@ def _validate_version(
     return value.strip()
 
 
-def _xpath_version(version: str) -> str:
-    return "3.1" if Decimal(version) >= Decimal("3.0") else "2.0"
-
-
 def _normalise_arity(value: Any, name: str) -> FunctionArity:
     if isinstance(value, bool):
         raise ValueError(f"function arity for {name!r} must not be a boolean")
@@ -385,7 +381,7 @@ class StaticContext:
 
     @property
     def xpath_version(self) -> str:
-        return _xpath_version(self.version)
+        return LanguageProfile.from_options(self.profile, self.version).xpath_version
 
     @property
     def compatibility_mode(self) -> bool:
@@ -448,6 +444,11 @@ class StaticContext:
             # are represented by the smallest covering range.
             functions[name] = _arity_range(arities)
         for name, arity in xslt_function_declarations(self.version).items():
+            if self.xpath_version == "3.1" and name in ("fn:key", "fn:generate-id"):
+                # The XPath 3.1 parser already provides these; declaring them
+                # again would fail registration.  The bridge overrides their
+                # behavior at evaluation time.
+                continue
             functions.setdefault(name, arity)
         variable_types = {
             name: str(variable.sequence_type)
@@ -767,9 +768,7 @@ def _element_defaults(
         xpath_default = fallback.xpath_default_namespace if fallback is not None else None
 
     found, expand_value = _nearest_attribute(element, ("expand-text", _EXPAND_TEXT))
-    if Decimal(version) < Decimal("3.0"):
-        expand_text = False
-    elif found:
+    if found:
         expand_text = _parse_yes_no(expand_value or "", element, "expand-text")
     else:
         expand_text = fallback.expand_text if fallback is not None else False

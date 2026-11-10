@@ -462,9 +462,9 @@ def test_sequence_type_function_map_and_array_tests(tmp_path: Path) -> None:
         assert _code(caught.value) in {"XPST0003", "XPST0051"}
 
 
-def test_sequence_type_version_gating(tmp_path: Path) -> None:
+def test_sequence_type_uses_3_1_surface_for_2_0_effective_version(tmp_path: Path) -> None:
     legacy = _context(tmp_path).with_version("2.0")
-    assert legacy.xpath_version == "2.0"
+    assert legacy.xpath_version == "3.1"
     assert str(compile_sequence_type("item()*", legacy)) == "item()*"
     assert str(compile_sequence_type("element(doc:item, xs:string)", legacy)) == (
         "element(doc:item, xs:string)"
@@ -477,15 +477,15 @@ def test_sequence_type_version_gating(tmp_path: Path) -> None:
         "function(*)",
         "function(xs:string) as xs:string",
         "namespace-node()",
-        "(item())",
-        "Q{urn:example}item",
     ):
-        with pytest.raises(XsltStaticError) as caught:
-            compile_sequence_type(source, legacy)
-        assert _code(caught.value) == "XPST0003"
+        assert str(compile_sequence_type(source, legacy)) == source
 
     assert str(compile_sequence_type("function(*)", legacy.with_version("3.0"))) == ("function(*)")
     assert str(compile_sequence_type("map(*)", legacy.with_version("3.0"))) == "map(*)"
+    assert str(compile_sequence_type("(item())", legacy)) == "item()"
+    with pytest.raises(XsltStaticError) as caught:
+        compile_sequence_type("Q{urn:example}item", legacy)
+    assert _code(caught.value) == "XPST0051"
 
 
 def test_sequence_type_qname_and_type_errors(tmp_path: Path) -> None:
@@ -554,10 +554,8 @@ def test_compile_xpath_uses_context_version_and_wraps_errors(tmp_path: Path) -> 
     assert tuple(value.value for value in result) == (2,)
 
     legacy = context.with_version("2.0")
-    assert compile_xpath("1 + 1", legacy).version == "2.0"
-    with pytest.raises(XsltStaticError) as caught:
-        compile_xpath("map{1: 2}", legacy)
-    assert _code(caught.value) == "XPST0003"
+    assert compile_xpath("1 + 1", legacy).version == "3.1"
+    assert compile_xpath("map{1: 2}", legacy).version == "3.1"
 
     for source, code in (
         ("1 +", "XPST0003"),

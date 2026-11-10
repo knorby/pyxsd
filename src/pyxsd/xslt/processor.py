@@ -71,7 +71,12 @@ from pyxsd.xslt.compiler.patterns import (
     PatternMatcher,
     compile_pattern,
 )
-from pyxsd.xslt.compiler.static import EffectiveModule, StaticPreprocessor
+from pyxsd.xslt.compiler.static import (
+    EffectiveAttribute,
+    EffectiveElement,
+    EffectiveModule,
+    StaticPreprocessor,
+)
 from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltStaticError
 from pyxsd.xslt.profiles import RecoveryPolicy
 from pyxsd.xslt.results import (
@@ -998,18 +1003,38 @@ def _context_for(
     context = base.with_variables(variables).with_functions(functions)
     if context.default_collation is None and default_collation is not None:
         context = context.with_default_collation(default_collation)
-    context = context.with_namespaces(declaration.namespaces)
-    if declaration.base_uri is not None:
-        context = context.with_base_uri(declaration.base_uri)
-    if module.identity is not None:
-        context = context.with_uri(module.identity)
-    context = context.with_location(declaration.location)
-    expand_text = declaration.attribute("expand-text")
-    if expand_text is not None:
-        context = context.with_expand_text(
-            _yes_no(expand_text, declaration, "expand-text", context)
-        )
-    return context
+    return _instruction_context(context, declaration)
+
+
+def _instruction_context(
+    context: StaticContext,
+    instruction: Instruction,
+) -> StaticContext:
+    """Apply one instruction's nearest standard-attribute scope to *context*.
+
+    ``Instruction`` is already the normalized declaration view, so wrapping its
+    attributes in an :class:`~pyxsd.xslt.compiler.static.EffectiveElement` lets
+    the shared ``StaticContext.for_element`` implementation apply the nearest
+    ``[xsl:]version``, ``expand-text``, namespaces, base URI, and other standard
+    attributes without duplicating the precedence rules.
+    """
+    element = EffectiveElement(
+        name=instruction.name,
+        attributes=tuple(
+            EffectiveAttribute(name=attribute.name, value=attribute.value, static=attribute.static)
+            for attribute in instruction.attributes
+        ),
+        children=(),
+        raw=None,
+        base_uri=instruction.base_uri,
+        in_scope_namespaces=instruction.namespaces,
+        synthetic=True,
+    )
+    return StaticContext.for_element(
+        element,
+        parent=context,
+        location=instruction.location,
+    )
 
 
 def _context_item_signature(
@@ -1212,6 +1237,7 @@ def _compile_instruction(
     module: EffectiveModule,
 ) -> _Plan:
     exclusions = _exclusions(module)
+    context = _instruction_context(context, instruction)
     context = _original_context(context, instruction)
     location = instruction.location
     if instruction.literal:

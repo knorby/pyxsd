@@ -234,7 +234,7 @@ class Transformation:
             error.attach_diagnostics(frames, package=package)
             return error
         module, effective_package, location = self._boundary_identity(frames)
-        return XsltDynamicError(
+        wrapped = XsltDynamicError(
             str(error) or type(error).__name__,
             code=error_code_from_exception(error),
             uri=module,
@@ -245,6 +245,9 @@ class Transformation:
             cause=error,
             allow_catch=catchable,
         )
+        wrapped.__cause__ = error
+        wrapped.__suppress_context__ = True
+        return wrapped
 
     def _stylesheet_identity(self) -> tuple[str | None, str | None]:
         stylesheet = self.stylesheet

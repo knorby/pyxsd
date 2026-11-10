@@ -699,7 +699,12 @@ class XsltContextBridge:
             return local in builtin_type_classes() and arity in (None, 1)
         declared = _declared_arities(self.version).get(expanded)
         if declared is None:
-            declared = _native_function_arities(self.xpath_version).get(expanded)
+            # Availability remains keyed to the declared profile surface.  A
+            # 3.0 processor still evaluates these expressions with XPath 3.1,
+            # but the compatibility profile keeps its historical availability
+            # answer (for example, no random-number-generator under 2.0).
+            native_version = "3.1" if _version_at_least(self.version, "3.0") else "2.0"
+            declared = _native_function_arities(native_version).get(expanded)
         if _arity_matches(declared, arity):
             return True
         package = self._package()

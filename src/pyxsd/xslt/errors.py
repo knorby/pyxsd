@@ -82,11 +82,20 @@ def expanded_error_code(code: str | None) -> str | None:
 
 
 def error_code_from_exception(error: BaseException) -> str | None:
-    """Extract a specification error code from an exception without rewriting it."""
+    """Extract a specification error code from an exception without rewriting it.
+
+    Standard error-namespace codes are returned in their familiar local form.
+    A custom QName is preserved as an expanded name so an extension error in a
+    non-standard namespace can still match a coded ``xsl:catch``.
+    """
     raw = getattr(error, "code", None)
-    code = normalized_error_code(raw) if isinstance(raw, str) else None
-    if code:
-        return code
+    if isinstance(raw, str) and raw:
+        expanded = expanded_error_code(raw)
+        if expanded is not None:
+            prefix = f"{{{ERROR_NAMESPACE}}}"
+            if expanded.startswith(prefix):
+                return expanded[len(prefix) :]
+            return expanded
     match = _ERROR_CODE.search(str(error))
     return None if match is None else match.group(1)
 
@@ -260,10 +269,10 @@ class XsltError(PyXSDError):
             elif frames and frames[-1].location is not None:
                 self.module = frames[-1].location.source
         if self.package is None:
-            if package is not None:
-                self.package = package
-            elif frames and frames[-1].package is not None:
+            if frames and frames[-1].package is not None:
                 self.package = frames[-1].package
+            elif package is not None:
+                self.package = package
         if self.phase is None:
             self.phase = "dynamic"
         if self.location is None and frames:

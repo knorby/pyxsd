@@ -134,10 +134,10 @@ def test_context_version_scoping_and_validation(tmp_path: Path) -> None:
     assert StaticContext.for_element(module.root).version == "3.0"
     assert StaticContext.for_element(outer).version == "3.0"
     assert StaticContext.for_element(inner).version == "2.0"
-    assert StaticContext.for_element(inner).xpath_version == "2.0"
+    assert StaticContext.for_element(inner).xpath_version == "3.1"
     assert StaticContext.for_element(inner).compatibility_mode is False
     assert StaticContext.for_element(deep).version == "2.0"
-    assert StaticContext.for_element(deep).xpath_version == "2.0"
+    assert StaticContext.for_element(deep).xpath_version == "3.1"
 
     backwards = _module(
         tmp_path,
@@ -146,7 +146,7 @@ def test_context_version_scoping_and_validation(tmp_path: Path) -> None:
     )
     context = StaticContext.for_element(backwards.root)
     assert context.version == "1.0"
-    assert context.xpath_version == "2.0"
+    assert context.xpath_version == "3.1"
     assert context.compatibility_mode is True
 
     invalid = _module(
@@ -190,7 +190,7 @@ def test_context_expand_text_scoping_and_invalid_values(tmp_path: Path) -> None:
         '<xsl:template match="/"/></xsl:stylesheet>',
         name="legacy.xsl",
     )
-    assert StaticContext.for_element(legacy.root).expand_text is False
+    assert StaticContext.for_element(legacy.root).expand_text is True
 
 
 def test_context_default_collation_and_validation_scoping(tmp_path: Path) -> None:
@@ -481,7 +481,7 @@ def test_context_with_methods_are_immutable(tmp_path: Path) -> None:
     profile = ProfileOptions(processor_profile="xslt-2.0", schema_aware=False)
     profiled = context.with_profile(profile)
     assert profiled.profile is profile
-    assert profiled.xpath_version == "3.1"
+    assert profiled.xpath_version == "2.0"
 
     schema = SchemaPool()
     with_schema = context.with_schema(schema)

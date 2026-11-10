@@ -18,6 +18,7 @@ from elementpath.exceptions import ElementPathError
 from pyxsd.exceptions import PyXSDError, XPathError
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.xslt import XsltProcessor
+from pyxsd.xslt.compiler.packages import PackageResolver
 from pyxsd.xslt.errors import (
     ERROR_NAMESPACE,
     XsltDynamicError,
@@ -88,7 +89,15 @@ def test_error_code_from_exception_uses_code_then_message() -> None:
     class Coded(Exception):
         code = "err:XPTY0004"
 
+    class BlankCode(Exception):
+        code = " "
+
+    class NumericCode(Exception):
+        code = 3
+
     assert error_code_from_exception(Coded("ignored")) == "XPTY0004"
+    assert error_code_from_exception(BlankCode("[err:XTDE0420] failed")) == "XTDE0420"
+    assert error_code_from_exception(NumericCode("[err:XPTY0004] failed")) == "XPTY0004"
     assert error_code_from_exception(RuntimeError("failed [err:XTDE0420]")) == "XTDE0420"
     assert error_code_from_exception(RuntimeError("plain failure")) is None
 
@@ -221,6 +230,43 @@ def test_dynamic_xslt_error_has_frame_stack_and_source_identity(
     identities = [frame.identity for frame in error.stack]
     assert "template main" in identities
     assert "template boom" in identities
+
+
+def test_used_package_error_reports_the_library_package(tmp_path: Path) -> None:
+    library = tmp_path / "library.xsl"
+    library.write_text(
+        f"""<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:library="urn:library"
+              name="urn:library" package-version="1.0" version="3.0">
+              <xsl:template name="library:boom" visibility="public">
+                <xsl:sequence select="document('urn:missing')"/>
+              </xsl:template>
+            </xsl:package>""",
+        encoding="utf-8",
+    )
+    principal = tmp_path / "principal.xsl"
+    principal.write_text(
+        f"""<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:library="urn:library"
+              name="urn:principal" version="3.0">
+              <xsl:use-package name="urn:library" package-version="1.0"/>
+              <xsl:template name="main" visibility="public">
+                <xsl:call-template name="library:boom"/>
+                <xsl:value-of select="'after'"/>
+              </xsl:template>
+            </xsl:package>""",
+        encoding="utf-8",
+    )
+    resolver = PackageResolver.from_sources(library)
+    compiled = XsltProcessor(resolver=resolver).compile(principal)
+
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(initial_template="main", delivery="document")
+
+    error = caught.value
+    assert error.code == "FODC0002"
+    assert error.package == "urn:library"
+    assert error.module == str(library)
+    assert error.stack[0].package == "urn:principal"
+    assert error.stack[-1].package == "urn:library"
 
 
 def test_xpath_failure_identity_is_preserved_until_a_boundary_wraps_it(
@@ -476,6 +522,7 @@ def test_callback_failure_is_wrapped_with_its_cause_at_an_extension_boundary() -
     error = transformation.boundary_error(original, stack=(frame,))
     assert isinstance(error, XsltDynamicError)
     assert error.cause is original
+    assert error.__cause__ is original
     assert error.code == "XPTY0004"
     assert error.stack == (frame,)
     assert error.stack[-1].identity == "instruction select"
@@ -484,10 +531,26 @@ def test_callback_failure_is_wrapped_with_its_cause_at_an_extension_boundary() -
     assert error.uri == "file:///module.xsl"
     assert error.catchable is False
     assert transformation.recover(error, DOCUMENT_RETRIEVAL) is False
-    try:
-        raise error from original
-    except XsltDynamicError as raised:
-        assert raised.__cause__ is original
+
+
+def test_custom_error_qname_survives_extension_boundary_wrapping() -> None:
+    class CustomFailure(Exception):
+        code = "Q{urn:custom}E1"
+
+    original = CustomFailure("custom extension failure")
+    transformation = Transformation()
+    wrapped = transformation.boundary_error(original, catchable=True)
+    assert isinstance(wrapped, XsltDynamicError)
+    assert wrapped.code == "{urn:custom}E1"
+    assert wrapped.expanded_code == "{urn:custom}E1"
+    assert wrapped.cause is original
+    assert wrapped.__cause__ is original
+    assert wrapped.matches_catch(["Q{urn:custom}E1"])
+    assert wrapped.matches_catch(["{urn:custom}E1"])
+    assert wrapped.matches_catch(["x:E1"], namespaces={"x": "urn:custom"})
+    assert wrapped.matches_catch(["x:*"], namespaces={"x": "urn:custom"})
+    assert not wrapped.matches_catch(["err:*"])
+    assert not wrapped.matches_catch(["err:E1"])
 
 
 def test_boundary_keeps_xslt_error_identity_and_attaches_context() -> None:

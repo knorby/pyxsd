@@ -304,6 +304,56 @@ def test_2_0_effective_version_uses_normal_3_0_conversions() -> None:
     assert attribute_value(attribute, "value") == "1 2 3"
 
 
+def test_nested_version_scopes_value_of_and_avt_conversions() -> None:
+    result = transform(
+        """
+        <xsl:template name="main">
+          <first><xsl:value-of xsl:version="1.0" select="(1, 2, 3)"/></first>
+          <second><xsl:value-of select="(1, 2, 3)"/></second>
+        </xsl:template>
+        """,
+        version="3.0",
+        delivery="document",
+    )
+    first, second = result.principal
+    assert element_text(first) == "1"
+    assert element_text(second) == "1 2 3"
+
+    attributes = transform(
+        """
+        <xsl:template name="main">
+          <one xsl:version="1.0" value="{(1, 2, 3)}"/>
+          <two value="{(1, 2, 3)}"/>
+        </xsl:template>
+        """,
+        version="3.0",
+        delivery="document",
+    )
+    one, two = attributes.principal
+    assert attribute_value(one, "value") == "1"
+    assert attribute_value(two, "value") == "1 2 3"
+
+
+def test_2_0_effective_version_keeps_the_xpath_3_1_surface() -> None:
+    for version in ("1.0", "2.0"):
+        result = transform(
+            "<xsl:template name=\"main\"><xsl:sequence select=\"'a' || 'b'\"/></xsl:template>",
+            version=version,
+        )
+        assert result.principal == (XdmAtomic.string("ab"),)
+
+
+def test_2_0_effective_version_keeps_expand_text_enabled() -> None:
+    result = transform(
+        '<xsl:template name="main"><out>{ 1 + 1 }</out></xsl:template>',
+        version="2.0",
+        attributes=' expand-text="yes"',
+        delivery="document",
+    )
+    element = result.principal_tree.children[0]
+    assert element_text(element) == "2"
+
+
 def test_1_0_compatibility_does_not_leak_native_profile_features() -> None:
     result = transform(
         """
