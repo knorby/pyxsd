@@ -499,6 +499,8 @@ def test_static_helpers_cover_ebv_and_string_values(tmp_path: Path) -> None:
     assert _ebv((XdmAtomic.double(float("nan")),), node) is False
     assert _ebv((XdmAtomic.string("x"),), node) is True
     assert _ebv((XdmAtomic.string(""),), node) is False
+    assert _ebv((XdmAtomic.any_uri("x"),), node) is True
+    assert _ebv((XdmAtomic.any_uri(""),), node) is False
     with pytest.raises(XsltStaticError) as caught:
         _ebv((XdmAtomic.integer(1), XdmAtomic.integer(2)), node)
     assert caught.value.code == "XPTY0004"
@@ -1175,8 +1177,13 @@ def test_function_available_checks_arity_and_added_functions(tmp_path: Path) -> 
     xml = _stylesheet(
         '<xsl:template name="t" use-when="'
         "function-available('fn:concat', 2) "
-        "and not(function-available('fn:concat', 99)) "
+        "and function-available('fn:concat', 33) "
+        "and function-available('fn:concat', 99) "
         "and not(function-available('fn:true', 1)) "
+        "and function-available('fn:abs', 1) "
+        "and function-available('fn:avg', 1) "
+        "and function-available('fn:data', 1) "
+        "and not(function-available('fn:data', 0)) "
         "and function-available('fn:static-base-uri') "
         "and function-available('fn:parse-xml') "
         "and function-available('fn:json-to-xml')"
@@ -1292,3 +1299,33 @@ def test_static_variable_without_select_is_xtse0010(tmp_path: Path) -> None:
         _effective(tmp_path, xml)
 
     assert caught.value.code == "XTSE0010"
+
+
+def test_static_variable_select_uses_own_xpath_default_namespace(
+    tmp_path: Path,
+) -> None:
+    xml = _stylesheet(
+        '<xsl:variable name="v" static="yes" '
+        f'xpath-default-namespace="{XSLT_NS}" '
+        "select=\"element-available('template')\"/>"
+        '<xsl:template name="t" use-when="$v"/>'
+    )
+
+    effective = _effective(tmp_path, xml)
+
+    assert effective.find("t") is not None
+
+
+def test_static_variable_select_uses_own_shadow_xpath_default_namespace(
+    tmp_path: Path,
+) -> None:
+    xml = _stylesheet(
+        '<xsl:variable name="v" static="yes" '
+        f'_xpath-default-namespace="{{{XSLT_NS!r}}}" '
+        "select=\"element-available('template')\"/>"
+        '<xsl:template name="t" use-when="$v"/>'
+    )
+
+    effective = _effective(tmp_path, xml)
+
+    assert effective.find("t") is not None

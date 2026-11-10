@@ -22,8 +22,11 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
 from types import MappingProxyType
 from typing import Any, Literal, TypeAlias
+
+from elementpath.xpath3 import XPath31Parser
 
 from pyxsd import __version__
 from pyxsd.locations import IssueLocation
@@ -38,6 +41,9 @@ XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 FN_NS = "http://www.w3.org/2005/xpath-functions"
+_MAP_NS = "http://www.w3.org/2005/xpath-functions/map"
+_ARRAY_NS = "http://www.w3.org/2005/xpath-functions/array"
+_MATH_NS = "http://www.w3.org/2005/xpath-functions/math"
 
 _STYLESHEET = f"{{{XSLT_NS}}}stylesheet"
 _TEMPLATE = f"{{{XSLT_NS}}}template"
@@ -215,155 +221,52 @@ _KNOWN_XSD_TYPES = frozenset(
     }
 )
 
-_FN_FUNCTIONS: Mapping[str, int | tuple[int, int | None]] = MappingProxyType(
+_XSLT_FUNCTION_ARITIES: Mapping[str, int | tuple[int, int | None]] = MappingProxyType(
     {
         "available-system-properties": 0,
-        "base-uri": (0, 1),
-        "boolean": 1,
-        "codepoint-equal": 2,
-        "codepoints-to-string": 1,
-        "collection": (0, 1),
-        "compare": (2, 3),
-        "concat": (2, None),
-        "contains": (2, 3),
-        "contains-token": (2, 3),
-        "count": 1,
         "current": 0,
-        "current-date": 0,
-        "current-dateTime": 0,
         "current-group": 0,
         "current-grouping-key": 0,
-        "current-time": 0,
-        "data": (0, 1),
-        "doc": (1, 2),
         "document": (1, 2),
-        "document-uri": (0, 1),
         "element-available": 1,
-        "empty": 1,
-        "ends-with": (2, 3),
-        "error": (0, 3),
-        "exists": 1,
-        "false": 0,
-        "format-date": (2, 5),
-        "format-dateTime": (2, 5),
-        "format-number": (2, 3),
-        "format-time": (2, 5),
         "function-available": (1, 2),
-        "generate-id": (0, 1),
-        "json-to-xml": (1, 2),
         "key": (2, 3),
-        "last": 0,
-        "local-name": (0, 1),
-        "lower-case": 1,
-        "matches": (2, 3),
-        "name": (0, 1),
-        "namespace-uri": (0, 1),
-        "node-name": (0, 1),
-        "nilled": (0, 1),
-        "normalize-space": (0, 1),
-        "not": 1,
-        "number": (0, 1),
-        "parse-xml": 1,
-        "parse-xml-fragment": 1,
-        "position": 0,
-        "replace": (3, 4),
-        "resolve-uri": (1, 2),
-        "reverse": 1,
-        "root": (0, 1),
-        "round": (1, 2),
-        "serialize": (1, 2),
-        "static-base-uri": 0,
-        "starts-with": (2, 3),
-        "string": (0, 1),
-        "string-join": (1, 2),
-        "string-length": (0, 1),
-        "string-to-codepoints": 1,
-        "subsequence": (2, 3),
-        "substring": (2, 3),
-        "substring-after": (2, 3),
-        "substring-before": (2, 3),
-        "sum": (1, 2),
         "system-property": 1,
-        "tokenize": (1, 3),
-        "translate": 3,
-        "true": 0,
         "type-available": 1,
         "unparsed-entity-uri": 1,
-        "unparsed-text": (1, 2),
-        "unparsed-text-available": (1, 2),
-        "upper-case": 1,
-        "uri-collection": (0, 1),
-        "xml-to-json": (1, 2),
     }
 )
 
-_MAP_NS = "http://www.w3.org/2005/xpath-functions/map"
-_ARRAY_NS = "http://www.w3.org/2005/xpath-functions/array"
-_MATH_NS = "http://www.w3.org/2005/xpath-functions/math"
 
-_MAP_FUNCTIONS: Mapping[str, int | tuple[int, int | None]] = MappingProxyType(
-    {
-        "contains": 2,
-        "entry": 2,
-        "find": 2,
-        "for-each": 2,
-        "get": 2,
-        "keys": 1,
-        "merge": (1, 2),
-        "put": 3,
-        "remove": 2,
-        "size": 1,
-    }
-)
-_ARRAY_FUNCTIONS: Mapping[str, int | tuple[int, int | None]] = MappingProxyType(
-    {
-        "append": 2,
-        "filter": 2,
-        "flatten": (1, 2),
-        "fold-left": 3,
-        "fold-right": 3,
-        "for-each": 2,
-        "for-each-pair": 3,
-        "get": 2,
-        "head": 1,
-        "insert-before": 3,
-        "join": 1,
-        "put": 3,
-        "remove": 2,
-        "reverse": 1,
-        "size": 1,
-        "sort": (1, 3),
-        "subarray": (2, 3),
-        "tail": 1,
-    }
-)
-_MATH_FUNCTIONS: Mapping[str, int | tuple[int, int | None]] = MappingProxyType(
-    {
-        "acos": 1,
-        "asin": 1,
-        "atan": 1,
-        "atan2": 2,
-        "cos": 1,
-        "exp": 1,
-        "exp10": 1,
-        "log": 1,
-        "log10": 1,
-        "pi": 0,
-        "pow": 2,
-        "sin": 1,
-        "sqrt": 1,
-        "tan": 1,
-    }
-)
+@lru_cache(maxsize=1)
+def _evaluator_function_arities() -> Mapping[str, int | tuple[int, int | None]]:
+    """Derive availability from the XPath parser surface actually used here.
 
-_FUNCTION_TABLES: Mapping[str, Mapping[str, int | tuple[int, int | None]]] = MappingProxyType(
-    {
-        FN_NS: _FN_FUNCTIONS,
-        _MAP_NS: _MAP_FUNCTIONS,
-        _ARRAY_NS: _ARRAY_FUNCTIONS,
-        _MATH_NS: _MATH_FUNCTIONS,
-    }
-)
+    The static evaluator runs through the installed XPath 3.1 parser, so its
+    symbol table is the authoritative built-in function surface.  Only the
+    XSLT additions that are not in the pure XPath parser are supplied by hand.
+    """
+    parser = XPath31Parser()
+    table: dict[str, int | tuple[int, int | None]] = {}
+    for symbol, token in parser.symbol_table.items():
+        nargs = getattr(token, "nargs", None)
+        if nargs is None:
+            continue
+        label = str(getattr(token, "label", ""))
+        if "function" not in label:
+            continue
+        namespace = getattr(token, "namespace", None)
+        if namespace is None:
+            if label == "constructor function":
+                continue
+            namespace = FN_NS
+        expanded = symbol if symbol.startswith("{") else f"{{{namespace}}}{symbol}"
+        table[expanded] = nargs
+    table[f"{{{FN_NS}}}data"] = 1
+    for local, arity in _XSLT_FUNCTION_ARITIES.items():
+        table[f"{{{FN_NS}}}{local}"] = arity
+    return MappingProxyType(table)
+
 
 _EBV_STRING_TYPES = frozenset(
     {
@@ -376,6 +279,7 @@ _EBV_STRING_TYPES = frozenset(
         "NMTOKEN",
         "NMTOKENS",
         "Name",
+        "anyURI",
         "language",
         "normalizedString",
         "string",
@@ -629,6 +533,7 @@ class EffectiveElement:
     in_scope_namespaces: Mapping[str, str] = field(default_factory=dict)
     namespace_declarations: tuple[tuple[str, str | None], ...] = ()
     synthetic: bool = False
+    xpath_default_namespace: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.in_scope_namespaces, MappingProxyType):
@@ -901,9 +806,6 @@ def _system_property(name: str) -> str:
     return _SYSTEM_PROPERTIES.get(name, "")
 
 
-_VARIADIC_ARITY_CEILING = 32
-
-
 def _arity_matches(
     spec: int | tuple[int, int | None] | None,
     arity: int | None,
@@ -915,8 +817,7 @@ def _arity_matches(
     if isinstance(spec, int):
         return arity == spec
     minimum, maximum = spec
-    effective_maximum = _VARIADIC_ARITY_CEILING if maximum is None else maximum
-    return minimum <= arity <= effective_maximum
+    return minimum <= arity and (maximum is None or arity <= maximum)
 
 
 class _StaticEvaluator:
@@ -980,10 +881,7 @@ class _StaticEvaluator:
             return False
         if expanded.startswith(f"{{{XSD_NS}}}"):
             return _local_name(expanded) in _KNOWN_XSD_TYPES and arity in (None, 1)
-        for namespace, table in _FUNCTION_TABLES.items():
-            if expanded.startswith(f"{{{namespace}}}"):
-                return _arity_matches(table.get(_local_name(expanded)), arity)
-        return False
+        return _arity_matches(_evaluator_function_arities().get(expanded), arity)
 
     def _element_available(
         self, name: str, element: XdmNode, default_namespace: str | None
@@ -1225,6 +1123,7 @@ class _Apply:
             base_uri=raw_root.base_uri,
             in_scope_namespaces=raw_root.in_scope_namespaces,
             namespace_declarations=raw_root.namespace_declarations,
+            xpath_default_namespace=effective_default,
         )
         return root, tuple(graph.includes), tuple(graph.imports)
 
@@ -1322,6 +1221,7 @@ class _Apply:
             base_uri=raw.base_uri,
             in_scope_namespaces=raw.in_scope_namespaces,
             namespace_declarations=raw.namespace_declarations,
+            xpath_default_namespace=effective_default,
         )
 
     def _process_children(
@@ -1365,7 +1265,7 @@ class _Apply:
                     raw,
                     element,
                     precedence,
-                    default_namespace,
+                    element.xpath_default_namespace,
                 )
                 if graph is not None and raw.name in {
                     f"{{{XSLT_NS}}}include",
