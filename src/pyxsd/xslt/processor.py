@@ -2931,6 +2931,7 @@ class _Invocation(Transformation):
                 {},
                 package_name,
                 referenced=_pattern_variable_names(pattern),
+                static_context=pattern.context,
             )
             self._pattern_environments[key] = environment
         return environment
@@ -4262,6 +4263,7 @@ class _Invocation(Transformation):
         original_functions: Mapping[int, Component] | None = None,
         focus: Focus | None = None,
         expression: CompiledExpression | None = None,
+        static_context: StaticContext | None = None,
     ) -> ExpressionEnvironment:
         variables: dict[str, Any] = {}
         package = self.stylesheet._packages.get(package_name) or self.package
@@ -4295,6 +4297,7 @@ class _Invocation(Transformation):
             package_name,
             Focus.absent() if focus is None else focus,
             expression,
+            static_context,
         )
         overrides: dict[str, Any] = dict(bridge.function_overrides())
         return ExpressionEnvironment(
@@ -4322,9 +4325,14 @@ class _Invocation(Transformation):
         package_name: str | None,
         focus: Focus,
         expression: CompiledExpression | None,
+        static_context: StaticContext | None = None,
     ) -> XsltContextBridge:
         package = self.stylesheet._packages.get(package_name) or self.package
-        static = None if expression is None else expression.static_context
+        static = (
+            static_context
+            if static_context is not None
+            else (None if expression is None else expression.static_context)
+        )
         return XsltContextBridge(
             self,
             package_name=package_name,
@@ -4334,6 +4342,11 @@ class _Invocation(Transformation):
             default_namespace=None if static is None else static.default_namespace,
             base_uri=None if static is None else static.base_uri,
             xpath_version="3.1" if expression is None else expression.version,
+            xslt_version=(
+                None
+                if static is None
+                else getattr(static, "xslt_version", None) or getattr(static, "version", None)
+            ),
             key_lookup=self._key_override_for(package_name),
         )
 

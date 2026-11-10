@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Any, Literal, NoReturn, TypeAlias, cast
 from urllib.parse import urljoin
 
@@ -1028,6 +1029,50 @@ def _rewrite_current(source: str, context: StaticContext, location: IssueLocatio
     return "".join(pieces)
 
 
+def _function_local_name(name: str, context: StaticContext) -> str | None:
+    if name.startswith("Q{"):
+        close = name.find("}")
+        if close >= 0 and name[2:close] == FN_NS:
+            return name[close + 1 :]
+        return None
+    prefix, separator, local = name.partition(":")
+    if not separator:
+        return name
+    return local if context.namespaces.get(prefix) == FN_NS else None
+
+
+_PATTERN_FORBIDDEN_FUNCTIONS: Mapping[str, str] = MappingProxyType(
+    {
+        "current-group": "XTSE1060",
+        "current-grouping-key": "XTSE1070",
+        "current-merge-group": "XTSE3470",
+        "current-merge-key": "XTSE3500",
+    }
+)
+
+
+def _reject_pattern_context_functions(
+    source: str,
+    context: StaticContext,
+    location: IssueLocation | None,
+) -> None:
+    """Report XSLT context-dependent functions that patterns cannot use."""
+    tokens = _Scanner(source, context, location).scan()
+    for index, token in enumerate(tokens[:-1]):
+        if token.kind != "name":
+            continue
+        local = _function_local_name(token.value, context)
+        code = _PATTERN_FORBIDDEN_FUNCTIONS.get(local or "")
+        if code is None or tokens[index + 1].value not in ("(", "#"):
+            continue
+        raise _static_error(
+            context,
+            f"{token.value} is not available in a pattern",
+            code,
+            location=location,
+        )
+
+
 def _is_current_function_name(name: str, context: StaticContext) -> bool:
     if name == "current":
         return True
@@ -1050,6 +1095,7 @@ def _compile_expression(
             "XPST0003",
             location=location,
         )
+    _reject_pattern_context_functions(source, context, location)
     static_context = context.xpath_static_context()
     variable_types = dict(static_context.variable_types)
     variable_types[_CURRENT_VARIABLE] = "item()"
@@ -1064,6 +1110,7 @@ def _compile_expression(
         base_uri=static_context.base_uri,
         default_collation=static_context.default_collation,
         xsd_version=static_context.xsd_version,
+        xslt_version=static_context.xslt_version,
     )
     rewritten = _rewrite_current(source, context, location)
     engine = XPathEngine(context.xpath_version)
@@ -2120,11 +2167,13 @@ def _evaluate(
     local = ExpressionEnvironment(
         variables=variables,
         functions=environment.functions,
+        function_overrides=environment.function_overrides,
         key_indexes=environment.key_indexes,
         documents=environment.documents,
         collections=environment.collections,
         default_collection=environment.default_collection,
         text_resources=environment.text_resources,
+        decimal_formats=environment.decimal_formats,
         current_datetime=environment.current_datetime,
         implicit_timezone=environment.implicit_timezone,
         base_uri=environment.base_uri,

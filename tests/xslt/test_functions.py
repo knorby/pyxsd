@@ -284,7 +284,7 @@ def test_generate_id_argument_and_context_error_arms() -> None:
         <xsl:template name="main"><xsl:sequence select="generate-id()"/></xsl:template>
         """
     )
-    assert transform(absent, initial_template="main").principal == (XdmAtomic.string(""),)
+    assert error_code(lambda: transform(absent, initial_template="main")) == "XPDY0002"
 
     non_node = stylesheet(
         """

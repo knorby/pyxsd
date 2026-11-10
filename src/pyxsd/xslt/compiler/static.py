@@ -26,6 +26,7 @@ from functools import lru_cache
 from types import MappingProxyType
 from typing import Any, Literal, TypeAlias
 
+from elementpath.xpath2 import XPath2Parser
 from elementpath.xpath3 import XPath31Parser
 
 from pyxsd.locations import IssueLocation
@@ -36,13 +37,11 @@ from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticCon
 from pyxsd.xslt.compiler.modules import ModuleKind, SourceModule
 from pyxsd.xslt.errors import XsltStaticError
 from pyxsd.xslt.runtime.functions import (
-    KNOWN_XSLT_ELEMENTS as _KNOWN_XSLT_ELEMENTS,
-)
-from pyxsd.xslt.runtime.functions import (
     SYSTEM_PROPERTIES as _SYSTEM_PROPERTIES,
 )
 from pyxsd.xslt.runtime.functions import (
-    XSLT_FUNCTION_ARITIES as _XSLT_FUNCTION_ARITIES,
+    xslt_element_available,
+    xslt_function_arities,
 )
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -147,15 +146,33 @@ _KNOWN_XSD_TYPES = frozenset(
 )
 
 
-@lru_cache(maxsize=1)
-def _evaluator_function_arities() -> Mapping[str, int | tuple[int, int | None]]:
-    """Derive availability from the XPath parser surface actually used here.
+def _effective_version_at_least(version: str, minimum: str) -> bool:
+    from decimal import Decimal
 
-    The static evaluator runs through the installed XPath 3.1 parser, so its
-    symbol table is the authoritative built-in function surface.  Only the
-    XSLT additions that are not in the pure XPath parser are supplied by hand.
-    """
-    parser = XPath31Parser()
+    return Decimal(version) >= Decimal(minimum)
+
+
+def _effective_stylesheet_version(element: XdmNode) -> str:
+    """The nearest in-scope ``version`` attribute, or the 3.0 default."""
+    current: XdmNode | None = element
+    while current is not None:
+        attribute = current.attribute("version")
+        if attribute is None:
+            attribute = current.attribute(f"{{{XSLT_NS}}}version")
+        value = attribute.string_value if isinstance(attribute, XdmNode) else attribute
+        if value is not None and value.strip():
+            version = value.strip()
+            if version in ("1.0", "2.0", "3.0", "3.1"):
+                return version
+            return "3.0"
+        current = current.parent
+    return "3.0"
+
+
+@lru_cache(maxsize=4)
+def _evaluator_function_arities(version: str) -> Mapping[str, int | tuple[int, int | None]]:
+    """Derive availability from the parser surface for the effective profile."""
+    parser = XPath31Parser() if _effective_version_at_least(version, "3.0") else XPath2Parser()
     table: dict[str, int | tuple[int, int | None]] = {}
     for symbol, token in parser.symbol_table.items():
         nargs = getattr(token, "nargs", None)
@@ -172,8 +189,7 @@ def _evaluator_function_arities() -> Mapping[str, int | tuple[int, int | None]]:
         expanded = symbol if symbol.startswith("{") else f"{{{namespace}}}{symbol}"
         table[expanded] = nargs
     table[f"{{{FN_NS}}}data"] = 1
-    for local, arity in _XSLT_FUNCTION_ARITIES.items():
-        table[f"{{{FN_NS}}}{local}"] = arity
+    table.update(xslt_function_arities(version))
     return MappingProxyType(table)
 
 
@@ -770,20 +786,22 @@ class _StaticEvaluator:
             return False
         if expanded.startswith(f"{{{XSD_NS}}}"):
             return _local_name(expanded) in _KNOWN_XSD_TYPES and arity in (None, 1)
-        return _arity_matches(_evaluator_function_arities().get(expanded), arity)
+        version = _effective_stylesheet_version(element)
+        return _arity_matches(_evaluator_function_arities(version).get(expanded), arity)
 
     def _element_available(
         self, name: str, element: XdmNode, default_namespace: str | None
     ) -> bool:
+        version = _effective_stylesheet_version(element)
         if ":" not in name and not name.startswith(("{", "Q{")):
             if default_namespace != XSLT_NS:
                 return False
-            return name in _KNOWN_XSLT_ELEMENTS
+            return xslt_element_available(name, version)
         expanded = self._resolve_name(name, element, None)
         return (
             expanded is not None
             and expanded.startswith(f"{{{XSLT_NS}}}")
-            and _local_name(expanded) in _KNOWN_XSLT_ELEMENTS
+            and xslt_element_available(_local_name(expanded), version)
         )
 
     def _type_available(self, name: str, element: XdmNode, default_namespace: str | None) -> bool:

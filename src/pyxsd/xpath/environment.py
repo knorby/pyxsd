@@ -119,6 +119,7 @@ class XPathStaticContext:
     base_uri: str | None = None
     default_collation: str | None = None
     xsd_version: str | None = None
+    xslt_version: str | None = None
 
     def __post_init__(self) -> None:
         namespaces = _freeze_mapping(self.namespaces, "namespaces")
@@ -145,6 +146,8 @@ class XPathStaticContext:
             raise TypeError("default_collation must be a string or None")
         if self.xsd_version not in (None, "1.0", "1.1"):
             raise ValueError("xsd_version must be '1.0', '1.1', or None")
+        if self.xslt_version not in (None, "1.0", "2.0", "3.0", "3.1"):
+            raise ValueError("xslt_version must be '1.0', '2.0', '3.0', '3.1', or None")
 
         object.__setattr__(self, "namespaces", namespaces)
         object.__setattr__(self, "variable_types", variable_types)

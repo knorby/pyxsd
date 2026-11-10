@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import copy
 import inspect
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from types import MethodType
 from typing import Any, cast
@@ -24,6 +24,7 @@ from elementpath.xpath_tokens.functions import XPathFunction
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmItem, XdmSequence, as_xdm
 
 __all__ = [
+    "FUNCTION_SCOPE_VARIABLE",
     "ContextFunction",
     "ContextFunctionToken",
     "HostFunctionToken",
@@ -34,6 +35,12 @@ __all__ = [
     "sequence_to_elementpath",
 ]
 
+
+#: Reserved context variable marking the body of an inline/higher-order
+#: function call.  XSLT context components are absent while this marker is in
+#: scope, while ordinary XPath focus remains available to context-item
+#: expressions such as ``.`` and to ``generate-id#0``'s argument default.
+FUNCTION_SCOPE_VARIABLE = "__pyxsd_function_scope"
 
 ContextFunctionCallback = Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence]
 
@@ -249,6 +256,11 @@ def _evaluate_token(value: Any, context: Any) -> Any:
     return value
 
 
+def _in_function_scope(context: Any) -> bool:
+    variables = getattr(context, "variables", None)
+    return isinstance(variables, Mapping) and bool(variables.get(FUNCTION_SCOPE_VARIABLE))
+
+
 class ContextFunctionToken(XPathFunction):
     """An invocation-local token for one XSLT context-dependent function.
 
@@ -315,16 +327,20 @@ class ContextFunctionToken(XPathFunction):
         direct, reader, converter = self._require_callbacks()
         active = context if context is not None else self.context
         arguments = self._arguments(active, reader)
-        result = direct(self._context_item(active, reader), arguments)
+        dynamic = self.dynamic
+        if dynamic is not None and _in_function_scope(active):
+            result = dynamic(None, arguments)
+        else:
+            result = direct(self._context_item(active, reader), arguments)
         return self._finish(result, converter)
 
     def __call__(self, *args: Any, context: Any = None) -> Any:
-        _, _reader, converter = self._require_callbacks()
+        _, reader, converter = self._require_callbacks()
         dynamic = self.dynamic
         if dynamic is None:
             direct, _, _ = self._require_callbacks()
             dynamic = direct
-        arguments = tuple(as_xdm(_evaluate_token(value, context)) for value in args)
+        arguments = tuple(reader(_evaluate_token(value, context)) for value in args)
         return self._finish(dynamic(None, arguments), converter)
 
     def __repr__(self) -> str:

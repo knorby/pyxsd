@@ -20,6 +20,7 @@ capability boundary.
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -59,6 +60,7 @@ from pyxsd.xpath.environment import (
     XPathStaticContext,
 )
 from pyxsd.xpath.functions import (
+    FUNCTION_SCOPE_VARIABLE,
     ContextFunction,
     ContextFunctionToken,
     HostFunctionToken,
@@ -749,6 +751,7 @@ def _build_parser(
     _install_syntax_only_parse(parser)
     _install_focus_token(parser)
     _install_focus_functions(parser)
+    _install_function_scope(parser)
     _register_schema_constructors(parser, static_context)
 
     for name in static_context.functions:
@@ -810,6 +813,38 @@ def _install_focus_functions(parser: Any) -> None:
             sequence_types=base.sequence_types,
             evaluate=evaluate,
         )
+
+
+def _install_function_scope(parser: Any) -> None:
+    """Mark the body of an inline/higher-order function call.
+
+    XPath keeps the caller's focus for an inline function body, but XSLT
+    clears its own dynamic components (current item, current group, merge and
+    regex captures) for a function invocation.  The reserved context variable
+    lets one evaluation's ``ContextFunctionToken`` distinguish the two
+    without any process-global state.
+    """
+    base = parser.symbol_table.get("function")
+    if base is None:  # pragma: no cover - every supported parser has it
+        return
+
+    def call(self: Any, *args: Any, context: Any = None) -> Any:
+        active = self.context if context is None else context
+        if active is None:  # pragma: no cover - XPath supplies a context
+            return base.__call__(self, *args, context=context)
+        marked = copy.copy(active)
+        variables = dict(getattr(marked, "variables", {}) or {})
+        variables[FUNCTION_SCOPE_VARIABLE] = True
+        marked.variables = variables
+        return base.__call__(self, *args, context=marked)
+
+    parser._register(
+        "function",
+        "_PyxsdScopedInlineFunction",
+        bases=(base,),
+        label=base.label,
+        __call__=call,
+    )
 
 
 def _register_schema_constructors(parser: Any, static_context: XPathStaticContext) -> None:

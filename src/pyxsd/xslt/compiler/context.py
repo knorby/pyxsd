@@ -462,6 +462,7 @@ class StaticContext:
             base_uri=self.base_uri,
             default_collation=self.default_collation,
             xsd_version=self.schema.xsd_version if self.schema is not None else None,
+            xslt_version=self.version,
         )
 
     # -- immutable updates -----------------------------------------------------

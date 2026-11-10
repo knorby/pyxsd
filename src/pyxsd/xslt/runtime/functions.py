@@ -45,7 +45,7 @@ from pyxsd.xslt.errors import XsltDynamicError
 
 __all__ = [
     "ABSENT",
-    "KNOWN_XSLT_ELEMENTS",
+    "IMPLEMENTED_XSLT_ELEMENTS",
     "SYSTEM_PROPERTIES",
     "XSLT_FUNCTION_ARITIES",
     "XsltContextBridge",
@@ -82,99 +82,119 @@ SYSTEM_PROPERTIES: Mapping[str, str] = MappingProxyType(
         "xsl:supports-backwards-compatibility": "yes",
         "xsl:supports-namespace-axis": "yes",
         "xsl:supports-streaming": "no",
-        "xsl:supports-dynamic-evaluation": "yes",
-        "xsl:supports-higher-order-functions": "yes",
-        "xsl:supports-xpath-3.1": "yes",
+        "xsl:supports-dynamic-evaluation": "no",
         "xsl:xpath-version": "3.1",
-        "xsl:xsd-version": "1.1",
     }
 )
 
-#: XSLT elements this processor recognises for ``element-available``.  The set
-#: records the specification surface; actual instruction execution may still be
-#: pending for a later task, exactly as ``element-available`` describes.
-KNOWN_XSLT_ELEMENTS = frozenset(
+#: Elements whose implementation exists in this execution slice.  XSLT 3.0
+#: section 24.2.2 defines element-available() as true only for implemented
+#: elements, so specification-only names stay out of this set.
+IMPLEMENTED_XSLT_ELEMENTS = frozenset(
     {
         "accept",
-        "accumulator",
-        "accumulator-rule",
-        "analysis",
-        "analyze-string",
         "apply-imports",
         "apply-templates",
-        "assert",
         "attribute",
         "attribute-set",
-        "break",
         "call-template",
-        "catch",
-        "character-map",
         "choose",
-        "comment",
-        "context-item",
-        "copy",
-        "copy-of",
         "decimal-format",
-        "document",
-        "element",
-        "evaluate",
         "expose",
-        "fallback",
-        "for-each",
-        "for-each-group",
-        "fork",
         "function",
-        "global-context-item",
-        "if",
         "import",
-        "import-schema",
         "include",
-        "iterate",
         "key",
-        "map",
-        "map-entry",
-        "matching-substring",
-        "merge",
-        "merge-action",
-        "merge-key",
-        "merge-source",
-        "message",
         "mode",
-        "namespace",
-        "namespace-alias",
-        "next-iteration",
         "next-match",
-        "non-matching-substring",
-        "number",
-        "on-completion",
-        "on-empty",
-        "on-non-empty",
         "otherwise",
         "output",
         "override",
         "package",
         "param",
-        "perform-sort",
         "preserve-space",
-        "processing-instruction",
         "result-document",
         "sequence",
-        "sort",
-        "source-document",
-        "stream",
         "strip-space",
         "stylesheet",
         "template",
         "text",
         "transform",
-        "try",
         "use-package",
         "value-of",
         "variable",
         "when",
+        "with-param",
+    }
+)
+
+#: XSLT 3.0 additions unavailable to a 2.0-versioned module.
+_XSLT_3_ONLY_ELEMENTS = frozenset(
+    {
+        "accept",
+        "accumulator",
+        "accumulator-rule",
+        "assert",
+        "break",
+        "context-item",
+        "evaluate",
+        "expose",
+        "fork",
+        "global-context-item",
+        "iterate",
+        "map",
+        "map-entry",
+        "merge",
+        "merge-action",
+        "merge-key",
+        "merge-source",
+        "mode",
+        "next-iteration",
+        "on-completion",
+        "on-empty",
+        "on-non-empty",
+        "override",
+        "package",
+        "source-document",
+        "stream",
+        "try",
+        "catch",
+        "use-package",
         "where-populated",
     }
 )
+
+#: XSLT 2.0 additions unavailable to a 1.0-versioned module.
+_XSLT_2_ONLY_ELEMENTS = frozenset(
+    {
+        "analyze-string",
+        "character-map",
+        "document",
+        "for-each-group",
+        "function",
+        "import-schema",
+        "matching-substring",
+        "non-matching-substring",
+        "perform-sort",
+        "result-document",
+        "sequence",
+        "sort",
+    }
+)
+
+
+def xslt_element_available(name: str, version: str) -> bool:
+    """Whether the XSLT-namespace element *name* is implemented for *version*."""
+    if name not in IMPLEMENTED_XSLT_ELEMENTS:
+        return False
+    if _version_at_least(version, "3.0"):
+        return True
+    if name in _XSLT_3_ONLY_ELEMENTS:
+        return False
+    if _version_at_least(version, "2.0"):
+        return True
+    return name not in _XSLT_2_ONLY_ELEMENTS
+
 
 #: XSLT-defined function signatures used by static preprocessing availability.
 XSLT_FUNCTION_ARITIES: Mapping[str, FunctionArity] = MappingProxyType(
@@ -249,9 +269,10 @@ def xslt_function_declarations(version: str) -> Mapping[str, FunctionArity]:
     """Return the XSLT function declarations legal for *version*.
 
     Keys are lexical QNames in the standard function namespace because every
-    static context binds ``fn``.  Native XPath functions (``key``,
-    ``generate-id``, ``format-*``) are deliberately absent: the parser already
-    owns those symbols and registering them again would be a collision.
+    static context binds ``fn``.  Functions native to the XPath 3.1 parser
+    (``key``, ``generate-id``, ``format-*``) are deliberately absent in the
+    3.0 profile; in 1.0/2.0 profiles the XPath 2.0 parser has no native symbol,
+    so the bridge declares them explicitly.
     """
     effective = _profile_version(version)
     declarations: dict[str, FunctionArity] = {}
@@ -259,11 +280,11 @@ def xslt_function_declarations(version: str) -> Mapping[str, FunctionArity]:
         if not _version_at_least(effective, minimum):
             continue
         declarations[f"fn:{local}"] = _declaration_arity(local, effective)
-    if effective == "2.0":
-        # XSLT 2.0 requires these functions but the XPath 2.0 parser has no
+    if not _version_at_least(effective, "3.0"):
+        # XSLT 1.0/2.0 require these functions but the XPath 2.0 parser has no
         # native symbol for them; the bridge supplies both implementations.
-        declarations["fn:key"] = (2, 3)
-        declarations["fn:generate-id"] = 1
+        declarations["fn:key"] = 2 if effective == "1.0" else (2, 3)
+        declarations["fn:generate-id"] = (0, 1)
     return MappingProxyType(declarations)
 
 
@@ -348,15 +369,23 @@ def _native_function_arities(version: str) -> Mapping[str, FunctionArity]:
     return MappingProxyType(table)
 
 
+def xslt_function_arities(version: str) -> Mapping[str, FunctionArity]:
+    """Expanded-name arity map for XSLT functions available in *version*."""
+    effective = _profile_version(version)
+    table = {
+        f"{{{FN_NS}}}{name.partition(':')[2]}": arity
+        for name, arity in xslt_function_declarations(effective).items()
+    }
+    if _version_at_least(effective, "3.0"):
+        # Native XPath functions that XSLT defines additional semantics for.
+        table[f"{{{FN_NS}}}key"] = (2, 3)
+        table[f"{{{FN_NS}}}generate-id"] = (0, 1)
+    return MappingProxyType(table)
+
+
 @lru_cache(maxsize=4)
 def _declared_arities(version: str) -> Mapping[str, FunctionArity]:
-    declarations = xslt_function_declarations(version)
-    table = {f"{{{FN_NS}}}{name.partition(':')[2]}": arity for name, arity in declarations.items()}
-    # key() and generate-id() are native to the XPath parser but are XSLT
-    # functions for availability purposes.
-    table[f"{{{FN_NS}}}key"] = (2, 3)
-    table[f"{{{FN_NS}}}generate-id"] = 1 if version == "2.0" else (0, 1)
-    return MappingProxyType(table)
+    return xslt_function_arities(version)
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +437,7 @@ class XsltContextBridge:
     default_namespace: str | None = None
     base_uri: str | None = None
     xpath_version: str = "3.1"
+    xslt_version: str | None = None
     key_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence] | None = None
 
     def __post_init__(self) -> None:
@@ -466,6 +496,14 @@ class XsltContextBridge:
         if self.key_lookup is not None and not callable(self.key_lookup):
             raise TypeError("key_lookup must be callable or None")
         object.__setattr__(self, "xpath_version", self._effective_xpath_version())
+        if self.xslt_version is None:
+            object.__setattr__(
+                self,
+                "xslt_version",
+                "2.0" if self.xpath_version == "2.0" else "3.0",
+            )
+        else:
+            object.__setattr__(self, "xslt_version", _profile_version(self.xslt_version))
 
     def _effective_xpath_version(self) -> str:
         # 3.0 and 3.1 profiles share XPath 3.1's function surface here; the
@@ -477,7 +515,8 @@ class XsltContextBridge:
     @property
     def version(self) -> str:
         """The effective XSLT profile used for availability decisions."""
-        return "2.0" if self.xpath_version == "2.0" else "3.0"
+        assert self.xslt_version is not None
+        return self.xslt_version
 
     # -- immutable state transitions ---------------------------------------
 
@@ -523,38 +562,47 @@ class XsltContextBridge:
 
     def function_overrides(self) -> Mapping[str, ContextFunction]:
         """Function implementations legal for this evaluation's profile."""
+        legal = {name.partition(":")[2] for name in xslt_function_declarations(self.version)}
         table: dict[str, ContextFunction] = {
             f"{{{FN_NS}}}current": ContextFunction(self._direct_current, self._dynamic_current),
             f"{{{FN_NS}}}document": ContextFunction(self._document_function),
             f"{{{FN_NS}}}system-property": ContextFunction(self._system_property_function),
             f"{{{FN_NS}}}function-available": ContextFunction(self._function_available_function),
             f"{{{FN_NS}}}element-available": ContextFunction(self._element_available_function),
-            f"{{{FN_NS}}}type-available": ContextFunction(self._type_available_function),
-            f"{{{FN_NS}}}available-system-properties": ContextFunction(
-                self._available_system_properties_function
-            ),
             f"{{{FN_NS}}}unparsed-entity-uri": ContextFunction(self._unparsed_entity_uri_function),
             f"{{{FN_NS}}}generate-id": ContextFunction(self._generate_id_function),
         }
-        table[f"{{{FN_NS}}}current-group"] = ContextFunction(
-            self._direct_current_group, self._dynamic_current_group
-        )
-        table[f"{{{FN_NS}}}current-grouping-key"] = ContextFunction(
-            self._direct_current_grouping_key, self._dynamic_current_grouping_key
-        )
-        table[f"{{{FN_NS}}}regex-group"] = ContextFunction(
-            self._direct_regex_group, self._dynamic_regex_group
-        )
-        if _version_at_least(self.version, "3.0"):
+        if "type-available" in legal:
+            table[f"{{{FN_NS}}}type-available"] = ContextFunction(self._type_available_function)
+        if "available-system-properties" in legal:
+            table[f"{{{FN_NS}}}available-system-properties"] = ContextFunction(
+                self._available_system_properties_function
+            )
+        if "current-group" in legal:
+            table[f"{{{FN_NS}}}current-group"] = ContextFunction(
+                self._direct_current_group, self._dynamic_current_group
+            )
+        if "current-grouping-key" in legal:
+            table[f"{{{FN_NS}}}current-grouping-key"] = ContextFunction(
+                self._direct_current_grouping_key, self._dynamic_current_grouping_key
+            )
+        if "regex-group" in legal:
+            table[f"{{{FN_NS}}}regex-group"] = ContextFunction(
+                self._direct_regex_group, self._dynamic_regex_group
+            )
+        if "current-merge-group" in legal:
             table[f"{{{FN_NS}}}current-merge-group"] = ContextFunction(
                 self._direct_current_merge_group, self._dynamic_current_merge_group
             )
+        if "current-merge-key" in legal:
             table[f"{{{FN_NS}}}current-merge-key"] = ContextFunction(
                 self._direct_current_merge_key, self._dynamic_current_merge_key
             )
+        if "accumulator-before" in legal:
             table[f"{{{FN_NS}}}accumulator-before"] = ContextFunction(
                 self._direct_accumulator_before
             )
+        if "accumulator-after" in legal:
             table[f"{{{FN_NS}}}accumulator-after"] = ContextFunction(self._direct_accumulator_after)
         if self.key_lookup is not None:
             table[f"{{{FN_NS}}}key"] = ContextFunction(self._direct_key, self._dynamic_key)
@@ -674,7 +722,7 @@ class XsltContextBridge:
         )
         if _namespace_of(expanded) != XSLT_NS:
             return False
-        return _local_name(expanded) in KNOWN_XSLT_ELEMENTS
+        return xslt_element_available(_local_name(expanded), self.version)
 
     def type_available(self, name: str) -> bool:
         expanded = _expand_name(
@@ -696,33 +744,78 @@ class XsltContextBridge:
     def available_system_properties(self) -> XdmSequence:
         return tuple(as_xdm(QName(XSLT_NS, name))[0] for name in SYSTEM_PROPERTIES)
 
-    def document(self, uri: str, node: XdmNode | None = None) -> XdmDocument:
-        """Resolve an authorised stylesheet module or an invocation-local doc."""
-        base = self.base_uri
-        if node is not None:
-            base = node.base_uri or base
-        if uri == "":
-            return self._stylesheet_document()
-        target = urljoin(base, uri) if base is not None else uri
-        split = urlsplit(target)
-        if split.fragment:
+    def document(
+        self,
+        uri_sequence: XdmSequence | str,
+        node: XdmNode | None = None,
+    ) -> XdmSequence:
+        """Resolve URI references using the XSLT document() argument rules."""
+        if isinstance(uri_sequence, str):
+            uri_sequence = (XdmAtomic.string(uri_sequence),)
+        base_node_uri = None if node is None else node.base_uri
+        resolved: dict[int, XdmDocument] = {}
+        for item in uri_sequence:
+            if isinstance(item, XdmNode):
+                base = base_node_uri if node is not None else item.base_uri
+                for atomic in item.typed_value:
+                    if not isinstance(atomic, XdmAtomic):  # pragma: no cover - XDM invariant
+                        raise XsltDynamicError(
+                            "document() node atomization must yield atomic values",
+                            code="XPTY0004",
+                        )
+                    document = self._resolve_document(_document_uri(atomic), base)
+                    resolved[id(document)] = document
+                continue
+            if not isinstance(item, XdmAtomic):
+                raise XsltDynamicError(
+                    "document() requires atomic values or nodes",
+                    code="XPTY0004",
+                )
+            base = base_node_uri if node is not None else self.base_uri
+            document = self._resolve_document(_document_uri(item), base)
+            resolved[id(document)] = document
+        return tuple(sorted(resolved.values(), key=lambda document: document.document_order))
+
+    def _resolve_document(self, uri: str, base: str | None) -> XdmDocument:
+        if "#" in uri:
             raise XsltDynamicError(
                 f"document fragment identifiers are not resolved for {uri!r}",
-                code="FODC0002",
+                code="XTDE1160",
             )
+        if urlsplit(uri).scheme:
+            target = uri
+        elif base is None:
+            raise XsltDynamicError(
+                f"the relative document URI {uri!r} has no base URI",
+                code="XTDE1162",
+            )
+        else:
+            target = urljoin(base, uri)
         documents = getattr(self.transformation, "documents", {})
         document = documents.get(target)
         if isinstance(document, XdmDocument):
             return document
+        module_document = self._stylesheet_document(target)
+        if module_document is not None:
+            return module_document
         raise XsltDynamicError(
             f"the document {uri!r} is not available to this transformation",
             code="FODC0002",
         )
 
-    def unparsed_entity_uri(self, name: str, node: XdmNode | None = None) -> str:
+    def unparsed_entity_uri(self, name: str, node: XdmItem | None = None) -> str:
         del name
-        target = node if node is not None else self.current_item
-        if not isinstance(target, XdmNode) or not isinstance(target.document, XdmDocument):
+        if node is None:
+            raise XsltDynamicError(
+                "unparsed-entity-uri requires a context node",
+                code="XPDY0002",
+            )
+        if not isinstance(node, XdmNode):
+            raise XsltDynamicError(
+                "unparsed-entity-uri requires a node",
+                code="XPTY0004",
+            )
+        if not isinstance(node.document, XdmDocument):  # pragma: no cover - XDM invariant
             raise XsltDynamicError(
                 "unparsed-entity-uri requires a node in a document",
                 code="XTDE1370",
@@ -755,20 +848,13 @@ class XsltContextBridge:
     def _schema_pool(self) -> Any:
         return getattr(getattr(self.transformation, "stylesheet", None), "schema_pool", None)
 
-    def _stylesheet_document(self) -> XdmDocument:
+    def _stylesheet_document(self, uri: str) -> XdmDocument | None:
         package = self._package()
         modules = () if package is None else package.modules
         for module in modules:
-            if self.base_uri is not None and (
-                module.uri == self.base_uri or module.raw.base_uri == self.base_uri
-            ):
+            if module.uri == uri or module.raw.base_uri == uri:
                 return module.document
-        if modules:
-            return modules[0].document
-        raise XsltDynamicError(
-            "document('') has no stylesheet module in this evaluation",
-            code="FODC0002",
-        )
+        return None
 
     def _accumulator(self, name: str) -> None:
         package = self._package()
@@ -892,8 +978,8 @@ class XsltContextBridge:
         arguments: tuple[XdmSequence, ...],
     ) -> XdmSequence:
         del context_item
-        number = _single_integer(arguments, 0)
-        return (XdmAtomic.string(self.regex_group(number)),)
+        _single_integer(arguments, 0)
+        return (XdmAtomic.string(""),)
 
     def _document_function(
         self,
@@ -901,16 +987,11 @@ class XsltContextBridge:
         arguments: tuple[XdmSequence, ...],
     ) -> XdmSequence:
         del context_item
-        uri = _single_string(arguments, 0)
+        uri_sequence = arguments[0] if arguments else ()
         node: XdmNode | None = None
         if len(arguments) > 1:
-            if len(arguments[1]) != 1 or not isinstance(arguments[1][0], XdmNode):
-                raise XsltDynamicError(
-                    "document() requires a single node as its second argument",
-                    code="XPTY0004",
-                )
-            node = arguments[1][0]
-        return (self.document(uri, node),)
+            node = _single_node(arguments[1], "document() second argument")
+        return self.document(uri_sequence, node)
 
     def _system_property_function(
         self,
@@ -954,7 +1035,10 @@ class XsltContextBridge:
         if not arguments:
             item = context_item
             if item is None:
-                return (XdmAtomic.string(""),)
+                raise XsltDynamicError(
+                    "generate-id() requires a context node",
+                    code="XPDY0002",
+                )
         else:
             value = arguments[0]
             if len(value) > 1:
@@ -986,15 +1070,10 @@ class XsltContextBridge:
         arguments: tuple[XdmSequence, ...],
     ) -> XdmSequence:
         name = _single_string(arguments, 0)
-        node: XdmNode | None = context_item if isinstance(context_item, XdmNode) else None
+        target: XdmItem | None = context_item
         if len(arguments) > 1:
-            if len(arguments[1]) != 1 or not isinstance(arguments[1][0], XdmNode):
-                raise XsltDynamicError(
-                    "unparsed-entity-uri() requires a single node",
-                    code="XPTY0004",
-                )
-            node = arguments[1][0]
-        return (XdmAtomic.any_uri(self.unparsed_entity_uri(name, node)),)
+            target = _single_node(arguments[1], "unparsed-entity-uri() second argument")
+        return (XdmAtomic.any_uri(self.unparsed_entity_uri(name, target)),)
 
     def _direct_accumulator_before(
         self,
@@ -1028,6 +1107,25 @@ class XsltContextBridge:
         assert self.key_lookup is not None
         del context_item
         return self.key_lookup(None, arguments)
+
+
+def _document_uri(item: XdmAtomic) -> str:
+    local = item.type_name.partition("}")[2] if item.type_name.startswith("{") else item.type_name
+    if local not in ("string", "anyURI", "untypedAtomic"):
+        raise XsltDynamicError(
+            "document() argument items must be strings, anyURIs, or nodes",
+            code="XPTY0004",
+        )
+    return item.lexical
+
+
+def _single_node(sequence: XdmSequence, label: str) -> XdmNode:
+    if len(sequence) != 1 or not isinstance(sequence[0], XdmNode):
+        raise XsltDynamicError(
+            f"{label} must be a single node",
+            code="XPTY0004",
+        )
+    return sequence[0]
 
 
 def _single_string(arguments: tuple[XdmSequence, ...], index: int) -> str:

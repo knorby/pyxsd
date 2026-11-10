@@ -481,16 +481,19 @@ def test_accumulator_functions_are_explicitly_unavailable() -> None:
 # Documents, keys, and identifiers
 
 
-def test_document_resolves_the_stylesheet_module_and_denies_other_resources() -> None:
-    source = stylesheet(
+def test_document_resolves_the_stylesheet_module_and_denies_other_resources(
+    tmp_path: Path,
+) -> None:
+    compiled = _compiled_stylesheet(
+        tmp_path,
         """
         <xsl:template name="main">
           <xsl:sequence select="count(document('')/xsl:stylesheet)"/>
           <xsl:sequence select="count(document('')/xsl:stylesheet/xsl:template)"/>
         </xsl:template>
-        """
+        """,
     )
-    assert transform(source, initial_template="main").principal == (
+    assert compiled.transform(initial_template="main").principal == (
         XdmAtomic.integer(1),
         XdmAtomic.integer(1),
     )
@@ -562,7 +565,7 @@ def test_unparsed_entity_uri_checks_context_and_returns_empty_uri() -> None:
         </xsl:template>
         """
     )
-    assert error_code(lambda: transform(absent, initial_template="main")) == "XTDE1370"
+    assert error_code(lambda: transform(absent, initial_template="main")) == "XPDY0002"
 
     contextual = stylesheet(
         """
@@ -977,8 +980,8 @@ def test_bridge_document_state_and_denial_paths(tmp_path: Path) -> None:
     document = _document()
     transformation = SimpleNamespace(documents={"urn:doc": document})
     available = XsltContextBridge(transformation)  # type: ignore[arg-type]
-    assert available.document("urn:doc") is document
-    assert available.document("urn:doc", document.root_element) is document
+    assert available.document("urn:doc") == (document,)
+    assert available.document("urn:doc", document.root_element) == (document,)
     overrides = available.function_overrides()
     assert overrides[f"{{{FN_NS}}}document"].direct(
         None, ((XdmAtomic.string("urn:doc"),), (document.root_element,))
@@ -990,10 +993,10 @@ def test_bridge_document_state_and_denial_paths(tmp_path: Path) -> None:
     assert caught.value.code == "FODC0002"
     with pytest.raises(XsltError) as caught:
         denied.document("urn:doc#fragment")
-    assert caught.value.code == "FODC0002"
+    assert caught.value.code == "XTDE1160"
     with pytest.raises(XsltError) as caught:
         denied.document("")
-    assert caught.value.code == "FODC0002"
+    assert caught.value.code == "XTDE1162"
 
     path = tmp_path / "module.xsl"
     path.write_text(
@@ -1071,6 +1074,8 @@ def test_environment_decimal_format_validation() -> None:
         decimal_formats={None: {"decimal-separator": ","}, "urn:x": {"zero-digit": "0"}}
     )
     assert environment.decimal_formats[None]["decimal-separator"] == ","
+    with pytest.raises(ValueError, match="xslt_version"):
+        XPathStaticContext(xslt_version="4.0")
 
 
 def test_key_three_argument_forms_and_dynamic_invocation() -> None:
@@ -1187,3 +1192,462 @@ def test_plain_function_overrides_receive_context_and_arguments() -> None:
     environment = ExpressionEnvironment(function_overrides={f"{{{FN_NS}}}generate-id": override})
     assert engine.evaluate(compiled, environment, focus=item) == (XdmAtomic.string("override"),)
     assert seen == [(item, ((item,),))]
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1 regressions
+
+
+def _compiled_stylesheet(tmp_path: Path, body: str, *, version: str = "3.0"):
+    path = tmp_path / "stylesheet.xsl"
+    path.write_text(stylesheet(body, version=version).decode(), encoding="utf-8")
+    return XsltProcessor().compile(path)
+
+
+def test_dynamic_function_items_keep_node_arguments(tmp_path: Path) -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="by-id" match="item" use="@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="string-join(key#3('by-id', 'a', /*)/@id, ',')"/>
+          <xsl:sequence select="generate-id#1(/*)"/>
+          <xsl:sequence select="string(unparsed-entity-uri#2('x', /*))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b'<doc><item id="a"/></doc>', initial_template="main")
+    assert result.principal[0] == XdmAtomic.string("a")
+    assert result.principal[1].lexical.startswith("ID")
+    assert result.principal[2] == XdmAtomic.string("")
+
+    compiled = _compiled_stylesheet(
+        tmp_path,
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="count(document#2('', /*))"/>
+        </xsl:template>
+        """,
+    )
+    stylesheet_document = compiled.package.modules[0].document
+    assert compiled.transform(
+        global_context_item=stylesheet_document,
+        initial_template="main",
+    ).principal == (XdmAtomic.integer(1),)
+
+
+def test_inline_function_calls_clear_xslt_current_state() -> None:
+    direct = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="string(current()/doc/@id)"/>
+        </xsl:template>
+        """
+    )
+    assert transform(direct, b'<doc id="outer"/>', initial_template="main").principal == (
+        XdmAtomic.string("outer"),
+    )
+
+    inline = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence
+            select="let $f := function() { string(current()/doc/@id) } return $f()"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        error_code(lambda: transform(inline, b'<doc id="outer"/>', initial_template="main"))
+        == "XTDE1360"
+    )
+
+    higher_order = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="for-each(1, function($x) { current() })"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        error_code(lambda: transform(higher_order, b'<doc id="outer"/>', initial_template="main"))
+        == "XTDE1360"
+    )
+
+
+def test_pattern_predicates_use_the_xslt_bridge(tmp_path: Path) -> None:
+    system_property = stylesheet(
+        """
+        <xsl:template match="/"><xsl:apply-templates select="doc/item"/></xsl:template>
+        <xsl:template match="item[system-property('xsl:version') = '3.0']">
+          <xsl:sequence select="'hit'"/>
+        </xsl:template>
+        """
+    )
+    assert transform(system_property, b"<doc><item/><item/></doc>").principal == (
+        XdmAtomic.string("hit"),
+        XdmAtomic.string("hit"),
+    )
+
+    regex = stylesheet(
+        """
+        <xsl:template match="/"><xsl:apply-templates select="doc/item"/></xsl:template>
+        <xsl:template match="item[regex-group(1) = '']">
+          <xsl:sequence select="'hit'"/>
+        </xsl:template>
+        """
+    )
+    assert transform(regex, b"<doc><item/><item/></doc>").principal == (
+        XdmAtomic.string("hit"),
+        XdmAtomic.string("hit"),
+    )
+
+    compiled = _compiled_stylesheet(
+        tmp_path,
+        """
+        <xsl:template match="/"><xsl:apply-templates select="doc/item"/></xsl:template>
+        <xsl:template match="item[document('')/xsl:stylesheet]">
+          <xsl:sequence select="'hit'"/>
+        </xsl:template>
+        """,
+    )
+    assert compiled.transform(source=b"<doc><item/><item/></doc>").principal == (
+        XdmAtomic.string("hit"),
+        XdmAtomic.string("hit"),
+    )
+
+    other_namespace = stylesheet('<xsl:template match="item[Q{urn:other}current-group()]"/>')
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(io.BytesIO(other_namespace))
+    assert caught.value.code == "XPST0017"
+
+    for match, code in (
+        ("item[current-group()]", "XTSE1060"),
+        ("item[current-grouping-key()]", "XTSE1070"),
+        ("item[current-merge-group()]", "XTSE3470"),
+        ("item[current-merge-key()]", "XTSE3500"),
+    ):
+        source = stylesheet(f'<xsl:template match="{match}"/>')
+        with pytest.raises(XsltStaticError) as caught:
+            XsltProcessor().compile(io.BytesIO(source))
+        assert caught.value.code == code
+
+
+def test_dynamic_regex_group_clears_captures() -> None:
+    contextual = bridge(regex_captures=("whole", "capture"))
+    override = contextual.function_overrides()[f"{{{FN_NS}}}regex-group"]
+    assert override.direct(None, ((XdmAtomic.integer(1),),)) == (XdmAtomic.string("capture"),)
+    assert override.dynamic(None, ((XdmAtomic.integer(1),),)) == (XdmAtomic.string(""),)
+
+
+def test_unparsed_entity_uri_uses_xpath_context_rules() -> None:
+    non_node = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence
+            select="count((1, 2)[string(unparsed-entity-uri('x')) = ''])"/>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(non_node, b"<doc/>")) == "XPTY0004"
+
+    dynamic = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence select="unparsed-entity-uri#1('x')"/>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(dynamic, b"<doc/>")) == "XPDY0002"
+
+    absent = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="unparsed-entity-uri('x')"/>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(absent, initial_template="main")) == "XPDY0002"
+
+    invalid = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence select="unparsed-entity-uri('x', ('a', 'b'))"/>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(invalid, b"<doc/>")) == "XPTY0004"
+
+    contextual = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence select="string(unparsed-entity-uri('x', /*))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(contextual, b"<doc/>").principal == (XdmAtomic.string(""),)
+
+
+def test_document_sequences_base_nodes_and_exact_errors(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    first = _document()
+    second = XdmDocument.parse(b"<other/>")
+    transformation = SimpleNamespace(documents={"urn:a": first, "urn:b": second})
+    bridge_with_documents = XsltContextBridge(transformation)  # type: ignore[arg-type]
+    assert bridge_with_documents.document(()) == ()
+    assert bridge_with_documents.document(
+        (XdmAtomic.string("urn:a"), XdmAtomic.string("urn:b"))
+    ) == (first, second)
+
+    static = XPathStaticContext(
+        namespaces={"fn": FN_NS},
+        functions={"fn:document": (1, 2)},
+        xslt_version="3.0",
+    )
+    engine = XPathEngine("3.1")
+    environment = ExpressionEnvironment(
+        function_overrides=bridge_with_documents.function_overrides()
+    )
+    assert engine.evaluate(engine.compile("count(document(()))", static), environment) == (
+        XdmAtomic.integer(0),
+    )
+    assert engine.evaluate(
+        engine.compile("count(document(('urn:a', 'urn:b')))", static), environment
+    ) == (XdmAtomic.integer(2),)
+
+    source = XdmDocument.parse(b"<doc><uri>urn:a</uri></doc>")
+    assert engine.evaluate(
+        engine.compile("count(document(/*/uri/text()))", static),
+        environment,
+        focus=source,
+    ) == (XdmAtomic.integer(1),)
+
+    static_document = XdmDocument.parse(b"<static/>", base_uri="urn:stylesheet")
+    base_document = XdmDocument.parse(b"<base/>", base_uri="urn:base")
+    based = XsltContextBridge(
+        SimpleNamespace(documents={"urn:stylesheet": static_document, "urn:base": base_document}),  # type: ignore[arg-type]
+        base_uri="urn:stylesheet",
+    )
+    assert based.document("") == (static_document,)
+    assert based.document("", base_document.root_element) == (base_document,)
+
+    no_base = XsltContextBridge(SimpleNamespace(documents={}))  # type: ignore[arg-type]
+    with pytest.raises(XsltError) as caught:
+        no_base.document((XdmAtomic.string("relative.xml"),))
+    assert caught.value.code == "XTDE1162"
+    with pytest.raises(XsltError) as caught:
+        bridge_with_documents.document((XdmAtomic.string("urn:a#fragment"),))
+    assert caught.value.code == "XTDE1160"
+    with pytest.raises(XsltError) as caught:
+        bridge_with_documents.document((XdmAtomic.integer(1),))
+    assert caught.value.code == "XPTY0004"
+    with pytest.raises(XsltError) as caught:
+        bridge_with_documents.document((object(),))  # type: ignore[arg-type]
+    assert caught.value.code == "XPTY0004"
+
+    compiled = _compiled_stylesheet(
+        tmp_path,
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="count(document('', /*))"/>
+        </xsl:template>
+        """,
+    )
+    stylesheet_document = compiled.package.modules[0].document
+    assert compiled.transform(
+        global_context_item=stylesheet_document,
+        initial_template="main",
+    ).principal == (XdmAtomic.integer(1),)
+
+
+def test_versions_gate_generate_id_document_and_availability() -> None:
+    two = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="starts-with(generate-id(), 'ID')"/>
+          <xsl:sequence select="function-available('generate-id', 0)"/>
+          <xsl:sequence select="function-available('accumulator-before')"/>
+          <xsl:sequence select="function-available('current-group')"/>
+          <xsl:sequence select="function-available('type-available')"/>
+          <xsl:sequence select="function-available('document', 2)"/>
+        </xsl:template>
+        """,
+        version="2.0",
+    )
+    assert transform(two, b"<doc/>", initial_template="main").principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(False),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+    )
+
+    one = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="starts-with(generate-id(), 'ID')"/>
+          <xsl:sequence select="function-available('current-group')"/>
+          <xsl:sequence select="function-available('type-available')"/>
+          <xsl:sequence select="function-available('document')"/>
+          <xsl:sequence select="element-available('xsl:merge')"/>
+          <xsl:sequence select="element-available('xsl:template')"/>
+        </xsl:template>
+        """,
+        version="1.0",
+    )
+    assert transform(one, b"<doc/>", initial_template="main").principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(False),
+        XdmAtomic.boolean(False),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(False),
+        XdmAtomic.boolean(True),
+    )
+
+    legal = bridge(
+        xpath_version="2.0",
+        xslt_version="1.0",
+        namespaces={"xsl": XSLT_NS, "fn": FN_NS},
+    )
+    assert legal.function_available("document", 1)
+    assert not legal.function_available("document", 2)
+    overrides = legal.function_overrides()
+    assert f"{{{FN_NS}}}current" in overrides
+    assert f"{{{FN_NS}}}current-group" not in overrides
+    assert f"{{{FN_NS}}}type-available" not in overrides
+    assert f"{{{FN_NS}}}regex-group" not in overrides
+
+    two_point_zero = bridge(
+        xpath_version="2.0",
+        xslt_version="2.0",
+        namespaces={"xsl": XSLT_NS, "fn": FN_NS},
+    )
+    assert two_point_zero.function_available("current-group")
+    assert not two_point_zero.function_available("accumulator-before")
+    assert two_point_zero.function_available("generate-id", 0)
+    assert not two_point_zero.element_available("xsl:merge")
+    assert not two_point_zero.element_available("xsl:evaluate")
+    assert not two_point_zero.element_available("xsl:mode")
+    assert not two_point_zero.element_available("xsl:for-each-group")
+    assert not two_point_zero.element_available("xsl:analyze-string")
+    assert two_point_zero.element_available("xsl:template")
+
+
+def test_static_availability_and_system_property_are_honest() -> None:
+    static = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="'excluded'" use-when="function-available('accumulator-before')"/>
+          <xsl:sequence select="'merge'" use-when="element-available('xsl:merge')"/>
+          <xsl:sequence select="'done'"/>
+        </xsl:template>
+        """,
+        version="2.0",
+    )
+    assert transform(static, b"<doc/>", initial_template="main").principal == (
+        XdmAtomic.string("done"),
+    )
+
+    system = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="system-property('xsl:supports-dynamic-evaluation')"/>
+          <xsl:sequence select="element-available('xsl:merge')"/>
+          <xsl:sequence select="element-available('xsl:evaluate')"/>
+          <xsl:sequence select="element-available('xsl:for-each-group')"/>
+          <xsl:sequence select="element-available('xsl:analyze-string')"/>
+          <xsl:sequence select="element-available('xsl:template')"/>
+        </xsl:template>
+        """
+    )
+    assert transform(system, b"<doc/>", initial_template="main").principal == (
+        XdmAtomic.string("no"),
+        XdmAtomic.boolean(False),
+        XdmAtomic.boolean(False),
+        XdmAtomic.boolean(False),
+        XdmAtomic.boolean(False),
+        XdmAtomic.boolean(True),
+    )
+
+
+def test_static_profile_version_defaults_and_validation() -> None:
+    from pyxsd.xslt.compiler.static import _effective_stylesheet_version
+
+    def root(source: bytes):
+        return XdmDocument.parse(source).root_element
+
+    assert (
+        _effective_stylesheet_version(
+            root(f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="9.9"/>'.encode())
+        )
+        == "3.0"
+    )
+    assert (
+        _effective_stylesheet_version(root(f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}"/>'.encode()))
+        == "3.0"
+    )
+
+
+def test_dynamic_generate_id_without_focus_is_an_error() -> None:
+    dynamic = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence select="generate-id#0()"/>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(dynamic, b"<doc/>")) == "XPDY0002"
+
+
+def test_inline_function_calls_clear_group_merge_and_regex_state() -> None:
+    document = _document()
+    item = document.root_element
+    key = XdmAtomic.string("key")
+    contextual = bridge(
+        group=(item,),
+        grouping_key=(key,),
+        merge_group={"source": (item,)},
+        merge_sources=("source",),
+        merge_key=(key,),
+        regex_captures=("whole", "capture"),
+    )
+    static = XPathStaticContext(
+        namespaces={"fn": FN_NS},
+        functions={
+            "fn:current-group": 0,
+            "fn:current-grouping-key": 0,
+            "fn:current-merge-group": (0, 1),
+            "fn:current-merge-key": 0,
+            "fn:regex-group": 1,
+        },
+        xslt_version="3.0",
+    )
+    engine = XPathEngine("3.1")
+    environment = ExpressionEnvironment(function_overrides=contextual.function_overrides())
+
+    for source, code in (
+        ("function() { current-group() }()", "XTDE1061"),
+        ("function() { current-grouping-key() }()", "XTDE1071"),
+        ("function() { current-merge-group() }()", "XTDE3480"),
+        ("function() { current-merge-key() }()", "XTDE3510"),
+    ):
+        compiled = engine.compile(source, static)
+        with pytest.raises(XsltError) as caught:
+            engine.evaluate(compiled, environment, focus=item)
+        assert caught.value.code == code
+
+    compiled = engine.compile("function() { regex-group(1) }()", static)
+    assert engine.evaluate(compiled, environment, focus=item) == (XdmAtomic.string(""),)
+
+    two_point_zero = bridge(
+        xpath_version="2.0",
+        xslt_version="2.0",
+        namespaces={"fn": FN_NS},
+    )
+    overrides = two_point_zero.function_overrides()
+    assert f"{{{FN_NS}}}current-group" in overrides
+    assert f"{{{FN_NS}}}current-grouping-key" in overrides
+    assert f"{{{FN_NS}}}regex-group" in overrides
+    assert f"{{{FN_NS}}}type-available" in overrides
+    assert f"{{{FN_NS}}}current-merge-group" not in overrides
+    assert f"{{{FN_NS}}}accumulator-before" not in overrides
