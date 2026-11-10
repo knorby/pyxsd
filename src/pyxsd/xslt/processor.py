@@ -835,11 +835,12 @@ def _compile_instruction(
         if select is not None and _has_plan_content(children):
             raise XsltStaticError(
                 "xsl:value-of with a select attribute must have empty content",
-                code="XTSE0010",
+                code="XTSE0870",
                 uri=context.uri,
                 location=location,
             )
         separator = instruction.attribute("separator")
+        separator_default = " " if select is not None else ""
         return _ValueOfPlan(
             instruction=instruction,
             expression=(
@@ -847,7 +848,9 @@ def _compile_instruction(
             ),
             children=children,
             separator=(
-                compile_avt(separator, context, location=location) if separator is not None else " "
+                compile_avt(separator, context, location=location)
+                if separator is not None
+                else separator_default
             ),
         )
     if local == "text":

@@ -845,7 +845,7 @@ def test_compiled_accessors_and_mode_rule_counts() -> None:
         ),
         (
             '<xsl:template match="doc"><xsl:value-of select="1">text</xsl:value-of></xsl:template>',
-            "XTSE0010",
+            "XTSE0870",
         ),
         (
             '<xsl:template match="doc"><xsl:sequence select="1">text</xsl:sequence></xsl:template>',
@@ -1755,6 +1755,15 @@ def test_value_of_content_forms_and_simple_content_separators() -> None:
         )
     )
     assert _text(separated.transform(initial_template="main").principal_tree) == "1-2"
+
+    content_default = compile_bytes(
+        xsl(
+            '<xsl:template name="main">'
+            '<xsl:value-of><xsl:sequence select="1,2"/></xsl:value-of>'
+            "</xsl:template>"
+        )
+    )
+    assert _text(content_default.transform(initial_template="main").principal_tree) == "12"
 
     adjacent = compile_bytes(
         xsl(
