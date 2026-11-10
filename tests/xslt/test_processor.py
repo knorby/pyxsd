@@ -1011,7 +1011,7 @@ def test_circular_and_cached_global_variables() -> None:
         xsl(
             '<xsl:variable name="a" select="$b"/>'
             '<xsl:variable name="b" select="$a"/>'
-            '<xsl:template name="main"><literal/></xsl:template>'
+            '<xsl:template name="main"><xsl:value-of select="$a"/></xsl:template>'
         )
     )
     with pytest.raises(XsltError) as error:
@@ -1376,7 +1376,7 @@ def test_unknown_global_variable_reference_is_reported() -> None:
     compiled = compile_bytes(
         xsl(
             '<xsl:variable name="v" select="$unknown"/>'
-            '<xsl:template name="main"><literal/></xsl:template>'
+            '<xsl:template name="main"><xsl:value-of select="$v"/></xsl:template>'
         )
     )
 

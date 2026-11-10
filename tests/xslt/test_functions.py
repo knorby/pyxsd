@@ -42,6 +42,12 @@ def transform(
     return compiled.transform(source=input_source, delivery=delivery, **options)
 
 
+def element_children(node: Any) -> tuple[Any, ...]:
+    from pyxsd.xdm.nodes import NodeKind
+
+    return tuple(child for child in node.children if child.kind is NodeKind.ELEMENT)
+
+
 def error_code(call: Callable[[], object]) -> str | None:
     with pytest.raises(XsltError) as caught:
         call()
@@ -319,7 +325,7 @@ def test_key_error_arms_composite_keys_and_function_values() -> None:
         <xsl:template name="main"><xsl:sequence select="count(key('k', 'x'))"/></xsl:template>
         """
     )
-    assert transform(no_document, initial_template="main").principal == (XdmAtomic.integer(0),)
+    assert error_code(lambda: transform(no_document, initial_template="main")) == "XTDE1270"
 
     global_document = stylesheet(
         """
@@ -330,11 +336,16 @@ def test_key_error_arms_composite_keys_and_function_values() -> None:
         <xsl:template name="main"><xsl:sequence select="my:count-key()"/></xsl:template>
         """
     )
-    assert transform(
-        global_document,
-        b'<doc><item id="x"/></doc>',
-        initial_template="main",
-    ).principal == (XdmAtomic.integer(1),)
+    assert (
+        error_code(
+            lambda: transform(
+                global_document,
+                b'<doc><item id="x"/></doc>',
+                initial_template="main",
+            )
+        )
+        == "XTDE1270"
+    )
 
     composite = stylesheet(
         """
@@ -455,3 +466,47 @@ def test_document_node_traversal_handles_an_empty_document() -> None:
         base_uri=None,
     )
     assert list(_document_nodes(empty)) == [empty]
+
+
+def test_original_function_and_variable_in_overrides(tmp_path: Path) -> None:
+    library = tmp_path / "library.xsl"
+    library.write_text(
+        _package(
+            "urn:library",
+            """
+            <xsl:variable name="my:number" select="1" visibility="public"/>
+            <xsl:function name="my:label" as="xs:string" visibility="public">
+              <xsl:param name="value" as="xs:string"/>
+              <xsl:sequence select="concat('base:', $value)"/>
+            </xsl:function>
+            """,
+        ),
+        encoding="utf-8",
+    )
+    principal = tmp_path / "principal.xsl"
+    principal.write_text(
+        _package(
+            "urn:principal",
+            """
+            <xsl:use-package name="urn:library" package-version="1.0">
+              <xsl:override>
+                <xsl:variable name="my:number" visibility="public" select="$xsl:original + 1"/>
+                <xsl:function name="my:label" as="xs:string" visibility="public">
+                  <xsl:param name="value" as="xs:string"/>
+                  <xsl:sequence select="concat('over:', xsl:original($value))"/>
+                </xsl:function>
+              </xsl:override>
+            </xsl:use-package>
+            <xsl:template name="xsl:initial-template" visibility="public">
+              <out><xsl:sequence select="my:label('x')"/></out>
+              <number><xsl:sequence select="$my:number"/></number>
+            </xsl:template>
+            """,
+        ),
+        encoding="utf-8",
+    )
+    compiled = XsltProcessor(resolver=PackageResolver.from_sources(library)).compile(principal)
+    result = compiled.transform(delivery="document")
+    out, number = element_children(result.principal_tree)
+    assert out.string_value == "over:base:x"
+    assert number.string_value == "2"

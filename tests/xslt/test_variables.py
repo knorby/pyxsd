@@ -152,7 +152,7 @@ def test_forward_global_references_are_lazy_and_circularity_is_reported() -> Non
         """
         <xsl:variable name="a" select="$b"/>
         <xsl:variable name="b" select="$a"/>
-        <xsl:template name="main"><literal/></xsl:template>
+        <xsl:template name="main"><xsl:value-of select="$a"/></xsl:template>
         """
     )
     assert error_code(lambda: transform(circular, initial_template="main")) == "XTDE0640"
@@ -274,3 +274,37 @@ def test_required_parameter_without_a_value_is_reported() -> None:
         """
     )
     assert error_code(lambda: transform(source, initial_template="main")) == "XTDE0700"
+
+
+def test_forward_global_reference_through_content_and_function_body() -> None:
+    content = stylesheet(
+        """
+        <xsl:variable name="a"><xsl:value-of select="$b"/></xsl:variable>
+        <xsl:variable name="b" select="'B'"/>
+        <xsl:template name="main"><xsl:value-of select="$a"/></xsl:template>
+        """
+    )
+    assert transform(content, initial_template="main").principal_tree.string_value == "B"
+
+    function = stylesheet(
+        """
+        <xsl:variable name="a" select="my:get()"/>
+        <xsl:variable name="b" select="'B'"/>
+        <xsl:function name="my:get" as="xs:string">
+          <xsl:sequence select="$b"/>
+        </xsl:function>
+        <xsl:template name="main"><xsl:value-of select="$a"/></xsl:template>
+        """
+    )
+    assert transform(function, initial_template="main").principal_tree.string_value == "B"
+
+
+def test_unused_broken_global_is_not_evaluated() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="broken" select="error()"/>
+        <xsl:template name="main"><out/></xsl:template>
+        """
+    )
+    result = transform(source, initial_template="main")
+    assert element_children(result.principal_tree)[0].local_name == "out"

@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from pyxsd.xdm import XdmAtomic
+from pyxsd.xdm import XdmAtomic, XdmFunction
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus
 from pyxsd.xslt import XsltProcessor
@@ -524,13 +524,17 @@ def test_rule_dispatcher_contract_and_layer_candidates() -> None:
     current_rule = _typed_rule("item", order=0, priority=5, precedence=(0, 2))
     same_rule = _typed_rule("item", order=1, priority=1, precedence=(0, 2))
     lower_rule = _typed_rule("item", order=2, priority=100, precedence=(0, 1))
-    layer_rule = _typed_rule("item", order=3, priority=1, layer=1)
+    descendant_rule = _typed_rule("item", order=3, priority=1, precedence=(0, 2, 1))
+    layer_rule = _typed_rule("item", order=4, priority=1, layer=1)
     priority = current_rule.priority
     layer_priority = layer_rule.priority
+    descendant_priority = descendant_rule.priority
     assert priority is not None and layer_priority is not None
+    assert descendant_priority is not None
     current = RuleMatch(current_rule, 0, priority, 0)
     same_priority_lower = RuleMatch(same_rule, 0, priority, 0)
     lower_precedence = RuleMatch(lower_rule, 0, priority, 0)
+    descendant = RuleMatch(descendant_rule, 0, descendant_priority, 0)
     lower_layer = RuleMatch(layer_rule, 0, layer_priority, 1)
     dispatcher = RuleDispatcher(
         [
@@ -539,6 +543,7 @@ def test_rule_dispatcher_contract_and_layer_candidates() -> None:
                 PatternIndex(
                     [
                         lower_precedence.rule,
+                        descendant.rule,
                         same_priority_lower.rule,
                         current.rule,
                     ]
@@ -549,9 +554,9 @@ def test_rule_dispatcher_contract_and_layer_candidates() -> None:
     )
     selected = dispatcher.select(item, None, environment)
     assert selected is not None and selected.rule is current.rule
-    skipped_then_lower = dispatcher.apply_imports(item, current, None, environment)
-    assert skipped_then_lower is not None
-    assert skipped_then_lower.rule is lower_precedence.rule
+    imported = dispatcher.apply_imports(item, current, None, environment)
+    assert imported == descendant
+    assert dispatcher.apply_imports(item, descendant, None, environment) == lower_layer
     assert dispatcher.apply_imports(item, lower_precedence, None, environment) == lower_layer
 
 
@@ -623,9 +628,15 @@ def test_builtin_value_covers_every_on_no_match_variant() -> None:
     comment = next(node for node in document.descendants if node.kind is NodeKind.COMMENT)
     assert invocation._builtin_value(comment, "text-only-copy", {}, {}) == ()
     assert invocation._builtin_value(document, "deep-skip", {}, {}) == ()
+    assert invocation._builtin_value(document, "shallow-skip", {}, {}) == ()
+    function_item = XdmFunction(lambda arguments, environment, captured: (), arity=0)
+    assert invocation._builtin_value(function_item, "shallow-skip", {}, {}) == ()
     assert invocation._builtin_value(doc, "deep-skip", {}, {}) == ()
     assert invocation._builtin_value(child, "shallow-skip", {}, {}) == ()
-    assert invocation._builtin_value(XdmAtomic.integer(3), "shallow-skip", {}, {}) == ()
+    assert (
+        invocation._builtin_value(XdmAtomic.integer(3), "shallow-skip", {}, {})[0].string_value
+        == "3"
+    )
     assert invocation._builtin_value(XdmAtomic.integer(3), "shallow", {}, {}) == (
         XdmAtomic.integer(3),
     )
@@ -854,3 +865,242 @@ def test_local_variable_empty_as_and_attribute_set_cycles() -> None:
             None,
         )
     assert caught.value.code == "XTDE0710"
+
+
+def test_apply_imports_excludes_sibling_imports(tmp_path: Path) -> None:
+    b_style = stylesheet('<xsl:template match="item"><from-b/></xsl:template>')
+    a_style = stylesheet(
+        """
+        <xsl:template match="item">
+          <from-a/>
+          <xsl:apply-imports/>
+        </xsl:template>
+        """
+    )
+    b_path = _write(tmp_path, "b.xsl", b_style)
+    a_path = _write(tmp_path, "a.xsl", a_style)
+    principal = stylesheet(
+        f"""
+        <xsl:import href="{b_path.name}"/>
+        <xsl:import href="{a_path.name}"/>
+        <xsl:template match="/"><xsl:apply-templates select="/*/item"/></xsl:template>
+        """
+    )
+    principal_path = _write(tmp_path, "principal.xsl", principal)
+    result = transform_path(principal_path, b"<doc><item/></doc>")
+    assert [child.local_name for child in element_children(result.principal_tree)] == ["from-a"]
+
+
+def test_union_next_match_with_explicit_priority_does_not_reenter_the_rule() -> None:
+    source = stylesheet(
+        """
+        <xsl:template match="item|item" priority="5">
+          <alpha><xsl:next-match/></alpha>
+        </xsl:template>
+        <xsl:template match="item" priority="1"><low/></xsl:template>
+        <xsl:template match="/"><xsl:apply-templates select="/*/item"/></xsl:template>
+        """
+    )
+    result = transform(source, b"<doc><item/></doc>")
+    alpha = element_children(result.principal_tree)[0]
+    assert alpha.local_name == "alpha"
+    assert [child.local_name for child in element_children(alpha)] == ["low"]
+
+
+def test_union_rule_without_priority_fails_on_multiple_match() -> None:
+    source = stylesheet(
+        """
+        <xsl:mode on-multiple-match="fail"/>
+        <xsl:template match="item|item"><alpha/></xsl:template>
+        <xsl:template match="/"><xsl:apply-templates select="/*/item"/></xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(source, b"<doc><item/></doc>")) == "XTDE0540"
+
+
+def test_shallow_skip_applies_attribute_rules_before_children() -> None:
+    source = stylesheet(
+        """
+        <xsl:mode on-no-match="shallow-skip"/>
+        <xsl:template match="@a"><attr><xsl:value-of select="."/></attr></xsl:template>
+        <xsl:template match="/"><xsl:apply-templates select="/*"/></xsl:template>
+        """
+    )
+    result = transform(source, b'<doc a="X"><child>t</child></doc>')
+    attributes = [
+        child for child in element_children(result.principal_tree) if child.local_name == "attr"
+    ]
+    assert [child.string_value for child in attributes] == ["X"]
+
+
+def test_builtin_rules_flatten_arrays_and_ignore_function_items() -> None:
+    arrays = stylesheet(
+        """
+        <xsl:template match="/"><xsl:apply-templates select="([1, 2])"/></xsl:template>
+        """
+    )
+    assert transform(arrays, b"<doc/>").principal_tree.string_value == "12"
+
+    shallow_arrays = stylesheet(
+        """
+        <xsl:mode on-no-match="shallow-skip"/>
+        <xsl:template match="/"><xsl:apply-templates select="([1, 2])"/></xsl:template>
+        """
+    )
+    assert transform(shallow_arrays, b"<doc/>").principal_tree.string_value == "12"
+
+    functions = stylesheet(
+        """
+        <xsl:template match="."><xsl:next-match/></xsl:template>
+        <xsl:template match="/">
+          <xsl:apply-templates select="upper-case#1"/>
+        </xsl:template>
+        """
+    )
+    assert transform(functions, b"<doc/>").principal == ()
+
+
+def test_named_template_absent_context_clears_the_current_rule() -> None:
+    source = stylesheet(
+        """
+        <xsl:template match="item" priority="2">
+          <xsl:call-template name="delegate"/>
+        </xsl:template>
+        <xsl:template match="item" priority="1"><low/></xsl:template>
+        <xsl:template name="delegate">
+          <xsl:context-item use="absent"/>
+          <xsl:next-match/>
+        </xsl:template>
+        <xsl:template match="/"><xsl:apply-templates select="/*/item"/></xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(source, b"<doc><item/></doc>")) == "XTDE0560"
+
+
+def test_variable_and_attribute_content_keep_the_current_rule() -> None:
+    variable = stylesheet(
+        """
+        <xsl:template match="item" priority="2">
+          <xsl:variable name="v" as="element()*"><xsl:next-match/></xsl:variable>
+          <xsl:sequence select="$v"/>
+        </xsl:template>
+        <xsl:template match="item" priority="1"><low/></xsl:template>
+        <xsl:template match="/"><xsl:apply-templates select="/*/item"/></xsl:template>
+        """
+    )
+    result = transform(variable, b"<doc><item/></doc>")
+    assert [child.local_name for child in element_children(result.principal_tree)] == ["low"]
+
+    attribute = stylesheet(
+        """
+        <xsl:template match="item" priority="2">
+          <out><xsl:attribute name="a"><xsl:next-match/></xsl:attribute></out>
+        </xsl:template>
+        <xsl:template match="item" priority="1"><xsl:text>next</xsl:text></xsl:template>
+        <xsl:template match="/"><xsl:apply-templates select="/*/item"/></xsl:template>
+        """
+    )
+    attribute_result = transform(attribute, b"<doc><item/></doc>")
+    out = element_children(attribute_result.principal_tree)[0]
+    assert [(item.name, item.string_value) for item in out.attributes] == [("a", "next")]
+
+
+def test_with_param_content_keeps_the_current_rule() -> None:
+    source = stylesheet(
+        """
+        <xsl:template match="item" priority="2">
+          <xsl:call-template name="show">
+            <xsl:with-param name="p"><xsl:next-match/></xsl:with-param>
+          </xsl:call-template>
+        </xsl:template>
+        <xsl:template match="item" priority="1"><xsl:text>next</xsl:text></xsl:template>
+        <xsl:template name="show">
+          <xsl:param name="p"/>
+          <out><xsl:value-of select="$p"/></out>
+        </xsl:template>
+        <xsl:template match="/"><xsl:apply-templates select="/*/item"/></xsl:template>
+        """
+    )
+    result = transform(source, b"<doc><item/></doc>")
+    assert element_children(result.principal_tree)[0].string_value == "next"
+
+
+def test_private_library_mode_and_library_default_mode(tmp_path: Path) -> None:
+    library = package(
+        "urn:library",
+        """
+        <xsl:mode name="my:hidden"/>
+        <xsl:mode name="my:default"/>
+        <xsl:template name="my:private" visibility="public">
+          <out><xsl:apply-templates select="/*/item" mode="my:hidden"/></out>
+        </xsl:template>
+        <xsl:template name="my:defaulted" visibility="public">
+          <out><xsl:apply-templates select="/*/item"/></out>
+        </xsl:template>
+        <xsl:template name="my:explicit-default" visibility="public">
+          <out><xsl:apply-templates select="/*/item" mode="#default"/></out>
+        </xsl:template>
+        <xsl:template match="item" mode="my:hidden"><hidden/></xsl:template>
+        <xsl:template match="item" mode="my:default"><defaulted/></xsl:template>
+        """,
+        attributes=' default-mode="my:default"',
+    )
+    principal = package(
+        "urn:principal",
+        """
+        <xsl:use-package name="urn:library" package-version="1.0">
+          <xsl:accept component="template" names="my:private my:defaulted my:explicit-default" visibility="public"/>
+        </xsl:use-package>
+        <xsl:template name="xsl:initial-template" visibility="public">
+          <xsl:call-template name="my:private"/>
+          <xsl:call-template name="my:defaulted"/>
+          <xsl:call-template name="my:explicit-default"/>
+        </xsl:template>
+        """,
+    )
+    library_path = _write(tmp_path, "library.xsl", library)
+    principal_path = _write(tmp_path, "principal.xsl", principal)
+    compiled = XsltProcessor(resolver=PackageResolver.from_sources(library_path)).compile(
+        principal_path
+    )
+    result = compiled.transform(
+        source=b"<doc><item/></doc>",
+        initial_template="xsl:initial-template",
+        delivery="document",
+    )
+    assert [child.local_name for child in element_children(result.principal_tree)] == [
+        "out",
+        "out",
+        "out",
+    ]
+    assert [
+        [child.local_name for child in element_children(out)]
+        for out in element_children(result.principal_tree)
+    ] == [["hidden"], ["defaulted"], ["defaulted"]]
+
+
+def test_unnamed_mode_selector_and_environment_global_lookup() -> None:
+    unnamed = stylesheet(
+        """
+        <xsl:template match="item"><unnamed/></xsl:template>
+        <xsl:template match="/">
+          <xsl:apply-templates select="/*/item" mode="#unnamed"/>
+        </xsl:template>
+        """
+    )
+    result = transform(unnamed, b"<doc><item/></doc>")
+    assert element_children(result.principal_tree)[0].local_name == "unnamed"
+
+    invocation = _invocation(
+        stylesheet(
+            """
+            <xsl:variable name="g" select="1"/>
+            <xsl:template name="main"><out/></xsl:template>
+            """
+        )
+    )
+    assert invocation._environment({}, None).variables == {}
+    component = invocation.stylesheet._package_variables[None][0]
+    invocation._global_value(component)
+    environment = invocation._environment({}, None)
+    assert environment.variables["g"] == (XdmAtomic.integer(1),)

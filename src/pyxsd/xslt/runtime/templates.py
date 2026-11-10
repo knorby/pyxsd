@@ -40,6 +40,14 @@ def _precedence_compare(left: tuple[int, ...], right: tuple[int, ...]) -> int:
     return 1 if left > right else -1
 
 
+def _is_import_descendant(
+    candidate: tuple[int, ...],
+    current: tuple[int, ...],
+) -> bool:
+    """Whether *candidate* lives in a stylesheet level imported by *current*."""
+    return len(candidate) > len(current) and candidate[: len(current)] == current
+
+
 def _priority(value: Decimal | str | int | None) -> Decimal | None:
     if value is None:
         return None
@@ -188,7 +196,10 @@ class RuleDispatcher:
             selected = matches[0]
             if self.on_multiple_match == "fail":
                 tied = {
-                    id(match.rule)
+                    (
+                        id(match.rule),
+                        match.alternative_index if match.rule.priority is None else None,
+                    )
                     for match in matches
                     if match.rule.precedence == selected.rule.precedence
                     and match.priority == selected.priority
@@ -222,18 +233,23 @@ class RuleDispatcher:
         mode: str | None,
         environment: ExpressionEnvironment,
     ) -> RuleMatch | None:
-        """Return the best candidate below the current rule's precedence.
+        """Return the best rule in a stylesheet level imported by the current one.
 
-        Candidates in a later package layer are always lower precedence.  In
-        the current layer only rules whose import precedence is strictly lower
-        are eligible; equal-precedence rules with lower priority are skipped.
+        XSLT 3.0 §6.8 considers only descendants of the current rule's
+        stylesheet level in the import tree.  Import precedence is the path of
+        import counters, so a descendant's path must extend the current path.
+        Package layers below the current one are dependency levels and are
+        likewise eligible; sibling imports and equal-precedence rules are not.
         """
         matches = self.matches(item, mode, environment)
         position = _position(matches, current)
         for match in matches[position + 1 :]:
             if match.layer_index > current.layer_index:
                 return match
-            if _precedence_compare(match.rule.precedence, current.rule.precedence) < 0:
+            if match.layer_index == current.layer_index and _is_import_descendant(
+                match.rule.precedence,
+                current.rule.precedence,
+            ):
                 return match
         return None
 
@@ -355,6 +371,7 @@ class PatternIndex:
         if not isinstance(environment, ExpressionEnvironment):
             raise TypeError("environment must be an ExpressionEnvironment")
         matches: list[RuleMatch] = []
+        seen_explicit: set[int] = set()
         for entry in self._groups.get((mode, package_layer), ()):
             alternative = entry.rule.pattern.alternatives[entry.alternative_index]
             if not alternative.filter.matches(item):
@@ -362,14 +379,19 @@ class PatternIndex:
                 continue
             self.statistics.candidate_tests += 1
             matcher = self._matchers[id(entry.rule.pattern)]
-            if matcher.matches_alternative(entry.alternative_index, item, environment):
-                matches.append(
-                    RuleMatch(
-                        rule=entry.rule,
-                        alternative_index=entry.alternative_index,
-                        priority=entry.priority,
-                    )
+            if not matcher.matches_alternative(entry.alternative_index, item, environment):
+                continue
+            if entry.rule.priority is not None:
+                if id(entry.rule) in seen_explicit:
+                    continue
+                seen_explicit.add(id(entry.rule))
+            matches.append(
+                RuleMatch(
+                    rule=entry.rule,
+                    alternative_index=entry.alternative_index,
+                    priority=entry.priority,
                 )
+            )
         return tuple(matches)
 
     def __len__(self) -> int:
