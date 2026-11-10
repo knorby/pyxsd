@@ -216,6 +216,68 @@ def test_rollback_restores_replaced_attributes_and_renamed_namespaces() -> None:
     assert namespace is not None and namespace.namespace_binding == "urn:old"
 
 
+def test_rollback_restores_namespace_names_and_attribute_prefixes_after_fixup() -> None:
+    source = _xml(b"<s xmlns:p='urn:new'/>").root_element.namespace_node("p")
+    assert source is not None
+
+    builder = ResultBuilder.document()
+    root = builder.element(
+        "{urn:old}root",
+        attributes=(("{urn:old}a", "1"),),
+        namespaces={"p": "urn:old"},
+    )
+    original_namespace = root.namespace_node("p")
+    original_attribute = root.attributes[0]
+    assert original_namespace is not None
+    assert original_namespace.name == "p"
+    assert original_attribute.prefix == "p"
+
+    with builder.transaction() as extent:
+        builder.append((source,))
+        assert root.prefix == "ns1"
+        assert original_attribute.prefix == "ns1"
+        assert original_namespace.prefix == "ns1"
+        assert original_namespace.name == "ns1"
+        extent.rollback()
+
+    assert root.prefix == "p"
+    assert root.namespace_node("p") is original_namespace
+    assert original_namespace.prefix == "p"
+    assert original_namespace.name == "p"
+    assert original_namespace.string_value == "urn:old"
+    assert root.namespace_node("ns1") is None
+    assert root.attributes[0] is original_attribute
+    assert original_attribute.prefix == "p"
+    assert dict(root.in_scope_namespaces)["p"] == "urn:old"
+
+
+def test_rollback_restores_default_namespace_node_name_after_fixup() -> None:
+    source = _xml(b"<s xmlns='urn:new'/>").root_element.namespace_node("")
+    assert source is not None
+
+    builder = ResultBuilder.document()
+    root = builder.element("{urn:old}root", namespaces={"": "urn:old"})
+    original_namespace = root.namespace_node("")
+    assert original_namespace is not None
+    assert original_namespace.name is None
+
+    with builder.transaction() as extent:
+        builder.append((source,))
+        assert root.prefix == "ns1"
+        renamed = root.namespace_node("ns1")
+        assert renamed is original_namespace
+        assert renamed.name == "ns1"
+        extent.rollback()
+
+    assert root.prefix == ""
+    restored = root.namespace_node("")
+    assert restored is original_namespace
+    assert restored.prefix == ""
+    assert restored.name is None
+    assert restored.string_value == "urn:old"
+    assert dict(root.in_scope_namespaces)[""] == "urn:old"
+
+
 # ---------------------------------------------------------------------------
 # Element state and illegal ordering
 
@@ -781,6 +843,67 @@ def test_wrap_uses_an_item_separator_between_all_items() -> None:
 
     empty = ResultBuilder.wrap(())
     assert empty.children == ()
+
+
+def test_wrap_flattens_arrays_before_applying_the_item_separator() -> None:
+    tree = ResultBuilder.wrap(
+        (
+            XdmArray([XdmAtomic.string("a"), XdmArray([XdmAtomic.string("b")])]),
+            XdmAtomic.string("c"),
+        ),
+        item_separator="|",
+    )
+    assert tree.children[0].string_value == "a|b|c"
+
+    trailing_empty = ResultBuilder.wrap(
+        (XdmAtomic.string("a"), XdmArray([])),
+        item_separator="|",
+    )
+    assert trailing_empty.children[0].string_value == "a"
+
+    leading_empty = ResultBuilder.wrap(
+        (XdmArray([]), XdmAtomic.string("a")),
+        item_separator="|",
+    )
+    assert leading_empty.children[0].string_value == "a"
+
+    only_empty = ResultBuilder.wrap((XdmArray([XdmArray([])]),), item_separator="|")
+    assert only_empty.children == ()
+
+    zero_length = ResultBuilder.wrap(
+        (XdmArray([XdmAtomic.string("a"), XdmAtomic.string("b")]),),
+        item_separator="",
+    )
+    assert zero_length.children[0].string_value == "ab"
+
+
+def test_wrap_flattens_array_members_of_nodes_with_separators() -> None:
+    first = _xml(b"<one/>").root_element
+    second = _xml(b"<two/>").root_element
+    tree = ResultBuilder.wrap(
+        (XdmArray([first, second]), XdmAtomic.string("tail")),
+        item_separator="|",
+    )
+    assert [child.kind for child in tree.children] == [
+        NodeKind.ELEMENT,
+        NodeKind.TEXT,
+        NodeKind.ELEMENT,
+        NodeKind.TEXT,
+    ]
+    assert tree.children[1].string_value == "|"
+    assert tree.children[3].string_value == "|tail"
+
+    documents = ResultBuilder.wrap(
+        (XdmArray([_xml(b"<one/>"), _xml(b"<two/>")]),),
+        item_separator="|",
+    )
+    assert [child.name for child in documents.children if child.kind is NodeKind.ELEMENT] == [
+        "one",
+        "two",
+    ]
+    assert any(
+        child.kind is NodeKind.TEXT and child.string_value == "|" for child in documents.children
+    )
 
 
 def test_wrap_rejects_attributes_namespaces_and_function_items() -> None:

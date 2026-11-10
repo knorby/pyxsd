@@ -892,8 +892,10 @@ class _ParentSnapshot:
     node: XdmNode
     children: int
     attributes: tuple[XdmNode, ...]
+    attribute_prefixes: tuple[str, ...]
     namespace_nodes: tuple[XdmNode, ...]
     namespace_prefixes: tuple[str, ...]
+    namespace_names: tuple[str | None, ...]
     scope: Mapping[str, str]
     declarations: tuple[tuple[str, str | None], ...]
     prefix: str
@@ -1296,8 +1298,10 @@ class ResultBuilder:
             node=node,
             children=len(node._children),
             attributes=tuple(node._attributes),
+            attribute_prefixes=tuple(item._prefix for item in node._attributes),
             namespace_nodes=tuple(node._namespace_nodes),
             namespace_prefixes=tuple(item._prefix for item in node._namespace_nodes),
+            namespace_names=tuple(item._name for item in node._namespace_nodes),
             scope=node._in_scope_namespaces,
             declarations=node._namespace_declarations,
             prefix=node._prefix,
@@ -1310,13 +1314,21 @@ class ResultBuilder:
             node = parent.node
             del node._children[parent.children :]
             node._attributes[:] = parent.attributes
+            for attribute, prefix in zip(
+                parent.attributes,
+                parent.attribute_prefixes,
+                strict=True,
+            ):
+                attribute._prefix = prefix
             node._namespace_nodes[:] = parent.namespace_nodes
-            for namespace_node, prefix in zip(
+            for namespace_node, prefix, name in zip(
                 parent.namespace_nodes,
                 parent.namespace_prefixes,
+                parent.namespace_names,
                 strict=True,
             ):
                 namespace_node._prefix = prefix
+                namespace_node._name = name
             node._in_scope_namespaces = parent.scope
             node._namespace_declarations = parent.declarations
             node._prefix = parent.prefix
@@ -1373,7 +1385,7 @@ class ResultBuilder:
             base_uri=base_uri,
             schema_pool=schema_pool,
         )
-        items = tuple(sequence)
+        items = tuple(_flatten_arrays(sequence))
         if item_separator is None:
             builder.append(items)
         else:
