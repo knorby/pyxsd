@@ -19,9 +19,10 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TypeAlias
 
-from pyxsd.xdm import XdmItem, XdmSequence
-from pyxsd.xdm.nodes import XdmAnnotation, XdmNode
+from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence
+from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmNode
 from pyxsd.xslt.compiler.instructions import Instruction
+from pyxsd.xslt.errors import XsltDynamicError
 from pyxsd.xslt.runtime.builder import ResultBuilder
 
 __all__ = [
@@ -32,6 +33,8 @@ __all__ = [
     "DocumentInstruction",
     "ElementInstruction",
     "LiteralResultInstruction",
+    "MapEntryInstruction",
+    "MapInstruction",
     "NamespaceInstruction",
     "ProcessingInstruction",
     "SequenceInstruction",
@@ -40,7 +43,11 @@ __all__ = [
     "construct_attribute",
     "construct_instruction",
     "construct_into",
+    "construct_map",
+    "construct_map_entry",
     "construct_sequence",
+    "is_deemed_empty",
+    "is_vacuous",
 ]
 
 
@@ -234,6 +241,35 @@ class TemporaryTreeInstruction:
         return False
 
 
+@dataclass(frozen=True, slots=True)
+class MapEntryInstruction:
+    """Construct one singleton map from an already evaluated key and value."""
+
+    key: XdmAtomic
+    value: tuple[XdmItem, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, XdmAtomic):
+            raise TypeError("a map entry instruction requires an atomic key")
+        value = tuple(self.value)
+        if not all(isinstance(item, XdmItem) for item in value):
+            raise TypeError("a map entry instruction requires XDM value items")
+        object.__setattr__(self, "value", value)
+
+
+@dataclass(frozen=True, slots=True)
+class MapInstruction:
+    """Construct one map by merging already constructed singleton/merged maps."""
+
+    maps: tuple[XdmMap, ...] = ()
+
+    def __post_init__(self) -> None:
+        maps = tuple(self.maps)
+        if not all(isinstance(item, XdmMap) for item in maps):
+            raise TypeError("a map instruction requires XDM maps")
+        object.__setattr__(self, "maps", maps)
+
+
 ConstructionInstruction: TypeAlias = (
     TextInstruction
     | AttributeInstruction
@@ -246,7 +282,100 @@ ConstructionInstruction: TypeAlias = (
     | CopyInstruction
     | DocumentInstruction
     | TemporaryTreeInstruction
+    | MapEntryInstruction
+    | MapInstruction
 )
+
+
+def is_vacuous(item: XdmItem) -> bool:
+    """Whether *item* is vacuous for ``xsl:on-empty``/``xsl:on-non-empty``.
+
+    An element with no children is not vacuous: only zero-length text nodes,
+    childless document nodes, zero-length atomics, and arrays whose flattened
+    members are all vacuous count.  Maps are never vacuous.
+    """
+    if isinstance(item, XdmNode):
+        if item.kind is NodeKind.TEXT:
+            return item.string_value == ""
+        return item.kind is NodeKind.DOCUMENT and not item.children
+    if isinstance(item, XdmAtomic):
+        return item.lexical == ""
+    if isinstance(item, XdmArray):
+        return all(is_vacuous(member) for sequence in item.members for member in sequence)
+    return False
+
+
+def is_deemed_empty(item: XdmItem) -> bool:
+    """Whether *item* is deemed empty for ``xsl:where-populated``.
+
+    Unlike :func:`is_vacuous`, an element with no children is deemed empty,
+    while any other zero-string-valued node (including a comment or processing
+    instruction) is deemed empty and an element with a child never is.
+    """
+    if isinstance(item, XdmNode):
+        if item.kind in (NodeKind.DOCUMENT, NodeKind.ELEMENT):
+            return not item.children
+        return item.string_value == ""
+    if isinstance(item, XdmAtomic):
+        return item.lexical == ""
+    if isinstance(item, XdmMap):
+        return item.size == 0
+    if isinstance(item, XdmArray):
+        return all(is_deemed_empty(member) for sequence in item.members for member in sequence)
+    return False
+
+
+def _require_map_key(sequence: XdmSequence) -> XdmAtomic:
+    """Apply the function conversion rules for an ``xs:anyAtomicType`` key."""
+    atomized: list[XdmAtomic] = []
+    for item in sequence:
+        if isinstance(item, XdmAtomic):
+            atomized.append(item)
+            continue
+        if isinstance(item, XdmNode):
+            atomized.extend(value for value in item.typed_value if isinstance(value, XdmAtomic))
+            continue
+        raise XsltDynamicError(
+            "a map key cannot atomize a function item",
+            code="FOTY0013",
+        )
+    if len(atomized) != 1:
+        raise XsltDynamicError(
+            f"a map key requires exactly one atomic value, got {len(atomized)}",
+            code="XPTY0004",
+        )
+    key = atomized[0]
+    if key.type_name.endswith("}untypedAtomic"):
+        return XdmAtomic.string(key.lexical)
+    return key
+
+
+def construct_map_entry(key: XdmSequence, value: XdmSequence) -> XdmMap:
+    """Construct one map entry, converting its key and preserving its value."""
+    return XdmMap(((_require_map_key(key), tuple(value)),))
+
+
+def construct_map(maps: XdmSequence) -> XdmMap:
+    """Merge map results with ``duplicates="reject"`` and the exact error code."""
+    entries: list[tuple[XdmAtomic, XdmSequence]] = []
+    for item in maps:
+        if not isinstance(item, XdmMap):
+            raise XsltDynamicError(
+                "xsl:map content must evaluate to a sequence of maps",
+                code="XTTE3375",
+            )
+        for key, value in item.entries:
+            duplicate = next(
+                (existing for existing, _ in entries if existing.same_key(key)),
+                None,
+            )
+            if duplicate is not None:
+                raise XsltDynamicError(
+                    f"xsl:map contains the duplicate key {key.lexical!r}",
+                    code="XTDE3365",
+                )
+            entries.append((key, value))
+    return XdmMap(entries)
 
 
 def _construct_element(
@@ -321,6 +450,10 @@ def construct_instruction(instruction: ConstructionInstruction) -> XdmSequence:
         return (builder.processing_instruction_node(instruction.target, instruction.value),)
     if isinstance(instruction, SequenceInstruction):
         return instruction.items
+    if isinstance(instruction, MapEntryInstruction):
+        return (XdmMap(((instruction.key, instruction.value),)),)
+    if isinstance(instruction, MapInstruction):
+        return (construct_map(tuple(instruction.maps)),)
     if isinstance(instruction, ElementInstruction):
         return _construct_element(
             instruction.name,

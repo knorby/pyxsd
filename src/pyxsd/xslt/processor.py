@@ -17,6 +17,7 @@ import os
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass, replace
+from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import Any, Literal, TypeAlias, cast
 from urllib.parse import urljoin, urlsplit
@@ -38,7 +39,7 @@ from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath.continuation import ContinuationMachine, HostFunction, Suspension
 from pyxsd.xpath.engine import CompiledExpression, XPathEngine
-from pyxsd.xpath.environment import ExpressionEnvironment, Focus, FocusKind
+from pyxsd.xpath.environment import ExpressionEnvironment, Focus, FocusKind, FunctionArity
 from pyxsd.xslt.compiler.context import (
     ProfileOptions,
     StaticContext,
@@ -77,7 +78,7 @@ from pyxsd.xslt.compiler.static import (
     EffectiveModule,
     StaticPreprocessor,
 )
-from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltStaticError
+from pyxsd.xslt.errors import ERROR_NAMESPACE, XsltDynamicError, XsltError, XsltStaticError
 from pyxsd.xslt.profiles import RecoveryPolicy
 from pyxsd.xslt.results import (
     ResultEntry,
@@ -86,6 +87,12 @@ from pyxsd.xslt.results import (
     _append_complex_content,
     _build_result_tree,
     _NodeFactory,
+)
+from pyxsd.xslt.runtime.evaluate import (
+    DynamicExpressionCache,
+    StaticContextIdentity,
+    evaluate_dynamic,
+    with_params_variables,
 )
 from pyxsd.xslt.runtime.frames import (
     NO_INPUT,
@@ -96,7 +103,13 @@ from pyxsd.xslt.runtime.frames import (
     Return,
 )
 from pyxsd.xslt.runtime.functions import XsltContextBridge
-from pyxsd.xslt.runtime.instructions import construct_attribute
+from pyxsd.xslt.runtime.instructions import (
+    construct_attribute,
+    construct_map,
+    construct_map_entry,
+    is_deemed_empty,
+    is_vacuous,
+)
 from pyxsd.xslt.runtime.templates import (
     PatternIndex,
     RuleDispatcher,
@@ -136,6 +149,97 @@ _LITERAL_XSLT_ATTRIBUTES = frozenset(
         "xpath-default-namespace",
     }
 )
+
+#: Every element name defined by the XSLT 3.0 schema.  A child in the XSLT
+#: namespace outside this set is a forwards-compatible candidate, not one of the
+#: known instructions this runtime intentionally reports as unimplemented.
+_XSLT30_ELEMENTS = frozenset(
+    {
+        "accept",
+        "accumulator",
+        "accumulator-rule",
+        "analyze-string",
+        "apply-imports",
+        "apply-templates",
+        "assert",
+        "attribute",
+        "attribute-set",
+        "break",
+        "call-template",
+        "catch",
+        "character-map",
+        "choose",
+        "comment",
+        "context-item",
+        "copy",
+        "copy-of",
+        "decimal-format",
+        "declaration",
+        "document",
+        "element",
+        "evaluate",
+        "expose",
+        "fallback",
+        "for-each",
+        "for-each-group",
+        "fork",
+        "function",
+        "global-context-item",
+        "if",
+        "import",
+        "import-schema",
+        "include",
+        "instruction",
+        "iterate",
+        "key",
+        "literal-result-element",
+        "map",
+        "map-entry",
+        "matching-substring",
+        "merge",
+        "merge-action",
+        "merge-key",
+        "merge-source",
+        "message",
+        "mode",
+        "namespace",
+        "namespace-alias",
+        "next-iteration",
+        "next-match",
+        "non-matching-substring",
+        "number",
+        "on-completion",
+        "on-empty",
+        "on-non-empty",
+        "otherwise",
+        "output",
+        "output-character",
+        "override",
+        "package",
+        "param",
+        "perform-sort",
+        "preserve-space",
+        "processing-instruction",
+        "result-document",
+        "sequence",
+        "sort",
+        "source-document",
+        "strip-space",
+        "stylesheet",
+        "template",
+        "text",
+        "transform",
+        "try",
+        "use-package",
+        "value-of",
+        "variable",
+        "when",
+        "where-populated",
+        "with-param",
+    }
+)
+
+_PROCESSOR_VERSION = Decimal("3.0")
 
 
 class XsltInvocationError(ValueError):
@@ -272,6 +376,85 @@ class _ChoosePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class _MapPlan:
+    instruction: Instruction
+    children: tuple[_Plan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _MapEntryPlan:
+    instruction: Instruction
+    key: CompiledExpression
+    expression: CompiledExpression | None
+    children: tuple[_Plan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _EvaluatePlan:
+    instruction: Instruction
+    expression: CompiledExpression
+    sequence_type: CompiledSequenceType | None
+    base_uri: CompiledValueTemplate | None
+    schema_aware: CompiledValueTemplate | None
+    context_item: CompiledExpression | None
+    namespace_context: CompiledExpression | None
+    with_params: tuple[_WithParamPlan, ...]
+    with_params_expression: CompiledExpression | None
+    xpath_version: str
+    enabled: bool
+    namespaces: Mapping[str, str]
+    default_namespace: str | None
+    functions: Mapping[str, FunctionArity]
+
+
+@dataclass(frozen=True, slots=True)
+class _AssertPlan:
+    instruction: Instruction
+    test: CompiledExpression
+    select: CompiledExpression | None
+    children: tuple[_Plan, ...]
+    error_code: CompiledValueTemplate | None
+    enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _WherePopulatedPlan:
+    instruction: Instruction
+    children: tuple[_Plan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _OnEmptyPlan:
+    instruction: Instruction
+    expression: CompiledExpression | None
+    children: tuple[_Plan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _OnNonEmptyPlan:
+    instruction: Instruction
+    expression: CompiledExpression | None
+    children: tuple[_Plan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ConditionalSequencePlan:
+    plans: tuple[_Plan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _FallbackPlan:
+    instruction: Instruction
+    children: tuple[_Plan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ConcatPlan:
+    instruction: Instruction
+    parts: tuple[tuple[_Plan, ...], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _ResultDocumentPlan:
     instruction: Instruction
     href: str | CompiledValueTemplate
@@ -302,6 +485,16 @@ _Plan: TypeAlias = (
     | _OverridingPlan
     | _RestoreVariablesPlan
     | _ChoosePlan
+    | _MapPlan
+    | _MapEntryPlan
+    | _EvaluatePlan
+    | _AssertPlan
+    | _WherePopulatedPlan
+    | _OnEmptyPlan
+    | _OnNonEmptyPlan
+    | _ConditionalSequencePlan
+    | _FallbackPlan
+    | _ConcatPlan
     | _ResultDocumentPlan
     | _UnsupportedPlan
 )
@@ -1094,7 +1287,42 @@ def _compile_sequence(
                 plans.append(_TextPlan(child.value))
             continue
         plans.append(_compile_instruction(child, context, module))
-    return tuple(plans)
+    return _conditional_sequence(plans)
+
+
+def _conditional_sequence(plans: Iterable[_Plan]) -> tuple[_Plan, ...]:
+    """Wrap a sequence constructor that contains conditional-content markers."""
+    body = tuple(plans)
+    if not any(isinstance(plan, (_OnEmptyPlan, _OnNonEmptyPlan)) for plan in body):
+        return body
+    leading = 0
+    while leading < len(body) and isinstance(body[leading], _ParamPlan):
+        leading += 1
+    parameters = body[:leading]
+    content = body[leading:]
+    on_empty = next(
+        (index for index, plan in enumerate(content) if isinstance(plan, _OnEmptyPlan)),
+        None,
+    )
+    for index, plan in enumerate(content):
+        if isinstance(plan, _OnEmptyPlan) and on_empty != index:
+            raise XsltStaticError(
+                "a sequence constructor permits at most one xsl:on-empty",
+                code="XTSE0010",
+                uri=plan.instruction.module,
+                location=plan.instruction.location,
+            )
+        if on_empty is not None and index > on_empty:
+            if isinstance(plan, _FallbackPlan):
+                continue
+            instruction = getattr(plan, "instruction", None)
+            raise XsltStaticError(
+                "xsl:on-empty must be the last instruction in its sequence constructor",
+                code="XTSE0010",
+                uri=getattr(instruction, "module", None),
+                location=getattr(instruction, "location", None),
+            )
+    return (*parameters, _ConditionalSequencePlan(content))
 
 
 def _compile_with_params(
@@ -1118,43 +1346,47 @@ def _compile_with_params(
                 uri=context.uri,
                 location=child.location,
             )
-        name = child.attribute("name")
-        if not name:
-            raise XsltStaticError(
-                "xsl:with-param requires a name",
-                code="XTSE0010",
-                uri=context.uri,
-                location=child.location,
-            )
-        select = child.attribute("select")
-        children = _compile_sequence(child.children, context, module)
-        if select is not None and _has_plan_content(children):
-            raise XsltStaticError(
-                "a parameter with a select attribute must have empty content",
-                code="XTSE0620",
-                uri=context.uri,
-                location=child.location,
-            )
-        as_source = child.attribute("as")
-        result.append(
-            _WithParamPlan(
-                name=_expanded_name(name, child.namespaces),
-                tunnel=_attribute_yes_no(child, "tunnel", context),
-                expression=(
-                    compile_xpath(select, context, location=child.location)
-                    if select is not None
-                    else None
-                ),
-                children=children,
-                has_as=as_source is not None,
-                sequence_type=(
-                    compile_sequence_type(as_source, context, location=child.location)
-                    if as_source is not None
-                    else None
-                ),
-            )
-        )
+        result.append(_compile_parameter(child, context, module))
     return tuple(result)
+
+
+def _compile_parameter(
+    child: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _WithParamPlan:
+    name = child.attribute("name")
+    if not name:
+        raise XsltStaticError(
+            "xsl:with-param requires a name",
+            code="XTSE0010",
+            uri=context.uri,
+            location=child.location,
+        )
+    select = child.attribute("select")
+    children = _compile_sequence(child.children, context, module)
+    if select is not None and _has_plan_content(children):
+        raise XsltStaticError(
+            "a parameter with a select attribute must have empty content",
+            code="XTSE0620",
+            uri=context.uri,
+            location=child.location,
+        )
+    as_source = child.attribute("as")
+    return _WithParamPlan(
+        name=_expanded_name(name, child.namespaces),
+        tunnel=_attribute_yes_no(child, "tunnel", context),
+        expression=(
+            compile_xpath(select, context, location=child.location) if select is not None else None
+        ),
+        children=children,
+        has_as=as_source is not None,
+        sequence_type=(
+            compile_sequence_type(as_source, context, location=child.location)
+            if as_source is not None
+            else None
+        ),
+    )
 
 
 def _instruction_mode(instruction: Instruction) -> str | None:
@@ -1522,6 +1754,125 @@ def _compile_instruction(
             branches=tuple(branches),
             otherwise=otherwise,
         )
+    if local == "if":
+        test = instruction.attribute("test")
+        if test is None:
+            raise XsltStaticError(
+                "xsl:if requires a test attribute",
+                code="XTSE0010",
+                uri=context.uri,
+                location=location,
+            )
+        return _ChoosePlan(
+            instruction=instruction,
+            branches=(
+                (
+                    compile_xpath(test, context, location=location),
+                    _compile_sequence(instruction.children, context, module),
+                ),
+            ),
+            otherwise=None,
+        )
+    if local == "map":
+        if instruction.attribute("select") is not None:
+            raise XsltStaticError(
+                "xsl:map does not have a select attribute",
+                code="XTSE0010",
+                uri=context.uri,
+                location=location,
+            )
+        return _MapPlan(
+            instruction=instruction,
+            children=_compile_sequence(instruction.children, context, module),
+        )
+    if local == "map-entry":
+        key = instruction.attribute("key")
+        if key is None:
+            raise XsltStaticError(
+                "xsl:map-entry requires a key attribute",
+                code="XTSE0010",
+                uri=context.uri,
+                location=location,
+            )
+        select = instruction.attribute("select")
+        children = _compile_sequence(instruction.children, context, module)
+        if select is not None and _has_plan_content(children):
+            raise XsltStaticError(
+                "xsl:map-entry with a select attribute must have empty content",
+                code="XTSE3280",
+                uri=context.uri,
+                location=location,
+            )
+        return _MapEntryPlan(
+            instruction=instruction,
+            key=compile_xpath(key, context, location=location),
+            expression=(
+                compile_xpath(select, context, location=location) if select is not None else None
+            ),
+            children=children,
+        )
+    if local == "evaluate":
+        return _compile_evaluate(instruction, context, module)
+    if local == "assert":
+        test = instruction.attribute("test")
+        if test is None:
+            raise XsltStaticError(
+                "xsl:assert requires a test attribute",
+                code="XTSE0010",
+                uri=context.uri,
+                location=location,
+            )
+        select = instruction.attribute("select")
+        error_code = instruction.attribute("error-code")
+        return _AssertPlan(
+            instruction=instruction,
+            test=compile_xpath(test, context, location=location),
+            select=(
+                compile_xpath(select, context, location=location) if select is not None else None
+            ),
+            children=_compile_sequence(instruction.children, context, module),
+            error_code=(
+                compile_avt(error_code, context, location=location)
+                if error_code is not None
+                else None
+            ),
+            enabled=_assertion_checking_enabled(context),
+        )
+    if local == "where-populated":
+        if instruction.attribute("select") is not None:
+            raise XsltStaticError(
+                "xsl:where-populated does not have a select attribute",
+                code="XTSE0010",
+                uri=context.uri,
+                location=location,
+            )
+        return _WherePopulatedPlan(
+            instruction=instruction,
+            children=_compile_sequence(instruction.children, context, module),
+        )
+    if local in ("on-empty", "on-non-empty"):
+        select = instruction.attribute("select")
+        children = _compile_sequence(instruction.children, context, module)
+        if select is not None and _has_plan_content(children):
+            raise XsltStaticError(
+                f"xsl:{local} with a select attribute must have empty content",
+                code="XTSE3185",
+                uri=context.uri,
+                location=location,
+            )
+        plan_type = _OnEmptyPlan if local == "on-empty" else _OnNonEmptyPlan
+        return plan_type(
+            instruction=instruction,
+            expression=(
+                compile_xpath(select, context, location=location) if select is not None else None
+            ),
+            children=children,
+        )
+    if local == "fallback":
+        return _FallbackPlan(
+            instruction=instruction,
+            children=_compile_sequence(instruction.children, context, module),
+        )
     if local == "call-template":
         reference = instruction.reference
         if reference is None:
@@ -1556,6 +1907,8 @@ def _compile_instruction(
             uri=context.uri,
             location=location,
         )
+    if instruction.is_xslt and local not in _XSLT30_ELEMENTS:
+        return _compile_forward_instruction(instruction, context, module)
     select = instruction.attribute("select")
     if select is not None:
         compile_xpath(select, context, location=location)
@@ -1564,6 +1917,200 @@ def _compile_instruction(
         compile_xpath(test, context, location=location)
     _compile_sequence(instruction.children, context, module)
     return _UnsupportedPlan(instruction)
+
+
+def _assertion_checking_enabled(context: StaticContext) -> bool:
+    value = context.static_option("assertions", False)
+    if not isinstance(value, bool):
+        raise TypeError("the assertions static option must be a boolean")
+    return value
+
+
+def _dynamic_evaluation_enabled(context: StaticContext) -> bool:
+    value = context.static_option("dynamic-evaluation", True)
+    if not isinstance(value, bool):
+        raise TypeError("the dynamic-evaluation static option must be a boolean")
+    return value
+
+
+def _dynamic_xpath_version(instruction: Instruction, context: StaticContext) -> str:
+    raw = instruction.attribute("xpath-version")
+    if raw is None:
+        return context.xpath_version
+    value = raw.strip()
+    if value not in ("2.0", "3.0", "3.1"):
+        raise XsltStaticError(
+            f"xsl:evaluate has an unsupported xpath-version {raw!r}",
+            code="XTSE0020",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    if Decimal(value) > Decimal(context.xpath_version):
+        raise XsltStaticError(
+            f"xsl:evaluate requests XPath {value} but the processor supports "
+            f"{context.xpath_version}",
+            code="XTSE0020",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    return value
+
+
+def _static_function_arity_range(arities: Sequence[FunctionArity]) -> FunctionArity:
+    minimum = min(arity if isinstance(arity, int) else arity[0] for arity in arities)
+    maximum = max(
+        arity if isinstance(arity, int) else (arity[1] if arity[1] is not None else arity[0])
+        for arity in arities
+    )
+    return minimum if minimum == maximum else (minimum, maximum)
+
+
+def _dynamic_function_declarations(context: StaticContext) -> Mapping[str, FunctionArity]:
+    grouped: dict[str, list[FunctionArity]] = {}
+    for (name, arity), function in context.functions.items():
+        if function.visibility in ("hidden", "private"):
+            continue
+        if not name.startswith("{") and ":" not in name:
+            continue
+        grouped.setdefault(name, []).append(arity)
+    declarations: dict[str, FunctionArity] = {}
+    for name, arities in grouped.items():
+        declarations[name] = (
+            arities[0] if len(arities) == 1 else _static_function_arity_range(arities)
+        )
+    return MappingProxyType(declarations)
+
+
+def _compile_evaluate_content(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> tuple[tuple[_WithParamPlan, ...], tuple[tuple[_Plan, ...], ...]]:
+    parameters: list[_WithParamPlan] = []
+    fallbacks: list[tuple[_Plan, ...]] = []
+    for child in instruction.children:
+        if isinstance(child, TextNode):
+            raise XsltStaticError(
+                "xsl:evaluate permits only xsl:with-param and xsl:fallback content",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        if child.is_xslt and child.local_name == "with-param":
+            parameters.append(_compile_parameter(child, context, module))
+            continue
+        if child.is_xslt and child.local_name == "fallback":
+            fallbacks.append(_compile_sequence(child.children, context, module))
+            continue
+        raise XsltStaticError(
+            "xsl:evaluate permits only xsl:with-param and xsl:fallback content",
+            code="XTSE0010",
+            uri=context.uri,
+            location=child.location,
+        )
+    return tuple(parameters), tuple(fallbacks)
+
+
+def _compile_evaluate(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    xpath_source = instruction.attribute("xpath")
+    if xpath_source is None:
+        raise XsltStaticError(
+            "xsl:evaluate requires an xpath attribute",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    expression = compile_xpath(xpath_source, context, location=instruction.location)
+    with_params, fallback = _compile_evaluate_content(instruction, context, module)
+    enabled = _dynamic_evaluation_enabled(context)
+    if not enabled and fallback:
+        return _ConcatPlan(instruction, fallback)
+    select_with_params = instruction.attribute("with-params")
+    context_item = instruction.attribute("context-item")
+    namespace_context = instruction.attribute("namespace-context")
+    base_uri = instruction.attribute("base-uri")
+    schema_aware = instruction.attribute("schema-aware")
+    as_source = instruction.attribute("as")
+    namespaces = {prefix: uri for prefix, uri in instruction.namespaces.items() if prefix}
+    return _EvaluatePlan(
+        instruction=instruction,
+        expression=expression,
+        sequence_type=(
+            compile_sequence_type(as_source, context, location=instruction.location)
+            if as_source is not None
+            else None
+        ),
+        base_uri=(
+            compile_avt(base_uri, context, location=instruction.location)
+            if base_uri is not None
+            else None
+        ),
+        schema_aware=(
+            compile_avt(schema_aware, context, location=instruction.location)
+            if schema_aware is not None
+            else None
+        ),
+        context_item=(
+            compile_xpath(context_item, context, location=instruction.location)
+            if context_item is not None
+            else None
+        ),
+        namespace_context=(
+            compile_xpath(namespace_context, context, location=instruction.location)
+            if namespace_context is not None
+            else None
+        ),
+        with_params=with_params,
+        with_params_expression=(
+            compile_xpath(select_with_params, context, location=instruction.location)
+            if select_with_params is not None
+            else None
+        ),
+        xpath_version=_dynamic_xpath_version(instruction, context),
+        enabled=enabled,
+        namespaces=MappingProxyType(dict(namespaces)),
+        default_namespace=context.xpath_default_namespace,
+        functions=_dynamic_function_declarations(context),
+    )
+
+
+def _forwards_compatible(version: str) -> bool:
+    try:
+        return Decimal(version) > _PROCESSOR_VERSION
+    except (InvalidOperation, ValueError):
+        return False
+
+
+def _compile_forward_instruction(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    if not _forwards_compatible(context.version):
+        raise XsltStaticError(
+            f"xsl:{instruction.local_name} is not defined in XSLT 3.0",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    fallbacks = [
+        child for child in instruction.elements if child.is_xslt and child.local_name == "fallback"
+    ]
+    if not fallbacks:
+        raise XsltStaticError(
+            f"xsl:{instruction.local_name} is not defined in XSLT 3.0 and has no xsl:fallback",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    return _ConcatPlan(
+        instruction,
+        tuple(_compile_sequence(fallback.children, context, module) for fallback in fallbacks),
+    )
 
 
 def _literal_namespaces(
@@ -1606,6 +2153,36 @@ def _namespace(name: str) -> str | None:
     if not name.startswith("{"):
         return None
     return name[1:].partition("}")[0]
+
+
+def _boolean_avt(value: str, attribute: str) -> bool:
+    normalized = value.strip()
+    if normalized in ("yes", "true", "1"):
+        return True
+    if normalized in ("no", "false", "0"):
+        return False
+    raise XsltDynamicError(
+        f"the effective value of {attribute} is not a boolean: {value!r}",
+        code="XTDE0030",
+    )
+
+
+def _dynamic_variable_names(
+    values: Mapping[str, XdmSequence],
+    namespaces: Mapping[str, str],
+) -> dict[str, XdmSequence]:
+    """Bind dynamic variables by expanded and in-scope lexical names."""
+    result: dict[str, XdmSequence] = {}
+    for name, value in values.items():
+        result[name] = value
+        if not name.startswith("{"):
+            continue
+        namespace, _, local = name[1:].partition("}")
+        for prefix, uri in namespaces.items():
+            if prefix and uri == namespace:
+                result[f"{prefix}:{local}"] = value
+                break
+    return result
 
 
 def _has_plan_content(plans: Iterable[_Plan]) -> bool:
@@ -2232,6 +2809,7 @@ class _Invocation(Transformation):
         super().__init__(stylesheet, options, limits=limits)
         self._mode_dispatchers: dict[tuple[str | None, str | None], RuleDispatcher] = {}
         self._pattern_environments: dict[int, ExpressionEnvironment] = {}
+        self.dynamic_expressions = DynamicExpressionCache()
 
     # -- top level ---------------------------------------------------------
 
@@ -3786,6 +4364,117 @@ class _Invocation(Transformation):
                 rule_context=rule_context,
                 original_functions=original_functions,
             )
+        if isinstance(plan, _MapPlan):
+            values = self._execute_plans(
+                plan.children,
+                focus=focus,
+                locals_=locals_,
+                final_output=final_output,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+            return (construct_map(values),)
+        if isinstance(plan, _MapEntryPlan):
+            key = self._evaluate(
+                plan.key,
+                focus,
+                locals_,
+                package_name,
+                original_functions=original_functions,
+            )
+            if plan.expression is not None:
+                value = self._evaluate(
+                    plan.expression,
+                    focus,
+                    locals_,
+                    package_name,
+                    original_functions=original_functions,
+                )
+            else:
+                value = self._execute_plans(
+                    plan.children,
+                    focus=focus,
+                    locals_=locals_,
+                    final_output=False,
+                    package_name=package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
+                    rule_context=rule_context,
+                    original_functions=original_functions,
+                )
+            return (construct_map_entry(key, value),)
+        if isinstance(plan, _EvaluatePlan):
+            return self._dynamic_evaluate(
+                plan,
+                focus,
+                locals_,
+                package_name,
+                final_output=final_output,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+        if isinstance(plan, _AssertPlan):
+            self._assert_value(
+                plan,
+                focus,
+                locals_,
+                package_name,
+                final_output=final_output,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+            return ()
+        if isinstance(plan, _WherePopulatedPlan):
+            values = self._execute_plans(
+                plan.children,
+                focus=focus,
+                locals_=locals_,
+                final_output=final_output,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+            return tuple(item for item in values if not is_deemed_empty(item))
+        if isinstance(plan, _ConditionalSequencePlan):
+            return self._execute_conditional_sequence(
+                plan,
+                focus,
+                locals_,
+                final_output=final_output,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+        if isinstance(plan, _FallbackPlan):
+            return ()
+        if isinstance(plan, _ConcatPlan):
+            result: list[XdmItem] = []
+            for part in plan.parts:
+                result.extend(
+                    self._execute_plans(
+                        part,
+                        focus=focus,
+                        locals_=locals_,
+                        final_output=final_output,
+                        package_name=package_name,
+                        mode=mode,
+                        tunnel_parameters=tunnel_parameters,
+                        rule_context=rule_context,
+                        original_functions=original_functions,
+                    )
+                )
+            return tuple(result)
         if isinstance(plan, _CallTemplatePlan):
             template, tunnel = self._plan_parameters_for(
                 plan.parameters,
@@ -3869,6 +4558,391 @@ class _Invocation(Transformation):
         raise TypeError(  # pragma: no cover - every _Plan arm is handled above
             f"unknown compiled plan {type(plan).__name__}"
         )
+
+    def _execute_conditional_sequence(
+        self,
+        plan: _ConditionalSequencePlan,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        *,
+        final_output: bool,
+        package_name: str | None,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
+        rule_context: _RuleContext | None = None,
+        original_functions: Mapping[int, Component] | None = None,
+    ) -> XdmSequence:
+        result: list[XdmItem] = []
+        deferred: list[tuple[_OnNonEmptyPlan, Mapping[str, XdmSequence]]] = []
+        local_scope = dict(locals_)
+        populated = False
+        for item in plan.plans:
+            if isinstance(item, _ParamPlan):
+                raise XsltError(
+                    "xsl:param is only supported at the start of a template or function",
+                    code="XTDE0000",
+                )
+            if isinstance(item, _VariablePlan):
+                local_scope[item.name] = self._variable_value(
+                    item,
+                    focus,
+                    local_scope,
+                    package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
+                    rule_context=rule_context,
+                    original_functions=original_functions,
+                )
+                continue
+            if isinstance(item, _OnNonEmptyPlan):
+                if populated:
+                    result.extend(
+                        self._conditional_value(
+                            item,
+                            focus,
+                            local_scope,
+                            final_output,
+                            package_name,
+                            mode=mode,
+                            tunnel_parameters=tunnel_parameters,
+                            rule_context=rule_context,
+                            original_functions=original_functions,
+                        )
+                    )
+                else:
+                    deferred.append((item, dict(local_scope)))
+                continue
+            if isinstance(item, _OnEmptyPlan):
+                if not populated:
+                    result.clear()
+                    result.extend(
+                        self._conditional_value(
+                            item,
+                            focus,
+                            local_scope,
+                            final_output,
+                            package_name,
+                            mode=mode,
+                            tunnel_parameters=tunnel_parameters,
+                            rule_context=rule_context,
+                            original_functions=original_functions,
+                        )
+                    )
+                continue
+            values = self._execute_plan(
+                item,
+                focus=focus,
+                locals_=local_scope,
+                final_output=final_output,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+            for value in values:
+                if not populated and not is_vacuous(value):
+                    for deferred_plan, deferred_scope in deferred:
+                        result.extend(
+                            self._conditional_value(
+                                deferred_plan,
+                                focus,
+                                deferred_scope,
+                                final_output,
+                                package_name,
+                                mode=mode,
+                                tunnel_parameters=tunnel_parameters,
+                                rule_context=rule_context,
+                                original_functions=original_functions,
+                            )
+                        )
+                    deferred.clear()
+                    populated = True
+                result.append(value)
+        return tuple(result)
+
+    def _conditional_value(
+        self,
+        plan: _OnEmptyPlan | _OnNonEmptyPlan,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        final_output: bool,
+        package_name: str | None,
+        *,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
+        rule_context: _RuleContext | None = None,
+        original_functions: Mapping[int, Component] | None = None,
+    ) -> XdmSequence:
+        if plan.expression is not None:
+            return self._evaluate(
+                plan.expression,
+                focus,
+                locals_,
+                package_name,
+                original_functions=original_functions,
+            )
+        return self._execute_plans(
+            plan.children,
+            focus=focus,
+            locals_=locals_,
+            final_output=final_output,
+            package_name=package_name,
+            mode=mode,
+            tunnel_parameters=tunnel_parameters,
+            rule_context=rule_context,
+            original_functions=original_functions,
+        )
+
+    def _assert_value(
+        self,
+        plan: _AssertPlan,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
+        *,
+        final_output: bool,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
+        rule_context: _RuleContext | None = None,
+        original_functions: Mapping[int, Component] | None = None,
+    ) -> None:
+        if not plan.enabled:
+            return
+        failure: BaseException | None = None
+        satisfied = False
+        try:
+            satisfied = _effective_boolean(
+                self._evaluate(
+                    plan.test,
+                    focus,
+                    locals_,
+                    package_name,
+                    original_functions=original_functions,
+                )
+            )
+        except Exception as exc:
+            failure = exc
+        if satisfied:
+            return
+        message_values: list[XdmItem] = []
+        if plan.select is not None:
+            message_values.extend(
+                self._evaluate(
+                    plan.select,
+                    focus,
+                    locals_,
+                    package_name,
+                    original_functions=original_functions,
+                )
+            )
+        message_values.extend(
+            self._execute_plans(
+                plan.children,
+                focus=focus,
+                locals_=locals_,
+                final_output=False,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+        )
+        detail = ""
+        if message_values:
+            document = _build_result_tree(message_values)
+            detail = document.string_value.strip()
+        code = "XTMM9001"
+        if plan.error_code is not None:
+            selected = self._value_source(plan.error_code, focus, locals_, package_name).strip()
+            expanded = _expanded_name(selected, plan.instruction.namespaces)
+            if expanded.startswith(f"{{{ERROR_NAMESPACE}}}"):
+                expanded = expanded.rpartition("}")[2]
+            code = expanded or "XTMM9001"
+        if detail:
+            message = f"assertion failed: {detail} (test: {plan.test.source})"
+        else:
+            message = f"assertion failed: {plan.test.source} evaluated to false"
+        raise XsltDynamicError(
+            message,
+            code=code,
+            location=plan.instruction.location,
+            cause=failure,
+        )
+
+    def _dynamic_evaluate(
+        self,
+        plan: _EvaluatePlan,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
+        *,
+        final_output: bool,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
+        rule_context: _RuleContext | None = None,
+        original_functions: Mapping[int, Component] | None = None,
+    ) -> XdmSequence:
+        if not plan.enabled:
+            raise XsltDynamicError(
+                "xsl:evaluate is disabled for this transformation",
+                code="XTDE3175",
+                location=plan.instruction.location,
+            )
+        target_values = self._evaluate(
+            plan.expression,
+            focus,
+            locals_,
+            package_name,
+            original_functions=original_functions,
+        )
+        profile = self.profile_for(plan.expression.static_context.xslt_version)
+        target = profile.string_sequence(target_values)
+
+        parameter_values: dict[str, XdmSequence] = {}
+        variable_types: dict[str, str] = {}
+        for parameter in plan.with_params:
+            if parameter.expression is not None:
+                value = self._evaluate(
+                    parameter.expression,
+                    focus,
+                    locals_,
+                    package_name,
+                    original_functions=original_functions,
+                )
+            else:
+                value = self._execute_plans(
+                    parameter.children,
+                    focus=focus,
+                    locals_=locals_,
+                    final_output=False,
+                    package_name=package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
+                    rule_context=rule_context,
+                    original_functions=original_functions,
+                )
+            if parameter.sequence_type is not None:
+                value = _coerce_sequence(
+                    value,
+                    parameter.sequence_type,
+                    code="XTTE0590",
+                    label=f"parameter {parameter.name!r}",
+                )
+            parameter_values[parameter.name] = value
+            variable_types[parameter.name] = (
+                "item()*" if parameter.sequence_type is None else str(parameter.sequence_type)
+            )
+        if plan.with_params_expression is not None:
+            supplied = self._evaluate(
+                plan.with_params_expression,
+                focus,
+                locals_,
+                package_name,
+                original_functions=original_functions,
+            )
+            for name, value in with_params_variables(supplied).items():
+                parameter_values[name] = value
+                variable_types[name] = "item()*"
+
+        expression_focus = Focus.absent()
+        if plan.context_item is not None:
+            context_values = self._evaluate(
+                plan.context_item,
+                focus,
+                locals_,
+                package_name,
+                original_functions=original_functions,
+            )
+            if len(context_values) > 1:
+                raise XsltDynamicError(
+                    "xsl:evaluate/@context-item must return at most one item",
+                    code="XTTE3210",
+                    location=plan.instruction.location,
+                )
+            if context_values:
+                expression_focus = Focus.singleton(context_values[0])
+
+        namespaces = dict(plan.namespaces)
+        default_namespace = plan.default_namespace
+        if plan.namespace_context is not None:
+            context_nodes = self._evaluate(
+                plan.namespace_context,
+                focus,
+                locals_,
+                package_name,
+                original_functions=original_functions,
+            )
+            if len(context_nodes) != 1 or not isinstance(context_nodes[0], XdmNode):
+                raise XsltDynamicError(
+                    "xsl:evaluate/@namespace-context must return a single node",
+                    code="XTTE3170",
+                    location=plan.instruction.location,
+                )
+            namespaces = {
+                prefix: uri
+                for prefix, uri in context_nodes[0].in_scope_namespaces.items()
+                if prefix
+            }
+            default_namespace = context_nodes[0].in_scope_namespaces.get("")
+
+        base_uri = (
+            self._value_source(plan.base_uri, focus, locals_, package_name)
+            if plan.base_uri is not None
+            else plan.instruction.base_uri
+        )
+        schema_aware = False
+        if plan.schema_aware is not None:
+            schema_aware = _boolean_avt(
+                self._value_source(plan.schema_aware, focus, locals_, package_name),
+                "schema-aware",
+            )
+        schema = (
+            self.stylesheet.schema_pool
+            if schema_aware and self.stylesheet.processor.schema_aware
+            else None
+        )
+
+        available = self.fallback_functions(package_name)
+        functions = {name: available[name] for name in plan.functions if name in available}
+        identity = StaticContextIdentity(
+            xpath_version=plan.xpath_version,
+            namespaces=namespaces,
+            default_namespace=default_namespace,
+            base_uri=base_uri,
+            variable_types=variable_types,
+            functions=plan.functions,
+            schema=schema,
+            schema_aware=schema_aware,
+            default_collation=plan.expression.static_context.default_collation,
+            xslt_version=plan.expression.static_context.xslt_version,
+            package_name=package_name,
+        )
+        variables = _dynamic_variable_names(parameter_values, namespaces)
+        environment = ExpressionEnvironment(
+            variables=variables,
+            functions=functions,
+            decimal_formats=self._decimal_formats(package_name),
+            current_datetime=self.current_datetime,
+            implicit_timezone=self.implicit_timezone,
+            base_uri=base_uri,
+        )
+        result = evaluate_dynamic(
+            target,
+            identity,
+            environment,
+            focus=expression_focus,
+            cache=self.dynamic_expressions,
+        )
+        if plan.sequence_type is not None:
+            result = _coerce_sequence(
+                result,
+                plan.sequence_type,
+                code="XPTY0004",
+                label="xsl:evaluate result",
+            )
+        return result
 
     def _literal_element(
         self,

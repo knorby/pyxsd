@@ -1557,9 +1557,9 @@ def test_static_availability_and_system_property_are_honest() -> None:
         """
     )
     assert transform(system, b"<doc/>", initial_template="main").principal == (
-        XdmAtomic.string("no"),
+        XdmAtomic.string("yes"),
         XdmAtomic.boolean(False),
-        XdmAtomic.boolean(False),
+        XdmAtomic.boolean(True),
         XdmAtomic.boolean(False),
         XdmAtomic.boolean(False),
         XdmAtomic.boolean(True),

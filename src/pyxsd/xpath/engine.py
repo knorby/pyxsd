@@ -625,13 +625,21 @@ def _expanded_variable_name(value: str, static_context: XPathStaticContext) -> s
 class XPathEngine:
     """Compile and evaluate standalone XPath expressions."""
 
-    def __init__(self, version: str = "3.1") -> None:
+    def __init__(self, version: str = "3.1", *, xslt_functions: bool = True) -> None:
+        if not isinstance(xslt_functions, bool):
+            raise TypeError("xslt_functions must be a boolean")
         self._version = _normalise_version(version)
         self._parser_class = _PARSERS[self._version]
+        self._xslt_functions = xslt_functions
 
     @property
     def version(self) -> str:
         return self._version
+
+    @property
+    def xslt_functions(self) -> bool:
+        """Whether XSLT-only functions such as ``key`` are registered."""
+        return self._xslt_functions
 
     @property
     def parser_class(self) -> type[Any]:
@@ -650,7 +658,12 @@ class XPathEngine:
         if not isinstance(source, str) or not source.strip():
             raise ValueError("an XPath expression requires non-empty source")
 
-        parser = _build_parser(self._version, static_context, functions=None, key=True)
+        parser = _build_parser(
+            self._version,
+            static_context,
+            functions=None,
+            key=self._xslt_functions,
+        )
         root_token = parser.parse(source)
         variable_names = _expression_variable_names(root_token, static_context)
 
@@ -697,7 +710,7 @@ class XPathEngine:
             self._version,
             compiled.static_context,
             functions=environment.functions,
-            key=True,
+            key=self._xslt_functions,
             base_uri=environment.base_uri,
             decimal_formats=environment.decimal_formats,
         )

@@ -956,9 +956,9 @@ def test_text_value_templates_and_nested_sequences() -> None:
     )
 
 
-def test_unsupported_instruction_with_test_attribute_is_compiled() -> None:
+def test_unsupported_instruction_with_select_attribute_is_compiled() -> None:
     compiled = compile_bytes(
-        xsl('<xsl:template name="main"><xsl:if test="true()"><literal/></xsl:if></xsl:template>')
+        xsl('<xsl:template name="main"><xsl:message select="1 + 1"/></xsl:template>')
     )
 
     with pytest.raises(XsltError, match="not supported"):

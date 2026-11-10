@@ -82,7 +82,7 @@ SYSTEM_PROPERTIES: Mapping[str, str] = MappingProxyType(
         "xsl:supports-backwards-compatibility": "yes",
         "xsl:supports-namespace-axis": "yes",
         "xsl:supports-streaming": "no",
-        "xsl:supports-dynamic-evaluation": "no",
+        "xsl:supports-dynamic-evaluation": "yes",
         "xsl:supports-higher-order-functions": "yes",
         "xsl:xpath-version": "3.1",
         "xsl:xsd-version": "1.1",
@@ -97,18 +97,26 @@ IMPLEMENTED_XSLT_ELEMENTS = frozenset(
         "accept",
         "apply-imports",
         "apply-templates",
+        "assert",
         "attribute",
         "attribute-set",
         "call-template",
         "choose",
         "decimal-format",
+        "evaluate",
         "expose",
+        "fallback",
         "function",
+        "if",
         "import",
         "include",
         "key",
+        "map",
+        "map-entry",
         "mode",
         "next-match",
+        "on-empty",
+        "on-non-empty",
         "otherwise",
         "output",
         "override",
@@ -126,6 +134,7 @@ IMPLEMENTED_XSLT_ELEMENTS = frozenset(
         "value-of",
         "variable",
         "when",
+        "where-populated",
         "with-param",
     }
 )
@@ -683,7 +692,24 @@ class XsltContextBridge:
         )
         if _namespace_of(expanded) != XSLT_NS:
             return ""
-        return SYSTEM_PROPERTIES.get(f"xsl:{_local_name(expanded)}", "")
+        local = _local_name(expanded)
+        if local == "supports-dynamic-evaluation":
+            return "yes" if self._dynamic_evaluation_enabled() else "no"
+        return SYSTEM_PROPERTIES.get(f"xsl:{local}", "")
+
+    def _dynamic_evaluation_enabled(self) -> bool:
+        stylesheet = getattr(self.transformation, "stylesheet", None)
+        processor = getattr(stylesheet, "processor", None)
+        options = getattr(processor, "static_options", {})
+        if not isinstance(options, Mapping):
+            return True
+        value = options.get("dynamic-evaluation", True)
+        if not isinstance(value, bool):
+            raise XsltDynamicError(
+                "the dynamic-evaluation static option must be a boolean",
+                code="XTDE0030",
+            )
+        return value
 
     def function_available(self, name: str, arity: int | None = None) -> bool:
         expanded = _expand_name(
@@ -730,7 +756,10 @@ class XsltContextBridge:
         )
         if _namespace_of(expanded) != XSLT_NS:
             return False
-        return xslt_element_available(_local_name(expanded), self.version)
+        local = _local_name(expanded)
+        if local == "evaluate" and not self._dynamic_evaluation_enabled():
+            return False
+        return xslt_element_available(local, self.version)
 
     def type_available(self, name: str) -> bool:
         expanded = _expand_name(

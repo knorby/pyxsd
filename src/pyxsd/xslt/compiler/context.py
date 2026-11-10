@@ -420,6 +420,9 @@ class StaticContext:
 
     def xpath_static_context(self) -> XPathStaticContext:
         """Build the immutable Task 11 static context for this element."""
+        effective_xslt_version = self.version
+        if Decimal(effective_xslt_version) > Decimal("3.1"):
+            effective_xslt_version = "3.1"
         grouped: dict[str, list[FunctionArity]] = {}
         for name, arity in self.functions:
             grouped.setdefault(name, []).append(arity)
@@ -443,7 +446,7 @@ class StaticContext:
             # XPathStaticContext carries one arity per name; exact overloads
             # are represented by the smallest covering range.
             functions[name] = _arity_range(arities)
-        for name, arity in xslt_function_declarations(self.version).items():
+        for name, arity in xslt_function_declarations(effective_xslt_version).items():
             if self.xpath_version == "3.1" and name in ("fn:key", "fn:generate-id"):
                 # The XPath 3.1 parser already provides these; declaring them
                 # again would fail registration.  The bridge overrides their
@@ -464,7 +467,7 @@ class StaticContext:
             base_uri=self.base_uri,
             default_collation=self.default_collation,
             xsd_version=self.schema.xsd_version if self.schema is not None else None,
-            xslt_version=self.version,
+            xslt_version=effective_xslt_version,
         )
 
     # -- immutable updates -----------------------------------------------------
