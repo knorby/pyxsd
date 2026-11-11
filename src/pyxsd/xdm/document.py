@@ -22,14 +22,17 @@ import io
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 from xml.etree import ElementTree as ET
 
 from pyxsd.namespaces import XSD_NS
+from pyxsd.schema_context import SchemaContext, active_context, context_report
 from pyxsd.source_spans import SourceIndex
+from pyxsd.validation import ValidationReport
 from pyxsd.xdm.annotations import (
     UNTYPED,
     UNTYPED_ATOMIC,
+    OccurrenceAnnotation,
     OccurrenceCapture,
 )
 from pyxsd.xdm.errors import XdmInputError
@@ -576,7 +579,7 @@ def _type_validated_document(
     base_uri: str | None,
     source_name: str | None,
 ) -> XdmDocument:
-    """Validate a source root against one requested type."""
+    """Validate the actual root occurrence against the requested type."""
     if type_name == _XSD_UNTYPED:
         return strip_type_annotations(
             _untyped_document(
@@ -586,27 +589,22 @@ def _type_validated_document(
                 source_name=source_name,
             )
         )
+    document = _untyped_document(
+        source,
+        document_uri=document_uri,
+        base_uri=base_uri,
+        source_name=source_name,
+    )
+    root = document.root_element
     if type_name == _XSD_UNTYPED_ATOMIC:
-        document = _untyped_document(
-            source,
-            document_uri=document_uri,
-            base_uri=base_uri,
-            source_name=source_name,
-        )
-        if any(child.kind is NodeKind.ELEMENT for child in document.root_element.children):
+        if any(child.kind is NodeKind.ELEMENT for child in root.children):
             raise DocumentValidationError(
                 "xs:untypedAtomic validation rejects element children",
                 reason="type",
             )
-        document.root_element._apply_occurrence_annotation(XdmAnnotation(UNTYPED_ATOMIC, None))
+        root._apply_occurrence_annotation(XdmAnnotation(UNTYPED_ATOMIC, None))
         return document
     if type_name == _XSD_ANY_TYPE:
-        document = _untyped_document(
-            source,
-            document_uri=document_uri,
-            base_uri=base_uri,
-            source_name=source_name,
-        )
         if strip:
             strip_type_annotations(document)
         return document
@@ -621,68 +619,80 @@ def _type_validated_document(
             f"the type {type_name!r} is not in the in-scope schema definitions",
             reason="type",
         )
-
-    if isinstance(source, XdmDocument):
-        document = source
-        _validate_type_on_document(document, adapter, type_name)
-        if adapter.is_simple() and document.root_element.annotation.type_name != adapter.name:
-            document = _untyped_copy(document)
-            _annotate_simple_root(document, adapter)
-        return strip_type_annotations(_untyped_copy(document)) if strip else document
-
-    from pyxsd.document import Document
-
-    if isinstance(source, Document):
-        document = source.to_xdm()
-        _validate_type_on_document(document, adapter, type_name)
-        if adapter.is_simple() and document.root_element.annotation.type_name != adapter.name:
-            document = _untyped_copy(document)
-            _annotate_simple_root(document, adapter)
-        return strip_type_annotations(_untyped_copy(document)) if strip else document
-
-    captured = _capture_source(source)
-    untyped = _grounded_copy(
-        captured,
-        schema_pool=schema_pool,
-        document_uri=document_uri,
-        base_uri=base_uri,
-        source_name=source_name,
-    )
-    root = untyped.root_element
     if adapter.is_simple():
+        if any(child.kind is NodeKind.ELEMENT for child in root.children):
+            raise DocumentValidationError(
+                f"the source document is not valid against the type {type_name!r}",
+                reason="type",
+            )
         if not adapter.is_valid(root.string_value):
             raise DocumentValidationError(
                 f"the source document is not valid against the type {type_name!r}",
                 reason="type",
             )
-        schema = schema_pool.schema_for_element(root.name)
-        if schema is not None:
-            parsed = _parse_payload(schema, captured.data)
-            if not _instance_errors(parsed.report):
-                copy_type_annotations(parsed.to_xdm(), untyped)
-                return strip_type_annotations(untyped) if strip else untyped
-        _annotate_simple_root(untyped, adapter)
-        return strip_type_annotations(untyped) if strip else untyped
+        _annotate_simple_root(document, adapter)
+        return document
+    _validate_complex_occurrence(document, adapter, type_name)
+    return document
 
-    schema = schema_pool.schema_for_element(root.name)
-    if schema is None:
-        # Without a global declaration there is no element binding to attach
-        # to this requested type; accept the well-formed tree rather than
-        # inventing a synthetic declaration.
-        return strip_type_annotations(untyped) if strip else untyped
-    parsed = _parse_payload(schema, captured.data)
-    if _instance_errors(parsed.report):
+
+def _validate_complex_occurrence(
+    document: XdmDocument,
+    adapter: Any,
+    type_name: str,
+) -> None:
+    """Assess one element occurrence against a complex type's content model."""
+    type_class: Any = getattr(adapter, "_type_class", None)
+    schema = getattr(adapter.schema, "_schema", None)
+    if not isinstance(type_class, type) or schema is None:  # pragma: no cover
         raise DocumentValidationError(
             f"the source document is not valid against the type {type_name!r}",
             reason="type",
         )
-    if parsed.root is not None and not adapter.is_valid(parsed.root):
+    element = element_from_xdm(document.root_element)
+    report = ValidationReport()
+    context = getattr(schema, "_schema_context", None)
+    if context is None:  # pragma: no cover - compiled schemas carry a context
+        context = SchemaContext(components=schema.components)
+    host = getattr(schema, "_host", None)
+    parents = _parent_index(element)
+    if host is not None:  # pragma: no cover - compiled schemas carry a host
+        host._elementParents = parents
+        host._elementTypes = {}
+    try:
+        with active_context(context), context_report(context, report):
+            cast(Any, type_class).makeInstanceFromTag(element)
+    finally:
+        if host is not None:  # pragma: no cover - compiled schemas carry a host
+            host._elementParents.clear()
+            host._elementTypes.clear()
+    if _instance_errors(report):
         raise DocumentValidationError(
             f"the source document is not valid against the type {type_name!r}",
             reason="type",
         )
-    copy_type_annotations(parsed.to_xdm(), untyped)
-    return strip_type_annotations(untyped) if strip else untyped
+    root = document.root_element
+    root._apply_occurrence_annotation(
+        OccurrenceAnnotation(
+            type_name=adapter.name,
+            nilled=False,
+            validity="valid",
+            actual_type=type_class,
+            validation_attempted="full",
+            typed_values=(),
+        )
+    )
+
+
+def _parent_index(element: Any) -> dict[int, Any]:
+    parents: dict[int, Any] = {}
+    stack = [element]
+    while stack:
+        parent = stack.pop()
+        for child in parent:
+            parents[id(child)] = parent
+            stack.append(child)
+    return parents
 
 
 def _untyped_document(
@@ -706,32 +716,7 @@ def _untyped_document(
     )
 
 
-def _validate_type_on_document(
-    document: XdmDocument,
-    adapter: Any,
-    type_name: str,
-) -> None:
-    root = document.root_element
-    if adapter.is_simple():
-        if not adapter.is_valid(root.string_value):
-            raise DocumentValidationError(
-                f"the source document is not valid against the type {type_name!r}",
-                reason="type",
-            )
-        return
-    actual = root.annotation.actual_type
-    declared = getattr(adapter, "_type_class", None)
-    if isinstance(actual, type) and isinstance(declared, type) and issubclass(actual, declared):
-        return
-    raise DocumentValidationError(
-        f"the source document is not valid against the type {type_name!r}",
-        reason="type",
-    )
-
-
 def _annotate_simple_root(document: XdmDocument, adapter: Any) -> None:
-    from pyxsd.xdm.annotations import OccurrenceAnnotation
-
     root = document.root_element
     value = adapter.cast(root.string_value)
     root._apply_occurrence_annotation(
@@ -747,25 +732,27 @@ def _annotate_simple_root(document: XdmDocument, adapter: Any) -> None:
 
 
 def _copy_subtree_annotations(origin: XdmNode, destination: XdmNode) -> None:
-    if origin.kind is not destination.kind or origin.name != destination.name:
-        raise ValueError("the captured and grounded trees describe different revisions")
-    destination._apply_occurrence_annotation(origin.annotation)
-    origin_children = origin.children
-    target_children = destination.children
-    if len(origin_children) != len(target_children):
-        raise ValueError("the captured and grounded trees describe different revisions")
-    origin_attributes = origin.attributes
-    target_attributes = destination.attributes
-    if len(origin_attributes) != len(target_attributes):
-        raise ValueError("the captured and grounded trees describe different revisions")
-    for origin_attribute, target_attribute in zip(
-        origin_attributes, target_attributes, strict=True
-    ):
-        if origin_attribute.name != target_attribute.name:
+    stack: list[tuple[XdmNode, XdmNode]] = [(origin, destination)]
+    while stack:
+        source_node, target_node = stack.pop()
+        if source_node.kind is not target_node.kind or source_node.name != target_node.name:
             raise ValueError("the captured and grounded trees describe different revisions")
-        target_attribute._apply_occurrence_annotation(origin_attribute.annotation)
-    for origin_child, target_child in zip(origin_children, target_children, strict=True):
-        _copy_subtree_annotations(origin_child, target_child)
+        target_node._apply_occurrence_annotation(source_node.annotation)
+        source_children = source_node.children
+        target_children = target_node.children
+        if len(source_children) != len(target_children):
+            raise ValueError("the captured and grounded trees describe different revisions")
+        source_attributes = source_node.attributes
+        target_attributes = target_node.attributes
+        if len(source_attributes) != len(target_attributes):
+            raise ValueError("the captured and grounded trees describe different revisions")
+        for source_attribute, target_attribute in zip(
+            source_attributes, target_attributes, strict=True
+        ):
+            if source_attribute.name != target_attribute.name:
+                raise ValueError("the captured and grounded trees describe different revisions")
+            target_attribute._apply_occurrence_annotation(source_attribute.annotation)
+        stack.extend(zip(source_children, target_children, strict=True))
 
 
 def _untyped_copy(document: XdmDocument) -> XdmDocument:

@@ -916,8 +916,6 @@ class XsltProcessor:
             resource_policy=self.resource_policy,
         )
         if not self.schema_aware:
-            from pyxsd.xslt.compiler.packages import _package_closure
-
             if self.validation == "strict":
                 raise XsltStaticError(
                     "a non-schema-aware processor cannot use strict validation",
@@ -925,13 +923,7 @@ class XsltProcessor:
                     uri=effective.identity,
                     location=effective.root.source_location(),
                 )
-            if any(current.schema_imports for current in _package_closure(package)):
-                raise XsltStaticError(
-                    "a non-schema-aware processor cannot process xsl:import-schema",
-                    code="XTSE1650",
-                    uri=effective.identity,
-                    location=effective.root.source_location(),
-                )
+            _reject_non_schema_aware_features(package)
         return _compile_stylesheet(
             self,
             package,
@@ -1087,6 +1079,58 @@ class CompiledStylesheet:
             validation_type=validation_type,
         )
         return _Invocation(self, options, limits=limits).run()
+
+
+def _reject_non_schema_aware_features(package: CompiledPackage) -> None:
+    """Reject stylesheet features a non-schema-aware processor cannot honor."""
+    from pyxsd.xslt.compiler.packages import _package_closure
+
+    for current in _package_closure(package):
+        for module in current.modules:
+            for node in (module.document.root_element, *module.document.root_element.descendants):
+                if node.kind is not NodeKind.ELEMENT:
+                    continue
+                if node.name == f"{{{XSLT_NS}}}import-schema":
+                    raise XsltStaticError(
+                        "a non-schema-aware processor cannot process xsl:import-schema",
+                        code="XTSE1650",
+                        uri=module.identity,
+                        location=node.source_location(),
+                    )
+                for attribute in node.attributes:
+                    name = attribute.name or ""
+                    local = name.rpartition("}")[2] if name.startswith("{") else name
+                    namespaced = name.startswith("{")
+                    if namespaced and not name.startswith(f"{{{XSLT_NS}}}"):
+                        continue
+                    if local == "type":
+                        raise XsltStaticError(
+                            "a non-schema-aware processor cannot process a type attribute",
+                            code="XTSE1660",
+                            uri=module.identity,
+                            location=node.source_location(),
+                        )
+                    if local in ("validation", "default-validation"):
+                        value = attribute.string_value.strip()
+                        if value not in ("strip", "preserve", "lax"):
+                            raise XsltStaticError(
+                                "a non-schema-aware processor cannot use this validation value",
+                                code="XTSE1660",
+                                uri=module.identity,
+                                location=node.source_location(),
+                            )
+                typed_attribute = node.attribute("typed")
+                if (
+                    node.name == f"{{{XSLT_NS}}}mode"
+                    and typed_attribute is not None
+                    and typed_attribute.string_value.strip() in ("yes", "strict")
+                ):
+                    raise XsltStaticError(
+                        "a non-schema-aware processor cannot use a typed mode",
+                        code="XTSE1660",
+                        uri=module.identity,
+                        location=node.source_location(),
+                    )
 
 
 def _merge_schema_pools(

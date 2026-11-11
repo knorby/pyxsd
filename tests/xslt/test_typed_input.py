@@ -1091,7 +1091,11 @@ def test_type_validation_on_a_pre_captured_tree() -> None:
     from pyxsd.xdm.document import parse_typed_document
 
     pool = SchemaPool.from_schema(Schema.compile(io.BytesIO(INVOICE_XSD.encode())))
-    captured = parse_typed_document(TYPED_INVOICE, schema_pool=pool, validation="strip")
+    captured = parse_typed_document(
+        f'<inv:amount xmlns:inv="{INVOICE}">12.5</inv:amount>'.encode(),
+        schema_pool=pool,
+        validation="strip",
+    )
     typed = parse_typed_document(
         captured,
         schema_pool=pool,
@@ -1410,7 +1414,7 @@ def test_type_without_a_global_declaration_accepts_a_complex_type() -> None:
     from pyxsd.xdm.document import parse_typed_document
 
     pool = SchemaPool.from_schema(Schema.compile(io.BytesIO(INVOICE_XSD.encode())))
-    source = f'<inv:Undeclared xmlns:inv="{INVOICE}"><inv:amount>1</inv:amount></inv:Undeclared>'.encode()
+    source = f'<inv:Undeclared xmlns:inv="{INVOICE}"><amount>1</amount></inv:Undeclared>'.encode()
 
     typed = parse_typed_document(
         source,
@@ -1418,7 +1422,7 @@ def test_type_without_a_global_declaration_accepts_a_complex_type() -> None:
         type_name=f"{{{INVOICE}}}InvoiceType",
     )
 
-    assert typed.root_element.type_name == f"{{{XSD_NS}}}untyped"
+    assert typed.root_element.type_name == f"{{{INVOICE}}}InvoiceType"
 
 
 def test_type_without_a_pool_and_untyped_atomic_child_rejection() -> None:
@@ -1668,7 +1672,11 @@ def test_type_on_an_already_annotated_simple_tree() -> None:
     from pyxsd.xdm.document import parse_typed_document
 
     pool = SchemaPool.from_schema(Schema.compile(io.BytesIO(INVOICE_XSD.encode())))
-    captured = parse_typed_document(TYPED_INVOICE, schema_pool=pool, validation="strip")
+    captured = parse_typed_document(
+        f'<inv:amount xmlns:inv="{INVOICE}">12.5</inv:amount>'.encode(),
+        schema_pool=pool,
+        validation="strip",
+    )
     annotated = parse_typed_document(
         captured,
         schema_pool=pool,
@@ -1688,12 +1696,12 @@ def test_type_on_a_bound_document_with_a_different_simple_annotation() -> None:
 
     pool = SchemaPool.from_schema(Schema.compile(io.BytesIO(INVOICE_XSD.encode())))
     result = parse_typed_document(
-        schema_document("12.5"),
+        amount_document("12.5"),
         schema_pool=pool,
-        type_name=f"{{{INVOICE}}}Amount",
+        type_name=f"{{{XSD_NS}}}string",
     )
 
-    assert result.root_element.type_name == f"{{{INVOICE}}}Amount"
+    assert result.root_element.type_name == f"{{{XSD_NS}}}string"
 
 
 def test_type_simple_falls_back_when_the_declaration_is_stricter() -> None:
@@ -1784,3 +1792,221 @@ def test_builtin_validation_type_with_a_schema_pool() -> None:
     result = compiled.transform(TYPED_INVOICE, validation_type="xs:anyType")
 
     assert result.principal[0].type_name == f"{{{XSD_NS}}}double"
+
+
+LOOSE_STRICT_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
+    xmlns:inv="{INVOICE}">
+  <xs:complexType name="Loose">
+    <xs:sequence><xs:element name="amount" type="xs:decimal"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="Strict">
+    <xs:sequence>
+      <xs:element name="amount" type="xs:decimal"/>
+      <xs:element name="extra" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="inv:Strict"/>
+</xs:schema>"""
+
+
+def test_type_requested_simple_type_rejects_complex_content() -> None:
+    policy = _Policy({"urn:doc": TYPED_INVOICE})
+    compiled = compile_stylesheet(
+        io.BytesIO(
+            _stylesheet(
+                _import_schema() + '<xsl:template name="main">'
+                '<xsl:source-document href="urn:doc" type="inv:Amount"/>'
+                "</xsl:template>"
+            )
+        ),
+        resource_policy=policy,
+    )
+
+    assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
+
+
+def test_type_requested_simple_type_rejects_child_elements() -> None:
+    policy = _Policy(
+        {"urn:doc": f'<inv:amount xmlns:inv="{INVOICE}"><x>12.5</x></inv:amount>'.encode()}
+    )
+    compiled = compile_stylesheet(
+        io.BytesIO(
+            _stylesheet(
+                _import_schema() + '<xsl:template name="main">'
+                '<xsl:source-document href="urn:doc" type="inv:Amount"/>'
+                "</xsl:template>"
+            )
+        ),
+        resource_policy=policy,
+    )
+
+    assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
+
+
+def test_type_requested_loose_type_validates_against_loose_not_strict() -> None:
+    policy = _Policy(
+        {"urn:doc": f'<inv:root xmlns:inv="{INVOICE}"><amount>5</amount></inv:root>'.encode()}
+    )
+    compiled = compile_stylesheet(
+        io.BytesIO(
+            _stylesheet(
+                _import_schema(LOOSE_STRICT_XSD) + '<xsl:template name="main">'
+                '<xsl:source-document href="urn:doc" type="inv:Loose">'
+                '<xsl:sequence select="* instance of element(*, inv:Loose)"/>'
+                "</xsl:source-document>"
+                "</xsl:template>"
+            )
+        ),
+        resource_policy=policy,
+    )
+
+    result = compiled.transform(initial_template="main")
+
+    assert result.principal[0].lexical == "true"
+
+
+def test_type_requested_complex_type_annotates_the_occurrence() -> None:
+    compiled = compile_stylesheet(io.BytesIO(_typed_invoice_stylesheet()))
+
+    compiled.transform(
+        TYPED_INVOICE,
+        validation="strip",
+        validation_type="inv:InvoiceType",
+    )
+
+    assert (
+        evaluate(". instance of element(*, inv:InvoiceType)", compiled, TYPED_INVOICE)[0].lexical
+        == "true"
+    )
+
+
+def test_type_requested_complex_type_on_untyped_captured_document() -> None:
+    from pyxsd.xdm.document import parse_typed_document
+    from pyxsd.xdm.nodes import XdmDocument
+
+    pool = SchemaPool.from_schema(Schema.compile(io.BytesIO(INVOICE_XSD.encode())))
+    untyped = XdmDocument.parse(TYPED_INVOICE)
+
+    check = compile_stylesheet(
+        io.BytesIO(
+            _stylesheet(
+                _import_schema() + '<xsl:template match="/">'
+                '<xsl:sequence select="* instance of element(*, inv:InvoiceType)"/>'
+                "</xsl:template>"
+            )
+        )
+    )
+    result = check.transform(untyped, validation_type="inv:InvoiceType")
+
+    assert result.principal[0].lexical == "true"
+    typed = parse_typed_document(
+        untyped,
+        schema_pool=pool,
+        type_name=f"{{{INVOICE}}}InvoiceType",
+    )
+    assert typed.root_element.type_name == f"{{{INVOICE}}}InvoiceType"
+
+
+def test_deep_annotation_copy_is_iterative() -> None:
+    from pyxsd.xdm.document import copy_type_annotations
+    from pyxsd.xdm.nodes import XdmDocument
+
+    depth = 2000
+    payload = ("<root>" + "<n>" * depth + "</n>" * depth + "</root>").encode()
+    source = XdmDocument.parse(payload)
+    target = XdmDocument.parse(payload)
+
+    assert copy_type_annotations(source, target) is target
+
+
+def test_deep_strict_validation_does_not_recurse() -> None:
+    from pyxsd.xdm.document import parse_typed_document
+
+    schema = Schema.compile(
+        io.BytesIO(
+            (
+                f'<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}" '
+                f'xmlns:inv="{INVOICE}">'
+                '<xs:element name="node" type="xs:anyType"/>'
+                "</xs:schema>"
+            ).encode()
+        )
+    )
+    pool = SchemaPool.from_schema(schema)
+    depth = 100
+    payload = (
+        f'<inv:node xmlns:inv="{INVOICE}">'
+        + "<inv:node>" * depth
+        + "</inv:node>" * depth
+        + "</inv:node>"
+    ).encode()
+
+    document = parse_typed_document(payload, schema_pool=pool, validation="strict")
+
+    assert document.root_element.name == f"{{{INVOICE}}}node"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<xsl:template name="main"><xsl:source-document href="urn:doc" validation="strict"/></xsl:template>',
+        '<xsl:template name="main"><xsl:source-document href="urn:doc" type="xs:string"/></xsl:template>',
+        '<xsl:template name="main"><xsl:copy-of select="." validation="strict"/></xsl:template>',
+        '<xsl:mode default-validation="strict"/><xsl:template name="main"/>',
+    ],
+)
+def test_non_schema_aware_stylesheet_attributes_are_xtse1660(body: str) -> None:
+    assert (
+        _error_code(
+            lambda: XsltProcessor(schema_aware=False).compile(io.BytesIO(_stylesheet(body)))
+        )
+        == "XTSE1660"
+    )
+
+
+def test_non_schema_aware_used_package_attributes_are_xtse1660() -> None:
+    library = _package(
+        '<xsl:template name="lib:t" visibility="public">'
+        '<xsl:source-document href="urn:doc" validation="strict"/>'
+        "</xsl:template>"
+    )
+    principal = _stylesheet(
+        '<xsl:use-package name="urn:lib"/><xsl:template name="main"/>',
+        attributes=' xmlns:lib="urn:lib"',
+    )
+    from pyxsd.xslt.compiler.packages import PackageResolver
+
+    assert (
+        _error_code(
+            lambda: XsltProcessor(
+                schema_aware=False, resolver=PackageResolver.from_sources(library)
+            ).compile(io.BytesIO(principal))
+        )
+        == "XTSE1660"
+    )
+
+
+def test_non_schema_aware_allowed_attributes_and_comments() -> None:
+    body = (
+        "<!-- a comment -->"
+        '<xsl:template name="main">'
+        '<out xmlns:x="urn:x" x:foreign="1">'
+        '<xsl:source-document href="urn:doc" validation="preserve"/>'
+        "</out>"
+        "</xsl:template>"
+    )
+
+    compiled = XsltProcessor(schema_aware=False).compile(io.BytesIO(_stylesheet(body)))
+
+    assert compiled is not None
+
+
+def test_non_schema_aware_typed_mode_is_xtse1660() -> None:
+    body = '<xsl:mode typed="yes"/><xsl:template name="main"/>'
+
+    assert (
+        _error_code(
+            lambda: XsltProcessor(schema_aware=False).compile(io.BytesIO(_stylesheet(body)))
+        )
+        == "XTSE1660"
+    )
