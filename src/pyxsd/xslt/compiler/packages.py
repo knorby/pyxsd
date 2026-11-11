@@ -36,7 +36,7 @@ from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import NamespaceContext
 from pyxsd.resource_policy import ResourcePolicyError
-from pyxsd.resource_refs import resolve_reference
+from pyxsd.resource_refs import classify_resource, resolve_reference
 from pyxsd.xdm.document import element_from_xdm
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xslt.compiler.context import StaticContext
@@ -989,14 +989,13 @@ def compile_package_set(
     if principal_module is None:
         raise ValueError("compile_package_set requires at least one package source")
     compiled = _PackageCompiler(resolver).compile(_descriptor(principal_module), top_level=True)
-    pool = _compile_schema_imports(
+    compiled = _attach_schema_pools(
         compiled,
         xsd_version=xsd_version,
         resource_policy=resource_policy,
     )
-    if pool is None:
-        return compiled
-    return replace(compiled, schema_pool=pool)
+    _check_schema_consistency(compiled)
+    return compiled
 
 
 # ---------------------------------------------------------------------------
@@ -1019,28 +1018,55 @@ def _package_closure(package: CompiledPackage) -> tuple[CompiledPackage, ...]:
     return tuple(result)
 
 
+def _attach_schema_pools(
+    package: CompiledPackage,
+    *,
+    xsd_version: str,
+    resource_policy: Any,
+) -> CompiledPackage:
+    """Attach each package's own imported-schema pool to the package graph."""
+    dependencies = tuple(
+        _attach_schema_pools(dependency, xsd_version=xsd_version, resource_policy=resource_policy)
+        for dependency in package.dependencies
+    )
+    pool = _compile_schema_imports(
+        package,
+        xsd_version=xsd_version,
+        resource_policy=resource_policy,
+    )
+    return replace(package, dependencies=dependencies, schema_pool=pool)
+
+
+def _check_schema_consistency(package: CompiledPackage) -> None:
+    """Require all packages' imported components to form one valid schema."""
+    pools = [
+        current.schema_pool
+        for current in _package_closure(package)
+        if current.schema_pool is not None
+    ]
+    if len(pools) < 2:
+        return
+    schemas = [schema for pool in pools for schema in pool.raw_schemas]
+    try:
+        SchemaPool(schemas, xsd_version=pools[0].xsd_version, merge_namespaces=True)
+    except ValueError as exc:
+        raise XsltStaticError(
+            str(exc),
+            code="XTSE0220",
+            uri=package.modules[0].identity if package.modules else None,
+            location=package.location,
+            cause=exc,
+        ) from exc
+
+
 def _compile_schema_imports(
     package: CompiledPackage,
     *,
     xsd_version: str,
     resource_policy: Any,
 ) -> SchemaPool | None:
-    """Compile the package closure's ``xsl:import-schema`` declarations."""
-    declarations: list[_SchemaImport] = []
-    seen: set[tuple[Any, ...]] = set()
-    for current in _package_closure(package):
-        for declaration in current.schema_imports:
-            key = (
-                declaration.module,
-                declaration.namespace,
-                declaration.locations,
-                id(declaration.inline),
-                declaration.precedence,
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            declarations.append(declaration)
+    """Compile one package's own ``xsl:import-schema`` declarations."""
+    declarations = list(package.schema_imports)
     if not declarations:
         return None
 
@@ -1055,7 +1081,7 @@ def _compile_schema_imports(
                 raise XsltStaticError(
                     f"the schema imported by xsl:import-schema is not valid: "
                     f"{schema.report.error_count} error(s)",
-                    code="XTSE1660",
+                    code="XTSE0220",
                     uri=declaration.module,
                     location=declaration.location,
                 )
@@ -1066,7 +1092,7 @@ def _compile_schema_imports(
                 raise XsltStaticError(
                     f"the imported schema targets {schema.target_namespace!r}, not the "
                     f"declared namespace {declaration.namespace!r}",
-                    code="XTSE1660",
+                    code="XTSE0220",
                     uri=declaration.module,
                     location=declaration.location,
                 )
@@ -1082,6 +1108,8 @@ def _compile_schema_imports(
             key=cmp_to_key(_schema_precedence_compare),
         )
         selected.extend(schema for precedence, schema in entries if precedence == highest)
+    if not selected:
+        return None
 
     try:
         return SchemaPool(selected, xsd_version=xsd_version, merge_namespaces=True)
@@ -1105,30 +1133,51 @@ def _compile_schema_declaration(
     from pyxsd.schema import Schema
 
     version = cast(Literal["1.0", "1.1"], xsd_version)
+    policy = _schema_resource_policy(resource_policy)
     if declaration.inline is not None:
         context = NamespaceContext()
         element = element_from_xdm(declaration.inline, context)
+        base = (
+            None if declaration.base_uri is None else _local_schema_reference(declaration.base_uri)
+        )
         try:
             return (
                 Schema.compile(
                     element,
                     xsd_version=version,
                     namespace_context=context,
+                    resource_policy=policy,
+                    base_uri=base,
                 ),
             )
-        except PyXSDError as exc:
+        except ResourcePolicyError as exc:
             raise XsltStaticError(
-                f"the inline schema could not be compiled: {exc}",
+                f"the inline schema dependency could not be loaded: {exc}",
                 code="XTSE1650",
                 uri=declaration.module,
                 location=declaration.location,
                 cause=exc,
             ) from exc
-    policy = _schema_resource_policy(resource_policy)
+        except PyXSDError as exc:
+            raise XsltStaticError(
+                f"the inline schema could not be compiled: {exc}",
+                code="XTSE0220",
+                uri=declaration.module,
+                location=declaration.location,
+                cause=exc,
+            ) from exc
     result: list[Any] = []
     for location in declaration.locations:
         try:
             target = _local_schema_reference(resolve_reference(location, base=declaration.base_uri))
+            kind = classify_resource(target).kind
+            if kind == "local" and not os.path.exists(target):
+                # ``schema-location`` is a hint.  A missing document is not
+                # an error unless a stylesheet reference later needs a name
+                # from its namespace.
+                continue
+            if kind == "remote" and policy is None:
+                continue
             result.append(
                 Schema.compile(
                     target,
@@ -1136,10 +1185,18 @@ def _compile_schema_declaration(
                     resource_policy=policy,
                 )
             )
-        except (OSError, PyXSDError, ResourcePolicyError) as exc:
+        except ResourcePolicyError as exc:
             raise XsltStaticError(
                 f"the schema document {location!r} could not be loaded: {exc}",
                 code="XTSE1650",
+                uri=declaration.module,
+                location=declaration.location,
+                cause=exc,
+            ) from exc
+        except PyXSDError as exc:
+            raise XsltStaticError(
+                f"the schema document {location!r} could not be loaded: {exc}",
+                code="XTSE0220",
                 uri=declaration.module,
                 location=declaration.location,
                 cause=exc,
@@ -1870,17 +1927,58 @@ def _validate_manifest_placement(module: EffectiveModule) -> None:
 
 
 def _package_input_type_annotations(descriptor: PackageDescriptor) -> str | None:
-    value = descriptor.module.root.attribute("input-type-annotations")
-    if value is None:
-        return None
-    if value not in _INPUT_TYPE_ANNOTATIONS:
+    root = descriptor.module.root
+    package_value = (
+        root.attribute("input-type-annotations") if root.local_name == "package" else None
+    )
+    module_values: set[str] = set()
+    for module in descriptor.all_modules:
+        if module.root.local_name == "package":
+            continue
+        value = module.root.attribute("input-type-annotations")
+        if value is not None:
+            if value not in _INPUT_TYPE_ANNOTATIONS:
+                raise _error(
+                    f"invalid input-type-annotations value {value!r}",
+                    "XTSE0020",
+                    element=module.root,
+                    module=module,
+                )
+            module_values.add(value)
+    if len(module_values) > 1:
         raise _error(
-            f"invalid input-type-annotations value {value!r}",
-            "XTSE0020",
-            element=descriptor.module.root,
+            "stylesheet modules in one package disagree on input-type-annotations",
+            "XTSE0265",
+            element=root,
             module=descriptor.module,
         )
-    return value
+    if module_values:
+        value = next(iter(module_values))
+        if package_value is None and root.local_name == "package":
+            raise _error(
+                "a module's input-type-annotations value must also appear on xsl:package",
+                "XTSE0265",
+                element=root,
+                module=descriptor.module,
+            )
+        if package_value is not None and package_value != value:
+            raise _error(
+                "the package and its modules disagree on input-type-annotations",
+                "XTSE0265",
+                element=root,
+                module=descriptor.module,
+            )
+        return value
+    if package_value is not None:
+        if package_value not in _INPUT_TYPE_ANNOTATIONS:
+            raise _error(
+                f"invalid input-type-annotations value {package_value!r}",
+                "XTSE0020",
+                element=root,
+                module=descriptor.module,
+            )
+        return package_value
+    return None
 
 
 def _package_default_validation(descriptor: PackageDescriptor) -> str | None:
@@ -1905,7 +2003,7 @@ def _parse_schema_import(element: EffectiveElement, module: EffectiveModule) -> 
         if not namespace:
             raise _error(
                 "the namespace attribute of xsl:import-schema must not be empty",
-                "XTSE0215",
+                "XTSE0020",
                 element=element,
                 module=module,
             )
@@ -1914,7 +2012,7 @@ def _parse_schema_import(element: EffectiveElement, module: EffectiveModule) -> 
     if len(inline) > 1:
         raise _error(
             "xsl:import-schema accepts at most one inline xs:schema",
-            "XTSE0215",
+            "XTSE0010",
             element=element,
             module=module,
         )
@@ -1929,6 +2027,14 @@ def _parse_schema_import(element: EffectiveElement, module: EffectiveModule) -> 
     if inline:
         inline_element = inline[0]
         target = inline_element.attribute("targetNamespace")
+        if namespace is not None and target is None:
+            raise _error(
+                "the namespace attribute requires the inline schema to declare "
+                "the same targetNamespace",
+                "XTSE0215",
+                element=element,
+                module=module,
+            )
         if namespace is not None and target is not None and namespace != target:
             raise _error(
                 "the namespace attribute conflicts with the inline schema's targetNamespace",
@@ -1941,7 +2047,7 @@ def _parse_schema_import(element: EffectiveElement, module: EffectiveModule) -> 
         if inline_element.raw is None:  # pragma: no cover - authored declarations have raw nodes
             raise _error(
                 "the inline xs:schema has no source tree",
-                "XTSE1650",
+                "XTSE0220",
                 element=element,
                 module=module,
             )
@@ -1955,13 +2061,6 @@ def _parse_schema_import(element: EffectiveElement, module: EffectiveModule) -> 
             location=element.source_location(),
         )
     locations = tuple((schema_location or "").split())
-    if not locations:
-        raise _error(
-            "xsl:import-schema requires a schema-location attribute or an inline xs:schema",
-            "XTSE1650",
-            element=element,
-            module=module,
-        )
     return _SchemaImport(
         namespace=namespace,
         locations=locations,

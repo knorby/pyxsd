@@ -915,14 +915,23 @@ class XsltProcessor:
             xsd_version=self.xsd_version,
             resource_policy=self.resource_policy,
         )
-        if package.schema_imports and not self.schema_aware:
-            raise XsltStaticError(
-                "a non-schema-aware processor cannot process xsl:import-schema",
-                code="XTSE1650",
-                uri=effective.identity,
-                location=effective.root.source_location(),
-            )
-        pool = _merge_schema_pools(pool, package.schema_pool)
+        if not self.schema_aware:
+            from pyxsd.xslt.compiler.packages import _package_closure
+
+            if self.validation == "strict":
+                raise XsltStaticError(
+                    "a non-schema-aware processor cannot use strict validation",
+                    code="XTSE1660",
+                    uri=effective.identity,
+                    location=effective.root.source_location(),
+                )
+            if any(current.schema_imports for current in _package_closure(package)):
+                raise XsltStaticError(
+                    "a non-schema-aware processor cannot process xsl:import-schema",
+                    code="XTSE1650",
+                    uri=effective.identity,
+                    location=effective.root.source_location(),
+                )
         return _compile_stylesheet(
             self,
             package,
@@ -962,6 +971,7 @@ class CompiledStylesheet:
     _package_variables: Mapping[str | None, tuple[Component, ...]]
     _static_variables: Mapping[str | None, Mapping[str, XdmSequence]]
     _packages: Mapping[str | None, CompiledPackage]
+    _package_schema_pools: Mapping[str | None, SchemaPool | None]
     _keys: Mapping[str | None, tuple[_KeyDefinition, ...]]
     _package_modes: Mapping[str | None, Mapping[ModeKey, tuple[_ModeLayerPlan, ...]]]
     _accumulators: Mapping[AccumulatorKey, AccumulatorDefinition] = field(default_factory=dict)
@@ -991,6 +1001,11 @@ class CompiledStylesheet:
             ),
         )
         object.__setattr__(self, "_packages", MappingProxyType(dict(self._packages)))
+        object.__setattr__(
+            self,
+            "_package_schema_pools",
+            MappingProxyType(dict(self._package_schema_pools)),
+        )
         object.__setattr__(self, "_keys", MappingProxyType(dict(self._keys)))
         object.__setattr__(
             self,
@@ -1116,6 +1131,10 @@ def _compile_stylesheet(
         validate_decimal_formats(current_package.decimal_formats)
     profile = processor._profile()
     collation = processor.default_collation
+    package_schemas: dict[str | None, SchemaPool | None] = {
+        package_name: _merge_schema_pools(schema, current_package.schema_pool)
+        for package_name, current_package in packages.items()
+    }
     components: dict[tuple[str | None, str, str | None, int | None], _ComponentPlan] = {}
     keys: dict[str | None, list[_KeyDefinition]] = {}
     accumulators: dict[AccumulatorKey, AccumulatorDefinition] = {}
@@ -1129,7 +1148,7 @@ def _compile_stylesheet(
                 module,
                 component.declaration,
                 owner_package,
-                schema,
+                package_schemas.get(component.owner, schema),
                 profile,
                 collation,
             )
@@ -1209,7 +1228,7 @@ def _compile_stylesheet(
             packages,
             modules,
             principal,
-            schema,
+            package_schemas,
             profile,
             collation,
         )
@@ -1259,7 +1278,7 @@ def _compile_stylesheet(
     return CompiledStylesheet(
         processor=processor,
         package=package,
-        schema_pool=schema,
+        schema_pool=package_schemas.get(package.name, schema),
         profile=profile,
         static_parameters=static_parameters,
         _components=components,
@@ -1268,6 +1287,7 @@ def _compile_stylesheet(
         _package_variables=package_variables,
         _static_variables=static_variables,
         _packages=packages,
+        _package_schema_pools=package_schemas,
         _keys={name: tuple(definitions) for name, definitions in keys.items()},
         _package_modes=package_modes,
         _accumulators=accumulators,
@@ -1776,7 +1796,7 @@ def _compile_package_modes(
     packages: Mapping[str | None, CompiledPackage],
     modules: Mapping[str, EffectiveModule],
     principal: EffectiveModule,
-    schema: SchemaPool | None,
+    package_schemas: Mapping[str | None, SchemaPool | None],
     profile: ProfileOptions,
     collation: str | None,
 ) -> dict[ModeKey, tuple[_ModeLayerPlan, ...]]:
@@ -1799,7 +1819,7 @@ def _compile_package_modes(
                     module,
                     rule.declaration,
                     owner_package,
-                    schema,
+                    package_schemas.get(rule.owner),
                     profile,
                     collation,
                 )
@@ -2849,7 +2869,7 @@ def _compile_validation_type(
     if not text:
         raise XsltStaticError(
             f"{label} has an empty type attribute",
-            code="XPST0003",
+            code="XTSE1520",
             uri=context.uri,
             location=instruction.location,
         )
@@ -2858,7 +2878,7 @@ def _compile_validation_type(
         if close < 0:
             raise XsltStaticError(
                 f"{label} has an invalid EQName {text!r}",
-                code="XPST0003",
+                code="XTSE1520",
                 uri=context.uri,
                 location=instruction.location,
             )
@@ -2872,7 +2892,7 @@ def _compile_validation_type(
             if bound_uri is None:
                 raise XsltStaticError(
                     f"the namespace prefix {prefix!r} is not bound in the static context",
-                    code="XPST0081",
+                    code="XTSE1520",
                     uri=context.uri,
                     location=instruction.location,
                 )
@@ -2880,20 +2900,13 @@ def _compile_validation_type(
         else:
             default = context.xpath_default_namespace
             expanded = f"{{{default}}}{text}" if default else text
+    if _is_builtin_type_name(expanded):
+        return expanded
     pool = context.schema
-    if pool is None:
-        if _is_builtin_type_name(expanded):
-            return expanded
+    if pool is None or pool.get_type(expanded) is None:
         raise XsltStaticError(
             f"the type {text!r} is not in the in-scope schema definitions",
-            code="XPST0051",
-            uri=context.uri,
-            location=instruction.location,
-        )
-    if pool.get_type(expanded) is None:
-        raise XsltStaticError(
-            f"the type {text!r} is not in the in-scope schema definitions",
-            code="XPST0051",
+            code="XTSE1520",
             uri=context.uri,
             location=instruction.location,
         )
@@ -2904,7 +2917,9 @@ def _is_builtin_type_name(name: str) -> bool:
     from pyxsd.xdm.annotations import builtin_type_classes
 
     namespace, _, local = name[1:].partition("}") if name.startswith("{") else ("", "", name)
-    return namespace == "http://www.w3.org/2001/XMLSchema" and local in builtin_type_classes()
+    return namespace == "http://www.w3.org/2001/XMLSchema" and (
+        local in builtin_type_classes() or local in ("untyped", "untypedAtomic")
+    )
 
 
 def _merge_source_names(sources: tuple[_MergeSourcePlan, ...]) -> tuple[str, ...]:
@@ -4499,6 +4514,11 @@ def _prepare_invocation(
     )
     if effective_type is not None and effective_validation in ("strip", "preserve"):
         effective_validation = "strict"
+    if not stylesheet.processor.schema_aware and effective_validation == "strict":
+        raise XsltInvocationError(
+            "a non-schema-aware processor cannot use strict validation",
+            code=None,
+        )
 
     source_supplied = source is not _ABSENT
     global_supplied = global_context_item is not _ABSENT
@@ -4720,11 +4740,12 @@ def _typed_source(
         if schema_pool is None:
             expanded = _expanded_name(validation_type, namespaces)
             if _is_builtin_type_name(expanded):
-                type_name = None
+                local = expanded.rpartition("}")[2]
+                type_name = expanded if local in ("untyped", "untypedAtomic", "anyType") else None
             else:
                 raise XsltDynamicError(
                     f"the type {validation_type!r} is not in the in-scope schema definitions",
-                    code="XPST0051",
+                    code="XTSE1520",
                 )
         else:
             type_name = _resolve_type_name(validation_type, schema_pool, namespaces)
@@ -4740,6 +4761,7 @@ def _typed_source(
         code = {
             "unknown": "XTTE1512",
             "invalid": "XTTE1510",
+            "lax-invalid": "XTTE1515",
             "type": "XTTE1540",
         }[exc.reason]
         raise XsltDynamicError(str(exc), code=code, cause=exc) from exc
@@ -4752,10 +4774,12 @@ def _resolve_type_name(
 ) -> str:
     """Return *type_name* if the pool knows it, else raise XPST0051."""
     expanded = _expanded_name(type_name, namespaces)
+    if _is_builtin_type_name(expanded):
+        return expanded
     if schema_pool.get_type(expanded) is None and schema_pool.get_type(type_name) is None:
         raise XsltDynamicError(
             f"the type {type_name!r} is not in the in-scope schema definitions",
-            code="XPST0051",
+            code="XTSE1520",
         )
     return expanded if expanded.startswith("{") else type_name
 
@@ -5362,6 +5386,24 @@ class _Invocation(Transformation):
         )
         self._accumulator_matchers: dict[int, PatternMatcher] = {}
         self._mark_initial_selection()
+
+    def _package_schema_pool(self, package_name: str | None) -> object:
+        return self.stylesheet._package_schema_pools.get(package_name, self.stylesheet.schema_pool)
+
+    def _package_input_type_annotations(self, package_name: str | None) -> str:
+        package = self.stylesheet._packages[package_name]
+        return package.input_type_annotations or "unspecified"
+
+    def _document_annotations(
+        self,
+        package_name: str | None,
+        *,
+        validation: str | None,
+        type_name: str | None,
+    ) -> str:
+        if validation is not None or type_name is not None:
+            return "preserve"
+        return self._package_input_type_annotations(package_name)
 
     # -- accumulator state --------------------------------------------------
 
@@ -6631,6 +6673,12 @@ class _Invocation(Transformation):
                     base=source.base_uri,
                     validation=source.validation,
                     type_name=source.type_name,
+                    schema_pool=self._package_schema_pool(package_name),
+                    input_type_annotations=self._document_annotations(
+                        package_name,
+                        validation=source.validation,
+                        type_name=source.type_name,
+                    ),
                 )
                 for atomic in atomics
             )
@@ -6798,6 +6846,12 @@ class _Invocation(Transformation):
             base=plan.instruction.base_uri,
             validation=plan.validation,
             type_name=plan.type_name,
+            schema_pool=self._package_schema_pool(package_name),
+            input_type_annotations=self._document_annotations(
+                package_name,
+                validation=plan.validation,
+                type_name=plan.type_name,
+            ),
         )
         self.accumulators.restrict(
             document,

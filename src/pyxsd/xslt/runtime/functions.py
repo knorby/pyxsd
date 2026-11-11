@@ -942,7 +942,12 @@ class XsltContextBridge:
             return module_document
         resources = getattr(self.transformation, "document_resources", None)
         if resources is not None:
-            document = resources.resolve(target, base=None)
+            document = resources.resolve(
+                target,
+                base=None,
+                schema_pool=self._schema_pool(),
+                input_type_annotations=self._input_type_annotations(),
+            )
             self._allow_all_accumulators(document)
             return document
         raise XsltDynamicError(
@@ -1031,7 +1036,14 @@ class XsltContextBridge:
         return packages.get(self.package_name) or getattr(stylesheet, "package", None)
 
     def _schema_pool(self) -> Any:
-        return getattr(getattr(self.transformation, "stylesheet", None), "schema_pool", None)
+        stylesheet = getattr(self.transformation, "stylesheet", None)
+        pools = getattr(stylesheet, "_package_schema_pools", {})
+        return pools.get(self.package_name, getattr(stylesheet, "schema_pool", None))
+
+    def _input_type_annotations(self) -> str:
+        package = self._package()
+        value = getattr(package, "input_type_annotations", None)
+        return value or "unspecified"
 
     def _stylesheet_document(self, uri: str) -> XdmDocument | None:
         package = self._package()

@@ -26,6 +26,7 @@ __all__ = ["DocumentResources", "resolve_document_uri"]
 DOCUMENT_PURPOSE = "instance"
 _VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
 _INPUT_TYPE_ANNOTATIONS = frozenset({"strip", "preserve", "unspecified"})
+_UNSET = object()
 
 
 class _DocumentPolicy(Protocol):
@@ -94,6 +95,7 @@ class DocumentResources:
         self.validation = validation
         self.validation_type = validation_type
         self.input_type_annotations = input_type_annotations
+        self._variants: dict[tuple[str, str, str | None, int, str], XdmDocument] = {}
 
     def resolve(
         self,
@@ -102,6 +104,8 @@ class DocumentResources:
         base: str | None,
         validation: str | None = None,
         type_name: str | None = None,
+        schema_pool: object = _UNSET,
+        input_type_annotations: str | object = _UNSET,
     ) -> XdmDocument:
         """Return the grounded document identified by *uri*.
 
@@ -109,18 +113,32 @@ class DocumentResources:
         policy denial propagates as :class:`ResourcePolicyError`; an ordinary
         read failure or malformed XML becomes ``FODC0002`` with the original
         exception preserved as the cause.  Schema-aware validation uses the
-        same pool and validation mode as the source input.
+        requested pool and validation mode; a cached document is reused only
+        for the same validation, type, pool, and annotation mode.
         """
         target = resolve_document_uri(uri, base)
-        cached = self.documents.get(target)
-        if cached is not None:
-            if not isinstance(cached, XdmDocument):  # pragma: no cover - registry invariant
-                raise TypeError("a document registry entry must be an XdmDocument")
-            return cached
         mode = self.validation if validation is None else validation
         if mode not in _VALIDATION_MODES:
             raise ValueError(f"invalid validation mode {mode!r}")
+        requested_type = self.validation_type if type_name is None else type_name
+        pool = self.schema_pool if schema_pool is _UNSET else schema_pool
+        annotations = (
+            self.input_type_annotations
+            if input_type_annotations is _UNSET
+            else input_type_annotations
+        )
+        if annotations not in _INPUT_TYPE_ANNOTATIONS:
+            raise ValueError(f"invalid input-type-annotations value {annotations!r}")
+        key = (target, mode, requested_type, id(pool), annotations)
+        cached = self._variants.get(key)
+        if cached is not None:
+            return cached
+        existing = self.documents.get(target)
+        if existing is not None and not isinstance(existing, XdmDocument):  # pragma: no cover
+            raise TypeError("a document registry entry must be an XdmDocument")
         if self.policy is None:
+            if existing is not None:
+                return existing
             raise XsltDynamicError(
                 f"the document {uri!r} is not available to this transformation",
                 code="FODC0002",
@@ -135,13 +153,12 @@ class DocumentResources:
             ) from exc
         if not isinstance(data, ResourceData):
             raise TypeError("a resource policy read must return ResourceData")
-        requested_type = self.validation_type if type_name is None else type_name
         try:
             document = parse_typed_document(
                 data.content,
-                schema_pool=cast("Any", self.schema_pool),
+                schema_pool=cast("Any", pool),
                 validation=mode,
-                input_type_annotations=self.input_type_annotations,
+                input_type_annotations=annotations,
                 type_name=requested_type,
                 document_uri=target,
                 base_uri=target,
@@ -151,6 +168,7 @@ class DocumentResources:
             code = {
                 "unknown": "XTTE1512",
                 "invalid": "XTTE1510",
+                "lax-invalid": "XTTE1515",
                 "type": "XTTE1540",
             }[exc.reason]
             raise XsltDynamicError(str(exc), code=code, cause=exc) from exc
@@ -160,5 +178,7 @@ class DocumentResources:
                 code="FODC0002",
                 cause=exc,
             ) from exc
-        self.documents[target] = document
+        self._variants[key] = document
+        if existing is None:
+            self.documents[target] = document
         return document

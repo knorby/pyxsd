@@ -384,6 +384,7 @@ class Schema:
         resource_policy: ResourcePolicy | None = None,
         xml_policy: XmlParserPolicy | None = None,
         xml_limits: XmlLimits | None = None,
+        base_uri: str | None = None,
         _source_purpose: ResourcePurpose = "schema",
     ) -> "Schema":
         """Compiles *source* into a :class:`Schema`.
@@ -449,6 +450,12 @@ class Schema:
         - ``xml_limits`` - optional :class:`~pyxsd.xml_policy.
           XmlLimits` byte/depth/element budgets for the same documents.
 
+        - ``base_uri`` - the base reference for an already-parsed
+          ``Element`` (or a stream with no path), used to resolve
+          relative ``xs:include``/``xs:import`` locations and to give the
+          resource policy a document base. It is ignored for a path
+          source, whose own location is its base.
+
         - ``_source_purpose`` - internal: the resource purpose the main
           schema document reads under. :func:`pyxsd.parse` passes
           ``"schema-hint"`` when the instance's own location hint
@@ -461,8 +468,6 @@ class Schema:
             raise ValueError(f"xsd_version must be '1.0' or '1.1', not {xsd_version!r}")
         purpose = validate_purpose(_source_purpose)
         _reject_parser_override(resource_policy, xml_policy, xml_limits)
-        if isinstance(source, ET.Element) and resource_policy is not None:
-            raise ResourcePolicyError("an unverified Element cannot bypass resource policy parsing")
         if overlay is not None and classify_resource(overlay).kind == "remote":
             raise ResourcePolicyError(
                 f"the overlay '{overlay}' is remote; Python overlay modules are "
@@ -480,7 +485,7 @@ class Schema:
         with _policy_compilation(resource_policy, root_read=isinstance(source, (str, os.PathLike))):
             original_source = source
             source_data = None
-            if resource_policy is not None:
+            if resource_policy is not None and not isinstance(source, ET.Element):
                 try:
                     source_data = read_resource(source, resource_policy, purpose=purpose)
                 except OSError as exc:
@@ -488,7 +493,9 @@ class Schema:
                 source = source_data.source_id
             elif isinstance(source, (str, os.PathLike)):
                 require_local_reference(os.fspath(source), purpose=purpose)
-            main_source = resource_base(source) if isinstance(source, (str, os.PathLike)) else None
+            main_source = (
+                resource_base(source) if isinstance(source, (str, os.PathLike)) else base_uri
+            )
             # A remote schema never loads a local Python overlay: that would be a
             # remote-to-local pivot. The fallback directory (for an overlay named
             # as a module) is derived only from a local source; a remote or
@@ -541,7 +548,7 @@ class Schema:
             # still resolve relative to the main schema document.
             ctx.additional_schemas = collect_additional_schemas(ctx, schema_location_pairs or [])
             host = _CompileHost(ctx)
-            schema = _compile_into_context(ctx, source, host)
+            schema = _compile_into_context(ctx, source, host, base_uri=base_uri)
             schema.source = original_source
             if overlay:
                 load_overlay_classes(schema, overlay, fallback_dir=overlay_dir)
@@ -1301,6 +1308,8 @@ def _compile_into_context(
     ctx: CompositionContext,
     xsd_file: str | Path | os.PathLike[str] | IO[str] | ET.Element | None,
     host: Any,
+    *,
+    base_uri: str | None = None,
 ) -> Schema:
     """Runs the schema-compilation pipeline into *ctx*.
 
@@ -1324,17 +1333,17 @@ def _compile_into_context(
     # building, the declaration sweeps) resolve it without needing the
     # parser passed down; the previous value is restored afterwards.
     with active_context(ctx.schema_context), context_report(ctx.schema_context, ctx.report):
-        if ctx.resource_policy is not None:
+        if isinstance(xsd_file, ET.Element):
+            # An already-parsed caller tree is the schema document.  Its
+            # namespace evidence was recorded on ctx.namespace_context by
+            # the caller; nothing is serialized or parsed again here.
+            root = xsd_file
+        elif ctx.resource_policy is not None:
             assert ctx.source_data is not None
             try:
                 root = ctx.resource_policy.parse(ctx.source_data, ctx.namespace_context)
             except ET.ParseError as exc:
                 raise PyXSDError(f"the schema file is not well-formed XML: {exc}") from exc
-        elif isinstance(xsd_file, ET.Element):
-            # An already-parsed caller tree is the schema document.  Its
-            # namespace evidence was recorded on ctx.namespace_context by
-            # the caller; nothing is serialized or parsed again here.
-            root = xsd_file
         elif isinstance(xsd_file, (str, os.PathLike)):
             try:
                 with open(xsd_file, "rb") as schemaFile:
@@ -1373,7 +1382,7 @@ def _compile_into_context(
         if ctx.processor_version == decimal.Decimal("1.0"):
             check_xsd10_vocabulary(root, ctx.report)
 
-        base, visited = schema_composition_context(ctx, xsd_file)
+        base, visited = schema_composition_context(ctx, xsd_file, base_uri=base_uri)
         # Documents already fully composed; their components must not be
         # spliced twice (diamond includes) and a repeat encounter is not
         # an error.

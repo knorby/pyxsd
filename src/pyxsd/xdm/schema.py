@@ -836,6 +836,12 @@ class PyxsdSchemaProxy:
             return self
         wanted = path[2:] if path.startswith("./") else path
         expanded = self.expand_name(wanted, namespaces)
+        if (
+            expanded == wanted
+            and not expanded.startswith("{")
+            and self.target_namespace is not None
+        ):
+            expanded = clark(self.target_namespace, wanted)
         element = self._pool.get_element(expanded or wanted)
         if element is not None and element.parent is self:
             return element
@@ -1014,6 +1020,12 @@ class _MergedSchemaProxy:
             return self
         wanted = path[2:] if path.startswith("./") else path
         expanded = self.expand_name(wanted, namespaces)
+        if (
+            expanded == wanted
+            and not expanded.startswith("{")
+            and self.target_namespace is not None
+        ):
+            expanded = clark(self.target_namespace, wanted)
         element = self._pool.get_element(expanded or wanted)
         if element is not None and element.parent in self._members:
             return element
@@ -1495,6 +1507,10 @@ def _component_origin(schema: Any, er: Any) -> Any:
             return _canonical_origin(source)
     source = getattr(schema, "source", None)
     if source is not None:
+        from xml.etree import ElementTree as ET
+
+        if isinstance(source, ET.Element):
+            return ("inline", _element_signature(source))
         return _canonical_origin(source)
     return ("anonymous", id(schema))
 
@@ -1515,17 +1531,24 @@ def _canonical_origin(source: Any) -> Any:
         return source
 
 
+def _element_signature(element: Any) -> Any:
+    """A structural identity for an inline schema source tree."""
+    from xml.etree import ElementTree as ET
+
+    if not isinstance(element, ET.Element):
+        return id(element)
+    return (
+        element.tag,
+        tuple(sorted(element.attrib.items())),
+        element.text or "",
+        tuple(_element_signature(child) for child in element),
+    )
+
+
 def _lookup(mapping: Mapping[str, Any], qname: str | None) -> Any:
     if qname is None:
         return None
-    found = mapping.get(qname)
-    if found is not None:
-        return found
-    if not qname.startswith("{") and ":" not in qname:
-        matches = [value for key, value in mapping.items() if local_name(key) == qname]
-        if len(matches) == 1:
-            return matches[0]
-    return None
+    return mapping.get(qname)
 
 
 def schema_type_name_for_er(er: Any, schema: Any) -> str | None:

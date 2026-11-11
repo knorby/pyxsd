@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 from xml.etree import ElementTree as ET
 
+from pyxsd.namespaces import XSD_NS
 from pyxsd.source_spans import SourceIndex
 from pyxsd.xdm.annotations import (
     UNTYPED,
@@ -39,6 +41,7 @@ from pyxsd.xdm.nodes import (
     _document_uri_from_source,
     _read_source,
 )
+from pyxsd.xdm.values import XdmAtomic
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
     from pyxsd.xdm.schema import SchemaPool
@@ -56,6 +59,9 @@ __all__ = [
 
 _VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
 _INPUT_TYPE_ANNOTATIONS = frozenset({"strip", "preserve", "unspecified"})
+_XSD_UNTYPED = f"{{{XSD_NS}}}untyped"
+_XSD_UNTYPED_ATOMIC = f"{{{XSD_NS}}}untypedAtomic"
+_XSD_ANY_TYPE = f"{{{XSD_NS}}}anyType"
 
 _CHANGED_MESSAGE = (
     "the bound tree changed since XDM capture; "
@@ -279,7 +285,7 @@ class DocumentValidationError(XdmInputError):
         self,
         message: str,
         *,
-        reason: Literal["invalid", "unknown", "type"],
+        reason: Literal["invalid", "lax-invalid", "unknown", "type"],
         cause: BaseException | None = None,
     ) -> None:
         super().__init__(message)
@@ -321,34 +327,7 @@ def copy_type_annotations(source: XdmDocument, target: XdmDocument) -> XdmDocume
     """
     if not isinstance(source, XdmDocument) or not isinstance(target, XdmDocument):
         raise TypeError("annotation copying requires two XdmDocument trees")
-    source_stack: list[XdmNode] = [source]
-    target_stack: list[XdmNode] = [target]
-    while source_stack:
-        if not target_stack:  # pragma: no cover - structure guard
-            raise ValueError("the target tree ended before the captured tree")
-        origin = source_stack.pop()
-        destination = target_stack.pop()
-        if origin.kind is not destination.kind or origin.name != destination.name:
-            raise ValueError("the captured and grounded trees describe different revisions")
-        destination._apply_occurrence_annotation(origin.annotation)
-        origin_children = origin.children
-        target_children = destination.children
-        if len(origin_children) != len(target_children):
-            raise ValueError("the captured and grounded trees describe different revisions")
-        origin_attributes = origin.attributes
-        target_attributes = destination.attributes
-        if len(origin_attributes) != len(target_attributes):
-            raise ValueError("the captured and grounded trees describe different revisions")
-        for origin_attribute, target_attribute in zip(
-            origin_attributes, target_attributes, strict=True
-        ):
-            if origin_attribute.name != target_attribute.name:
-                raise ValueError("the captured and grounded trees describe different revisions")
-            target_attribute._apply_occurrence_annotation(origin_attribute.annotation)
-        source_stack.extend(reversed(origin_children))
-        target_stack.extend(reversed(target_children))
-    if target_stack:  # pragma: no cover - structure guard
-        raise ValueError("the target tree extends beyond the captured tree")
+    _copy_subtree_annotations(source, target)
     return target
 
 
@@ -367,14 +346,14 @@ def parse_typed_document(
 
     ``validation`` is ``strict``, ``lax``, ``preserve``, or ``strip``.
     ``input_type_annotations`` is ``strip``, ``preserve``, or ``unspecified``
-    and is applied after validity assessment.  A ``strict`` or ``lax`` mode
-    validates through the compiled pyxsd schemas in *schema_pool*; a document
-    whose root matches no global declaration is untyped under ``lax`` and an
-    error under ``strict``.  ``type_name`` validates the root against one
-    in-scope type after binding.
+    and is applied after validity assessment.  ``strict`` and ``lax`` use the
+    compiled pyxsd schemas in *schema_pool*; ``lax`` validates a known
+    descendant declaration when the root itself is undeclared.  ``type_name``
+    validates the root against one in-scope type independently of the
+    validation mode.
 
-    A pre-captured :class:`~pyxsd.xdm.nodes.XdmDocument` is never reparsed:
-    its annotations are preserved or stripped as requested.  An already-bound
+    A pre-captured :class:`~pyxsd.xdm.nodes.XdmDocument` is never reparsed
+    unless validation or type assessment requires it; an already-bound
     :class:`pyxsd.document.Document` is consumed through its coherent capture.
     """
     if validation not in _VALIDATION_MODES:
@@ -385,9 +364,28 @@ def parse_typed_document(
         raise TypeError("a validation type name must be a string or None")
     strip = input_type_annotations == "strip" or validation == "strip"
 
+    if type_name is not None:
+        return _type_validated_document(
+            source,
+            schema_pool=schema_pool,
+            type_name=type_name,
+            strip=input_type_annotations == "strip",
+            document_uri=document_uri,
+            base_uri=base_uri,
+            source_name=source_name,
+        )
+
     if isinstance(source, XdmDocument):
-        if validation in ("strict", "lax") and schema_pool is not None:
-            _require_annotated(source, validation)
+        if validation in ("strict", "lax"):
+            return _validated_document(
+                source,
+                schema_pool=schema_pool,
+                validation=validation,
+                strip=strip,
+                document_uri=document_uri,
+                base_uri=base_uri,
+                source_name=source_name,
+            )
         if strip:
             return strip_type_annotations(_untyped_copy(source))
         return source
@@ -395,24 +393,23 @@ def parse_typed_document(
     from pyxsd.document import Document
 
     if isinstance(source, Document):
-        if validation == "strict" and _instance_errors(source.report):
-            raise DocumentValidationError(
-                "the source document is not valid against the imported schema",
-                reason="invalid",
+        if validation in ("strict", "lax"):
+            return _validated_bound_document(
+                source,
+                schema_pool=schema_pool,
+                validation=validation,
+                strip=strip,
             )
-        if type_name is not None and schema_pool is not None:
-            _validate_named_type(source.root, type_name, schema_pool)
         document = source.to_xdm()
         if strip:
             return strip_type_annotations(_untyped_copy(document))
         return document
 
-    if validation in ("strict", "lax") and schema_pool is not None:
+    if validation in ("strict", "lax"):
         return _validated_document(
             source,
             schema_pool=schema_pool,
             validation=validation,
-            type_name=type_name,
             strip=strip,
             document_uri=document_uri,
             base_uri=base_uri,
@@ -434,25 +431,22 @@ def parse_typed_document(
 def _validated_document(
     source: Any,
     *,
-    schema_pool: SchemaPool,
+    schema_pool: SchemaPool | None,
     validation: str,
-    type_name: str | None,
     strip: bool,
     document_uri: str | None,
     base_uri: str | None,
     source_name: str | None,
 ) -> XdmDocument:
     """Validate *source* through one pool schema and return its grounded tree."""
-    captured = CaptureSource.from_input(source)
+    captured = _capture_source(source)
     untyped = XdmDocument.parse(
         captured.data,
         source_name=captured.source_name,
         document_uri=captured.document_uri,
     )
     root_name = untyped.root_element.name
-    schema = schema_pool.schema_for_element(root_name)
-    if schema is None and type_name is not None:
-        schema = schema_pool.schema_for_type(type_name)
+    schema = schema_pool.schema_for_element(root_name) if schema_pool is not None else None
     if schema is None:
         if validation == "strict":
             raise DocumentValidationError(
@@ -460,34 +454,318 @@ def _validated_document(
                 "in-scope schema definitions",
                 reason="unknown",
             )
-        return untyped if not strip else strip_type_annotations(untyped)
+        target = _grounded_copy(
+            captured,
+            schema_pool=schema_pool,
+            document_uri=document_uri,
+            base_uri=base_uri,
+            source_name=source_name,
+        )
+        if schema_pool is not None:
+            _lax_validate_known_children(target, schema_pool)
+        if strip:
+            strip_type_annotations(target)
+        return target
 
-    parsed = schema.parse(captured.data, capture_xdm=True)
+    parsed = _parse_payload(schema, captured.data)
     errors = _instance_errors(parsed.report)
-    if errors and validation == "strict":
-        if type_name is not None:
-            raise DocumentValidationError(
-                f"the source document is not valid against the type {type_name!r}",
-                reason="type",
-            )
+    if errors:
         raise DocumentValidationError(
             "the source document is not valid against the imported schema",
-            reason="invalid",
+            reason="invalid" if validation == "strict" else "lax-invalid",
         )
-    if type_name is not None:
-        _validate_named_type(parsed.root, type_name, schema_pool)
+    target = _grounded_copy(
+        captured,
+        schema_pool=schema_pool,
+        document_uri=document_uri,
+        base_uri=base_uri,
+        source_name=source_name,
+    )
+    copy_type_annotations(parsed.to_xdm(), target)
+    if strip:
+        strip_type_annotations(target)
+    return target
 
-    target = XdmDocument.parse(
+
+def _validated_bound_document(
+    source: Any,
+    *,
+    schema_pool: SchemaPool | None,
+    validation: str,
+    strip: bool,
+) -> XdmDocument:
+    """Validate an already-bound Document through its coherent capture."""
+    document = source.to_xdm()
+    if source.root is None:
+        if validation == "strict":
+            raise DocumentValidationError(
+                "the source document has no global element declaration",
+                reason="unknown",
+            )
+        if schema_pool is not None:
+            _lax_validate_known_children(document, schema_pool)
+        return strip_type_annotations(_untyped_copy(document)) if strip else document
+    errors = _instance_errors(source.report)
+    if errors:
+        raise DocumentValidationError(
+            "the source document is not valid against its schema",
+            reason="invalid" if validation == "strict" else "lax-invalid",
+        )
+    if strip:
+        return strip_type_annotations(_untyped_copy(document))
+    return document
+
+
+def _parse_payload(schema: Any, payload: bytes) -> Any:
+    return schema.parse(io.BytesIO(payload), capture_xdm=True)
+
+
+def _capture_source(source: Any) -> CaptureSource:
+    if isinstance(source, XdmDocument):
+        return CaptureSource.from_content(
+            source.source_index.content,
+            source_name=source.source_name,
+        )
+    return CaptureSource.from_input(source)
+
+
+def _grounded_copy(
+    captured: CaptureSource,
+    *,
+    schema_pool: SchemaPool | None,
+    document_uri: str | None,
+    base_uri: str | None,
+    source_name: str | None,
+) -> XdmDocument:
+    return XdmDocument.parse(
         captured.data,
         source_name=source_name or captured.source_name,
         document_uri=document_uri if document_uri is not None else captured.document_uri,
         base_uri=base_uri if base_uri is not None else document_uri,
         schema_pool=schema_pool,
     )
-    copy_type_annotations(parsed.to_xdm(), target)
-    if strip:
-        strip_type_annotations(target)
-    return target
+
+
+def _lax_validate_known_children(document: XdmDocument, schema_pool: SchemaPool) -> None:
+    """Validate declared descendants of an undeclared root with lax semantics."""
+    stack: list[XdmNode] = [document.root_element]
+    while stack:
+        node = stack.pop()
+        if node.kind is not NodeKind.ELEMENT:
+            continue
+        schema = schema_pool.schema_for_element(node.name)
+        if schema is None:
+            stack.extend(reversed(node.children))
+            continue
+        parsed = schema.parse(element_from_xdm(node), capture_xdm=True)
+        if _instance_errors(parsed.report):
+            raise DocumentValidationError(
+                "the source document is not valid against the imported schema",
+                reason="lax-invalid",
+            )
+        _copy_subtree_annotations(parsed.to_xdm().root_element, node)
+
+
+def _type_validated_document(
+    source: Any,
+    *,
+    schema_pool: SchemaPool | None,
+    type_name: str,
+    strip: bool,
+    document_uri: str | None,
+    base_uri: str | None,
+    source_name: str | None,
+) -> XdmDocument:
+    """Validate a source root against one requested type."""
+    if type_name == _XSD_UNTYPED:
+        return strip_type_annotations(
+            _untyped_document(
+                source,
+                document_uri=document_uri,
+                base_uri=base_uri,
+                source_name=source_name,
+            )
+        )
+    if type_name == _XSD_UNTYPED_ATOMIC:
+        document = _untyped_document(
+            source,
+            document_uri=document_uri,
+            base_uri=base_uri,
+            source_name=source_name,
+        )
+        if any(child.kind is NodeKind.ELEMENT for child in document.root_element.children):
+            raise DocumentValidationError(
+                "xs:untypedAtomic validation rejects element children",
+                reason="type",
+            )
+        document.root_element._apply_occurrence_annotation(XdmAnnotation(UNTYPED_ATOMIC, None))
+        return document
+    if type_name == _XSD_ANY_TYPE:
+        document = _untyped_document(
+            source,
+            document_uri=document_uri,
+            base_uri=base_uri,
+            source_name=source_name,
+        )
+        if strip:
+            strip_type_annotations(document)
+        return document
+    if schema_pool is None:
+        raise DocumentValidationError(
+            f"the type {type_name!r} is not in the in-scope schema definitions",
+            reason="type",
+        )
+    adapter = schema_pool.get_type(type_name)
+    if adapter is None:
+        raise DocumentValidationError(
+            f"the type {type_name!r} is not in the in-scope schema definitions",
+            reason="type",
+        )
+
+    if isinstance(source, XdmDocument):
+        document = source
+        _validate_type_on_document(document, adapter, type_name)
+        if adapter.is_simple() and document.root_element.annotation.type_name != adapter.name:
+            document = _untyped_copy(document)
+            _annotate_simple_root(document, adapter)
+        return strip_type_annotations(_untyped_copy(document)) if strip else document
+
+    from pyxsd.document import Document
+
+    if isinstance(source, Document):
+        document = source.to_xdm()
+        _validate_type_on_document(document, adapter, type_name)
+        if adapter.is_simple() and document.root_element.annotation.type_name != adapter.name:
+            document = _untyped_copy(document)
+            _annotate_simple_root(document, adapter)
+        return strip_type_annotations(_untyped_copy(document)) if strip else document
+
+    captured = _capture_source(source)
+    untyped = _grounded_copy(
+        captured,
+        schema_pool=schema_pool,
+        document_uri=document_uri,
+        base_uri=base_uri,
+        source_name=source_name,
+    )
+    root = untyped.root_element
+    if adapter.is_simple():
+        if not adapter.is_valid(root.string_value):
+            raise DocumentValidationError(
+                f"the source document is not valid against the type {type_name!r}",
+                reason="type",
+            )
+        schema = schema_pool.schema_for_element(root.name)
+        if schema is not None:
+            parsed = _parse_payload(schema, captured.data)
+            if not _instance_errors(parsed.report):
+                copy_type_annotations(parsed.to_xdm(), untyped)
+                return strip_type_annotations(untyped) if strip else untyped
+        _annotate_simple_root(untyped, adapter)
+        return strip_type_annotations(untyped) if strip else untyped
+
+    schema = schema_pool.schema_for_element(root.name)
+    if schema is None:
+        # Without a global declaration there is no element binding to attach
+        # to this requested type; accept the well-formed tree rather than
+        # inventing a synthetic declaration.
+        return strip_type_annotations(untyped) if strip else untyped
+    parsed = _parse_payload(schema, captured.data)
+    if _instance_errors(parsed.report):
+        raise DocumentValidationError(
+            f"the source document is not valid against the type {type_name!r}",
+            reason="type",
+        )
+    if parsed.root is not None and not adapter.is_valid(parsed.root):
+        raise DocumentValidationError(
+            f"the source document is not valid against the type {type_name!r}",
+            reason="type",
+        )
+    copy_type_annotations(parsed.to_xdm(), untyped)
+    return strip_type_annotations(untyped) if strip else untyped
+
+
+def _untyped_document(
+    source: Any,
+    *,
+    document_uri: str | None,
+    base_uri: str | None,
+    source_name: str | None,
+) -> XdmDocument:
+    if isinstance(source, XdmDocument):
+        return _untyped_copy(source)
+    from pyxsd.document import Document
+
+    if isinstance(source, Document):
+        return _untyped_copy(source.to_xdm())
+    return XdmDocument.parse(
+        source,
+        document_uri=document_uri,
+        base_uri=base_uri,
+        source_name=source_name,
+    )
+
+
+def _validate_type_on_document(
+    document: XdmDocument,
+    adapter: Any,
+    type_name: str,
+) -> None:
+    root = document.root_element
+    if adapter.is_simple():
+        if not adapter.is_valid(root.string_value):
+            raise DocumentValidationError(
+                f"the source document is not valid against the type {type_name!r}",
+                reason="type",
+            )
+        return
+    actual = root.annotation.actual_type
+    declared = getattr(adapter, "_type_class", None)
+    if isinstance(actual, type) and isinstance(declared, type) and issubclass(actual, declared):
+        return
+    raise DocumentValidationError(
+        f"the source document is not valid against the type {type_name!r}",
+        reason="type",
+    )
+
+
+def _annotate_simple_root(document: XdmDocument, adapter: Any) -> None:
+    from pyxsd.xdm.annotations import OccurrenceAnnotation
+
+    root = document.root_element
+    value = adapter.cast(root.string_value)
+    root._apply_occurrence_annotation(
+        OccurrenceAnnotation(
+            type_name=adapter.name,
+            nilled=False,
+            validity="valid",
+            actual_type=getattr(adapter, "_type_class", None),
+            validation_attempted="full",
+            typed_values=(XdmAtomic(value, adapter.name, getattr(adapter, "_type_class", None)),),
+        )
+    )
+
+
+def _copy_subtree_annotations(origin: XdmNode, destination: XdmNode) -> None:
+    if origin.kind is not destination.kind or origin.name != destination.name:
+        raise ValueError("the captured and grounded trees describe different revisions")
+    destination._apply_occurrence_annotation(origin.annotation)
+    origin_children = origin.children
+    target_children = destination.children
+    if len(origin_children) != len(target_children):
+        raise ValueError("the captured and grounded trees describe different revisions")
+    origin_attributes = origin.attributes
+    target_attributes = destination.attributes
+    if len(origin_attributes) != len(target_attributes):
+        raise ValueError("the captured and grounded trees describe different revisions")
+    for origin_attribute, target_attribute in zip(
+        origin_attributes, target_attributes, strict=True
+    ):
+        if origin_attribute.name != target_attribute.name:
+            raise ValueError("the captured and grounded trees describe different revisions")
+        target_attribute._apply_occurrence_annotation(origin_attribute.annotation)
+    for origin_child, target_child in zip(origin_children, target_children, strict=True):
+        _copy_subtree_annotations(origin_child, target_child)
 
 
 def _untyped_copy(document: XdmDocument) -> XdmDocument:
@@ -504,38 +782,6 @@ def _untyped_copy(document: XdmDocument) -> XdmDocument:
         base_uri=document.base_uri,
         schema_pool=document.schema_pool,
     )
-
-
-def _require_annotated(document: XdmDocument, validation: str) -> None:
-    """Reject a strict request for an untyped captured tree."""
-    root = document.root_element
-    if validation == "strict" and root.annotation.governing_declaration is None:
-        raise DocumentValidationError(
-            "the source document carries no schema validity assessment",
-            reason="unknown",
-        )
-
-
-def _validate_named_type(bound: Any, type_name: str, schema_pool: SchemaPool) -> None:
-    adapter = schema_pool.get_type(type_name)
-    if adapter is None:
-        raise DocumentValidationError(
-            f"the type {type_name!r} is not in the in-scope schema definitions",
-            reason="type",
-        )
-    if bound is None:
-        raise DocumentValidationError(
-            "the source document has no root to validate against the requested type",
-            reason="type",
-        )
-    value: Any = bound
-    if adapter.is_simple() and not isinstance(bound, str):
-        value = str(bound)
-    if not adapter.is_valid(value):
-        raise DocumentValidationError(
-            f"the source document is not valid against the type {type_name!r}",
-            reason="type",
-        )
 
 
 def _instance_errors(report: Any) -> tuple[Any, ...]:

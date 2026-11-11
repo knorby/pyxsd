@@ -686,7 +686,8 @@ def test_pool_lookup_and_registration_edges(tmp_path: Path):
     assert pool.get_attribute(None) is None
     assert pool.get_substitution_group(None) is None
     assert pool.get_type("Missing") is None
-    assert pool.get_type("Amount") is pool.get_type(f"{{{MONEY}}}Amount")
+    assert pool.get_type("Amount") is None
+    assert pool.get_type(f"{{{MONEY}}}Amount") is not None
 
     with pytest.raises(ValueError, match="xsd_version"):
         SchemaPool([], xsd_version="2.0")

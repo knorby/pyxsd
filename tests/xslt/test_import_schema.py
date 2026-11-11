@@ -143,13 +143,15 @@ def test_inline_schema_with_schema_location_is_static_error() -> None:
     assert _error_code(lambda: _compile(_stylesheet(body))) == "XTSE0215"
 
 
-def test_import_schema_without_a_location_is_static_error() -> None:
-    body = f'<xsl:import-schema namespace="{OTHER}"/>'
+def test_import_schema_without_a_location_is_a_hint() -> None:
+    body = f'<xsl:import-schema namespace="{OTHER}"/><xsl:template name="main"/>'
 
-    assert _error_code(lambda: _compile(_stylesheet(body))) == "XTSE1650"
+    compiled = _compile(_stylesheet(body))
+
+    assert compiled.schema_pool is None
 
 
-def test_missing_schema_document_is_static_error(tmp_path: Path) -> None:
+def test_missing_schema_document_is_a_hint_until_a_name_is_needed(tmp_path: Path) -> None:
     stylesheet = _write(
         tmp_path / "missing.xsl",
         _stylesheet(
@@ -158,16 +160,28 @@ def test_missing_schema_document_is_static_error(tmp_path: Path) -> None:
             '<xsl:template name="main"/>'
         ).decode(),
     )
+    compiled = _compile(stylesheet)
+    assert compiled.schema_pool is None
 
-    assert _error_code(lambda: _compile(stylesheet)) == "XTSE1650"
+    references = _write(
+        tmp_path / "references.xsl",
+        _stylesheet(
+            f'<xsl:import-schema namespace="{INVOICE}" '
+            'schema-location="missing.xsd"/>'
+            '<xsl:template name="main">'
+            "<xsl:sequence select=\"inv:Amount('1')\"/>"
+            "</xsl:template>"
+        ).decode(),
+    )
+    assert _error_code(lambda: _compile(references)) == "XPST0017"
 
 
-def test_invalid_schema_is_static_error() -> None:
+def test_invalid_schema_is_a_synthetic_schema_error() -> None:
     body = _inline(
         '<xs:element name="root" type="xs:string"/><xs:element name="root" type="xs:int"/>'
     )
 
-    assert _error_code(lambda: _compile(_stylesheet(body))) == "XTSE1660"
+    assert _error_code(lambda: _compile(_stylesheet(body))) == "XTSE0220"
 
 
 def test_same_namespace_imports_merge_distinct_components() -> None:
@@ -588,7 +602,7 @@ def test_referenced_schema_target_namespace_mismatch_is_static_error(
         ).decode(),
     )
 
-    assert _error_code(lambda: _compile(stylesheet)) == "XTSE1660"
+    assert _error_code(lambda: _compile(stylesheet)) == "XTSE0220"
 
 
 def test_multiple_inline_schemas_and_empty_namespace_are_static_errors() -> None:
@@ -601,8 +615,8 @@ def test_multiple_inline_schemas_and_empty_namespace_are_static_errors() -> None
     )
     empty = '<xsl:import-schema namespace="  "/>'
 
-    assert _error_code(lambda: _compile(_stylesheet(multiple))) == "XTSE0215"
-    assert _error_code(lambda: _compile(_stylesheet(empty))) == "XTSE0215"
+    assert _error_code(lambda: _compile(_stylesheet(multiple))) == "XTSE0010"
+    assert _error_code(lambda: _compile(_stylesheet(empty))) == "XTSE0020"
 
 
 def test_import_schema_must_be_a_top_level_declaration() -> None:
@@ -667,16 +681,28 @@ def test_pool_identity_deduplication_and_raw_schemas() -> None:
     assert pool.schema_for_element(f"{{{INVOICE}}}Amount") is None
 
 
-def test_schema_compile_rejects_an_element_with_a_resource_policy() -> None:
-    from xml.etree import ElementTree as ET
+def test_inline_schema_dependencies_honor_the_resource_policy(tmp_path: Path, monkeypatch) -> None:
+    _write(
+        tmp_path / "evil.xsd",
+        f'<xs:schema xmlns:xs="{XSD_NS}">'
+        '<xs:simpleType name="Included"><xs:restriction base="xs:string"/></xs:simpleType>'
+        "</xs:schema>",
+    )
+    monkeypatch.chdir(tmp_path)
+    policy = _ReadOnlyPolicy({})
+    body = (
+        "<xsl:import-schema>"
+        f'<xs:schema targetNamespace="{INVOICE}">'
+        '<xs:include schemaLocation="evil.xsd"/>'
+        "</xs:schema>"
+        "</xsl:import-schema>"
+        '<xsl:template name="main"><xsl:sequence select="inv:Included(\'x\')"/></xsl:template>'
+    )
 
-    from pyxsd.resource_policy import ResourcePolicyError
-    from pyxsd.schema import Schema
-
-    element = ET.fromstring(f'<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"/>')
-
-    with pytest.raises(ResourcePolicyError, match="Element"):
-        Schema.compile(element, resource_policy=object())  # type: ignore[arg-type]
+    with pytest.raises(XsltError) as caught:
+        _compile(_stylesheet(body), resource_policy=policy)
+    assert caught.value.code == "XTSE1650"
+    assert any(read[0] == "evil.xsd" for read in policy.reads)
 
 
 def test_substitution_group_conflict_is_static_error() -> None:
@@ -817,7 +843,7 @@ def test_inline_schema_compile_failure_maps_to_static_error(monkeypatch) -> None
 
     monkeypatch.setattr(Schema, "compile", fail)
 
-    assert _error_code(lambda: _compile(_stylesheet(_inline(AMOUNT_TYPE)))) == "XTSE1650"
+    assert _error_code(lambda: _compile(_stylesheet(_inline(AMOUNT_TYPE)))) == "XTSE0220"
 
 
 def test_merge_schema_pools_rejects_version_mismatch_and_conflicts() -> None:
@@ -878,6 +904,8 @@ def test_package_validation_attribute_helpers() -> None:
     )
 
     class Root:
+        local_name = "stylesheet"
+
         def __init__(self, value: str) -> None:
             self.value = value
 
@@ -890,7 +918,7 @@ def test_package_validation_attribute_helpers() -> None:
 
     def descriptor(value: str) -> Any:
         module = SimpleNamespace(root=Root(value), identity=None)
-        return SimpleNamespace(module=module)
+        return SimpleNamespace(module=module, all_modules=(module,))
 
     assert _package_input_type_annotations(descriptor("preserve")) == "preserve"
     assert _package_default_validation(descriptor("strip")) == "strip"
@@ -899,4 +927,90 @@ def test_package_validation_attribute_helpers() -> None:
     assert caught.value.code == "XTSE0020"
     with pytest.raises(XsltError) as caught:
         _package_default_validation(descriptor("strict"))
+    assert caught.value.code == "XTSE0020"
+
+
+def test_namespace_with_an_unqualified_inline_schema_is_xtse0215() -> None:
+    body = (
+        f'<xsl:import-schema namespace="{INVOICE}">'
+        '<xs:schema><xs:simpleType name="A"><xs:restriction base="xs:string"/></xs:simpleType></xs:schema>'
+        "</xsl:import-schema>"
+        '<xsl:template name="main"/>'
+    )
+
+    assert _error_code(lambda: _compile(_stylesheet(body))) == "XTSE0215"
+
+
+def test_pool_type_lookup_is_namespace_exact() -> None:
+    body = _inline(AMOUNT_TYPE) + '<xsl:template name="main"/>'
+    pool = _compile(_stylesheet(body)).schema_pool
+
+    assert pool.get_type("Amount") is None
+    assert pool.get_type(f"{{{INVOICE}}}Amount") is not None
+
+
+def test_remote_schema_location_without_a_policy_is_a_hint() -> None:
+    body = (
+        f'<xsl:import-schema namespace="{INVOICE}" '
+        'schema-location="https://example.com/invoice.xsd"/>'
+        '<xsl:template name="main"/>'
+    )
+
+    compiled = _compile(_stylesheet(body))
+
+    assert compiled.schema_pool is None
+
+
+def test_referenced_schema_policy_denial_is_xtse1650() -> None:
+    policy = _ReadOnlyPolicy({})
+    body = (
+        f'<xsl:import-schema namespace="{INVOICE}" '
+        'schema-location="urn:example:denied.xsd"/>'
+        '<xsl:template name="main"/>'
+    )
+
+    assert _error_code(lambda: _compile(_stylesheet(body), resource_policy=policy)) == ("XTSE1650")
+
+
+def test_malformed_referenced_schema_is_xtse0220(tmp_path: Path) -> None:
+    _write(tmp_path / "broken.xsd", "<xs:schema")
+    stylesheet = _write(
+        tmp_path / "broken.xsl",
+        _stylesheet(
+            f'<xsl:import-schema namespace="{INVOICE}" schema-location="broken.xsd"/>'
+            '<xsl:template name="main"/>'
+        ).decode(),
+    )
+
+    assert _error_code(lambda: _compile(stylesheet)) == "XTSE0220"
+
+
+def test_package_input_type_annotations_package_value_branches() -> None:
+    from types import SimpleNamespace
+
+    from pyxsd.xslt.compiler.packages import _package_input_type_annotations
+
+    class Root:
+        local_name = "package"
+
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+        def attribute(self, name: str) -> str:
+            del name
+            return self.value
+
+        def source_location(self) -> None:
+            return None
+
+    module = SimpleNamespace(root=Root("preserve"), identity=None)
+    descriptor = SimpleNamespace(module=module, all_modules=(module,))
+
+    assert _package_input_type_annotations(descriptor) == "preserve"
+    bad = SimpleNamespace(
+        module=SimpleNamespace(root=Root("bogus"), identity=None),
+        all_modules=(SimpleNamespace(root=Root("bogus"), identity=None),),
+    )
+    with pytest.raises(XsltError) as caught:
+        _package_input_type_annotations(bad)
     assert caught.value.code == "XTSE0020"

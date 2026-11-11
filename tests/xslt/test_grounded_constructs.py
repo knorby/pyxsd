@@ -437,7 +437,7 @@ def test_nested_source_documents_restore_the_outer_context() -> None:
 
 
 def test_source_document_validation_options() -> None:
-    for validation in ("strict", "lax", "preserve", "strip"):
+    for validation in ("lax", "preserve", "strip"):
         body = f"""
             <xsl:template name="main">
               <xsl:source-document href="urn:doc" validation="{validation}">
@@ -450,6 +450,21 @@ def test_source_document_validation_options() -> None:
             delivery="document", initial_template="main"
         )
         assert result.principal_tree.string_value == "value"
+
+    strict = """
+        <xsl:template name="main">
+          <xsl:source-document href="urn:doc" validation="strict"/>
+        </xsl:template>
+    """
+    policy = MappingPolicy({"urn:doc": b"<doc><n>value</n></doc>"})
+    assert (
+        error_code(
+            lambda: compiled(stylesheet(strict), resource_policy=policy).transform(
+                delivery="document", initial_template="main"
+            )
+        )
+        == "XTTE1512"
+    )
 
     typed = """
         <xsl:template name="main">

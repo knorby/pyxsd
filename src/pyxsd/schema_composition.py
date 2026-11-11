@@ -265,6 +265,8 @@ class CompositionContext:
 def schema_composition_context(
     ctx: CompositionContext,
     xsd_file: str | Path | os.PathLike[str] | IO[str] | ET.Element | None,
+    *,
+    base_uri: str | None = None,
 ) -> tuple[str | None, set[str]]:
     """Returns the (base, visited) context for schema composition.
 
@@ -275,9 +277,19 @@ def schema_composition_context(
     resolving relative locations against the working directory. *visited*
     starts with the main schema document itself so include cycles are
     detected; an anonymous stream has no identity to record.
+
+    An already-parsed ``Element`` has no path; the caller may supply its
+    base through *base_uri* so relative includes/imports and a resource
+    policy resolve against the authored document rather than the process
+    working directory.
     """
     if not isinstance(xsd_file, (str, os.PathLike)):
-        return None, set()
+        if base_uri is None:
+            return None, set()
+        base = cast(str, resource_base(base_uri))
+        if classify_resource(base).kind == "memory":
+            return base, set()
+        return base, set()
     base = cast(str, resource_base(os.fspath(xsd_file)))
     if classify_resource(base).kind == "memory":
         return base, set()
