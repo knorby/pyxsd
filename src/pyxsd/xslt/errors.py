@@ -61,8 +61,12 @@ def is_static_error_code(code: str | None) -> bool:
     caught, so these codes stay outside ``xsl:try`` even if a processor reports
     them while executing an expression.
     """
-    local = normalized_error_code(code)
-    return local is not None and local.startswith(("XPST", "XQST", "XTSE"))
+    expanded = expanded_error_code(code)
+    prefix = f"{{{ERROR_NAMESPACE}}}"
+    if expanded is None or not expanded.startswith(prefix):
+        return False
+    local = expanded[len(prefix) :]
+    return local.startswith(("XPST", "XQST", "XTSE"))
 
 
 def expanded_error_code(code: str | None) -> str | None:

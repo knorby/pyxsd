@@ -7567,6 +7567,16 @@ class _Invocation(Transformation):
             return self.boundary_error(error, catchable=False)
         return error
 
+    def _evaluate_global(self, component: Component) -> XdmSequence:
+        """Evaluate one lazy global and mark escaping errors non-catchable."""
+        try:
+            return self._global_value(component)
+        except BaseException as global_error:
+            marked = self._outside_try_error(global_error)
+            if marked is global_error:
+                raise
+            raise marked from global_error
+
     def _global_value(self, component: Component) -> XdmSequence:
         assert component.name is not None
         key = (component.owner, component.name)
@@ -8951,13 +8961,7 @@ class _Invocation(Transformation):
                 if component is None or name in attempted:
                     raise
                 attempted.add(name)
-                try:
-                    self._global_value(component)
-                except BaseException as global_error:
-                    marked = self._outside_try_error(global_error)
-                    if marked is global_error:
-                        raise
-                    raise marked from global_error
+                self._evaluate_global(component)
 
     def _expression_references_global(
         self,
@@ -9009,7 +9013,7 @@ class _Invocation(Transformation):
                     for name in locals_
                 ):
                     continue
-                value = self._global_value(component)
+                value = self._evaluate_global(component)
             self._bind(variables, component.name, value)
         for key, value in locals_.items():
             self._bind(variables, key, value)

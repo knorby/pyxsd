@@ -985,6 +985,51 @@ def test_local_variable_error_outside_try_is_not_caught() -> None:
     assert local_code(caught.value) == "FOAR0001"
 
 
+def test_global_variable_error_in_match_pattern_is_not_caught() -> None:
+    with pytest.raises(Exception) as caught:
+        transform(
+            """
+            <xsl:variable name="q" select="22 div 0"/>
+            <xsl:template match="item[$q]"><hit/></xsl:template>
+            <xsl:template name="main">
+              <out>
+                <xsl:try>
+                  <xsl:apply-templates select="doc/item"/>
+                  <xsl:catch><caught/></xsl:catch>
+                </xsl:try>
+              </out>
+            </xsl:template>
+            """,
+            source=b"<doc><item/></doc>",
+        )
+
+    assert local_code(caught.value) == "FOAR0001"
+
+
+def test_global_variable_error_in_accumulator_pattern_is_not_caught() -> None:
+    with pytest.raises(Exception) as caught:
+        transform(
+            """
+            <xsl:variable name="q" select="22 div 0"/>
+            <xsl:mode use-accumulators="#all"/>
+            <xsl:accumulator name="my:a" initial-value="0">
+              <xsl:accumulator-rule match="item[$q]" select="$value + 1"/>
+            </xsl:accumulator>
+            <xsl:template name="main">
+              <out>
+                <xsl:try>
+                  <xsl:sequence select="accumulator-before('my:a')"/>
+                  <xsl:catch><caught/></xsl:catch>
+                </xsl:try>
+              </out>
+            </xsl:template>
+            """,
+            source=b"<doc><item/></doc>",
+        )
+
+    assert local_code(caught.value) == "FOAR0001"
+
+
 def test_global_variable_error_in_catch_body_is_not_caught_by_outer_try() -> None:
     with pytest.raises(Exception) as caught:
         transform(
@@ -1605,7 +1650,8 @@ def test_static_error_codes_are_never_catchable() -> None:
 
     assert is_static_error_code("XPST0008") is True
     assert is_static_error_code("err:XTSE0010") is True
-    assert is_static_error_code("Q{urn:custom}XQST0001") is True
+    assert is_static_error_code("Q{urn:custom}XQST0001") is False
+    assert is_static_error_code("Q{}XPST0008") is False
     assert is_static_error_code("FOAR0001") is False
     assert is_static_error_code(None) is False
 
@@ -1618,6 +1664,23 @@ def test_static_error_codes_are_never_catchable() -> None:
 
     assert static.catchable is False
     assert serialization.catchable is False
+
+
+@pytest.mark.parametrize("local", ["XPST0001", "XTSE0001", "XQST0001"])
+def test_custom_namespace_static_looking_codes_are_catchable(local: str) -> None:
+    result = transform(
+        f"""
+        <xsl:template name="main">
+          <xsl:try select="error(QName('urn:custom', '{local}'))">
+            <xsl:catch errors="Q{{urn:custom}}{local}" select="'caught'"/>
+            <xsl:catch errors="*" select="'wild'"/>
+          </xsl:try>
+        </xsl:template>
+        """,
+        delivery="raw",
+    )
+
+    assert result.principal == (XdmAtomic.string("caught"),)
 
 
 def test_transformation_boundary_preserves_python_cause_identity() -> None:
