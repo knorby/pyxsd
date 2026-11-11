@@ -759,6 +759,135 @@ def test_iteration_control_rejects_shared_state_outside_iterate() -> None:
     assert caught.value.code == "XTSE3120"
 
 
+def test_break_inside_conditional_content_executes() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1 to 3">
+            <xsl:on-non-empty><xsl:sequence select="'nonempty'"/></xsl:on-non-empty>
+            <xsl:sequence select="."/>
+            <xsl:variable name="value" select="'break'"/>
+            <xsl:break select="$value"/>
+          </xsl:iterate>
+        </xsl:template>
+        """
+    )
+    result = transform(source, initial_template="main")
+    assert result.principal == (
+        XdmAtomic.string("nonempty"),
+        XdmAtomic.integer(1),
+        XdmAtomic.string("break"),
+    )
+
+
+def test_break_keeps_pending_output_from_nested_conditional_branch() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1 to 3">
+            <xsl:on-non-empty><xsl:sequence select="'nonempty'"/></xsl:on-non-empty>
+            <xsl:if test=". = 1">
+              <xsl:sequence select="'before'"/>
+              <xsl:break select="'break'"/>
+            </xsl:if>
+          </xsl:iterate>
+        </xsl:template>
+        """
+    )
+    result = transform(source, initial_template="main")
+    assert result.principal == (
+        XdmAtomic.string("nonempty"),
+        XdmAtomic.string("before"),
+        XdmAtomic.string("break"),
+    )
+
+
+def test_next_iteration_inside_conditional_content_executes() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1 to 3">
+            <xsl:on-non-empty><xsl:sequence select="'n'"/></xsl:on-non-empty>
+            <xsl:sequence select="."/>
+            <xsl:next-iteration/>
+          </xsl:iterate>
+        </xsl:template>
+        """
+    )
+    result = transform(source, initial_template="main")
+    assert tuple(item.lexical for item in result.principal if isinstance(item, XdmAtomic)) == (
+        "n",
+        "1",
+        "n",
+        "2",
+        "n",
+        "3",
+    )
+
+
+def test_next_iteration_keeps_pending_output_from_nested_conditional_branch() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1 to 2">
+            <xsl:on-non-empty><xsl:sequence select="'n'"/></xsl:on-non-empty>
+            <xsl:if test="true()">
+              <xsl:sequence select="'before'"/>
+              <xsl:next-iteration/>
+            </xsl:if>
+          </xsl:iterate>
+        </xsl:template>
+        """
+    )
+    result = transform(source, initial_template="main")
+    assert tuple(item.lexical for item in result.principal if isinstance(item, XdmAtomic)) == (
+        "n",
+        "before",
+        "n",
+        "before",
+    )
+
+
+def test_break_after_where_populated() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1 to 2">
+            <xsl:where-populated><xsl:sequence select="'kept'"/></xsl:where-populated>
+            <xsl:break select="'break'"/>
+          </xsl:iterate>
+        </xsl:template>
+        """
+    )
+    result = transform(source, initial_template="main")
+    assert tuple(item.lexical for item in result.principal if isinstance(item, XdmAtomic)) == (
+        "kept",
+        "break",
+    )
+
+
+def test_controls_inside_on_non_empty_content_remain_static_errors() -> None:
+    sources = (
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1">
+            <xsl:on-non-empty><xsl:break/></xsl:on-non-empty>
+            <xsl:sequence select="."/>
+          </xsl:iterate>
+        </xsl:template>
+        """,
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1">
+            <xsl:on-empty><xsl:next-iteration/></xsl:on-empty>
+          </xsl:iterate>
+        </xsl:template>
+        """,
+    )
+    for source in sources:
+        assert error_code(lambda source=source: compiled(stylesheet(source))) == "XTSE3120"
+
+
 def test_direct_execution_of_an_iteration_control_plan_is_a_static_error() -> None:
     plan = _BreakPlan(
         Instruction(name=f"{{{XSLT_NS}}}break"),

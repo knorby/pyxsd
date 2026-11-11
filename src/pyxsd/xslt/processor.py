@@ -3482,6 +3482,35 @@ def _require_absolute(uri: str, label: str) -> str:
 # Invocation execution
 
 
+class _IterationControlSignal(Exception):
+    """A valid iterate-body control reached through synchronous conditional content.
+
+    ``xsl:on-non-empty`` and ``xsl:on-empty`` are executed by the conditional
+    sequence evaluator, which normally returns a value synchronously.  A
+    control instruction in that content must instead unwind to the body frame so
+    the iteration frame can observe it.  The signal carries the conditional
+    output produced before the control and the lexical focus at the control.
+    """
+
+    __slots__ = ("focus", "pending", "plan", "variables")
+
+    def __init__(
+        self,
+        plan: _NextIterationPlan | _BreakPlan,
+        variables: Mapping[str, XdmSequence],
+        focus: Focus,
+    ) -> None:
+        super().__init__(plan.instruction.local_name)
+        self.plan = plan
+        self.variables = dict(variables)
+        self.focus = focus
+        self.pending: tuple[XdmItem, ...] = ()
+
+    def prepend(self, values: Sequence[XdmItem]) -> None:
+        """Add already-produced conditional output before this control."""
+        self.pending = (*values, *self.pending)
+
+
 class _Invocation(Transformation):
     """One transformation's complete dynamic state and instruction runtime."""
 
@@ -3496,6 +3525,7 @@ class _Invocation(Transformation):
         self._mode_dispatchers: dict[tuple[str | None, str | None], RuleDispatcher] = {}
         self._pattern_environments: dict[int, ExpressionEnvironment] = {}
         self.dynamic_expressions = DynamicExpressionCache()
+        self._active_iteration_frame: Frame | None = None
 
     # -- top level ---------------------------------------------------------
 
@@ -3728,9 +3758,14 @@ class _Invocation(Transformation):
 
     def step(self, frame: Frame) -> FrameResult:
         previous = (self.current_group, self.current_grouping_key)
+        previous_iteration = self._active_iteration_frame
         self.current_group = None if frame.group is NO_GROUP else cast(XdmSequence, frame.group)
         self.current_grouping_key = (
             None if frame.grouping_key is NO_GROUP else cast(XdmSequence, frame.grouping_key)
+        )
+        state = frame.iteration
+        self._active_iteration_frame = (
+            frame if isinstance(state, IterationState) and state.kind == "iterate" else None
         )
         try:
             if frame.kind == "xpath":
@@ -3742,6 +3777,7 @@ class _Invocation(Transformation):
             return self._step_instruction(frame)
         finally:
             self.current_group, self.current_grouping_key = previous
+            self._active_iteration_frame = previous_iteration
 
     def _consume_input(self, frame: Frame) -> Frame:
         if frame.input is NO_INPUT:
@@ -3907,17 +3943,26 @@ class _Invocation(Transformation):
             return self._apply_templates_step(plan, frame, cursor)
         if isinstance(plan, _OverridingPlan):
             return self._overriding_step(plan, frame, cursor, rule_context)
-        value = self._execute_plan(
-            plan,
-            focus=frame.focus,
-            locals_=self._frame_variables(frame),
-            final_output=frame.final_output,
-            package_name=frame.package,
-            mode=frame.mode,
-            tunnel_parameters=self._frame_tunnel(frame),
-            rule_context=rule_context,
-            original_functions=original_functions,
-        )
+        try:
+            value = self._execute_plan(
+                plan,
+                focus=frame.focus,
+                locals_=self._frame_variables(frame),
+                final_output=frame.final_output,
+                package_name=frame.package,
+                mode=frame.mode,
+                tunnel_parameters=self._frame_tunnel(frame),
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+        except _IterationControlSignal as signal:
+            control_frame = replace(
+                frame,
+                variables=signal.variables,
+                focus=signal.focus,
+                values=frame.values + signal.pending,
+            )
+            return self._iteration_control(signal.plan, control_frame)
         return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
 
     # -- iteration, sorting, and grouping ---------------------------------
@@ -5700,37 +5745,41 @@ class _Invocation(Transformation):
     ) -> XdmSequence:
         result: list[XdmItem] = []
         local_scope = dict(locals_)
-        for plan in plans:
-            if isinstance(plan, _ParamPlan):
-                raise XsltError(
-                    "xsl:param is only supported at the start of a template or function",
-                    code="XTDE0000",
+        try:
+            for plan in plans:
+                if isinstance(plan, _ParamPlan):
+                    raise XsltError(
+                        "xsl:param is only supported at the start of a template or function",
+                        code="XTDE0000",
+                    )
+                if isinstance(plan, _VariablePlan):
+                    local_scope[plan.name] = self._variable_value(
+                        plan,
+                        focus,
+                        local_scope,
+                        package_name,
+                        mode=mode,
+                        tunnel_parameters=tunnel_parameters,
+                        rule_context=rule_context,
+                        original_functions=original_functions,
+                    )
+                    continue
+                result.extend(
+                    self._execute_plan(
+                        plan,
+                        focus=focus,
+                        locals_=local_scope,
+                        final_output=final_output,
+                        package_name=package_name,
+                        mode=mode,
+                        tunnel_parameters=tunnel_parameters,
+                        rule_context=rule_context,
+                        original_functions=original_functions,
+                    )
                 )
-            if isinstance(plan, _VariablePlan):
-                local_scope[plan.name] = self._variable_value(
-                    plan,
-                    focus,
-                    local_scope,
-                    package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
-                )
-                continue
-            result.extend(
-                self._execute_plan(
-                    plan,
-                    focus=focus,
-                    locals_=local_scope,
-                    final_output=final_output,
-                    package_name=package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
-                )
-            )
+        except _IterationControlSignal as signal:
+            signal.prepend(result)
+            raise
         return tuple(result)
 
     def _execute_plan(
@@ -5749,6 +5798,9 @@ class _Invocation(Transformation):
         if isinstance(plan, _TextPlan):
             return (self._text_node(plan.value),)
         if isinstance(plan, (_NextIterationPlan, _BreakPlan)):
+            active = getattr(self, "_active_iteration_frame", None)
+            if active is not None and isinstance(active.iteration, IterationState):
+                raise _IterationControlSignal(plan, locals_, focus)
             raise XsltStaticError(
                 f"xsl:{plan.instruction.local_name} requires an enclosing xsl:iterate",
                 code="XTSE3120",
@@ -6108,78 +6160,32 @@ class _Invocation(Transformation):
         deferred: list[tuple[_OnNonEmptyPlan, Mapping[str, XdmSequence]]] = []
         local_scope = dict(locals_)
         populated = False
-        for item in plan.plans:
-            if isinstance(item, _ParamPlan):
-                raise XsltError(
-                    "xsl:param is only supported at the start of a template or function",
-                    code="XTDE0000",
-                )
-            if isinstance(item, _VariablePlan):
-                local_scope[item.name] = self._variable_value(
-                    item,
-                    focus,
-                    local_scope,
-                    package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
-                )
-                continue
-            if isinstance(item, _OnNonEmptyPlan):
-                if populated:
-                    result.extend(
-                        self._conditional_value(
-                            item,
-                            focus,
-                            local_scope,
-                            final_output,
-                            package_name,
-                            mode=mode,
-                            tunnel_parameters=tunnel_parameters,
-                            rule_context=rule_context,
-                            original_functions=original_functions,
-                        )
+        try:
+            for item in plan.plans:
+                if isinstance(item, _ParamPlan):
+                    raise XsltError(
+                        "xsl:param is only supported at the start of a template or function",
+                        code="XTDE0000",
                     )
-                else:
-                    deferred.append((item, dict(local_scope)))
-                continue
-            if isinstance(item, _OnEmptyPlan):
-                if not populated:
-                    result.clear()
-                    result.extend(
-                        self._conditional_value(
-                            item,
-                            focus,
-                            local_scope,
-                            final_output,
-                            package_name,
-                            mode=mode,
-                            tunnel_parameters=tunnel_parameters,
-                            rule_context=rule_context,
-                            original_functions=original_functions,
-                        )
+                if isinstance(item, _VariablePlan):
+                    local_scope[item.name] = self._variable_value(
+                        item,
+                        focus,
+                        local_scope,
+                        package_name,
+                        mode=mode,
+                        tunnel_parameters=tunnel_parameters,
+                        rule_context=rule_context,
+                        original_functions=original_functions,
                     )
-                continue
-            values = self._execute_plan(
-                item,
-                focus=focus,
-                locals_=local_scope,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
-            for value in values:
-                if not populated and not is_vacuous(value):
-                    for deferred_plan, deferred_scope in deferred:
+                    continue
+                if isinstance(item, _OnNonEmptyPlan):
+                    if populated:
                         result.extend(
                             self._conditional_value(
-                                deferred_plan,
+                                item,
                                 focus,
-                                deferred_scope,
+                                local_scope,
                                 final_output,
                                 package_name,
                                 mode=mode,
@@ -6188,9 +6194,75 @@ class _Invocation(Transformation):
                                 original_functions=original_functions,
                             )
                         )
-                    deferred.clear()
-                    populated = True
-                result.append(value)
+                    else:
+                        deferred.append((item, dict(local_scope)))
+                    continue
+                if isinstance(item, _OnEmptyPlan):
+                    if not populated:
+                        result.clear()
+                        result.extend(
+                            self._conditional_value(
+                                item,
+                                focus,
+                                local_scope,
+                                final_output,
+                                package_name,
+                                mode=mode,
+                                tunnel_parameters=tunnel_parameters,
+                                rule_context=rule_context,
+                                original_functions=original_functions,
+                            )
+                        )
+                    continue
+                values = self._execute_plan(
+                    item,
+                    focus=focus,
+                    locals_=local_scope,
+                    final_output=final_output,
+                    package_name=package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
+                    rule_context=rule_context,
+                    original_functions=original_functions,
+                )
+                for value in values:
+                    if not populated and not is_vacuous(value):
+                        for deferred_plan, deferred_scope in deferred:
+                            result.extend(
+                                self._conditional_value(
+                                    deferred_plan,
+                                    focus,
+                                    deferred_scope,
+                                    final_output,
+                                    package_name,
+                                    mode=mode,
+                                    tunnel_parameters=tunnel_parameters,
+                                    rule_context=rule_context,
+                                    original_functions=original_functions,
+                                )
+                            )
+                        deferred.clear()
+                        populated = True
+                    result.append(value)
+        except _IterationControlSignal as signal:
+            if not populated and any(not is_vacuous(value) for value in signal.pending):
+                for deferred_plan, deferred_scope in deferred:
+                    result.extend(
+                        self._conditional_value(
+                            deferred_plan,
+                            focus,
+                            deferred_scope,
+                            final_output,
+                            package_name,
+                            mode=mode,
+                            tunnel_parameters=tunnel_parameters,
+                            rule_context=rule_context,
+                            original_functions=original_functions,
+                        )
+                    )
+                deferred.clear()
+            signal.prepend(result)
+            raise
         return tuple(result)
 
     def _conditional_value(
