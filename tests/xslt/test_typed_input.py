@@ -87,6 +87,68 @@ NILLABLE_PRICE_XSD = PRICE_XSD.replace(
     '<xs:element name="price" type="inv:Price" nillable="true"/></xs:schema>',
 )
 
+BLOCK_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
+    xmlns:inv="{INVOICE}">
+  <xs:complexType name="Base" block="extension">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="Ext">
+    <xs:complexContent>
+      <xs:extension base="inv:Base">
+        <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:complexType name="Other">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:element name="Root" type="inv:Other" block="extension"/>
+  <xs:element name="RootBase" type="inv:Base"/>
+</xs:schema>"""
+
+UNBLOCKED_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
+    xmlns:inv="{INVOICE}">
+  <xs:complexType name="BaseOpen">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="ExtOpen">
+    <xs:complexContent>
+      <xs:extension base="inv:BaseOpen">
+        <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>"""
+
+DECL_BLOCK_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
+    xmlns:inv="{INVOICE}">
+  <xs:complexType name="BaseOpen">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="ExtOpen">
+    <xs:complexContent>
+      <xs:extension base="inv:BaseOpen">
+        <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:complexType name="OtherOpen">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:element name="RootOpen" type="inv:OtherOpen" block="extension"/>
+</xs:schema>"""
+
+NESTED_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
+    xmlns:inv="{INVOICE}">
+  <xs:complexType name="Line">
+    <xs:sequence><xs:element name="value" type="xs:decimal"/></xs:sequence>
+    <xs:attribute name="code" type="xs:int"/>
+  </xs:complexType>
+  <xs:complexType name="Order">
+    <xs:sequence><xs:element name="line" type="inv:Line"/></xs:sequence>
+  </xs:complexType>
+</xs:schema>"""
+
 
 def _stylesheet(body: str, *, attributes: str = "") -> bytes:
     return (
@@ -2091,6 +2153,90 @@ def test_type_requested_nilled_complex_occurrence_checks_attributes() -> None:
     compiled, _ = _requested_type_transform(NILLABLE_PRICE_XSD, source, "1", type_name="inv:Price")
 
     assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
+
+
+def test_type_requested_complex_type_annotates_nested_nodes() -> None:
+    source = (
+        f'<inv:order xmlns:inv="{INVOICE}"><line code="7"><value>12.5</value></line></inv:order>'
+    ).encode()
+    compiled, _ = _requested_type_transform(
+        NESTED_XSD,
+        source,
+        "(* instance of element(*, inv:Order), "
+        "*/line instance of element(*, inv:Line), "
+        "*/line/value instance of element(*, xs:decimal), "
+        "*/line/@code instance of attribute(*, xs:int), "
+        "data(*/line/value))",
+        type_name="inv:Order",
+    )
+
+    result = compiled.transform(initial_template="main")
+
+    assert [item.lexical for item in result.principal] == [
+        "true",
+        "true",
+        "true",
+        "true",
+        "12.5",
+    ]
+    assert result.principal[4].type_name == f"{{{XSD_NS}}}decimal"
+
+
+def test_type_requested_prohibited_substitutions_without_declaration() -> None:
+    source = (
+        f'<inv:NoDecl xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="inv:Ext"><a>x</a><b>y</b></inv:NoDecl>'
+    ).encode()
+    compiled, _ = _requested_type_transform(BLOCK_XSD, source, "1", type_name="inv:Base")
+
+    assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
+
+
+def test_type_requested_prohibited_substitutions_with_differing_declaration() -> None:
+    source = (
+        f'<inv:Root xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="inv:Ext"><a>x</a><b>y</b></inv:Root>'
+    ).encode()
+    compiled, _ = _requested_type_transform(BLOCK_XSD, source, "1", type_name="inv:Base")
+
+    assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
+
+
+def test_type_requested_applies_declaration_prohibited_substitutions() -> None:
+    source = (
+        f'<inv:RootOpen xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="inv:ExtOpen"><a>x</a><b>y</b></inv:RootOpen>'
+    ).encode()
+    compiled, _ = _requested_type_transform(DECL_BLOCK_XSD, source, "1", type_name="inv:BaseOpen")
+
+    assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
+
+
+def test_type_requested_prohibited_substitutions_with_matching_declaration() -> None:
+    source = (
+        f'<inv:RootBase xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="inv:Ext"><a>x</a><b>y</b></inv:RootBase>'
+    ).encode()
+    compiled, _ = _requested_type_transform(BLOCK_XSD, source, "1", type_name="inv:Base")
+
+    assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
+
+
+def test_type_requested_unblocked_substitution_is_accepted() -> None:
+    source = (
+        f'<inv:Open xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="inv:ExtOpen"><a>x</a><b>y</b></inv:Open>'
+    ).encode()
+    compiled, _ = _requested_type_transform(
+        UNBLOCKED_XSD,
+        source,
+        "* instance of element(*, inv:ExtOpen)",
+        type_name="inv:BaseOpen",
+    )
+
+    result = compiled.transform(initial_template="main")
+
+    assert result.principal[0].lexical == "true"
 
 
 def test_type_requested_complex_type_on_untyped_captured_document() -> None:
