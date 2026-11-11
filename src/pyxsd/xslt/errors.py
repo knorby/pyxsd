@@ -53,6 +53,18 @@ def normalized_error_code(code: str | None) -> str | None:
     return value.rsplit(":", 1)[-1] or None
 
 
+def is_static_error_code(code: str | None) -> bool:
+    """Whether *code* identifies a static XPath or XSLT error.
+
+    ``XPST``/``XQST`` are static XPath/XQuery errors and ``XTSE`` is the XSLT
+    static-error family.  XSLT 3.0 section 8.3 says static errors are never
+    caught, so these codes stay outside ``xsl:try`` even if a processor reports
+    them while executing an expression.
+    """
+    local = normalized_error_code(code)
+    return local is not None and local.startswith(("XPST", "XQST", "XTSE"))
+
+
 def expanded_error_code(code: str | None) -> str | None:
     """Return one error code as an expanded QName when its namespace is known.
 
@@ -264,7 +276,11 @@ class XsltError(PyXSDError):
         serialization errors are outside ``xsl:try``, and a foreign callback
         failure is not converted merely because it crossed an XSLT boundary.
         """
-        return self.phase in (None, "dynamic") and bool(self.code)
+        return (
+            self.phase in (None, "dynamic")
+            and bool(self.code)
+            and not is_static_error_code(self.code)
+        )
 
     def matches_catch(
         self,
@@ -479,7 +495,7 @@ class XsltSerializationError(XsltError):
 
     @property
     def catchable(self) -> bool:
-        return self.secondary and bool(self.code)
+        return self.secondary and bool(self.code) and not is_static_error_code(self.code)
 
 
 __all__ = [
@@ -491,5 +507,6 @@ __all__ = [
     "XsltStaticError",
     "error_code_from_exception",
     "expanded_error_code",
+    "is_static_error_code",
     "normalized_error_code",
 ]

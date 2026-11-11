@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import pytest
+from elementpath.exceptions import ElementPathError
 
 from pyxsd.resource_policy import ResourceData
 from pyxsd.xdm import XdmAtomic
@@ -92,6 +93,11 @@ def child_text(node: XdmNode, name: str) -> str:
         if child.kind is NodeKind.ELEMENT and child.local_name == name:
             return child.string_value
     raise AssertionError(f"no child element named {name!r}")
+
+
+def local_code(error: BaseException) -> str:
+    code = getattr(error, "code", None)
+    return "" if code is None else str(code).rsplit(":", 1)[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -867,6 +873,282 @@ def test_outer_variables_are_visible_in_catch() -> None:
     assert result.principal == (XdmAtomic.string("outer-value"),)
 
 
+def test_static_error_in_try_select_is_not_caught() -> None:
+    with pytest.raises(Exception) as caught:
+        transform(
+            """
+            <xsl:template name="main">
+              <xsl:try select="$undefined">
+                <xsl:catch select="'caught'"/>
+              </xsl:try>
+            </xsl:template>
+            """
+        )
+
+    assert local_code(caught.value) == "XPST0008"
+
+
+def test_err_variable_outside_catch_is_a_static_error() -> None:
+    with pytest.raises(Exception) as caught:
+        transform(
+            """
+            <xsl:template name="main">
+              <xsl:try>
+                <xsl:sequence select="$err:code"/>
+                <xsl:catch select="'caught'"/>
+              </xsl:try>
+            </xsl:template>
+            """
+        )
+
+    assert local_code(caught.value) == "XPST0008"
+
+
+def test_static_error_in_catch_body_is_not_caught_by_outer_try() -> None:
+    with pytest.raises(Exception) as caught:
+        transform(
+            """
+            <xsl:template name="main">
+              <xsl:try>
+                <xsl:try select="1 div 0">
+                  <xsl:catch errors="err:FOAR0001">
+                    <xsl:sequence select="$pi"/>
+                  </xsl:catch>
+                </xsl:try>
+                <xsl:catch select="'outer'"/>
+              </xsl:try>
+            </xsl:template>
+            """
+        )
+
+    assert local_code(caught.value) == "XPST0008"
+
+
+def test_global_variable_error_outside_try_is_not_caught() -> None:
+    with pytest.raises(Exception) as caught:
+        transform(
+            """
+            <xsl:variable name="p" select="0"/>
+            <xsl:variable name="q" select="22 div $p"/>
+            <xsl:template name="main">
+              <output>
+                <xsl:try>
+                  <out><xsl:value-of select="$q"/></out>
+                  <xsl:catch><caught/></xsl:catch>
+                </xsl:try>
+              </output>
+            </xsl:template>
+            """
+        )
+
+    assert local_code(caught.value) == "FOAR0001"
+    assert isinstance(caught.value, XsltDynamicError)
+    assert caught.value.allow_catch is False
+    assert getattr(caught.value.cause, "code", None) == "err:FOAR0001"
+    assert caught.value.__cause__ is caught.value.cause
+
+
+def test_local_variable_initializer_inside_try_is_caught() -> None:
+    result = transform(
+        """
+        <xsl:template name="main">
+          <out>
+            <xsl:try>
+              <xsl:variable name="q" select="1 div 0"/>
+              <xsl:sequence select="$q"/>
+              <xsl:catch errors="err:FOAR0001" select="'caught'"/>
+            </xsl:try>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    assert result.principal_tree.string_value == "caught"
+
+
+def test_local_variable_error_outside_try_is_not_caught() -> None:
+    with pytest.raises(Exception) as caught:
+        transform(
+            """
+            <xsl:template name="main">
+              <xsl:variable name="q" select="22 div 0"/>
+              <output>
+                <xsl:try>
+                  <out><xsl:value-of select="$q"/></out>
+                  <xsl:catch><caught/></xsl:catch>
+                </xsl:try>
+              </output>
+            </xsl:template>
+            """
+        )
+
+    assert local_code(caught.value) == "FOAR0001"
+
+
+def test_global_variable_error_in_catch_body_is_not_caught_by_outer_try() -> None:
+    with pytest.raises(Exception) as caught:
+        transform(
+            """
+            <xsl:variable name="q" select="22 div 0"/>
+            <xsl:template name="main">
+              <xsl:try>
+                <xsl:try select="1 div 0">
+                  <xsl:catch errors="err:FOAR0001">
+                    <xsl:sequence select="$q"/>
+                  </xsl:catch>
+                </xsl:try>
+                <xsl:catch select="'outer'"/>
+              </xsl:try>
+            </xsl:template>
+            """
+        )
+
+    assert local_code(caught.value) == "FOAR0001"
+
+
+def test_global_variable_xslt_error_is_not_caught() -> None:
+    processor = XsltProcessor(static_options={"assertions": True})
+    with pytest.raises(XsltDynamicError) as caught:
+        transform(
+            """
+            <xsl:variable name="q">
+              <xsl:assert test="false()" select="'global assertion'"/>
+            </xsl:variable>
+            <xsl:template name="main">
+              <xsl:try>
+                <xsl:sequence select="$q"/>
+                <xsl:catch select="'caught'"/>
+              </xsl:try>
+            </xsl:template>
+            """,
+            processor=processor,
+        )
+
+    assert local_code(caught.value) == "XTMM9001"
+    assert caught.value.allow_catch is False
+    assert isinstance(caught.value.cause, XsltDynamicError)
+    assert local_code(caught.value.cause) == "XTMM9001"
+
+
+def test_global_variable_static_error_is_not_caught() -> None:
+    with pytest.raises(Exception) as caught:
+        transform(
+            """
+            <xsl:variable name="q" select="$undefined"/>
+            <xsl:template name="main">
+              <xsl:try>
+                <xsl:sequence select="$q"/>
+                <xsl:catch select="'caught'"/>
+              </xsl:try>
+            </xsl:template>
+            """
+        )
+
+    assert local_code(caught.value) == "XPST0008"
+
+
+def test_global_variable_uncoded_error_is_not_caught() -> None:
+    class _UncodedPolicy:
+        def read(self, source: str, *, base: str | None, purpose: str) -> ResourceData:
+            del base, purpose
+            admitted = _stylesheet_resource(source)
+            if admitted is not None:
+                return admitted
+            raise ElementPathError("uncoded global failure")
+
+    with pytest.raises(XsltDynamicError) as caught:
+        transform(
+            """
+            <xsl:variable name="q">
+              <xsl:source-document href="urn:test:uncoded-global"/>
+            </xsl:variable>
+            <xsl:template name="main">
+              <xsl:try>
+                <xsl:sequence select="$q"/>
+                <xsl:catch select="'caught'"/>
+              </xsl:try>
+            </xsl:template>
+            """,
+            processor=XsltProcessor(resource_policy=_UncodedPolicy()),
+        )
+
+    assert caught.value.code is None
+    assert caught.value.allow_catch is False
+    assert isinstance(caught.value.cause, ElementPathError)
+
+
+def test_global_variable_python_failure_keeps_identity() -> None:
+    policy = _ExplodingPolicy()
+    with pytest.raises(RuntimeError, match="python callback exploded"):
+        transform(
+            """
+            <xsl:variable name="q">
+              <xsl:source-document href="urn:test:boom"/>
+            </xsl:variable>
+            <xsl:template name="main">
+              <xsl:try>
+                <xsl:sequence select="$q"/>
+                <xsl:catch select="'caught'"/>
+              </xsl:try>
+            </xsl:template>
+            """,
+            processor=XsltProcessor(resource_policy=policy),
+        )
+
+    assert policy.calls == ["urn:test:boom"]
+
+
+def test_uncoded_elementpath_error_is_not_caught() -> None:
+    class _UncodedPolicy:
+        def read(self, source: str, *, base: str | None, purpose: str) -> ResourceData:
+            del base, purpose
+            admitted = _stylesheet_resource(source)
+            if admitted is not None:
+                return admitted
+            raise ElementPathError("uncoded python failure")
+
+    with pytest.raises(ElementPathError, match="uncoded python failure"):
+        transform(
+            """
+            <xsl:template name="main">
+              <xsl:try>
+                <xsl:source-document href="urn:test:uncoded"/>
+                <xsl:catch select="'caught'"/>
+              </xsl:try>
+            </xsl:template>
+            """,
+            processor=XsltProcessor(resource_policy=_UncodedPolicy()),
+        )
+
+
+def test_outside_try_error_preserves_static_and_uncatchable_identity() -> None:
+    from pyxsd.xslt.processor import _Invocation
+
+    invocation = object.__new__(_Invocation)
+    static = XsltStaticError("static", code="XTSE0010")
+    uncatchable = XsltDynamicError("resource", code="XTDE0001", allow_catch=False)
+
+    assert _Invocation._outside_try_error(invocation, static) is static
+    assert _Invocation._outside_try_error(invocation, uncatchable) is uncatchable
+
+
+def test_global_variable_internal_try_can_catch_its_own_error() -> None:
+    result = transform(
+        """
+        <xsl:variable name="q">
+          <xsl:try select="1 div 0">
+            <xsl:catch select="'recovered'"/>
+          </xsl:try>
+        </xsl:variable>
+        <xsl:template name="main">
+          <out><xsl:value-of select="$q"/></out>
+        </xsl:template>
+        """
+    )
+
+    assert result.principal_tree.string_value == "recovered"
+
+
 def test_try_body_variables_are_not_visible_in_catch_body() -> None:
     with pytest.raises(Exception) as caught:
         transform(
@@ -883,7 +1165,7 @@ def test_try_body_variables_are_not_visible_in_catch_body() -> None:
             """
         )
 
-    assert getattr(caught.value, "code", None) == "XPST0008"
+    assert local_code(caught.value) == "XPST0008"
 
 
 def test_try_body_variables_are_not_visible_in_catch_select() -> None:
@@ -900,7 +1182,7 @@ def test_try_body_variables_are_not_visible_in_catch_select() -> None:
             """
         )
 
-    assert getattr(caught.value, "code", None) == "XPST0008"
+    assert local_code(caught.value) == "XPST0008"
 
 
 # ---------------------------------------------------------------------------
@@ -1316,6 +1598,26 @@ def test_error_metadata_is_typed_and_validated() -> None:
         XsltDynamicError("bad", column_number="1")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="has_description"):
         XsltDynamicError("bad", has_description=1)  # type: ignore[arg-type]
+
+
+def test_static_error_codes_are_never_catchable() -> None:
+    from pyxsd.xslt.errors import XsltSerializationError, is_static_error_code
+
+    assert is_static_error_code("XPST0008") is True
+    assert is_static_error_code("err:XTSE0010") is True
+    assert is_static_error_code("Q{urn:custom}XQST0001") is True
+    assert is_static_error_code("FOAR0001") is False
+    assert is_static_error_code(None) is False
+
+    static = XsltDynamicError("static", code="XPST0008", phase="dynamic")
+    serialization = XsltSerializationError(
+        "static serialization",
+        code="XTSE0010",
+        secondary=True,
+    )
+
+    assert static.catchable is False
+    assert serialization.catchable is False
 
 
 def test_transformation_boundary_preserves_python_cause_identity() -> None:

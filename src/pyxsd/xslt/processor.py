@@ -89,7 +89,14 @@ from pyxsd.xslt.compiler.static import (
     EffectiveModule,
     StaticPreprocessor,
 )
-from pyxsd.xslt.errors import ERROR_NAMESPACE, XsltDynamicError, XsltError, XsltStaticError
+from pyxsd.xslt.errors import (
+    ERROR_NAMESPACE,
+    XsltDynamicError,
+    XsltError,
+    XsltStaticError,
+    error_code_from_exception,
+    is_static_error_code,
+)
 from pyxsd.xslt.profiles import RecoveryPolicy
 from pyxsd.xslt.results import (
     ResultEntry,
@@ -5455,6 +5462,9 @@ class _Invocation(Transformation):
         if isinstance(error, XsltError):
             return error if error.catchable else None
         if isinstance(error, (ElementPathError, XPathEvaluationError)):
+            code = error_code_from_exception(error)
+            if code is None or is_static_error_code(code):
+                return None
             return self.boundary_error(error, stack=stack, catchable=True)
         return None
 
@@ -7515,6 +7525,48 @@ class _Invocation(Transformation):
             return ()
         return (XdmAtomic.string(""),)
 
+    def _outside_try_error(self, error: BaseException) -> BaseException:
+        """Mark an error raised while initializing an outer variable.
+
+        XSLT 3.0 section 8.3 excludes errors from evaluating references to
+        variables declared outside the try.  Globals are lazy here, so the
+        first reference may be the one that triggers their initializer.  A
+        dynamic error escaping that initializer is wrapped as non-catchable;
+        static errors and foreign Python failures keep their own identity.
+        """
+        if isinstance(error, XsltStaticError):
+            return error
+        if isinstance(error, XsltError):
+            if not error.catchable:
+                return error
+            message = error.args[0] if error.args else str(error)
+            wrapped = XsltDynamicError(
+                message,
+                code=error.code,
+                phase=error.phase or "dynamic",
+                uri=error.uri,
+                module=error.module,
+                package=error.package,
+                location=error.location,
+                stack=error.stack,
+                cause=error,
+                allow_catch=False,
+                description=error.description,
+                has_description=error.has_description,
+                value=error.value,
+                line_number=error.line_number,
+                column_number=error.column_number,
+            )
+            wrapped.__cause__ = error
+            wrapped.__suppress_context__ = True
+            return wrapped
+        if isinstance(error, (ElementPathError, XPathEvaluationError)):
+            code = error_code_from_exception(error)
+            if code is not None and is_static_error_code(code):
+                return error
+            return self.boundary_error(error, catchable=False)
+        return error
+
     def _global_value(self, component: Component) -> XdmSequence:
         assert component.name is not None
         key = (component.owner, component.name)
@@ -8899,7 +8951,13 @@ class _Invocation(Transformation):
                 if component is None or name in attempted:
                     raise
                 attempted.add(name)
-                self._global_value(component)
+                try:
+                    self._global_value(component)
+                except BaseException as global_error:
+                    marked = self._outside_try_error(global_error)
+                    if marked is global_error:
+                        raise
+                    raise marked from global_error
 
     def _expression_references_global(
         self,
