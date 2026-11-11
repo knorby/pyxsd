@@ -33,6 +33,7 @@ from pyxsd.xslt.runtime.accumulators import (
     find_cycle,
     iter_accumulator_calls,
     parse_accumulator_names,
+    same_context_accumulator_call,
 )
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -1289,6 +1290,46 @@ def test_mode_use_accumulators_uses_declaration_namespaces(tmp_path: Path) -> No
     assert values(result) == ("0",)
 
 
+def test_mode_use_accumulators_uses_the_supplying_declaration() -> None:
+    later_declaration = """
+        <xsl:mode name="m"/>
+        <xsl:mode name="m" use-accumulators="p:a" xmlns:p="urn:example:app"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0"
+          streamable="yes">
+          <xsl:accumulator-rule match="doc:n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:template match="/" mode="m">
+          <xsl:sequence select="accumulator-before('app:a')"/>
+        </xsl:template>
+    """
+    assert values(
+        transform(
+            stylesheet(later_declaration),
+            b'<doc xmlns="urn:example:doc"><n/></doc>',
+            initial_mode="m",
+        )
+    ) == ("0",)
+
+    earlier_declaration = """
+        <xsl:mode name="m" use-accumulators="p:a" xmlns:p="urn:example:app"/>
+        <xsl:mode name="m"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0"
+          streamable="yes">
+          <xsl:accumulator-rule match="doc:n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:template match="/" mode="m">
+          <xsl:sequence select="accumulator-before('app:a')"/>
+        </xsl:template>
+    """
+    assert values(
+        transform(
+            stylesheet(earlier_declaration),
+            b'<doc xmlns="urn:example:doc"><n/></doc>',
+            initial_mode="m",
+        )
+    ) == ("0",)
+
+
 def test_static_scanning_ignores_literal_text_and_escaped_braces() -> None:
     literal_text = """
         <xsl:accumulator name="app:a" initial-value="0">
@@ -1377,6 +1418,77 @@ def test_same_accumulator_preceding_node_recurrence_is_not_a_cycle() -> None:
         </xsl:template>
     """
     assert values(transform(stylesheet(body), SOURCE)) == ("1", "3", "7", "7")
+
+
+def test_same_accumulator_predicate_only_recurrence_is_not_a_cycle() -> None:
+    exact_probe = """
+        <xsl:accumulator name="app:a" as="item()*" initial-value="()">
+          <xsl:accumulator-rule match="n"
+            select="preceding-sibling::n[1][accumulator-before('app:a')]"/>
+        </xsl:accumulator>
+        <xsl:template name="main"/>
+    """
+    compile_stylesheet(stylesheet(exact_probe))
+
+    preceding_sibling = """
+        <xsl:mode use-accumulators="#all"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n"
+            select="$value + 1 + (if (preceding-sibling::n[1][accumulator-before('app:a') > 0])
+              then 1 else 0)"/>
+        </xsl:accumulator>
+        <xsl:template match="/">
+          <xsl:for-each select="doc/n">
+            <xsl:sequence select="accumulator-before('app:a')"/>
+          </xsl:for-each>
+          <xsl:sequence select="accumulator-after('app:a')"/>
+        </xsl:template>
+    """
+    assert values(transform(stylesheet(preceding_sibling), SOURCE)) == (
+        "1",
+        "3",
+        "5",
+        "5",
+    )
+
+    ancestor = """
+        <xsl:mode use-accumulators="#all"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n"
+            select="$value + 1 + (if (ancestor::doc[1][accumulator-before('app:a') >= 0])
+              then 1 else 0)"/>
+        </xsl:accumulator>
+        <xsl:template match="/">
+          <xsl:for-each select="doc/n">
+            <xsl:sequence select="accumulator-before('app:a')"/>
+          </xsl:for-each>
+        </xsl:template>
+    """
+    assert values(transform(stylesheet(ancestor), SOURCE)) == ("2", "4", "6")
+
+
+def test_same_context_predicate_self_references_remain_static_cycles() -> None:
+    current_node = """
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n"
+            select="$value + count(.[accumulator-before('app:a')])"/>
+        </xsl:accumulator>
+        <xsl:template name="main"/>
+    """
+    with pytest.raises(XsltStaticError) as caught:
+        compile_stylesheet(stylesheet(current_node))
+    assert caught.value.code == "XTDE3400"
+
+    self_axis = """
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n"
+            select="$value + count(self::n[accumulator-before('app:a')])"/>
+        </xsl:accumulator>
+        <xsl:template name="main"/>
+    """
+    with pytest.raises(XsltStaticError) as caught:
+        compile_stylesheet(stylesheet(self_axis))
+    assert caught.value.code == "XTDE3400"
 
 
 def test_non_literal_self_reference_is_rejected_at_runtime() -> None:
@@ -1690,6 +1802,37 @@ def test_iter_accumulator_calls() -> None:
         ("before", "unterminated"),
     )
     assert tuple(iter_accumulator_calls("(: unterminated")) == ()
+
+
+def test_same_context_accumulator_call() -> None:
+    def check(source: str, expected: bool) -> None:
+        start = source.index("accumulator-")
+        assert same_context_accumulator_call(source, start) is expected, source
+
+    check("accumulator-before('a')", True)
+    check("x ! accumulator-before('a')", False)
+    check("preceding-sibling::n[1][accumulator-before('a')]", False)
+    check("preceding-sibling::n[accumulator-before('a')]", False)
+    check("ancestor::doc[1][accumulator-before('a')]", False)
+    check("text()[accumulator-before('a')]", False)
+    check(".[accumulator-before('a')]", True)
+    check("..[accumulator-before('a')]", False)
+    check("self::n[accumulator-before('a')]", True)
+    check("self::*[accumulator-before('a')]", True)
+    check("$x[accumulator-before('a')]", True)
+    check("?key[accumulator-before('a')]", True)
+    check("f()[accumulator-before('a')]", True)
+    check("(preceding-sibling::n[1])[accumulator-before('a')]", True)
+    check("n[1][2][accumulator-before('a')]", False)
+    check("attribute::x[accumulator-before('a')]", False)
+    check("p:n[accumulator-before('a')]", False)
+    check("preceding-sibling::n[1][(: x :) accumulator-before('a')]", False)
+    check("preceding-sibling::n[1]['x'][accumulator-before('a')]", False)
+    check("::*[accumulator-before('a')]", False)
+    check(")[accumulator-before('a')]", True)
+    check("][accumulator-before('a')]", True)
+    check("[accumulator-before('a')]", True)
+    check("$[accumulator-before('a')]", True)
 
 
 def test_find_cycle() -> None:

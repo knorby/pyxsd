@@ -38,6 +38,7 @@ __all__ = [
     "iter_accumulator_call_spans",
     "iter_accumulator_calls",
     "parse_accumulator_names",
+    "same_context_accumulator_call",
 ]
 
 AccumulatorKey = tuple[str | None, str]
@@ -422,6 +423,143 @@ def iter_accumulator_calls(source: str) -> Iterator[tuple[str, str | None]]:
     """
     for phase, value, _start in iter_accumulator_call_spans(source):
         yield phase, value
+
+
+_NODE_TEST_FUNCTIONS = frozenset(
+    {
+        "attribute",
+        "comment",
+        "document-node",
+        "element",
+        "node",
+        "processing-instruction",
+        "schema-attribute",
+        "schema-element",
+        "text",
+    }
+)
+
+
+def _previous_nonspace(source: str, index: int) -> int:
+    while index >= 0 and source[index].isspace():
+        index -= 1
+    return index
+
+
+def _enclosing_open(source: str, position: int, opening: str, closing: str) -> int | None:
+    stack: list[int] = []
+    index = 0
+    while index < position:
+        if source.startswith("(:", index):
+            index = _skip_comment(source, index)
+            continue
+        if source[index] in ("'", '"'):
+            _, index = _read_string(source, index)
+            continue
+        char = source[index]
+        if char == opening:
+            stack.append(index)
+        elif char == closing and stack:
+            stack.pop()
+        index += 1
+    return stack[-1] if stack else None
+
+
+def enclosing_predicate_start(source: str, position: int) -> int | None:
+    """Return the ``[`` that opens the innermost predicate containing *position*."""
+    return _enclosing_open(source, position, "[", "]")
+
+
+def enclosing_paren_start(source: str, position: int) -> int | None:
+    """Return the ``(`` that opens the innermost parenthesis containing *position*."""
+    return _enclosing_open(source, position, "(", ")")
+
+
+def _axis_before(source: str, token_start: int) -> str | None:
+    before = _previous_nonspace(source, token_start - 1)
+    if before < 1 or source[before] != ":" or source[before - 1] != ":":
+        return None
+    axis_end = _previous_nonspace(source, before - 2)
+    if axis_end < 0:
+        return None
+    axis_start = axis_end
+    while axis_start >= 0 and (source[axis_start].isalnum() or source[axis_start] in ("_", "-")):
+        axis_start -= 1
+    return source[axis_start + 1 : axis_end + 1]
+
+
+def _token_axis_changes_focus(source: str, index: int) -> bool:
+    end = index
+    if source[index] == "*":
+        token_start = index
+    else:
+        while index >= 0 and (source[index].isalnum() or source[index] in ("_", "-", ".", ":")):
+            index -= 1
+        token_start = index + 1
+    token = source[token_start : end + 1]
+    if "::" in token:
+        axis = token.rpartition("::")[0].strip()
+        return axis != "self"
+    axis_name = _axis_before(source, token_start)
+    if axis_name is not None:
+        return axis_name != "self"
+    before = _previous_nonspace(source, token_start - 1)
+    return not (before >= 0 and source[before] in ("$", "?"))
+
+
+def _paren_is_node_test(source: str, close_index: int) -> bool:
+    opening = enclosing_paren_start(source, close_index)
+    if opening is None:
+        return False
+    token_end = _previous_nonspace(source, opening - 1)
+    if token_end < 0:
+        return False
+    token_start = token_end
+    while token_start >= 0 and (
+        source[token_start].isalnum() or source[token_start] in ("_", "-", ":", ".")
+    ):
+        token_start -= 1
+    token = source[token_start + 1 : token_end + 1]
+    return token.rpartition(":")[2] in _NODE_TEST_FUNCTIONS
+
+
+def _predicate_changes_focus(source: str, predicate_start: int) -> bool:
+    index = _previous_nonspace(source, predicate_start - 1)
+    while index >= 0 and source[index] == "]":
+        opening = enclosing_predicate_start(source, index)
+        if opening is None:
+            return False
+        index = _previous_nonspace(source, opening - 1)
+    if index < 0:
+        return False
+    char = source[index]
+    if char == ".":
+        return index > 0 and source[index - 1] == "."
+    if char == ")":
+        return _paren_is_node_test(source, index)
+    if char == "*" or char.isalnum() or char in ("_", ":"):
+        return _token_axis_changes_focus(source, index)
+    return False
+
+
+def same_context_accumulator_call(source: str, start: int) -> bool:
+    """Whether an accumulator call's focus is the rule's own context node.
+
+    A call inside a predicate attached to a path step (including chained
+    predicates and calls nested in functions/operators within the predicate)
+    addresses the step's item; ``.`` and ``self::`` predicates keep the same
+    node.  A call reached through ``/`` or ``!`` outside a predicate may address
+    a different node.  Any other position is treated as same-context.  This
+    conservative lexical check keeps the common self-cycle static while
+    deferring focus-changing recurrences to the runtime partial-value cache.
+    """
+    predicate = enclosing_predicate_start(source, start)
+    if predicate is not None:
+        return not _predicate_changes_focus(source, predicate)
+    index = _previous_nonspace(source, start - 1)
+    if index < 0:
+        return True
+    return source[index] not in ("!", "/")
 
 
 K = TypeVar("K", bound=Hashable)

@@ -492,12 +492,23 @@ class Mode:
     declared_visibility: str | None = None
     rule_layers: tuple[ModeRuleLayer, ...] = ()
     properties: Mapping[str, str] = field(default_factory=dict)
+    property_namespaces: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
     namespaces: Mapping[str, str] = field(default_factory=dict)
     module: str | None = None
     location: IssueLocation | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "namespaces", MappingProxyType(dict(self.namespaces)))
+        object.__setattr__(
+            self,
+            "property_namespaces",
+            MappingProxyType(
+                {
+                    name: MappingProxyType(dict(namespaces))
+                    for name, namespaces in self.property_namespaces.items()
+                }
+            ),
+        )
 
     @property
     def rules(self) -> tuple[ModeRule, ...]:
@@ -2720,7 +2731,7 @@ class _PackageCompiler:
                 all_mode_keys.add(mode_name)
         for group in mode_groups:
             key = group.name
-            properties = _merge_mode_properties(group.declarations, descriptor)
+            properties, property_namespaces = _merge_mode_properties(group.declarations, descriptor)
             declared_visibility = group.declared_visibility
             visibility = (
                 "private"
@@ -2735,6 +2746,7 @@ class _PackageCompiler:
                 declared=True,
                 declared_visibility=declared_visibility,
                 properties=properties,
+                property_namespaces=property_namespaces,
                 namespaces=group.declarations[0].element.in_scope_namespaces,
                 module=group.declarations[0].module.identity,
                 location=group.declarations[0].element.source_location(),
@@ -3402,9 +3414,34 @@ def _merged_attribute_value(
     return chosen[0]
 
 
+def _merged_mode_property(
+    entries: Sequence[tuple[tuple[int, ...], str, _Declaration]],
+    *,
+    code: str,
+    message: str,
+) -> tuple[str, _Declaration]:
+    highest = max((entry[0] for entry in entries), key=cmp_to_key(_cmp_precedence))
+    chosen: tuple[str, _Declaration] | None = None
+    for precedence, value, declaration in entries:
+        if precedence != highest:
+            continue
+        if chosen is None:
+            chosen = (value, declaration)
+            continue
+        if chosen[0] != value:
+            raise _error(
+                message,
+                code,
+                element=declaration.element,
+                module=declaration.module,
+            )
+    assert chosen is not None
+    return chosen
+
+
 def _merge_mode_properties(
     declarations: Sequence[_Declaration], descriptor: PackageDescriptor
-) -> Mapping[str, str]:
+) -> tuple[Mapping[str, str], Mapping[str, Mapping[str, str]]]:
     entries: dict[str, list[tuple[tuple[int, ...], str, _Declaration]]] = {}
     for declaration in declarations:
         for attribute in declaration.element.attributes:
@@ -3415,15 +3452,17 @@ def _merge_mode_properties(
             entries.setdefault(local, []).append(
                 (declaration.precedence, attribute.value, declaration)
             )
-    properties = {
-        local: _merged_attribute_value(
+    properties: dict[str, str] = {}
+    property_namespaces: dict[str, Mapping[str, str]] = {}
+    for local, values in entries.items():
+        value, declaration = _merged_mode_property(
             values,
             code="XTSE0545",
             message=f"mode declarations disagree about {local!r}",
         )
-        for local, values in entries.items()
-    }
-    return MappingProxyType(properties)
+        properties[local] = value
+        property_namespaces[local] = declaration.element.in_scope_namespaces
+    return MappingProxyType(properties), MappingProxyType(property_namespaces)
 
 
 def _instruction_mode_references(

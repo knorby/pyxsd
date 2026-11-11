@@ -103,6 +103,7 @@ from pyxsd.xslt.runtime.accumulators import (
     find_cycle,
     iter_accumulator_call_spans,
     parse_accumulator_names,
+    same_context_accumulator_call,
 )
 from pyxsd.xslt.runtime.evaluate import (
     DynamicExpressionCache,
@@ -1421,7 +1422,7 @@ def _collect_accumulator_references(
         if (
             key == definition.key
             and self_reference_guard
-            and not _same_context_accumulator_call(source, start)
+            and not same_context_accumulator_call(source, start)
         ):
             # A same-accumulator call after a path or simple-map operator can
             # address a preceding node.  It is a legitimate recurrence, not a
@@ -1455,21 +1456,6 @@ def _resolve_accumulator_reference(
             location=definition.location,
         )
     return (component.owner, component.name)
-
-
-def _same_context_accumulator_call(source: str, start: int) -> bool:
-    """Whether a call's focus is the rule's own context node.
-
-    A call reached through ``/`` or ``!`` may address a different node.  A
-    same-context call (the default, and every call in an initial-value
-    expression) is a true self-dependency.  This conservative check keeps the
-    common self-cycle static while deferring focus-changing recurrences to the
-    runtime partial-value cache.
-    """
-    index = start - 1
-    while index >= 0 and source[index].isspace():
-        index -= 1
-    return index < 0 or source[index] not in ("!", "/")
 
 
 def _plan_accumulator_references(
@@ -1539,10 +1525,11 @@ def _resolve_mode_accumulators(
     mode: Mode,
 ) -> frozenset[AccumulatorKey]:
     """Resolve one ``xsl:mode/@use-accumulators`` list in its package."""
+    namespaces = mode.property_namespaces.get("use-accumulators", mode.namespaces)
     return _resolve_use_accumulators(
         value,
         package,
-        mode.namespaces,
+        namespaces,
         uri=mode.module,
         location=mode.location,
     )
