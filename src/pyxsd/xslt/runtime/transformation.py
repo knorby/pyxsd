@@ -88,6 +88,10 @@ class _SecondaryExtent:
             if uri not in self._final_uri_keys:
                 self._final_uris.discard(uri)
 
+    def commit(self) -> None:
+        """Keep this extent's secondary entries and final URIs."""
+        return
+
 
 class Transformation:
     """One transformation's complete dynamic state and frame scheduler."""
@@ -276,6 +280,15 @@ class Transformation:
             if last.package is not None:
                 package = last.package
         return module, package, location
+
+    def result_extent(self) -> _SecondaryExtent:
+        """Return a rollback boundary for secondary result state.
+
+        The extent snapshots ``secondary`` and ``final_uris`` when a
+        speculative ``xsl:try`` body starts.  The scheduler rolls it back when
+        the body fails and commits it when the body completes.
+        """
+        return _SecondaryExtent(self)
 
     def frame_boundary(self, frame: Frame) -> Frame:
         """Attach production rollback and diagnostic boundaries to *frame*.

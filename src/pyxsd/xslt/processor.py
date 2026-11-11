@@ -23,7 +23,8 @@ from types import MappingProxyType
 from typing import Any, Literal, TypeAlias, cast
 from urllib.parse import urljoin, urlsplit
 
-from elementpath.exceptions import MissingContextError
+from elementpath.datatypes import QName
+from elementpath.exceptions import ElementPathError, MissingContextError
 from elementpath.helpers import is_ncname
 
 from pyxsd.document import Document
@@ -42,7 +43,12 @@ from pyxsd.xdm import (
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
-from pyxsd.xpath.continuation import ContinuationMachine, HostFunction, Suspension
+from pyxsd.xpath.continuation import (
+    ContinuationMachine,
+    HostFunction,
+    Suspension,
+    XPathEvaluationError,
+)
 from pyxsd.xpath.engine import CompiledExpression, XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, FocusKind, FunctionArity
 from pyxsd.xslt.compiler.context import (
@@ -115,6 +121,7 @@ from pyxsd.xslt.runtime.frames import (
     NO_GROUP,
     NO_INPUT,
     Call,
+    CatchResult,
     Continue,
     Frame,
     FrameResult,
@@ -517,6 +524,28 @@ class _ChoosePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class _CatchPlan:
+    """One compiled ``xsl:catch`` body and its error NameTests."""
+
+    instruction: Instruction
+    errors: tuple[str, ...] | None
+    expression: CompiledExpression | None
+    children: tuple[_Plan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _TryPlan:
+    """One compiled ``xsl:try`` with its body and ordered catch handlers."""
+
+    instruction: Instruction
+    expression: CompiledExpression | None
+    children: tuple[_Plan, ...]
+    catches: tuple[_CatchPlan, ...]
+    rollback_output: bool = True
+    tail: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class _MapPlan:
     instruction: Instruction
     children: tuple[_Plan, ...]
@@ -635,6 +664,7 @@ _Plan: TypeAlias = (
     | _OverridingPlan
     | _RestoreVariablesPlan
     | _ChoosePlan
+    | _TryPlan
     | _MapPlan
     | _MapEntryPlan
     | _EvaluatePlan
@@ -2111,6 +2141,17 @@ def _tail_marked_plan(plan: _Plan) -> _Plan:
             branches=tuple((test, _mark_tail(branch)) for test, branch in plan.branches),
             otherwise=(None if plan.otherwise is None else _mark_tail(plan.otherwise)),
         )
+    if isinstance(plan, _TryPlan):
+        # A try body always keeps its handler, so its final call is not a tail
+        # call.  A catch body has no handler of its own; when the try itself is
+        # in tail position its final call can still replace the catch frame.
+        return replace(
+            plan,
+            catches=tuple(
+                replace(catch, children=_mark_tail(catch.children)) for catch in plan.catches
+            ),
+            tail=True,
+        )
     if isinstance(plan, _SequencePlan) and plan.expression is None and plan.children:
         return replace(plan, children=_mark_tail(plan.children))
     return plan
@@ -2917,6 +2958,12 @@ def _validate_control_plan(
             _validate_iteration_controls(children, None)
         _validate_iteration_controls(plan.children, plan.parameter_names)
         return
+    if isinstance(plan, _TryPlan):
+        nested_parameters = parameters if tail else None
+        _validate_iteration_controls(plan.children, nested_parameters)
+        for catch in plan.catches:
+            _validate_iteration_controls(catch.children, nested_parameters)
+        return
     if isinstance(plan, _SequencePlan):
         if plan.expression is None:
             _validate_iteration_controls(plan.children, None)
@@ -3004,6 +3051,131 @@ def _plan_children(plan: _Plan) -> tuple[tuple[_Plan, ...], ...]:
     if isinstance(plan, _OverridingPlan):
         return tuple(parameter.children for parameter in plan.parameters)
     return ()
+
+
+_CATCH_VARIABLE_NAMES = (
+    "code",
+    "description",
+    "value",
+    "module",
+    "line-number",
+    "column-number",
+)
+
+
+def _catch_context(context: StaticContext) -> StaticContext:
+    """Declare the six standard error variables for one catch body."""
+    variables = dict(context.variables)
+    for name in _CATCH_VARIABLE_NAMES:
+        expanded = f"{{{ERROR_NAMESPACE}}}{name}"
+        variables.setdefault(
+            expanded,
+            StaticVariable(name=expanded, kind="variable", visibility="private"),
+        )
+    return context.with_variables(variables)
+
+
+def _compile_catch(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _CatchPlan:
+    """Compile one ``xsl:catch`` body with its error variables in scope."""
+    context = _catch_context(_instruction_context(context, instruction))
+    errors_source = instruction.attribute("errors")
+    errors = None if errors_source is None else tuple(errors_source.split())
+    select = instruction.attribute("select")
+    children = _compile_sequence(instruction.children, context, module)
+    if select is not None and _has_plan_content(children, allow_fallback=True):
+        raise XsltStaticError(
+            "xsl:catch with a select attribute must have empty content except for xsl:fallback",
+            code="XTSE3150",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    return _CatchPlan(
+        instruction=instruction,
+        errors=errors,
+        expression=(
+            compile_xpath(select, context, location=instruction.location)
+            if select is not None
+            else None
+        ),
+        children=children,
+    )
+
+
+def _compile_try(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _TryPlan:
+    """Compile one ``xsl:try`` body and its ordered catch declarations."""
+    context = _instruction_context(context, instruction)
+    select = instruction.attribute("select")
+    rollback_source = instruction.attribute("rollback-output")
+    rollback_output = (
+        True
+        if rollback_source is None
+        else _attribute_yes_no(instruction, "rollback-output", context)
+    )
+    body: list[Any] = []
+    catches: list[_CatchPlan] = []
+    seen_catch = False
+    for child in instruction.children:
+        if isinstance(child, TextNode):
+            if seen_catch:
+                if child.value.strip():
+                    raise XsltStaticError(
+                        "xsl:try permits only xsl:catch and xsl:fallback after the first xsl:catch",
+                        code="XTSE0010",
+                        uri=context.uri,
+                        location=child.location,
+                    )
+                continue
+            body.append(child)
+            continue
+        if child.is_xslt and child.local_name == "fallback":
+            continue
+        if child.is_xslt and child.local_name == "catch":
+            seen_catch = True
+            catches.append(_compile_catch(child, context, module))
+            continue
+        if seen_catch:
+            raise XsltStaticError(
+                "xsl:try permits only xsl:catch and xsl:fallback after the first xsl:catch",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        body.append(child)
+    if not catches:
+        raise XsltStaticError(
+            "xsl:try requires at least one xsl:catch",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    body_plans = _compile_sequence(body, context, module)
+    if select is not None and _has_plan_content(body_plans, allow_fallback=True):
+        raise XsltStaticError(
+            "xsl:try with a select attribute must have no content other than "
+            "xsl:catch and xsl:fallback",
+            code="XTSE3140",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    return _TryPlan(
+        instruction=instruction,
+        expression=(
+            compile_xpath(select, context, location=instruction.location)
+            if select is not None
+            else None
+        ),
+        children=() if select is not None else body_plans,
+        catches=tuple(catches),
+        rollback_output=rollback_output,
+    )
 
 
 def _compile_instruction(
@@ -3370,6 +3542,15 @@ def _compile_instruction(
                 ),
             ),
             otherwise=None,
+        )
+    if local == "try":
+        return _compile_try(instruction, context, module)
+    if local == "catch":
+        raise XsltStaticError(
+            "xsl:catch is only permitted inside xsl:try",
+            code="XTSE0010",
+            uri=context.uri,
+            location=location,
         )
     if local == "map":
         if instruction.attribute("select") is not None:
@@ -4440,6 +4621,23 @@ def _effective_boolean(sequence: XdmSequence) -> bool:
     )
 
 
+def _error_qname(code: str) -> XdmAtomic:
+    """Return one expanded error code as an ``xs:QName`` atomic item.
+
+    Implementation codes are not required to be lexical QNames.  A code whose
+    local part is not an NCName is preserved as a string rather than making a
+    caught error unreadable; all specification and ``fn:error`` codes use the
+    typed branch.
+    """
+    if code.startswith("{"):
+        uri, _, local = code[1:].partition("}")
+    else:
+        uri, local = "", code
+    if is_ncname(local):
+        return cast(XdmAtomic, as_xdm(QName(uri, local))[0])
+    return XdmAtomic.string(code)
+
+
 def _require_absolute(uri: str, label: str) -> str:
     if not isinstance(uri, str) or not uri or not urlsplit(uri).scheme:
         raise XsltInvocationError(f"{label} must be a non-empty absolute URI, got {uri!r}")
@@ -5034,6 +5232,8 @@ class _Invocation(Transformation):
                     cursor=0,
                 )
             )
+        if isinstance(plan, _TryPlan):
+            return self._try_step(plan, frame, cursor)
         if isinstance(plan, _CallTemplatePlan):
             return self._call_template_step(plan, frame, cursor, rule_context)
         if isinstance(plan, _ApplyTemplatesPlan):
@@ -5061,6 +5261,235 @@ class _Invocation(Transformation):
             )
             return self._iteration_control(signal.plan, control_frame)
         return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
+
+    # -- try/catch ---------------------------------------------------------
+
+    def _try_step(self, plan: _TryPlan, frame: Frame, cursor: int) -> FrameResult:
+        """Run one try body as a child frame with a catch error handler.
+
+        A tail try whose caller has no remaining work can replace that caller,
+        transferring already-produced output and the caller's continuation to
+        the try frame.  The handler therefore starts a catch frame with the
+        same committed output, and a tail call in the catch body can replace
+        the catch frame without growing the explicit stack.
+        """
+        program = cast(tuple[_Plan, ...], frame.program or ())
+        remaining = program[cursor + 1 :]
+        replace_caller = (
+            plan.tail
+            and all(isinstance(item, _RestoreVariablesPlan) for item in remaining)
+            and frame.error_handler is None
+            and frame.extent is None
+            and frame.conversion is None
+        )
+        base_values = frame.values if replace_caller else ()
+        child = Frame(
+            kind="instruction",
+            component=frame.component,
+            identity="xsl:try",
+            program=self._try_body_program(plan),
+            variables=frame.variables,
+            tunnel_parameters=frame.tunnel_parameters,
+            focus=frame.focus,
+            continuation=frame.continuation if replace_caller else None,
+            extent=self.result_extent() if plan.rollback_output else None,
+            error_handler=self._try_handler(plan, frame, base_values),
+            package=frame.package,
+            mode=frame.mode,
+            location=plan.instruction.location,
+            final_output=frame.final_output,
+            values=base_values,
+            group=frame.group,
+            grouping_key=frame.grouping_key,
+            iteration=frame.iteration,
+        )
+        if replace_caller:
+            return Continue(child)
+        return Call(child, resume=replace(frame, cursor=cursor + 1), tail=False)
+
+    @staticmethod
+    def _try_body_program(plan: _TryPlan) -> tuple[_Plan, ...]:
+        if plan.expression is None:
+            return plan.children
+        return (
+            _SequencePlan(
+                instruction=plan.instruction,
+                expression=plan.expression,
+                children=(),
+            ),
+        )
+
+    @staticmethod
+    def _catch_program(catch: _CatchPlan) -> tuple[_Plan, ...]:
+        if catch.expression is None:
+            return catch.children
+        return (
+            _SequencePlan(
+                instruction=catch.instruction,
+                expression=catch.expression,
+                children=(),
+            ),
+        )
+
+    def _try_handler(
+        self,
+        plan: _TryPlan,
+        frame: Frame,
+        base_values: tuple[object, ...],
+    ) -> Any:
+        def handler(
+            error: BaseException,
+            stack: tuple[Any, ...],
+        ) -> CatchResult | None:
+            caught = self._catchable_error(error, stack)
+            if caught is None:
+                return None
+            catch = self._select_catch(plan, caught)
+            if catch is None:
+                return None
+            variables: dict[str, object] = dict(frame.variables)
+            variables.update(self._catch_variables(caught))
+            catch_frame = Frame(
+                kind="instruction",
+                component=frame.component,
+                identity="xsl:catch",
+                program=self._catch_program(catch),
+                variables=variables,
+                tunnel_parameters=frame.tunnel_parameters,
+                focus=frame.focus,
+                package=frame.package,
+                mode=frame.mode,
+                location=catch.instruction.location,
+                final_output=frame.final_output,
+                values=base_values,
+                group=frame.group,
+                grouping_key=frame.grouping_key,
+                iteration=frame.iteration,
+            )
+            return CatchResult(frame=catch_frame)
+
+        return handler
+
+    def _run_try(
+        self,
+        plan: _TryPlan,
+        *,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        final_output: bool,
+        package_name: str | None,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
+        rule_context: _RuleContext | None = None,
+        original_functions: Mapping[int, Component] | None = None,
+    ) -> XdmSequence:
+        """Run a try in a synchronous nested sequence constructor."""
+        extent = self.result_extent() if plan.rollback_output else None
+        try:
+            if plan.expression is not None:
+                value = self._evaluate(
+                    plan.expression,
+                    focus,
+                    locals_,
+                    package_name,
+                    original_functions=original_functions,
+                )
+            else:
+                value = self._execute_plans(
+                    plan.children,
+                    focus=focus,
+                    locals_=locals_,
+                    final_output=final_output,
+                    package_name=package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
+                    rule_context=rule_context,
+                    original_functions=original_functions,
+                )
+        except BaseException as error:
+            caught = self._catchable_error(error, self.diagnostics)
+            catch = None if caught is None else self._select_catch(plan, caught)
+            if caught is None or catch is None:
+                if extent is not None:
+                    extent.rollback()
+                raise
+            if extent is not None:
+                extent.rollback()
+            variables: dict[str, XdmSequence] = dict(locals_)
+            variables.update(self._catch_variables(caught))
+            if catch.expression is not None:
+                return self._evaluate(
+                    catch.expression,
+                    focus,
+                    variables,
+                    package_name,
+                    original_functions=original_functions,
+                )
+            return self._execute_plans(
+                catch.children,
+                focus=focus,
+                locals_=variables,
+                final_output=final_output,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+        else:
+            if extent is not None:
+                extent.commit()
+            return value
+
+    def _catchable_error(
+        self,
+        error: BaseException,
+        stack: tuple[Any, ...] | None,
+    ) -> XsltError | None:
+        """Return the deliberate XSLT dynamic error a catch may consume.
+
+        XPath engine errors are converted here with their original exception
+        retained as the cause.  Static errors, foreign callback failures, and
+        every other Python exception keep their identity and are not caught.
+        """
+        if isinstance(error, XsltError):
+            return error if error.catchable else None
+        if isinstance(error, (ElementPathError, XPathEvaluationError)):
+            return self.boundary_error(error, stack=stack, catchable=True)
+        return None
+
+    @staticmethod
+    def _select_catch(plan: _TryPlan, error: XsltError) -> _CatchPlan | None:
+        for catch in plan.catches:
+            if error.matches_catch(
+                catch.errors,
+                namespaces=catch.instruction.namespaces,
+            ):
+                return catch
+        return None
+
+    @staticmethod
+    def _catch_variables(error: XsltError) -> dict[str, XdmSequence]:
+        variables: dict[str, XdmSequence] = {}
+        code = error.expanded_code or ""
+        variables[f"{{{ERROR_NAMESPACE}}}code"] = (_error_qname(code),)
+        variables[f"{{{ERROR_NAMESPACE}}}description"] = (
+            (XdmAtomic.string(error.description),) if error.has_description else ()
+        )
+        variables[f"{{{ERROR_NAMESPACE}}}value"] = tuple(error.value)
+        module = (
+            error.module or error.uri or (None if error.location is None else error.location.source)
+        )
+        variables[f"{{{ERROR_NAMESPACE}}}module"] = (
+            () if module is None else (XdmAtomic.string(module),)
+        )
+        variables[f"{{{ERROR_NAMESPACE}}}line-number"] = (
+            () if error.line_number is None else (XdmAtomic.integer(error.line_number),)
+        )
+        variables[f"{{{ERROR_NAMESPACE}}}column-number"] = (
+            () if error.column_number is None else (XdmAtomic.integer(error.column_number),)
+        )
+        return variables
 
     # -- iteration, sorting, and grouping ---------------------------------
 
@@ -7431,6 +7860,18 @@ class _Invocation(Transformation):
                 rule_context=rule_context,
                 original_functions=original_functions,
             )
+        if isinstance(plan, _TryPlan):
+            return self._run_try(
+                plan,
+                focus=focus,
+                locals_=locals_,
+                final_output=final_output,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
         if isinstance(plan, _MapPlan):
             values = self._execute_plans(
                 plan.children,
@@ -7825,6 +8266,7 @@ class _Invocation(Transformation):
             return
         message_failure: BaseException | None = None
         detail = ""
+        value: tuple[XdmItem, ...] = ()
         try:
             message_values: list[XdmItem] = []
             if plan.select is not None:
@@ -7853,6 +8295,7 @@ class _Invocation(Transformation):
             if message_values:
                 document = _build_result_tree(message_values)
                 detail = document.string_value.strip()
+                value = (document,)
         except Exception as exc:
             message_failure = exc
             detail = f"message construction failed: {exc}"
@@ -7876,6 +8319,7 @@ class _Invocation(Transformation):
             code=code,
             location=plan.instruction.location,
             cause=failure or message_failure,
+            value=value,
         )
 
     def _dynamic_evaluate(
@@ -8345,29 +8789,34 @@ class _Invocation(Transformation):
                 code="XTDE1490",
             )
         self.final_uris.add(uri)
-        sequence = self._execute_plans(
-            plan.children,
-            focus=focus,
-            locals_=locals_,
-            final_output=True,
-            package_name=package_name,
-            mode=mode,
-            tunnel_parameters=tunnel_parameters,
-        )
-        tree = None
-        if self._build_tree(build_tree, effective_method):
-            tree = _build_result_tree(sequence, output_uri=uri)
-        serialization = dict(base_attributes)
-        serialization.update(evaluated)
-        serialization["method"] = effective_method
-        if build_tree is not None:
-            serialization["build-tree"] = build_tree
-        self.secondary[uri] = ResultEntry(
-            sequence,
-            output_uri=uri,
-            tree=tree,
-            serialization=serialization,
-        )
+        try:
+            sequence = self._execute_plans(
+                plan.children,
+                focus=focus,
+                locals_=locals_,
+                final_output=True,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+            )
+            tree = None
+            if self._build_tree(build_tree, effective_method):
+                tree = _build_result_tree(sequence, output_uri=uri)
+            serialization = dict(base_attributes)
+            serialization.update(evaluated)
+            serialization["method"] = effective_method
+            if build_tree is not None:
+                serialization["build-tree"] = build_tree
+            self.secondary[uri] = ResultEntry(
+                sequence,
+                output_uri=uri,
+                tree=tree,
+                serialization=serialization,
+            )
+        except BaseException:
+            self.final_uris.discard(uri)
+            self.secondary.pop(uri, None)
+            raise
 
     def _secondary_uri(self, href: str) -> str:
         base = self.options.output_uri

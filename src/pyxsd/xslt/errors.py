@@ -19,10 +19,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation
+from pyxsd.xdm import XdmItem
 
 if TYPE_CHECKING:
     from pyxsd.xslt.runtime.frames import FrameDiagnostic
@@ -129,6 +130,8 @@ def _normalize_name_test(
         prefix, _, local = value.partition(":")
         if not prefix or not local:
             return None
+        if prefix == "*":
+            return "*", local
         uri = None if namespaces is None else namespaces.get(prefix)
         if uri is None:
             if prefix != "err":
@@ -150,6 +153,8 @@ def _name_test_matches(
     code_namespace, code_local = _split_expanded_name(expanded_code)
     if namespace == "*" and local == "*":
         return True
+    if namespace == "*":
+        return local == code_local
     if local == "*":
         return namespace == code_namespace
     return namespace == code_namespace and local == code_local
@@ -174,6 +179,12 @@ class XsltError(PyXSDError):
     is derived from explicit execution frames, never from the Python call stack.
     ``cause`` preserves a parser, resource, expression, or callback exception
     instead of replacing its identity with this error.
+
+    ``description``, ``value``, ``line_number``, and ``column_number`` carry
+    the standard ``err:*`` catch metadata.  ``has_description`` distinguishes
+    an explicitly absent description (``fn:error`` with one argument) from an
+    empty one.  Line and column numbers remain ``None`` when the source
+    occurrence does not carry them.
     """
 
     def __init__(
@@ -188,22 +199,42 @@ class XsltError(PyXSDError):
         location: IssueLocation | None = None,
         stack: Sequence[FrameDiagnostic] = (),
         cause: BaseException | None = None,
+        description: str | None = None,
+        has_description: bool = True,
+        value: Sequence[object] = (),
+        line_number: int | None = None,
+        column_number: int | None = None,
     ) -> None:
         if code is not None and not isinstance(code, str):
             raise TypeError("an XSLT error code must be a string or None")
         if phase is not None and not isinstance(phase, str):
             raise TypeError("an XSLT error phase must be a string or None")
-        for label, value in (
+        for label, value_text in (
             ("uri", uri),
             ("module", module),
             ("package", package),
+            ("description", description),
         ):
-            if value is not None and not isinstance(value, str):
+            if value_text is not None and not isinstance(value_text, str):
                 raise TypeError(f"the XSLT error {label} must be a string or None")
         if location is not None and not isinstance(location, IssueLocation):
             raise TypeError("the XSLT error location must be an IssueLocation or None")
         if cause is not None and not isinstance(cause, BaseException):
             raise TypeError("the XSLT error cause must be an exception or None")
+        if not isinstance(has_description, bool):
+            raise TypeError("has_description must be a boolean")
+        items = tuple(value)
+        if not all(isinstance(item, XdmItem) for item in items):
+            raise TypeError("the XSLT error value must contain XDM items")
+        typed_items = cast(tuple[XdmItem, ...], items)
+        for label, number in (
+            ("line_number", line_number),
+            ("column_number", column_number),
+        ):
+            if number is not None and (
+                isinstance(number, bool) or not isinstance(number, int) or number < 0
+            ):
+                raise TypeError(f"the XSLT error {label} must be an integer or None")
         super().__init__(message)
         self.code = code
         self.phase = phase
@@ -213,6 +244,11 @@ class XsltError(PyXSDError):
         self.location = location
         self.stack: tuple[FrameDiagnostic, ...] = ()
         self.cause = cause
+        self.description = message if description is None else description
+        self.has_description = has_description
+        self.value: tuple[XdmItem, ...] = typed_items
+        self.line_number = line_number
+        self.column_number = column_number
         self.attach_diagnostics(stack, module=module, package=package)
 
     @property
@@ -315,6 +351,11 @@ class XsltStaticError(XsltError):
         location: IssueLocation | None = None,
         stack: Sequence[FrameDiagnostic] = (),
         cause: BaseException | None = None,
+        description: str | None = None,
+        has_description: bool = True,
+        value: Sequence[object] = (),
+        line_number: int | None = None,
+        column_number: int | None = None,
     ) -> None:
         super().__init__(
             message,
@@ -326,6 +367,11 @@ class XsltStaticError(XsltError):
             location=location,
             stack=stack,
             cause=cause,
+            description=description,
+            has_description=has_description,
+            value=value,
+            line_number=line_number,
+            column_number=column_number,
         )
 
 
@@ -352,6 +398,11 @@ class XsltDynamicError(XsltError):
         stack: Sequence[FrameDiagnostic] = (),
         cause: BaseException | None = None,
         allow_catch: bool = True,
+        description: str | None = None,
+        has_description: bool = True,
+        value: Sequence[object] = (),
+        line_number: int | None = None,
+        column_number: int | None = None,
     ) -> None:
         if not isinstance(allow_catch, bool):
             raise TypeError("allow_catch must be a boolean")
@@ -366,6 +417,11 @@ class XsltDynamicError(XsltError):
             location=location,
             stack=stack,
             cause=cause,
+            description=description,
+            has_description=has_description,
+            value=value,
+            line_number=line_number,
+            column_number=column_number,
         )
 
     @property
@@ -395,6 +451,11 @@ class XsltSerializationError(XsltError):
         stack: Sequence[FrameDiagnostic] = (),
         cause: BaseException | None = None,
         secondary: bool = False,
+        description: str | None = None,
+        has_description: bool = True,
+        value: Sequence[object] = (),
+        line_number: int | None = None,
+        column_number: int | None = None,
     ) -> None:
         if not isinstance(secondary, bool):
             raise TypeError("secondary must be a boolean")
@@ -409,6 +470,11 @@ class XsltSerializationError(XsltError):
             location=location,
             stack=stack,
             cause=cause,
+            description=description,
+            has_description=has_description,
+            value=value,
+            line_number=line_number,
+            column_number=column_number,
         )
 
     @property

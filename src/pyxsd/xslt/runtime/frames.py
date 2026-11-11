@@ -307,9 +307,24 @@ FrameResult: TypeAlias = Continue | Call | Return | Raise
 
 @dataclass(frozen=True, slots=True)
 class CatchResult:
-    """An error handler's request to complete the frame with one value."""
+    """An error handler's request to complete the frame with one value.
+
+    ``value`` completes the frame directly.  ``frame`` instead schedules a
+    catch body on the same explicit stack, inheriting the failed frame's
+    continuation, so a tail call in the catch body remains eligible for
+    scheduler replacement.  The two forms are mutually exclusive.
+    """
 
     value: object = ()
+    frame: Frame | None = None
+
+    def __post_init__(self) -> None:
+        if self.frame is None:
+            return
+        if not isinstance(self.frame, Frame):
+            raise TypeError("a catch result frame must be a Frame or None")
+        if self.value != ():
+            raise ValueError("a catch result cannot carry both a frame and a value")
 
 
 class SchedulerViolation(RuntimeError):
@@ -466,6 +481,7 @@ class Scheduler:
         return continuation is None or continuation.kind == "resume"
 
     def _finish(self, frame: Frame, value: object) -> None:
+        self._commit(frame)
         if frame.continuation is None:
             self._result = value
             self._has_result = True
@@ -516,6 +532,12 @@ class Scheduler:
                 raise SchedulerViolation(
                     "an error handler must return CatchResult or None"
                 ) from error
+            if handled.frame is not None:
+                catch_frame = handled.frame
+                if frame.continuation is not None:
+                    catch_frame = replace(catch_frame, continuation=frame.continuation)
+                self._push(catch_frame)
+                return
             if frame.continuation is None:
                 self._result = handled.value
                 self._has_result = True
@@ -529,8 +551,17 @@ class Scheduler:
         if callable(rollback):
             rollback()
 
+    def _commit(self, frame: Frame) -> None:
+        commit = getattr(frame.extent, "commit", None)
+        if callable(commit):
+            commit()
+
     def _resource_error(self, message: str) -> XsltDynamicError:
         stack = tuple(frame.diagnostic() for frame in self._frames)
         if stack:
             self.diagnostics = stack
-        return XsltDynamicError(message, code=PYXSD_FRAME_EXHAUSTED)
+        return XsltDynamicError(
+            message,
+            code=PYXSD_FRAME_EXHAUSTED,
+            allow_catch=False,
+        )

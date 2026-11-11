@@ -146,6 +146,8 @@ IMPLEMENTED_XSLT_ELEMENTS = frozenset(
         "template",
         "text",
         "transform",
+        "try",
+        "catch",
         "use-package",
         "value-of",
         "variable",
@@ -599,6 +601,7 @@ class XsltContextBridge:
             f"{{{FN_NS}}}element-available": ContextFunction(self._element_available_function),
             f"{{{FN_NS}}}unparsed-entity-uri": ContextFunction(self._unparsed_entity_uri_function),
             f"{{{FN_NS}}}generate-id": ContextFunction(self._generate_id_function),
+            f"{{{FN_NS}}}error": ContextFunction(self._error_function),
         }
         if "type-available" in legal:
             table[f"{{{FN_NS}}}type-available"] = ContextFunction(self._type_available_function)
@@ -635,6 +638,56 @@ class XsltContextBridge:
         if self.key_lookup is not None:
             table[f"{{{FN_NS}}}key"] = ContextFunction(self._direct_key, self._dynamic_key)
         return MappingProxyType(table)
+
+    def _error_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """Raise one coded dynamic error, preserving the optional value.
+
+        The underlying XPath engine evaluates ``fn:error`` but discards its
+        third argument.  This invocation-local override keeps the exact value
+        sequence so ``$err:value`` can expose it to a matching ``xsl:catch``.
+        """
+        del context_item
+        code = "FOER0000"
+        description: str | None = None
+        value: XdmSequence = ()
+        if arguments:
+            first = arguments[0]
+            if first:
+                if len(first) != 1 or not isinstance(first[0], XdmAtomic):
+                    raise XsltDynamicError(
+                        "the first argument to error() must be an xs:QName",
+                        code="XPTY0004",
+                    )
+                qname = first[0].value
+                if not isinstance(qname, QName):
+                    raise XsltDynamicError(
+                        "the first argument to error() must be an xs:QName",
+                        code="XPTY0004",
+                    )
+                uri = qname.uri or ""
+                code = f"Q{{{uri}}}{qname.local_name}"
+        if len(arguments) > 1:
+            second = arguments[1]
+            if second:
+                if len(second) != 1 or not isinstance(second[0], XdmAtomic):
+                    raise XsltDynamicError(
+                        "the second argument to error() must be a string",
+                        code="XPTY0004",
+                    )
+                description = second[0].lexical
+        if len(arguments) > 2:
+            value = arguments[2]
+        raise XsltDynamicError(
+            description or "",
+            code=code,
+            description=description,
+            has_description=description is not None,
+            value=value,
+        )
 
     def current(self) -> XdmItem:
         """The instruction-level current item, never a predicate focus item."""
