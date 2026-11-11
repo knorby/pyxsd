@@ -241,6 +241,94 @@ def test_merge_keys_compare_with_the_selected_collation() -> None:
     ]
 
 
+def test_current_merge_key_keeps_the_atomized_type_for_text_data_type() -> None:
+    body = """
+        <xsl:template name="main">
+          <out>
+            <xsl:merge>
+              <xsl:merge-source select="doc/n">
+                <xsl:merge-key select="xs:date(@d)" data-type="text"/>
+              </xsl:merge-source>
+              <xsl:merge-action>
+                <entry isdate="{current-merge-key() instance of xs:date}"
+                  value="{current-merge-key()}"/>
+              </xsl:merge-action>
+            </xsl:merge>
+          </out>
+        </xsl:template>
+    """
+    result = transform(
+        stylesheet(body),
+        b'<doc><n d="2020-01-01"/><n d="2020-01-02"/></doc>',
+        initial_template="main",
+    )
+    entries = element_children(result.principal_tree.root_element)
+    assert [
+        (entry.attributes[0].string_value, entry.attributes[1].string_value) for entry in entries
+    ] == [("true", "2020-01-01"), ("true", "2020-01-02")]
+
+
+def test_current_merge_key_is_the_first_item_for_equal_numeric_types() -> None:
+    cases = (
+        ("xs:double(0.1)", "xs:decimal('0.1')", "double"),
+        ("xs:decimal('0.1')", "xs:double(0.1)", "decimal"),
+    )
+    for first, second, expected in cases:
+        body = f"""
+            <xsl:template name="main">
+              <out>
+                <xsl:merge>
+                  <xsl:merge-source select="{first}">
+                    <xsl:merge-key select="."/>
+                  </xsl:merge-source>
+                  <xsl:merge-source select="{second}">
+                    <xsl:merge-key select="."/>
+                  </xsl:merge-source>
+                  <xsl:merge-action>
+                    <entry count="{{count(current-merge-group())}}"
+                      type="{{if (current-merge-key() instance of xs:double)
+                        then 'double' else 'decimal'}}"/>
+                  </xsl:merge-action>
+                </xsl:merge>
+              </out>
+            </xsl:template>
+        """
+        result = transform(stylesheet(body), initial_template="main")
+        entries = element_children(result.principal_tree.root_element)
+        assert len(entries) == 1
+        assert entries[0].attributes[0].string_value == "2"
+        assert entries[0].attributes[1].string_value == expected
+
+
+def test_merge_order_check_promotes_mixed_numeric_comparison() -> None:
+    cases = (
+        ("(xs:double(0.1), xs:decimal('0.1'))", "double"),
+        ("(xs:decimal('0.1'), xs:double(0.1))", "decimal"),
+    )
+    for sequence, expected in cases:
+        body = f"""
+            <xsl:template name="main">
+              <out>
+                <xsl:merge>
+                  <xsl:merge-source select="{sequence}">
+                    <xsl:merge-key select="."/>
+                  </xsl:merge-source>
+                  <xsl:merge-action>
+                    <entry count="{{count(current-merge-group())}}"
+                      type="{{if (current-merge-key() instance of xs:double)
+                        then 'double' else 'decimal'}}"/>
+                  </xsl:merge-action>
+                </xsl:merge>
+              </out>
+            </xsl:template>
+        """
+        result = transform(stylesheet(body), initial_template="main")
+        entries = element_children(result.principal_tree.root_element)
+        assert len(entries) == 1
+        assert entries[0].attributes[0].string_value == "2"
+        assert entries[0].attributes[1].string_value == expected
+
+
 def test_merge_data_type_text_and_untyped_keys_become_strings() -> None:
     body = """
         <xsl:template name="main">
@@ -1297,6 +1385,16 @@ def test_merge_order_checks_and_sorting_helpers() -> None:
         2,
         1,
     ]
+
+
+def test_merge_order_check_promotes_mixed_numeric_values_directly() -> None:
+    from pyxsd.xslt.runtime.iteration import ResolvedSortKey
+
+    keys = (ResolvedSortKey(),)
+    double = MergeItem(XdmAtomic.double(0.1), 0, 0, 1, ((XdmAtomic.double(0.1),),))
+    decimal = MergeItem(XdmAtomic.decimal("0.1"), 0, 0, 2, ((XdmAtomic.decimal("0.1"),),))
+    check_merge_order((double, decimal), keys)
+    check_merge_order((decimal, double), keys)
 
 
 def test_merge_key_comparison_maps_incomparable_values_to_xtte2230() -> None:

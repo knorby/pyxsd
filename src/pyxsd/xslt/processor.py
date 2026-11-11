@@ -135,6 +135,7 @@ from pyxsd.xslt.runtime.iteration import (
     group_starting_with,
     grouping_key_set,
     merge_groups,
+    promote_merge_keys,
     resolve_collation,
     sort_merge_input,
     sort_records,
@@ -4744,31 +4745,29 @@ class _Invocation(Transformation):
                 )
             ):
                 items = tuple(
-                    MergeItem(
-                        item=item,
-                        source=source_index,
-                        anchor=anchor_index,
+                    self._merge_item(
+                        source,
+                        resolved,
+                        item,
+                        source_index=source_index,
+                        anchor_index=anchor_index,
                         position=position,
-                        key=self._merge_key_values(
-                            source,
-                            resolved,
-                            item,
-                            locals_,
-                            package_name,
-                            mode=mode,
-                            tunnel_parameters=tunnel_parameters,
-                            rule_context=rule_context,
-                            original_functions=original_functions,
-                        ),
+                        locals_=locals_,
+                        package_name=package_name,
+                        mode=mode,
+                        tunnel_parameters=tunnel_parameters,
+                        rule_context=rule_context,
+                        original_functions=original_functions,
                     )
                     for position, item in enumerate(sequence, start=1)
                 )
                 if source.sort_before_merge:
                     items = sort_merge_input(items, resolved)
-                else:
-                    check_merge_order(items, resolved)
                 inputs.append(items)
-        groups = merge_groups(inputs, resolved)
+        comparison_keys = promote_merge_keys(inputs, resolved)
+        for input_sequence in inputs:
+            check_merge_order(input_sequence, resolved, comparison_keys=comparison_keys)
+        groups = merge_groups(inputs, resolved, comparison_keys=comparison_keys)
         names = _merge_source_names(plan.sources)
         result: list[XdmItem] = []
         for position, group in enumerate(groups, start=1):
@@ -4895,6 +4894,42 @@ class _Invocation(Transformation):
             ),
         )
 
+    def _merge_item(
+        self,
+        source: _MergeSourcePlan,
+        resolved: tuple[ResolvedSortKey, ...],
+        item: XdmItem,
+        *,
+        source_index: int,
+        anchor_index: int,
+        position: int,
+        locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
+        mode: str | None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None,
+        rule_context: _RuleContext | None,
+        original_functions: Mapping[int, Component] | None,
+    ) -> MergeItem:
+        comparison_key, current_key = self._merge_key_values(
+            source,
+            resolved,
+            item,
+            locals_,
+            package_name,
+            mode=mode,
+            tunnel_parameters=tunnel_parameters,
+            rule_context=rule_context,
+            original_functions=original_functions,
+        )
+        return MergeItem(
+            item=item,
+            source=source_index,
+            anchor=anchor_index,
+            position=position,
+            key=comparison_key,
+            current_key=current_key,
+        )
+
     def _merge_key_values(
         self,
         source: _MergeSourcePlan,
@@ -4907,9 +4942,10 @@ class _Invocation(Transformation):
         tunnel_parameters: Mapping[str, XdmSequence] | None,
         rule_context: _RuleContext | None,
         original_functions: Mapping[int, Component] | None,
-    ) -> tuple[XdmSequence, ...]:
+    ) -> tuple[tuple[XdmSequence, ...], tuple[XdmSequence, ...]]:
         key_focus = Focus.singleton(item)
-        values: list[XdmSequence] = []
+        comparison_values: list[XdmSequence] = []
+        current_values: list[XdmSequence] = []
         for key, resolved_key in zip(source.keys, resolved, strict=True):
             if key.select is not None:
                 value = self._evaluate(
@@ -4939,14 +4975,16 @@ class _Invocation(Transformation):
                     location=key.instruction.location,
                 )
             if not atomics:
-                values.append(())
+                comparison_values.append(())
+                current_values.append(())
                 continue
             atomic = atomics[0]
+            current_values.append((atomic,))
             if resolved_key.data_type == "text":
-                values.append((XdmAtomic.string(atomic.lexical),))
+                comparison_values.append((XdmAtomic.string(atomic.lexical),))
             else:
-                values.append((atomic,))
-        return tuple(values)
+                comparison_values.append((atomic,))
+        return tuple(comparison_values), tuple(current_values)
 
     def _run_fork(
         self,

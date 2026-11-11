@@ -58,6 +58,7 @@ __all__ = [
     "grouping_key_set",
     "merge_groups",
     "merge_key_equal",
+    "promote_merge_keys",
     "resolve_collation",
     "sort_merge_input",
     "sort_records",
@@ -473,6 +474,11 @@ class MergeItem:
     the input sequence selected by one ``for-each-item``/``for-each-source``
     anchor, and ``position`` the item's order within that input sequence.
     Together they define the normative current-merge-group ordering.
+
+    ``key`` is the comparison key after any ``data-type`` conversion, while
+    ``current_key`` is the item's atomized key with ``xs:untypedAtomic`` cast to
+    ``xs:string`` and no comparison conversion.  ``current-merge-key()`` exposes
+    the first group item's ``current_key``, not its comparison key.
     """
 
     item: XdmItem
@@ -480,6 +486,7 @@ class MergeItem:
     anchor: int
     position: int
     key: tuple[XdmSequence, ...]
+    current_key: tuple[XdmSequence, ...] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.item, XdmItem):
@@ -491,31 +498,44 @@ class MergeItem:
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"a merge item {label} must be a non-negative integer")
-        if not isinstance(self.key, tuple):
-            raise ValueError("a merge item key must be a tuple of key components")
-        for component in self.key:
-            if not isinstance(component, tuple) or not all(
-                isinstance(value, XdmAtomic) for value in component
-            ):
-                raise ValueError(
-                    "a merge item key component must be an XDM sequence of atomic values"
-                )
+        _validate_merge_key_components(self.key, "a merge item key")
+        current_key = self.key if self.current_key is None else self.current_key
+        _validate_merge_key_components(current_key, "a merge item current key")
+        object.__setattr__(self, "current_key", current_key)
 
 
 @dataclass(frozen=True, slots=True)
 class MergeGroup:
-    """One group of items sharing a composite merge key."""
+    """One group of items sharing a composite merge key.
+
+    ``key`` is the first item's current key (what ``current-merge-key()``
+    exposes); ``comparison_key`` is the first item's comparison key used to
+    order the group.
+    """
 
     items: tuple[MergeItem, ...]
     key: tuple[XdmSequence, ...]
+    comparison_key: tuple[XdmSequence, ...] | None = None
 
     def __post_init__(self) -> None:
         if not self.items:
             raise ValueError("a merge group is never empty")
         if not all(isinstance(item, MergeItem) for item in self.items):
             raise TypeError("a merge group requires merge items")
-        if not isinstance(self.key, tuple):
-            raise ValueError("a merge group key must be a tuple of key components")
+        _validate_merge_key_components(self.key, "a merge group key")
+        comparison_key = self.key if self.comparison_key is None else self.comparison_key
+        _validate_merge_key_components(comparison_key, "a merge group comparison key")
+        object.__setattr__(self, "comparison_key", comparison_key)
+
+
+def _validate_merge_key_components(key: object, label: str) -> None:
+    if not isinstance(key, tuple):
+        raise ValueError(f"{label} must be a tuple of key components")
+    for component in key:
+        if not isinstance(component, tuple) or not all(
+            isinstance(value, XdmAtomic) for value in component
+        ):
+            raise ValueError(f"{label} component must be an XDM sequence of atomic values")
 
 
 # ---------------------------------------------------------------------------
@@ -908,13 +928,40 @@ def compare_merge_key_sets(
         raise
 
 
+def promote_merge_keys(
+    inputs: Sequence[Sequence[MergeItem]],
+    keys: tuple[ResolvedSortKey, ...],
+) -> tuple[ResolvedSortKey, ...]:
+    """Select one numeric comparison mode for every merge key component.
+
+    XSLT requires one ``lt`` implementation for all comparisons of a key
+    component.  Pairwise promotion can be non-transitive, so the mode is chosen
+    across every item of every merge input sequence before any ordering check or
+    group comparison.
+    """
+    key_values = tuple(item.key for sequence in inputs for item in sequence)
+    return _sort_numeric_modes(keys, key_values)
+
+
 def check_merge_order(
     items: Sequence[MergeItem],
     keys: tuple[ResolvedSortKey, ...],
+    *,
+    comparison_keys: tuple[ResolvedSortKey, ...] | None = None,
 ) -> None:
-    """Reject an input sequence that is not already sorted on its merge key."""
+    """Reject an input sequence that is not already sorted on its merge key.
+
+    Without an explicit ``comparison_keys`` tuple the promoted numeric mode is
+    selected across this sequence, so a mixed ``xs:double``/``xs:decimal``
+    sequence that is equal under double promotion is not falsely rejected.
+    """
+    effective = (
+        comparison_keys
+        if comparison_keys is not None
+        else _sort_numeric_modes(keys, tuple(item.key for item in items))
+    )
     for previous, current in pairwise(items):
-        if compare_sort_key_sets(previous.key, current.key, keys) > 0:
+        if compare_sort_key_sets(previous.key, current.key, effective) > 0:
             raise XsltDynamicError(
                 "a merge input sequence is not correctly sorted on its merge key",
                 code="XTDE2220",
@@ -936,19 +983,24 @@ def sort_merge_input(
 def merge_groups(
     inputs: Sequence[Sequence[MergeItem]],
     keys: tuple[ResolvedSortKey, ...],
+    *,
+    comparison_keys: tuple[ResolvedSortKey, ...] | None = None,
 ) -> tuple[MergeGroup, ...]:
     """Merge sorted input sequences into groups in composite-key order.
 
     *inputs* must already be ordered by merge source, then anchor, then input
     position.  The algorithm consumes only the heads of the grounded sequences
     and retains duplicate items and repeated occurrences exactly as selected.
+    Group identity comes from the first item's ``current_key`` while ordering
+    uses the promoted comparison key.
     """
-    positions = [0] * len(inputs)
-    groups: list[MergeGroup] = []
     for sequence in inputs:
         for item in sequence:
             if len(item.key) != len(keys):
                 raise ValueError("a merge item key must match the merge key specification")
+    effective = comparison_keys if comparison_keys is not None else promote_merge_keys(inputs, keys)
+    positions = [0] * len(inputs)
+    groups: list[MergeGroup] = []
     while True:
         candidates = [
             (index, sequence[positions[index]])
@@ -959,7 +1011,7 @@ def merge_groups(
             break
         best_item = candidates[0][1]
         for _, item in candidates[1:]:
-            if compare_merge_key_sets(item.key, best_item.key, keys) < 0:
+            if compare_merge_key_sets(item.key, best_item.key, effective) < 0:
                 best_item = item
         members: list[MergeItem] = []
         for index, sequence in enumerate(inputs):
@@ -970,7 +1022,13 @@ def merge_groups(
                 members.append(sequence[position])
                 position += 1
             positions[index] = position
-        groups.append(MergeGroup(tuple(members), best_item.key))
+        groups.append(
+            MergeGroup(
+                tuple(members),
+                best_item.current_key if best_item.current_key is not None else best_item.key,
+                best_item.key,
+            )
+        )
     return tuple(groups)
 
 
