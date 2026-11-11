@@ -888,6 +888,61 @@ def test_controls_inside_on_non_empty_content_remain_static_errors() -> None:
         assert error_code(lambda source=source: compiled(stylesheet(source))) == "XTSE3120"
 
 
+def test_controls_inside_xsl_sequence_content_are_static_errors() -> None:
+    sources = (
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1">
+            <xsl:sequence><xsl:break/></xsl:sequence>
+          </xsl:iterate>
+        </xsl:template>
+        """,
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1">
+            <xsl:sequence><xsl:next-iteration/></xsl:sequence>
+          </xsl:iterate>
+        </xsl:template>
+        """,
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1 to 3">
+            <xsl:on-non-empty><xsl:sequence select="'n'"/></xsl:on-non-empty>
+            <xsl:sequence><xsl:break select="'break'"/></xsl:sequence>
+          </xsl:iterate>
+        </xsl:template>
+        """,
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1 to 3">
+            <xsl:on-non-empty><xsl:sequence select="'n'"/></xsl:on-non-empty>
+            <xsl:sequence><xsl:next-iteration/></xsl:sequence>
+          </xsl:iterate>
+        </xsl:template>
+        """,
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1">
+            <xsl:if test="true()">
+              <xsl:sequence><xsl:break/></xsl:sequence>
+            </xsl:if>
+          </xsl:iterate>
+        </xsl:template>
+        """,
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1">
+            <xsl:iterate select="2">
+              <xsl:sequence><xsl:break/></xsl:sequence>
+            </xsl:iterate>
+          </xsl:iterate>
+        </xsl:template>
+        """,
+    )
+    for source in sources:
+        assert error_code(lambda source=source: compiled(stylesheet(source))) == "XTSE3120"
+
+
 def test_direct_execution_of_an_iteration_control_plan_is_a_static_error() -> None:
     plan = _BreakPlan(
         Instruction(name=f"{{{XSLT_NS}}}break"),

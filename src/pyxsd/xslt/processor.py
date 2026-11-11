@@ -1979,7 +1979,7 @@ def _validate_control_plan(
         return
     if isinstance(plan, _SequencePlan):
         if plan.expression is None:
-            _validate_iteration_controls(plan.children, parameters if tail else None)
+            _validate_iteration_controls(plan.children, None)
         return
     if isinstance(plan, _ChoosePlan):
         for _, branch in plan.branches:
