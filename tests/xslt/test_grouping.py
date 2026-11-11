@@ -533,6 +533,62 @@ def test_empty_population_produces_no_groups_or_body_output() -> None:
     assert element_children(result.principal_tree.root_element) == ()
 
 
+def test_on_completion_retains_the_enclosing_group_and_grouping_key() -> None:
+    body = """
+        <xsl:template name="main">
+          <out>
+            <xsl:for-each-group select="doc/n" group-by="@k">
+              <g>
+                <xsl:iterate select="()">
+                  <xsl:on-completion>
+                    <xsl:call-template name="show-group"/>
+                  </xsl:on-completion>
+                </xsl:iterate>
+              </g>
+            </xsl:for-each-group>
+          </out>
+        </xsl:template>
+        <xsl:template name="show-group">
+          <shown count="{count(current-group())}" key="{current-grouping-key()}"/>
+        </xsl:template>
+    """
+    result = transform(
+        stylesheet(body),
+        b'<doc><n k="a"/><n k="a"/></doc>',
+        initial_template="main",
+    )
+    shown = element_children(element_children(result.principal_tree.root_element)[0])[0]
+    assert shown.attributes[0].string_value == "2"
+    assert shown.attributes[1].string_value == "a"
+
+
+def test_on_completion_retains_group_state_inside_perform_sort() -> None:
+    body = """
+        <xsl:template name="main">
+          <out>
+            <xsl:for-each-group select="doc/n" group-by="@k">
+              <xsl:iterate select="()">
+                <xsl:on-completion>
+                  <xsl:perform-sort select="current-group()">
+                    <xsl:sort select="@id" data-type="number"/>
+                  </xsl:perform-sort>
+                </xsl:on-completion>
+              </xsl:iterate>
+            </xsl:for-each-group>
+          </out>
+        </xsl:template>
+    """
+    result = transform(
+        stylesheet(body),
+        b'<doc><n k="a" id="2"/><n k="a" id="1"/></doc>',
+        initial_template="main",
+    )
+    assert [
+        next(attribute.string_value for attribute in child.attributes if attribute.name == "id")
+        for child in result.principal_tree.root_element.children
+    ] == ["1", "2"]
+
+
 # ---------------------------------------------------------------------------
 # Collations
 
@@ -690,6 +746,35 @@ def test_grouping_pattern_can_use_a_global_variable() -> None:
     assert [group.string_value for group in groups] == ["0", "1,2"]
 
 
+def test_group_by_preserves_repeated_population_occurrences_of_one_node() -> None:
+    body = """
+        <xsl:template name="main">
+          <out>
+            <xsl:for-each-group select="(doc/n[1], doc/n[1])" group-by="'k'">
+              <g count="{count(current-group())}"/>
+            </xsl:for-each-group>
+            <xsl:for-each-group select="(doc/n[1], doc/n[1])" group-by="('a', 'b')"
+              composite="yes">
+              <g count="{count(current-group())}"/>
+            </xsl:for-each-group>
+            <xsl:for-each-group select="(doc/n[1], doc/n[1])" group-by="('a', 'b')">
+              <g key="{current-grouping-key()}" count="{count(current-group())}"/>
+            </xsl:for-each-group>
+          </out>
+        </xsl:template>
+    """
+    result = transform(
+        stylesheet(body),
+        b"<doc><n/></doc>",
+        initial_template="main",
+    )
+    groups = element_children(result.principal_tree.root_element)
+    assert [group.attributes[0].string_value for group in groups[:2]] == ["2", "2"]
+    assert [
+        (group.attributes[0].string_value, group.attributes[1].string_value) for group in groups[2:]
+    ] == [("a", "2"), ("b", "2")]
+
+
 def test_group_by_deep_equal_uses_codepoint_default() -> None:
     body = """
         <xsl:template name="main">
@@ -807,6 +892,14 @@ def test_group_by_ignores_duplicate_keys_supplied_for_one_item() -> None:
     )
     assert len(groups) == 1
     assert groups[0].items == (item,)
+
+    repeated = group_by(
+        (item, item),
+        ((key,), (key,)),
+        collation,
+    )
+    assert len(repeated) == 1
+    assert repeated[0].items == (item, item)
 
 
 def test_atomic_equal_handles_comparison_failures_as_unequal() -> None:

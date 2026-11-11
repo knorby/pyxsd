@@ -1969,8 +1969,12 @@ def _validate_control_plan(
                         uri=plan.instruction.module,
                         location=plan.instruction.location,
                     )
+        for children in _plan_children(plan):
+            _validate_iteration_controls(children, None)
         return
     if isinstance(plan, _IteratePlan):
+        for children in _plan_children(plan):
+            _validate_iteration_controls(children, None)
         _validate_iteration_controls(plan.children, plan.parameter_names)
         return
     if isinstance(plan, _SequencePlan):
@@ -2029,6 +2033,15 @@ def _plan_children(plan: _Plan) -> tuple[tuple[_Plan, ...], ...]:
     if isinstance(plan, _FallbackPlan):
         return (plan.children,)
     if isinstance(plan, _ResultDocumentPlan):
+        return (plan.children,)
+    if isinstance(plan, _IteratePlan):
+        groups = [parameter.children for parameter in plan.parameters]
+        if plan.on_completion is not None:
+            groups.append(plan.on_completion.children)
+        return tuple(groups)
+    if isinstance(plan, _NextIterationPlan):
+        return tuple(parameter.children for parameter in plan.parameters)
+    if isinstance(plan, _BreakPlan):
         return (plan.children,)
     if isinstance(plan, _ForEachPlan):
         return (plan.children,)
@@ -3973,6 +3986,7 @@ class _Invocation(Transformation):
                 ),
                 base_variables=dict(variables),
                 parameters=parameters,
+                parameter_plans={parameter.name: parameter for parameter in plan.parameters},
                 on_completion=plan.on_completion,
             )
         else:
@@ -4063,38 +4077,37 @@ class _Invocation(Transformation):
         variables: dict[str, XdmSequence] = dict(state.base_variables)
         for name, value in state.parameters.items():
             self._bind(variables, name, value)
-        with self._group_scope(None, None):
-            try:
-                if completion.select is not None:
-                    value = self._evaluate(
-                        completion.select,
-                        Focus.absent(),
-                        variables,
-                        frame.package,
-                        original_functions=self._original_functions(frame),
-                    )
-                else:
-                    value = self._execute_plans(
-                        completion.children,
-                        focus=Focus.absent(),
-                        locals_=variables,
-                        final_output=frame.final_output,
-                        package_name=frame.package,
-                        mode=frame.mode,
-                        tunnel_parameters=self._frame_tunnel(frame),
-                        rule_context=self._rule_context(frame),
-                        original_functions=self._original_functions(frame),
-                    )
-            except MissingContextError as exc:
-                error = XsltDynamicError(
-                    "xsl:on-completion has no context item",
-                    code="XPDY0002",
-                    location=completion.instruction.location,
-                    cause=exc,
+        try:
+            if completion.select is not None:
+                value = self._evaluate(
+                    completion.select,
+                    Focus.absent(),
+                    variables,
+                    frame.package,
+                    original_functions=self._original_functions(frame),
                 )
-                error.__cause__ = exc
-                error.__suppress_context__ = True
-                raise error from exc
+            else:
+                value = self._execute_plans(
+                    completion.children,
+                    focus=Focus.absent(),
+                    locals_=variables,
+                    final_output=frame.final_output,
+                    package_name=frame.package,
+                    mode=frame.mode,
+                    tunnel_parameters=self._frame_tunnel(frame),
+                    rule_context=self._rule_context(frame),
+                    original_functions=self._original_functions(frame),
+                )
+        except MissingContextError as exc:
+            error = XsltDynamicError(
+                "xsl:on-completion has no context item",
+                code="XPDY0002",
+                location=completion.instruction.location,
+                cause=exc,
+            )
+            error.__cause__ = exc
+            error.__suppress_context__ = True
+            raise error from exc
         return self._return_frame(replace(frame, values=frame.values + tuple(value)))
 
     def _iteration_control(
@@ -4111,7 +4124,7 @@ class _Invocation(Transformation):
                 location=plan.instruction.location,
             )
         if isinstance(plan, _NextIterationPlan):
-            supplied = self._iteration_parameter_values(plan.parameters, frame)
+            supplied = self._iteration_parameter_values(plan.parameters, frame, state)
             state.pending_parameters = {**state.parameters, **supplied}
             state.control = "next"
             return self._return_frame(frame)
@@ -4172,6 +4185,7 @@ class _Invocation(Transformation):
         self,
         parameters: tuple[_WithParamPlan, ...],
         frame: Frame,
+        state: IterationState,
     ) -> dict[str, XdmSequence]:
         values: dict[str, XdmSequence] = {}
         for parameter in parameters:
@@ -4184,7 +4198,7 @@ class _Invocation(Transformation):
                     original_functions=self._original_functions(frame),
                 )
             elif parameter.children:
-                value = self._execute_plans(
+                sequence = self._execute_plans(
                     parameter.children,
                     focus=frame.focus,
                     locals_=self._frame_variables(frame),
@@ -4195,8 +4209,9 @@ class _Invocation(Transformation):
                     rule_context=self._rule_context(frame),
                     original_functions=self._original_functions(frame),
                 )
+                value = sequence if parameter.has_as else (_build_result_tree(sequence),)
             else:
-                value = ()
+                value = () if parameter.has_as else (XdmAtomic.string(""),)
             if parameter.sequence_type is not None:
                 value = _coerce_sequence(
                     value,
@@ -4204,6 +4219,8 @@ class _Invocation(Transformation):
                     code="XTTE0590",
                     label=f"parameter {parameter.name!r}",
                 )
+            declared = state.parameter_plans[parameter.name]
+            value = self._coerce_parameter(declared, value, code="XTTE0590")
             self._bind(values, parameter.name, value)
         return values
 
@@ -5731,6 +5748,13 @@ class _Invocation(Transformation):
     ) -> XdmSequence:
         if isinstance(plan, _TextPlan):
             return (self._text_node(plan.value),)
+        if isinstance(plan, (_NextIterationPlan, _BreakPlan)):
+            raise XsltStaticError(
+                f"xsl:{plan.instruction.local_name} requires an enclosing xsl:iterate",
+                code="XTSE3120",
+                uri=plan.instruction.module,
+                location=plan.instruction.location,
+            )
         if isinstance(plan, (_ForEachPlan, _IteratePlan, _ForEachGroupPlan)):
             return self._run_iteration_plan(
                 plan,

@@ -690,6 +690,19 @@ def test_number_data_type_handles_booleans_and_empty_strings() -> None:
     ) == ("", "false", "true")
 
 
+def test_number_data_type_handles_large_integers_without_python_overflow() -> None:
+    huge = "1" + "0" * 400
+    body = f"""
+        <xsl:template name="main">
+          <xsl:perform-sort select="(xs:integer('{huge}'), 1)">
+            <xsl:sort select="." data-type="number"/>
+          </xsl:perform-sort>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert tuple(item.lexical for item in result.principal) == ("1", huge)
+
+
 def test_native_sort_orders_temporal_values_and_rejects_binary_values() -> None:
     assert sort_strings(
         "(xs:date('2020-01-03'), xs:date('2020-01-01'), xs:date('2020-01-02'))",

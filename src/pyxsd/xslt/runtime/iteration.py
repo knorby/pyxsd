@@ -156,7 +156,7 @@ def _as_float32(value: Any) -> float:
 
 def _bounded_number(value: Any) -> float:
     """Convert one numeric payload to binary64 for number-typed ordering."""
-    return float(value)
+    return _as_float(value)
 
 
 def _number_value(item: XdmAtomic) -> float:
@@ -438,6 +438,7 @@ class IterationState:
     items: tuple[IterationItem, ...]
     base_variables: Mapping[str, XdmSequence]
     parameters: dict[str, XdmSequence] = field(default_factory=dict)
+    parameter_plans: Mapping[str, Any] = field(default_factory=dict)
     on_completion: Completion | None = None
     index: int = 0
     control: str | None = None
@@ -449,6 +450,7 @@ class IterationState:
         if self.control not in (None, "next", "break"):
             raise ValueError(f"unknown iteration control {self.control!r}")
         self.base_variables = dict(self.base_variables)
+        self.parameter_plans = dict(self.parameter_plans)
 
 
 # ---------------------------------------------------------------------------
@@ -744,10 +746,10 @@ def group_by(
             if index is None:
                 groups.append([item])
                 group_keys.append(key)
-                index = len(groups) - 1
+                seen.append(len(groups) - 1)
+                continue
             if index not in seen:
-                if groups[index] and groups[index][0] is not item:
-                    groups[index].append(item)
+                groups[index].append(item)
                 seen.append(index)
     return tuple(
         Group(tuple(members), members[0], group_keys[index]) for index, members in enumerate(groups)

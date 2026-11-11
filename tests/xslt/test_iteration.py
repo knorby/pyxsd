@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from pyxsd.xdm import XdmAtomic
+from pyxsd.xpath.environment import Focus
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.context import StaticContext
 from pyxsd.xslt.compiler.instructions import Instruction, TextNode
@@ -290,6 +291,77 @@ def test_iterate_parameter_type_error_preserves_code_and_cause() -> None:
     assert caught.value.__cause__ is not None
 
 
+def test_next_iteration_values_are_coerced_to_declared_parameter_types() -> None:
+    invalid = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1 to 2">
+            <xsl:param name="x" as="xs:integer" select="0"/>
+            <xsl:sequence select="concat($x instance of xs:integer, ':', $x)"/>
+            <xsl:next-iteration>
+              <xsl:with-param name="x" select="'not-an-integer'"/>
+            </xsl:next-iteration>
+          </xsl:iterate>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(invalid, initial_template="main")) == "XTTE0590"
+
+    converted = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1 to 2">
+            <xsl:param name="x" as="xs:integer" select="0"/>
+            <xsl:sequence select="concat($x instance of xs:integer, ':', $x)"/>
+            <xsl:next-iteration>
+              <xsl:with-param name="x" select="'2'"/>
+            </xsl:next-iteration>
+          </xsl:iterate>
+        </xsl:template>
+        """
+    )
+    assert transform(converted, initial_template="main").principal == (
+        XdmAtomic.string("true:0"),
+        XdmAtomic.string("true:2"),
+    )
+
+
+def test_next_iteration_with_param_value_rules() -> None:
+    content = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1 to 2">
+            <xsl:param name="p" select="()"/>
+            <xsl:sequence select="concat($p instance of document-node(), ':', count($p))"/>
+            <xsl:next-iteration>
+              <xsl:with-param name="p"><xsl:sequence select="'x'"/></xsl:with-param>
+            </xsl:next-iteration>
+          </xsl:iterate>
+        </xsl:template>
+        """
+    )
+    assert transform(content, initial_template="main").principal == (
+        XdmAtomic.string("false:0"),
+        XdmAtomic.string("true:1"),
+    )
+
+    empty = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1 to 2">
+            <xsl:param name="p" select="'initial'"/>
+            <xsl:sequence select="concat($p instance of xs:string, ':', string-length($p))"/>
+            <xsl:next-iteration><xsl:with-param name="p"/></xsl:next-iteration>
+          </xsl:iterate>
+        </xsl:template>
+        """
+    )
+    assert transform(empty, initial_template="main").principal == (
+        XdmAtomic.string("true:7"),
+        XdmAtomic.string("true:0"),
+    )
+
+
 def test_iterate_body_variables_are_rebound_for_each_item() -> None:
     source = stylesheet(
         """
@@ -547,6 +619,46 @@ def test_break_select_with_content_is_static_error() -> None:
     assert error_code(lambda: compiled(source)) == "XTSE3125"
 
 
+def test_control_placement_is_validated_in_iteration_containers() -> None:
+    sources = (
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1">
+            <xsl:on-completion><xsl:break/></xsl:on-completion>
+            <xsl:sequence select="."/>
+          </xsl:iterate>
+        </xsl:template>
+        """,
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1">
+            <xsl:param name="x"><xsl:break/></xsl:param>
+            <xsl:sequence select="."/>
+          </xsl:iterate>
+        </xsl:template>
+        """,
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1">
+            <xsl:param name="x" select="0"/>
+            <xsl:next-iteration>
+              <xsl:with-param name="x"><xsl:break/></xsl:with-param>
+            </xsl:next-iteration>
+          </xsl:iterate>
+        </xsl:template>
+        """,
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1">
+            <xsl:break><xsl:break/></xsl:break>
+          </xsl:iterate>
+        </xsl:template>
+        """,
+    )
+    for source in sources:
+        assert error_code(lambda source=source: compiled(stylesheet(source))) == "XTSE3120"
+
+
 def test_next_iteration_with_param_content_and_empty_parameter() -> None:
     source = stylesheet(
         """
@@ -643,6 +755,24 @@ def test_iteration_control_rejects_shared_state_outside_iterate() -> None:
             None,
             plan,
             Frame(iteration=state),
+        )
+    assert caught.value.code == "XTSE3120"
+
+
+def test_direct_execution_of_an_iteration_control_plan_is_a_static_error() -> None:
+    plan = _BreakPlan(
+        Instruction(name=f"{{{XSLT_NS}}}break"),
+        expression=None,
+        children=(),
+    )
+    with pytest.raises(XsltStaticError) as caught:
+        _Invocation._execute_plan(  # type: ignore[arg-type]
+            None,
+            plan,
+            focus=Focus.absent(),
+            locals_={},
+            final_output=True,
+            package_name=None,
         )
     assert caught.value.code == "XTSE3120"
 
