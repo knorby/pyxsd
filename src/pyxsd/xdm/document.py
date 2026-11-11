@@ -678,9 +678,10 @@ def _actual_requested_type(
         )
     declared_class = getattr(requested, "_type_class", None)
     actual_class = getattr(actual, "_type_class", None)
-    # XSD 1.1 §3.3.4.2: a stipulated type (XSLT §25.4.1.2/§25.4.2)
-    # makes the name-resolved declaration non-governing (§3.3.4.6 clause
-    # 4.2), so only the requested type's {prohibited substitutions}
+    # XSD 1.1 §3.3.4.6 clause 4.2: a stipulated type (XSLT
+    # §25.4.1.2/§25.4.2) makes the name-resolved declaration
+    # non-governing, so §3.3.4.2 requires valid substitutability without
+    # limitation: only the requested type's {prohibited substitutions}
     # constrain the xsi:type override.
     blocked = combinedBlock(None, declared_class)
     reason = is_valid_xsi_type(actual_class, declared_class, blocked)

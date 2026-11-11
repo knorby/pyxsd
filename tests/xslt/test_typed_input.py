@@ -102,7 +102,7 @@ BLOCK_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
   <xs:complexType name="Other">
     <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
   </xs:complexType>
-  <xs:element name="Root" type="inv:Other" block="extension"/>
+  <xs:element name="Root" type="inv:Other" block="restriction"/>
   <xs:element name="RootBase" type="inv:Base"/>
 </xs:schema>"""
 
@@ -151,6 +151,69 @@ SELF_BLOCK_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
     </xs:complexContent>
   </xs:complexType>
   <xs:element name="RootExt" type="inv:Ext" block="extension"/>
+</xs:schema>"""
+
+MRO_BLOCK_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
+    xmlns:inv="{INVOICE}">
+  <xs:complexType name="Base" block="extension">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="Ext">
+    <xs:complexContent>
+      <xs:extension base="inv:Base">
+        <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:complexType name="Ext2">
+    <xs:complexContent>
+      <xs:extension base="inv:Ext">
+        <xs:sequence><xs:element name="c" type="xs:string"/></xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>"""
+
+EXPLICIT_BLOCK_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
+    xmlns:inv="{INVOICE}">
+  <xs:complexType name="Base">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="Ext" block="extension">
+    <xs:complexContent>
+      <xs:extension base="inv:Base">
+        <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:complexType name="Ext2">
+    <xs:complexContent>
+      <xs:extension base="inv:Ext">
+        <xs:sequence><xs:element name="c" type="xs:string"/></xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>"""
+
+BLOCK_DEFAULT_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
+    xmlns:inv="{INVOICE}" blockDefault="extension">
+  <xs:complexType name="Base">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="Ext">
+    <xs:complexContent>
+      <xs:extension base="inv:Base">
+        <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:complexType name="Ext2">
+    <xs:complexContent>
+      <xs:extension base="inv:Ext">
+        <xs:sequence><xs:element name="c" type="xs:string"/></xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
 </xs:schema>"""
 
 NESTED_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
@@ -2249,6 +2312,43 @@ def test_type_requested_stipulated_type_accepts_declaration_own_type() -> None:
     result = compiled.transform(initial_template="main")
 
     assert result.principal[0].lexical == "true"
+
+
+def test_type_requested_own_block_is_not_inherited_from_base() -> None:
+    source = (
+        f'<inv:NoDecl xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="inv:Ext2"><a>x</a><b>y</b><c>z</c></inv:NoDecl>'
+    ).encode()
+    compiled, _ = _requested_type_transform(
+        MRO_BLOCK_XSD,
+        source,
+        "* instance of element(*, inv:Ext2)",
+        type_name="inv:Ext",
+    )
+
+    result = compiled.transform(initial_template="main")
+
+    assert result.principal[0].lexical == "true"
+
+
+def test_type_requested_explicit_own_block_still_rejects() -> None:
+    source = (
+        f'<inv:NoDecl xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="inv:Ext2"><a>x</a><b>y</b><c>z</c></inv:NoDecl>'
+    ).encode()
+    compiled, _ = _requested_type_transform(EXPLICIT_BLOCK_XSD, source, "1", type_name="inv:Ext")
+
+    assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
+
+
+def test_type_requested_block_default_still_rejects() -> None:
+    source = (
+        f'<inv:NoDecl xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="inv:Ext2"><a>x</a><b>y</b><c>z</c></inv:NoDecl>'
+    ).encode()
+    compiled, _ = _requested_type_transform(BLOCK_DEFAULT_XSD, source, "1", type_name="inv:Ext")
+
+    assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
 
 
 def test_type_requested_prohibited_substitutions_with_matching_declaration() -> None:

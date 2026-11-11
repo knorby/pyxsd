@@ -169,9 +169,16 @@ def derived_from_union_member(derived: type | None, base: type | None) -> bool:
 
 
 def combinedBlock(elementBlock: Any, declaredCls: type | None) -> frozenset[str]:
-    """Returns the union of an element's and its type's ``block`` tokens."""
+    """Returns the union of an element's and its type's ``block`` tokens.
+
+    The type contribution is the declared class's own ``block`` value, not
+    one inherited through the Python MRO: an XSD type's
+    ``{prohibited substitutions}`` comes from its own ``block`` (or the
+    schema's ``blockDefault``), not from its base type.
+    """
     tokens = set(blockTokens(elementBlock))
-    tokens |= blockTokens(getattr(declaredCls, "_block_", None))
+    if declaredCls is not None:
+        tokens |= blockTokens(vars(declaredCls).get("_block_"))
     return frozenset(tokens)
 
 
