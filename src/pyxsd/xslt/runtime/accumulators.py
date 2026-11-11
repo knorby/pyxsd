@@ -446,7 +446,7 @@ def _previous_nonspace(source: str, index: int) -> int:
     return index
 
 
-def _enclosing_open(source: str, position: int, opening: str, closing: str) -> int | None:
+def _enclosing_opens(source: str, position: int, opening: str, closing: str) -> list[int]:
     stack: list[int] = []
     index = 0
     while index < position:
@@ -462,6 +462,11 @@ def _enclosing_open(source: str, position: int, opening: str, closing: str) -> i
         elif char == closing and stack:
             stack.pop()
         index += 1
+    return stack
+
+
+def _enclosing_open(source: str, position: int, opening: str, closing: str) -> int | None:
+    stack = _enclosing_opens(source, position, opening, closing)
     return stack[-1] if stack else None
 
 
@@ -552,19 +557,22 @@ def same_context_accumulator_call(source: str, start: int) -> bool:
     """Whether an accumulator call's focus is the rule's own context node.
 
     An immediate ``/`` or ``!`` before the call always changes focus, even
-    inside a ``.``/``self::`` predicate.  Otherwise a call inside a predicate
-    attached to a path step addresses the step's item; ``.`` and ``self::``
-    predicates keep the same node.  Any other position is treated as
-    same-context.  This conservative lexical check keeps the common self-cycle
-    static while deferring focus-changing recurrences to the runtime
-    partial-value cache.
+    inside a ``.``/``self::`` predicate.  Otherwise every enclosing predicate
+    must preserve the rule's focus: a call inside a predicate attached to a
+    path step addresses the step's item, and ``.``/``self::`` predicates keep
+    the focus their enclosing expression established.  A self-axis predicate
+    nested inside a focus-changing predicate therefore addresses the outer
+    step's item, not the rule's context node.  Any other position is treated
+    as same-context.  This conservative lexical check keeps the common
+    self-cycle static while deferring focus-changing recurrences to the
+    runtime partial-value cache.
     """
     index = _previous_nonspace(source, start - 1)
     if index >= 0 and source[index] in ("!", "/"):
         return False
-    predicate = enclosing_predicate_start(source, start)
-    if predicate is not None:
-        return not _predicate_changes_focus(source, predicate)
+    predicates = _enclosing_opens(source, start, "[", "]")
+    if predicates:
+        return not any(_predicate_changes_focus(source, predicate) for predicate in predicates)
     return True
 
 
