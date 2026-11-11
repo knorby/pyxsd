@@ -17,13 +17,17 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TypeAlias
+from typing import TypeAlias, cast
 
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence
 from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmDocument, XdmNode
 from pyxsd.xslt.compiler.instructions import Instruction
 from pyxsd.xslt.errors import XsltDynamicError
-from pyxsd.xslt.runtime.builder import ResultBuilder
+from pyxsd.xslt.runtime.builder import (
+    ResultBuilder,
+    validate_constructed,
+    validate_delivered,
+)
 
 __all__ = [
     "AttributeInstruction",
@@ -75,6 +79,9 @@ class AttributeInstruction:
     value: str
     prefix: str | None = None
     annotation: XdmAnnotation | None = None
+    validation: str | None = None
+    type_name: str | None = None
+    schema_pool: object = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not isinstance(self.value, str):
@@ -142,6 +149,9 @@ class ElementInstruction:
     base_uri: str | None = None
     annotation: XdmAnnotation | None = None
     prefix: str | None = None
+    validation: str | None = None
+    type_name: str | None = None
+    schema_pool: object = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "attributes", tuple(self.attributes))
@@ -161,6 +171,9 @@ class LiteralResultInstruction:
     namespace_aliases: Mapping[str, str] = field(default_factory=dict)
     annotation: XdmAnnotation | None = None
     prefix: str | None = None
+    validation: str | None = None
+    type_name: str | None = None
+    schema_pool: object = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "attributes", tuple(self.attributes))
@@ -177,6 +190,9 @@ class LiteralResultInstruction:
         content: Iterable[ConstructionInstruction] = (),
         namespace_aliases: Mapping[str, str] | None = None,
         annotation: XdmAnnotation | None = None,
+        validation: str | None = None,
+        type_name: str | None = None,
+        schema_pool: object = None,
     ) -> LiteralResultInstruction:
         """Create a literal result from one compiled instruction's static state."""
         if attributes is None:
@@ -191,6 +207,9 @@ class LiteralResultInstruction:
             base_uri=instruction.base_uri,
             namespace_aliases=namespace_aliases or {},
             annotation=annotation,
+            validation=validation,
+            type_name=type_name,
+            schema_pool=schema_pool,
         )
 
 
@@ -201,6 +220,9 @@ class CopyInstruction:
     source: XdmNode
     deep: bool = True
     copy_namespaces: bool = True
+    validation: str | None = None
+    type_name: str | None = None
+    schema_pool: object = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.source, XdmNode):
@@ -218,6 +240,8 @@ class DocumentInstruction:
     base_uri: str | None = None
     final_output: bool = False
     schema_pool: object = None
+    validation: str | None = None
+    type_name: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "content", tuple(self.content))
@@ -233,6 +257,8 @@ class TemporaryTreeInstruction:
     document_uri: str | None = None
     base_uri: str | None = None
     schema_pool: object = None
+    validation: str | None = None
+    type_name: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "content", tuple(self.content))
@@ -389,6 +415,9 @@ def _construct_element(
     annotation: XdmAnnotation | None,
     prefix: str | None,
     namespace_aliases: Mapping[str, str] | None = None,
+    validation: str | None = None,
+    type_name: str | None = None,
+    schema_pool: object = None,
 ) -> XdmSequence:
     builder = ResultBuilder.temporary(base_uri=base_uri)
     with builder.transaction():
@@ -404,6 +433,13 @@ def _construct_element(
         builder.append(construct_sequence(content))
         element = builder.root.root_element
         builder.to_tree()
+    if validation is not None or type_name is not None:
+        validate_constructed(
+            element,
+            validation=validation or "strip",
+            type_name=type_name,
+            schema_pool=schema_pool,
+        )
     return (element,)
 
 
@@ -443,6 +479,8 @@ def _construct_document(
     base_uri: str | None,
     final_output: bool,
     schema_pool: object,
+    validation: str | None = None,
+    type_name: str | None = None,
 ) -> XdmSequence:
     builder = ResultBuilder.document(
         document_uri=document_uri,
@@ -453,6 +491,13 @@ def _construct_document(
     with builder.transaction():
         builder.append(construct_sequence(content))
         document = builder.to_tree()
+    if validation is not None or type_name is not None:
+        validate_delivered(
+            document,
+            validation=validation or "strip",
+            type_name=type_name,
+            schema_pool=schema_pool,
+        )
     return (document,)
 
 
@@ -462,14 +507,21 @@ def construct_instruction(instruction: ConstructionInstruction) -> XdmSequence:
         return (ResultBuilder.temporary().text_node(instruction.value),)
     if isinstance(instruction, AttributeInstruction):
         builder = ResultBuilder.temporary()
-        return (
-            builder.attribute_node(
-                instruction.name,
-                instruction.value,
-                prefix=instruction.prefix,
-                annotation=instruction.annotation,
-            ),
+        attribute = builder.attribute_node(
+            instruction.name,
+            instruction.value,
+            prefix=instruction.prefix,
+            annotation=instruction.annotation,
         )
+        if instruction.validation is not None or instruction.type_name is not None:
+            validate_constructed(
+                attribute,
+                validation=instruction.validation or "strip",
+                type_name=instruction.type_name,
+                schema_pool=instruction.schema_pool,
+                operation="attribute",
+            )
+        return (attribute,)
     if isinstance(instruction, NamespaceInstruction):
         builder = ResultBuilder.temporary()
         return (builder.namespace_node(instruction.prefix, instruction.uri),)
@@ -493,6 +545,9 @@ def construct_instruction(instruction: ConstructionInstruction) -> XdmSequence:
             base_uri=instruction.base_uri,
             annotation=instruction.annotation,
             prefix=instruction.prefix,
+            validation=instruction.validation,
+            type_name=instruction.type_name,
+            schema_pool=instruction.schema_pool,
         )
     if isinstance(instruction, LiteralResultInstruction):
         return _construct_element(
@@ -504,6 +559,9 @@ def construct_instruction(instruction: ConstructionInstruction) -> XdmSequence:
             annotation=instruction.annotation,
             prefix=instruction.prefix,
             namespace_aliases=instruction.namespace_aliases,
+            validation=instruction.validation,
+            type_name=instruction.type_name,
+            schema_pool=instruction.schema_pool,
         )
     if isinstance(instruction, CopyInstruction):
         builder = ResultBuilder.temporary(base_uri=instruction.source.base_uri)
@@ -513,6 +571,22 @@ def construct_instruction(instruction: ConstructionInstruction) -> XdmSequence:
                 deep=instruction.deep,
                 copy_namespaces=instruction.copy_namespaces,
             )
+        if instruction.validation is not None or instruction.type_name is not None:
+            if copied.kind is NodeKind.DOCUMENT:
+                validate_delivered(
+                    cast(XdmDocument, copied),
+                    validation=instruction.validation or "strip",
+                    type_name=instruction.type_name,
+                    schema_pool=instruction.schema_pool,
+                )
+            else:
+                validate_constructed(
+                    copied,
+                    validation=instruction.validation or "strip",
+                    type_name=instruction.type_name,
+                    schema_pool=instruction.schema_pool,
+                    operation="copy",
+                )
         return (copied,)
     if isinstance(instruction, DocumentInstruction):
         return _construct_document(
@@ -521,6 +595,8 @@ def construct_instruction(instruction: ConstructionInstruction) -> XdmSequence:
             base_uri=instruction.base_uri,
             final_output=instruction.final_output,
             schema_pool=instruction.schema_pool,
+            validation=instruction.validation,
+            type_name=instruction.type_name,
         )
     if isinstance(instruction, TemporaryTreeInstruction):
         return _construct_document(
@@ -529,6 +605,8 @@ def construct_instruction(instruction: ConstructionInstruction) -> XdmSequence:
             base_uri=instruction.base_uri,
             final_output=False,
             schema_pool=instruction.schema_pool,
+            validation=instruction.validation,
+            type_name=instruction.type_name,
         )
     raise TypeError(f"unknown construction instruction {type(instruction).__name__}")
 

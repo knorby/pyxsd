@@ -764,7 +764,7 @@ def test_attribute_instruction_name_errors_and_prefixes() -> None:
         </xsl:template>
         """
     )
-    assert error_code(lambda: transform(unbound, b"<doc/>")) == "XTDE0850"
+    assert error_code(lambda: transform(unbound, b"<doc/>")) == "XTDE0860"
 
     prefixed = stylesheet(
         """

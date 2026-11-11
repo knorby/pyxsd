@@ -1793,14 +1793,17 @@ def test_rule_captures_a_global_package_variable() -> None:
     assert values(transform(stylesheet(body), SOURCE)) == ("10", "20", "30")
 
 
-def test_copy_of_is_not_claimed_by_this_slice() -> None:
+def test_copy_of_is_supported_by_this_slice() -> None:
     body = """
         <xsl:template name="main">
           <xsl:copy-of select="/doc"/>
         </xsl:template>
     """
-    with pytest.raises(XsltError, match="xsl:copy-of"):
-        transform(stylesheet(body), SOURCE, initial_template="main")
+    result = transform(stylesheet(body), SOURCE, initial_template="main")
+
+    assert result.principal[0].kind is NodeKind.ELEMENT
+    assert result.principal_tree.root_element.name == "doc"
+    assert result.principal_tree.root_element.string_value == "123"
 
 
 # ---------------------------------------------------------------------------

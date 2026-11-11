@@ -125,6 +125,11 @@ class ResultEntry:
             raise TypeError("result messages must be Message values")
         object.__setattr__(self, "messages", messages)
 
+    @property
+    def document(self) -> XdmDocument | None:
+        """The separately delivered document, when sequence normalization built one."""
+        return self.tree
+
 
 @dataclass(frozen=True, slots=True)
 class TransformationResult:

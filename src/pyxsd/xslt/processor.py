@@ -119,6 +119,7 @@ from pyxsd.xslt.runtime.accumulators import (
     parse_accumulator_names,
     same_context_accumulator_call,
 )
+from pyxsd.xslt.runtime.builder import ResultBuilder, validate_constructed, validate_delivered
 from pyxsd.xslt.runtime.evaluate import (
     DynamicExpressionCache,
     StaticContextIdentity,
@@ -208,6 +209,8 @@ _AbsentType = object
 _INHERIT = object()
 _DELIVERIES = frozenset({"stylesheet", "raw", "document"})
 _VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
+UNTYPED_TYPE = "{http://www.w3.org/2001/XMLSchema}untyped"
+ANY_TYPE = "{http://www.w3.org/2001/XMLSchema}anyType"
 
 #: Literal-result attributes whose names are XSLT-defined metadata, not output.
 _LITERAL_XSLT_ATTRIBUTES = frozenset(
@@ -367,6 +370,51 @@ class _LiteralPlan:
     children: tuple[_Plan, ...]
     namespaces: tuple[tuple[str, str], ...]
     attribute_sets: tuple[ComponentReference, ...] = ()
+    validation: str = "strip"
+    type_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ElementPlan:
+    instruction: Instruction
+    name: CompiledValueTemplate
+    namespace: CompiledValueTemplate | None
+    namespaces: Mapping[str, str]
+    children: tuple[_Plan, ...]
+    attribute_sets: tuple[ComponentReference, ...] = ()
+    inherit_namespaces: bool = True
+    validation: str = "strip"
+    type_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _DocumentPlan:
+    instruction: Instruction
+    children: tuple[_Plan, ...]
+    validation: str = "strip"
+    type_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _CopyPlan:
+    instruction: Instruction
+    select: CompiledExpression | None
+    children: tuple[_Plan, ...]
+    copy_namespaces: bool = True
+    inherit_namespaces: bool = True
+    attribute_sets: tuple[ComponentReference, ...] = ()
+    validation: str = "strip"
+    type_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _CopyOfPlan:
+    instruction: Instruction
+    select: CompiledExpression
+    copy_namespaces: bool = True
+    copy_accumulators: bool = False
+    validation: str = "strip"
+    type_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,6 +446,10 @@ class _AttributePlan:
     namespaces: Mapping[str, str]
     expression: CompiledExpression | None
     children: tuple[_Plan, ...]
+    namespace: CompiledValueTemplate | None = None
+    separator: CompiledValueTemplate | str | None = None
+    validation: str = "strip"
+    type_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -654,6 +706,8 @@ class _ResultDocumentPlan:
     format: str | CompiledValueTemplate | None
     attributes: tuple[tuple[str, str | CompiledValueTemplate], ...]
     children: tuple[_Plan, ...]
+    validation: str = "strip"
+    type_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -694,6 +748,10 @@ _Plan: TypeAlias = (
     | _SequencePlan
     | _ValueOfPlan
     | _LiteralPlan
+    | _ElementPlan
+    | _DocumentPlan
+    | _CopyPlan
+    | _CopyOfPlan
     | _ParamPlan
     | _VariablePlan
     | _AttributePlan
@@ -2976,6 +3034,72 @@ def _is_builtin_type_name(name: str) -> bool:
     )
 
 
+def _compile_construction_validation(
+    instruction: Instruction,
+    context: StaticContext,
+    *,
+    label: str,
+    literal: bool = False,
+    attribute: bool = False,
+) -> tuple[str, str | None]:
+    """Resolve one construction instruction's validation and type request."""
+    if literal:
+        type_value = instruction.attribute(f"{{{XSLT_NS}}}type")
+        validation = instruction.attribute(f"{{{XSLT_NS}}}validation")
+    else:
+        type_value = instruction.attribute("type")
+        validation = instruction.attribute("validation")
+    if validation is not None and type_value is not None:
+        raise XsltStaticError(
+            f"{label} type and validation are mutually exclusive",
+            code="XTSE1505",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    if validation is not None and validation.strip() not in _VALIDATION_MODES:
+        raise XsltStaticError(
+            f"{label} has an invalid validation value {validation!r}",
+            code="XTSE0020",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    effective = (
+        validation.strip() if validation is not None else (context.default_validation or "strip")
+    )
+    type_name = (
+        None
+        if type_value is None
+        else _compile_validation_type(type_value, context, instruction, label)
+    )
+    if type_name is not None and attribute:
+        _require_simple_construction_type(type_name, context, instruction, label)
+    return effective, type_name
+
+
+def _require_simple_construction_type(
+    type_name: str,
+    context: StaticContext,
+    instruction: Instruction,
+    label: str,
+) -> None:
+    if type_name in (UNTYPED_TYPE, ANY_TYPE):
+        raise XsltStaticError(
+            f"{label} cannot validate an attribute against a complex type",
+            code="XTSE1530",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    pool = context.schema
+    adapter = pool.get_type(type_name) if pool is not None else None
+    if adapter is not None and not adapter.is_simple():
+        raise XsltStaticError(
+            f"{label} cannot validate an attribute against a complex type",
+            code="XTSE1530",
+            uri=context.uri,
+            location=instruction.location,
+        )
+
+
 def _merge_source_names(sources: tuple[_MergeSourcePlan, ...]) -> tuple[str, ...]:
     """Name each merge source in stylesheet order.
 
@@ -3642,6 +3766,12 @@ def _compile_instruction(
             attributes,
             exclusions,
         )
+        validation, type_name = _compile_construction_validation(
+            instruction,
+            context,
+            label="a literal result element",
+            literal=True,
+        )
         return _LiteralPlan(
             instruction=instruction,
             attributes=tuple(attributes),
@@ -3652,8 +3782,100 @@ def _compile_instruction(
                 for reference in instruction.references
                 if reference.kind == "attribute-set"
             ),
+            validation=validation,
+            type_name=type_name,
         )
     local = instruction.local_name
+    if local == "element":
+        name = instruction.attribute("name")
+        if name is None:
+            raise XsltStaticError(
+                "xsl:element requires a name attribute",
+                code="XTSE0010",
+                uri=context.uri,
+                location=location,
+            )
+        validation, type_name = _compile_construction_validation(
+            instruction,
+            context,
+            label="xsl:element",
+        )
+        return _ElementPlan(
+            instruction=instruction,
+            name=compile_avt(name, context, location=location),
+            namespace=(
+                compile_avt(instruction.attribute("namespace") or "", context, location=location)
+                if instruction.attribute("namespace") is not None
+                else None
+            ),
+            namespaces=instruction.namespaces,
+            children=_compile_sequence(instruction.children, context, module),
+            attribute_sets=tuple(
+                reference
+                for reference in instruction.references
+                if reference.kind == "attribute-set"
+            ),
+            inherit_namespaces=_attribute_yes_no(instruction, "inherit-namespaces", context),
+            validation=validation,
+            type_name=type_name,
+        )
+    if local == "document":
+        validation, type_name = _compile_construction_validation(
+            instruction,
+            context,
+            label="xsl:document",
+        )
+        return _DocumentPlan(
+            instruction=instruction,
+            children=_compile_sequence(instruction.children, context, module),
+            validation=validation,
+            type_name=type_name,
+        )
+    if local == "copy":
+        select = instruction.attribute("select")
+        validation, type_name = _compile_construction_validation(
+            instruction,
+            context,
+            label="xsl:copy",
+        )
+        return _CopyPlan(
+            instruction=instruction,
+            select=(
+                compile_xpath(select, context, location=location) if select is not None else None
+            ),
+            children=_compile_sequence(instruction.children, context, module),
+            copy_namespaces=_attribute_yes_no(instruction, "copy-namespaces", context),
+            inherit_namespaces=_attribute_yes_no(instruction, "inherit-namespaces", context),
+            attribute_sets=tuple(
+                reference
+                for reference in instruction.references
+                if reference.kind == "attribute-set"
+            ),
+            validation=validation,
+            type_name=type_name,
+        )
+    if local == "copy-of":
+        select = instruction.attribute("select")
+        if select is None:
+            raise XsltStaticError(
+                "xsl:copy-of requires a select attribute",
+                code="XTSE0010",
+                uri=context.uri,
+                location=location,
+            )
+        validation, type_name = _compile_construction_validation(
+            instruction,
+            context,
+            label="xsl:copy-of",
+        )
+        return _CopyOfPlan(
+            instruction=instruction,
+            select=compile_xpath(select, context, location=location),
+            copy_namespaces=_attribute_yes_no(instruction, "copy-namespaces", context),
+            copy_accumulators=_attribute_yes_no(instruction, "copy-accumulators", context),
+            validation=validation,
+            type_name=type_name,
+        )
     if local == "sequence":
         select = instruction.attribute("select")
         children = _compile_sequence(instruction.children, context, module)
@@ -3857,6 +4079,13 @@ def _compile_instruction(
                 uri=context.uri,
                 location=location,
             )
+        validation, type_name = _compile_construction_validation(
+            instruction,
+            context,
+            label="xsl:attribute",
+            attribute=True,
+        )
+        separator = instruction.attribute("separator")
         return _AttributePlan(
             instruction=instruction,
             name=compile_avt(name, context, location=location),
@@ -3865,6 +4094,16 @@ def _compile_instruction(
                 compile_xpath(select, context, location=location) if select is not None else None
             ),
             children=children,
+            namespace=(
+                compile_avt(instruction.attribute("namespace") or "", context, location=location)
+                if instruction.attribute("namespace") is not None
+                else None
+            ),
+            separator=(
+                compile_avt(separator, context, location=location) if separator is not None else " "
+            ),
+            validation=validation,
+            type_name=type_name,
         )
     if local in ("next-match", "apply-imports"):
         return _OverridingPlan(
@@ -3894,6 +4133,11 @@ def _compile_instruction(
                     compile_avt(attribute.value, context, location=location),
                 )
             )
+        validation, type_name = _compile_construction_validation(
+            instruction,
+            context,
+            label="xsl:result-document",
+        )
         return _ResultDocumentPlan(
             instruction=instruction,
             href=(compile_avt(href, context, location=location) if href is not None else ""),
@@ -3912,6 +4156,8 @@ def _compile_instruction(
             ),
             attributes=tuple(extra_attributes),
             children=_compile_sequence(instruction.children, context, module),
+            validation=validation,
+            type_name=type_name,
         )
     if local == "analyze-string":
         return _compile_analyze_string(instruction, context, module)
@@ -4383,6 +4629,56 @@ def _expanded_name(name: str, namespaces: Mapping[str, str]) -> str:
     if uri is None:
         return name
     return f"{{{uri}}}{local}"
+
+
+def _constructed_qname(
+    lexical: str,
+    namespace_value: str | None,
+    namespaces: Mapping[str, str],
+    *,
+    default_namespace: bool,
+    code: str,
+    namespace_code: str | None = None,
+    prefix_code: str | None = None,
+) -> str:
+    """Resolve a dynamically constructed element or attribute name."""
+    text = lexical.strip()
+    if not text:
+        raise XsltDynamicError("a constructed name must not be empty", code=code)
+    if text.startswith("Q{"):
+        close = text.find("}")
+        if close < 0 or not is_ncname(text[close + 1 :]):
+            raise XsltDynamicError(f"the constructed name {text!r} is not a valid QName", code=code)
+        namespace = text[2:close]
+        local = text[close + 1 :]
+        return f"{{{namespace}}}{local}" if namespace else local
+    if text.startswith("{"):
+        return text
+    prefix, separator, local = text.partition(":")
+    if not separator:
+        prefix, local = "", text
+    if not is_ncname(local) or (separator and not is_ncname(prefix)):
+        raise XsltDynamicError(f"the constructed name {text!r} is not a valid QName", code=code)
+    if namespace_value is not None:
+        if namespace_value == "http://www.w3.org/2000/xmlns/":
+            raise XsltDynamicError(
+                "the xmlns namespace cannot be used for a constructed name",
+                code=namespace_code or code,
+            )
+        return f"{{{namespace_value}}}{local}" if namespace_value else local
+    if separator:
+        uri = namespaces.get(prefix)
+        if uri is None:
+            raise XsltDynamicError(
+                f"the namespace prefix {prefix!r} is not bound in the static context",
+                code=prefix_code or code,
+            )
+        return f"{{{uri}}}{local}"
+    if default_namespace:
+        uri = namespaces.get("")
+        if uri:
+            return f"{{{uri}}}{text}"
+    return text
 
 
 def _namespace(name: str) -> str | None:
@@ -5559,6 +5855,11 @@ class _Invocation(Transformation):
             )
         ):
             tree = _build_result_tree(sequence, output_uri=self.options.output_uri)
+            tree = validate_delivered(
+                tree,
+                validation=self.package.default_validation or "strip",
+                schema_pool=self._package_schema_pool(self.package.name),
+            )
         entry = ResultEntry(
             sequence,
             output_uri=self.options.output_uri,
@@ -7624,10 +7925,12 @@ class _Invocation(Transformation):
             rule_context=self._rule_context(frame),
             original_functions=self._original_functions(frame),
         )
+        resolved_mode = self._resolve_mode(plan.mode, frame.mode, frame.package)
+        self._check_typed_mode(items, resolved_mode, frame.package)
         template, tunnel = self._plan_parameters(plan.parameters, frame)
         child = self._apply_frame(
             items,
-            self._resolve_mode(plan.mode, frame.mode, frame.package),
+            resolved_mode,
             template,
             {**self._frame_tunnel(frame), **tunnel},
             tail=plan.tail,
@@ -7720,6 +8023,36 @@ class _Invocation(Transformation):
         if declaration is None:
             return {}
         return declaration.properties
+
+    def _check_typed_mode(
+        self,
+        items: XdmSequence,
+        mode: str | None,
+        package_name: str | None,
+    ) -> None:
+        typed = self._mode_properties(mode, package_name).get("typed", "unspecified")
+        if typed == "unspecified":
+            return
+        for item in items:
+            if not isinstance(item, XdmNode) or item.kind not in (
+                NodeKind.ELEMENT,
+                NodeKind.ATTRIBUTE,
+            ):
+                continue
+            untyped = item.type_name in (
+                UNTYPED_TYPE,
+                "{http://www.w3.org/2001/XMLSchema}untypedAtomic",
+            )
+            if typed in ("yes", "strict", "lax") and untyped:
+                raise XsltDynamicError(
+                    "an untyped node cannot be processed in a typed mode",
+                    code="XTTE3100",
+                )
+            if typed == "no" and not untyped:
+                raise XsltDynamicError(
+                    "a typed node cannot be processed in an untyped mode",
+                    code="XTTE3110",
+                )
 
     def _pattern_environment(self, rule: TemplateRule) -> ExpressionEnvironment:
         body = cast(_BodyPlan, rule.template)
@@ -8682,6 +9015,54 @@ class _Invocation(Transformation):
                     original_functions=original_functions,
                 ),
             )
+        if isinstance(plan, _ElementPlan):
+            return (
+                self._element_value(
+                    plan,
+                    focus,
+                    locals_,
+                    final_output,
+                    package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
+                    rule_context=rule_context,
+                    original_functions=original_functions,
+                ),
+            )
+        if isinstance(plan, _DocumentPlan):
+            return (
+                self._document_value(
+                    plan,
+                    focus,
+                    locals_,
+                    final_output,
+                    package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
+                    rule_context=rule_context,
+                    original_functions=original_functions,
+                ),
+            )
+        if isinstance(plan, _CopyPlan):
+            return self._copy_value(
+                plan,
+                focus,
+                locals_,
+                final_output,
+                package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+        if isinstance(plan, _CopyOfPlan):
+            return self._copy_of_value(
+                plan,
+                focus,
+                locals_,
+                package_name,
+                original_functions=original_functions,
+            )
         if isinstance(plan, _ChoosePlan):
             branch = None
             for test, candidate in plan.branches:
@@ -8874,6 +9255,8 @@ class _Invocation(Transformation):
                 rule_context=rule_context,
                 original_functions=original_functions,
             )
+            resolved_mode = self._resolve_mode(plan.mode, mode, package_name)
+            self._check_typed_mode(items, resolved_mode, package_name)
             template, tunnel = self._plan_parameters_for(
                 plan.parameters,
                 focus,
@@ -8886,7 +9269,7 @@ class _Invocation(Transformation):
             )
             return self._apply_templates(
                 items,
-                self._resolve_mode(plan.mode, mode, package_name),
+                resolved_mode,
                 template,
                 {**(tunnel_parameters or {}), **tunnel},
                 package_name=package_name,
@@ -9604,7 +9987,296 @@ class _Invocation(Transformation):
             original_functions=original_functions,
         )
         _append_complex_content(factory, element, content, allow_attributes=True)
+        validate_constructed(
+            element,
+            validation=plan.validation,
+            type_name=plan.type_name,
+            schema_pool=self._package_schema_pool(package_name),
+        )
         return element
+
+    def _element_value(
+        self,
+        plan: _ElementPlan,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        final_output: bool,
+        package_name: str | None,
+        *,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
+        rule_context: _RuleContext | None = None,
+        original_functions: Mapping[int, Component] | None = None,
+    ) -> XdmNode:
+        lexical = self._value_source(plan.name, focus, locals_, package_name)
+        namespace_value = (
+            None
+            if plan.namespace is None
+            else self._value_source(plan.namespace, focus, locals_, package_name)
+        )
+        name = _constructed_qname(
+            lexical,
+            namespace_value,
+            plan.namespaces,
+            default_namespace=True,
+            code="XTDE0820",
+            namespace_code="XTDE0835",
+            prefix_code="XTDE0830",
+        )
+        attributes: list[tuple[str, str]] = []
+        for reference in plan.attribute_sets:
+            component = self._resolve_attribute_set(reference, package_name)
+            attributes.extend(
+                (attribute.name or "", attribute.string_value)
+                for attribute in self._attribute_set_attributes(
+                    component,
+                    focus,
+                    package_name,
+                )
+                if attribute.kind is NodeKind.ATTRIBUTE
+            )
+        builder = ResultBuilder.temporary(base_uri=plan.instruction.base_uri)
+        with builder.transaction():
+            builder.element(
+                name,
+                attributes=tuple(attributes),
+                namespaces=dict(plan.namespaces),
+                base_uri=plan.instruction.base_uri,
+                inherit_namespaces=plan.inherit_namespaces,
+            )
+            builder.append(
+                self._execute_plans(
+                    plan.children,
+                    focus=focus,
+                    locals_=locals_,
+                    final_output=final_output,
+                    package_name=package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
+                    rule_context=rule_context,
+                    original_functions=original_functions,
+                )
+            )
+            element = builder.root.root_element
+            builder.to_tree()
+        validate_constructed(
+            element,
+            validation=plan.validation,
+            type_name=plan.type_name,
+            schema_pool=self._package_schema_pool(package_name),
+        )
+        return element
+
+    def _document_value(
+        self,
+        plan: _DocumentPlan,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        final_output: bool,
+        package_name: str | None,
+        *,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
+        rule_context: _RuleContext | None = None,
+        original_functions: Mapping[int, Component] | None = None,
+    ) -> XdmDocument:
+        pool = self._package_schema_pool(package_name)
+        builder = ResultBuilder.document(
+            base_uri=plan.instruction.base_uri,
+            schema_pool=pool,
+            final_output=False,
+        )
+        with builder.transaction():
+            builder.append(
+                self._execute_plans(
+                    plan.children,
+                    focus=focus,
+                    locals_=locals_,
+                    final_output=final_output,
+                    package_name=package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
+                    rule_context=rule_context,
+                    original_functions=original_functions,
+                )
+            )
+            document = builder.to_tree()
+        return validate_delivered(
+            document,
+            validation=plan.validation,
+            type_name=plan.type_name,
+            schema_pool=pool,
+        )
+
+    def _copy_value(
+        self,
+        plan: _CopyPlan,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        final_output: bool,
+        package_name: str | None,
+        *,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
+        rule_context: _RuleContext | None = None,
+        original_functions: Mapping[int, Component] | None = None,
+    ) -> XdmSequence:
+        if plan.select is not None:
+            selected = self._evaluate(
+                plan.select,
+                focus,
+                locals_,
+                package_name,
+                original_functions=original_functions,
+            )
+            if not selected:
+                return ()
+            if len(selected) != 1:
+                raise XsltDynamicError(
+                    "xsl:copy select must evaluate to at most one item",
+                    code="XPTY0004",
+                )
+            item = selected[0]
+        else:
+            if focus.item is None:
+                raise XsltDynamicError("xsl:copy requires a context item", code="XPDY0002")
+            item = focus.item
+        if not isinstance(item, XdmNode):
+            return (item,)
+        pool = self._package_schema_pool(package_name)
+        factory = _NodeFactory(base_uri=item.base_uri)
+        if item.kind is NodeKind.DOCUMENT:
+            content = self._execute_plans(
+                plan.children,
+                focus=focus,
+                locals_=locals_,
+                final_output=final_output,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+            if content:
+                document = factory.document
+                _append_complex_content(factory, document, content, allow_attributes=False)
+                document._finalize_document_order()
+            else:
+                document = cast(
+                    XdmDocument,
+                    factory.clone(
+                        item,
+                        parent=None,
+                        deep=True,
+                        copy_namespaces=plan.copy_namespaces,
+                    ),
+                )
+            return (
+                validate_delivered(
+                    document,
+                    validation=plan.validation,
+                    type_name=plan.type_name,
+                    schema_pool=pool,
+                ),
+            )
+        clone = factory.clone(
+            item,
+            parent=None,
+            deep=False,
+            copy_namespaces=plan.copy_namespaces,
+        )
+        if item.kind is NodeKind.ELEMENT:
+            attributes: list[XdmNode] = []
+            for reference in plan.attribute_sets:
+                component = self._resolve_attribute_set(reference, package_name)
+                attributes.extend(self._attribute_set_attributes(component, focus, package_name))
+            if attributes:
+                _append_complex_content(factory, clone, attributes, allow_attributes=True)
+            content = self._execute_plans(
+                plan.children,
+                focus=focus,
+                locals_=locals_,
+                final_output=final_output,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+            if content:
+                _append_complex_content(factory, clone, content, allow_attributes=True)
+        validate_constructed(
+            clone,
+            validation=plan.validation,
+            type_name=plan.type_name,
+            schema_pool=pool,
+            operation="copy",
+        )
+        return (clone,)
+
+    def _copy_of_value(
+        self,
+        plan: _CopyOfPlan,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
+        *,
+        original_functions: Mapping[int, Component] | None = None,
+    ) -> XdmSequence:
+        items = self._evaluate(
+            plan.select,
+            focus,
+            locals_,
+            package_name,
+            original_functions=original_functions,
+        )
+        pool = self._package_schema_pool(package_name)
+        result: list[XdmItem] = []
+        for item in items:
+            if not isinstance(item, XdmNode):
+                result.append(item)
+                continue
+            self._check_copy_type(item, plan.type_name, pool)
+            clone = _NodeFactory().clone(
+                item,
+                parent=None,
+                deep=True,
+                copy_namespaces=plan.copy_namespaces,
+            )
+            if clone.kind is NodeKind.DOCUMENT:
+                result.append(
+                    validate_delivered(
+                        cast(XdmDocument, clone),
+                        validation=plan.validation,
+                        type_name=plan.type_name,
+                        schema_pool=pool,
+                    )
+                )
+                continue
+            validate_constructed(
+                clone,
+                validation=plan.validation,
+                type_name=plan.type_name,
+                schema_pool=pool,
+                operation="copy-of",
+            )
+            result.append(clone)
+        return tuple(result)
+
+    def _check_copy_type(
+        self,
+        item: XdmNode,
+        type_name: str | None,
+        schema_pool: Any,
+    ) -> None:
+        if type_name is None or item.kind is not NodeKind.ATTRIBUTE:
+            return
+        adapter = schema_pool.get_type(type_name) if schema_pool is not None else None
+        if adapter is not None and not adapter.is_simple():
+            raise XsltDynamicError(
+                "a copy of an attribute cannot be validated against a complex type",
+                code="XTTE1535",
+            )
 
     def _variable_value(
         self,
@@ -9666,19 +10338,23 @@ class _Invocation(Transformation):
         original_functions: Mapping[int, Component] | None = None,
     ) -> XdmSequence:
         lexical = self._value_source(plan.name, focus, locals_, package_name)
-        prefix, separator, local = lexical.partition(":")
+        namespace_value = (
+            None
+            if plan.namespace is None
+            else self._value_source(plan.namespace, focus, locals_, package_name)
+        )
+        prefix, separator, _ = lexical.partition(":")
         if not lexical:
             raise XsltDynamicError("an attribute name must not be empty", code="XTDE0850")
-        if separator:
-            uri = plan.namespaces.get(prefix)
-            if uri is None:
-                raise XsltDynamicError(
-                    f"the attribute prefix {prefix!r} is not bound",
-                    code="XTDE0850",
-                )
-            name = f"{{{uri}}}{local}"
-        else:
-            name = lexical
+        name = _constructed_qname(
+            lexical,
+            namespace_value,
+            plan.namespaces,
+            default_namespace=False,
+            code="XTDE0850",
+            namespace_code="XTDE0865",
+            prefix_code="XTDE0860",
+        )
         if plan.expression is not None:
             value = self._evaluate(
                 plan.expression,
@@ -9699,11 +10375,24 @@ class _Invocation(Transformation):
                 rule_context=rule_context,
                 original_functions=original_functions,
             )
-        return construct_attribute(
+        separator_value = (
+            self._value_source(plan.separator, focus, locals_, package_name)
+            if plan.separator is not None
+            else " "
+        )
+        attributes = construct_attribute(
             name,
-            _simple_content_string(value, " "),
+            _simple_content_string(value, separator_value),
             prefix=prefix if separator else None,
         )
+        validate_constructed(
+            cast(XdmNode, attributes[0]),
+            validation=plan.validation,
+            type_name=plan.type_name,
+            schema_pool=self._package_schema_pool(package_name),
+            operation="attribute",
+        )
+        return attributes
 
     def _execute_overriding(
         self,
@@ -9861,8 +10550,15 @@ class _Invocation(Transformation):
                 tunnel_parameters=tunnel_parameters,
             )
             tree = None
+            pool = self._package_schema_pool(package_name)
             if self._build_tree(build_tree, effective_method):
                 tree = _build_result_tree(sequence, output_uri=uri)
+                tree = validate_delivered(
+                    tree,
+                    validation=plan.validation,
+                    type_name=plan.type_name,
+                    schema_pool=pool,
+                )
             serialization = dict(base_attributes)
             serialization.update(evaluated)
             serialization["method"] = effective_method

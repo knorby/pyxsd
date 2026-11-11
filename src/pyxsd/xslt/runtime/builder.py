@@ -24,11 +24,17 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal
+from typing import Any, Literal, cast
 
 from pyxsd.source_spans import SourceIndex
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmSequence
 from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmDocument, XdmNode
+from pyxsd.xdm.validation import (
+    ConstructedValidationError,
+    ValidationRequest,
+    validate_document,
+    validate_occurrence,
+)
 from pyxsd.xslt.errors import XsltDynamicError
 
 __all__ = [
@@ -37,7 +43,21 @@ __all__ = [
     "ResultBuilder",
     "TransactionExtent",
     "build_result_tree",
+    "validate_constructed",
+    "validate_delivered",
+    "validation_code",
 ]
+
+_VALIDATION_CODES = {
+    "invalid": "XTTE1510",
+    "unknown": "XTTE1512",
+    "lax-invalid": "XTTE1515",
+    "type": "XTTE1540",
+    "qname": "XTTE1545",
+    "document-shape": "XTTE1550",
+    "document-constraint": "XTTE1555",
+    "copy-type": "XTTE1535",
+}
 
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 XMLNS_NS = "http://www.w3.org/2000/xmlns/"
@@ -55,6 +75,66 @@ _NCNAME = re.compile(r"^[^\W\d][\w.\-]*$", re.UNICODE)
 
 def _dynamic(message: str, code: str) -> XsltDynamicError:
     return XsltDynamicError(message, code=code)
+
+
+def validation_code(error: ConstructedValidationError) -> str:
+    """The exact XSLT error code for one constructed-validation failure."""
+    return _VALIDATION_CODES[error.reason]
+
+
+def _raise_validation_error(error: ConstructedValidationError) -> None:
+    raise XsltDynamicError(
+        str(error),
+        code=validation_code(error),
+        cause=error,
+    ) from error
+
+
+def validate_constructed(
+    node: XdmNode,
+    *,
+    validation: str = "strip",
+    type_name: str | None = None,
+    schema_pool: Any = None,
+    operation: str = "element",
+) -> XdmNode:
+    """Validate one constructed node and return it unchanged.
+
+    This is the construction boundary used by the builder, the instruction
+    layer, and the processor.  The node is mutated in place with its schema
+    annotation and any defaulted attributes/nodes; no serialized result is
+    validated.
+    """
+    request = ValidationRequest(validation, type_name)
+    try:
+        if node.kind is NodeKind.DOCUMENT:
+            validate_document(cast(XdmDocument, node), request, schema_pool=schema_pool)
+        else:
+            validate_occurrence(
+                node,
+                request,
+                schema_pool=schema_pool,
+                operation=operation,  # type: ignore[arg-type]
+            )
+    except ConstructedValidationError as error:
+        _raise_validation_error(error)
+    return node
+
+
+def validate_delivered(
+    document: XdmDocument,
+    *,
+    validation: str = "strip",
+    type_name: str | None = None,
+    schema_pool: Any = None,
+) -> XdmDocument:
+    """Apply delivery-boundary validation to a normalized document."""
+    request = ValidationRequest(validation, type_name)
+    try:
+        validate_document(document, request, schema_pool=schema_pool)
+    except ConstructedValidationError as error:
+        _raise_validation_error(error)
+    return document
 
 
 def _is_ncname(value: str) -> bool:
