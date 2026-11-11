@@ -698,15 +698,12 @@ def _sort_numeric_modes(
     return tuple(replace(key, numeric_mode=mode) for key, mode in zip(keys, modes, strict=True))
 
 
-def sort_records(
+def _sort_records_with_keys(
     records: Sequence[Any],
     keys: tuple[ResolvedSortKey, ...],
     key_values: Sequence[tuple[XdmSequence, ...]],
 ) -> tuple[Any, ...]:
-    """Sort *records* stably by their pre-evaluated sort key values."""
-    if len(records) != len(key_values):
-        raise ValueError("each record requires one sort key tuple")
-    keys = _sort_numeric_modes(keys, key_values)
+    """Sort records stably with already-resolved comparison keys."""
     decorated = list(enumerate(zip(records, key_values, strict=True)))
 
     def compare(left: tuple[int, Any], right: tuple[int, Any]) -> int:
@@ -721,6 +718,21 @@ def sort_records(
 
     decorated.sort(key=cmp_to_key(compare))
     return tuple(record for _, (record, _) in decorated)
+
+
+def sort_records(
+    records: Sequence[Any],
+    keys: tuple[ResolvedSortKey, ...],
+    key_values: Sequence[tuple[XdmSequence, ...]],
+) -> tuple[Any, ...]:
+    """Sort *records* stably by their pre-evaluated sort key values."""
+    if len(records) != len(key_values):
+        raise ValueError("each record requires one sort key tuple")
+    return _sort_records_with_keys(
+        records,
+        _sort_numeric_modes(keys, key_values),
+        key_values,
+    )
 
 
 def _numeric_equal(left: XdmAtomic, right: XdmAtomic) -> bool:
@@ -971,13 +983,21 @@ def check_merge_order(
 def sort_merge_input(
     items: Sequence[MergeItem],
     keys: tuple[ResolvedSortKey, ...],
+    *,
+    comparison_keys: tuple[ResolvedSortKey, ...] | None = None,
 ) -> tuple[MergeItem, ...]:
-    """Sort one input sequence by its composite merge key values."""
-    return sort_records(
-        tuple(items),
-        keys,
-        tuple(item.key for item in items),
+    """Sort one input sequence by its composite merge key values.
+
+    Without explicit ``comparison_keys`` the numeric mode is selected across
+    this sequence.  ``_run_merge`` supplies the merge-wide promoted tuple so a
+    ``sort-before-merge`` sequence is ordered with the same ``lt``
+    implementation used for its subsequent order check and group merge.
+    """
+    key_values = tuple(item.key for item in items)
+    effective = (
+        comparison_keys if comparison_keys is not None else _sort_numeric_modes(keys, key_values)
     )
+    return _sort_records_with_keys(tuple(items), effective, key_values)
 
 
 def merge_groups(

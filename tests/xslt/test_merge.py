@@ -627,6 +627,80 @@ def test_merge_sort_before_merge_sorts_each_input_sequence() -> None:
     assert [entry.attributes[0].string_value for entry in entries] == ["1", "2", "3"]
 
 
+def test_sort_before_merge_uses_merge_wide_promoted_numeric_order() -> None:
+    sort_source = "(xs:float(1), xs:decimal('0.1000000001'), xs:decimal('0.1'))"
+    cases = (
+        (
+            f"""
+            <xsl:merge-source select="{sort_source}" sort-before-merge="yes">
+              <xsl:merge-key select="."/>
+            </xsl:merge-source>
+            <xsl:merge-source select="xs:double(2)">
+              <xsl:merge-key select="."/>
+            </xsl:merge-source>
+            """
+        ),
+        (
+            f"""
+            <xsl:merge-source select="xs:double(2)">
+              <xsl:merge-key select="."/>
+            </xsl:merge-source>
+            <xsl:merge-source select="{sort_source}" sort-before-merge="yes">
+              <xsl:merge-key select="."/>
+            </xsl:merge-source>
+            """
+        ),
+    )
+    for sources in cases:
+        body = f"""
+            <xsl:template name="main">
+              <out>
+                <xsl:merge>
+                  {sources}
+                  <xsl:merge-action>
+                    <entry value="{{current-merge-key()}}"
+                      type="{{if (current-merge-key() instance of xs:double)
+                        then 'double'
+                        else if (current-merge-key() instance of xs:float)
+                        then 'float' else 'decimal'}}"/>
+                  </xsl:merge-action>
+                </xsl:merge>
+              </out>
+            </xsl:template>
+        """
+        result = transform(stylesheet(body), initial_template="main")
+        entries = element_children(result.principal_tree.root_element)
+        assert [
+            (entry.attributes[0].string_value, entry.attributes[1].string_value)
+            for entry in entries
+        ] == [
+            ("0.1", "decimal"),
+            ("0.1000000001", "decimal"),
+            ("1.0", "float"),
+            ("2.0", "double"),
+        ]
+
+
+def test_sort_merge_input_accepts_explicit_promoted_comparison_keys() -> None:
+    from pyxsd.xslt.runtime.iteration import ResolvedSortKey
+
+    keys = (ResolvedSortKey(),)
+    promoted = (ResolvedSortKey(numeric_mode="double"),)
+    items = (
+        MergeItem(XdmAtomic.float(1.0), 0, 0, 1, ((XdmAtomic.float(1.0),),)),
+        MergeItem(
+            XdmAtomic.decimal("0.1000000001"),
+            0,
+            0,
+            2,
+            ((XdmAtomic.decimal("0.1000000001"),),),
+        ),
+        MergeItem(XdmAtomic.decimal("0.1"), 0, 0, 3, ((XdmAtomic.decimal("0.1"),),)),
+    )
+    ordered = sort_merge_input(items, keys, comparison_keys=promoted)
+    assert [item.item.lexical for item in ordered] == ["0.1", "0.1000000001", "1.0"]
+
+
 def test_merge_unsorted_input_is_xtde2220() -> None:
     body = """
         <xsl:template name="main">

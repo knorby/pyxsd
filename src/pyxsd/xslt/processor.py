@@ -4734,6 +4734,7 @@ class _Invocation(Transformation):
     ) -> XdmSequence:
         resolved = self._merge_resolved_keys(plan.sources, focus, locals_, package_name)
         inputs: list[tuple[MergeItem, ...]] = []
+        sort_before_merge: list[bool] = []
         for source_index, source in enumerate(plan.sources):
             for anchor_index, sequence in enumerate(
                 self._merge_input_sequences(
@@ -4761,10 +4762,16 @@ class _Invocation(Transformation):
                     )
                     for position, item in enumerate(sequence, start=1)
                 )
-                if source.sort_before_merge:
-                    items = sort_merge_input(items, resolved)
                 inputs.append(items)
+                sort_before_merge.append(source.sort_before_merge)
         comparison_keys = promote_merge_keys(inputs, resolved)
+        for index, input_sequence in enumerate(inputs):
+            if sort_before_merge[index]:
+                inputs[index] = sort_merge_input(
+                    input_sequence,
+                    resolved,
+                    comparison_keys=comparison_keys,
+                )
         for input_sequence in inputs:
             check_merge_order(input_sequence, resolved, comparison_keys=comparison_keys)
         groups = merge_groups(inputs, resolved, comparison_keys=comparison_keys)
