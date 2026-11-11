@@ -61,6 +61,32 @@ TYPED_INVOICE = (
 ).encode()
 UNTYPED_INVOICE = b"<Invoice><amount>12.50</amount></Invoice>"
 
+PRICE_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
+    xmlns:inv="{INVOICE}">
+  <xs:complexType name="Price">
+    <xs:simpleContent>
+      <xs:extension base="xs:decimal">
+        <xs:attribute name="id" type="xs:int" use="required"/>
+      </xs:extension>
+    </xs:simpleContent>
+  </xs:complexType>
+</xs:schema>"""
+
+NILLABLE_INVOICE_XSD = INVOICE_XSD.replace(
+    '<xs:element name="Invoice" type="inv:InvoiceType"/>',
+    '<xs:element name="Invoice" type="inv:InvoiceType" nillable="true"/>',
+)
+
+NILLABLE_AMOUNT_XSD = INVOICE_XSD.replace(
+    '<xs:element name="amount" type="inv:Amount"/>',
+    '<xs:element name="amount" type="inv:Amount" nillable="true"/>',
+)
+
+NILLABLE_PRICE_XSD = PRICE_XSD.replace(
+    "</xs:schema>",
+    '<xs:element name="price" type="inv:Price" nillable="true"/></xs:schema>',
+)
+
 
 def _stylesheet(body: str, *, attributes: str = "") -> bytes:
     return (
@@ -1866,18 +1892,205 @@ def test_type_requested_loose_type_validates_against_loose_not_strict() -> None:
 
 
 def test_type_requested_complex_type_annotates_the_occurrence() -> None:
-    compiled = compile_stylesheet(io.BytesIO(_typed_invoice_stylesheet()))
+    compiled = compile_stylesheet(
+        io.BytesIO(
+            _stylesheet(
+                _import_schema() + '<xsl:template match="/">'
+                '<xsl:sequence select="(* instance of element(*, inv:InvoiceType), '
+                '*/amount instance of element(*, xs:decimal))"/>'
+                "</xsl:template>"
+            )
+        )
+    )
 
-    compiled.transform(
+    result = compiled.transform(
         TYPED_INVOICE,
         validation="strip",
         validation_type="inv:InvoiceType",
     )
 
-    assert (
-        evaluate(". instance of element(*, inv:InvoiceType)", compiled, TYPED_INVOICE)[0].lexical
-        == "true"
+    assert [item.lexical for item in result.principal] == ["true", "true"]
+
+
+def test_type_requested_complex_type_annotates_attributes_and_simple_content() -> None:
+    policy = _Policy(
+        {"urn:doc": f'<inv:price xmlns:inv="{INVOICE}" id="3">12.5</inv:price>'.encode()}
     )
+    compiled = compile_stylesheet(
+        io.BytesIO(
+            _stylesheet(
+                _import_schema(PRICE_XSD) + '<xsl:template name="main">'
+                '<xsl:source-document href="urn:doc" type="inv:Price">'
+                '<xsl:sequence select="(* instance of element(*, inv:Price), '
+                '*/@id instance of attribute(*, xs:int), data(*))"/>'
+                "</xsl:source-document>"
+                "</xsl:template>"
+            )
+        ),
+        resource_policy=policy,
+    )
+
+    result = compiled.transform(initial_template="main")
+
+    assert [item.lexical for item in result.principal] == ["true", "true", "12.5"]
+    assert result.principal[2].type_name == f"{{{XSD_NS}}}decimal"
+
+
+def test_type_requested_complex_type_honors_xsi_type() -> None:
+    source = (
+        f'<inv:Invoice xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="inv:SpecialInvoice">'
+        "<amount>1</amount><code>special</code>"
+        "</inv:Invoice>"
+    ).encode()
+    policy = _Policy({"urn:doc": source})
+    compiled = compile_stylesheet(
+        io.BytesIO(
+            _stylesheet(
+                _import_schema() + '<xsl:template name="main">'
+                '<xsl:source-document href="urn:doc" type="inv:InvoiceType">'
+                '<xsl:sequence select="(* instance of element(*, inv:SpecialInvoice), '
+                'string(*/code))"/>'
+                "</xsl:source-document>"
+                "</xsl:template>"
+            )
+        ),
+        resource_policy=policy,
+    )
+
+    result = compiled.transform(initial_template="main")
+
+    assert [item.lexical for item in result.principal] == ["true", "special"]
+
+
+def test_type_requested_complex_type_honors_xsi_nil() -> None:
+    source = (f'<inv:Invoice xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" xsi:nil="true"/>').encode()
+    policy = _Policy({"urn:doc": source})
+    compiled = compile_stylesheet(
+        io.BytesIO(
+            _stylesheet(
+                _import_schema(NILLABLE_INVOICE_XSD) + '<xsl:template name="main">'
+                '<xsl:source-document href="urn:doc" type="inv:InvoiceType">'
+                '<xsl:sequence select="* instance of element(*, inv:InvoiceType?)"/>'
+                "</xsl:source-document>"
+                "</xsl:template>"
+            )
+        ),
+        resource_policy=policy,
+    )
+
+    result = compiled.transform(initial_template="main")
+
+    assert result.principal[0].lexical == "true"
+
+
+def _requested_type_transform(
+    schema: str,
+    source: bytes,
+    select: str,
+    *,
+    type_name: str = "inv:InvoiceType",
+):
+    policy = _Policy({"urn:doc": source})
+    compiled = compile_stylesheet(
+        io.BytesIO(
+            _stylesheet(
+                _import_schema(schema) + '<xsl:template name="main">'
+                f'<xsl:source-document href="urn:doc" type="{type_name}">'
+                f'<xsl:sequence select="{select}"/>'
+                "</xsl:source-document>"
+                "</xsl:template>"
+            )
+        ),
+        resource_policy=policy,
+    )
+    return compiled, policy
+
+
+def test_type_requested_complex_type_accepts_same_xsi_type() -> None:
+    source = (
+        f'<inv:Invoice xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="inv:InvoiceType"><amount>1</amount></inv:Invoice>'
+    ).encode()
+    compiled, _ = _requested_type_transform(
+        INVOICE_XSD, source, "* instance of element(*, inv:InvoiceType)"
+    )
+
+    result = compiled.transform(initial_template="main")
+
+    assert result.principal[0].lexical == "true"
+
+
+def test_type_requested_unknown_xsi_type_is_xtte1540() -> None:
+    source = (
+        f'<inv:Invoice xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="inv:Missing"><amount>1</amount></inv:Invoice>'
+    ).encode()
+    compiled, _ = _requested_type_transform(INVOICE_XSD, source, "1")
+
+    assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
+
+
+def test_type_requested_xsi_type_not_derived_is_xtte1540() -> None:
+    source = (
+        f'<inv:Invoice xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="inv:Amount"><amount>1</amount></inv:Invoice>'
+    ).encode()
+    compiled, _ = _requested_type_transform(INVOICE_XSD, source, "1")
+
+    assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
+
+
+def test_type_requested_undeclared_root_honors_xsi_type() -> None:
+    source = (
+        f'<inv:special xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="inv:SpecialInvoice"><amount>1</amount><code>c</code></inv:special>'
+    ).encode()
+    compiled, _ = _requested_type_transform(
+        INVOICE_XSD, source, "* instance of element(*, inv:SpecialInvoice)"
+    )
+
+    result = compiled.transform(initial_template="main")
+
+    assert result.principal[0].lexical == "true"
+
+
+def test_type_requested_nil_on_non_nillable_declaration_is_xtte1540() -> None:
+    source = (f'<inv:Invoice xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" xsi:nil="true"/>').encode()
+    compiled, _ = _requested_type_transform(INVOICE_XSD, source, "1")
+
+    assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
+
+
+def test_type_requested_nil_with_content_is_xtte1540() -> None:
+    source = (
+        f'<inv:Invoice xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:nil="true"><amount>1</amount></inv:Invoice>'
+    ).encode()
+    compiled, _ = _requested_type_transform(NILLABLE_INVOICE_XSD, source, "1")
+
+    assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
+
+
+def test_type_requested_nilled_simple_occurrence() -> None:
+    source = (f'<inv:amount xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" xsi:nil="true"/>').encode()
+    compiled, _ = _requested_type_transform(
+        NILLABLE_AMOUNT_XSD,
+        source,
+        "* instance of element(*, inv:Amount?)",
+        type_name="inv:Amount",
+    )
+
+    result = compiled.transform(initial_template="main")
+
+    assert result.principal[0].lexical == "true"
+
+
+def test_type_requested_nilled_complex_occurrence_checks_attributes() -> None:
+    source = (f'<inv:price xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" xsi:nil="true"/>').encode()
+    compiled, _ = _requested_type_transform(NILLABLE_PRICE_XSD, source, "1", type_name="inv:Price")
+
+    assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
 
 
 def test_type_requested_complex_type_on_untyped_captured_document() -> None:
@@ -1999,6 +2212,40 @@ def test_non_schema_aware_allowed_attributes_and_comments() -> None:
     compiled = XsltProcessor(schema_aware=False).compile(io.BytesIO(_stylesheet(body)))
 
     assert compiled is not None
+
+
+@pytest.mark.parametrize("schema_aware", [False, True])
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<input type="text"/>',
+        '<out validation="strict"/>',
+        '<script type="text/javascript"/>',
+        '<xhtml:input xmlns:xhtml="http://www.w3.org/1999/xhtml" type="text"/>',
+    ],
+)
+def test_literal_result_type_attributes_compile(schema_aware: bool, body: str) -> None:
+    compiled = XsltProcessor(schema_aware=schema_aware).compile(
+        io.BytesIO(_stylesheet(f'<xsl:template name="main">{body}</xsl:template>'))
+    )
+
+    assert compiled is not None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<xsl:template name="main"><input xsl:type="xs:string"/></xsl:template>',
+        '<xsl:template name="main"><out xsl:validation="strict"/></xsl:template>',
+    ],
+)
+def test_non_schema_aware_literal_result_xsl_attributes_are_xtse1660(body: str) -> None:
+    assert (
+        _error_code(
+            lambda: XsltProcessor(schema_aware=False).compile(io.BytesIO(_stylesheet(body)))
+        )
+        == "XTSE1660"
+    )
 
 
 def test_non_schema_aware_typed_mode_is_xtse1660() -> None:

@@ -1097,12 +1097,21 @@ def _reject_non_schema_aware_features(package: CompiledPackage) -> None:
                         uri=module.identity,
                         location=node.source_location(),
                     )
+                # Only XSLT-defined attributes are schema-related.  An
+                # unprefixed ``type`` or ``validation`` on a literal result
+                # element is an ordinary literal attribute, and a foreign
+                # namespaced attribute is always the user's own.
+                is_xslt_element = node.name.startswith(f"{{{XSLT_NS}}}")
                 for attribute in node.attributes:
                     name = attribute.name or ""
-                    local = name.rpartition("}")[2] if name.startswith("{") else name
-                    namespaced = name.startswith("{")
-                    if namespaced and not name.startswith(f"{{{XSLT_NS}}}"):
-                        continue
+                    if name.startswith("{"):
+                        if not name.startswith(f"{{{XSLT_NS}}}"):
+                            continue
+                        local = name.rpartition("}")[2]
+                    else:
+                        if not is_xslt_element:
+                            continue
+                        local = name
                     if local == "type":
                         raise XsltStaticError(
                             "a non-schema-aware processor cannot process a type attribute",
@@ -1110,15 +1119,16 @@ def _reject_non_schema_aware_features(package: CompiledPackage) -> None:
                             uri=module.identity,
                             location=node.source_location(),
                         )
-                    if local in ("validation", "default-validation"):
-                        value = attribute.string_value.strip()
-                        if value not in ("strip", "preserve", "lax"):
-                            raise XsltStaticError(
-                                "a non-schema-aware processor cannot use this validation value",
-                                code="XTSE1660",
-                                uri=module.identity,
-                                location=node.source_location(),
-                            )
+                    if local not in ("validation", "default-validation"):
+                        continue
+                    value = attribute.string_value.strip()
+                    if value not in ("strip", "preserve", "lax"):
+                        raise XsltStaticError(
+                            "a non-schema-aware processor cannot use this validation value",
+                            code="XTSE1660",
+                            uri=module.identity,
+                            location=node.source_location(),
+                        )
                 typed_attribute = node.attribute("typed")
                 if (
                     node.name == f"{{{XSLT_NS}}}mode"

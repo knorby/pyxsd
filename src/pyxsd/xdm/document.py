@@ -25,8 +25,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 from xml.etree import ElementTree as ET
 
-from pyxsd.namespaces import XSD_NS
-from pyxsd.schema_context import SchemaContext, active_context, context_report
+from pyxsd.derivation import combinedBlock, is_valid_xsi_type
+from pyxsd.locations import ParseProvenance
+from pyxsd.namespaces import XSD_NS, XSI_NS
+from pyxsd.schema_context import SchemaContext, active_context, context_provenance, context_report
 from pyxsd.source_spans import SourceIndex
 from pyxsd.validation import ValidationReport
 from pyxsd.xdm.annotations import (
@@ -34,6 +36,9 @@ from pyxsd.xdm.annotations import (
     UNTYPED_ATOMIC,
     OccurrenceAnnotation,
     OccurrenceCapture,
+    capture_element_occurrence,
+    capture_remaining_attributes,
+    capturing_occurrences,
 )
 from pyxsd.xdm.errors import XdmInputError
 from pyxsd.xdm.nodes import (
@@ -613,12 +618,17 @@ def _type_validated_document(
             f"the type {type_name!r} is not in the in-scope schema definitions",
             reason="type",
         )
-    adapter = schema_pool.get_type(type_name)
-    if adapter is None:
+    requested = schema_pool.get_type(type_name)
+    if requested is None:
         raise DocumentValidationError(
             f"the type {type_name!r} is not in the in-scope schema definitions",
             reason="type",
         )
+    declaration = _element_declaration(schema_pool, root.name)
+    adapter = _actual_requested_type(schema_pool, requested, root, declaration)
+    if root.annotation.nil_declared:
+        _validate_nilled_occurrence(document, adapter, declaration, type_name)
+        return document
     if adapter.is_simple():
         if any(child.kind is NodeKind.ELEMENT for child in root.children):
             raise DocumentValidationError(
@@ -632,36 +642,128 @@ def _type_validated_document(
             )
         _annotate_simple_root(document, adapter)
         return document
-    _validate_complex_occurrence(document, adapter, type_name)
+    _validate_complex_occurrence(
+        document,
+        adapter,
+        type_name,
+        declaration=_governing_declaration(declaration, adapter),
+    )
     return document
 
 
-def _validate_complex_occurrence(
+def _element_declaration(schema_pool: SchemaPool, name: str | None) -> Any:
+    """The global element declaration for *name*, when the pool has one."""
+    adapter = schema_pool.get_element(name)
+    return None if adapter is None else getattr(adapter, "_er", None)
+
+
+def _actual_requested_type(
+    schema_pool: SchemaPool,
+    requested: Any,
+    root: XdmNode,
+    declaration: Any,
+) -> Any:
+    """Resolve ``xsi:type`` over the requested type (XSD §3.3.4.1)."""
+    lexical_attribute = root.attribute(f"{{{XSI_NS}}}type")
+    if lexical_attribute is None:
+        return requested
+    lexical = lexical_attribute.string_value
+    resolved = root.annotation.xsi_type or lexical
+    if resolved == requested.name:
+        return requested
+    actual = schema_pool.get_type(resolved)
+    if actual is None:
+        raise DocumentValidationError(
+            f"the xsi:type {resolved!r} is not in the in-scope schema definitions",
+            reason="type",
+        )
+    declared_class = getattr(requested, "_type_class", None)
+    actual_class = getattr(actual, "_type_class", None)
+    blocked = None
+    getter = getattr(declaration, "getType", None) if declaration is not None else None
+    if getter is not None and getter() is declared_class:
+        blocked = combinedBlock(declaration.getBlock(), declared_class)
+    reason = is_valid_xsi_type(actual_class, declared_class, blocked)
+    if reason is not None:
+        raise DocumentValidationError(
+            f"the xsi:type {resolved!r} is not validly derived from {requested.name!r}",
+            reason="type",
+        )
+    return actual
+
+
+def _governing_declaration(declaration: Any, adapter: Any) -> Any:
+    """The declaration that actually governs this occurrence, if any."""
+    if declaration is None:
+        return None
+    getter = getattr(declaration, "getType", None)
+    declared = getter() if getter is not None else None
+    actual = getattr(adapter, "_type_class", None)
+    if isinstance(declared, type) and isinstance(actual, type) and issubclass(actual, declared):
+        return declaration
+    return None
+
+
+def _validate_nilled_occurrence(
     document: XdmDocument,
     adapter: Any,
+    declaration: Any,
     type_name: str,
 ) -> None:
-    """Assess one element occurrence against a complex type's content model."""
-    type_class: Any = getattr(adapter, "_type_class", None)
-    schema = getattr(adapter.schema, "_schema", None)
-    if not isinstance(type_class, type) or schema is None:  # pragma: no cover
+    """Assess one nilled occurrence against the requested type."""
+    root = document.root_element
+    if declaration is None or not declaration.isNillable():
         raise DocumentValidationError(
             f"the source document is not valid against the type {type_name!r}",
             reason="type",
         )
-    element = element_from_xdm(document.root_element)
+    if any(child.kind in (NodeKind.ELEMENT, NodeKind.TEXT) for child in root.children):
+        raise DocumentValidationError(
+            f"the source document is not valid against the type {type_name!r}",
+            reason="type",
+        )
+    type_class: Any = getattr(adapter, "_type_class", None)
+    if adapter.is_simple():
+        root._apply_occurrence_annotation(
+            _root_annotation(root, adapter, nilled=True, typed_values=())
+        )
+        return
+    schema = getattr(adapter.schema, "_schema", None)
+    if schema is None:  # pragma: no cover - compiled schemas carry a schema
+        raise DocumentValidationError(
+            f"the source document is not valid against the type {type_name!r}",
+            reason="type",
+        )
+    element = element_from_xdm(root, schema.namespace_context)
+    provenance = ParseProvenance(element, None)
     report = ValidationReport()
-    context = getattr(schema, "_schema_context", None)
-    if context is None:  # pragma: no cover - compiled schemas carry a context
-        context = SchemaContext(components=schema.components)
+    context = _schema_context(schema)
     host = getattr(schema, "_host", None)
     parents = _parent_index(element)
     if host is not None:  # pragma: no cover - compiled schemas carry a host
         host._elementParents = parents
         host._elementTypes = {}
     try:
-        with active_context(context), context_report(context, report):
-            cast(Any, type_class).makeInstanceFromTag(element)
+        with capturing_occurrences() as capture:
+            with (
+                active_context(context),
+                context_report(context, report),
+                context_provenance(context, provenance),
+            ):
+                instance = cast(Any, type_class)._nilledInstance(
+                    type_class, element, type_class._node_name(element)
+                )
+                capture_remaining_attributes(element)
+                capture_element_occurrence(
+                    element,
+                    governing_declaration=_governing_declaration(declaration, adapter),
+                    actual_type=type_class,
+                    nilled=True,
+                    validation_attempted="full",
+                    bound=instance,
+                    xsi_type_namespaces=dict(root.in_scope_namespaces),
+                )
+            capture.finish(report)
     finally:
         if host is not None:  # pragma: no cover - compiled schemas carry a host
             host._elementParents.clear()
@@ -671,17 +773,69 @@ def _validate_complex_occurrence(
             f"the source document is not valid against the type {type_name!r}",
             reason="type",
         )
-    root = document.root_element
-    root._apply_occurrence_annotation(
-        OccurrenceAnnotation(
-            type_name=adapter.name,
-            nilled=False,
-            validity="valid",
-            actual_type=type_class,
-            validation_attempted="full",
-            typed_values=(),
+    capture.apply(document)
+
+
+def _schema_context(schema: Any) -> SchemaContext:
+    context = getattr(schema, "_schema_context", None)
+    if context is None:  # pragma: no cover - compiled schemas carry a context
+        context = SchemaContext(components=schema.components)
+    return context
+
+
+def _validate_complex_occurrence(
+    document: XdmDocument,
+    adapter: Any,
+    type_name: str,
+    *,
+    declaration: Any = None,
+) -> None:
+    """Assess one element occurrence against a complex type's content model."""
+    type_class: Any = getattr(adapter, "_type_class", None)
+    schema = getattr(adapter.schema, "_schema", None)
+    if not isinstance(type_class, type) or schema is None:  # pragma: no cover
+        raise DocumentValidationError(
+            f"the source document is not valid against the type {type_name!r}",
+            reason="type",
         )
-    )
+    root = document.root_element
+    element = element_from_xdm(root, schema.namespace_context)
+    provenance = ParseProvenance(element, None)
+    report = ValidationReport()
+    context = _schema_context(schema)
+    host = getattr(schema, "_host", None)
+    parents = _parent_index(element)
+    if host is not None:  # pragma: no cover - compiled schemas carry a host
+        host._elementParents = parents
+        host._elementTypes = {}
+    try:
+        with capturing_occurrences() as capture:
+            with (
+                active_context(context),
+                context_report(context, report),
+                context_provenance(context, provenance),
+            ):
+                instance = cast(Any, type_class).makeInstanceFromTag(element)
+                capture_remaining_attributes(element)
+                capture_element_occurrence(
+                    element,
+                    governing_declaration=declaration,
+                    actual_type=type_class,
+                    validation_attempted="full",
+                    bound=instance,
+                    xsi_type_namespaces=dict(root.in_scope_namespaces),
+                )
+            capture.finish(report)
+    finally:
+        if host is not None:  # pragma: no cover - compiled schemas carry a host
+            host._elementParents.clear()
+            host._elementTypes.clear()
+    if _instance_errors(report):
+        raise DocumentValidationError(
+            f"the source document is not valid against the type {type_name!r}",
+            reason="type",
+        )
+    capture.apply(document)
 
 
 def _parent_index(element: Any) -> dict[int, Any]:
@@ -716,16 +870,38 @@ def _untyped_document(
     )
 
 
+def _root_annotation(
+    root: XdmNode,
+    adapter: Any,
+    *,
+    nilled: bool,
+    typed_values: tuple[Any, ...],
+) -> OccurrenceAnnotation:
+    """One root occurrence annotation, keeping the parse's source evidence."""
+    evidence = root.annotation
+    lexical_attribute = root.attribute(f"{{{XSI_NS}}}type")
+    return OccurrenceAnnotation(
+        type_name=adapter.name,
+        nilled=nilled,
+        validity="valid",
+        xsi_type=evidence.xsi_type,
+        xsi_type_lexical=(None if lexical_attribute is None else lexical_attribute.string_value),
+        nil_lexical=evidence.nil_lexical,
+        nil_declared=evidence.nil_declared,
+        actual_type=getattr(adapter, "_type_class", None),
+        validation_attempted="full",
+        typed_values=typed_values,
+    )
+
+
 def _annotate_simple_root(document: XdmDocument, adapter: Any) -> None:
     root = document.root_element
     value = adapter.cast(root.string_value)
     root._apply_occurrence_annotation(
-        OccurrenceAnnotation(
-            type_name=adapter.name,
+        _root_annotation(
+            root,
+            adapter,
             nilled=False,
-            validity="valid",
-            actual_type=getattr(adapter, "_type_class", None),
-            validation_attempted="full",
             typed_values=(XdmAtomic(value, adapter.name, getattr(adapter, "_type_class", None)),),
         )
     )
