@@ -755,3 +755,36 @@ def test_case_insensitive_negative_empty_character_class() -> None:
 
     result = analyze_string(compile_xpath_regex("[^]", "i"), "a")
     assert any(piece.matched for piece in result)
+
+
+def test_negative_base_character_class_subtraction_negates_base_first() -> None:
+    from pyxsd.xslt.runtime.text import analyze_string, compile_xpath_regex
+
+    def matches(pattern: str, text: str) -> bool:
+        return any(
+            piece.matched for piece in analyze_string(compile_xpath_regex(pattern, "i"), text)
+        )
+
+    assert matches("[^a-[b]]", "c")
+    assert not matches("[^a-[b]]", "b")
+    assert not matches("[^a-[b]]", "B")
+
+    assert not matches("[^a-z-[aeiou]]", "a")
+    assert not matches("[^a-z-[aeiou]]", "A")
+    assert not matches("[^a-z-[aeiou]]", "c")
+    assert matches("[^a-z-[aeiou]]", "!")
+
+    assert not matches("[^\\p{Lu}-[Q]]", "Q")
+    assert not matches("[^\\p{Lu}-[Q]]", "q")
+    assert matches("[^\\p{Lu}-[Q]]", "r")
+    assert not matches("[^\\p{Lu}-[Q]]", "R")
+
+    assert matches("[^a-[^b]]", "b")
+    assert matches("[^a-[^b]]", "B")
+    assert not matches("[^a-[^b]]", "c")
+    assert not matches("[^a-[^b]]", "a")
+
+    assert matches("[a-[b]]", "a")
+    assert not matches("[a-[b]]", "b")
+    assert matches("[a-z-[aeiou]]", "c")
+    assert not matches("[a-z-[aeiou]]", "a")

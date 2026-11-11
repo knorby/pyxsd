@@ -537,15 +537,9 @@ def _translate_class_subtraction(
     assert subtraction is not None
     base_content = content[:subtraction]
     subtracted_raw = content[subtraction + 1 :]
-    base_negative = base_content.startswith("^")
-    base_fragment = _translate_class_content(
-        base_content[1:] if base_negative else base_content,
-        base_negative,
-        ignore_case,
-    )
+    base_fragment = _translate_class_content(base_content, negative, ignore_case)
     subtracted = _translate_class_raw(subtracted_raw, ignore_case)
-    positive = f"(?!{subtracted})(?:{base_fragment})"
-    return f"(?!{positive})[\\s\\S]" if negative else positive
+    return f"(?!{subtracted})(?:{base_fragment})"
 
 
 def _translate_class_content(content: str, negative: bool, ignore_case: bool) -> str:
