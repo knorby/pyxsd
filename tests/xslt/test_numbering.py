@@ -366,13 +366,23 @@ def test_letter_value_selects_alphabetic_or_traditional_sequences() -> None:
         <xsl:template name="main">
           <xsl:number value="(1, 2, 27)" format="a" letter-value="alphabetic"/>
           <xsl:text>|</xsl:text>
-          <xsl:number value="(1, 2, 4)" format="i" letter-value="traditional"/>
+          <xsl:number value="4" format="a" letter-value="traditional"/>
           <xsl:text>|</xsl:text>
-          <xsl:number value="2" format="a" letter-value="unknown"/>
+          <xsl:number value="4" format="i" letter-value="alphabetic"/>
+          <xsl:text>|</xsl:text>
+          <xsl:number value="4" format="A" letter-value="traditional"/>
+          <xsl:text>|</xsl:text>
+          <xsl:number value="4" format="I" letter-value="alphabetic"/>
         </xsl:template>
         """
     )
-    assert text(lambda: transform(source, None, initial_template="main")) == "a.b.aa|i.ii.iv|b"
+    assert text(lambda: transform(source, None, initial_template="main")) == "a.b.aa|iv|l|IV|L"
+
+    invalid = stylesheet(
+        '<xsl:template name="main"><xsl:number value="2" format="a" '
+        'letter-value="unknown"/></xsl:template>'
+    )
+    assert error_code(lambda: transform(invalid, None, initial_template="main")) == "XTDE0030"
 
 
 def test_grouping_separator_and_size_apply_to_decimal_tokens() -> None:
@@ -884,3 +894,135 @@ def test_context_bridge_validates_decimal_format_values() -> None:
         XsltContextBridge(Transformation(), decimal_formats={1: DecimalFormat()})  # type: ignore[dict-item]
     with pytest.raises(TypeError):
         XsltContextBridge(Transformation(), decimal_formats={None: "bad"})  # type: ignore[dict-item]
+
+
+# ---------------------------------------------------------------------------
+# Review fix round 1 regressions
+
+
+def test_format_number_preserves_more_than_28_significant_digits() -> None:
+    source = format_number(
+        expression=(
+            "format-number(99999999999999999999999999999, '0'), "
+            "format-number(12222222222222222222222222222, '0'), "
+            "format-number(xs:decimal('1222222222222222222222222222.5'), '0.0')"
+        )
+    )
+    assert values(lambda: transform(source, None, initial_template="main")) == [
+        "99999999999999999999999999999",
+        "12222222222222222222222222222",
+        "1222222222222222222222222222.5",
+    ]
+
+
+def test_format_number_atomizes_nodes_and_attributes() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="format-number(/doc/price, '0.00')"/>
+          <xsl:sequence select="format-number(/doc/n/@x, '0.00')"/>
+          <xsl:for-each select="/doc/n">
+            <xsl:sequence select="format-number(@x, '#,##0.00')"/>
+          </xsl:for-each>
+        </xsl:template>
+        """
+    )
+    assert values(
+        lambda: transform(
+            source,
+            b'<doc><price>12.5</price><n x="12.5"/></doc>',
+            initial_template="main",
+        )
+    ) == ["12.50", "12.50", "12.50"]
+
+
+def test_format_number_large_doubles_do_not_raise_decimal_errors() -> None:
+    source = format_number(
+        expression=(
+            "format-number(xs:double('1e50'), '0.00'), "
+            "format-number(xs:double('1e308'), '0'), "
+            "format-number(xs:double('1e308'), '0%')"
+        )
+    )
+    results = values(lambda: transform(source, None, initial_template="main"))
+    assert results[0].startswith("1") and results[0].endswith(".00")
+    assert results[1].startswith("1") and results[1].isdigit() and len(results[1]) == 309
+    assert results[2].startswith("1") and results[2].endswith("%") and len(results[2]) == 312
+
+
+def test_place_marker_uses_dot_after_a_prefix() -> None:
+    from pyxsd.xslt.runtime.numbering import format_place_marker
+
+    assert format_place_marker([1, 2, 3], "(1)") == "(1.2.3)"
+    assert format_place_marker([1, 2, 3], "(A)") == "(A.B.C)"
+    assert format_place_marker([1, 2, 3], "(w)") == "(one.two.three)"
+
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:for-each select="//section">
+            <xsl:number level="multiple" count="chapter|section" format="(1)"/>
+          </xsl:for-each>
+        </xsl:template>
+        """
+    )
+    source_xml = b"<doc><chapter><section/></chapter><chapter><section/></chapter></doc>"
+    assert text(lambda: transform(source, source_xml, initial_template="main")) == "(1.1)(2.1)"
+
+
+def test_exponent_pictures_and_exponent_separator() -> None:
+    source = format_number(
+        expression=(
+            "format-number(12.34, '0.000e00'), "
+            "format-number(1234.5678, '00.000E0', 'fortran'), "
+            "format-number(0.234, '0.0E0', 'fortran'), "
+            "format-number(0.234, '#.00E0', 'fortran'), "
+            "format-number(0.234, '.00E0', 'fortran')"
+        ),
+        decimal_formats='<xsl:decimal-format name="fortran" exponent-separator="E"/>',
+    )
+    assert values(lambda: transform(source, None, initial_template="main")) == [
+        "1.234e01",
+        "12.346E2",
+        "2.3E-1",
+        "0.23E0",
+        ".23E0",
+    ]
+
+
+def test_exponent_separator_must_be_one_character() -> None:
+    source = stylesheet('<xsl:decimal-format exponent-separator="EE"/>')
+    assert error_code(lambda: compiled(source)) == "XTSE0020"
+
+
+def test_format_number_removes_a_leading_zero_without_a_mandatory_integer_digit() -> None:
+    source = format_number(
+        expression=(
+            "format-number(0.5, '.00'), "
+            "format-number(0.5, '#.0'), "
+            "format-number(0.234, '.00E0', 'fortran')"
+        ),
+        decimal_formats='<xsl:decimal-format name="fortran" exponent-separator="E"/>',
+    )
+    assert values(lambda: transform(source, None, initial_template="main")) == [
+        ".50",
+        ".5",
+        ".23E0",
+    ]
+
+
+def test_exponent_and_letter_value_boundary_branches() -> None:
+    from pyxsd.xslt.runtime.numbering import DecimalFormat, format_number, format_place_marker
+
+    formats = {None: DecimalFormat()}
+    assert format_number(0, "0.0e0", None, formats, {}) == "0.0e0"
+    assert format_number(1, "e0", None, formats, {}) == "e1"
+    assert format_number(1, "0e ", None, formats, {}) == "1e "
+    assert format_number(0.123, "#.e9", None, formats, {}) == "0.1e0"
+    assert format_number(1, "0e0ms", None, formats, {}) == "1e0ms"
+    for picture in ("0e0e0", "0e0%", "0e#"):
+        with pytest.raises(XsltDynamicError) as caught:
+            format_number(1, picture, None, formats, {})
+        assert caught.value.code == "FODF1310"
+    assert format_place_marker([0], "a", letter_value="traditional") == "0"
+    assert format_place_marker([0], "i", letter_value="alphabetic") == "0"

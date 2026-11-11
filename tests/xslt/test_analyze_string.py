@@ -534,6 +534,7 @@ def test_regex_module_rejects_invalid_argument_types() -> None:
         "a{",
         "a{2,1}",
         "a)",
+        "(a){x}",
     ),
 )
 def test_xpath_regex_rejects_python_only_or_malformed_constructs(pattern: str) -> None:
@@ -642,3 +643,77 @@ def test_compile_analyze_string_ignores_whitespace_text() -> None:
     with pytest.raises(XsltStaticError) as caught:
         _compile_analyze_string(instruction, StaticContext(), None)  # type: ignore[arg-type]
     assert caught.value.code == "XTSE1130"
+
+
+def test_case_insensitive_flag_does_not_change_unicode_category_classes() -> None:
+    from pyxsd.xslt.runtime.text import analyze_string, compile_xpath_regex
+
+    def matches(pattern: str, text: str) -> bool:
+        return any(
+            piece.matched for piece in analyze_string(compile_xpath_regex(pattern, "i"), text)
+        )
+
+    assert not matches("[\\p{Lu}]", "a")
+    assert matches("[\\p{Lu}]", "A")
+    assert not matches("[\\p{Ll}]", "A")
+    assert matches("[a\\p{Lu}]", "A")
+    assert matches("[a\\p{Lu}]", "a")
+    assert matches("[^\\p{Lu}]", "a")
+    assert not matches("[^\\p{Lu}]", "A")
+
+
+def test_unmatched_back_reference_matches_a_zero_length_string() -> None:
+    from pyxsd.xslt.runtime.text import analyze_string, compile_xpath_regex
+
+    def matches(pattern: str, text: str) -> bool:
+        return any(piece.matched for piece in analyze_string(compile_xpath_regex(pattern), text))
+
+    assert matches("(a)?b\\1", "b")
+    assert matches("(a)?b\\1", "aba")
+    assert not matches("(a)?b\\1", "ac")
+
+
+def test_regex_class_translation_covers_empty_and_category_parts() -> None:
+    from pyxsd.xslt.runtime.text import analyze_string, compile_xpath_regex
+
+    def matches(pattern: str, text: str, flags: str = "") -> bool:
+        return any(
+            piece.matched for piece in analyze_string(compile_xpath_regex(pattern, flags), text)
+        )
+
+    assert not matches("[]", "a", "i")
+    assert matches("[a-z]", "A", "i")
+    assert matches("[\\d]", "5", "i")
+    assert matches("[\\p{IsLu}]", "A", "i")
+    assert matches("(a){0,2}b\\1", "b")
+
+
+def test_regex_class_category_translation_edges() -> None:
+    from pyxsd.xslt.runtime.text import XPathRegexError, analyze_string, compile_xpath_regex
+
+    def matches(pattern: str, text: str) -> bool:
+        return any(
+            piece.matched for piece in analyze_string(compile_xpath_regex(pattern, "i"), text)
+        )
+
+    assert matches("[\\n]", "\n")
+    assert matches("[\\p{Lu}a]", "a")
+    assert matches("[\\p{Lu}a]", "A")
+    with pytest.raises(XPathRegexError) as caught:
+        compile_xpath_regex("[\\p{NoSuch}]", "i")
+    assert caught.value.code == "FORX0002"
+
+
+def test_regex_class_translation_mixed_escape_parts() -> None:
+    from pyxsd.xslt.runtime.text import XPathRegexError, analyze_string, compile_xpath_regex
+
+    def matches(pattern: str, text: str) -> bool:
+        return any(
+            piece.matched for piece in analyze_string(compile_xpath_regex(pattern, "i"), text)
+        )
+
+    assert matches("[a\\d]", "a")
+    assert matches("[a\\d]", "5")
+    with pytest.raises(XPathRegexError) as caught:
+        compile_xpath_regex("[\\p{IsNoSuch}]", "i")
+    assert caught.value.code == "FORX0002"

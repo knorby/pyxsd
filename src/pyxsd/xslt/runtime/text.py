@@ -22,8 +22,10 @@ from typing import Final, NoReturn
 
 from elementpath.regex import CharacterClass, RegexError, UnicodeSubset, unicode_subset
 from elementpath.regex.character_classes import (
+    CHARACTER_ESCAPES,
     c_shortcut,
     d_shortcut,
+    get_charset_parts,
     i_shortcut,
     s_shortcut,
     w_shortcut,
@@ -331,8 +333,20 @@ class _Translator:
         self.can_quantify = True
 
     def _character_class(self) -> None:
+        start = self.index
         character_class, self.index = self._parse_character_class(self.index)
-        self.output.append(str(character_class) if len(character_class) else "(?!)")
+        if not len(character_class):
+            self.output.append("(?!)")
+        else:
+            try:
+                translated = _translate_character_class(
+                    self.source[start : self.index],
+                    character_class,
+                    ignore_case="i" in self.flags,
+                )
+            except RegexError as exc:
+                self._fail(str(exc))
+            self.output.append(translated)
         self.can_quantify = True
 
     def _parse_character_class(self, index: int) -> tuple[CharacterClass, int]:
@@ -443,9 +457,22 @@ class _Translator:
         group = self.open_groups.pop()
         if group is not None:
             self.closed_groups.add(group)
-        self.output.append(")")
+        optional = group is not None and self._group_is_optional(self.index + 1)
+        self.output.append("|)" if optional else ")")
         self.index += 1
         self.can_quantify = True
+
+    def _group_is_optional(self, index: int) -> bool:
+        if index >= len(self.source):
+            return False
+        character = self.source[index]
+        if character in "?*":
+            return True
+        if character == "{":
+            match = _QUANTIFIER.match(self.source, index)
+            if match is not None:
+                return int(match.group(1)) == 0
+        return False
 
     def _protect_anchor(self) -> None:
         """Wrap an anchor before a quantifier, where Python forbids direct repetition."""
@@ -462,6 +489,51 @@ class _Translator:
             f"invalid XPath regular expression {self.source!r}: {message}",
             code="FORX0002",
         )
+
+
+def _translate_character_class(
+    raw: str,
+    character_class: CharacterClass,
+    *,
+    ignore_case: bool,
+) -> str:
+    """Keep category escapes case-sensitive inside an ``i``-flagged class."""
+    if not ignore_case or "-[" in raw:
+        return str(character_class)
+    inner = raw[1:-1]
+    negative = inner.startswith("^")
+    content = inner[1:] if negative else inner
+    if "\\" not in content:
+        return str(character_class)
+    alternatives: list[str] = []
+    ordinary: list[str] = []
+    for part in get_charset_parts(content):
+        if part in CHARACTER_ESCAPES:
+            value = CHARACTER_ESCAPES[part]
+            if isinstance(value, str):
+                ordinary.append(re.escape(value))
+                continue
+            if ordinary:
+                alternatives.append("[" + "".join(ordinary) + "]")
+                ordinary.clear()
+            alternatives.append(_python_class(value(), negative=part[-1].isupper()))
+            continue
+        if part.startswith("\\p") or part.startswith("\\P"):
+            if ordinary:
+                alternatives.append("[" + "".join(ordinary) + "]")
+                ordinary.clear()
+            name = part[3:-1]
+            try:
+                subset = unicode_subset(name)
+            except RegexError:
+                subset = unicode_subset(name[2:] if name.startswith("Is") else name)
+            alternatives.append(_python_class(subset, negative=part.startswith("\\P")))
+            continue
+        ordinary.append(part)
+    if ordinary:
+        alternatives.append("[" + "".join(ordinary) + "]")
+    positive = "(?:" + "|".join(alternatives) + ")"
+    return f"(?!{positive})[\\s\\S]" if negative else positive
 
 
 def _python_class(subset: UnicodeSubset, *, negative: bool) -> str:

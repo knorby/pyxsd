@@ -42,6 +42,7 @@ DEFAULT_DECIMAL_FORMAT: Mapping[str, str] = {
     "zero-digit": "0",
     "digit": "#",
     "pattern-separator": ";",
+    "exponent-separator": "e",
     "infinity": "Infinity",
     "NaN": "NaN",
     "minus-sign": "-",
@@ -55,6 +56,7 @@ _SINGLE_CHARACTER_ATTRIBUTES = {
     "zero-digit": "zero_digit",
     "digit": "digit",
     "pattern-separator": "pattern_separator",
+    "exponent-separator": "exponent_separator",
     "minus-sign": "minus_sign",
 }
 _DISTINCT_ATTRIBUTES = (
@@ -65,6 +67,7 @@ _DISTINCT_ATTRIBUTES = (
     "zero-digit",
     "digit",
     "pattern-separator",
+    "exponent-separator",
 )
 _SCALE_WORDS = (
     "thousand",
@@ -139,6 +142,7 @@ class DecimalFormat:
     zero_digit: str = "0"
     digit: str = "#"
     pattern_separator: str = ";"
+    exponent_separator: str = "e"
     infinity: str = "Infinity"
     nan: str = "NaN"
     minus_sign: str = "-"
@@ -193,6 +197,7 @@ class DecimalFormat:
             zero_digit=zero_digit,
             digit=values["digit"],
             pattern_separator=values["pattern-separator"],
+            exponent_separator=values["exponent-separator"],
             infinity=values["infinity"],
             nan=values["NaN"],
             minus_sign=values["minus-sign"],
@@ -248,6 +253,7 @@ def decimal_format_attributes(format_: DecimalFormat) -> dict[str, str]:
         "zero-digit": format_.zero_digit,
         "digit": format_.digit,
         "pattern-separator": format_.pattern_separator,
+        "exponent-separator": format_.exponent_separator,
         "infinity": format_.infinity,
         "NaN": format_.nan,
         "minus-sign": format_.minus_sign,
@@ -379,6 +385,12 @@ def format_place_marker(
         return ""
     if not all(isinstance(number, int) for number in numbers):
         raise ValueError("place markers contain integers")
+    normalized_letter_value = letter_value.strip()
+    if normalized_letter_value not in ("", "alphabetic", "traditional"):
+        raise XsltDynamicError(
+            f"the letter-value {letter_value!r} is not alphabetic or traditional",
+            code="XTDE0030",
+        )
     tokens = _format_tokens(format_)
     format_tokens = [token for token in tokens if token.is_format]
     if not format_tokens:
@@ -395,14 +407,16 @@ def format_place_marker(
             if last + 1 < len(tokens) and not tokens[last + 1].is_format
             else ""
         )
+        first_format_index = next(index for index, token in enumerate(tokens) if token.is_format)
         separators = []
         for index, token in enumerate(tokens):
             if not token.is_format:
                 continue
-            previous = tokens[index - 1] if index > 0 else None
-            separators.append(
-                previous.text if previous is not None and not previous.is_format else "."
-            )
+            if index == first_format_index:
+                separators.append(".")
+                continue
+            previous = tokens[index - 1]
+            separators.append(previous.text if not previous.is_format else ".")
     group_size = _grouping_size(grouping_size)
     parts: list[str] = []
     for index, number in enumerate(numbers):
@@ -415,7 +429,7 @@ def format_place_marker(
                 token.text,
                 lang=lang,
                 ordinal=ordinal,
-                letter_value=letter_value,
+                letter_value=normalized_letter_value,
                 grouping_separator=grouping_separator,
                 grouping_size=group_size,
             )
@@ -478,11 +492,21 @@ def _format_token(
             result += _ordinal_suffix(number)
         return result
     if token in ("A", "a"):
+        if letter_value == "traditional":
+            roman = _roman(number)
+            if roman is None:
+                return str(number)
+            return roman if token == "A" else roman.lower()
         alphabetic = _alphabetic(number, token)
         if alphabetic is None:
             return str(number)
         return alphabetic
     if token in ("I", "i"):
+        if letter_value == "alphabetic":
+            alphabetic = _alphabetic(number, token)
+            if alphabetic is None:
+                return str(number)
+            return alphabetic
         roman = _roman(number)
         if roman is None:
             return str(number)
@@ -653,6 +677,8 @@ class _SubPicture:
     minimum_fractional_size: int
     maximum_fractional_size: int
     has_decimal_separator: bool
+    scaling_factor: int
+    minimum_exponent_size: int
     percent: bool
     per_mille: bool
 
@@ -688,20 +714,25 @@ def format_number(
         decimal_number *= 100
     elif sub_picture.per_mille:
         decimal_number *= 1000
-    with localcontext() as context:
-        context.prec = max(50, len(str(decimal_number)) + sub_picture.maximum_fractional_size + 10)
-        quantum = Decimal(1).scaleb(-sub_picture.maximum_fractional_size)
-        rounded = decimal_number.quantize(quantum, rounding=ROUND_HALF_EVEN)
+    exponent = 0
+    if sub_picture.minimum_exponent_size:
+        decimal_number, exponent = _exponential_mantissa(
+            decimal_number,
+            sub_picture.scaling_factor,
+        )
+    rounded = _round_decimal(decimal_number, sub_picture.maximum_fractional_size)
     text = (
         ""
         if rounded.is_zero() and sub_picture.minimum_integer_size == 0
-        else _fixed_decimal(abs(rounded))
+        else _fixed_decimal(rounded.copy_abs())
     )
     integer, _, fraction = text.partition(".")
     if len(integer) < sub_picture.minimum_integer_size:
         integer = "0" * (sub_picture.minimum_integer_size - len(integer)) + integer
     if len(fraction) < sub_picture.minimum_fractional_size:
         fraction += "0" * (sub_picture.minimum_fractional_size - len(fraction))
+    if sub_picture.minimum_integer_size == 0 and integer == "0" and fraction:
+        integer = ""
     integer = _apply_integer_grouping(integer, sub_picture, decimal_format)
     fraction = _apply_fractional_grouping(fraction, sub_picture, decimal_format)
     digits = _translate_digits(integer + fraction, decimal_format)
@@ -710,7 +741,38 @@ def format_number(
     result = translated_integer
     if translated_fraction:
         result += decimal_format.decimal_separator + translated_fraction
+    if sub_picture.minimum_exponent_size:
+        result += decimal_format.exponent_separator
+        if exponent < 0:
+            result += decimal_format.minus_sign
+            exponent = -exponent
+        exponent_text = str(exponent).rjust(sub_picture.minimum_exponent_size, "0")
+        result += _translate_digits(exponent_text, decimal_format)
     return sub_picture.prefix + result + sub_picture.suffix
+
+
+def _round_decimal(value: Decimal, maximum_fractional_size: int) -> Decimal:
+    """Round *value* half-to-even without the default 28-digit context limit."""
+    digits = len(value.as_tuple().digits)
+    exponent = value.as_tuple().exponent
+    assert isinstance(exponent, int)
+    with localcontext() as context:
+        context.prec = max(50, digits + abs(exponent) + maximum_fractional_size + 10)
+        context.Emax = max(999999, abs(exponent) + maximum_fractional_size + 10)
+        context.Emin = -context.Emax
+        quantum = Decimal(1).scaleb(-maximum_fractional_size)
+        return value.quantize(quantum, rounding=ROUND_HALF_EVEN)
+
+
+def _exponential_mantissa(value: Decimal, scaling_factor: int) -> tuple[Decimal, int]:
+    """Return the mantissa and integer exponent for an exponent picture."""
+    if value.is_zero():
+        return Decimal(0), 0
+    sign = -1 if value.is_signed() else 1
+    magnitude = value.copy_abs()
+    exponent = magnitude.adjusted() - scaling_factor + 1
+    mantissa = magnitude.scaleb(-exponent)
+    return mantissa.copy_sign(sign), exponent
 
 
 def _resolve_decimal_format(
@@ -758,6 +820,8 @@ def _resolve_decimal_format(
 def _numeric_value(value: object) -> int | float | Decimal:
     if value is None:
         return float("nan")
+    if isinstance(value, XdmNode):
+        value = value.typed_value[0]
     if isinstance(value, XdmAtomic):
         local = (
             value.type_name.partition("}")[2]
@@ -817,12 +881,26 @@ def _analyze_subpicture(picture: str, decimal_format: DecimalFormat) -> _SubPict
     active = decimal_format.active_characters
     decimal_separator = decimal_format.decimal_separator
     grouping_separator = decimal_format.grouping_separator
+    exponent_separator = decimal_format.exponent_separator
     if picture.count(decimal_separator) > 1:
         _invalid_picture("more than one decimal separator")
     if decimal_format.percent in picture and decimal_format.per_mille in picture:
         _invalid_picture("both percent and per-mille signs")
     if picture.count(decimal_format.percent) + picture.count(decimal_format.per_mille) > 1:
         _invalid_picture("more than one percent or per-mille sign")
+    exponent_index: int | None = None
+    for index, character in enumerate(picture):
+        if character != exponent_separator or index == 0 or index + 1 >= len(picture):
+            continue
+        if picture[index - 1] in active and picture[index + 1] in active:
+            if exponent_index is not None:
+                _invalid_picture("more than one exponent separator")
+            exponent_index = index
+    effective_active = active | ({exponent_separator} if exponent_index is not None else set())
+    if exponent_index is not None and (
+        decimal_format.percent in picture or decimal_format.per_mille in picture
+    ):
+        _invalid_picture("an exponent cannot be combined with percent or per-mille")
     if (
         decimal_separator + grouping_separator in picture
         or grouping_separator + decimal_separator in picture
@@ -831,40 +909,56 @@ def _analyze_subpicture(picture: str, decimal_format: DecimalFormat) -> _SubPict
     if picture.startswith(grouping_separator) or picture.endswith(grouping_separator):
         _invalid_picture("a grouping separator must have digits on both sides")
     first_active = next(
-        (index for index, character in enumerate(picture) if character in active), None
+        (index for index, character in enumerate(picture) if character in effective_active), None
     )
     last_active = next(
-        (index for index, character in enumerate(reversed(picture)) if character in active),
+        (
+            index
+            for index, character in enumerate(reversed(picture))
+            if character in effective_active
+        ),
         None,
     )
     if first_active is None or last_active is None:
         _invalid_picture("a sub-picture requires a digit or optional digit")
     last_active = len(picture) - 1 - last_active
     for index in range(first_active + 1, last_active):
-        if picture[index] not in active:
+        if picture[index] not in effective_active:
             _invalid_picture("a passive character separates active characters")
+    mantissa = picture if exponent_index is None else picture[:exponent_index]
     if not any(
         character in decimal_format.digits or character == decimal_format.digit
-        for character in picture
+        for character in mantissa
     ):
         _invalid_picture("a sub-picture requires a digit or optional digit")
-    decimal_index = picture.find(decimal_separator)
+    exponent_part = "" if exponent_index is None else picture[exponent_index + 1 :]
+    minimum_exponent_size = 0
+    if exponent_index is not None:
+        digits_seen = sum(1 for character in exponent_part if character in decimal_format.digits)
+        if any(
+            character in effective_active and character not in decimal_format.digits
+            for character in exponent_part
+        ):
+            _invalid_picture("an exponent may contain only digits and a passive suffix")
+        minimum_exponent_size = digits_seen
+    decimal_index = mantissa.find(decimal_separator)
     if decimal_index < 0:
-        integer_part = picture
+        integer_part = mantissa
         fractional_part = ""
         has_decimal = False
     else:
-        integer_part = picture[:decimal_index]
-        fractional_part = picture[decimal_index + 1 :]
+        integer_part = mantissa[:decimal_index]
+        fractional_part = mantissa[decimal_index + 1 :]
         has_decimal = True
-    _validate_digit_families(integer_part + fractional_part, decimal_format)
+    _validate_digit_families(
+        integer_part + fractional_part + exponent_part,
+        decimal_format,
+    )
     _validate_digit_order(integer_part, fractional_part, decimal_format)
     integer_grouping = _integer_grouping_positions(integer_part, decimal_format)
     integer_step = _regular_step(integer_grouping)
     fractional_grouping = _fractional_grouping_positions(fractional_part, decimal_format)
     minimum_integer = sum(1 for character in integer_part if character in decimal_format.digits)
-    if not minimum_integer and not has_decimal:
-        minimum_integer = 1
     minimum_fractional = sum(
         1 for character in fractional_part if character in decimal_format.digits
     )
@@ -873,6 +967,17 @@ def _analyze_subpicture(picture: str, decimal_format: DecimalFormat) -> _SubPict
         for character in fractional_part
         if character in decimal_format.digits or character == decimal_format.digit
     )
+    if minimum_integer == 0 and maximum_fractional == 0:
+        if exponent_index is not None:
+            minimum_fractional = 1
+            maximum_fractional = 1
+        else:
+            minimum_integer = 1
+    if exponent_index is not None and minimum_integer == 0 and decimal_format.digit in integer_part:
+        minimum_integer = 1
+    if minimum_integer == 0 and minimum_fractional == 0:
+        minimum_fractional = 1
+    scaling_factor = sum(1 for character in integer_part if character in decimal_format.digits)
     prefix = picture[:first_active]
     suffix = picture[last_active + 1 :]
     return _SubPicture(
@@ -885,6 +990,8 @@ def _analyze_subpicture(picture: str, decimal_format: DecimalFormat) -> _SubPict
         minimum_fractional_size=minimum_fractional,
         maximum_fractional_size=maximum_fractional,
         has_decimal_separator=has_decimal,
+        scaling_factor=scaling_factor,
+        minimum_exponent_size=minimum_exponent_size,
         percent=decimal_format.percent in picture,
         per_mille=decimal_format.per_mille in picture,
     )
@@ -971,8 +1078,10 @@ def _fractional_grouping_positions(
 def _fixed_decimal(value: Decimal) -> str:
     if value.is_zero():
         return "0"
-    normalized = value.normalize()
-    return format(normalized, "f")
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
 
 
 def _apply_integer_grouping(
