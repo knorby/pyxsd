@@ -381,8 +381,6 @@ def format_place_marker(
     grouping_size: str | None = None,
 ) -> str:
     """Format one place marker using XSLT 3.0 section 12.4."""
-    if not numbers:
-        return ""
     if not all(isinstance(number, int) for number in numbers):
         raise ValueError("place markers contain integers")
     normalized_letter_value = letter_value.strip()
@@ -391,6 +389,8 @@ def format_place_marker(
             f"the letter-value {letter_value!r} is not alphabetic or traditional",
             code="XTDE0030",
         )
+    if not numbers:
+        return ""
     tokens = _format_tokens(format_)
     format_tokens = [token for token in tokens if token.is_format]
     if not format_tokens:
@@ -711,9 +711,9 @@ def format_number(
         return sub_picture.prefix + decimal_format.infinity + sub_picture.suffix
     decimal_number = _as_decimal(number)
     if sub_picture.percent:
-        decimal_number *= 100
+        decimal_number = _scale_decimal(decimal_number, 100)
     elif sub_picture.per_mille:
-        decimal_number *= 1000
+        decimal_number = _scale_decimal(decimal_number, 1000)
     exponent = 0
     if sub_picture.minimum_exponent_size:
         decimal_number, exponent = _exponential_mantissa(
@@ -751,6 +751,18 @@ def format_number(
     return sub_picture.prefix + result + sub_picture.suffix
 
 
+def _scale_decimal(value: Decimal, factor: int) -> Decimal:
+    """Multiply by 100/1000 without the default 28-digit context rounding."""
+    digits = len(value.as_tuple().digits)
+    exponent = value.as_tuple().exponent
+    assert isinstance(exponent, int)
+    with localcontext() as context:
+        context.prec = max(50, digits + abs(exponent) + len(str(factor)) + 10)
+        context.Emax = max(999999, abs(exponent) + 10)
+        context.Emin = -context.Emax
+        return value * factor
+
+
 def _round_decimal(value: Decimal, maximum_fractional_size: int) -> Decimal:
     """Round *value* half-to-even without the default 28-digit context limit."""
     digits = len(value.as_tuple().digits)
@@ -771,7 +783,12 @@ def _exponential_mantissa(value: Decimal, scaling_factor: int) -> tuple[Decimal,
     sign = -1 if value.is_signed() else 1
     magnitude = value.copy_abs()
     exponent = magnitude.adjusted() - scaling_factor + 1
-    mantissa = magnitude.scaleb(-exponent)
+    digits = len(magnitude.as_tuple().digits)
+    with localcontext() as context:
+        context.prec = max(50, digits + abs(exponent) + 10)
+        context.Emax = max(999999, abs(exponent) + 10)
+        context.Emin = -context.Emax
+        mantissa = magnitude.scaleb(-exponent)
     return mantissa.copy_sign(sign), exponent
 
 

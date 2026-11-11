@@ -1026,3 +1026,56 @@ def test_exponent_and_letter_value_boundary_branches() -> None:
         assert caught.value.code == "FODF1310"
     assert format_place_marker([0], "a", letter_value="traditional") == "0"
     assert format_place_marker([0], "i", letter_value="alphabetic") == "0"
+
+
+# ---------------------------------------------------------------------------
+# Review fix round 2 regressions
+
+
+def test_large_percent_and_per_mille_scaling_is_exact() -> None:
+    source = format_number(
+        expression=(
+            "format-number(99999999999999999999999999999, '0%'), "
+            "format-number(99999999999999999999999999999, '0‰')"
+        )
+    )
+    assert values(lambda: transform(source, None, initial_template="main")) == [
+        "9999999999999999999999999999900%",
+        "99999999999999999999999999999000‰",
+    ]
+
+
+def test_exponent_mantissa_preserves_more_than_28_significant_digits() -> None:
+    source = format_number(
+        expression=(
+            "format-number(99999999999999999999999999999, "
+            "'0.0000000000000000000000000000e00'), "
+            "format-number(12345678901234567890123456789, "
+            "'0.00000000000000000000000000000e00')"
+        )
+    )
+    assert values(lambda: transform(source, None, initial_template="main")) == [
+        "9.9999999999999999999999999999e28",
+        "1.23456789012345678901234567890e28",
+    ]
+
+
+def test_empty_place_marker_still_validates_letter_value() -> None:
+    source = stylesheet(
+        '<xsl:template name="main"><xsl:number value="()" format="a" '
+        'letter-value="unknown"/></xsl:template>'
+    )
+    assert error_code(lambda: transform(source, None, initial_template="main")) == "XTDE0030"
+
+
+def test_exponent_picture_pads_mandatory_fractional_digits() -> None:
+    source = format_number(
+        expression=(
+            "format-number(99999999999999999999999999999, '0.00000000000000000000000000000e00')"
+        )
+    )
+    # The 29-zero fractional picture requires 29 fractional digits; the exact
+    # mantissa has 28, so F&O step 9 adds one mandatory trailing zero.
+    assert values(lambda: transform(source, None, initial_template="main")) == [
+        "9.99999999999999999999999999990e28"
+    ]

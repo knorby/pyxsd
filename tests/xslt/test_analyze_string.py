@@ -717,3 +717,41 @@ def test_regex_class_translation_mixed_escape_parts() -> None:
     with pytest.raises(XPathRegexError) as caught:
         compile_xpath_regex("[\\p{IsNoSuch}]", "i")
     assert caught.value.code == "FORX0002"
+
+
+def test_character_class_subtraction_keeps_categories_case_sensitive() -> None:
+    from pyxsd.xslt.runtime.text import analyze_string, compile_xpath_regex
+
+    def matches(pattern: str, text: str) -> bool:
+        return any(
+            piece.matched for piece in analyze_string(compile_xpath_regex(pattern, "i"), text)
+        )
+
+    assert matches("[\\p{Lu}-[Q]]", "A")
+    assert not matches("[\\p{Lu}-[Q]]", "a")
+    assert not matches("[\\p{Lu}-[Q]]", "Q")
+    assert not matches("[\\p{Lu}-[Q]]", "q")
+    assert matches("[\\p{Ll}-[a]]", "b")
+    assert not matches("[\\p{Ll}-[a]]", "B")
+    assert matches("[\\w-[\\d]]", "x")
+    assert not matches("[\\w-[\\d]]", "5")
+
+
+def test_x_flag_whitespace_before_optional_group_quantifier() -> None:
+    from pyxsd.xslt.runtime.text import analyze_string, compile_xpath_regex
+
+    def matches(pattern: str, text: str, flags: str = "") -> bool:
+        return any(
+            piece.matched for piece in analyze_string(compile_xpath_regex(pattern, flags), text)
+        )
+
+    assert matches("(a) ?b\\1", "b", "x")
+    assert matches("(a) ?b\\1", "aba", "x")
+    assert not matches("(a) ?b\\1", "ac", "x")
+
+
+def test_case_insensitive_negative_empty_character_class() -> None:
+    from pyxsd.xslt.runtime.text import analyze_string, compile_xpath_regex
+
+    result = analyze_string(compile_xpath_regex("[^]", "i"), "a")
+    assert any(piece.matched for piece in result)

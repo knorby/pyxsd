@@ -463,6 +463,9 @@ class _Translator:
         self.can_quantify = True
 
     def _group_is_optional(self, index: int) -> bool:
+        if self.ignore_whitespace:
+            while index < len(self.source) and self.source[index] in _XPATH_WHITESPACE:
+                index += 1
         if index >= len(self.source):
             return False
         character = self.source[index]
@@ -498,30 +501,78 @@ def _translate_character_class(
     ignore_case: bool,
 ) -> str:
     """Keep category escapes case-sensitive inside an ``i``-flagged class."""
-    if not ignore_case or "-[" in raw:
+    if not ignore_case:
         return str(character_class)
+    return _translate_class_raw(raw, ignore_case)
+
+
+def _translate_class_raw(raw: str, ignore_case: bool) -> str:
     inner = raw[1:-1]
     negative = inner.startswith("^")
     content = inner[1:] if negative else inner
+    subtraction = _find_subtraction(content)
+    if subtraction is not None:
+        return _translate_class_subtraction(content, negative, ignore_case)
+    return _translate_class_content(content, negative, ignore_case)
+
+
+def _find_subtraction(content: str) -> int | None:
+    index = 0
+    while index + 1 < len(content):
+        if content[index] == "\\":
+            index += 2
+            continue
+        if content[index] == "-" and content[index + 1] == "[":
+            return index
+        index += 1
+    return None
+
+
+def _translate_class_subtraction(
+    content: str,
+    negative: bool,
+    ignore_case: bool,
+) -> str:
+    subtraction = _find_subtraction(content)
+    assert subtraction is not None
+    base_content = content[:subtraction]
+    subtracted_raw = content[subtraction + 1 :]
+    base_negative = base_content.startswith("^")
+    base_fragment = _translate_class_content(
+        base_content[1:] if base_negative else base_content,
+        base_negative,
+        ignore_case,
+    )
+    subtracted = _translate_class_raw(subtracted_raw, ignore_case)
+    positive = f"(?!{subtracted})(?:{base_fragment})"
+    return f"(?!{positive})[\\s\\S]" if negative else positive
+
+
+def _translate_class_content(content: str, negative: bool, ignore_case: bool) -> str:
+    if not content:
+        return r"[\s\S]" if negative else "(?!)"
     if "\\" not in content:
-        return str(character_class)
+        positive = f"[{content}]"
+        return f"(?!{positive})[\\s\\S]" if negative else positive
     alternatives: list[str] = []
     ordinary: list[str] = []
+
+    def flush() -> None:
+        if ordinary:
+            alternatives.append("[" + "".join(ordinary) + "]")
+            ordinary.clear()
+
     for part in get_charset_parts(content):
         if part in CHARACTER_ESCAPES:
             value = CHARACTER_ESCAPES[part]
             if isinstance(value, str):
                 ordinary.append(re.escape(value))
                 continue
-            if ordinary:
-                alternatives.append("[" + "".join(ordinary) + "]")
-                ordinary.clear()
+            flush()
             alternatives.append(_python_class(value(), negative=part[-1].isupper()))
             continue
         if part.startswith("\\p") or part.startswith("\\P"):
-            if ordinary:
-                alternatives.append("[" + "".join(ordinary) + "]")
-                ordinary.clear()
+            flush()
             name = part[3:-1]
             try:
                 subset = unicode_subset(name)
@@ -530,8 +581,8 @@ def _translate_character_class(
             alternatives.append(_python_class(subset, negative=part.startswith("\\P")))
             continue
         ordinary.append(part)
-    if ordinary:
-        alternatives.append("[" + "".join(ordinary) + "]")
+    flush()
+    assert alternatives
     positive = "(?:" + "|".join(alternatives) + ")"
     return f"(?!{positive})[\\s\\S]" if negative else positive
 
