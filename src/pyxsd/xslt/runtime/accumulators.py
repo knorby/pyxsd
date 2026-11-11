@@ -520,6 +520,12 @@ def _paren_is_node_test(source: str, close_index: int) -> bool:
     ):
         token_start -= 1
     token = source[token_start + 1 : token_end + 1]
+    if "::" in token:
+        axis: str | None = token.rpartition("::")[0].strip()
+    else:
+        axis = _axis_before(source, token_start + 1)
+    if axis == "self":
+        return False
     return token.rpartition(":")[2] in _NODE_TEST_FUNCTIONS
 
 
@@ -545,21 +551,21 @@ def _predicate_changes_focus(source: str, predicate_start: int) -> bool:
 def same_context_accumulator_call(source: str, start: int) -> bool:
     """Whether an accumulator call's focus is the rule's own context node.
 
-    A call inside a predicate attached to a path step (including chained
-    predicates and calls nested in functions/operators within the predicate)
-    addresses the step's item; ``.`` and ``self::`` predicates keep the same
-    node.  A call reached through ``/`` or ``!`` outside a predicate may address
-    a different node.  Any other position is treated as same-context.  This
-    conservative lexical check keeps the common self-cycle static while
-    deferring focus-changing recurrences to the runtime partial-value cache.
+    An immediate ``/`` or ``!`` before the call always changes focus, even
+    inside a ``.``/``self::`` predicate.  Otherwise a call inside a predicate
+    attached to a path step addresses the step's item; ``.`` and ``self::``
+    predicates keep the same node.  Any other position is treated as
+    same-context.  This conservative lexical check keeps the common self-cycle
+    static while deferring focus-changing recurrences to the runtime
+    partial-value cache.
     """
+    index = _previous_nonspace(source, start - 1)
+    if index >= 0 and source[index] in ("!", "/"):
+        return False
     predicate = enclosing_predicate_start(source, start)
     if predicate is not None:
         return not _predicate_changes_focus(source, predicate)
-    index = _previous_nonspace(source, start - 1)
-    if index < 0:
-        return True
-    return source[index] not in ("!", "/")
+    return True
 
 
 K = TypeVar("K", bound=Hashable)

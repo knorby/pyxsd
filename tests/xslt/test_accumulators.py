@@ -1467,6 +1467,82 @@ def test_same_accumulator_predicate_only_recurrence_is_not_a_cycle() -> None:
     assert values(transform(stylesheet(ancestor), SOURCE)) == ("2", "4", "6")
 
 
+def test_safe_focus_change_inside_same_context_predicate_is_not_a_cycle() -> None:
+    dot_if = """
+        <xsl:mode use-accumulators="#all"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n"
+            select="$value + 1 + (if (.[preceding-sibling::n[1] ! accumulator-before('app:a')])
+              then 1 else 0)"/>
+        </xsl:accumulator>
+        <xsl:template match="/">
+          <xsl:for-each select="doc/n">
+            <xsl:sequence select="accumulator-before('app:a')"/>
+          </xsl:for-each>
+          <xsl:sequence select="accumulator-after('app:a')"/>
+        </xsl:template>
+    """
+    # The predicate value is numeric, so XPath applies positional predicate
+    # semantics: n2 sees 1 (selects the single context item), n3 sees 3 (does
+    # not).  The recurrence itself is valid and must not be a static cycle.
+    assert values(transform(stylesheet(dot_if), SOURCE)) == ("1", "3", "4", "4")
+
+    dot_boolean = """
+        <xsl:mode use-accumulators="#all"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n"
+            select="$value + 1 + (if (.[boolean(
+              preceding-sibling::n[1] ! accumulator-before('app:a'))])
+              then 1 else 0)"/>
+        </xsl:accumulator>
+        <xsl:template match="/">
+          <xsl:for-each select="doc/n">
+            <xsl:sequence select="accumulator-before('app:a')"/>
+          </xsl:for-each>
+          <xsl:sequence select="accumulator-after('app:a')"/>
+        </xsl:template>
+    """
+    assert values(transform(stylesheet(dot_boolean), SOURCE)) == (
+        "1",
+        "3",
+        "5",
+        "5",
+    )
+
+    slash = """
+        <xsl:mode use-accumulators="#all"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n"
+            select="$value + 1 + (if (.[preceding-sibling::n[1]/accumulator-before('app:a')])
+              then 1 else 0)"/>
+        </xsl:accumulator>
+        <xsl:template match="/">
+          <xsl:for-each select="doc/n">
+            <xsl:sequence select="accumulator-before('app:a')"/>
+          </xsl:for-each>
+          <xsl:sequence select="accumulator-after('app:a')"/>
+        </xsl:template>
+    """
+    assert values(transform(stylesheet(slash), SOURCE)) == ("1", "3", "4", "4")
+
+    self_axis = """
+        <xsl:mode use-accumulators="#all"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n"
+            select="$value + 1 + (if (self::n[
+              preceding-sibling::n[1] ! accumulator-before('app:a')])
+              then 1 else 0)"/>
+        </xsl:accumulator>
+        <xsl:template match="/">
+          <xsl:for-each select="doc/n">
+            <xsl:sequence select="accumulator-before('app:a')"/>
+          </xsl:for-each>
+          <xsl:sequence select="accumulator-after('app:a')"/>
+        </xsl:template>
+    """
+    assert values(transform(stylesheet(self_axis), SOURCE)) == ("1", "3", "4", "4")
+
+
 def test_same_context_predicate_self_references_remain_static_cycles() -> None:
     current_node = """
         <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
@@ -1488,6 +1564,39 @@ def test_same_context_predicate_self_references_remain_static_cycles() -> None:
     """
     with pytest.raises(XsltStaticError) as caught:
         compile_stylesheet(stylesheet(self_axis))
+    assert caught.value.code == "XTDE3400"
+
+    self_wildcard = """
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n"
+            select="$value + count(self::*[accumulator-before('app:a')])"/>
+        </xsl:accumulator>
+        <xsl:template name="main"/>
+    """
+    with pytest.raises(XsltStaticError) as caught:
+        compile_stylesheet(stylesheet(self_wildcard))
+    assert caught.value.code == "XTDE3400"
+
+    self_node = """
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n"
+            select="$value + count(self::node()[accumulator-before('app:a')])"/>
+        </xsl:accumulator>
+        <xsl:template name="main"/>
+    """
+    with pytest.raises(XsltStaticError) as caught:
+        compile_stylesheet(stylesheet(self_node))
+    assert caught.value.code == "XTDE3400"
+
+    self_text = """
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n"
+            select="$value + count(self::text()[accumulator-before('app:a')])"/>
+        </xsl:accumulator>
+        <xsl:template name="main"/>
+    """
+    with pytest.raises(XsltStaticError) as caught:
+        compile_stylesheet(stylesheet(self_text))
     assert caught.value.code == "XTDE3400"
 
 
@@ -1819,6 +1928,14 @@ def test_same_context_accumulator_call() -> None:
     check("..[accumulator-before('a')]", False)
     check("self::n[accumulator-before('a')]", True)
     check("self::*[accumulator-before('a')]", True)
+    check("self::node()[accumulator-before('a')]", True)
+    check("self::text()[accumulator-before('a')]", True)
+    check("self::element()[accumulator-before('a')]", True)
+    check("child::node()[accumulator-before('a')]", False)
+    check("node()[accumulator-before('a')]", False)
+    check(".[preceding-sibling::n[1] ! accumulator-before('a')]", False)
+    check(".[preceding-sibling::n[1]/accumulator-before('a')]", False)
+    check("self::n[preceding-sibling::n[1] ! accumulator-before('a')]", False)
     check("$x[accumulator-before('a')]", True)
     check("?key[accumulator-before('a')]", True)
     check("f()[accumulator-before('a')]", True)
