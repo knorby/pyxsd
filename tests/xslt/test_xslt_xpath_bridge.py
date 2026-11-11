@@ -1524,7 +1524,7 @@ def test_versions_gate_generate_id_document_and_availability() -> None:
     assert not two_point_zero.element_available("xsl:merge")
     assert not two_point_zero.element_available("xsl:evaluate")
     assert not two_point_zero.element_available("xsl:mode")
-    assert not two_point_zero.element_available("xsl:for-each-group")
+    assert two_point_zero.element_available("xsl:for-each-group")
     assert not two_point_zero.element_available("xsl:analyze-string")
     assert two_point_zero.element_available("xsl:template")
 
@@ -1560,7 +1560,7 @@ def test_static_availability_and_system_property_are_honest() -> None:
         XdmAtomic.string("yes"),
         XdmAtomic.boolean(False),
         XdmAtomic.boolean(True),
-        XdmAtomic.boolean(False),
+        XdmAtomic.boolean(True),
         XdmAtomic.boolean(False),
         XdmAtomic.boolean(True),
     )

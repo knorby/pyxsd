@@ -124,6 +124,8 @@ class Transformation:
         self.current_datetime = base.current_datetime
         self.implicit_timezone = base.implicit_timezone
         self.output_attributes = self._read_output_attributes()
+        self.current_group: XdmSequence | None = None
+        self.current_grouping_key: XdmSequence | None = None
         self.limits = limits if limits is not None else ExecutionLimits()
         self.budget = ExecutionBudget(self.limits)
         self.scheduler = Scheduler(self.limits, budget=self.budget)

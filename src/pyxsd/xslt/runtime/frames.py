@@ -29,6 +29,7 @@ from pyxsd.xpath.environment import Focus
 from pyxsd.xslt.errors import XsltDynamicError
 
 __all__ = [
+    "NO_GROUP",
     "NO_INPUT",
     "PYXSD_FRAME_EXHAUSTED",
     "Call",
@@ -51,6 +52,9 @@ PYXSD_FRAME_EXHAUSTED = "PYXSD-XSLT-001"
 
 #: Sentinel distinguishing "no delivered child result" from an XDM value.
 NO_INPUT = object()
+
+#: Sentinel distinguishing an absent current group/key from an empty sequence.
+NO_GROUP = object()
 
 ContinuationKind: TypeAlias = Literal["resume", "append", "convert"]
 
@@ -197,6 +201,9 @@ class Frame:
     values: tuple[object, ...] = ()
     input: object = NO_INPUT
     conversion: Callable[[object], object] | None = None
+    group: object = NO_GROUP
+    grouping_key: object = NO_GROUP
+    iteration: object | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, str) or not self.kind:
@@ -231,6 +238,10 @@ class Frame:
             raise TypeError("a frame mode must be a string or None")
         if self.location is not None and not isinstance(self.location, IssueLocation):
             raise TypeError("a frame location must be an IssueLocation or None")
+        if self.group is not NO_GROUP and not isinstance(self.group, tuple):
+            raise TypeError("a frame group must be an XDM sequence or NO_GROUP")
+        if self.grouping_key is not NO_GROUP and not isinstance(self.grouping_key, tuple):
+            raise TypeError("a frame grouping key must be an XDM sequence or NO_GROUP")
 
     def diagnostic(self) -> FrameDiagnostic:
         """One data-only diagnostic entry for this frame."""

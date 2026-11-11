@@ -611,11 +611,7 @@ def test_result_document_is_rejected_in_temporary_output_state() -> None:
 
 def test_unsupported_instruction_is_explicit() -> None:
     compiled = compile_bytes(
-        xsl(
-            '<xsl:template name="main">'
-            '<xsl:for-each select="1 to 2"><xsl:sequence select="."/></xsl:for-each>'
-            "</xsl:template>"
-        )
+        xsl('<xsl:template name="main"><xsl:number value="1"/></xsl:template>')
     )
 
     with pytest.raises(XsltError, match="not supported by the Task 16 execution slice"):

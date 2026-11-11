@@ -1675,6 +1675,10 @@ def test_frame_and_continuation_contracts() -> None:
         Frame(mode=1)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="location"):
         Frame(location="here")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="frame group"):
+        Frame(group="group")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="frame grouping key"):
+        Frame(grouping_key="key")  # type: ignore[arg-type]
 
     with pytest.raises(ValueError, match="continuation kind"):
         Continuation("later")  # type: ignore[arg-type]
