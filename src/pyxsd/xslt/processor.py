@@ -817,6 +817,9 @@ class XsltProcessor:
     language: str = "3.0"
     xpath: str = "3.1"
     schema_aware: bool = True
+    xsd_version: str = "1.1"
+    validation: str = "strip"
+    validation_type: str | None = None
     default_collation: str | None = None
     implicit_timezone: Any = None
     resource_policy: Any = None
@@ -833,6 +836,14 @@ class XsltProcessor:
             raise ValueError("XSLT 3.0 requires XPath 3.1")
         if not isinstance(self.schema_aware, bool):
             raise TypeError("schema_aware must be a boolean")
+        if self.xsd_version not in ("1.0", "1.1"):
+            raise ValueError(f"xsd_version must be '1.0' or '1.1', not {self.xsd_version!r}")
+        if self.validation not in _VALIDATION_MODES:
+            raise ValueError(
+                f"validation must be one of {sorted(_VALIDATION_MODES)}, got {self.validation!r}"
+            )
+        if self.validation_type is not None and not isinstance(self.validation_type, str):
+            raise TypeError("validation_type must be a string or None")
         if self.default_collation is not None and not isinstance(self.default_collation, str):
             raise TypeError("default_collation must be a string or None")
         if self.recovery_policy is not None and not isinstance(
@@ -898,7 +909,20 @@ class XsltProcessor:
             for descriptor in self.resolver:
                 if descriptor.key != principal_key:
                     resolver.register(descriptor)
-        package = compile_package_set(effective, resolver=resolver)
+        package = compile_package_set(
+            effective,
+            resolver=resolver,
+            xsd_version=self.xsd_version,
+            resource_policy=self.resource_policy,
+        )
+        if package.schema_imports and not self.schema_aware:
+            raise XsltStaticError(
+                "a non-schema-aware processor cannot process xsl:import-schema",
+                code="XTSE1650",
+                uri=effective.identity,
+                location=effective.root.source_location(),
+            )
+        pool = _merge_schema_pools(pool, package.schema_pool)
         return _compile_stylesheet(
             self,
             package,
@@ -1026,6 +1050,8 @@ class CompiledStylesheet:
         output_uri: str | None = None,
         delivery: str = "stylesheet",
         limits: Any = None,
+        validation: str | None = None,
+        validation_type: str | None = None,
     ) -> TransformationResult:
         """Run one fresh invocation of this compiled stylesheet."""
         options = _prepare_invocation(
@@ -1042,8 +1068,35 @@ class CompiledStylesheet:
             initial_function_arguments=initial_function_arguments,
             output_uri=output_uri,
             delivery=delivery,
+            validation=validation,
+            validation_type=validation_type,
         )
         return _Invocation(self, options, limits=limits).run()
+
+
+def _merge_schema_pools(
+    primary: SchemaPool | None,
+    imported: SchemaPool | None,
+) -> SchemaPool | None:
+    """Compose an explicit caller schema pool with imported schemas."""
+    if primary is None:
+        return imported
+    if imported is None:
+        return primary
+    if primary.xsd_version != imported.xsd_version:
+        raise ValueError("the explicit schema pool and imported schemas use different XSD versions")
+    try:
+        return SchemaPool(
+            (*primary.raw_schemas, *imported.raw_schemas),
+            xsd_version=primary.xsd_version,
+            merge_namespaces=True,
+        )
+    except ValueError as exc:
+        raise XsltStaticError(
+            str(exc),
+            code="XTSE0220",
+            cause=exc,
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -2631,7 +2684,11 @@ def _compile_merge_source(
         streamable=streamable,
         sort_before_merge=sort_before_merge,
         validation=None if validation is None else validation.strip(),
-        type_name=None if type_name is None else type_name.strip(),
+        type_name=(
+            None
+            if type_name is None
+            else _compile_validation_type(type_name, context, instruction, "xsl:merge-source")
+        ),
         base_uri=instruction.base_uri,
         use_accumulators=_compile_use_accumulators(
             use_accumulators,
@@ -2768,13 +2825,86 @@ def _compile_source_document(
         children=_compile_sequence(instruction.children, context, module),
         streamable=streamable,
         validation=None if validation is None else validation.strip(),
-        type_name=None if type_name is None else type_name.strip(),
+        type_name=(
+            None
+            if type_name is None
+            else _compile_validation_type(type_name, context, instruction, "xsl:source-document")
+        ),
         use_accumulators=_compile_use_accumulators(
             instruction.attribute("use-accumulators"),
             context,
             instruction,
         ),
     )
+
+
+def _compile_validation_type(
+    value: str,
+    context: StaticContext,
+    instruction: Instruction,
+    label: str,
+) -> str:
+    """Resolve an [xsl:]type QName against the in-scope schema definitions."""
+    text = value.strip()
+    if not text:
+        raise XsltStaticError(
+            f"{label} has an empty type attribute",
+            code="XPST0003",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    if text.startswith("Q{"):
+        close = text.find("}")
+        if close < 0:
+            raise XsltStaticError(
+                f"{label} has an invalid EQName {text!r}",
+                code="XPST0003",
+                uri=context.uri,
+                location=instruction.location,
+            )
+        namespace_uri = text[2:close]
+        local = text[close + 1 :]
+        expanded = f"{{{namespace_uri}}}{local}" if namespace_uri else local
+    else:
+        prefix, separator, local = text.partition(":")
+        if separator:
+            bound_uri = context.namespaces.get(prefix)
+            if bound_uri is None:
+                raise XsltStaticError(
+                    f"the namespace prefix {prefix!r} is not bound in the static context",
+                    code="XPST0081",
+                    uri=context.uri,
+                    location=instruction.location,
+                )
+            expanded = f"{{{bound_uri}}}{local}"
+        else:
+            default = context.xpath_default_namespace
+            expanded = f"{{{default}}}{text}" if default else text
+    pool = context.schema
+    if pool is None:
+        if _is_builtin_type_name(expanded):
+            return expanded
+        raise XsltStaticError(
+            f"the type {text!r} is not in the in-scope schema definitions",
+            code="XPST0051",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    if pool.get_type(expanded) is None:
+        raise XsltStaticError(
+            f"the type {text!r} is not in the in-scope schema definitions",
+            code="XPST0051",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    return expanded
+
+
+def _is_builtin_type_name(name: str) -> bool:
+    from pyxsd.xdm.annotations import builtin_type_classes
+
+    namespace, _, local = name[1:].partition("}") if name.startswith("{") else ("", "", name)
+    return namespace == "http://www.w3.org/2001/XMLSchema" and local in builtin_type_classes()
 
 
 def _merge_source_names(sources: tuple[_MergeSourcePlan, ...]) -> tuple[str, ...]:
@@ -4327,6 +4457,9 @@ class _InvocationOptions:
     output_uri: str | None
     delivery: str
     entry: Literal["template", "function", "mode"]
+    validation: str = "strip"
+    validation_type: str | None = None
+    input_type_annotations: str | None = None
 
 
 def _prepare_invocation(
@@ -4344,6 +4477,8 @@ def _prepare_invocation(
     initial_function_arguments: Sequence[Any],
     output_uri: str | None,
     delivery: str,
+    validation: str | None = None,
+    validation_type: str | None = None,
 ) -> _InvocationOptions:
     package = stylesheet.package
     if delivery not in _DELIVERIES:
@@ -4352,6 +4487,18 @@ def _prepare_invocation(
         )
     if output_uri is not None:
         _require_absolute(output_uri, "output_uri")
+    if validation is not None and validation not in _VALIDATION_MODES:
+        raise XsltInvocationError(
+            f"validation must be one of {sorted(_VALIDATION_MODES)}, got {validation!r}"
+        )
+    if validation_type is not None and not isinstance(validation_type, str):
+        raise TypeError("validation_type must be a string or None")
+    effective_validation = stylesheet.processor.validation if validation is None else validation
+    effective_type = (
+        stylesheet.processor.validation_type if validation_type is None else validation_type
+    )
+    if effective_type is not None and effective_validation in ("strip", "preserve"):
+        effective_validation = "strict"
 
     source_supplied = source is not _ABSENT
     global_supplied = global_context_item is not _ABSENT
@@ -4387,7 +4534,14 @@ def _prepare_invocation(
     default_global: XdmItem | None = None
     default_selection: XdmSequence | _AbsentType = _ABSENT
     if source_supplied:
-        default_selection, default_global = _source_inputs(source)
+        default_selection, default_global = _source_inputs(
+            source,
+            schema_pool=stylesheet.schema_pool,
+            validation=effective_validation,
+            validation_type=effective_type,
+            input_type_annotations=package.input_type_annotations,
+            namespaces=package.namespaces,
+        )
 
     explicit_global: XdmItem | None = None
     if global_supplied:
@@ -4472,33 +4626,138 @@ def _prepare_invocation(
         output_uri=output_uri,
         delivery=delivery,
         entry=entry,
+        validation=effective_validation,
+        validation_type=effective_type,
+        input_type_annotations=package.input_type_annotations,
     )
 
 
-def _source_inputs(source: Any) -> tuple[XdmSequence, XdmItem | None]:
+def _source_inputs(
+    source: Any,
+    *,
+    schema_pool: SchemaPool | None = None,
+    validation: str = "strip",
+    validation_type: str | None = None,
+    input_type_annotations: str | None = None,
+    namespaces: Mapping[str, str] | None = None,
+) -> tuple[XdmSequence, XdmItem | None]:
+    annotations = "unspecified" if input_type_annotations is None else input_type_annotations
     if isinstance(source, Document):
-        document = source.to_xdm()
+        document = _typed_source(
+            source,
+            schema_pool=schema_pool,
+            validation=validation,
+            validation_type=validation_type,
+            input_type_annotations=annotations,
+            namespaces=namespaces or {},
+        )
         return (document,), document
     if isinstance(source, XdmDocument):
-        return (source,), source
+        document = _typed_source(
+            source,
+            schema_pool=schema_pool,
+            validation=validation,
+            validation_type=validation_type,
+            input_type_annotations=annotations,
+            namespaces=namespaces or {},
+        )
+        return (document,), document
     if isinstance(source, XdmItem):
         item_sequence: XdmSequence = (source,)
         global_item = source.document if isinstance(source, XdmNode) else None
         return item_sequence, global_item
     if isinstance(source, str) and source.lstrip().startswith("<"):
-        document = XdmDocument.parse(source.encode("utf-8"))
+        document = _typed_source(
+            source.encode("utf-8"),
+            schema_pool=schema_pool,
+            validation=validation,
+            validation_type=validation_type,
+            input_type_annotations=annotations,
+            namespaces=namespaces or {},
+        )
         return (document,), document
     if isinstance(source, (str, os.PathLike, bytes, bytearray, memoryview)):
-        document = XdmDocument.parse(source)
+        document = _typed_source(
+            source,
+            schema_pool=schema_pool,
+            validation=validation,
+            validation_type=validation_type,
+            input_type_annotations=annotations,
+            namespaces=namespaces or {},
+        )
         return (document,), document
     if hasattr(source, "read"):
-        document = XdmDocument.parse(source)
+        document = _typed_source(
+            source,
+            schema_pool=schema_pool,
+            validation=validation,
+            validation_type=validation_type,
+            input_type_annotations=annotations,
+            namespaces=namespaces or {},
+        )
         return (document,), document
     sequence: XdmSequence = as_xdm(source)
     global_item = None
     if len(sequence) == 1 and isinstance(sequence[0], XdmNode):
         global_item = sequence[0].document
     return sequence, global_item
+
+
+def _typed_source(
+    source: Any,
+    *,
+    schema_pool: SchemaPool | None,
+    validation: str,
+    validation_type: str | None,
+    input_type_annotations: str,
+    namespaces: Mapping[str, str],
+) -> XdmDocument:
+    """Parse one source input, converting validation failures to XSLT codes."""
+    from pyxsd.xdm.document import DocumentValidationError, parse_typed_document
+
+    type_name = None
+    if validation_type is not None:
+        if schema_pool is None:
+            expanded = _expanded_name(validation_type, namespaces)
+            if _is_builtin_type_name(expanded):
+                type_name = None
+            else:
+                raise XsltDynamicError(
+                    f"the type {validation_type!r} is not in the in-scope schema definitions",
+                    code="XPST0051",
+                )
+        else:
+            type_name = _resolve_type_name(validation_type, schema_pool, namespaces)
+    try:
+        return parse_typed_document(
+            source,
+            schema_pool=schema_pool,
+            validation=validation,
+            input_type_annotations=input_type_annotations,
+            type_name=type_name,
+        )
+    except DocumentValidationError as exc:
+        code = {
+            "unknown": "XTTE1512",
+            "invalid": "XTTE1510",
+            "type": "XTTE1540",
+        }[exc.reason]
+        raise XsltDynamicError(str(exc), code=code, cause=exc) from exc
+
+
+def _resolve_type_name(
+    type_name: str,
+    schema_pool: SchemaPool,
+    namespaces: Mapping[str, str],
+) -> str:
+    """Return *type_name* if the pool knows it, else raise XPST0051."""
+    expanded = _expanded_name(type_name, namespaces)
+    if schema_pool.get_type(expanded) is None and schema_pool.get_type(type_name) is None:
+        raise XsltDynamicError(
+            f"the type {type_name!r} is not in the in-scope schema definitions",
+            code="XPST0051",
+        )
+    return expanded if expanded.startswith("{") else type_name
 
 
 def _global_context(value: Any) -> XdmItem | None:
@@ -5083,10 +5342,16 @@ class _Invocation(Transformation):
         self.current_merge_key: XdmSequence | None = None
         self.current_merge_sources: tuple[str, ...] = ()
         self.current_regex_groups: tuple[str, ...] | None = None
+        validation_type = options.validation_type
+        if validation_type is not None and stylesheet.schema_pool is not None:
+            validation_type = _expanded_name(validation_type, self.package.namespaces)
         self.document_resources = DocumentResources(
             self.documents,
             policy=getattr(stylesheet.processor, "resource_policy", None),
             schema_pool=stylesheet.schema_pool,
+            validation=options.validation,
+            validation_type=validation_type,
+            input_type_annotations=options.input_type_annotations or "unspecified",
         )
         self.accumulators = AccumulatorManager(
             lookup=self._accumulator_definition,
@@ -6361,7 +6626,12 @@ class _Invocation(Transformation):
             )
             atomics = atomize_key_sequence(uri_values)
             documents = tuple(
-                self.document_resources.resolve(atomic.lexical, base=source.base_uri)
+                self.document_resources.resolve(
+                    atomic.lexical,
+                    base=source.base_uri,
+                    validation=source.validation,
+                    type_name=source.type_name,
+                )
                 for atomic in atomics
             )
             keys = source.use_accumulators
@@ -6523,7 +6793,12 @@ class _Invocation(Transformation):
         original_functions: Mapping[int, Component] | None = None,
     ) -> XdmSequence:
         href = self._value_template(plan.href, focus, locals_, package_name).strip()
-        document = self.document_resources.resolve(href, base=plan.instruction.base_uri)
+        document = self.document_resources.resolve(
+            href,
+            base=plan.instruction.base_uri,
+            validation=plan.validation,
+            type_name=plan.type_name,
+        )
         self.accumulators.restrict(
             document,
             plan.use_accumulators,

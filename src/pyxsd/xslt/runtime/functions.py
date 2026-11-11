@@ -940,6 +940,11 @@ class XsltContextBridge:
         if module_document is not None:
             self._allow_all_accumulators(module_document)
             return module_document
+        resources = getattr(self.transformation, "document_resources", None)
+        if resources is not None:
+            document = resources.resolve(target, base=None)
+            self._allow_all_accumulators(document)
+            return document
         raise XsltDynamicError(
             f"the document {uri!r} is not available to this transformation",
             code="FODC0002",

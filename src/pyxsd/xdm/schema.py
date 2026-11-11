@@ -911,6 +911,179 @@ class PyxsdSchemaProxy:
         return f"PyxsdSchemaProxy({self.target_namespace!r})"
 
 
+class _MergedSchemaProxy:
+    """One namespace composed from more than one compiled schema document."""
+
+    __slots__ = ("_members", "_namespaces", "_pool")
+
+    def __init__(self, members: tuple[PyxsdSchemaProxy, ...], pool: SchemaPool) -> None:
+        self._members = members
+        self._pool = pool
+        self._namespaces: dict[str, str] = {}
+
+    @property
+    def members(self) -> tuple[PyxsdSchemaProxy, ...]:
+        return self._members
+
+    @property
+    def schema(self) -> _MergedSchemaProxy:
+        return self
+
+    @property
+    def pool(self) -> SchemaPool:
+        return self._pool
+
+    @property
+    def target_namespace(self) -> str | None:
+        return self._members[0].target_namespace
+
+    @property
+    def base_element(self) -> PyxsdElement | None:
+        return None
+
+    @property
+    def name(self) -> str | None:
+        return self.target_namespace
+
+    @property
+    def tag(self) -> str:
+        return clark(XSD_NS, "schema")
+
+    @property
+    def attrib(self) -> Mapping[Any, Any]:
+        return MappingProxyType({})
+
+    @property
+    def text(self) -> None:
+        return None
+
+    @property
+    def tail(self) -> None:
+        return None
+
+    @property
+    def maps(self) -> SchemaPool:
+        return self._pool
+
+    @property
+    def validity(self) -> str:
+        return "valid" if all(member.validity == "valid" for member in self._members) else "invalid"
+
+    @property
+    def validation_attempted(self) -> str:
+        return (
+            "full"
+            if all(member.validation_attempted == "full" for member in self._members)
+            else "partial"
+        )
+
+    def is_fully_valid(self) -> bool:
+        return all(member.is_fully_valid() for member in self._members)
+
+    @property
+    def xsd_version(self) -> str:
+        return self._pool.xsd_version
+
+    def is_assertion_based(self) -> bool:
+        return False
+
+    def is_matching(self, name: str | None, default_namespace: str | None = None) -> bool:
+        return any(member.is_matching(name, default_namespace) for member in self._members)
+
+    def __iter__(self) -> Iterator[PyxsdElement]:
+        return iter(self._pool.elements_for(self))
+
+    def iter(self, tag: str | None = None) -> Iterator[PyxsdElement]:
+        for element in self:
+            if tag is None or tag == "*" or tag == element.name:
+                yield element
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.attrib.get(key, default)
+
+    def __len__(self) -> int:
+        return len(self._pool.elements_for(self))
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def find(
+        self, path: str, namespaces: Mapping[str, str] | None = None
+    ) -> PyxsdElement | _MergedSchemaProxy | None:
+        if path in (".", "./"):
+            return self
+        wanted = path[2:] if path.startswith("./") else path
+        expanded = self.expand_name(wanted, namespaces)
+        element = self._pool.get_element(expanded or wanted)
+        if element is not None and element.parent in self._members:
+            return element
+        return None
+
+    def get_type(self, qname: str) -> PyxsdType | None:
+        return self._pool.get_type(self.expand_name(qname))
+
+    def get_attribute(self, qname: str) -> PyxsdAttribute | None:
+        return self._pool.get_attribute(self.expand_name(qname))
+
+    def get_element(self, qname: str) -> PyxsdElement | None:
+        return self._pool.get_element(self.expand_name(qname))
+
+    def get_substitution_group(self, qname: str) -> frozenset[PyxsdElement] | None:
+        return self._pool.get_substitution_group(self.expand_name(qname))
+
+    def iter_atomic_types(self) -> Iterator[PyxsdType]:
+        for type_adapter in self._pool.imported_types_for(self):
+            if type_adapter.is_atomic() and type_adapter.name is not None:
+                yield type_adapter
+
+    def bind_parser(self, parser: Any) -> None:
+        """Bind *parser* to the merged namespace and register constructors."""
+        self._namespaces = dict(getattr(parser, "namespaces", None) or {})
+        if getattr(parser, "schema", None) is not self:
+            parser.schema = self
+        from elementpath.namespaces import get_prefixed_name
+
+        for type_adapter in self.iter_atomic_types():
+            assert type_adapter.name is not None
+            symbol = get_prefixed_name(type_adapter.name, self._namespaces)
+            if ":" not in symbol or symbol.startswith("{"):
+                continue
+            if symbol not in parser.symbol_table:
+                parser.schema_constructor(type_adapter.name)
+
+    def get_context(self) -> Any:
+        from elementpath.xpath_context import XPathSchemaContext
+
+        return XPathSchemaContext(root=cast(Any, self), item=None, schema=cast(Any, self))
+
+    def cast_as(self, obj: Any, type_qname: str) -> Any:
+        type_adapter = self.get_type(type_qname)
+        if type_adapter is None:
+            raise KeyError(type_qname)
+        return type_adapter.cast(obj, self._namespaces)
+
+    def is_instance(self, obj: Any, type_qname: str) -> bool:
+        type_adapter = self.get_type(type_qname)
+        if type_adapter is None:
+            raise KeyError(type_qname)
+        return type_adapter.is_valid(obj, namespaces=self._namespaces)
+
+    def expand_name(self, name: str, namespaces: Mapping[str, str] | None = None) -> str:
+        if name.startswith("{"):
+            return name
+        if ":" not in name:
+            return name
+        prefix, local = name.split(":", 1)
+        bindings = self._namespaces if namespaces is None else namespaces
+        uri = bindings.get(prefix)
+        if uri is None:
+            raise KeyError(f"unknown namespace prefix {prefix!r}")
+        return clark(uri, local)
+
+    def __repr__(self) -> str:
+        return f"MergedSchemaProxy({self.target_namespace!r}, {len(self._members)} schemas)"
+
+
 class SchemaPool:
     """An immutable composition of compiled pyxsd schemas.
 
@@ -920,7 +1093,8 @@ class SchemaPool:
     atomic types gain constructor functions.
     """
 
-    _schemas: dict[str | None, PyxsdSchemaProxy]
+    _schemas: dict[str | None, PyxsdSchemaProxy | _MergedSchemaProxy]
+    _schema_groups: dict[str | None, tuple[PyxsdSchemaProxy, ...]]
     _types: dict[str, PyxsdType]
     _elements: dict[str, PyxsdElement]
     _attributes: dict[str, PyxsdAttribute]
@@ -932,6 +1106,7 @@ class SchemaPool:
         "_constructors",
         "_element_cache",
         "_elements",
+        "_schema_groups",
         "_schemas",
         "_substitution_groups",
         "_type_cache",
@@ -939,13 +1114,20 @@ class SchemaPool:
         "_xsd_version",
     )
 
-    def __init__(self, schemas: Iterable[Any] = (), *, xsd_version: str = "1.1") -> None:
+    def __init__(
+        self,
+        schemas: Iterable[Any] = (),
+        *,
+        xsd_version: str = "1.1",
+        merge_namespaces: bool = False,
+    ) -> None:
         if xsd_version not in _XSD_VERSION_NAMES:
             raise ValueError(f"unsupported xsd_version {xsd_version!r}")
         self._xsd_version = xsd_version
         self._type_cache: dict[int, PyxsdType] = {}
         self._element_cache: dict[int, PyxsdElement] = {}
-        self._schemas: dict[str | None, PyxsdSchemaProxy] = {}
+        self._schemas: dict[str | None, PyxsdSchemaProxy | _MergedSchemaProxy] = {}
+        self._schema_groups: dict[str | None, tuple[PyxsdSchemaProxy, ...]] = {}
         self._types: dict[str, PyxsdType] = {}
         self._elements: dict[str, PyxsdElement] = {}
         self._attributes: dict[str, PyxsdAttribute] = {}
@@ -968,15 +1150,32 @@ class SchemaPool:
         for schema in schemas:
             proxy = PyxsdSchemaProxy(schema, self, xsd_version=xsd_version)
             namespace = proxy.target_namespace
-            if namespace in self._schemas:
-                raise ValueError(f"duplicate schema namespace {namespace!r}")
-            self._schemas[namespace] = proxy
+            members = self._schema_groups.get(namespace, ())
+            if members:
+                if not merge_namespaces:
+                    raise ValueError(f"duplicate schema namespace {namespace!r}")
+                if any(member._schema is schema for member in members):
+                    continue
+                source = getattr(schema, "source", None)
+                if source is not None and any(
+                    getattr(member._schema, "source", None) == source for member in members
+                ):
+                    continue
+            self._schema_groups[namespace] = (*members, proxy)
+            self._schemas[namespace] = (
+                proxy if not members else _MergedSchemaProxy(self._schema_groups[namespace], self)
+            )
             self._register_schema(proxy)
 
         # The slots stay dict-typed for the private registration helpers;
         # after construction they hold read-only mapping proxies.
         self._schemas = cast(
-            dict[str | None, PyxsdSchemaProxy], MappingProxyType(dict(self._schemas))
+            dict[str | None, PyxsdSchemaProxy | _MergedSchemaProxy],
+            MappingProxyType(dict(self._schemas)),
+        )
+        self._schema_groups = cast(
+            dict[str | None, tuple[PyxsdSchemaProxy, ...]],
+            MappingProxyType(dict(self._schema_groups)),
         )
         self._types = cast(dict[str, PyxsdType], MappingProxyType(dict(self._types)))
         self._elements = cast(dict[str, PyxsdElement], MappingProxyType(dict(self._elements)))
@@ -992,18 +1191,39 @@ class SchemaPool:
     @classmethod
     def from_imports(
         cls,
-        paths: Iterable[str | Any],
+        paths: Iterable[Any],
         *,
         xsd_version: str = "1.1",
+        resource_policy: Any = None,
+        merge_namespaces: bool = False,
+        namespace_context: Any = None,
     ) -> SchemaPool:
-        """Compile each imported schema path and compose them."""
+        """Compile each imported schema source and compose them.
+
+        *paths* may contain paths, readable streams, or already-parsed
+        ``Element`` trees.  Every source is compiled by pyxsd under
+        *xsd_version* and the supplied explicit *resource_policy*; no
+        second schema engine or serialized-text recovery is involved.
+        """
         if xsd_version not in _XSD_VERSION_NAMES:
             raise ValueError(f"unsupported xsd_version {xsd_version!r}")
         from pyxsd.schema import Schema
 
         version = cast(Literal["1.0", "1.1"], xsd_version)
-        schemas = [Schema.compile(path, xsd_version=version) for path in paths]
-        return cls(schemas, xsd_version=xsd_version)
+        schemas = [
+            Schema.compile(
+                path,
+                xsd_version=version,
+                resource_policy=resource_policy,
+                namespace_context=namespace_context,
+            )
+            for path in paths
+        ]
+        return cls(
+            schemas,
+            xsd_version=xsd_version,
+            merge_namespaces=merge_namespaces,
+        )
 
     @classmethod
     def from_schema(cls, schema: Any) -> SchemaPool:
@@ -1015,8 +1235,20 @@ class SchemaPool:
         return self._xsd_version
 
     @property
-    def schemas(self) -> Mapping[str | None, PyxsdSchemaProxy]:
+    def schemas(self) -> Mapping[str | None, PyxsdSchemaProxy | _MergedSchemaProxy]:
         return self._schemas
+
+    @property
+    def schema_groups(self) -> Mapping[str | None, tuple[PyxsdSchemaProxy, ...]]:
+        """Every compiled schema document grouped by its target namespace."""
+        return self._schema_groups
+
+    @property
+    def raw_schemas(self) -> tuple[Any, ...]:
+        """The compiled pyxsd schemas in composition order."""
+        return tuple(
+            member._schema for members in self._schema_groups.values() for member in members
+        )
 
     @property
     def types(self) -> Mapping[str, PyxsdType]:
@@ -1038,8 +1270,23 @@ class SchemaPool:
     def constructors(self) -> Mapping[str, AtomicConstructor]:
         return self._constructors
 
-    def proxy(self, namespace: str | None = None) -> PyxsdSchemaProxy | None:
+    def proxy(self, namespace: str | None = None) -> PyxsdSchemaProxy | _MergedSchemaProxy | None:
         return self._schemas.get(namespace)
+
+    def schema_for_element(self, qname: str | None) -> Any:
+        """Return the compiled schema that declares *qname*, or ``None``."""
+        element = self.get_element(qname)
+        if element is None:
+            return None
+        proxy = element.parent
+        return getattr(proxy, "_schema", None)
+
+    def schema_for_type(self, qname: str | None) -> Any:
+        """Return the compiled schema that declares *qname*, or ``None``."""
+        adapter = self.get_type(qname)
+        if adapter is None or adapter.schema is None:
+            return None
+        return getattr(adapter.schema, "_schema", None)
 
     def get_type(self, qname: str | None) -> PyxsdType | None:
         return _lookup(self._types, qname)
@@ -1093,14 +1340,20 @@ class SchemaPool:
             return None
         return self.type_for_class(type_class)
 
-    def elements_for(self, proxy: PyxsdSchemaProxy) -> tuple[PyxsdElement, ...]:
-        return tuple(element for element in self._elements.values() if element.parent is proxy)
+    def elements_for(
+        self, proxy: PyxsdSchemaProxy | _MergedSchemaProxy
+    ) -> tuple[PyxsdElement, ...]:
+        members = proxy.members if isinstance(proxy, _MergedSchemaProxy) else (proxy,)
+        return tuple(element for element in self._elements.values() if element.parent in members)
 
-    def imported_types_for(self, proxy: PyxsdSchemaProxy) -> tuple[PyxsdType, ...]:
+    def imported_types_for(
+        self, proxy: PyxsdSchemaProxy | _MergedSchemaProxy
+    ) -> tuple[PyxsdType, ...]:
+        members = set(proxy.members) if isinstance(proxy, _MergedSchemaProxy) else {proxy}
         return tuple(
             type_adapter
             for type_adapter in self._types.values()
-            if not type_adapter.is_builtin and type_adapter.schema is proxy
+            if not type_adapter.is_builtin and type_adapter.schema in members
         )
 
     def _register_schema(self, proxy: PyxsdSchemaProxy) -> None:
@@ -1146,21 +1399,56 @@ class SchemaPool:
         if type_class is None:  # pragma: no cover - compiled global types have classes
             return
         adapter = PyxsdType(self, type_class, er=er, proxy=proxy, name=name)
-        canonical = self._types.setdefault(name, adapter)
-        self._type_cache[id(type_class)] = canonical
-        if canonical.is_atomic():
-            self._constructors.setdefault(name, AtomicConstructor(name, canonical))
+        existing = self._types.get(name)
+        if existing is not None:
+            existing_proxy = existing.schema
+            existing_schema = None if existing_proxy is None else existing_proxy._schema
+            if existing.schema is not proxy and _component_origin(
+                existing_schema, existing._er
+            ) != _component_origin(proxy._schema, er):
+                raise ValueError(
+                    f"conflicting type definition {name!r} in namespace {proxy.target_namespace!r}"
+                )
+            self._type_cache[id(type_class)] = existing
+            return
+        self._types[name] = adapter
+        self._type_cache[id(type_class)] = adapter
+        if adapter.is_atomic():
+            self._constructors.setdefault(name, AtomicConstructor(name, adapter))
 
     def _register_element(self, proxy: PyxsdSchemaProxy, er: Any) -> None:
         adapter = self._element_for_er(proxy, er, global_declaration=True)
         if adapter is not None and adapter.name is not None:
-            self._elements.setdefault(adapter.name, adapter)
+            existing = self._elements.get(adapter.name)
+            if existing is not None:
+                existing_proxy = existing.parent
+                existing_schema = None if existing_proxy is None else existing_proxy._schema
+                if existing.parent is not proxy and _component_origin(
+                    existing_schema, existing._er
+                ) != _component_origin(proxy._schema, er):
+                    raise ValueError(
+                        f"conflicting element declaration {adapter.name!r} in namespace "
+                        f"{proxy.target_namespace!r}"
+                    )
+                return
+            self._elements[adapter.name] = adapter
 
     def _register_attribute(self, proxy: PyxsdSchemaProxy, er: Any) -> None:
         name = er.expandedName or er.name
         if name is None:
             return
-        self._attributes.setdefault(name, PyxsdAttribute(self, er, proxy, name=name))
+        existing = self._attributes.get(name)
+        if existing is not None:
+            existing_schema = getattr(existing.parent, "_schema", None)
+            if existing.parent is not proxy and _component_origin(
+                existing_schema, existing._er
+            ) != _component_origin(proxy._schema, er):
+                raise ValueError(
+                    f"conflicting attribute declaration {name!r} in namespace "
+                    f"{proxy.target_namespace!r}"
+                )
+            return
+        self._attributes[name] = PyxsdAttribute(self, er, proxy, name=name, parent=proxy)
 
     def _element_for_er(
         self, proxy: PyxsdSchemaProxy, er: Any, *, global_declaration: bool
@@ -1186,6 +1474,45 @@ class SchemaPool:
 
 # ---------------------------------------------------------------------------
 # Helpers
+
+
+def _component_origin(schema: Any, er: Any) -> Any:
+    """Return the source document that authored one declaration.
+
+    Two separately compiled schemas can expose the same imported component;
+    that is a diamond, not a conflict.  The declaration origin distinguishes
+    "same document reached twice" from "two documents disagree".  An
+    anonymous schema source (an inline ``Element``) is identified by its
+    compiled schema object, so two distinct inline documents never look like
+    a diamond.
+    """
+    origins = getattr(schema, "declaration_origins", None)
+    element = getattr(er, "xsdElement", None)
+    if origins is not None and element is not None:
+        location = origins.get(element)
+        source = getattr(location, "source", None)
+        if source is not None:
+            return _canonical_origin(source)
+    source = getattr(schema, "source", None)
+    if source is not None:
+        return _canonical_origin(source)
+    return ("anonymous", id(schema))
+
+
+def _canonical_origin(source: Any) -> Any:
+    """Canonicalize a local declaration source so symlinked paths compare equal."""
+    if not isinstance(source, str):
+        return source
+    from pathlib import Path
+
+    from pyxsd.resource_refs import classify_resource
+
+    if classify_resource(source).kind != "local":
+        return source
+    try:
+        return str(Path(source).resolve())
+    except OSError:  # pragma: no cover - unresolvable path stays distinct
+        return source
 
 
 def _lookup(mapping: Mapping[str, Any], qname: str | None) -> Any:

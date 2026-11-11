@@ -94,6 +94,11 @@ class SourceIndex:
         """The SHA-256 of the indexed source bytes."""
         return self._digest
 
+    @property
+    def content(self) -> bytes:
+        """The original source bytes this index describes."""
+        return self._content
+
     def span(self, path: tuple[PathStep, ...]) -> SourceSpan | None:
         """Return this occurrence's exact byte range, or ``None`` if unknown."""
         return self._spans.get(path)

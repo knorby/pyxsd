@@ -32,7 +32,13 @@ from types import MappingProxyType
 from typing import Any, Literal, TypeAlias, cast
 from urllib.parse import urlsplit
 
+from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation
+from pyxsd.namespaces import NamespaceContext
+from pyxsd.resource_policy import ResourcePolicyError
+from pyxsd.resource_refs import resolve_reference
+from pyxsd.xdm.document import element_from_xdm
+from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xslt.compiler.context import StaticContext
 from pyxsd.xslt.compiler.expressions import CompiledSequenceType, compile_sequence_type
 from pyxsd.xslt.compiler.instructions import (
@@ -75,6 +81,11 @@ _TRANSFORM = f"{_XSLT}transform"
 _PACKAGE = f"{_XSLT}package"
 _CONTEXT_ITEM = f"{_XSLT}context-item"
 _APPLY_TEMPLATES = f"{_XSLT}apply-templates"
+_IMPORT_SCHEMA = f"{_XSLT}import-schema"
+_XSD_NS = "http://www.w3.org/2001/XMLSchema"
+_XSD_SCHEMA = f"{{{_XSD_NS}}}schema"
+_INPUT_TYPE_ANNOTATIONS = frozenset({"strip", "preserve", "unspecified"})
+_VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
 
 _COMPONENT_KINDS = frozenset({"template", "function", "variable", "attribute-set", "mode"})
 _DECLARATION_VISIBILITIES = frozenset({"public", "private", "final", "abstract"})
@@ -548,6 +559,24 @@ HiddenModeKey = tuple[ModeKey, str | None]
 
 
 @dataclass(frozen=True, slots=True)
+class _SchemaImport:
+    """One authored ``xsl:import-schema`` declaration.
+
+    ``inline`` is the raw XDM ``xs:schema`` element when the declaration is
+    inline; otherwise ``locations`` holds the resolved-at-compile
+    ``schema-location`` tokens and ``base_uri`` is the declaration's base.
+    """
+
+    namespace: str | None
+    locations: tuple[str, ...]
+    inline: Any
+    base_uri: str | None
+    precedence: tuple[int, ...]
+    module: str | None
+    location: IssueLocation | None
+
+
+@dataclass(frozen=True, slots=True)
 class CompiledPackage:
     """One completely composed, immutable package.
 
@@ -573,6 +602,10 @@ class CompiledPackage:
     namespaces: Mapping[str, str] = field(default_factory=dict)
     default_mode: str | None = None
     location: IssueLocation | None = None
+    schema_imports: tuple[_SchemaImport, ...] = ()
+    schema_pool: SchemaPool | None = None
+    input_type_annotations: str | None = None
+    default_validation: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "components", MappingProxyType(dict(self.components)))
@@ -911,6 +944,8 @@ def compile_package_set(
     resolver: PackageResolver | None = None,
     static_parameters: Mapping[str, Any] | None = None,
     principal: PackageInput | None = None,
+    xsd_version: str = "1.1",
+    resource_policy: Any = None,
 ) -> CompiledPackage:
     """Compile the last supplied source as the principal package.
 
@@ -918,6 +953,11 @@ def compile_package_set(
     through a matching ``xsl:use-package`` declaration.  An explicit
     ``principal`` selects a different supplied source (or loads one additional
     source) without changing that registration rule.
+
+    ``xsl:import-schema`` declarations in the resulting package closure are
+    compiled through pyxsd under *xsd_version* and the explicit
+    *resource_policy* before this function returns, so dependent XPath
+    constructors see the complete in-scope schema definitions.
     """
     loader = ModuleLoader()
     preprocessor = StaticPreprocessor()
@@ -948,7 +988,210 @@ def compile_package_set(
         principal_module = loaded[-1][1]
     if principal_module is None:
         raise ValueError("compile_package_set requires at least one package source")
-    return _PackageCompiler(resolver).compile(_descriptor(principal_module), top_level=True)
+    compiled = _PackageCompiler(resolver).compile(_descriptor(principal_module), top_level=True)
+    pool = _compile_schema_imports(
+        compiled,
+        xsd_version=xsd_version,
+        resource_policy=resource_policy,
+    )
+    if pool is None:
+        return compiled
+    return replace(compiled, schema_pool=pool)
+
+
+# ---------------------------------------------------------------------------
+# Imported schemas
+
+
+def _package_closure(package: CompiledPackage) -> tuple[CompiledPackage, ...]:
+    """Return *package* and every used package, once each."""
+    seen: set[tuple[str | None, str]] = set()
+    result: list[CompiledPackage] = []
+    stack = [package]
+    while stack:
+        current = stack.pop()
+        key = (current.name, current.version)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(current)
+        stack.extend(current.dependencies)
+    return tuple(result)
+
+
+def _compile_schema_imports(
+    package: CompiledPackage,
+    *,
+    xsd_version: str,
+    resource_policy: Any,
+) -> SchemaPool | None:
+    """Compile the package closure's ``xsl:import-schema`` declarations."""
+    declarations: list[_SchemaImport] = []
+    seen: set[tuple[Any, ...]] = set()
+    for current in _package_closure(package):
+        for declaration in current.schema_imports:
+            key = (
+                declaration.module,
+                declaration.namespace,
+                declaration.locations,
+                id(declaration.inline),
+                declaration.precedence,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            declarations.append(declaration)
+    if not declarations:
+        return None
+
+    compiled: list[tuple[str | None, tuple[int, ...], Any]] = []
+    for declaration in declarations:
+        for schema in _compile_schema_declaration(
+            declaration,
+            xsd_version=xsd_version,
+            resource_policy=resource_policy,
+        ):
+            if schema.report.has_errors:
+                raise XsltStaticError(
+                    f"the schema imported by xsl:import-schema is not valid: "
+                    f"{schema.report.error_count} error(s)",
+                    code="XTSE1660",
+                    uri=declaration.module,
+                    location=declaration.location,
+                )
+            if (
+                declaration.namespace is not None
+                and schema.target_namespace != declaration.namespace
+            ):
+                raise XsltStaticError(
+                    f"the imported schema targets {schema.target_namespace!r}, not the "
+                    f"declared namespace {declaration.namespace!r}",
+                    code="XTSE1660",
+                    uri=declaration.module,
+                    location=declaration.location,
+                )
+            compiled.append((schema.target_namespace, declaration.precedence, schema))
+
+    by_namespace: dict[str | None, list[tuple[tuple[int, ...], Any]]] = {}
+    for namespace, precedence, schema in compiled:
+        by_namespace.setdefault(namespace, []).append((precedence, schema))
+    selected: list[Any] = []
+    for entries in by_namespace.values():
+        highest = max(
+            (precedence for precedence, _schema in entries),
+            key=cmp_to_key(_schema_precedence_compare),
+        )
+        selected.extend(schema for precedence, schema in entries if precedence == highest)
+
+    try:
+        return SchemaPool(selected, xsd_version=xsd_version, merge_namespaces=True)
+    except ValueError as exc:
+        raise XsltStaticError(
+            str(exc),
+            code="XTSE0220",
+            uri=package.modules[0].identity if package.modules else None,
+            location=package.location,
+            cause=exc,
+        ) from exc
+
+
+def _compile_schema_declaration(
+    declaration: _SchemaImport,
+    *,
+    xsd_version: str,
+    resource_policy: Any,
+) -> tuple[Any, ...]:
+    """Compile one declaration's inline or referenced schema documents."""
+    from pyxsd.schema import Schema
+
+    version = cast(Literal["1.0", "1.1"], xsd_version)
+    if declaration.inline is not None:
+        context = NamespaceContext()
+        element = element_from_xdm(declaration.inline, context)
+        try:
+            return (
+                Schema.compile(
+                    element,
+                    xsd_version=version,
+                    namespace_context=context,
+                ),
+            )
+        except PyXSDError as exc:
+            raise XsltStaticError(
+                f"the inline schema could not be compiled: {exc}",
+                code="XTSE1650",
+                uri=declaration.module,
+                location=declaration.location,
+                cause=exc,
+            ) from exc
+    policy = _schema_resource_policy(resource_policy)
+    result: list[Any] = []
+    for location in declaration.locations:
+        try:
+            target = _local_schema_reference(resolve_reference(location, base=declaration.base_uri))
+            result.append(
+                Schema.compile(
+                    target,
+                    xsd_version=version,
+                    resource_policy=policy,
+                )
+            )
+        except (OSError, PyXSDError, ResourcePolicyError) as exc:
+            raise XsltStaticError(
+                f"the schema document {location!r} could not be loaded: {exc}",
+                code="XTSE1650",
+                uri=declaration.module,
+                location=declaration.location,
+                cause=exc,
+            ) from exc
+    return tuple(result)
+
+
+def _local_schema_reference(reference: str) -> str:
+    """Turn a ``file:`` URI into the local path pyxsd's policy contract uses."""
+    parts = urlsplit(reference)
+    if parts.scheme != "file":
+        return reference
+    from pathlib import Path
+    from urllib.request import url2pathname
+
+    return str(Path(url2pathname(parts.path)).resolve())
+
+
+def _schema_resource_policy(policy: Any) -> Any:
+    """Adapt an explicit read-only policy to pyxsd's compile contract."""
+    if policy is None:
+        return None
+    if callable(getattr(policy, "parse", None)):
+        return policy
+    if not callable(getattr(policy, "read", None)):
+        raise TypeError("a resource policy must provide read()")
+    return _ReadOnlySchemaPolicy(policy)
+
+
+class _ReadOnlySchemaPolicy:
+    """Give a read-only policy pyxsd's parsing half without a second engine."""
+
+    def __init__(self, policy: Any) -> None:
+        self._policy = policy
+
+    def read(self, source: str, *, base: str | None, purpose: str) -> Any:
+        return self._policy.read(source, base=base, purpose=purpose)
+
+    def parse(self, data: Any, context: NamespaceContext) -> Any:
+        from pyxsd.namespaces import parse_with_namespaces
+
+        return parse_with_namespaces(io.BytesIO(data.content), context)
+
+
+def _schema_precedence_compare(left: tuple[int, ...], right: tuple[int, ...]) -> int:
+    """Compare import precedence: a shorter prefix is higher; later imports win."""
+    if left == right:
+        return 0
+    limit = min(len(left), len(right))
+    if left[:limit] == right[:limit]:
+        return 1 if len(left) < len(right) else -1
+    return 1 if left > right else -1
 
 
 # ---------------------------------------------------------------------------
@@ -1103,6 +1346,7 @@ class _Local:
     character_maps: tuple[_Declaration, ...]
     constructs: tuple[_Declaration, ...]
     mode_references: tuple[ModeKey, ...] = ()
+    schema_imports: tuple[_SchemaImport, ...] = ()
 
 
 def _visibility(
@@ -1611,11 +1855,122 @@ def _validate_manifest_placement(module: EffectiveModule) -> None:
                 element=element,
                 module=module,
             )
+        elif element.name == _IMPORT_SCHEMA and not root_child:
+            raise _error(
+                "xsl:import-schema is only permitted as a top-level declaration",
+                "XTSE0010",
+                element=element,
+                module=module,
+            )
         for child in element.elements:
             visit(child, element.name, False)
 
     for child in root.elements:
         visit(child, root.name, True)
+
+
+def _package_input_type_annotations(descriptor: PackageDescriptor) -> str | None:
+    value = descriptor.module.root.attribute("input-type-annotations")
+    if value is None:
+        return None
+    if value not in _INPUT_TYPE_ANNOTATIONS:
+        raise _error(
+            f"invalid input-type-annotations value {value!r}",
+            "XTSE0020",
+            element=descriptor.module.root,
+            module=descriptor.module,
+        )
+    return value
+
+
+def _package_default_validation(descriptor: PackageDescriptor) -> str | None:
+    value = descriptor.module.root.attribute("default-validation")
+    if value is None:
+        return None
+    if value not in {"preserve", "strip"}:
+        raise _error(
+            f"invalid default-validation value {value!r}",
+            "XTSE0020",
+            element=descriptor.module.root,
+            module=descriptor.module,
+        )
+    return value
+
+
+def _parse_schema_import(element: EffectiveElement, module: EffectiveModule) -> _SchemaImport:
+    """Validate and record one ``xsl:import-schema`` declaration."""
+    namespace = element.attribute("namespace")
+    if namespace is not None:
+        namespace = namespace.strip()
+        if not namespace:
+            raise _error(
+                "the namespace attribute of xsl:import-schema must not be empty",
+                "XTSE0215",
+                element=element,
+                module=module,
+            )
+    schema_location = element.attribute("schema-location")
+    inline = tuple(child for child in element.elements if child.name == _XSD_SCHEMA)
+    if len(inline) > 1:
+        raise _error(
+            "xsl:import-schema accepts at most one inline xs:schema",
+            "XTSE0215",
+            element=element,
+            module=module,
+        )
+    if inline and schema_location is not None:
+        raise _error(
+            "xsl:import-schema must not have both an inline xs:schema and a "
+            "schema-location attribute",
+            "XTSE0215",
+            element=element,
+            module=module,
+        )
+    if inline:
+        inline_element = inline[0]
+        target = inline_element.attribute("targetNamespace")
+        if namespace is not None and target is not None and namespace != target:
+            raise _error(
+                "the namespace attribute conflicts with the inline schema's targetNamespace",
+                "XTSE0215",
+                element=element,
+                module=module,
+            )
+        if namespace is None:
+            namespace = target
+        if inline_element.raw is None:  # pragma: no cover - authored declarations have raw nodes
+            raise _error(
+                "the inline xs:schema has no source tree",
+                "XTSE1650",
+                element=element,
+                module=module,
+            )
+        return _SchemaImport(
+            namespace=namespace,
+            locations=(),
+            inline=inline_element.raw,
+            base_uri=element.base_uri,
+            precedence=module.precedence,
+            module=module.identity,
+            location=element.source_location(),
+        )
+    locations = tuple((schema_location or "").split())
+    if not locations:
+        raise _error(
+            "xsl:import-schema requires a schema-location attribute or an inline xs:schema",
+            "XTSE1650",
+            element=element,
+            module=module,
+        )
+    return _SchemaImport(
+        namespace=namespace,
+        locations=locations,
+        inline=None,
+        base_uri=element.base_uri,
+        precedence=module.precedence,
+        module=module.identity,
+        location=element.source_location(),
+    )
 
 
 def _collect(descriptor: PackageDescriptor) -> _Local:
@@ -1626,6 +1981,7 @@ def _collect(descriptor: PackageDescriptor) -> _Local:
     outputs: list[_Declaration] = []
     decimal_formats: list[_Declaration] = []
     character_maps: list[_Declaration] = []
+    schema_imports: list[_SchemaImport] = []
     mode_references: set[ModeKey] = set()
     manifest_ids = {id(module) for module in descriptor.manifest_modules}
     order = 0
@@ -1639,6 +1995,10 @@ def _collect(descriptor: PackageDescriptor) -> _Local:
             )
         _validate_manifest_placement(module)
         for element in module.root.elements:
+            if element.name == _IMPORT_SCHEMA:
+                schema_imports.append(_parse_schema_import(element, module))
+                order += 1
+                continue
             if element.name == _USE_PACKAGE:
                 if via_import or id(module) not in manifest_ids:
                     raise _error(
@@ -1755,6 +2115,7 @@ def _collect(descriptor: PackageDescriptor) -> _Local:
         character_maps=tuple(character_maps),
         constructs=(),
         mode_references=tuple(sorted(mode_references, key=lambda item: (item is None, item or ""))),
+        schema_imports=tuple(schema_imports),
     )
 
 
@@ -2559,6 +2920,9 @@ class _PackageCompiler:
                 )
             ),
             location=descriptor.module.root.source_location(),
+            schema_imports=local.schema_imports,
+            input_type_annotations=_package_input_type_annotations(descriptor),
+            default_validation=_package_default_validation(descriptor),
         )
 
     # -- accepting components and modes ---------------------------------------

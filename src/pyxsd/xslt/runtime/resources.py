@@ -10,20 +10,22 @@ and canonical URI identities never leak between transformations.
 from __future__ import annotations
 
 from collections.abc import MutableMapping
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 from urllib.parse import urljoin, urlsplit
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.resource_policy import ResourceData
+from pyxsd.xdm.document import DocumentValidationError, parse_typed_document
 from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xslt.errors import XsltDynamicError
-from pyxsd.xslt.runtime.instructions import construct_grounded_document
 
 __all__ = ["DocumentResources", "resolve_document_uri"]
 
 #: Resource-policy purpose for an XSLT source document.  Source documents are
 #: XML instances, so the core policy vocabulary already covers them.
 DOCUMENT_PURPOSE = "instance"
+_VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
+_INPUT_TYPE_ANNOTATIONS = frozenset({"strip", "preserve", "unspecified"})
 
 
 class _DocumentPolicy(Protocol):
@@ -72,22 +74,42 @@ class DocumentResources:
         *,
         policy: object = None,
         schema_pool: object = None,
+        validation: str = "strip",
+        validation_type: str | None = None,
+        input_type_annotations: str = "unspecified",
     ) -> None:
         if not isinstance(documents, MutableMapping):
             raise TypeError("document resources require a mutable document mapping")
         if policy is not None and not callable(getattr(policy, "read", None)):
             raise TypeError("a document resource policy must provide read()")
+        if validation not in _VALIDATION_MODES:
+            raise ValueError(f"invalid validation mode {validation!r}")
+        if validation_type is not None and not isinstance(validation_type, str):
+            raise TypeError("validation_type must be a string or None")
+        if input_type_annotations not in _INPUT_TYPE_ANNOTATIONS:
+            raise ValueError(f"invalid input-type-annotations value {input_type_annotations!r}")
         self.documents = documents
         self.policy = cast(_DocumentPolicy | None, policy)
         self.schema_pool = schema_pool
+        self.validation = validation
+        self.validation_type = validation_type
+        self.input_type_annotations = input_type_annotations
 
-    def resolve(self, uri: str, *, base: str | None) -> XdmDocument:
+    def resolve(
+        self,
+        uri: str,
+        *,
+        base: str | None,
+        validation: str | None = None,
+        type_name: str | None = None,
+    ) -> XdmDocument:
         """Return the grounded document identified by *uri*.
 
         A missing document without an authorizing policy is ``FODC0002``.  A
         policy denial propagates as :class:`ResourcePolicyError`; an ordinary
         read failure or malformed XML becomes ``FODC0002`` with the original
-        exception preserved as the cause.
+        exception preserved as the cause.  Schema-aware validation uses the
+        same pool and validation mode as the source input.
         """
         target = resolve_document_uri(uri, base)
         cached = self.documents.get(target)
@@ -95,6 +117,9 @@ class DocumentResources:
             if not isinstance(cached, XdmDocument):  # pragma: no cover - registry invariant
                 raise TypeError("a document registry entry must be an XdmDocument")
             return cached
+        mode = self.validation if validation is None else validation
+        if mode not in _VALIDATION_MODES:
+            raise ValueError(f"invalid validation mode {mode!r}")
         if self.policy is None:
             raise XsltDynamicError(
                 f"the document {uri!r} is not available to this transformation",
@@ -110,13 +135,25 @@ class DocumentResources:
             ) from exc
         if not isinstance(data, ResourceData):
             raise TypeError("a resource policy read must return ResourceData")
+        requested_type = self.validation_type if type_name is None else type_name
         try:
-            document = construct_grounded_document(
+            document = parse_typed_document(
                 data.content,
-                uri=target,
+                schema_pool=cast("Any", self.schema_pool),
+                validation=mode,
+                input_type_annotations=self.input_type_annotations,
+                type_name=requested_type,
+                document_uri=target,
+                base_uri=target,
                 source_name=data.source_id or target,
-                schema_pool=self.schema_pool,
             )
+        except DocumentValidationError as exc:
+            code = {
+                "unknown": "XTTE1512",
+                "invalid": "XTTE1510",
+                "type": "XTTE1540",
+            }[exc.reason]
+            raise XsltDynamicError(str(exc), code=code, cause=exc) from exc
         except PyXSDError as exc:
             raise XsltDynamicError(
                 f"the document {uri!r} is not well-formed XML",

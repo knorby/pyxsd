@@ -264,7 +264,7 @@ class CompositionContext:
 
 def schema_composition_context(
     ctx: CompositionContext,
-    xsd_file: str | Path | os.PathLike[str] | IO[str] | None,
+    xsd_file: str | Path | os.PathLike[str] | IO[str] | ET.Element | None,
 ) -> tuple[str | None, set[str]]:
     """Returns the (base, visited) context for schema composition.
 

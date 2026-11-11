@@ -333,7 +333,7 @@ class Schema:
     #: derivation problems). Instance-phase issues never land here.
     report: ValidationReport
     #: The source the schema was compiled from, as given to ``compile``.
-    source: str | Path | os.PathLike[str] | IO[str] | None
+    source: str | Path | os.PathLike[str] | IO[str] | ET.Element | None
     #: The parser-like host the compilation ran under (reached from a
     #: generated class via its ``schema`` stamp). Per-parse binding
     #: indexes attach here.
@@ -347,7 +347,7 @@ class Schema:
         mode: Any,
         target_namespace: str | None,
         report: ValidationReport,
-        source: str | Path | os.PathLike[str] | IO[str] | None,
+        source: str | Path | os.PathLike[str] | IO[str] | ET.Element | None,
         schema_context: SchemaContext | None = None,
     ) -> None:
         self.classes = classes
@@ -372,7 +372,7 @@ class Schema:
     @classmethod
     def compile(
         cls,
-        source: str | Path | os.PathLike[str] | IO[str],
+        source: str | Path | os.PathLike[str] | IO[str] | ET.Element,
         *,
         mode: Any = ParseModes.NAMESPACED,
         xsd_version: Literal["1.0", "1.1"] = "1.1",
@@ -389,10 +389,13 @@ class Schema:
         """Compiles *source* into a :class:`Schema`.
 
         - ``source`` - a schema file path or a file object open for
-          reading. An unopenable file, malformed XML, or a document
-          whose root is not ``xs:schema`` raise
-          :class:`~pyxsd.exceptions.PyXSDError`; schema-legality
-          problems are collected on :attr:`report` instead.
+          reading, or an already-parsed ``xml.etree.ElementTree.Element``
+          used as the schema document root directly. An unopenable file,
+          malformed XML, or a document whose root is not ``xs:schema``
+          raise :class:`~pyxsd.exceptions.PyXSDError`; schema-legality
+          problems are collected on :attr:`report` instead. A caller that
+          supplies an ``Element`` also supplies its namespace evidence on
+          ``namespace_context``; no serialization or reparse occurs.
 
         - ``mode`` - a :class:`~pyxsd.binding.BindingPolicy` (usually a
           :class:`~pyxsd.binding.ParseModes` preset). Defaults to
@@ -458,6 +461,8 @@ class Schema:
             raise ValueError(f"xsd_version must be '1.0' or '1.1', not {xsd_version!r}")
         purpose = validate_purpose(_source_purpose)
         _reject_parser_override(resource_policy, xml_policy, xml_limits)
+        if isinstance(source, ET.Element) and resource_policy is not None:
+            raise ResourcePolicyError("an unverified Element cannot bypass resource policy parsing")
         if overlay is not None and classify_resource(overlay).kind == "remote":
             raise ResourcePolicyError(
                 f"the overlay '{overlay}' is remote; Python overlay modules are "
@@ -1294,7 +1299,7 @@ def load_overlay_classes(
 
 def _compile_into_context(
     ctx: CompositionContext,
-    xsd_file: str | Path | os.PathLike[str] | IO[str] | None,
+    xsd_file: str | Path | os.PathLike[str] | IO[str] | ET.Element | None,
     host: Any,
 ) -> Schema:
     """Runs the schema-compilation pipeline into *ctx*.
@@ -1325,6 +1330,11 @@ def _compile_into_context(
                 root = ctx.resource_policy.parse(ctx.source_data, ctx.namespace_context)
             except ET.ParseError as exc:
                 raise PyXSDError(f"the schema file is not well-formed XML: {exc}") from exc
+        elif isinstance(xsd_file, ET.Element):
+            # An already-parsed caller tree is the schema document.  Its
+            # namespace evidence was recorded on ctx.namespace_context by
+            # the caller; nothing is serialized or parsed again here.
+            root = xsd_file
         elif isinstance(xsd_file, (str, os.PathLike)):
             try:
                 with open(xsd_file, "rb") as schemaFile:
