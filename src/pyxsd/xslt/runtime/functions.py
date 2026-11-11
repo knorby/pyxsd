@@ -42,6 +42,7 @@ from pyxsd.xdm.nodes import XdmDocument, XdmNode
 from pyxsd.xpath.environment import Focus, FunctionArity
 from pyxsd.xpath.functions import ContextFunction
 from pyxsd.xslt.errors import XsltDynamicError, XsltError
+from pyxsd.xslt.runtime.numbering import DecimalFormat, format_number
 
 __all__ = [
     "ABSENT",
@@ -463,6 +464,7 @@ class XsltContextBridge:
     merge_sources: tuple[str, ...] = ()
     merge_key: XdmSequence | _Absent = ABSENT
     regex_captures: tuple[str, ...] | _Absent = ABSENT
+    decimal_formats: Mapping[str | None, DecimalFormat] = field(default_factory=dict)
     namespaces: Mapping[str, str] = field(default_factory=dict)
     default_namespace: str | None = None
     base_uri: str | None = None
@@ -499,6 +501,16 @@ class XsltContextBridge:
             object.__setattr__(
                 self, "regex_captures", _freeze_strings(self.regex_captures, "regex_groups")
             )
+        if not isinstance(self.decimal_formats, Mapping):
+            raise TypeError("decimal_formats must be a mapping")
+        formats: dict[str | None, DecimalFormat] = {}
+        for name, decimal_format in self.decimal_formats.items():
+            if name is not None and not isinstance(name, str):
+                raise TypeError("decimal format names must be strings or None")
+            if not isinstance(decimal_format, DecimalFormat):
+                raise TypeError("decimal_formats must map to DecimalFormat values")
+            formats[name] = decimal_format
+        object.__setattr__(self, "decimal_formats", MappingProxyType(formats))
         if not isinstance(self.namespaces, Mapping):
             raise TypeError("namespaces must be a mapping")
         namespaces: dict[str, str] = {}
@@ -602,6 +614,9 @@ class XsltContextBridge:
             f"{{{FN_NS}}}unparsed-entity-uri": ContextFunction(self._unparsed_entity_uri_function),
             f"{{{FN_NS}}}generate-id": ContextFunction(self._generate_id_function),
             f"{{{FN_NS}}}error": ContextFunction(self._error_function),
+            f"{{{FN_NS}}}format-number": ContextFunction(
+                self._direct_format_number, self._dynamic_format_number
+            ),
         }
         if "type-available" in legal:
             table[f"{{{FN_NS}}}type-available"] = ContextFunction(self._type_available_function)
@@ -1131,6 +1146,37 @@ class XsltContextBridge:
         del context_item
         _single_integer(arguments, 0)
         return (XdmAtomic.string(""),)
+
+    def _direct_format_number(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        return self._format_number_function(arguments)
+
+    def _dynamic_format_number(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        return self._format_number_function(arguments)
+
+    def _format_number_function(self, arguments: tuple[XdmSequence, ...]) -> XdmSequence:
+        value_sequence = arguments[0]
+        if len(value_sequence) > 1:
+            raise XsltDynamicError(
+                "format-number requires at most one numeric value",
+                code="XPTY0004",
+            )
+        value = value_sequence[0] if value_sequence else None
+        picture = _single_string(arguments, 1)
+        name: str | None = None
+        if len(arguments) > 2 and arguments[2]:
+            name = _single_string(arguments, 2)
+        formats = self.decimal_formats or {None: DecimalFormat()}
+        return (XdmAtomic.string(format_number(value, picture, name, formats, self.namespaces)),)
 
     def _document_function(
         self,

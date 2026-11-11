@@ -13,12 +13,13 @@ dynamic error instead of being approximated.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass, replace
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import Any, Literal, TypeAlias, cast
 from urllib.parse import urljoin, urlsplit
@@ -167,12 +168,25 @@ from pyxsd.xslt.runtime.iteration import (
     sort_merge_input,
     sort_records,
 )
+from pyxsd.xslt.runtime.numbering import (
+    DecimalFormat,
+    decimal_format_attributes,
+    effective_decimal_formats,
+    format_place_marker,
+    place_marker,
+    validate_decimal_formats,
+)
 from pyxsd.xslt.runtime.resources import DocumentResources
 from pyxsd.xslt.runtime.templates import (
     PatternIndex,
     RuleDispatcher,
     RuleMatch,
     TemplateRule,
+)
+from pyxsd.xslt.runtime.text import (
+    XPathRegexError,
+    analyze_string,
+    compile_xpath_regex,
 )
 from pyxsd.xslt.runtime.transformation import ComponentCall, Transformation
 
@@ -643,6 +657,33 @@ class _ResultDocumentPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class _AnalyzeStringPlan:
+    instruction: Instruction
+    expression: CompiledExpression
+    regex: CompiledValueTemplate
+    flags: CompiledValueTemplate | None
+    matching: tuple[_Plan, ...]
+    non_matching: tuple[_Plan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _NumberPlan:
+    instruction: Instruction
+    value: CompiledExpression | None
+    select: CompiledExpression | None
+    level: str
+    count: CompiledPattern | None
+    from_pattern: CompiledPattern | None
+    format: CompiledValueTemplate | str
+    lang: CompiledValueTemplate | None
+    ordinal: CompiledValueTemplate | None
+    letter_value: CompiledValueTemplate | None
+    grouping_separator: CompiledValueTemplate | None
+    grouping_size: CompiledValueTemplate | None
+    start_at: CompiledValueTemplate | None
+
+
+@dataclass(frozen=True, slots=True)
 class _UnsupportedPlan:
     instruction: Instruction
 
@@ -683,6 +724,8 @@ _Plan: TypeAlias = (
     | _FallbackPlan
     | _ConcatPlan
     | _ResultDocumentPlan
+    | _AnalyzeStringPlan
+    | _NumberPlan
     | _UnsupportedPlan
 )
 
@@ -1016,6 +1059,8 @@ def _compile_stylesheet(
 ) -> CompiledStylesheet:
     modules = _module_map(package)
     packages = _package_map(package)
+    for current_package in packages.values():
+        validate_decimal_formats(current_package.decimal_formats)
     profile = processor._profile()
     collation = processor.default_collation
     components: dict[tuple[str | None, str, str | None, int | None], _ComponentPlan] = {}
@@ -2745,6 +2790,192 @@ def _merge_source_names(sources: tuple[_MergeSourcePlan, ...]) -> tuple[str, ...
     )
 
 
+def _compile_analyze_string(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _AnalyzeStringPlan:
+    context = _instruction_context(context, instruction)
+    select = instruction.attribute("select")
+    regex = instruction.attribute("regex")
+    if select is None or regex is None:
+        raise XsltStaticError(
+            "xsl:analyze-string requires select and regex attributes",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    matching: tuple[_Plan, ...] | None = None
+    non_matching: tuple[_Plan, ...] | None = None
+    fallback_seen = False
+    for child in instruction.children:
+        if isinstance(child, TextNode):
+            if child.value.strip():
+                raise XsltStaticError(
+                    "xsl:analyze-string permits only matching and non-matching branches",
+                    code="XTSE0010",
+                    uri=context.uri,
+                    location=child.location,
+                )
+            continue
+        if not child.is_xslt:
+            raise XsltStaticError(
+                "xsl:analyze-string permits only matching and non-matching branches",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        local = child.local_name
+        if local == "fallback":
+            fallback_seen = True
+            continue
+        if fallback_seen:
+            raise XsltStaticError(
+                "xsl:fallback must follow the analyze-string branches",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        if local == "matching-substring":
+            if matching is not None or non_matching is not None:
+                raise XsltStaticError(
+                    "xsl:matching-substring must occur once and before any non-matching branch",
+                    code="XTSE0010",
+                    uri=context.uri,
+                    location=child.location,
+                )
+            matching = _compile_sequence(
+                child.children,
+                _instruction_context(context, child),
+                module,
+            )
+        elif local == "non-matching-substring":
+            if non_matching is not None:
+                raise XsltStaticError(
+                    "xsl:non-matching-substring must occur at most once",
+                    code="XTSE0010",
+                    uri=context.uri,
+                    location=child.location,
+                )
+            non_matching = _compile_sequence(
+                child.children,
+                _instruction_context(context, child),
+                module,
+            )
+        else:
+            raise XsltStaticError(
+                "xsl:analyze-string permits only matching and non-matching branches",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+    if matching is None and non_matching is None:
+        raise XsltStaticError(
+            "xsl:analyze-string requires a matching or non-matching branch",
+            code="XTSE1130",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    flags = instruction.attribute("flags")
+    return _AnalyzeStringPlan(
+        instruction=instruction,
+        expression=compile_xpath(select, context, location=instruction.location),
+        regex=compile_avt(regex, context, location=instruction.location),
+        flags=compile_avt(flags, context, location=instruction.location)
+        if flags is not None
+        else None,
+        matching=matching or (),
+        non_matching=non_matching or (),
+    )
+
+
+def _compile_number(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _NumberPlan:
+    context = _instruction_context(context, instruction)
+    value = instruction.attribute("value")
+    select = instruction.attribute("select")
+    level = instruction.attribute("level") or "single"
+    count = instruction.attribute("count")
+    from_source = instruction.attribute("from")
+    if value is not None and (
+        select is not None
+        or instruction.attribute("level") is not None
+        or count is not None
+        or from_source is not None
+    ):
+        raise XsltStaticError(
+            "xsl:number value may not be combined with select, level, count, or from",
+            code="XTSE0975",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    if level not in ("single", "multiple", "any"):
+        raise XsltStaticError(
+            f"invalid xsl:number level {level!r}",
+            code="XTSE0020",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    children = _compile_sequence(instruction.children, context, module)
+    if _has_plan_content(children, allow_fallback=True):
+        raise XsltStaticError(
+            "xsl:number must have empty content except for xsl:fallback",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    format_source = instruction.attribute("format")
+    return _NumberPlan(
+        instruction=instruction,
+        value=(
+            compile_xpath(value, context, location=instruction.location)
+            if value is not None
+            else None
+        ),
+        select=(
+            compile_xpath(select, context, location=instruction.location)
+            if select is not None
+            else None
+        ),
+        level=level,
+        count=(
+            compile_pattern(count, context, location=instruction.location)
+            if count is not None
+            else None
+        ),
+        from_pattern=(
+            compile_pattern(from_source, context, location=instruction.location)
+            if from_source is not None
+            else None
+        ),
+        format=(
+            compile_avt(format_source, context, location=instruction.location)
+            if format_source is not None
+            else "1"
+        ),
+        lang=_number_avt(instruction, "lang", context),
+        ordinal=_number_avt(instruction, "ordinal", context),
+        letter_value=_number_avt(instruction, "letter-value", context),
+        grouping_separator=_number_avt(instruction, "grouping-separator", context),
+        grouping_size=_number_avt(instruction, "grouping-size", context),
+        start_at=_number_avt(instruction, "start-at", context),
+    )
+
+
+def _number_avt(
+    instruction: Instruction,
+    name: str,
+    context: StaticContext,
+) -> CompiledValueTemplate | None:
+    source = instruction.attribute(name)
+    if source is None:
+        return None
+    return compile_avt(source, context, location=instruction.location)
+
+
 def _compile_for_each_group(
     instruction: Instruction,
     context: StaticContext,
@@ -3483,6 +3714,17 @@ def _compile_instruction(
             attributes=tuple(extra_attributes),
             children=_compile_sequence(instruction.children, context, module),
         )
+    if local == "analyze-string":
+        return _compile_analyze_string(instruction, context, module)
+    if local in ("matching-substring", "non-matching-substring"):
+        raise XsltStaticError(
+            f"xsl:{local} is only permitted inside xsl:analyze-string",
+            code="XTSE0010",
+            uri=context.uri,
+            location=location,
+        )
+    if local == "number":
+        return _compile_number(instruction, context, module)
     if local == "choose":
         branches: list[tuple[CompiledExpression, tuple[_Plan, ...]]] = []
         otherwise: tuple[_Plan, ...] | None = None
@@ -4525,6 +4767,144 @@ def _simple_content_string(sequence: XdmSequence, separator: str) -> str:
     return separator.join(values)
 
 
+_STRING_ATOMIC_LOCALS = frozenset(
+    {
+        "anyURI",
+        "ENTITIES",
+        "ENTITY",
+        "ID",
+        "IDREF",
+        "IDREFS",
+        "language",
+        "Name",
+        "NCName",
+        "NMTOKEN",
+        "NMTOKENS",
+        "normalizedString",
+        "string",
+        "token",
+        "untypedAtomic",
+    }
+)
+_NUMERIC_ATOMIC_LOCALS = frozenset(
+    {
+        "byte",
+        "decimal",
+        "double",
+        "float",
+        "int",
+        "integer",
+        "long",
+        "negativeInteger",
+        "nonNegativeInteger",
+        "nonPositiveInteger",
+        "positiveInteger",
+        "short",
+        "unsignedByte",
+        "unsignedInt",
+        "unsignedLong",
+        "unsignedShort",
+    }
+)
+_START_AT = re.compile(r"-?[0-9]+")
+
+
+def _analyze_string_value(sequence: XdmSequence) -> str:
+    """Apply the function conversion rules for ``xsl:analyze-string/@select``."""
+    if not sequence:
+        return ""
+    if len(sequence) > 1:
+        raise XsltDynamicError(
+            "xsl:analyze-string select must be a single string",
+            code="XPTY0004",
+        )
+    item = sequence[0]
+    if isinstance(item, XdmNode):
+        return item.string_value
+    if isinstance(item, XdmAtomic):
+        local = (
+            item.type_name.partition("}")[2]
+            if item.type_name.startswith("{")
+            else item.type_name.rpartition(":")[2]
+        )
+        if local in _STRING_ATOMIC_LOCALS:
+            return item.lexical
+    raise XsltDynamicError(
+        "xsl:analyze-string select must be a string or node",
+        code="XPTY0004",
+    )
+
+
+def _number_values(sequence: XdmSequence) -> tuple[int, ...]:
+    """Convert an atomized ``xsl:number/@value`` sequence to integers."""
+    numbers: list[int] = []
+    for item in sequence:
+        if isinstance(item, XdmNode):
+            atomics = tuple(value for value in item.typed_value if isinstance(value, XdmAtomic))
+        elif isinstance(item, XdmAtomic):
+            atomics = (item,)
+        else:
+            raise XsltDynamicError(
+                "xsl:number value cannot atomize a function item",
+                code="FOTY0013",
+            )
+        for atomic in atomics:
+            rounded = _rounded_integer(atomic)
+            if rounded is None or rounded < 0:
+                raise XsltDynamicError(
+                    "xsl:number value must convert to a non-negative integer",
+                    code="XTDE0980",
+                )
+            numbers.append(rounded)
+    return tuple(numbers)
+
+
+def _rounded_integer(item: XdmAtomic) -> int | None:
+    local = (
+        item.type_name.partition("}")[2]
+        if item.type_name.startswith("{")
+        else item.type_name.rpartition(":")[2]
+    )
+    value: object = item.value
+    if local not in _NUMERIC_ATOMIC_LOCALS:
+        if local not in _STRING_ATOMIC_LOCALS:
+            return None
+        lexical = item.lexical.strip()
+        if lexical in ("INF", "+INF", "-INF", "NaN"):
+            return None
+        try:
+            value = Decimal(lexical)
+        except InvalidOperation:
+            return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, Decimal):
+        return int((value + Decimal("0.5")).to_integral_value(rounding=ROUND_FLOOR))
+    assert isinstance(value, float)
+    if math.isnan(value) or math.isinf(value):
+        return None
+    return math.floor(value + 0.5)
+
+
+def _rebase_place_marker(
+    numbers: Sequence[int],
+    start_at: str | None,
+) -> tuple[int, ...]:
+    if start_at is None:
+        return tuple(numbers)
+    parts = start_at.split()
+    if not parts or any(_START_AT.fullmatch(part) is None for part in parts):
+        raise XsltDynamicError(
+            "xsl:number start-at must be a whitespace-separated integer sequence",
+            code="XTDE0030",
+        )
+    starts = [int(part) for part in parts]
+    return tuple(
+        number + (starts[index] if index < len(starts) else starts[-1]) - 1
+        for index, number in enumerate(numbers)
+    )
+
+
 _EBV_STRING_TYPES = frozenset(
     {
         "anyURI",
@@ -4702,6 +5082,7 @@ class _Invocation(Transformation):
         self.current_merge_group: Mapping[str, XdmSequence] | None = None
         self.current_merge_key: XdmSequence | None = None
         self.current_merge_sources: tuple[str, ...] = ()
+        self.current_regex_groups: tuple[str, ...] | None = None
         self.document_resources = DocumentResources(
             self.documents,
             policy=getattr(stylesheet.processor, "resource_policy", None),
@@ -4888,7 +5269,12 @@ class _Invocation(Transformation):
             group=group,
             grouping_key=grouping_key,
         )
-        with self._merge_scope(None, None, ()):
+        regex_scope = (
+            self._regex_scope(None)
+            if component.kind == "function"
+            else self._regex_scope(self.current_regex_groups)
+        )
+        with regex_scope, self._merge_scope(None, None, ()):
             return cast(XdmSequence, self.execute_frame(frame))
 
     def _component_identity(self, component: Component) -> str:
@@ -5102,6 +5488,15 @@ class _Invocation(Transformation):
             yield
         finally:
             self.current_group, self.current_grouping_key = previous
+
+    @contextmanager
+    def _regex_scope(self, groups: tuple[str, ...] | None, /) -> Iterator[None]:
+        previous = self.current_regex_groups
+        self.current_regex_groups = groups
+        try:
+            yield
+        finally:
+            self.current_regex_groups = previous
 
     @contextmanager
     def _merge_scope(
@@ -6951,7 +7346,17 @@ class _Invocation(Transformation):
         self,
         pattern: CompiledPattern,
         package_name: str | None,
+        *,
+        locals_: Mapping[str, XdmSequence] | None = None,
     ) -> ExpressionEnvironment:
+        if locals_ is not None:
+            return self._environment(
+                locals_,
+                package_name,
+                referenced=_pattern_variable_names(pattern),
+                static_context=pattern.context,
+                regex_captures=None,
+            )
         key = id(pattern)
         environment = self._pattern_environments.get(key)
         if environment is None:
@@ -6960,6 +7365,7 @@ class _Invocation(Transformation):
                 package_name,
                 referenced=_pattern_variable_names(pattern),
                 static_context=pattern.context,
+                regex_captures=None,
             )
             self._pattern_environments[key] = environment
         return environment
@@ -8130,6 +8536,30 @@ class _Invocation(Transformation):
                 tunnel_parameters=tunnel_parameters,
             )
             return ()
+        if isinstance(plan, _AnalyzeStringPlan):
+            return self._run_analyze_string(
+                plan,
+                focus=focus,
+                locals_=locals_,
+                final_output=final_output,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+        if isinstance(plan, _NumberPlan):
+            return self._run_number(
+                plan,
+                focus=focus,
+                locals_=locals_,
+                final_output=final_output,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
         if isinstance(plan, _UnsupportedPlan):
             raise XsltError(
                 f"the instruction xsl:{plan.instruction.local_name} is not supported by the "
@@ -8294,6 +8724,192 @@ class _Invocation(Transformation):
             rule_context=rule_context,
             original_functions=original_functions,
         )
+
+    def _run_analyze_string(
+        self,
+        plan: _AnalyzeStringPlan,
+        *,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        final_output: bool,
+        package_name: str | None,
+        mode: str | None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None,
+        rule_context: _RuleContext | None,
+        original_functions: Mapping[int, Component] | None,
+    ) -> XdmSequence:
+        values = self._evaluate(
+            plan.expression,
+            focus,
+            locals_,
+            package_name,
+            original_functions=original_functions,
+        )
+        text = _analyze_string_value(values)
+        regex_source = self._value_source(plan.regex, focus, locals_, package_name)
+        flags = (
+            self._value_source(plan.flags, focus, locals_, package_name)
+            if plan.flags is not None
+            else ""
+        )
+        try:
+            regex = compile_xpath_regex(regex_source, flags)
+        except XPathRegexError as exc:
+            code = "XTDE1145" if exc.code == "FORX0001" else "XTDE1140"
+            raise XsltDynamicError(str(exc), code=code) from exc
+        substrings = analyze_string(regex, text)
+        result: list[XdmItem] = []
+        for position, substring in enumerate(substrings, start=1):
+            branch = plan.matching if substring.matched else plan.non_matching
+            if not branch:
+                continue
+            branch_focus = Focus.singleton(
+                XdmAtomic.string(substring.value),
+                position=position,
+                size=len(substrings),
+            )
+            with self._regex_scope(substring.groups if substring.matched else None):
+                result.extend(
+                    self._execute_plans(
+                        branch,
+                        focus=branch_focus,
+                        locals_=locals_,
+                        final_output=final_output,
+                        package_name=package_name,
+                        mode=mode,
+                        tunnel_parameters=tunnel_parameters,
+                        rule_context=rule_context,
+                        original_functions=original_functions,
+                    )
+                )
+        return tuple(result)
+
+    def _run_number(
+        self,
+        plan: _NumberPlan,
+        *,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        final_output: bool,
+        package_name: str | None,
+        mode: str | None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None,
+        rule_context: _RuleContext | None,
+        original_functions: Mapping[int, Component] | None,
+    ) -> XdmSequence:
+        del final_output, mode, tunnel_parameters, rule_context
+        if plan.value is not None:
+            values = self._evaluate(
+                plan.value,
+                focus,
+                locals_,
+                package_name,
+                original_functions=original_functions,
+            )
+            numbers = _number_values(values)
+        else:
+            if plan.select is not None:
+                selected = self._evaluate(
+                    plan.select,
+                    focus,
+                    locals_,
+                    package_name,
+                    original_functions=original_functions,
+                )
+                if len(selected) != 1 or not isinstance(selected[0], XdmNode):
+                    raise XsltDynamicError(
+                        "xsl:number select must evaluate to a single node",
+                        code="XTTE1000",
+                    )
+                node = selected[0]
+            else:
+                item = focus.item
+                if not isinstance(item, XdmNode):
+                    raise XsltDynamicError(
+                        "xsl:number without select or value requires a context node",
+                        code="XTTE0990",
+                    )
+                node = item
+            count_match = self._number_matcher(plan.count, node, locals_, package_name)
+            from_match = (
+                self._number_matcher(plan.from_pattern, node, locals_, package_name)
+                if plan.from_pattern is not None
+                else None
+            )
+            numbers = place_marker(node, plan.level, count_match, from_match)
+        start_at = (
+            self._value_source(plan.start_at, focus, locals_, package_name)
+            if plan.start_at is not None
+            else None
+        )
+        numbers = _rebase_place_marker(numbers, start_at)
+        format_ = (
+            plan.format
+            if isinstance(plan.format, str)
+            else self._value_source(plan.format, focus, locals_, package_name)
+        )
+        lang = (
+            self._value_source(plan.lang, focus, locals_, package_name)
+            if plan.lang is not None
+            else ""
+        )
+        ordinal = (
+            self._value_source(plan.ordinal, focus, locals_, package_name)
+            if plan.ordinal is not None
+            else "no"
+        )
+        letter_value = (
+            self._value_source(plan.letter_value, focus, locals_, package_name)
+            if plan.letter_value is not None
+            else ""
+        )
+        grouping_separator = (
+            self._value_source(plan.grouping_separator, focus, locals_, package_name)
+            if plan.grouping_separator is not None
+            else None
+        )
+        grouping_size = (
+            self._value_source(plan.grouping_size, focus, locals_, package_name)
+            if plan.grouping_size is not None
+            else None
+        )
+        text = format_place_marker(
+            numbers,
+            format_,
+            lang=lang,
+            ordinal=ordinal.strip().lower() in ("yes", "1", "true"),
+            letter_value=letter_value,
+            grouping_separator=grouping_separator,
+            grouping_size=grouping_size,
+        )
+        return (self._text_node(text),)
+
+    def _number_matcher(
+        self,
+        pattern: CompiledPattern | None,
+        selected: XdmNode,
+        locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
+    ) -> Callable[[XdmNode], bool]:
+        if pattern is None:
+            kind = selected.kind
+            name = selected.name
+
+            def implied(candidate: XdmNode) -> bool:
+                return candidate.kind is kind and candidate.name == name
+
+            return implied
+        matcher = PatternMatcher(pattern)
+        environment = self._pattern_environment_for(
+            pattern,
+            package_name,
+            locals_=locals_,
+        )
+
+        def matches(candidate: XdmNode) -> bool:
+            return matcher.matches(candidate, environment)
+
+        return matches
 
     def _assert_value(
         self,
@@ -8995,6 +9611,7 @@ class _Invocation(Transformation):
         focus: Focus | None = None,
         expression: CompiledExpression | None = None,
         static_context: StaticContext | None = None,
+        regex_captures: object | None = _INHERIT,
     ) -> ExpressionEnvironment:
         variables: dict[str, Any] = {}
         package = self.stylesheet._packages.get(package_name) or self.package
@@ -9024,32 +9641,47 @@ class _Invocation(Transformation):
                     f"{{{XSLT_NS}}}original",
                     [component],
                 )
+        decimal_formats = self._decimal_format_objects(package_name)
         bridge = self._context_bridge(
             package_name,
             Focus.absent() if focus is None else focus,
             expression,
             static_context,
+            regex_captures=regex_captures,
+            decimal_formats=decimal_formats,
         )
         overrides: dict[str, Any] = dict(bridge.function_overrides())
         return ExpressionEnvironment(
             variables=variables,
             functions=functions,
             function_overrides=overrides,
-            decimal_formats=self._decimal_formats(package_name),
+            decimal_formats={
+                name: decimal_format_attributes(decimal_format)
+                for name, decimal_format in decimal_formats.items()
+            },
             current_datetime=self.current_datetime,
             implicit_timezone=self.implicit_timezone,
             base_uri=None,
         )
 
+    def _decimal_format_objects(
+        self,
+        package_name: str | None,
+    ) -> Mapping[str | None, DecimalFormat]:
+        package = self.stylesheet._packages.get(package_name) or self.package
+        definitions = {
+            definition.name: dict(definition.attributes) for definition in package.decimal_formats
+        }
+        return effective_decimal_formats(definitions)
+
     def _decimal_formats(
         self,
         package_name: str | None,
     ) -> Mapping[str | None, Mapping[str, str]]:
-        package = self.stylesheet._packages.get(package_name) or self.package
-        formats: dict[str | None, Mapping[str, str]] = {}
-        for definition in package.decimal_formats:
-            formats[definition.name] = dict(definition.attributes)
-        return formats
+        return {
+            name: decimal_format_attributes(decimal_format)
+            for name, decimal_format in self._decimal_format_objects(package_name).items()
+        }
 
     def _context_bridge(
         self,
@@ -9057,12 +9689,20 @@ class _Invocation(Transformation):
         focus: Focus,
         expression: CompiledExpression | None,
         static_context: StaticContext | None = None,
+        *,
+        regex_captures: object | None = _INHERIT,
+        decimal_formats: Mapping[str | None, DecimalFormat] | None = None,
     ) -> XsltContextBridge:
         package = self.stylesheet._packages.get(package_name) or self.package
         static = (
             static_context
             if static_context is not None
             else (None if expression is None else expression.static_context)
+        )
+        captures: Any = (
+            ABSENT
+            if regex_captures is not _INHERIT or self.current_regex_groups is None
+            else tuple(self.current_regex_groups)
         )
         return XsltContextBridge(
             self,
@@ -9076,6 +9716,12 @@ class _Invocation(Transformation):
             merge_group=(ABSENT if self.current_merge_group is None else self.current_merge_group),
             merge_sources=self.current_merge_sources,
             merge_key=(ABSENT if self.current_merge_key is None else tuple(self.current_merge_key)),
+            regex_captures=captures,
+            decimal_formats=(
+                decimal_formats
+                if decimal_formats is not None
+                else self._decimal_format_objects(package_name)
+            ),
             namespaces=package.namespaces if static is None else static.namespaces,
             default_namespace=None if static is None else static.default_namespace,
             base_uri=None if static is None else static.base_uri,
