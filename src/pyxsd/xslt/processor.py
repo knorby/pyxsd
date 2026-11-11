@@ -123,18 +123,23 @@ from pyxsd.xslt.runtime.iteration import (
     Completion,
     IterationItem,
     IterationState,
+    MergeItem,
     ResolvedSortKey,
     SortKey,
     adjacent_grouping_key,
     atomize_key_sequence,
+    check_merge_order,
     group_adjacent,
     group_by,
     group_ending_with,
     group_starting_with,
     grouping_key_set,
+    merge_groups,
     resolve_collation,
+    sort_merge_input,
     sort_records,
 )
+from pyxsd.xslt.runtime.resources import DocumentResources
 from pyxsd.xslt.runtime.templates import (
     PatternIndex,
     RuleDispatcher,
@@ -160,6 +165,7 @@ _ABSENT = object()
 _AbsentType = object
 _INHERIT = object()
 _DELIVERIES = frozenset({"stylesheet", "raw", "document"})
+_VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
 
 #: Literal-result attributes whose names are XSLT-defined metadata, not output.
 _LITERAL_XSLT_ATTRIBUTES = frozenset(
@@ -442,6 +448,44 @@ class _ForEachGroupPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class _MergeSourcePlan:
+    instruction: Instruction
+    name: str | None
+    select: CompiledExpression
+    keys: tuple[SortKey, ...]
+    for_each_item: CompiledExpression | None = None
+    for_each_source: CompiledExpression | None = None
+    streamable: bool = False
+    sort_before_merge: bool = False
+    validation: str | None = None
+    type_name: str | None = None
+    base_uri: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _MergePlan:
+    instruction: Instruction
+    sources: tuple[_MergeSourcePlan, ...]
+    action: tuple[_Plan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ForkPlan:
+    instruction: Instruction
+    branches: tuple[tuple[_Plan, ...], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceDocumentPlan:
+    instruction: Instruction
+    href: CompiledValueTemplate
+    children: tuple[_Plan, ...]
+    streamable: bool = False
+    validation: str | None = None
+    type_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _PerformSortPlan:
     instruction: Instruction
     expression: CompiledExpression | None
@@ -568,6 +612,9 @@ _Plan: TypeAlias = (
     | _NextIterationPlan
     | _BreakPlan
     | _ForEachGroupPlan
+    | _MergePlan
+    | _ForkPlan
+    | _SourceDocumentPlan
     | _PerformSortPlan
     | _OverridingPlan
     | _RestoreVariablesPlan
@@ -1757,6 +1804,345 @@ def _compile_iterate(
     )
 
 
+def _compile_merge(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _MergePlan:
+    context = _instruction_context(context, instruction)
+    sources: list[_MergeSourcePlan] = []
+    action: tuple[_Plan, ...] | None = None
+    for child in instruction.children:
+        if isinstance(child, TextNode):
+            raise XsltStaticError(
+                "xsl:merge permits only xsl:merge-source, xsl:merge-action, and xsl:fallback",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        if not (child.is_xslt and child.local_name in ("merge-source", "merge-action", "fallback")):
+            raise XsltStaticError(
+                "xsl:merge permits only xsl:merge-source, xsl:merge-action, and xsl:fallback",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        if child.local_name == "fallback":
+            continue
+        if child.local_name == "merge-source":
+            if action is not None:
+                raise XsltStaticError(
+                    "xsl:merge-source must precede xsl:merge-action",
+                    code="XTSE0010",
+                    uri=context.uri,
+                    location=child.location,
+                )
+            sources.append(_compile_merge_source(child, context, module))
+            continue
+        if action is not None:
+            raise XsltStaticError(
+                "xsl:merge permits at most one xsl:merge-action",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        action_context = _instruction_context(context, child)
+        action = _compile_sequence(child.children, action_context, module)
+    if not sources:
+        raise XsltStaticError(
+            "xsl:merge requires at least one xsl:merge-source",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    if action is None:
+        raise XsltStaticError(
+            "xsl:merge requires an xsl:merge-action",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    names = [source.name for source in sources if source.name is not None]
+    if len(names) != len(set(names)):
+        raise XsltStaticError(
+            "two sibling xsl:merge-source elements have the same name",
+            code="XTSE3190",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    key_counts = {len(source.keys) for source in sources}
+    if len(key_counts) > 1:
+        raise XsltStaticError(
+            "all xsl:merge-source elements must have the same number of xsl:merge-key children",
+            code="XTSE2200",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    return _MergePlan(instruction=instruction, sources=tuple(sources), action=action)
+
+
+def _compile_merge_source(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _MergeSourcePlan:
+    context = _instruction_context(context, instruction)
+    select_source = instruction.attribute("select")
+    if select_source is None:
+        raise XsltStaticError(
+            "xsl:merge-source requires a select attribute",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    for_each_item_source = instruction.attribute("for-each-item")
+    for_each_source_source = instruction.attribute("for-each-source")
+    streamable = _attribute_yes_no(instruction, "streamable", context)
+    sort_before_merge = _attribute_yes_no(instruction, "sort-before-merge", context)
+    use_accumulators = instruction.attribute("use-accumulators")
+    if for_each_item_source is not None and (
+        for_each_source_source is not None or use_accumulators is not None or streamable
+    ):
+        raise XsltStaticError(
+            "xsl:merge-source for-each-item excludes for-each-source, use-accumulators, "
+            "and streamable",
+            code="XTSE3195",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    if use_accumulators is not None and for_each_source_source is None:
+        raise XsltStaticError(
+            "xsl:merge-source use-accumulators requires for-each-source",
+            code="XTSE3195",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    validation = instruction.attribute("validation")
+    type_name = instruction.attribute("type")
+    if validation is not None and type_name is not None:
+        raise XsltStaticError(
+            "xsl:merge-source validation and type are mutually exclusive",
+            code="XTSE1505",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    if validation is not None and validation.strip() not in _VALIDATION_MODES:
+        raise XsltStaticError(
+            f"xsl:merge-source has an invalid validation value {validation!r}",
+            code="XTSE0020",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    if (validation is not None or type_name is not None) and for_each_source_source is None:
+        raise XsltStaticError(
+            "xsl:merge-source validation and type require for-each-source",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    name = instruction.attribute("name")
+    if name is not None:
+        name = name.strip()
+        if not is_ncname(name):
+            raise XsltStaticError(
+                f"xsl:merge-source has an invalid name {name!r}",
+                code="XTSE0010",
+                uri=context.uri,
+                location=instruction.location,
+            )
+    keys: list[SortKey] = []
+    for child in instruction.children:
+        if isinstance(child, TextNode):
+            raise XsltStaticError(
+                "xsl:merge-source permits only xsl:merge-key and xsl:fallback content",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        if child.is_xslt and child.local_name == "fallback":
+            continue
+        if not (child.is_xslt and child.local_name == "merge-key"):
+            raise XsltStaticError(
+                "xsl:merge-source permits only xsl:merge-key and xsl:fallback content",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        keys.append(_compile_merge_key(child, context, module))
+    if not keys:
+        raise XsltStaticError(
+            "xsl:merge-source requires at least one xsl:merge-key",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    return _MergeSourcePlan(
+        instruction=instruction,
+        name=name,
+        select=compile_xpath(select_source, context, location=instruction.location),
+        keys=tuple(keys),
+        for_each_item=(
+            compile_xpath(for_each_item_source, context, location=instruction.location)
+            if for_each_item_source is not None
+            else None
+        ),
+        for_each_source=(
+            compile_xpath(for_each_source_source, context, location=instruction.location)
+            if for_each_source_source is not None
+            else None
+        ),
+        streamable=streamable,
+        sort_before_merge=sort_before_merge,
+        validation=None if validation is None else validation.strip(),
+        type_name=None if type_name is None else type_name.strip(),
+        base_uri=instruction.base_uri,
+    )
+
+
+def _compile_merge_key(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> SortKey:
+    context = _instruction_context(context, instruction)
+    select_source = instruction.attribute("select")
+    children = _compile_sequence(instruction.children, context, module)
+    if select_source is not None and _has_plan_content(children, allow_fallback=True):
+        raise XsltStaticError(
+            "xsl:merge-key with a select attribute must have empty content except for xsl:fallback",
+            code="XTSE3200",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    if instruction.attribute("stable") is not None:
+        raise XsltStaticError(
+            "xsl:merge-key does not have a stable attribute",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    expression = (
+        compile_xpath(select_source, context, location=instruction.location)
+        if select_source is not None
+        else (
+            compile_xpath(".", context, location=instruction.location)
+            if not _has_plan_content(children, allow_fallback=True)
+            else None
+        )
+    )
+
+    def avt(name: str) -> CompiledValueTemplate | None:
+        value = instruction.attribute(name)
+        return (
+            compile_avt(value, context, location=instruction.location)
+            if value is not None
+            else None
+        )
+
+    return SortKey(
+        instruction=instruction,
+        select=expression,
+        children=() if select_source is not None else children,
+        lang=avt("lang"),
+        order=avt("order"),
+        collation=avt("collation"),
+        case_order=avt("case-order"),
+        data_type=avt("data-type"),
+        base_uri=instruction.base_uri,
+        xslt_version=context.version,
+    )
+
+
+def _compile_fork(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _ForkPlan:
+    context = _instruction_context(context, instruction)
+    elements: list[Instruction] = []
+    for child in instruction.children:
+        if isinstance(child, TextNode):
+            raise XsltStaticError(
+                "xsl:fork permits only xsl:sequence, xsl:for-each-group, and xsl:fallback",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        if child.is_xslt and child.local_name == "fallback":
+            continue
+        elements.append(child)
+    if len(elements) == 1 and elements[0].is_xslt and elements[0].local_name == "for-each-group":
+        return _ForkPlan(
+            instruction=instruction,
+            branches=((_compile_instruction(elements[0], context, module),),),
+        )
+    branches: list[tuple[_Plan, ...]] = []
+    for child in elements:
+        if not (child.is_xslt and child.local_name == "sequence"):
+            raise XsltStaticError(
+                "xsl:fork permits only xsl:sequence, xsl:for-each-group, and xsl:fallback",
+                code="XTSE0010",
+                uri=context.uri,
+                location=child.location,
+            )
+        branches.append((_compile_instruction(child, context, module),))
+    return _ForkPlan(instruction=instruction, branches=tuple(branches))
+
+
+def _compile_source_document(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _SourceDocumentPlan:
+    context = _instruction_context(context, instruction)
+    href = instruction.attribute("href")
+    if href is None:
+        raise XsltStaticError(
+            "xsl:source-document requires an href attribute",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    streamable = _attribute_yes_no(instruction, "streamable", context)
+    validation = instruction.attribute("validation")
+    type_name = instruction.attribute("type")
+    if validation is not None and type_name is not None:
+        raise XsltStaticError(
+            "xsl:source-document validation and type are mutually exclusive",
+            code="XTSE1505",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    if validation is not None and validation.strip() not in _VALIDATION_MODES:
+        raise XsltStaticError(
+            f"xsl:source-document has an invalid validation value {validation!r}",
+            code="XTSE0020",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    return _SourceDocumentPlan(
+        instruction=instruction,
+        href=compile_avt(href, context, location=instruction.location),
+        children=_compile_sequence(instruction.children, context, module),
+        streamable=streamable,
+        validation=None if validation is None else validation.strip(),
+        type_name=None if type_name is None else type_name.strip(),
+    )
+
+
+def _merge_source_names(sources: tuple[_MergeSourcePlan, ...]) -> tuple[str, ...]:
+    """Name each merge source in stylesheet order.
+
+    An unnamed source receives an implementation-dependent name that cannot
+    collide with an authored NCName, so ``current-merge-group()`` still returns
+    its items in source order while the single-argument form cannot address it.
+    """
+    return tuple(
+        source.name if source.name is not None else f"#merge-source-{index}"
+        for index, source in enumerate(sources)
+    )
+
+
 def _compile_for_each_group(
     instruction: Instruction,
     context: StaticContext,
@@ -2047,6 +2433,14 @@ def _plan_children(plan: _Plan) -> tuple[tuple[_Plan, ...], ...]:
         return (plan.children,)
     if isinstance(plan, _ForEachGroupPlan):
         return (plan.children,)
+    if isinstance(plan, _MergePlan):
+        groups = [plan.action]
+        groups.extend(key.children for source in plan.sources for key in source.keys)
+        return tuple(groups)
+    if isinstance(plan, _ForkPlan):
+        return plan.branches
+    if isinstance(plan, _SourceDocumentPlan):
+        return (plan.children,)
     if isinstance(plan, _PerformSortPlan):
         return (plan.children,)
     if isinstance(plan, _CallTemplatePlan):
@@ -2176,6 +2570,26 @@ def _compile_instruction(
         return _compile_break(instruction, context, module)
     if local == "for-each-group":
         return _compile_for_each_group(instruction, context, module)
+    if local == "merge":
+        return _compile_merge(instruction, context, module)
+    if local == "fork":
+        return _compile_fork(instruction, context, module)
+    if local == "source-document":
+        return _compile_source_document(instruction, context, module)
+    if local in ("merge-source", "merge-action", "merge-key"):
+        raise XsltStaticError(
+            f"xsl:{local} is only permitted in a containing merge instruction",
+            code="XTSE0010",
+            uri=context.uri,
+            location=location,
+        )
+    if local == "stream":
+        raise XsltStaticError(
+            "xsl:stream was renamed to xsl:source-document in XSLT 3.0",
+            code="XTSE0010",
+            uri=context.uri,
+            location=location,
+        )
     if local == "perform-sort":
         return _compile_perform_sort(instruction, context, module)
     if local in ("sort", "on-completion"):
@@ -3526,6 +3940,14 @@ class _Invocation(Transformation):
         self._pattern_environments: dict[int, ExpressionEnvironment] = {}
         self.dynamic_expressions = DynamicExpressionCache()
         self._active_iteration_frame: Frame | None = None
+        self.current_merge_group: Mapping[str, XdmSequence] | None = None
+        self.current_merge_key: XdmSequence | None = None
+        self.current_merge_sources: tuple[str, ...] = ()
+        self.document_resources = DocumentResources(
+            self.documents,
+            policy=getattr(stylesheet.processor, "resource_policy", None),
+            schema_pool=stylesheet.schema_pool,
+        )
 
     # -- top level ---------------------------------------------------------
 
@@ -3611,7 +4033,8 @@ class _Invocation(Transformation):
             group=group,
             grouping_key=grouping_key,
         )
-        return cast(XdmSequence, self.execute_frame(frame))
+        with self._merge_scope(None, None, ()):
+            return cast(XdmSequence, self.execute_frame(frame))
 
     def _component_identity(self, component: Component) -> str:
         name = component.name or "<unnamed>"
@@ -3824,6 +4247,30 @@ class _Invocation(Transformation):
             yield
         finally:
             self.current_group, self.current_grouping_key = previous
+
+    @contextmanager
+    def _merge_scope(
+        self,
+        group: Mapping[str, XdmSequence] | None,
+        key: XdmSequence | None,
+        sources: tuple[str, ...],
+    ) -> Iterator[None]:
+        previous = (
+            self.current_merge_group,
+            self.current_merge_key,
+            self.current_merge_sources,
+        )
+        self.current_merge_group = group
+        self.current_merge_key = key
+        self.current_merge_sources = sources
+        try:
+            yield
+        finally:
+            (
+                self.current_merge_group,
+                self.current_merge_key,
+                self.current_merge_sources,
+            ) = previous
 
     def _frame_tunnel(self, frame: Frame) -> Mapping[str, XdmSequence]:
         return cast(Mapping[str, XdmSequence], frame.tunnel_parameters)
@@ -4269,6 +4716,295 @@ class _Invocation(Transformation):
             self._bind(values, parameter.name, value)
         return values
 
+    # -- merging, splitting, and source documents -------------------------
+
+    def _run_merge(
+        self,
+        plan: _MergePlan,
+        *,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        final_output: bool,
+        package_name: str | None,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
+        rule_context: _RuleContext | None = None,
+        original_functions: Mapping[int, Component] | None = None,
+    ) -> XdmSequence:
+        resolved = self._merge_resolved_keys(plan.sources, focus, locals_, package_name)
+        inputs: list[tuple[MergeItem, ...]] = []
+        for source_index, source in enumerate(plan.sources):
+            for anchor_index, sequence in enumerate(
+                self._merge_input_sequences(
+                    source,
+                    focus,
+                    locals_,
+                    package_name,
+                    original_functions=original_functions,
+                )
+            ):
+                items = tuple(
+                    MergeItem(
+                        item=item,
+                        source=source_index,
+                        anchor=anchor_index,
+                        position=position,
+                        key=self._merge_key_values(
+                            source,
+                            resolved,
+                            item,
+                            locals_,
+                            package_name,
+                            mode=mode,
+                            tunnel_parameters=tunnel_parameters,
+                            rule_context=rule_context,
+                            original_functions=original_functions,
+                        ),
+                    )
+                    for position, item in enumerate(sequence, start=1)
+                )
+                if source.sort_before_merge:
+                    items = sort_merge_input(items, resolved)
+                else:
+                    check_merge_order(items, resolved)
+                inputs.append(items)
+        groups = merge_groups(inputs, resolved)
+        names = _merge_source_names(plan.sources)
+        result: list[XdmItem] = []
+        for position, group in enumerate(groups, start=1):
+            members: dict[str, list[XdmItem]] = {name: [] for name in names}
+            for item in group.items:
+                members[names[item.source]].append(item.item)
+            group_map: dict[str, XdmSequence] = {
+                name: tuple(values) for name, values in members.items()
+            }
+            action_focus = Focus.singleton(
+                group.items[0].item,
+                position=position,
+                size=len(groups),
+            )
+            key_sequence: XdmSequence = tuple(
+                atomic for component in group.key for atomic in component
+            )
+            with self._merge_scope(group_map, key_sequence, names):
+                result.extend(
+                    self._execute_plans(
+                        plan.action,
+                        focus=action_focus,
+                        locals_=locals_,
+                        final_output=final_output,
+                        package_name=package_name,
+                        mode=mode,
+                        tunnel_parameters=tunnel_parameters,
+                        rule_context=rule_context,
+                        original_functions=original_functions,
+                    )
+                )
+        return tuple(result)
+
+    def _merge_resolved_keys(
+        self,
+        sources: tuple[_MergeSourcePlan, ...],
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
+    ) -> tuple[ResolvedSortKey, ...]:
+        resolved_by_source: list[tuple[ResolvedSortKey, ...]] = []
+        signatures_by_source: list[tuple[tuple[object, ...], ...]] = []
+        for source in sources:
+            resolved: list[ResolvedSortKey] = []
+            signatures: list[tuple[object, ...]] = []
+            for key in source.keys:
+                key_resolved, signature = self._resolve_key_spec(
+                    key,
+                    focus,
+                    locals_,
+                    package_name,
+                )
+                resolved.append(key_resolved)
+                signatures.append(signature)
+            resolved_by_source.append(tuple(resolved))
+            signatures_by_source.append(tuple(signatures))
+        baseline = signatures_by_source[0]
+        for other_signatures in signatures_by_source[1:]:
+            if other_signatures != baseline:
+                raise XsltDynamicError(
+                    "xsl:merge-key definitions in corresponding positions must have the "
+                    "same effective lang, order, collation, case-order, and data-type",
+                    code="XTDE2210",
+                )
+        return resolved_by_source[0]
+
+    def _merge_input_sequences(
+        self,
+        source: _MergeSourcePlan,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
+        *,
+        original_functions: Mapping[int, Component] | None = None,
+    ) -> tuple[XdmSequence, ...]:
+        if source.for_each_item is not None:
+            anchors = self._evaluate(
+                source.for_each_item,
+                focus,
+                locals_,
+                package_name,
+                original_functions=original_functions,
+            )
+            return tuple(
+                self._evaluate(
+                    source.select,
+                    Focus.singleton(anchor, position=position, size=len(anchors)),
+                    locals_,
+                    package_name,
+                    original_functions=original_functions,
+                )
+                for position, anchor in enumerate(anchors, start=1)
+            )
+        if source.for_each_source is not None:
+            uri_values = self._evaluate(
+                source.for_each_source,
+                focus,
+                locals_,
+                package_name,
+                original_functions=original_functions,
+            )
+            atomics = atomize_key_sequence(uri_values)
+            documents = tuple(
+                self.document_resources.resolve(atomic.lexical, base=source.base_uri)
+                for atomic in atomics
+            )
+            return tuple(
+                self._evaluate(
+                    source.select,
+                    Focus.singleton(document, position=position, size=len(documents)),
+                    locals_,
+                    package_name,
+                    original_functions=original_functions,
+                )
+                for position, document in enumerate(documents, start=1)
+            )
+        return (
+            self._evaluate(
+                source.select,
+                focus,
+                locals_,
+                package_name,
+                original_functions=original_functions,
+            ),
+        )
+
+    def _merge_key_values(
+        self,
+        source: _MergeSourcePlan,
+        resolved: tuple[ResolvedSortKey, ...],
+        item: XdmItem,
+        locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
+        *,
+        mode: str | None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None,
+        rule_context: _RuleContext | None,
+        original_functions: Mapping[int, Component] | None,
+    ) -> tuple[XdmSequence, ...]:
+        key_focus = Focus.singleton(item)
+        values: list[XdmSequence] = []
+        for key, resolved_key in zip(source.keys, resolved, strict=True):
+            if key.select is not None:
+                value = self._evaluate(
+                    key.select,
+                    key_focus,
+                    locals_,
+                    package_name,
+                    original_functions=original_functions,
+                )
+            else:
+                value = self._execute_plans(
+                    key.children,
+                    focus=key_focus,
+                    locals_=locals_,
+                    final_output=False,
+                    package_name=package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
+                    rule_context=rule_context,
+                    original_functions=original_functions,
+                )
+            atomics = atomize_key_sequence(value)
+            if len(atomics) > 1:
+                raise XsltDynamicError(
+                    "a merge key value must contain at most one item after atomization",
+                    code="XTTE1020",
+                    location=key.instruction.location,
+                )
+            if not atomics:
+                values.append(())
+                continue
+            atomic = atomics[0]
+            if resolved_key.data_type == "text":
+                values.append((XdmAtomic.string(atomic.lexical),))
+            else:
+                values.append((atomic,))
+        return tuple(values)
+
+    def _run_fork(
+        self,
+        plan: _ForkPlan,
+        *,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        final_output: bool,
+        package_name: str | None,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
+        rule_context: _RuleContext | None = None,
+        original_functions: Mapping[int, Component] | None = None,
+    ) -> XdmSequence:
+        result: list[XdmItem] = []
+        for branch in plan.branches:
+            result.extend(
+                self._execute_plans(
+                    branch,
+                    focus=focus,
+                    locals_=locals_,
+                    final_output=final_output,
+                    package_name=package_name,
+                    mode=mode,
+                    tunnel_parameters=tunnel_parameters,
+                    rule_context=rule_context,
+                    original_functions=original_functions,
+                )
+            )
+        return tuple(result)
+
+    def _run_source_document(
+        self,
+        plan: _SourceDocumentPlan,
+        *,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        final_output: bool,
+        package_name: str | None,
+        mode: str | None = None,
+        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
+        rule_context: _RuleContext | None = None,
+        original_functions: Mapping[int, Component] | None = None,
+    ) -> XdmSequence:
+        href = self._value_template(plan.href, focus, locals_, package_name).strip()
+        document = self.document_resources.resolve(href, base=plan.instruction.base_uri)
+        return self._execute_plans(
+            plan.children,
+            focus=Focus.singleton(document),
+            locals_=locals_,
+            final_output=final_output,
+            package_name=package_name,
+            mode=mode,
+            tunnel_parameters=tunnel_parameters,
+            rule_context=rule_context,
+            original_functions=original_functions,
+        )
+
     # -- sort and group algorithms ---------------------------------------
 
     def _resolved_sort_keys(
@@ -4278,97 +5014,118 @@ class _Invocation(Transformation):
         locals_: Mapping[str, XdmSequence],
         package_name: str | None,
     ) -> tuple[ResolvedSortKey, ...]:
-        resolved: list[ResolvedSortKey] = []
-        for sort in sorts:
-            order = "ascending"
-            if sort.order is not None:
-                order = self._value_source(sort.order, focus, locals_, package_name).strip()
-                if order not in ("ascending", "descending"):
-                    raise XsltDynamicError(
-                        f"xsl:sort order must be ascending or descending, got {order!r}",
-                        code="XTDE0030",
-                        location=sort.instruction.location,
-                    )
-            data_type = "native"
-            if sort.data_type is not None:
-                data_type_value = self._value_source(
-                    sort.data_type,
-                    focus,
-                    locals_,
-                    package_name,
-                ).strip()
-                local = (
-                    data_type_value[2:].partition("}")[2]
-                    if data_type_value.startswith("Q{")
-                    else data_type_value.rpartition(":")[2]
+        return tuple(
+            self._resolve_key_spec(sort, focus, locals_, package_name)[0] for sort in sorts
+        )
+
+    def _resolve_key_spec(
+        self,
+        sort: SortKey,
+        focus: Focus,
+        locals_: Mapping[str, XdmSequence],
+        package_name: str | None,
+    ) -> tuple[ResolvedSortKey, tuple[object, ...]]:
+        """Resolve one sort/merge key and retain its effective-value signature."""
+        label = sort.instruction.local_name
+        order_value = None
+        order = "ascending"
+        if sort.order is not None:
+            order_value = self._value_source(sort.order, focus, locals_, package_name).strip()
+            order = order_value
+            if order not in ("ascending", "descending"):
+                raise XsltDynamicError(
+                    f"xsl:{label} order must be ascending or descending, got {order!r}",
+                    code="XTDE0030",
+                    location=sort.instruction.location,
                 )
-                if local == "text":
-                    data_type = "text"
-                elif local == "number":
-                    data_type = "number"
-                elif not local:
-                    raise XsltDynamicError(
-                        "xsl:sort data-type must not be empty",
-                        code="XTDE0030",
-                        location=sort.instruction.location,
-                    )
-            case_order = None
-            if sort.case_order is not None:
-                case_order = self._value_source(
-                    sort.case_order,
-                    focus,
-                    locals_,
-                    package_name,
-                ).strip()
-                if case_order not in ("upper-first", "lower-first"):
-                    raise XsltDynamicError(
-                        "xsl:sort case-order must be upper-first or lower-first, "
-                        f"got {case_order!r}",
-                        code="XTDE0030",
-                        location=sort.instruction.location,
-                    )
-            if sort.stable is not None:
-                stable = self._value_source(sort.stable, focus, locals_, package_name)
-                if stable.strip() not in (
-                    "yes",
-                    "true",
-                    "1",
-                    "no",
-                    "false",
-                    "0",
-                ):
-                    raise XsltDynamicError(
-                        f"xsl:sort stable has an invalid boolean value {stable!r}",
-                        code="XTDE0030",
-                        location=sort.instruction.location,
-                    )
-            language = ""
-            if sort.lang is not None:
-                language = self._value_source(sort.lang, focus, locals_, package_name).strip()
-            collation_uri = None
-            if sort.collation is not None:
-                collation_uri = self._value_source(
-                    sort.collation,
-                    focus,
-                    locals_,
-                    package_name,
-                ).strip()
-            collation = resolve_collation(
-                collation_uri,
-                code="XTDE1035",
-                default=None,
-                base_uri=sort.base_uri,
-                language=language if collation_uri is None else "",
-                case_order=case_order if collation_uri is None else None,
+        data_type_value = None
+        data_type = "native"
+        if sort.data_type is not None:
+            data_type_value = self._value_source(
+                sort.data_type,
+                focus,
+                locals_,
+                package_name,
+            ).strip()
+            local = (
+                data_type_value[2:].partition("}")[2]
+                if data_type_value.startswith("Q{")
+                else data_type_value.rpartition(":")[2]
             )
-            resolved.append(
-                ResolvedSortKey(
-                    order=order,
-                    collation=collation,
-                    data_type=data_type,
+            if local == "text":
+                data_type = "text"
+            elif local == "number":
+                data_type = "number"
+            elif not local:
+                raise XsltDynamicError(
+                    f"xsl:{label} data-type must not be empty",
+                    code="XTDE0030",
+                    location=sort.instruction.location,
                 )
-            )
-        return tuple(resolved)
+        case_order = None
+        if sort.case_order is not None:
+            case_order = self._value_source(
+                sort.case_order,
+                focus,
+                locals_,
+                package_name,
+            ).strip()
+            if case_order not in ("upper-first", "lower-first"):
+                raise XsltDynamicError(
+                    f"xsl:{label} case-order must be upper-first or lower-first, "
+                    f"got {case_order!r}",
+                    code="XTDE0030",
+                    location=sort.instruction.location,
+                )
+        if sort.stable is not None:
+            stable = self._value_source(sort.stable, focus, locals_, package_name)
+            if stable.strip() not in (
+                "yes",
+                "true",
+                "1",
+                "no",
+                "false",
+                "0",
+            ):
+                raise XsltDynamicError(
+                    f"xsl:{label} stable has an invalid boolean value {stable!r}",
+                    code="XTDE0030",
+                    location=sort.instruction.location,
+                )
+        language = ""
+        if sort.lang is not None:
+            language = self._value_source(sort.lang, focus, locals_, package_name).strip()
+        collation_uri = None
+        if sort.collation is not None:
+            collation_uri = self._value_source(
+                sort.collation,
+                focus,
+                locals_,
+                package_name,
+            ).strip()
+        collation = resolve_collation(
+            collation_uri,
+            code="XTDE1035",
+            default=None,
+            base_uri=sort.base_uri,
+            language=language if collation_uri is None else "",
+            case_order=case_order if collation_uri is None else None,
+        )
+        signature = (
+            order_value,
+            language if sort.lang is not None else None,
+            collation.uri if collation_uri is not None else None,
+            case_order,
+            data_type_value,
+        )
+        return (
+            ResolvedSortKey(
+                order=order,
+                collation=collation,
+                data_type=data_type,
+            ),
+            signature,
+        )
 
     def _sort_values_for(
         self,
@@ -5641,7 +6398,7 @@ class _Invocation(Transformation):
             )
         self._evaluating.append(key)
         try:
-            with self._group_scope(None, None):
+            with self._group_scope(None, None), self._merge_scope(None, None, ()):
                 declaration = component.declaration
                 plan = self._component_plan(component)
                 original_locals: dict[str, XdmSequence] = {}
@@ -5809,6 +6566,42 @@ class _Invocation(Transformation):
             )
         if isinstance(plan, (_ForEachPlan, _IteratePlan, _ForEachGroupPlan)):
             return self._run_iteration_plan(
+                plan,
+                focus=focus,
+                locals_=locals_,
+                final_output=final_output,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+        if isinstance(plan, _MergePlan):
+            return self._run_merge(
+                plan,
+                focus=focus,
+                locals_=locals_,
+                final_output=final_output,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+        if isinstance(plan, _ForkPlan):
+            return self._run_fork(
+                plan,
+                focus=focus,
+                locals_=locals_,
+                final_output=final_output,
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+                rule_context=rule_context,
+                original_functions=original_functions,
+            )
+        if isinstance(plan, _SourceDocumentPlan):
+            return self._run_source_document(
                 plan,
                 focus=focus,
                 locals_=locals_,
@@ -6919,7 +7712,8 @@ class _Invocation(Transformation):
             tunnel_parameters,
             package_name=package_name,
         )
-        return cast(XdmSequence, self.execute_frame(frame))
+        with self._merge_scope(None, None, ()):
+            return cast(XdmSequence, self.execute_frame(frame))
 
     # -- expressions and values -------------------------------------------
 
@@ -7067,6 +7861,9 @@ class _Invocation(Transformation):
             grouping_key=(
                 ABSENT if self.current_grouping_key is None else tuple(self.current_grouping_key)
             ),
+            merge_group=(ABSENT if self.current_merge_group is None else self.current_merge_group),
+            merge_sources=self.current_merge_sources,
+            merge_key=(ABSENT if self.current_merge_key is None else tuple(self.current_merge_key)),
             namespaces=package.namespaces if static is None else static.namespaces,
             default_namespace=None if static is None else static.default_namespace,
             base_uri=None if static is None else static.base_uri,
@@ -7174,7 +7971,7 @@ class _Invocation(Transformation):
             for node in _document_nodes(document):
                 if not matcher.matches(node, environment):
                     continue
-                with self._group_scope(None, None):
+                with self._group_scope(None, None), self._merge_scope(None, None, ()):
                     values = self._evaluate(
                         definition.use,
                         Focus.singleton(node),

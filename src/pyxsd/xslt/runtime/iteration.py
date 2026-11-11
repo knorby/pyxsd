@@ -23,6 +23,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from functools import cmp_to_key
+from itertools import pairwise
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
@@ -41,9 +42,13 @@ __all__ = [
     "Group",
     "IterationItem",
     "IterationState",
+    "MergeGroup",
+    "MergeItem",
     "ResolvedSortKey",
     "SortKey",
     "atomize_key_sequence",
+    "check_merge_order",
+    "compare_merge_key_sets",
     "compare_sort_key_sets",
     "deep_equal_sequences",
     "group_adjacent",
@@ -51,7 +56,10 @@ __all__ = [
     "group_ending_with",
     "group_starting_with",
     "grouping_key_set",
+    "merge_groups",
+    "merge_key_equal",
     "resolve_collation",
+    "sort_merge_input",
     "sort_records",
 ]
 
@@ -454,6 +462,63 @@ class IterationState:
 
 
 # ---------------------------------------------------------------------------
+# Merging
+
+
+@dataclass(frozen=True, slots=True)
+class MergeItem:
+    """One item selected by a merge source and its composite merge key.
+
+    ``source`` is the merge source's stylesheet order, ``anchor`` the order of
+    the input sequence selected by one ``for-each-item``/``for-each-source``
+    anchor, and ``position`` the item's order within that input sequence.
+    Together they define the normative current-merge-group ordering.
+    """
+
+    item: XdmItem
+    source: int
+    anchor: int
+    position: int
+    key: tuple[XdmSequence, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.item, XdmItem):
+            raise TypeError("a merge item requires an XDM item")
+        for label, value in (
+            ("source", self.source),
+            ("anchor", self.anchor),
+            ("position", self.position),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"a merge item {label} must be a non-negative integer")
+        if not isinstance(self.key, tuple):
+            raise ValueError("a merge item key must be a tuple of key components")
+        for component in self.key:
+            if not isinstance(component, tuple) or not all(
+                isinstance(value, XdmAtomic) for value in component
+            ):
+                raise ValueError(
+                    "a merge item key component must be an XDM sequence of atomic values"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class MergeGroup:
+    """One group of items sharing a composite merge key."""
+
+    items: tuple[MergeItem, ...]
+    key: tuple[XdmSequence, ...]
+
+    def __post_init__(self) -> None:
+        if not self.items:
+            raise ValueError("a merge group is never empty")
+        if not all(isinstance(item, MergeItem) for item in self.items):
+            raise TypeError("a merge group requires merge items")
+        if not isinstance(self.key, tuple):
+            raise ValueError("a merge group key must be a tuple of key components")
+
+
+# ---------------------------------------------------------------------------
 # Atomic and sequence comparison
 
 
@@ -801,6 +866,112 @@ def group_ending_with(
             groups[-1].append(item)
         previous_matched = matches_pattern
     return tuple(Group(tuple(members), members[0], None) for members in groups)
+
+
+# ---------------------------------------------------------------------------
+# Merging algorithms
+
+
+def merge_key_equal(
+    left: tuple[XdmSequence, ...],
+    right: tuple[XdmSequence, ...],
+    keys: tuple[ResolvedSortKey, ...],
+) -> bool:
+    """Whether two composite merge keys are equal under their collations."""
+    if len(left) != len(right):
+        return False
+    return all(
+        deep_equal_sequences(left_value, right_value, key.collation)
+        for left_value, right_value, key in zip(left, right, keys, strict=True)
+    )
+
+
+def compare_merge_key_sets(
+    left: tuple[XdmSequence, ...],
+    right: tuple[XdmSequence, ...],
+    keys: tuple[ResolvedSortKey, ...],
+) -> int:
+    """Compare two composite merge keys across input sequences.
+
+    Values that cannot be compared by the ``le`` operator are the merge
+    instruction's type error, not a sort-key comparison failure.
+    """
+    try:
+        return compare_sort_key_sets(left, right, keys)
+    except XsltDynamicError as exc:
+        if exc.code == "XTDE1030":
+            raise XsltDynamicError(
+                "merge key values from different input sequences are not comparable",
+                code="XTTE2230",
+                cause=exc,
+            ) from exc
+        raise
+
+
+def check_merge_order(
+    items: Sequence[MergeItem],
+    keys: tuple[ResolvedSortKey, ...],
+) -> None:
+    """Reject an input sequence that is not already sorted on its merge key."""
+    for previous, current in pairwise(items):
+        if compare_sort_key_sets(previous.key, current.key, keys) > 0:
+            raise XsltDynamicError(
+                "a merge input sequence is not correctly sorted on its merge key",
+                code="XTDE2220",
+            )
+
+
+def sort_merge_input(
+    items: Sequence[MergeItem],
+    keys: tuple[ResolvedSortKey, ...],
+) -> tuple[MergeItem, ...]:
+    """Sort one input sequence by its composite merge key values."""
+    return sort_records(
+        tuple(items),
+        keys,
+        tuple(item.key for item in items),
+    )
+
+
+def merge_groups(
+    inputs: Sequence[Sequence[MergeItem]],
+    keys: tuple[ResolvedSortKey, ...],
+) -> tuple[MergeGroup, ...]:
+    """Merge sorted input sequences into groups in composite-key order.
+
+    *inputs* must already be ordered by merge source, then anchor, then input
+    position.  The algorithm consumes only the heads of the grounded sequences
+    and retains duplicate items and repeated occurrences exactly as selected.
+    """
+    positions = [0] * len(inputs)
+    groups: list[MergeGroup] = []
+    for sequence in inputs:
+        for item in sequence:
+            if len(item.key) != len(keys):
+                raise ValueError("a merge item key must match the merge key specification")
+    while True:
+        candidates = [
+            (index, sequence[positions[index]])
+            for index, sequence in enumerate(inputs)
+            if positions[index] < len(sequence)
+        ]
+        if not candidates:
+            break
+        best_item = candidates[0][1]
+        for _, item in candidates[1:]:
+            if compare_merge_key_sets(item.key, best_item.key, keys) < 0:
+                best_item = item
+        members: list[MergeItem] = []
+        for index, sequence in enumerate(inputs):
+            position = positions[index]
+            while position < len(sequence) and merge_key_equal(
+                sequence[position].key, best_item.key, keys
+            ):
+                members.append(sequence[position])
+                position += 1
+            positions[index] = position
+        groups.append(MergeGroup(tuple(members), best_item.key))
+    return tuple(groups)
 
 
 # ---------------------------------------------------------------------------

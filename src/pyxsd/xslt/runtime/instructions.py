@@ -20,7 +20,7 @@ from types import MappingProxyType
 from typing import TypeAlias
 
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence
-from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmNode
+from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmDocument, XdmNode
 from pyxsd.xslt.compiler.instructions import Instruction
 from pyxsd.xslt.errors import XsltDynamicError
 from pyxsd.xslt.runtime.builder import ResultBuilder
@@ -41,6 +41,7 @@ __all__ = [
     "TemporaryTreeInstruction",
     "TextInstruction",
     "construct_attribute",
+    "construct_grounded_document",
     "construct_instruction",
     "construct_into",
     "construct_map",
@@ -404,6 +405,35 @@ def _construct_element(
         element = builder.root.root_element
         builder.to_tree()
     return (element,)
+
+
+def construct_grounded_document(
+    content: bytes | bytearray | memoryview,
+    *,
+    uri: str,
+    source_name: str | None = None,
+    schema_pool: object = None,
+) -> XdmDocument:
+    """Parse one already-admitted resource into a grounded XDM document.
+
+    The caller supplies admitted bytes, never a path, stream, or retrieval
+    callback: authorization belongs to the resource layer.  The resulting
+    document has one stable URI identity and no streaming cursor or bounded
+    memory claim.
+    """
+    if not isinstance(content, (bytes, bytearray, memoryview)):
+        raise TypeError("a grounded document requires admitted bytes")
+    if not isinstance(uri, str) or not uri:
+        raise ValueError("a grounded document requires a non-empty URI")
+    if source_name is not None and not isinstance(source_name, str):
+        raise TypeError("a grounded document source name must be a string or None")
+    return XdmDocument.parse(
+        bytes(content),
+        source_name=source_name or uri,
+        document_uri=uri,
+        base_uri=uri,
+        schema_pool=schema_pool,
+    )
 
 
 def _construct_document(
