@@ -101,7 +101,7 @@ from pyxsd.xslt.runtime.accumulators import (
     RulePhase,
     expand_accumulator_name,
     find_cycle,
-    iter_accumulator_calls,
+    iter_accumulator_call_spans,
     parse_accumulator_names,
 )
 from pyxsd.xslt.runtime.evaluate import (
@@ -473,7 +473,7 @@ class _MergeSourcePlan:
     validation: str | None = None
     type_name: str | None = None
     base_uri: str | None = None
-    use_accumulators: str | None = None
+    use_accumulators: frozenset[AccumulatorKey] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -497,7 +497,7 @@ class _SourceDocumentPlan:
     streamable: bool = False
     validation: str | None = None
     type_name: str | None = None
-    use_accumulators: str | None = None
+    use_accumulators: frozenset[AccumulatorKey] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1139,22 +1139,42 @@ def _compile_stylesheet(
     )
 
 
-_ACCUMULATOR_EXPRESSION_ATTRIBUTES = frozenset(
+_XSLT_STANDARD_ATTRIBUTES = frozenset(
     {
-        "for-each-item",
-        "for-each-source",
-        "group-adjacent",
-        "group-by",
-        "group-ending-with",
-        "group-starting-with",
-        "initial-value",
-        "match",
-        "select",
-        "test",
-        "use",
-        "xpath",
+        "default-collation",
+        "default-mode",
+        "default-validation",
+        "exclude-result-prefixes",
+        "expand-text",
+        "extension-element-prefixes",
+        "use-when",
+        "version",
+        "xpath-default-namespace",
     }
 )
+
+_ACCUMULATOR_ATTRIBUTES = frozenset({"as", "initial-value", "name", "streamable"})
+_ACCUMULATOR_RULE_ATTRIBUTES = frozenset({"match", "phase", "priority", "select"})
+
+
+def _validate_accumulator_attributes(
+    instruction: Instruction,
+    allowed: frozenset[str],
+    module: EffectiveModule,
+) -> None:
+    """Reject an unprefixed attribute not defined for an accumulator element."""
+    for attribute in instruction.attributes:
+        if attribute.namespace_uri is not None:
+            continue
+        local = attribute.local_name
+        if local in allowed or local in _XSLT_STANDARD_ATTRIBUTES:
+            continue
+        raise XsltStaticError(
+            f"the attribute {local!r} is not permitted on xsl:{instruction.local_name}",
+            code="XTSE0090",
+            uri=module.identity,
+            location=instruction.location,
+        )
 
 
 def _compile_accumulator(
@@ -1164,6 +1184,7 @@ def _compile_accumulator(
 ) -> AccumulatorDefinition:
     """Compile one package-local ``xsl:accumulator`` declaration."""
     declaration = component.declaration
+    _validate_accumulator_attributes(declaration, _ACCUMULATOR_ATTRIBUTES, module)
     name = component.name
     if name is None:  # pragma: no cover - package composition requires a name
         raise XsltStaticError(
@@ -1176,13 +1197,6 @@ def _compile_accumulator(
     if initial_source is None:
         raise XsltStaticError(
             "an xsl:accumulator requires an initial-value attribute",
-            code="XTSE0010",
-            uri=module.identity,
-            location=declaration.location,
-        )
-    if declaration.attribute("select") is not None:
-        raise XsltStaticError(
-            "select is not permitted on xsl:accumulator",
             code="XTSE0010",
             uri=module.identity,
             location=declaration.location,
@@ -1245,6 +1259,7 @@ def _compile_accumulator_rule(
     as_source: str | None,
     order: int,
 ) -> AccumulatorRule:
+    _validate_accumulator_attributes(rule, _ACCUMULATOR_RULE_ATTRIBUTES, module)
     base_context = _instruction_context(context, rule)
     match = rule.attribute("match")
     if match is None:
@@ -1360,6 +1375,7 @@ def _accumulator_references(
         definition.initial_value.static_context.namespaces,
         package,
         definition,
+        self_reference_guard=False,
     )
     for rule in definition.rules:
         _collect_accumulator_references(
@@ -1368,6 +1384,7 @@ def _accumulator_references(
             rule.pattern.context.namespaces,
             package,
             definition,
+            self_reference_guard=True,
         )
         if rule.select is not None:
             _collect_accumulator_references(
@@ -1376,12 +1393,14 @@ def _accumulator_references(
                 rule.select.static_context.namespaces,
                 package,
                 definition,
+                self_reference_guard=True,
             )
-        _instruction_accumulator_references(
+        _plan_accumulator_references(
             references,
-            rule.instruction,
+            rule.body,
             package,
             definition,
+            self_reference_guard=True,
         )
     return references
 
@@ -1392,11 +1411,23 @@ def _collect_accumulator_references(
     namespaces: Mapping[str, str],
     package: CompiledPackage,
     definition: AccumulatorDefinition,
+    *,
+    self_reference_guard: bool,
 ) -> None:
-    for _phase, raw_name in iter_accumulator_calls(source):
+    for _phase, raw_name, start in iter_accumulator_call_spans(source):
         if raw_name is None:
             continue
-        references.add(_resolve_accumulator_reference(raw_name, namespaces, package, definition))
+        key = _resolve_accumulator_reference(raw_name, namespaces, package, definition)
+        if (
+            key == definition.key
+            and self_reference_guard
+            and not _same_context_accumulator_call(source, start)
+        ):
+            # A same-accumulator call after a path or simple-map operator can
+            # address a preceding node.  It is a legitimate recurrence, not a
+            # cycle; the runtime partial-value cache resolves it.
+            continue
+        references.add(key)
 
 
 def _resolve_accumulator_reference(
@@ -1426,42 +1457,79 @@ def _resolve_accumulator_reference(
     return (component.owner, component.name)
 
 
-def _instruction_accumulator_references(
+def _same_context_accumulator_call(source: str, start: int) -> bool:
+    """Whether a call's focus is the rule's own context node.
+
+    A call reached through ``/`` or ``!`` may address a different node.  A
+    same-context call (the default, and every call in an initial-value
+    expression) is a true self-dependency.  This conservative check keeps the
+    common self-cycle static while deferring focus-changing recurrences to the
+    runtime partial-value cache.
+    """
+    index = start - 1
+    while index >= 0 and source[index].isspace():
+        index -= 1
+    return index < 0 or source[index] not in ("!", "/")
+
+
+def _plan_accumulator_references(
     references: set[AccumulatorKey],
-    instruction: Instruction,
+    value: Any,
     package: CompiledPackage,
     definition: AccumulatorDefinition,
+    *,
+    self_reference_guard: bool,
 ) -> None:
-    for attribute in instruction.attributes:
-        if (
-            attribute.local_name not in _ACCUMULATOR_EXPRESSION_ATTRIBUTES
-            and "{" not in attribute.value
-        ):
-            continue
+    """Scan compiled plan expressions, never raw literal stylesheet text."""
+    if isinstance(value, CompiledExpression):
         _collect_accumulator_references(
             references,
-            attribute.value,
-            instruction.namespaces,
+            value.source,
+            value.static_context.namespaces,
             package,
             definition,
+            self_reference_guard=self_reference_guard,
         )
-    for child in instruction.children:
-        if isinstance(child, TextNode):
-            if "{" not in child.value:
-                continue
+        return
+    if isinstance(value, CompiledValueTemplate):
+        for expression in value.expressions:
             _collect_accumulator_references(
                 references,
-                child.value,
-                instruction.namespaces,
+                expression.source,
+                expression.static_context.namespaces,
                 package,
                 definition,
+                self_reference_guard=self_reference_guard,
             )
-        else:
-            _instruction_accumulator_references(
+        return
+    if isinstance(value, (tuple, list)):
+        for item in value:
+            _plan_accumulator_references(
                 references,
-                child,
+                item,
                 package,
                 definition,
+                self_reference_guard=self_reference_guard,
+            )
+        return
+    if is_dataclass(value) and not isinstance(
+        value,
+        (
+            Instruction,
+            StaticContext,
+            CompiledPattern,
+            CompiledSequenceType,
+            ItemType,
+            IssueLocation,
+        ),
+    ):
+        for field_info in fields(value):
+            _plan_accumulator_references(
+                references,
+                getattr(value, field_info.name),
+                package,
+                definition,
+                self_reference_guard=self_reference_guard,
             )
 
 
@@ -1474,9 +1542,43 @@ def _resolve_mode_accumulators(
     return _resolve_use_accumulators(
         value,
         package,
-        package.namespaces,
+        mode.namespaces,
         uri=mode.module,
         location=mode.location,
+    )
+
+
+def _declared_streamable(component: Component) -> bool:
+    """Whether a component's normalized ``streamable`` flag is true."""
+    signature = component.signature
+    if signature is None:
+        return False
+    raw = signature.flags.get("streamable", "no")
+    return raw.strip() in ("yes", "true", "1")
+
+
+def _compile_use_accumulators(
+    value: str | None,
+    context: StaticContext,
+    instruction: Instruction,
+) -> frozenset[AccumulatorKey]:
+    """Resolve one instruction's ``use-accumulators`` attribute at compile time."""
+    if value is None:
+        return frozenset()
+    package = context.package
+    if package is None:
+        raise XsltStaticError(
+            "use-accumulators requires a containing package",
+            code="XTSE3300",
+            uri=instruction.module,
+            location=instruction.location,
+        )
+    return _resolve_use_accumulators(
+        value,
+        package,
+        instruction.namespaces,
+        uri=instruction.module,
+        location=instruction.location,
     )
 
 
@@ -1528,7 +1630,7 @@ def _resolve_use_accumulators(
                 uri=uri,
                 location=location,
             )
-        if component.signature is None or component.signature.flags.get("streamable") != "yes":
+        if not _declared_streamable(component):
             raise XsltStaticError(
                 f"the accumulator {token!r} is not declared streamable",
                 code="XTSE3300",
@@ -1787,6 +1889,7 @@ def _context_for(
                     module=component.module,
                 )
     context = base.with_variables(variables).with_functions(functions)
+    context = replace(context, package=package)
     if context.default_collation is None and default_collation is not None:
         context = context.with_default_collation(default_collation)
     return _instruction_context(context, declaration)
@@ -2450,7 +2553,11 @@ def _compile_merge_source(
         validation=None if validation is None else validation.strip(),
         type_name=None if type_name is None else type_name.strip(),
         base_uri=instruction.base_uri,
-        use_accumulators=use_accumulators,
+        use_accumulators=_compile_use_accumulators(
+            use_accumulators,
+            context,
+            instruction,
+        ),
     )
 
 
@@ -2582,7 +2689,11 @@ def _compile_source_document(
         streamable=streamable,
         validation=None if validation is None else validation.strip(),
         type_name=None if type_name is None else type_name.strip(),
-        use_accumulators=instruction.attribute("use-accumulators"),
+        use_accumulators=_compile_use_accumulators(
+            instruction.attribute("use-accumulators"),
+            context,
+            instruction,
+        ),
     )
 
 
@@ -4501,24 +4612,6 @@ class _Invocation(Transformation):
             label=f"accumulator {definition.name!r}",
         )
 
-    def _use_accumulator_keys(
-        self,
-        value: str | None,
-        package_name: str | None,
-        instruction: Instruction,
-    ) -> frozenset[AccumulatorKey]:
-        """Resolve one instruction's ``use-accumulators`` list at run time."""
-        if value is None:
-            return frozenset()
-        package = self.stylesheet._packages.get(package_name) or self.package
-        return _resolve_use_accumulators(
-            value,
-            package,
-            instruction.namespaces,
-            uri=instruction.module,
-            location=instruction.location,
-        )
-
     # -- top level ---------------------------------------------------------
 
     def run(self) -> TransformationResult:
@@ -5450,11 +5543,7 @@ class _Invocation(Transformation):
                 self.document_resources.resolve(atomic.lexical, base=source.base_uri)
                 for atomic in atomics
             )
-            keys = self._use_accumulator_keys(
-                source.use_accumulators,
-                package_name,
-                source.instruction,
-            )
+            keys = source.use_accumulators
             for document in documents:
                 self.accumulators.restrict(document, keys)
             return tuple(
@@ -5616,11 +5705,7 @@ class _Invocation(Transformation):
         document = self.document_resources.resolve(href, base=plan.instruction.base_uri)
         self.accumulators.restrict(
             document,
-            self._use_accumulator_keys(
-                plan.use_accumulators,
-                package_name,
-                plan.instruction,
-            ),
+            plan.use_accumulators,
         )
         return self._execute_plans(
             plan.children,

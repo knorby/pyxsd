@@ -290,6 +290,7 @@ class StaticContext:
     uri: str | None = None
     location: IssueLocation | None = None
     module: str | None = None
+    package: Any = None
 
     def __post_init__(self) -> None:
         namespaces = dict(BUILT_IN_NAMESPACES)
@@ -656,6 +657,7 @@ class StaticContext:
                 if fallback is not None
                 else None
             ),
+            package=fallback.package if fallback is not None else None,
         )
 
 

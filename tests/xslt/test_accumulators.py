@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
@@ -581,6 +582,12 @@ def test_temporary_tree_has_independent_accumulator_state() -> None:
 
 
 def test_copied_tree_has_independent_accumulator_state() -> None:
+    """A copied tree recomputes its own accumulator values.
+
+    ``xsl:copy-of``/``copy-accumulators`` are not implemented in this slice, so
+    this test exercises the XDM clone boundary.  It asserts independent
+    recomputation for the new tree, not transplanted accumulator values.
+    """
     body = """
         <xsl:mode use-accumulators="#all"/>
         <xsl:accumulator name="app:count" as="xs:integer" initial-value="0">
@@ -929,11 +936,11 @@ def test_source_document_use_accumulator_errors() -> None:
         ("p:missing", "XTSE3300"),
     )
     for declaration, code in cases:
-        stylesheet_ = compiled(stylesheet(base.format(declaration)), resource_policy=policy)
         assert (
             error_code(
-                lambda stylesheet_=stylesheet_: stylesheet_.transform(
-                    delivery="document", initial_template="main"
+                lambda declaration=declaration: compiled(
+                    stylesheet(base.format(declaration)),
+                    resource_policy=policy,
                 )
             )
             == code
@@ -957,7 +964,7 @@ def test_accumulator_declaration_errors() -> None:
         (
             '<xsl:accumulator name="app:a" initial-value="0" select="1">'
             '<xsl:accumulator-rule match="n"/></xsl:accumulator>',
-            "XTSE0010",
+            "XTSE0090",
         ),
         (
             '<xsl:accumulator name="app:a" initial-value="0">text</xsl:accumulator>',
@@ -1169,6 +1176,300 @@ def test_circular_and_illegal_accumulator_references_are_static_errors() -> None
 
 
 # ---------------------------------------------------------------------------
+# Fix round 1 regressions: static applicability, namespaces, scanning, locality
+
+
+def test_source_document_use_accumulators_is_static_in_an_unused_template() -> None:
+    body = """
+        <xsl:template name="unused">
+          <xsl:source-document href="urn:doc" use-accumulators="app:missing"/>
+        </xsl:template>
+    """
+    assert error_code(lambda: compiled(stylesheet(body))) == "XTSE3300"
+
+
+def test_merge_source_use_accumulators_is_static() -> None:
+    body = """
+        <xsl:template name="unused">
+          <xsl:merge>
+            <xsl:merge-source for-each-source="('urn:a')" select="/doc/n"
+              use-accumulators="app:missing">
+              <xsl:merge-key select="@k"/>
+            </xsl:merge-source>
+            <xsl:merge-action/>
+          </xsl:merge>
+        </xsl:template>
+    """
+    assert error_code(lambda: compiled(stylesheet(body))) == "XTSE3300"
+
+
+@pytest.mark.parametrize("form", ("true", "1", " yes "))
+def test_streamable_boolean_forms_are_accepted_by_use_accumulators(form: str) -> None:
+    body = f"""
+        <xsl:mode use-accumulators="app:a"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0"
+          streamable="{form}">
+          <xsl:accumulator-rule match="doc:n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:template match="/">
+          <xsl:for-each select="doc:doc/doc:n[1]">
+            <xsl:sequence select="accumulator-before('app:a')"/>
+          </xsl:for-each>
+        </xsl:template>
+    """
+    assert values(transform(stylesheet(body), b'<doc xmlns="urn:example:doc"><n/></doc>')) == ("1",)
+
+
+def test_source_document_use_accumulators_accepts_streamable_true() -> None:
+    body = """
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0"
+          streamable="true">
+          <xsl:accumulator-rule match="n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:template name="main">
+          <xsl:source-document href="urn:doc" use-accumulators="app:a">
+            <xsl:for-each select="doc/n">
+              <xsl:sequence select="accumulator-before('app:a')"/>
+            </xsl:for-each>
+          </xsl:source-document>
+        </xsl:template>
+    """
+    policy = MappingPolicy({"urn:doc": b"<doc><n/><n/></doc>"})
+    result = compiled(stylesheet(body), resource_policy=policy).transform(
+        delivery="document",
+        initial_template="main",
+    )
+    assert values(result) == ("1", "2")
+
+
+def test_mode_use_accumulators_uses_declaration_namespaces(tmp_path: Path) -> None:
+    local_prefix = """
+        <xsl:mode name="m" use-accumulators="p:a" xmlns:p="urn:example:app"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0"
+          streamable="yes">
+          <xsl:accumulator-rule match="doc:n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:template match="/" mode="m">
+          <xsl:sequence select="accumulator-before('app:a')"/>
+        </xsl:template>
+    """
+    assert values(
+        transform(
+            stylesheet(local_prefix),
+            b'<doc xmlns="urn:example:doc"><n/></doc>',
+            initial_mode="m",
+        )
+    ) == ("0",)
+
+    module = tmp_path / "module.xsl"
+    module.write_text(
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
+        f'xmlns:p="{APP_NS}" xmlns:app="{APP_NS}" version="3.0">'
+        '<xsl:mode name="m" use-accumulators="p:a"/>'
+        '<xsl:template match="/" mode="m">'
+        "<xsl:sequence select=\"accumulator-before('app:a')\"/>"
+        "</xsl:template></xsl:stylesheet>",
+        encoding="utf-8",
+    )
+    principal = stylesheet(
+        '<xsl:include href="module.xsl"/>'
+        '<xsl:accumulator name="app:a" as="xs:integer" initial-value="0" '
+        'streamable="yes">'
+        '<xsl:accumulator-rule match="doc:n" select="$value + 1"/>'
+        "</xsl:accumulator>"
+    )
+    principal_path = tmp_path / "principal.xsl"
+    principal_path.write_text(principal.decode(), encoding="utf-8")
+    compiled_ = XsltProcessor().compile(principal_path)
+    result = compiled_.transform(
+        source=b'<doc xmlns="urn:example:doc"><n/></doc>',
+        initial_mode="m",
+        delivery="document",
+    )
+    assert values(result) == ("0",)
+
+
+def test_static_scanning_ignores_literal_text_and_escaped_braces() -> None:
+    literal_text = """
+        <xsl:accumulator name="app:a" initial-value="0">
+          <xsl:accumulator-rule match="n">
+            <xsl:text>{accumulator-before('app:missing')}</xsl:text>
+          </xsl:accumulator-rule>
+        </xsl:accumulator>
+        <xsl:template name="main"/>
+    """
+    compile_stylesheet(stylesheet(literal_text))
+
+    escaped_avt = """
+        <xsl:accumulator name="app:a" initial-value="0">
+          <xsl:accumulator-rule match="n">
+            <xsl:value-of select="1"
+              separator="{{accumulator-before('app:missing')}}"/>
+          </xsl:accumulator-rule>
+        </xsl:accumulator>
+        <xsl:template name="main"/>
+    """
+    compile_stylesheet(stylesheet(escaped_avt))
+
+
+def test_rule_error_is_local_to_functionally_dependent_nodes() -> None:
+    start_error = """
+        <xsl:mode use-accumulators="#all"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n[2]" select="error()"/>
+        </xsl:accumulator>
+        <xsl:template match="/">
+          <xsl:for-each select="doc/n[1]">
+            <xsl:sequence select="accumulator-before('app:a')"/>
+            <xsl:sequence select="accumulator-after('app:a')"/>
+          </xsl:for-each>
+        </xsl:template>
+    """
+    assert values(transform(stylesheet(start_error), SOURCE)) == ("0", "0")
+
+    start_error_n2 = """
+        <xsl:mode use-accumulators="#all"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n[2]" select="error()"/>
+        </xsl:accumulator>
+        <xsl:template match="/">
+          <xsl:for-each select="doc/n[2]">
+            <xsl:sequence select="accumulator-before('app:a')"/>
+          </xsl:for-each>
+        </xsl:template>
+    """
+    assert error_code(lambda: transform(stylesheet(start_error_n2), SOURCE)) == "FOER0000"
+
+    end_error = """
+        <xsl:mode use-accumulators="#all"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n[1]" phase="end" select="error()"/>
+        </xsl:accumulator>
+        <xsl:template match="/">
+          <xsl:for-each select="doc/n[1]">
+            <xsl:sequence select="accumulator-before('app:a')"/>
+          </xsl:for-each>
+        </xsl:template>
+    """
+    assert values(transform(stylesheet(end_error), SOURCE)) == ("0",)
+
+    end_error_after = end_error.replace("accumulator-before", "accumulator-after")
+    assert error_code(lambda: transform(stylesheet(end_error_after), SOURCE)) == "FOER0000"
+
+    end_error_n2 = end_error.replace("doc/n[1]", "doc/n[2]")
+    assert error_code(lambda: transform(stylesheet(end_error_n2), SOURCE)) == "FOER0000"
+
+
+def test_same_accumulator_preceding_node_recurrence_is_not_a_cycle() -> None:
+    body = """
+        <xsl:mode use-accumulators="#all"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n"
+            select="$value + 1 + (if (preceding-sibling::n[1])
+              then preceding-sibling::n[1] ! accumulator-before('app:a')
+              else 0)"/>
+        </xsl:accumulator>
+        <xsl:template match="/">
+          <xsl:for-each select="doc/n">
+            <xsl:sequence select="accumulator-before('app:a')"/>
+          </xsl:for-each>
+          <xsl:sequence select="accumulator-after('app:a')"/>
+        </xsl:template>
+    """
+    assert values(transform(stylesheet(body), SOURCE)) == ("1", "3", "7", "7")
+
+
+def test_non_literal_self_reference_is_rejected_at_runtime() -> None:
+    body = """
+        <xsl:mode use-accumulators="#all"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n"
+            select="$value + accumulator-before(concat('app:', 'a'))"/>
+        </xsl:accumulator>
+        <xsl:template match="/">
+          <xsl:for-each select="doc/n">
+            <xsl:sequence select="accumulator-before('app:a')"/>
+          </xsl:for-each>
+        </xsl:template>
+    """
+    assert error_code(lambda: transform(stylesheet(body), SOURCE)) == "XTDE3400"
+
+
+def test_unknown_accumulator_attributes_are_static_errors() -> None:
+    declaration = """
+        <xsl:accumulator name="app:a" initial-value="0"
+          use-accumulators="#all">
+          <xsl:accumulator-rule match="n"/>
+        </xsl:accumulator>
+        <xsl:template name="main"/>
+    """
+    assert error_code(lambda: compiled(stylesheet(declaration))) == "XTSE0090"
+
+    rule = """
+        <xsl:accumulator name="app:a" initial-value="0">
+          <xsl:accumulator-rule match="n" bogus="x"/>
+        </xsl:accumulator>
+        <xsl:template name="main"/>
+    """
+    assert error_code(lambda: compiled(stylesheet(rule))) == "XTSE0090"
+
+
+def test_accumulator_allows_foreign_namespaced_attributes() -> None:
+    body = """
+        <xsl:accumulator name="app:a" initial-value="0" app:extra="x">
+          <xsl:accumulator-rule match="n" app:extra="x"/>
+        </xsl:accumulator>
+        <xsl:template name="main"/>
+    """
+    compile_stylesheet(stylesheet(body))
+
+
+def test_declared_streamable_without_a_signature_is_false() -> None:
+    from types import SimpleNamespace
+
+    from pyxsd.xslt.processor import _declared_streamable
+
+    assert _declared_streamable(SimpleNamespace(signature=None)) is False  # type: ignore[arg-type]
+
+
+def test_compile_use_accumulators_requires_a_package() -> None:
+    from pyxsd.xslt.compiler.context import StaticContext
+    from pyxsd.xslt.compiler.instructions import Instruction
+    from pyxsd.xslt.processor import _compile_use_accumulators
+
+    instruction = Instruction(name=f"{{{XSLT_NS}}}source-document")
+    with pytest.raises(XsltStaticError) as caught:
+        _compile_use_accumulators("app:a", StaticContext(), instruction)
+    assert caught.value.code == "XTSE3300"
+
+
+def test_rule_captures_a_global_package_variable() -> None:
+    body = """
+        <xsl:mode use-accumulators="#all"/>
+        <xsl:variable name="app:inc" select="10" visibility="public"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n" select="$value + $app:inc"/>
+        </xsl:accumulator>
+        <xsl:template match="/">
+          <xsl:for-each select="doc/n">
+            <xsl:sequence select="accumulator-before('app:a')"/>
+          </xsl:for-each>
+        </xsl:template>
+    """
+    assert values(transform(stylesheet(body), SOURCE)) == ("10", "20", "30")
+
+
+def test_copy_of_is_not_claimed_by_this_slice() -> None:
+    body = """
+        <xsl:template name="main">
+          <xsl:copy-of select="/doc"/>
+        </xsl:template>
+    """
+    with pytest.raises(XsltError, match="xsl:copy-of"):
+        transform(stylesheet(body), SOURCE, initial_template="main")
+
+
+# ---------------------------------------------------------------------------
 # Runtime manager contracts
 
 
@@ -1328,8 +1629,13 @@ def test_manager_detects_runtime_reentry() -> None:
 
     manager = _manager(definition, evaluate_rule=evaluate_rule)
     holder["manager"] = manager
+    node = next(
+        child
+        for child in root.root_element.children
+        if child.kind is NodeKind.ELEMENT and child.local_name == "n"
+    )
     with pytest.raises(XsltDynamicError) as caught:
-        manager.value(definition, root, "before")
+        manager.value(definition, node, "before")
     assert caught.value.code == "XTDE3400"
 
 

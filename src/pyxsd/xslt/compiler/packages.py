@@ -204,9 +204,10 @@ def _yes_no(
 ) -> bool:
     if value is None:
         return default
-    if value in ("yes", "true", "1"):
+    normalized = value.strip()
+    if normalized in ("yes", "true", "1"):
         return True
-    if value in ("no", "false", "0"):
+    if normalized in ("no", "false", "0"):
         return False
     raise _error(
         f"the {attribute} attribute has an invalid value {value!r}",
@@ -491,8 +492,12 @@ class Mode:
     declared_visibility: str | None = None
     rule_layers: tuple[ModeRuleLayer, ...] = ()
     properties: Mapping[str, str] = field(default_factory=dict)
+    namespaces: Mapping[str, str] = field(default_factory=dict)
     module: str | None = None
     location: IssueLocation | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "namespaces", MappingProxyType(dict(self.namespaces)))
 
     @property
     def rules(self) -> tuple[ModeRule, ...]:
@@ -2056,14 +2061,34 @@ def _signature(declaration: _Declaration) -> Signature:
     if declaration.kind == "attribute-set":
         return Signature(
             kind="attribute-set",
-            flags={"streamable": element.attribute("streamable") or "no"},
+            flags={
+                "streamable": "yes"
+                if _yes_no(
+                    element.attribute("streamable"),
+                    False,
+                    element=element,
+                    module=module,
+                    attribute="streamable",
+                )
+                else "no"
+            },
         )
     if declaration.kind == "accumulator":
         context = _module_context(module)
         return Signature(
             kind="accumulator",
             sequence_type=_type(element, "as", context, default="item()*"),
-            flags={"streamable": element.attribute("streamable") or "no"},
+            flags={
+                "streamable": "yes"
+                if _yes_no(
+                    element.attribute("streamable"),
+                    False,
+                    element=element,
+                    module=module,
+                    attribute="streamable",
+                )
+                else "no"
+            },
         )
     return Signature(kind="key")
 
@@ -2710,6 +2735,7 @@ class _PackageCompiler:
                 declared=True,
                 declared_visibility=declared_visibility,
                 properties=properties,
+                namespaces=group.declarations[0].element.in_scope_namespaces,
                 module=group.declarations[0].module.identity,
                 location=group.declarations[0].element.source_location(),
             )
@@ -2771,6 +2797,7 @@ class _PackageCompiler:
                     owner=descriptor.name,
                     containing=descriptor.name,
                     declared=False,
+                    namespaces=rules[0].declaration.namespaces if rules else {},
                     rule_layers=(
                         ModeRuleLayer(
                             owner=descriptor.name,

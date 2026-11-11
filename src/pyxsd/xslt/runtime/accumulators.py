@@ -35,6 +35,7 @@ __all__ = [
     "AccumulatorRule",
     "expand_accumulator_name",
     "find_cycle",
+    "iter_accumulator_call_spans",
     "iter_accumulator_calls",
     "parse_accumulator_names",
 ]
@@ -182,12 +183,29 @@ class AccumulatorManager:
                 code="XTDE3362",
             )
         cache_key = (tree, definition.key)
+        values = self._values.get(cache_key)
+        if values is not None:
+            selected = values.before if phase == "before" else values.after
+            if node in selected:
+                return selected[node]
         cached_error = self._errors.get(cache_key)
         if cached_error is not None:
             raise cached_error
-        values = self._values.get(cache_key)
-        if values is None:
+        if cache_key in self._evaluating:
+            raise XsltDynamicError(
+                f"the accumulator {definition.name!r} depends on itself",
+                code="XTDE3400",
+            )
+        try:
             values = self._compute(definition, root, cache_key)
+        except XsltError:
+            # A later node failed.  The requested node's value may already be
+            # known; only a functionally dependent call signals the error.
+            values = self._values[cache_key]
+            selected = values.before if phase == "before" else values.after
+            if node in selected:
+                return selected[node]
+            raise
         selected = values.before if phase == "before" else values.after
         try:
             return selected[node]
@@ -203,20 +221,15 @@ class AccumulatorManager:
         root: XdmNode,
         cache_key: tuple[int, AccumulatorKey],
     ) -> _AccumulatorValues:
-        if cache_key in self._evaluating:
-            raise XsltDynamicError(
-                f"the accumulator {definition.name!r} depends on itself",
-                code="XTDE3400",
-            )
         self._evaluating.add(cache_key)
+        values = _AccumulatorValues()
+        self._values[cache_key] = values
         try:
             current = self._coerce(
                 self._evaluate_initial(definition, root),
                 definition,
             )
-            values = _AccumulatorValues()
             self._visit(definition, root, current, values)
-            self._values[cache_key] = values
             return values
         except XsltError as exc:
             self._errors[cache_key] = exc
@@ -366,13 +379,12 @@ def _read_string(source: str, start: int) -> tuple[str, int]:
     return "".join(value), len(source)
 
 
-def iter_accumulator_calls(source: str) -> Iterator[tuple[str, str | None]]:
-    """Yield literal ``accumulator-before``/``accumulator-after`` calls.
+def iter_accumulator_call_spans(source: str) -> Iterator[tuple[str, str | None, int]]:
+    """Yield ``(phase, literal argument, call start)`` for accumulator calls.
 
-    String literals and nested XPath comments are skipped, so a name that only
-    appears as data is not a dependency.  When the first argument is a string
-    literal, the literal value is returned; a non-literal argument yields
-    ``None`` because static cycle analysis cannot resolve it.
+    String literals and nested XPath comments are skipped.  The start offset is
+    the position of the function name, which lets static analysis distinguish a
+    same-context call from one reached through a path or simple-map operator.
     """
     index = 0
     length = len(source)
@@ -393,11 +405,23 @@ def iter_accumulator_calls(source: str) -> Iterator[tuple[str, str | None]]:
             position += 1
         if position < length and source[position] in ("'", '"'):
             value, position = _read_string(source, position)
-            yield phase, value
+            yield phase, value, match.start()
             index = position
             continue
-        yield phase, None
+        yield phase, None, match.start()
         index = match.end()
+
+
+def iter_accumulator_calls(source: str) -> Iterator[tuple[str, str | None]]:
+    """Yield literal ``accumulator-before``/``accumulator-after`` calls.
+
+    String literals and nested XPath comments are skipped, so a name that only
+    appears as data is not a dependency.  When the first argument is a string
+    literal, the literal value is returned; a non-literal argument yields
+    ``None`` because static cycle analysis cannot resolve it.
+    """
+    for phase, value, _start in iter_accumulator_call_spans(source):
+        yield phase, value
 
 
 K = TypeVar("K", bound=Hashable)
