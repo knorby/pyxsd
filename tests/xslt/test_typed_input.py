@@ -138,6 +138,21 @@ DECL_BLOCK_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
   <xs:element name="RootOpen" type="inv:OtherOpen" block="extension"/>
 </xs:schema>"""
 
+SELF_BLOCK_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
+    xmlns:inv="{INVOICE}">
+  <xs:complexType name="Base">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="Ext">
+    <xs:complexContent>
+      <xs:extension base="inv:Base">
+        <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="RootExt" type="inv:Ext" block="extension"/>
+</xs:schema>"""
+
 NESTED_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
     xmlns:inv="{INVOICE}">
   <xs:complexType name="Line">
@@ -2192,7 +2207,7 @@ def test_type_requested_prohibited_substitutions_without_declaration() -> None:
     assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
 
 
-def test_type_requested_prohibited_substitutions_with_differing_declaration() -> None:
+def test_type_requested_prohibited_substitutions_from_requested_type() -> None:
     source = (
         f'<inv:Root xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
         'xsi:type="inv:Ext"><a>x</a><b>y</b></inv:Root>'
@@ -2202,14 +2217,38 @@ def test_type_requested_prohibited_substitutions_with_differing_declaration() ->
     assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
 
 
-def test_type_requested_applies_declaration_prohibited_substitutions() -> None:
+def test_type_requested_stipulated_type_ignores_declaration_block() -> None:
     source = (
         f'<inv:RootOpen xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
         'xsi:type="inv:ExtOpen"><a>x</a><b>y</b></inv:RootOpen>'
     ).encode()
-    compiled, _ = _requested_type_transform(DECL_BLOCK_XSD, source, "1", type_name="inv:BaseOpen")
+    compiled, _ = _requested_type_transform(
+        DECL_BLOCK_XSD,
+        source,
+        "* instance of element(*, inv:ExtOpen)",
+        type_name="inv:BaseOpen",
+    )
 
-    assert _error_code(lambda: compiled.transform(initial_template="main")) == "XTTE1540"
+    result = compiled.transform(initial_template="main")
+
+    assert result.principal[0].lexical == "true"
+
+
+def test_type_requested_stipulated_type_accepts_declaration_own_type() -> None:
+    source = (
+        f'<inv:RootExt xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="inv:Ext"><a>x</a><b>y</b></inv:RootExt>'
+    ).encode()
+    compiled, _ = _requested_type_transform(
+        SELF_BLOCK_XSD,
+        source,
+        "* instance of element(*, inv:Ext)",
+        type_name="inv:Base",
+    )
+
+    result = compiled.transform(initial_template="main")
+
+    assert result.principal[0].lexical == "true"
 
 
 def test_type_requested_prohibited_substitutions_with_matching_declaration() -> None:

@@ -625,7 +625,7 @@ def _type_validated_document(
             reason="type",
         )
     declaration = _element_declaration(schema_pool, root.name)
-    adapter = _actual_requested_type(schema_pool, requested, root, declaration)
+    adapter = _actual_requested_type(schema_pool, requested, root)
     if root.annotation.nil_declared:
         _validate_nilled_occurrence(document, adapter, declaration, type_name)
         return document
@@ -661,9 +661,8 @@ def _actual_requested_type(
     schema_pool: SchemaPool,
     requested: Any,
     root: XdmNode,
-    declaration: Any,
 ) -> Any:
-    """Resolve ``xsi:type`` over the requested type (XSD §3.3.4.1)."""
+    """Resolve ``xsi:type`` over the requested type (XSD §3.3.4.2)."""
     lexical_attribute = root.attribute(f"{{{XSI_NS}}}type")
     if lexical_attribute is None:
         return requested
@@ -679,14 +678,11 @@ def _actual_requested_type(
         )
     declared_class = getattr(requested, "_type_class", None)
     actual_class = getattr(actual, "_type_class", None)
-    # XSD 1.1 §3.3.4.2: valid substitution uses the requested type's
-    # {prohibited substitutions} plus the governing declaration's
-    # {disallowed substitutions}, whether or not the declaration's own
-    # declared type equals the requested one.
-    blocked = combinedBlock(
-        declaration.getBlock() if declaration is not None else None,
-        declared_class,
-    )
+    # XSD 1.1 §3.3.4.2: a stipulated type (XSLT §25.4.1.2/§25.4.2)
+    # makes the name-resolved declaration non-governing (§3.3.4.6 clause
+    # 4.2), so only the requested type's {prohibited substitutions}
+    # constrain the xsi:type override.
+    blocked = combinedBlock(None, declared_class)
     reason = is_valid_xsi_type(actual_class, declared_class, blocked)
     if reason is not None:
         raise DocumentValidationError(
