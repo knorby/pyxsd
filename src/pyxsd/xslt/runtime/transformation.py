@@ -144,6 +144,10 @@ class Transformation:
         self.key_index_documents: dict[int, XdmDocument] = {}
         self.documents: dict[str, XdmDocument] = {}
         self.evaluating_attribute_sets: list[tuple[str | None, str | None]] = []
+        # A subclass may install an invocation-local accumulator manager.  The
+        # base transformation keeps the absent state so bridge unit tests and
+        # non-XSLT schedulers do not fabricate accumulator values.
+        self.accumulators: Any = None
 
     def _read_output_attributes(self) -> Mapping[str, str]:
         if self.package is None:

@@ -1356,6 +1356,9 @@ def test_merge_source_attribute_combinations_are_static_errors() -> None:
 
 def test_merge_for_each_source_accepts_validation_options() -> None:
     body = """
+        <xsl:accumulator name="acc" as="xs:integer" initial-value="0" streamable="yes">
+          <xsl:accumulator-rule match="n" select="$value + 1"/>
+        </xsl:accumulator>
         <xsl:template name="main">
           <out>
             <xsl:merge>

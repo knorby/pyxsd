@@ -41,7 +41,7 @@ from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.nodes import XdmDocument, XdmNode
 from pyxsd.xpath.environment import Focus, FunctionArity
 from pyxsd.xpath.functions import ContextFunction
-from pyxsd.xslt.errors import XsltDynamicError
+from pyxsd.xslt.errors import XsltDynamicError, XsltError
 
 __all__ = [
     "ABSENT",
@@ -95,6 +95,8 @@ SYSTEM_PROPERTIES: Mapping[str, str] = MappingProxyType(
 IMPLEMENTED_XSLT_ELEMENTS = frozenset(
     {
         "accept",
+        "accumulator",
+        "accumulator-rule",
         "apply-imports",
         "apply-templates",
         "assert",
@@ -859,14 +861,21 @@ class XsltContextBridge:
         documents = getattr(self.transformation, "documents", {})
         document = documents.get(target)
         if isinstance(document, XdmDocument):
+            self._allow_all_accumulators(document)
             return document
         module_document = self._stylesheet_document(target)
         if module_document is not None:
+            self._allow_all_accumulators(module_document)
             return module_document
         raise XsltDynamicError(
             f"the document {uri!r} is not available to this transformation",
             code="FODC0002",
         )
+
+    def _allow_all_accumulators(self, document: XdmDocument) -> None:
+        manager = getattr(self.transformation, "accumulators", None)
+        if manager is not None:
+            manager.allow_all(document)
 
     def unparsed_entity_uri(self, name: str, node: XdmItem | None = None) -> str:
         del name
@@ -889,19 +898,52 @@ class XsltContextBridge:
         # the zero-length xs:anyURI rather than an invented system identifier.
         return ""
 
-    def accumulator_before(self, name: str) -> XdmSequence:
-        self._accumulator(name)
-        raise XsltDynamicError(  # pragma: no cover - Task 25 accumulator runtime
-            "accumulator evaluation is not available in this build",
-            code=None,
-        )
+    def accumulator_before(
+        self,
+        name: str,
+        context_item: XdmItem | None = None,
+    ) -> XdmSequence:
+        return self._accumulator_value(name, "before", context_item)
 
-    def accumulator_after(self, name: str) -> XdmSequence:
-        self._accumulator(name)
-        raise XsltDynamicError(  # pragma: no cover - Task 25 accumulator runtime
-            "accumulator evaluation is not available in this build",
-            code=None,
+    def accumulator_after(
+        self,
+        name: str,
+        context_item: XdmItem | None = None,
+    ) -> XdmSequence:
+        return self._accumulator_value(name, "after", context_item)
+
+    def _accumulator_value(
+        self,
+        name: str,
+        phase: str,
+        context_item: XdmItem | None,
+    ) -> XdmSequence:
+        expanded = _expand_name(
+            name,
+            self.namespaces,
+            default_namespace=None,
+            code="XTDE3340",
+            label="accumulator name",
         )
+        manager = getattr(self.transformation, "accumulators", None)
+        if manager is None:
+            raise XsltError(
+                "accumulator evaluation is not available for this transformation",
+                code=None,
+            )
+        definition = manager.definition(self.package_name, expanded)
+        if definition is None:
+            raise XsltDynamicError(
+                f"the accumulator {name!r} is not declared in this package",
+                code="XTDE3340",
+            )
+        node = context_item if context_item is not None else self.focus.item
+        if node is None:
+            raise XsltDynamicError(
+                "an accumulator value requires a context item",
+                code="XTDE3350",
+            )
+        return manager.value(definition, node, phase)
 
     # -- package and resource helpers --------------------------------------
 
@@ -920,15 +962,6 @@ class XsltContextBridge:
             if module.uri == uri or module.raw.base_uri == uri:
                 return module.document
         return None
-
-    def _accumulator(self, name: str) -> None:
-        package = self._package()
-        component = None if package is None else package.accumulator(name)
-        if component is None:
-            raise XsltDynamicError(
-                f"the accumulator {name!r} is not declared in this package",
-                code="XTDE3340",
-            )
 
     # -- callback adapters --------------------------------------------------
 
@@ -1145,16 +1178,14 @@ class XsltContextBridge:
         context_item: XdmItem | None,
         arguments: tuple[XdmSequence, ...],
     ) -> XdmSequence:
-        del context_item
-        return self.accumulator_before(_single_string(arguments, 0))
+        return self.accumulator_before(_single_string(arguments, 0), context_item)
 
     def _direct_accumulator_after(
         self,
         context_item: XdmItem | None,
         arguments: tuple[XdmSequence, ...],
     ) -> XdmSequence:
-        del context_item
-        return self.accumulator_after(_single_string(arguments, 0))
+        return self.accumulator_after(_single_string(arguments, 0), context_item)
 
     def _direct_key(
         self,

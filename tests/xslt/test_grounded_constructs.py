@@ -481,6 +481,9 @@ def test_source_document_validation_options() -> None:
 
 def test_source_document_accepts_use_accumulators_syntax() -> None:
     body = """
+        <xsl:accumulator name="acc" as="xs:integer" initial-value="0" streamable="yes">
+          <xsl:accumulator-rule match="n" select="$value + 1"/>
+        </xsl:accumulator>
         <xsl:template name="main">
           <xsl:source-document href="urn:doc" use-accumulators="acc">
             <xsl:value-of select="/doc/n"/>

@@ -27,6 +27,7 @@ from elementpath.exceptions import MissingContextError
 from elementpath.helpers import is_ncname
 
 from pyxsd.document import Document
+from pyxsd.locations import IssueLocation
 from pyxsd.resource_policy import ResourcePolicyError
 from pyxsd.schema import Schema
 from pyxsd.xdm import (
@@ -91,6 +92,17 @@ from pyxsd.xslt.results import (
     _append_complex_content,
     _build_result_tree,
     _NodeFactory,
+)
+from pyxsd.xslt.runtime.accumulators import (
+    AccumulatorDefinition,
+    AccumulatorKey,
+    AccumulatorManager,
+    AccumulatorRule,
+    RulePhase,
+    expand_accumulator_name,
+    find_cycle,
+    iter_accumulator_calls,
+    parse_accumulator_names,
 )
 from pyxsd.xslt.runtime.evaluate import (
     DynamicExpressionCache,
@@ -461,6 +473,7 @@ class _MergeSourcePlan:
     validation: str | None = None
     type_name: str | None = None
     base_uri: str | None = None
+    use_accumulators: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -484,6 +497,7 @@ class _SourceDocumentPlan:
     streamable: bool = False
     validation: str | None = None
     type_name: str | None = None
+    use_accumulators: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -845,6 +859,10 @@ class CompiledStylesheet:
     _packages: Mapping[str | None, CompiledPackage]
     _keys: Mapping[str | None, tuple[_KeyDefinition, ...]]
     _package_modes: Mapping[str | None, Mapping[ModeKey, tuple[_ModeLayerPlan, ...]]]
+    _accumulators: Mapping[AccumulatorKey, AccumulatorDefinition] = field(default_factory=dict)
+    _mode_accumulators: Mapping[tuple[str | None, ModeKey], frozenset[AccumulatorKey]] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_components", MappingProxyType(dict(self._components)))
@@ -875,6 +893,12 @@ class CompiledStylesheet:
             MappingProxyType(
                 {name: MappingProxyType(dict(modes)) for name, modes in self._package_modes.items()}
             ),
+        )
+        object.__setattr__(self, "_accumulators", MappingProxyType(dict(self._accumulators)))
+        object.__setattr__(
+            self,
+            "_mode_accumulators",
+            MappingProxyType(dict(self._mode_accumulators)),
         )
 
     @property
@@ -958,6 +982,7 @@ def _compile_stylesheet(
     collation = processor.default_collation
     components: dict[tuple[str | None, str, str | None, int | None], _ComponentPlan] = {}
     keys: dict[str | None, list[_KeyDefinition]] = {}
+    accumulators: dict[AccumulatorKey, AccumulatorDefinition] = {}
     for package_name, current_package in packages.items():
         for component in current_package.components.values():
             if component.owner != package_name:
@@ -974,6 +999,13 @@ def _compile_stylesheet(
             )
             attributes = component.declaration
             context = _original_context(context, attributes)
+            if component.kind == "accumulator":
+                accumulators[(component.owner, component.name or "")] = _compile_accumulator(
+                    component,
+                    context,
+                    module,
+                )
+                continue
             select_source = attributes.attribute("select")
             if select_source is not None and component.kind != "variable":
                 raise XsltStaticError(
@@ -1034,6 +1066,7 @@ def _compile_stylesheet(
                 )
             )
 
+    _validate_accumulator_graph(accumulators, packages)
     package_modes: dict[str | None, dict[ModeKey, tuple[_ModeLayerPlan, ...]]] = {
         package_name: _compile_package_modes(
             current_package,
@@ -1046,6 +1079,16 @@ def _compile_stylesheet(
         )
         for package_name, current_package in packages.items()
     }
+    mode_accumulators: dict[tuple[str | None, ModeKey], frozenset[AccumulatorKey]] = {}
+    for package_name, current_package in packages.items():
+        for mode_name, mode in current_package.modes.items():
+            value = mode.properties.get("use-accumulators")
+            owner_package = packages.get(mode.owner, current_package)
+            mode_accumulators[(package_name, mode_name)] = (
+                frozenset()
+                if value is None
+                else _resolve_mode_accumulators(value, owner_package, mode)
+            )
     modes = package_modes.get(package.name, {})
     globals_: list[Component] = []
     package_variables: dict[str | None, tuple[Component, ...]] = {}
@@ -1058,8 +1101,8 @@ def _compile_stylesheet(
         )
         values: dict[str, XdmSequence] = {}
         for module in current_package.modules:
-            for name, value in module.static_variables.items():
-                values.setdefault(name, value)
+            for variable_name, static_value in module.static_variables.items():
+                values.setdefault(variable_name, static_value)
         static_variables[package_name] = values
         for component in current_package.components.values():
             if (
@@ -1091,7 +1134,417 @@ def _compile_stylesheet(
         _packages=packages,
         _keys={name: tuple(definitions) for name, definitions in keys.items()},
         _package_modes=package_modes,
+        _accumulators=accumulators,
+        _mode_accumulators=mode_accumulators,
     )
+
+
+_ACCUMULATOR_EXPRESSION_ATTRIBUTES = frozenset(
+    {
+        "for-each-item",
+        "for-each-source",
+        "group-adjacent",
+        "group-by",
+        "group-ending-with",
+        "group-starting-with",
+        "initial-value",
+        "match",
+        "select",
+        "test",
+        "use",
+        "xpath",
+    }
+)
+
+
+def _compile_accumulator(
+    component: Component,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> AccumulatorDefinition:
+    """Compile one package-local ``xsl:accumulator`` declaration."""
+    declaration = component.declaration
+    name = component.name
+    if name is None:  # pragma: no cover - package composition requires a name
+        raise XsltStaticError(
+            "an xsl:accumulator requires a name",
+            code="XTSE0010",
+            uri=module.identity,
+            location=declaration.location,
+        )
+    initial_source = declaration.attribute("initial-value")
+    if initial_source is None:
+        raise XsltStaticError(
+            "an xsl:accumulator requires an initial-value attribute",
+            code="XTSE0010",
+            uri=module.identity,
+            location=declaration.location,
+        )
+    if declaration.attribute("select") is not None:
+        raise XsltStaticError(
+            "select is not permitted on xsl:accumulator",
+            code="XTSE0010",
+            uri=module.identity,
+            location=declaration.location,
+        )
+    initial_value = compile_xpath(initial_source, context, location=declaration.location)
+    as_source = declaration.attribute("as")
+    sequence_type = compile_sequence_type(
+        as_source or "item()*",
+        context,
+        location=declaration.location,
+    )
+    streamable = _attribute_yes_no(declaration, "streamable", context)
+    rules: list[AccumulatorRule] = []
+    for order, child in enumerate(component.body.children):
+        if not (
+            isinstance(child, Instruction)
+            and child.is_xslt
+            and child.local_name == "accumulator-rule"
+        ):
+            raise XsltStaticError(
+                "xsl:accumulator permits only xsl:accumulator-rule children",
+                code="XTSE0010",
+                uri=module.identity,
+                location=getattr(child, "location", declaration.location),
+            )
+        rules.append(
+            _compile_accumulator_rule(
+                child,
+                context,
+                module,
+                sequence_type,
+                as_source,
+                order,
+            )
+        )
+    if not rules:
+        raise XsltStaticError(
+            "an xsl:accumulator requires at least one xsl:accumulator-rule",
+            code="XTSE0010",
+            uri=module.identity,
+            location=declaration.location,
+        )
+    return AccumulatorDefinition(
+        owner=component.owner,
+        name=name,
+        initial_value=initial_value,
+        sequence_type=sequence_type,
+        streamable=streamable,
+        rules=tuple(rules),
+        module=module.identity,
+        location=declaration.location,
+    )
+
+
+def _compile_accumulator_rule(
+    rule: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+    sequence_type: CompiledSequenceType,
+    as_source: str | None,
+    order: int,
+) -> AccumulatorRule:
+    base_context = _instruction_context(context, rule)
+    match = rule.attribute("match")
+    if match is None:
+        raise XsltStaticError(
+            "an xsl:accumulator-rule requires a match attribute",
+            code="XTSE0010",
+            uri=module.identity,
+            location=rule.location,
+        )
+    pattern = compile_pattern(match, base_context, location=rule.location)
+    rule_context = base_context.with_variable(
+        StaticVariable(
+            name="value",
+            sequence_type=sequence_type,
+            declared_type=as_source,
+            module=module.identity,
+        )
+    )
+    phase_source = rule.attribute("phase")
+    phase = "start" if phase_source is None else phase_source.strip()
+    if phase in ("end", "finish"):
+        phase = "end"
+    elif phase != "start":
+        raise XsltStaticError(
+            f"invalid xsl:accumulator-rule phase {phase_source!r}",
+            code="XTSE0020",
+            uri=module.identity,
+            location=rule.location,
+        )
+    priority_source = rule.attribute("priority")
+    priority: Decimal | None = None
+    if priority_source is not None:
+        try:
+            priority = Decimal(priority_source.strip())
+        except (InvalidOperation, ValueError) as exc:
+            raise XsltStaticError(
+                f"invalid xsl:accumulator-rule priority {priority_source!r}",
+                code="XTSE0020",
+                uri=module.identity,
+                location=rule.location,
+                cause=exc,
+            ) from exc
+        if not priority.is_finite():
+            raise XsltStaticError(
+                "an xsl:accumulator-rule priority must be a finite decimal",
+                code="XTSE0020",
+                uri=module.identity,
+                location=rule.location,
+            )
+    select_source = rule.attribute("select")
+    content = tuple(
+        child
+        for child in rule.children
+        if not (isinstance(child, TextNode) and not child.value.strip())
+    )
+    if select_source is not None:
+        if content:
+            raise XsltStaticError(
+                "an xsl:accumulator-rule with a select attribute must have empty content",
+                code="XTSE0010",
+                uri=module.identity,
+                location=rule.location,
+            )
+        select = compile_xpath(select_source, rule_context, location=rule.location)
+        body: tuple[_Plan, ...] = ()
+    else:
+        select = None
+        body = _compile_sequence(content, rule_context, module)
+    return AccumulatorRule(
+        phase=cast(RulePhase, phase),
+        pattern=pattern,
+        select=select,
+        body=body,
+        priority=priority,
+        order=order,
+        instruction=rule,
+        location=rule.location,
+    )
+
+
+def _validate_accumulator_graph(
+    accumulators: Mapping[AccumulatorKey, AccumulatorDefinition],
+    packages: Mapping[str | None, CompiledPackage],
+) -> None:
+    """Reject cyclic or package-illegal accumulator dependencies statically."""
+    graph: dict[AccumulatorKey, set[AccumulatorKey]] = {key: set() for key in accumulators}
+    for definition in accumulators.values():
+        package = packages.get(definition.owner)
+        if package is None:  # pragma: no cover - every definition has a package
+            continue
+        graph[definition.key].update(_accumulator_references(definition, package))
+    cycle = find_cycle(graph)
+    if cycle is None:
+        return
+    first = accumulators[cycle[0]]
+    names = " -> ".join(name for _owner, name in cycle)
+    raise XsltStaticError(
+        f"the accumulators {names} form a cyclic dependency",
+        code="XTDE3400",
+        uri=first.module,
+        location=first.location,
+    )
+
+
+def _accumulator_references(
+    definition: AccumulatorDefinition,
+    package: CompiledPackage,
+) -> set[AccumulatorKey]:
+    references: set[AccumulatorKey] = set()
+    _collect_accumulator_references(
+        references,
+        definition.initial_value.source,
+        definition.initial_value.static_context.namespaces,
+        package,
+        definition,
+    )
+    for rule in definition.rules:
+        _collect_accumulator_references(
+            references,
+            rule.pattern.source,
+            rule.pattern.context.namespaces,
+            package,
+            definition,
+        )
+        if rule.select is not None:
+            _collect_accumulator_references(
+                references,
+                rule.select.source,
+                rule.select.static_context.namespaces,
+                package,
+                definition,
+            )
+        _instruction_accumulator_references(
+            references,
+            rule.instruction,
+            package,
+            definition,
+        )
+    return references
+
+
+def _collect_accumulator_references(
+    references: set[AccumulatorKey],
+    source: str,
+    namespaces: Mapping[str, str],
+    package: CompiledPackage,
+    definition: AccumulatorDefinition,
+) -> None:
+    for _phase, raw_name in iter_accumulator_calls(source):
+        if raw_name is None:
+            continue
+        references.add(_resolve_accumulator_reference(raw_name, namespaces, package, definition))
+
+
+def _resolve_accumulator_reference(
+    raw_name: str,
+    namespaces: Mapping[str, str],
+    package: CompiledPackage,
+    definition: AccumulatorDefinition,
+) -> AccumulatorKey:
+    try:
+        expanded = expand_accumulator_name(raw_name, namespaces)
+    except ValueError as exc:
+        raise XsltStaticError(
+            f"invalid accumulator reference {raw_name!r}",
+            code="XTDE3340",
+            uri=definition.module,
+            location=definition.location,
+            cause=exc,
+        ) from exc
+    component = package.accumulator(expanded)
+    if component is None or component.kind != "accumulator" or component.name is None:
+        raise XsltStaticError(
+            f"the accumulator {raw_name!r} is not declared in this package",
+            code="XTDE3340",
+            uri=definition.module,
+            location=definition.location,
+        )
+    return (component.owner, component.name)
+
+
+def _instruction_accumulator_references(
+    references: set[AccumulatorKey],
+    instruction: Instruction,
+    package: CompiledPackage,
+    definition: AccumulatorDefinition,
+) -> None:
+    for attribute in instruction.attributes:
+        if (
+            attribute.local_name not in _ACCUMULATOR_EXPRESSION_ATTRIBUTES
+            and "{" not in attribute.value
+        ):
+            continue
+        _collect_accumulator_references(
+            references,
+            attribute.value,
+            instruction.namespaces,
+            package,
+            definition,
+        )
+    for child in instruction.children:
+        if isinstance(child, TextNode):
+            if "{" not in child.value:
+                continue
+            _collect_accumulator_references(
+                references,
+                child.value,
+                instruction.namespaces,
+                package,
+                definition,
+            )
+        else:
+            _instruction_accumulator_references(
+                references,
+                child,
+                package,
+                definition,
+            )
+
+
+def _resolve_mode_accumulators(
+    value: str,
+    package: CompiledPackage,
+    mode: Mode,
+) -> frozenset[AccumulatorKey]:
+    """Resolve one ``xsl:mode/@use-accumulators`` list in its package."""
+    return _resolve_use_accumulators(
+        value,
+        package,
+        package.namespaces,
+        uri=mode.module,
+        location=mode.location,
+    )
+
+
+def _resolve_use_accumulators(
+    value: str,
+    package: CompiledPackage,
+    namespaces: Mapping[str, str],
+    *,
+    uri: str | None,
+    location: IssueLocation | None,
+) -> frozenset[AccumulatorKey]:
+    """Resolve and validate one ``use-accumulators`` token list."""
+    try:
+        tokens = parse_accumulator_names(value)
+    except ValueError as exc:
+        raise XsltStaticError(
+            "invalid use-accumulators value",
+            code="XTSE3300",
+            uri=uri,
+            location=location,
+            cause=exc,
+        ) from exc
+    if tokens == ("#all",):
+        return frozenset(
+            (component.owner, component.name)
+            for component in package.components.values()
+            if component.kind == "accumulator"
+            and component.owner == package.name
+            and component.name is not None
+            and not component.hidden
+        )
+    keys: set[AccumulatorKey] = set()
+    for token in tokens:
+        try:
+            expanded = expand_accumulator_name(token, namespaces)
+        except ValueError as exc:
+            raise XsltStaticError(
+                f"invalid accumulator name {token!r} in use-accumulators",
+                code="XTSE3300",
+                uri=uri,
+                location=location,
+                cause=exc,
+            ) from exc
+        component = package.accumulator(expanded)
+        if component is None or component.kind != "accumulator" or component.name is None:
+            raise XsltStaticError(
+                f"the accumulator {token!r} is not declared in this package",
+                code="XTSE3300",
+                uri=uri,
+                location=location,
+            )
+        if component.signature is None or component.signature.flags.get("streamable") != "yes":
+            raise XsltStaticError(
+                f"the accumulator {token!r} is not declared streamable",
+                code="XTSE3300",
+                uri=uri,
+                location=location,
+            )
+        key = (component.owner, component.name)
+        if key in keys:
+            raise XsltStaticError(
+                f"the accumulator {token!r} appears more than once in use-accumulators",
+                code="XTSE3300",
+                uri=uri,
+                location=location,
+            )
+        keys.add(key)
+    return frozenset(keys)
 
 
 def _compile_package_modes(
@@ -1997,6 +2450,7 @@ def _compile_merge_source(
         validation=None if validation is None else validation.strip(),
         type_name=None if type_name is None else type_name.strip(),
         base_uri=instruction.base_uri,
+        use_accumulators=use_accumulators,
     )
 
 
@@ -2128,6 +2582,7 @@ def _compile_source_document(
         streamable=streamable,
         validation=None if validation is None else validation.strip(),
         type_name=None if type_name is None else type_name.strip(),
+        use_accumulators=instruction.attribute("use-accumulators"),
     )
 
 
@@ -3949,6 +4404,120 @@ class _Invocation(Transformation):
             policy=getattr(stylesheet.processor, "resource_policy", None),
             schema_pool=stylesheet.schema_pool,
         )
+        self.accumulators = AccumulatorManager(
+            lookup=self._accumulator_definition,
+            evaluate_initial=self._evaluate_accumulator_initial,
+            evaluate_rule=self._evaluate_accumulator_rule,
+            coerce=self._coerce_accumulator_value,
+            matches=self._accumulator_rule_matches,
+        )
+        self._accumulator_matchers: dict[int, PatternMatcher] = {}
+        self._mark_initial_selection()
+
+    # -- accumulator state --------------------------------------------------
+
+    def _mark_initial_selection(self) -> None:
+        """Set accumulator applicability for the invocation's initial trees."""
+        options = self.options
+        if options.entry == "mode":
+            selection = cast(XdmSequence, options.initial_match_selection)
+            mode = options.mode
+            keys = self.stylesheet._mode_accumulators.get(
+                (self.package.name, None if mode is None else mode.name),
+                frozenset(),
+            )
+            for item in selection:
+                if isinstance(item, XdmNode):
+                    self.accumulators.restrict(item.root, keys)
+            return
+        global_item = options.global_context_item
+        if isinstance(global_item, XdmNode):
+            self.accumulators.allow_all(global_item.root)
+
+    def _accumulator_definition(
+        self,
+        package_name: str | None,
+        expanded_name: str,
+    ) -> AccumulatorDefinition | None:
+        package = self.stylesheet._packages.get(package_name) or self.package
+        component = package.accumulator(expanded_name)
+        if component is None or component.name is None:
+            return None
+        return self.stylesheet._accumulators.get((component.owner, component.name))
+
+    def _accumulator_rule_matches(
+        self,
+        definition: AccumulatorDefinition,
+        rule: AccumulatorRule,
+        node: XdmNode,
+    ) -> bool:
+        matcher = self._accumulator_matchers.get(id(rule.pattern))
+        if matcher is None:
+            matcher = PatternMatcher(rule.pattern)
+            self._accumulator_matchers[id(rule.pattern)] = matcher
+        environment = self._pattern_environment_for(rule.pattern, definition.owner)
+        return matcher.matches(node, environment)
+
+    def _evaluate_accumulator_initial(
+        self,
+        definition: AccumulatorDefinition,
+        root: XdmNode,
+    ) -> XdmSequence:
+        return self._evaluate(
+            definition.initial_value,
+            Focus.singleton(root),
+            {},
+            definition.owner,
+        )
+
+    def _evaluate_accumulator_rule(
+        self,
+        definition: AccumulatorDefinition,
+        rule: AccumulatorRule,
+        node: XdmNode,
+        old_value: XdmSequence,
+    ) -> XdmSequence:
+        locals_: dict[str, XdmSequence] = {"value": old_value}
+        focus = Focus.singleton(node)
+        if rule.select is not None:
+            return self._evaluate(rule.select, focus, locals_, definition.owner)
+        return self._execute_plans(
+            rule.body,
+            focus=focus,
+            locals_=locals_,
+            final_output=False,
+            package_name=definition.owner,
+        )
+
+    def _coerce_accumulator_value(
+        self,
+        sequence: XdmSequence,
+        definition: AccumulatorDefinition,
+    ) -> XdmSequence:
+        return _coerce_sequence(
+            sequence,
+            definition.sequence_type,
+            code="XPTY0004",
+            label=f"accumulator {definition.name!r}",
+        )
+
+    def _use_accumulator_keys(
+        self,
+        value: str | None,
+        package_name: str | None,
+        instruction: Instruction,
+    ) -> frozenset[AccumulatorKey]:
+        """Resolve one instruction's ``use-accumulators`` list at run time."""
+        if value is None:
+            return frozenset()
+        package = self.stylesheet._packages.get(package_name) or self.package
+        return _resolve_use_accumulators(
+            value,
+            package,
+            instruction.namespaces,
+            uri=instruction.module,
+            location=instruction.location,
+        )
 
     # -- top level ---------------------------------------------------------
 
@@ -4881,6 +5450,13 @@ class _Invocation(Transformation):
                 self.document_resources.resolve(atomic.lexical, base=source.base_uri)
                 for atomic in atomics
             )
+            keys = self._use_accumulator_keys(
+                source.use_accumulators,
+                package_name,
+                source.instruction,
+            )
+            for document in documents:
+                self.accumulators.restrict(document, keys)
             return tuple(
                 self._evaluate(
                     source.select,
@@ -5038,6 +5614,14 @@ class _Invocation(Transformation):
     ) -> XdmSequence:
         href = self._value_template(plan.href, focus, locals_, package_name).strip()
         document = self.document_resources.resolve(href, base=plan.instruction.base_uri)
+        self.accumulators.restrict(
+            document,
+            self._use_accumulator_keys(
+                plan.use_accumulators,
+                package_name,
+                plan.instruction,
+            ),
+        )
         return self._execute_plans(
             plan.children,
             focus=Focus.singleton(document),
