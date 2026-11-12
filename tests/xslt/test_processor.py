@@ -992,6 +992,7 @@ def test_instruction_dispatch_preserves_family_results(body: str, expected: str)
         ('<xsl:attribute><xsl:sequence select="+"/></xsl:attribute>', "XTSE0010", "attribute"),
         ('<xsl:map-entry select="+"/>', "XTSE0010", "map-entry"),
         ('<xsl:message select="+"/>', "XPST0003", "message"),
+        ('<xsl:message test="+"/>', "XPST0003", "message"),
         ("<xsl:catch/>", "XTSE0010", "catch"),
         ('<xsl:with-param name="p"/>', "XTSE0010", "with-param"),
         ("<xsl:sort/>", "XTSE0010", "sort"),
