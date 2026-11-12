@@ -1,19 +1,22 @@
-"""Validation of constructed XDM element, attribute, and document nodes.
+"""Validation of XDM element, attribute, and document occurrences.
 
 XSLT construction instructions can request schema validation with a global
 declaration (``validation="strict"`` or ``"lax"``) or with a named type
-(``type="..."``).  This module applies that request to the actual constructed
-occurrence and writes the resulting type annotation, nilled property, typed
-value, and defaulted attributes/nodes onto the same XDM tree.  It never
-serializes a result and re-parses it; an element is converted structurally to
-an ElementTree for pyxsd's binder, and the resulting annotation is matched
-back by occurrence position.
+(``type="..."``), and schema-aware source input can request the same named
+type.  This module applies that request to the actual occurrence and writes
+the resulting type annotation, nilled property, typed value, and defaulted
+attributes/nodes onto the same XDM tree.  It never serializes a result and
+re-parses it; an element is converted structurally to an ElementTree for
+pyxsd's binder, and the resulting annotation is matched back by occurrence
+position.
 
-The module is independent of the XSLT execution layer.  It raises
-:class:`ConstructedValidationError` with a reason; the XSLT boundary maps each
-reason to its exact ``XTTE`` code.  Raw maps, arrays, and atomic values never
-reach this module: delivery validation is only invoked after sequence
-normalization actually creates a document node.
+The module is independent of the XSLT execution layer.  Constructed failures
+raise :class:`ConstructedValidationError` with a reason; the XSLT boundary maps
+each reason to its exact ``XTTE`` code.  Source requested-type assessment maps
+the same reasons onto :class:`~pyxsd.xdm.document.DocumentValidationError`.
+Raw maps, arrays, and atomic values never reach this module: delivery
+validation is only invoked after sequence normalization actually creates a
+document node.
 """
 
 from __future__ import annotations
@@ -43,6 +46,7 @@ from pyxsd.xdm.annotations import (
     OccurrenceAnnotation,
     _atomize,
     capturing_occurrences,
+    id_kind_for,
     schema_type_name,
 )
 from pyxsd.xdm.document import element_from_xdm
@@ -105,7 +109,7 @@ def _isolated_schema(
     """Yield a private schema/host/context view for one validation run.
 
     ``Schema.parse`` and the generated binder keep per-parse binding indexes
-    and the active report/provenance on a shared host/context.  Constructed
+    and the active report/provenance on a shared host/context.  Occurrence
     validation clones both for the duration of one assessment, and routes
     generated-class host lookups through :func:`parser_host_override`, so
     concurrent transformations cannot overwrite one another's annotations.
@@ -139,6 +143,15 @@ def _isolated_schema(
     isolated.namespace_context = namespace_context
     with parser_host_override(schema, host):
         yield isolated, host, context, namespace_context
+
+
+def _occurrence_error(
+    error_type: type[XdmInputError],
+    message: str,
+    reason: str,
+) -> XdmInputError:
+    """Build the caller's public validation error with its own reason arm."""
+    return cast(Any, error_type)(message, reason=reason)
 
 
 class ConstructedValidationError(XdmInputError):
@@ -283,6 +296,128 @@ def _check_document_constraints(
 # Element validation
 
 
+def _assess_element(
+    node: XdmNode,
+    adapter: Any,
+    *,
+    document_root: bool = False,
+    declaration: Any = None,
+    error_type: type[XdmInputError],
+    reason: str,
+) -> None:
+    """Assess one element occurrence against a concrete type definition.
+
+    Source requested-type validation and constructed-element validation both
+    delegate here.  The type adapter is resolved against an invocation-private
+    schema/host/context view, the occurrence is converted structurally for the
+    binder, and the resulting annotations and defaulted attributes are applied
+    back to the original XDM node.  *declaration* is the governing element
+    declaration when one exists; failures use *error_type* and *reason* so each
+    public boundary keeps its own error contract.
+    """
+    schema_pool = getattr(adapter, "maps", None)
+    adapter = _actual_type(
+        node,
+        adapter,
+        schema_pool,
+        error_type=error_type,
+        reason=reason,
+    )
+    if declaration is None:
+        declaration = _element_declaration(schema_pool, node.name)
+    nilled = _is_nilled(node)
+    if adapter.is_simple():
+        _validate_simple_element(
+            node,
+            adapter,
+            schema_pool=schema_pool,
+            nilled=nilled,
+            declaration=declaration,
+            error_type=error_type,
+            reason=reason,
+        )
+        return
+    type_class = getattr(adapter, "_type_class", None)
+    schema = getattr(getattr(adapter, "schema", None), "_schema", None)
+    if not isinstance(type_class, type) or schema is None:  # pragma: no cover
+        raise _occurrence_error(
+            error_type,
+            f"the type {getattr(adapter, 'name', None)!r} has no compiled definition",
+            reason,
+        )
+    if nilled and (declaration is None or not declaration.isNillable()):
+        raise _occurrence_error(
+            error_type,
+            f"the element {node.name!r} cannot be nilled without a nillable declaration",
+            reason,
+        )
+    if nilled and any(
+        child.kind is NodeKind.ELEMENT or child.kind is NodeKind.TEXT for child in node.children
+    ):
+        raise _occurrence_error(
+            error_type,
+            f"the nilled element {node.name!r} cannot carry content",
+            reason,
+        )
+    with _isolated_schema(schema) as (_isolated, host, context, namespace_context):
+        element = element_from_xdm(node, namespace_context)
+        _normalize_empty_text(element)
+        provenance = ParseProvenance(element, None)
+        report = ValidationReport()
+        host._elementParents = _parent_index(element)
+        with capturing_occurrences() as capture:
+            with (
+                active_context(context),
+                context_report(context, report),
+                context_provenance(context, provenance),
+            ):
+                instance = _make_instance(
+                    type_class,
+                    element,
+                    nilled=nilled,
+                    error_type=error_type,
+                    reason=reason,
+                )
+                _capture_root(
+                    node,
+                    element,
+                    capture,
+                    type_class,
+                    instance,
+                    declaration=_governing_declaration(declaration, adapter),
+                    nilled=nilled,
+                )
+            capture.finish(report)
+    if document_root:
+        from pyxsd.instance_binding import check_identity_constraints_entry
+
+        check_identity_constraints_entry(schema, instance, report)
+    errors = _instance_errors(report, document=document_root)
+    if errors:
+        if document_root and any(
+            getattr(issue, "code", None) in _DOCUMENT_CONSTRAINT_CODES for issue in errors
+        ):
+            raise _occurrence_error(
+                error_type,
+                "the validated document has unsatisfied document-level constraints",
+                "document-constraint",
+            )
+        raise _occurrence_error(
+            error_type,
+            f"the element {node.name!r} is not valid against {getattr(adapter, 'name', None)!r}",
+            reason,
+        )
+    _apply_capture(
+        node,
+        element,
+        provenance,
+        capture,
+        error_type=error_type,
+        reason=reason,
+    )
+    node.document._finalize_document_order()
+
+
 def _validate_element(
     node: XdmNode,
     request: ValidationRequest,
@@ -350,7 +485,13 @@ def _validate_element_declaration(
             f"the constructed element {node.name!r} is not valid against its declaration",
             reason="invalid" if mode == "strict" else lax_reason,
         )
-    _apply_parsed_tree(node, parsed.to_xdm().root_element)
+    parsed_tree = parsed.to_xdm()
+    _finish_xdm_validity(
+        parsed_tree.root_element,
+        _instance_issues(parsed.report),
+        ignore_codes=frozenset() if document_root else _ID_CODES,
+    )
+    _apply_parsed_tree(node, parsed_tree.root_element)
     node.document._finalize_document_order()
 
 
@@ -411,15 +552,12 @@ def _validate_element_type(
             f"the type {type_name!r} is not in scope",
             reason="type",
         )
-    actual = _actual_type(node, adapter, schema_pool)
-    if actual.is_simple():
-        _validate_simple_element(node, actual, schema_pool=schema_pool)
-        return
-    _validate_element_class(
+    _assess_element(
         node,
-        actual,
-        reason="type",
+        adapter,
         document_root=document_root,
+        error_type=ConstructedValidationError,
+        reason="type",
     )
 
 
@@ -429,31 +567,39 @@ def _validate_simple_element(
     *,
     schema_pool: SchemaPool | None,
     untyped_atomic: bool = False,
+    nilled: bool | None = None,
+    declaration: Any = None,
+    error_type: type[XdmInputError] = ConstructedValidationError,
+    reason: str = "type",
 ) -> None:
-    """Assess a constructed element against a simple type definition."""
+    """Assess an element occurrence against a simple type definition."""
     type_name = UNTYPED_ATOMIC if untyped_atomic else adapter.name
-    nil = node.attribute(f"{{{XSI_NS}}}nil")
-    nilled = nil is not None and nil.string_value.strip() in ("true", "1")
+    if nilled is None:
+        nilled = _is_nilled(node)
     for child in node.children:
         if child.kind is NodeKind.ELEMENT or (nilled and child.kind is NodeKind.TEXT):
-            raise ConstructedValidationError(
-                f"the constructed element {node.name!r} is not valid against {type_name!r}",
-                reason="type",
+            raise _occurrence_error(
+                error_type,
+                f"the element {node.name!r} is not valid against {type_name!r}",
+                reason,
             )
     for attribute in node.attributes:
         if attribute.namespace_uri != XSI_NS or attribute.local_name not in _SIMPLE_XSI_ATTRIBUTES:
-            raise ConstructedValidationError(
+            raise _occurrence_error(
+                error_type,
                 f"the simple-typed element {node.name!r} cannot carry the attribute "
                 f"{attribute.name!r}",
-                reason="type",
+                reason,
             )
     if nilled:
-        declaration = _element_declaration(schema_pool, node.name)
+        if declaration is None:
+            declaration = _element_declaration(schema_pool, node.name)
         if declaration is None or not declaration.isNillable():
-            raise ConstructedValidationError(
+            raise _occurrence_error(
+                error_type,
                 f"the simple-typed element {node.name!r} cannot be nilled without a "
                 "nillable declaration",
-                reason="type",
+                reason,
             )
         node._apply_occurrence_annotation(
             _element_annotation(
@@ -462,6 +608,9 @@ def _validate_simple_element(
                 actual_type=None if untyped_atomic else getattr(adapter, "_type_class", None),
                 typed_values=(),
                 nilled=True,
+                id_kind=None
+                if untyped_atomic
+                else id_kind_for(getattr(adapter, "_type_class", None)),
             )
         )
         return
@@ -470,9 +619,10 @@ def _validate_simple_element(
         typed_values = (XdmAtomic.untyped_atomic(node.string_value),)
     else:
         if not adapter.is_valid(node.string_value):
-            raise ConstructedValidationError(
-                f"the constructed element {node.name!r} is not valid against {adapter.name!r}",
-                reason="type",
+            raise _occurrence_error(
+                error_type,
+                f"the element {node.name!r} is not valid against {adapter.name!r}",
+                reason,
             )
         typed_values = _atomize(adapter.cast(node.string_value))
     node._apply_occurrence_annotation(
@@ -481,6 +631,7 @@ def _validate_simple_element(
             type_name=type_name,
             actual_type=None if untyped_atomic else getattr(adapter, "_type_class", None),
             typed_values=typed_values,
+            id_kind=None if untyped_atomic else id_kind_for(getattr(adapter, "_type_class", None)),
         )
     )
 
@@ -490,7 +641,20 @@ def _element_declaration(schema_pool: SchemaPool | None, name: str | None) -> An
     return None if adapter is None else getattr(adapter, "_er", None)
 
 
-def _actual_type(node: XdmNode, requested: Any, schema_pool: SchemaPool | None) -> Any:
+def _is_nilled(node: XdmNode) -> bool:
+    """Whether the occurrence's lexical ``xsi:nil`` asks for a nilled element."""
+    nil = node.attribute(f"{{{XSI_NS}}}nil")
+    return nil is not None and nil.string_value.strip() in ("true", "1")
+
+
+def _actual_type(
+    node: XdmNode,
+    requested: Any,
+    schema_pool: SchemaPool | None,
+    *,
+    error_type: type[XdmInputError],
+    reason: str,
+) -> Any:
     """Resolve an ``xsi:type`` override over the stipulated requested type."""
     lexical = node.attribute(f"{{{XSI_NS}}}type")
     if lexical is None:
@@ -502,90 +666,58 @@ def _actual_type(node: XdmNode, requested: Any, schema_pool: SchemaPool | None) 
         return requested
     actual = _lookup_type(schema_pool, resolved)
     if actual is None:
-        raise ConstructedValidationError(
+        raise _occurrence_error(
+            error_type,
             f"the xsi:type {resolved!r} is not in scope",
-            reason="type",
+            reason,
         )
     declared_class = getattr(requested, "_type_class", None)
     actual_class = getattr(actual, "_type_class", None)
-    reason = is_valid_xsi_type(
+    invalid = is_valid_xsi_type(
         actual_class,
         declared_class,
         combinedBlock(None, declared_class),
     )
-    if reason is not None:
-        raise ConstructedValidationError(
+    if invalid is not None:
+        raise _occurrence_error(
+            error_type,
             f"the xsi:type {resolved!r} is not validly derived from {requested.name!r}",
-            reason="type",
+            reason,
         )
     return actual
 
 
-def _validate_element_class(
-    node: XdmNode,
-    adapter: Any,
+def _make_instance(
+    type_class: type[Any],
+    element: Any,
     *,
-    reason: Literal["invalid", "type", "lax-invalid"],
-    document_root: bool = False,
-) -> None:
-    type_class = getattr(adapter, "_type_class", None)
-    schema = getattr(adapter.schema, "_schema", None)
-    if not isinstance(type_class, type) or schema is None:  # pragma: no cover
-        raise ConstructedValidationError(
-            f"the type {getattr(adapter, 'name', None)!r} has no compiled definition",
-            reason=reason,
-        )
-    with _isolated_schema(schema) as (_isolated, _host, context, namespace_context):
-        element = element_from_xdm(node, namespace_context)
-        _normalize_empty_text(element)
-        provenance = ParseProvenance(element, None)
-        report = ValidationReport()
-        _host._elementParents = _parent_index(element)
-        with capturing_occurrences() as capture:
-            with (
-                active_context(context),
-                context_report(context, report),
-                context_provenance(context, provenance),
-            ):
-                instance = _make_instance(type_class, element)
-                _capture_root(
-                    node,
-                    element,
-                    capture,
-                    type_class,
-                    instance,
-                )
-            capture.finish(report)
-    if document_root:
-        from pyxsd.instance_binding import check_identity_constraints_entry
-
-        check_identity_constraints_entry(schema, instance, report)
-    errors = _instance_errors(report, document=document_root)
-    if errors:
-        if document_root and any(
-            getattr(issue, "code", None) in _DOCUMENT_CONSTRAINT_CODES for issue in errors
-        ):
-            raise ConstructedValidationError(
-                "the constructed document has unsatisfied document-level constraints",
-                reason="document-constraint",
-            )
-        raise ConstructedValidationError(
-            f"the constructed element {node.name!r} is not valid against "
-            f"{getattr(adapter, 'name', None)!r}",
-            reason=reason,
-        )
-    _apply_capture(node, element, provenance, capture)
-    node.document._finalize_document_order()
-
-
-def _make_instance(type_class: type[Any], element: Any) -> Any:
+    nilled: bool,
+    error_type: type[XdmInputError],
+    reason: str,
+) -> Any:
+    if nilled:
+        generated = cast(Any, type_class)
+        return generated._nilledInstance(type_class, element, generated._node_name(element))
     maker = getattr(type_class, "makeInstanceFromTag", None)
     if maker is None:  # pragma: no cover - generated classes expose the binder
-        raise ConstructedValidationError(
+        raise _occurrence_error(
+            error_type,
             "the requested type cannot bind an element occurrence",
-            reason="type",
+            reason,
         )
     return maker(element)
+
+
+def _governing_declaration(declaration: Any, adapter: Any) -> Any:
+    """The declaration that actually governs this occurrence, if any."""
+    if declaration is None:
+        return None
+    getter = getattr(declaration, "getType", None)
+    declared = getter() if getter is not None else None
+    actual = getattr(adapter, "_type_class", None)
+    if isinstance(declared, type) and isinstance(actual, type) and issubclass(actual, declared):
+        return declaration
+    return None
 
 
 def _capture_root(
@@ -594,13 +726,18 @@ def _capture_root(
     capture: Any,
     type_class: type[Any],
     instance: Any,
+    *,
+    declaration: Any = None,
+    nilled: bool = False,
 ) -> None:
     from pyxsd.xdm.annotations import capture_element_occurrence, capture_remaining_attributes
 
     capture_remaining_attributes(element)
     capture_element_occurrence(
         element,
+        governing_declaration=declaration,
         actual_type=type_class,
+        nilled=nilled,
         validation_attempted="full",
         bound=instance,
         xsi_type_namespaces=dict(node.in_scope_namespaces),
@@ -676,6 +813,7 @@ def _validate_attribute_declaration(
             actual_type=getattr(type_adapter, "_type_class", None),
             typed_values=_atomize(typed),
             governing_declaration=getattr(adapter, "_er", None),
+            id_kind=id_kind_for(getattr(type_adapter, "_type_class", None)),
         )
     )
 
@@ -717,6 +855,7 @@ def _validate_attribute_type(
             type_name=adapter.name,
             actual_type=getattr(adapter, "_type_class", None),
             typed_values=_atomize(typed),
+            id_kind=id_kind_for(getattr(adapter, "_type_class", None)),
         )
     )
 
@@ -764,6 +903,53 @@ def _uses_qname_or_notation(type_class: Any) -> bool:
 
 # ---------------------------------------------------------------------------
 # Annotation application and defaulted values
+
+
+def _finish_xdm_validity(
+    root: XdmNode,
+    errors: tuple[Any, ...],
+    *,
+    ignore_codes: frozenset[str] = frozenset(),
+) -> None:
+    """Recalculate PSVI validity after excluding ignored instance errors.
+
+    ``Schema.parse`` finishes its capture with every error, including
+    document-wide constraints a fragment assessment does not enforce.  When
+    those errors are discarded, an occurrence they touched must not keep the
+    ``invalid`` PSVI validity they left behind.
+    """
+    non_ignored: set[tuple[tuple[Any, ...], str | None]] = set()
+    ignored: set[tuple[tuple[Any, ...], str | None]] = set()
+    for issue in errors:
+        location = issue.location
+        if location is None:  # pragma: no cover - reportable errors carry a location
+            continue
+        key = (location.path, location.attribute)
+        target = ignored if issue.code in ignore_codes else non_ignored
+        target.add(key)
+        for stop in range(1, len(location.path) + 1):
+            target.add((location.path[:stop], None))
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.kind in (NodeKind.ELEMENT, NodeKind.ATTRIBUTE):
+            location = node.source_location()
+            assert location is not None
+            key = (location.path, location.attribute)
+            annotation = node.annotation
+            if (
+                getattr(annotation, "validity", None) == "invalid"
+                and key not in non_ignored
+                and key in ignored
+            ):
+                validity = (
+                    "valid"
+                    if getattr(annotation, "validation_attempted", "none") == "full"
+                    else "notKnown"
+                )
+                node._apply_occurrence_annotation(replace(annotation, validity=validity))
+        stack.extend(reversed(node.children))
+        stack.extend(node.attributes)
 
 
 def _validated_annotation(annotation: OccurrenceAnnotation, node: XdmNode) -> OccurrenceAnnotation:
@@ -831,8 +1017,11 @@ def _apply_capture(
     element: Any,
     provenance: ParseProvenance,
     capture: Any,
+    *,
+    error_type: type[XdmInputError] = ConstructedValidationError,
+    reason: str = "invalid",
 ) -> None:
-    """Apply a pyxsd binding capture to the constructed XDM occurrence."""
+    """Apply a pyxsd binding capture to the original XDM occurrence."""
     stack: list[tuple[XdmNode, Any]] = [(target, element)]
     while stack:
         target_node, source_element = stack.pop()
@@ -862,9 +1051,10 @@ def _apply_capture(
         ]
         source_children = list(source_element)
         if len(target_children) != len(source_children):  # pragma: no cover - internal invariant
-            raise ConstructedValidationError(
-                "the validated tree does not match the constructed occurrence",
-                reason="invalid",
+            raise _occurrence_error(
+                error_type,
+                "the validated tree does not match the validated occurrence",
+                reason,
             )
         stack.extend(zip(target_children, source_children, strict=True))
 
@@ -1016,6 +1206,7 @@ def _element_annotation(
     actual_type: Any,
     typed_values: tuple[Any, ...],
     nilled: bool = False,
+    id_kind: str | None = None,
 ) -> OccurrenceAnnotation:
     evidence = node.annotation
     return OccurrenceAnnotation(
@@ -1029,6 +1220,7 @@ def _element_annotation(
         xsi_type_lexical=getattr(evidence, "xsi_type_lexical", None),
         nil_lexical=getattr(evidence, "nil_lexical", None),
         nil_declared=bool(getattr(evidence, "nil_declared", False)),
+        id_kind=id_kind,
     )
 
 
@@ -1039,6 +1231,7 @@ def _attribute_annotation(
     actual_type: Any,
     typed_values: tuple[Any, ...],
     governing_declaration: Any = None,
+    id_kind: str | None = None,
 ) -> OccurrenceAnnotation:
     return OccurrenceAnnotation(
         type_name=type_name,
@@ -1049,6 +1242,7 @@ def _attribute_annotation(
         governing_declaration=governing_declaration,
         is_attribute=True,
         typed_values=typed_values,
+        id_kind=id_kind,
     )
 
 
@@ -1070,6 +1264,7 @@ def _annotate_untyped_atomic_attribute(node: XdmNode) -> None:
             type_name=UNTYPED_ATOMIC,
             actual_type=None,
             typed_values=(XdmAtomic.untyped_atomic(node.string_value),),
+            id_kind=getattr(node.annotation, "id_kind", None),
         )
     )
 
@@ -1090,6 +1285,7 @@ def _strip_subtree(root: XdmNode) -> None:
                     xsi_type_lexical=getattr(node.annotation, "xsi_type_lexical", None),
                     nil_lexical=getattr(node.annotation, "nil_lexical", None),
                     nil_declared=bool(getattr(node.annotation, "nil_declared", False)),
+                    id_kind=getattr(node.annotation, "id_kind", None),
                 )
             )
             stack.extend(reversed(node.children))
@@ -1145,14 +1341,19 @@ def _parent_index(element: Any) -> dict[int, Any]:
     return parents
 
 
-def _instance_errors(report: Any, *, document: bool) -> tuple[Any, ...]:
+def _instance_issues(report: Any) -> tuple[Any, ...]:
+    """Every instance-phase error, before any document-level filtering."""
     from pyxsd.validation import IssueSeverity
 
-    errors = tuple(
+    return tuple(
         issue
         for issue in report
         if issue.phase == "instance" and issue.severity is IssueSeverity.ERROR
     )
+
+
+def _instance_errors(report: Any, *, document: bool) -> tuple[Any, ...]:
+    errors = _instance_issues(report)
     if document:
         return errors
     return tuple(issue for issue in errors if getattr(issue, "code", None) not in _ID_CODES)

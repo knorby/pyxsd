@@ -78,6 +78,7 @@ class XdmAnnotation:
     xsi_type: str | None = None
     nil_lexical: str | None = None
     nil_declared: bool = False
+    id_kind: str | None = None
 
     @property
     def actual_type(self) -> str | None:

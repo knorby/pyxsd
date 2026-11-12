@@ -1023,6 +1023,30 @@ def test_named_type_validation_simple_string_arms() -> None:
     assert caught.value.reason == "type"
 
 
+def test_requested_simple_type_checks_attributes_with_the_value() -> None:
+    from pyxsd.xdm.document import DocumentValidationError, parse_typed_document
+
+    pool = SchemaPool.from_schema(Schema.compile(io.BytesIO(INVOICE_XSD.encode())))
+
+    with pytest.raises(DocumentValidationError) as caught:
+        parse_typed_document(
+            b'<inv:amount xmlns:inv="urn:example:invoice" extra="x">12.5</inv:amount>',
+            schema_pool=pool,
+            type_name=f"{{{INVOICE}}}Amount",
+        )
+    assert caught.value.reason == "type"
+
+    allowed = parse_typed_document(
+        (
+            f'<inv:amount xmlns:inv="{INVOICE}" xmlns:xsi="{XSI_NS}" '
+            f'xsi:schemaLocation="{INVOICE} urn:example:invoice.xsd">12.5</inv:amount>'
+        ).encode(),
+        schema_pool=pool,
+        type_name=f"{{{INVOICE}}}Amount",
+    )
+    assert allowed.root_element.type_name == f"{{{INVOICE}}}Amount"
+
+
 def test_element_from_xdm_skips_comments() -> None:
     from pyxsd.xdm.document import element_from_xdm
     from pyxsd.xdm.nodes import XdmDocument
