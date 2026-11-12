@@ -89,6 +89,7 @@ from pyxsd.xslt.compiler.static import (
     EffectiveAttribute,
     EffectiveElement,
     EffectiveModule,
+    SpaceRule,
     StaticPreprocessor,
 )
 from pyxsd.xslt.errors import (
@@ -191,6 +192,7 @@ from pyxsd.xslt.runtime.text import (
     compile_xpath_regex,
 )
 from pyxsd.xslt.runtime.transformation import ComponentCall, Transformation
+from pyxsd.xslt.runtime.whitespace import apply_source_space_rules
 
 __all__ = [
     "CompiledStylesheet",
@@ -1029,6 +1031,7 @@ class CompiledStylesheet:
     _mode_accumulators: Mapping[tuple[str | None, ModeKey], frozenset[AccumulatorKey]] = field(
         default_factory=dict
     )
+    _space_rules: Mapping[str | None, tuple[SpaceRule, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_components", MappingProxyType(dict(self._components)))
@@ -1071,6 +1074,7 @@ class CompiledStylesheet:
             "_mode_accumulators",
             MappingProxyType(dict(self._mode_accumulators)),
         )
+        object.__setattr__(self, "_space_rules", MappingProxyType(dict(self._space_rules)))
 
     @property
     def language(self) -> str:
@@ -1240,6 +1244,10 @@ def _compile_stylesheet(
 ) -> CompiledStylesheet:
     modules = _module_map(package)
     packages = _package_map(package)
+    space_rules = {
+        package_name: _package_space_rules(current_package)
+        for package_name, current_package in packages.items()
+    }
     for current_package in packages.values():
         validate_decimal_formats(current_package.decimal_formats)
     profile = processor._profile()
@@ -1405,6 +1413,7 @@ def _compile_stylesheet(
         _package_modes=package_modes,
         _accumulators=accumulators,
         _mode_accumulators=mode_accumulators,
+        _space_rules=space_rules,
     )
 
 
@@ -2083,6 +2092,58 @@ def _package_map(package: CompiledPackage) -> dict[str | None, CompiledPackage]:
 
     visit(package)
     return result
+
+
+def _package_space_rules(package: CompiledPackage) -> tuple[SpaceRule, ...]:
+    """Return one package's space declarations in declaration order.
+
+    The traversal follows each module's declarations and then its includes and
+    imports, exactly as the effective-module graph records them.  Both
+    declaration kinds are kept in one sequence so equal-precedence ties can use
+    declaration order; the runtime selects the best match by import precedence,
+    NameTest priority, and then this order.
+    """
+    rules: list[SpaceRule] = []
+    seen: set[int] = set()
+    names = (f"{{{XSLT_NS}}}strip-space", f"{{{XSLT_NS}}}preserve-space")
+
+    def visit(module: EffectiveModule) -> None:
+        if id(module) in seen:
+            return
+        seen.add(id(module))
+        for declaration in module.root.elements:
+            if declaration.name not in names:
+                continue
+            elements = declaration.attribute("elements")
+            if not elements:
+                continue
+            default_namespace = declaration.xpath_default_namespace
+            tokens: list[str] = []
+            for token in elements.split():
+                if (
+                    default_namespace is not None
+                    and token != "*"
+                    and ":" not in token
+                    and not token.startswith("Q{")
+                ):
+                    token = f"Q{{{default_namespace}}}{token}"
+                tokens.append(token)
+            rules.append(
+                SpaceRule(
+                    elements=tuple(tokens),
+                    namespaces=declaration.in_scope_namespaces,
+                    preserve=declaration.name == names[1],
+                    module=module.identity,
+                    base_uri=declaration.base_uri,
+                    precedence=module.precedence,
+                )
+            )
+        for dependent in (*module.includes, *module.imports):
+            visit(dependent)
+
+    for module in package.modules:
+        visit(module)
+    return tuple(rules)
 
 
 def _component_module(
@@ -4922,6 +4983,7 @@ def _prepare_invocation(
             validation_type=effective_type,
             input_type_annotations=package.input_type_annotations,
             namespaces=package.namespaces,
+            space_rules=stylesheet._space_rules.get(package.name, ()),
         )
 
     explicit_global: XdmItem | None = None
@@ -5021,61 +5083,39 @@ def _source_inputs(
     validation_type: str | None = None,
     input_type_annotations: str | None = None,
     namespaces: Mapping[str, str] | None = None,
+    space_rules: Sequence[SpaceRule] = (),
 ) -> tuple[XdmSequence, XdmItem | None]:
     annotations = "unspecified" if input_type_annotations is None else input_type_annotations
-    if isinstance(source, Document):
+
+    def _document(value: Any) -> XdmDocument:
         document = _typed_source(
-            source,
+            value,
             schema_pool=schema_pool,
             validation=validation,
             validation_type=validation_type,
             input_type_annotations=annotations,
             namespaces=namespaces or {},
         )
+        return apply_source_space_rules(document, rules=space_rules)
+
+    if isinstance(source, Document):
+        document = _document(source)
         return (document,), document
     if isinstance(source, XdmDocument):
-        document = _typed_source(
-            source,
-            schema_pool=schema_pool,
-            validation=validation,
-            validation_type=validation_type,
-            input_type_annotations=annotations,
-            namespaces=namespaces or {},
-        )
+        document = _document(source)
         return (document,), document
     if isinstance(source, XdmItem):
         item_sequence: XdmSequence = (source,)
         global_item = source.document if isinstance(source, XdmNode) else None
         return item_sequence, global_item
     if isinstance(source, str) and source.lstrip().startswith("<"):
-        document = _typed_source(
-            source.encode("utf-8"),
-            schema_pool=schema_pool,
-            validation=validation,
-            validation_type=validation_type,
-            input_type_annotations=annotations,
-            namespaces=namespaces or {},
-        )
+        document = _document(source.encode("utf-8"))
         return (document,), document
     if isinstance(source, (str, os.PathLike, bytes, bytearray, memoryview)):
-        document = _typed_source(
-            source,
-            schema_pool=schema_pool,
-            validation=validation,
-            validation_type=validation_type,
-            input_type_annotations=annotations,
-            namespaces=namespaces or {},
-        )
+        document = _document(source)
         return (document,), document
     if hasattr(source, "read"):
-        document = _typed_source(
-            source,
-            schema_pool=schema_pool,
-            validation=validation,
-            validation_type=validation_type,
-            input_type_annotations=annotations,
-            namespaces=namespaces or {},
-        )
+        document = _document(source)
         return (document,), document
     sequence: XdmSequence = as_xdm(source)
     global_item = None
@@ -5737,6 +5777,7 @@ class _Invocation(Transformation):
             validation=options.validation,
             validation_type=validation_type,
             input_type_annotations=options.input_type_annotations or "unspecified",
+            space_rules=stylesheet._space_rules,
         )
         self.accumulators = AccumulatorManager(
             lookup=self._accumulator_definition,
@@ -7048,6 +7089,7 @@ class _Invocation(Transformation):
                         validation=source.validation,
                         type_name=source.type_name,
                     ),
+                    package=package_name,
                 )
                 for atomic in atomics
             )
@@ -7221,6 +7263,7 @@ class _Invocation(Transformation):
                 validation=plan.validation,
                 type_name=plan.type_name,
             ),
+            package=package_name,
         )
         self.accumulators.restrict(
             document,

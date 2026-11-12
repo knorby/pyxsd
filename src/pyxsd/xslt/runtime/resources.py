@@ -9,8 +9,8 @@ and canonical URI identities never leak between transformations.
 
 from __future__ import annotations
 
-from collections.abc import MutableMapping
-from typing import Any, Protocol, cast
+from collections.abc import Mapping, MutableMapping, Sequence
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urljoin, urlsplit
 
 from pyxsd.exceptions import PyXSDError
@@ -18,6 +18,10 @@ from pyxsd.resource_policy import ResourceData
 from pyxsd.xdm.document import DocumentValidationError, parse_typed_document
 from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xslt.errors import XsltDynamicError
+from pyxsd.xslt.runtime.whitespace import apply_source_space_rules
+
+if TYPE_CHECKING:
+    from pyxsd.xslt.compiler.static import SpaceRule
 
 __all__ = ["DocumentResources", "resolve_document_uri"]
 
@@ -64,9 +68,12 @@ class DocumentResources:
     """Resolve grounded documents for one transformation invocation.
 
     *documents* is the invocation's shared document registry.  A document that
-    is already present is returned unchanged; a policy read is cached under the
-    same canonical URI so later ``document()`` or ``xsl:source-document`` calls
-    observe the same grounded nodes.
+    is already present is reused; a policy read is cached under the same
+    canonical URI so later ``document()`` or ``xsl:source-document`` calls
+    observe the same grounded nodes.  *space_rules* maps each package name to
+    that package's strip/preserve declarations, so one loaded source is filtered
+    by the rules of the package that requested it without changing the shared
+    captured document.
     """
 
     def __init__(
@@ -78,6 +85,7 @@ class DocumentResources:
         validation: str = "strip",
         validation_type: str | None = None,
         input_type_annotations: str = "unspecified",
+        space_rules: Mapping[str | None, Sequence[SpaceRule]] | None = None,
     ) -> None:
         if not isinstance(documents, MutableMapping):
             raise TypeError("document resources require a mutable document mapping")
@@ -89,13 +97,19 @@ class DocumentResources:
             raise TypeError("validation_type must be a string or None")
         if input_type_annotations not in _INPUT_TYPE_ANNOTATIONS:
             raise ValueError(f"invalid input-type-annotations value {input_type_annotations!r}")
+        if space_rules is not None and not isinstance(space_rules, Mapping):
+            raise TypeError("source space rules must be a package mapping")
         self.documents = documents
         self.policy = cast(_DocumentPolicy | None, policy)
         self.schema_pool = schema_pool
         self.validation = validation
         self.validation_type = validation_type
         self.input_type_annotations = input_type_annotations
-        self._variants: dict[tuple[str, str, str | None, int, str], XdmDocument] = {}
+        self.space_rules = {} if space_rules is None else dict(space_rules)
+        self._variants: dict[
+            tuple[str, str, str | None, int, str, str | None],
+            XdmDocument,
+        ] = {}
 
     def resolve(
         self,
@@ -106,6 +120,7 @@ class DocumentResources:
         type_name: str | None = None,
         schema_pool: object = _UNSET,
         input_type_annotations: str | object = _UNSET,
+        package: str | None = None,
     ) -> XdmDocument:
         """Return the grounded document identified by *uri*.
 
@@ -114,7 +129,10 @@ class DocumentResources:
         read failure or malformed XML becomes ``FODC0002`` with the original
         exception preserved as the cause.  Schema-aware validation uses the
         requested pool and validation mode; a cached document is reused only
-        for the same validation, type, pool, and annotation mode.
+        for the same validation, type, pool, annotation mode, and package.
+        The package's space declarations are applied to the captured document;
+        a caller-owned registry entry is returned unchanged when no rule
+        removes anything.
         """
         target = resolve_document_uri(uri, base)
         mode = self.validation if validation is None else validation
@@ -129,56 +147,60 @@ class DocumentResources:
         )
         if annotations not in _INPUT_TYPE_ANNOTATIONS:
             raise ValueError(f"invalid input-type-annotations value {annotations!r}")
-        key = (target, mode, requested_type, id(pool), annotations)
+        rules = self.space_rules.get(package, ())
+        key = (target, mode, requested_type, id(pool), annotations, package)
         cached = self._variants.get(key)
         if cached is not None:
             return cached
         existing = self.documents.get(target)
         if existing is not None and not isinstance(existing, XdmDocument):  # pragma: no cover
             raise TypeError("a document registry entry must be an XdmDocument")
+        document: XdmDocument
         if self.policy is None:
-            if existing is not None:
-                return existing
-            raise XsltDynamicError(
-                f"the document {uri!r} is not available to this transformation",
-                code="FODC0002",
-            )
-        try:
-            data = self.policy.read(target, base=None, purpose=DOCUMENT_PURPOSE)
-        except OSError as exc:
-            raise XsltDynamicError(
-                f"the document {uri!r} could not be read",
-                code="FODC0002",
-                cause=exc,
-            ) from exc
-        if not isinstance(data, ResourceData):
-            raise TypeError("a resource policy read must return ResourceData")
-        try:
-            document = parse_typed_document(
-                data.content,
-                schema_pool=cast("Any", pool),
-                validation=mode,
-                input_type_annotations=annotations,
-                type_name=requested_type,
-                document_uri=target,
-                base_uri=target,
-                source_name=data.source_id or target,
-            )
-        except DocumentValidationError as exc:
-            code = {
-                "unknown": "XTTE1512",
-                "invalid": "XTTE1510",
-                "lax-invalid": "XTTE1515",
-                "type": "XTTE1540",
-            }[exc.reason]
-            raise XsltDynamicError(str(exc), code=code, cause=exc) from exc
-        except PyXSDError as exc:
-            raise XsltDynamicError(
-                f"the document {uri!r} is not well-formed XML",
-                code="FODC0002",
-                cause=exc,
-            ) from exc
-        self._variants[key] = document
-        if existing is None:
-            self.documents[target] = document
-        return document
+            if existing is None:
+                raise XsltDynamicError(
+                    f"the document {uri!r} is not available to this transformation",
+                    code="FODC0002",
+                )
+            document = existing
+        else:
+            try:
+                data = self.policy.read(target, base=None, purpose=DOCUMENT_PURPOSE)
+            except OSError as exc:
+                raise XsltDynamicError(
+                    f"the document {uri!r} could not be read",
+                    code="FODC0002",
+                    cause=exc,
+                ) from exc
+            if not isinstance(data, ResourceData):
+                raise TypeError("a resource policy read must return ResourceData")
+            try:
+                document = parse_typed_document(
+                    data.content,
+                    schema_pool=cast("Any", pool),
+                    validation=mode,
+                    input_type_annotations=annotations,
+                    type_name=requested_type,
+                    document_uri=target,
+                    base_uri=target,
+                    source_name=data.source_id or target,
+                )
+            except DocumentValidationError as exc:
+                code = {
+                    "unknown": "XTTE1512",
+                    "invalid": "XTTE1510",
+                    "lax-invalid": "XTTE1515",
+                    "type": "XTTE1540",
+                }[exc.reason]
+                raise XsltDynamicError(str(exc), code=code, cause=exc) from exc
+            except PyXSDError as exc:
+                raise XsltDynamicError(
+                    f"the document {uri!r} is not well-formed XML",
+                    code="FODC0002",
+                    cause=exc,
+                ) from exc
+            if existing is None:
+                self.documents[target] = document
+        filtered = apply_source_space_rules(document, rules=rules)
+        self._variants[key] = filtered
+        return filtered

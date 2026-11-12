@@ -1222,6 +1222,16 @@ def test_space_rules_keep_module_local_namespace_context(tmp_path: Path) -> None
     assert effective.preserve_space[0].namespaces["p"] == "urn:imported"
 
 
+def test_space_rules_retain_import_precedence(tmp_path: Path) -> None:
+    _write(tmp_path, "base.xsl", _stylesheet('<xsl:strip-space elements="doc:item"/>'))
+    xml = _stylesheet('<xsl:import href="base.xsl"/><xsl:preserve-space elements="doc:item"/>')
+
+    effective = _effective(tmp_path, xml)
+
+    assert effective.preserve_space[0].precedence == ()
+    assert effective.strip_space[0].precedence == (1,)
+
+
 def test_space_rule_freezes_plain_namespace_mapping() -> None:
     from pyxsd.xslt.compiler.static import SpaceRule
 
