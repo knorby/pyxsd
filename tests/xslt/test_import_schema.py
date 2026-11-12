@@ -802,7 +802,7 @@ def test_merged_bind_parser_is_idempotent_with_prefixes() -> None:
 
 def test_schema_origin_and_precedence_helpers() -> None:
     from pyxsd.xdm.schema import _canonical_origin, _component_origin
-    from pyxsd.xslt.compiler.packages import _schema_precedence_compare
+    from pyxsd.xslt.compiler.schema_imports import _schema_precedence_compare
 
     schema = object()
     assert _component_origin(schema, object()) == ("anonymous", id(schema))
@@ -816,7 +816,7 @@ def test_schema_origin_and_precedence_helpers() -> None:
 
 
 def test_schema_resource_policy_requires_read() -> None:
-    from pyxsd.xslt.compiler.packages import _schema_resource_policy
+    from pyxsd.xslt.compiler.schema_imports import _schema_resource_policy
 
     assert _schema_resource_policy(None) is None
     with pytest.raises(TypeError, match="read"):
@@ -826,7 +826,7 @@ def test_schema_resource_policy_requires_read() -> None:
 def test_package_closure_visits_a_shared_dependency_once() -> None:
     from types import SimpleNamespace
 
-    from pyxsd.xslt.compiler.packages import _package_closure
+    from pyxsd.xslt.compiler.schema_imports import _package_closure
 
     shared = SimpleNamespace(name="shared", version="1", dependencies=())
     root = SimpleNamespace(name="root", version="1", dependencies=(shared, shared))

@@ -704,7 +704,7 @@ class CompiledStylesheet:
 
 def _reject_non_schema_aware_features(package: CompiledPackage) -> None:
     """Reject stylesheet features a non-schema-aware processor cannot honor."""
-    from pyxsd.xslt.compiler.packages import _package_closure
+    from pyxsd.xslt.compiler.schema_imports import _package_closure
 
     for current in _package_closure(package):
         for module in current.modules:
