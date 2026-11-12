@@ -13,10 +13,10 @@ from typing import Any
 from urllib.parse import urljoin
 
 import pytest
+from tests.xslt.support import element_children, stylesheet, transform
 
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.xdm import XdmAtomic
-from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltError
 from pyxsd.xslt.runtime.iteration import (
@@ -37,38 +37,14 @@ HTML_CASE_INSENSITIVE = (
 )
 
 
-def stylesheet(body: str, *, version: str = "3.0") -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'version="{version}">{body}</xsl:stylesheet>'
-    ).encode()
-
-
 def compiled(source: bytes, **options: Any):
     return XsltProcessor(**options).compile(io.BytesIO(source))
-
-
-def transform(
-    source: bytes,
-    input_source: bytes | None = None,
-    *,
-    delivery: str = "document",
-    **options: Any,
-):
-    stylesheet_ = compiled(source)
-    if input_source is None:
-        return stylesheet_.transform(delivery=delivery, **options)
-    return stylesheet_.transform(source=input_source, delivery=delivery, **options)
 
 
 def error_code(call: Any) -> str | None:
     with pytest.raises(XsltError) as caught:
         call()
     return caught.value.code
-
-
-def element_children(node: Any) -> tuple[XdmNode, ...]:
-    return tuple(child for child in node.children if child.kind is NodeKind.ELEMENT)
 
 
 class MappingPolicy:

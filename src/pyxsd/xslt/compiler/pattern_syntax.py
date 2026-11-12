@@ -33,7 +33,7 @@ from pyxsd.xslt.compiler.expressions import (
     compile_sequence_type,
     validate_variable_references,
 )
-from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.errors import XsltStaticError, error_code_from_exception
 
 FN_NS = "http://www.w3.org/2005/xpath-functions"
 _INTERNAL_NS = "urn:pyxsd:xslt:pattern"
@@ -72,9 +72,7 @@ _TYPED_POLICIES: dict[str, str] = {
 
 _XPATH_WHITESPACE = " \t\r\n"
 _NCNAME = re.compile(r"[^\W\d][\w.\-\u00B7\u0300-\u036F\u203F-\u2040]*", re.UNICODE)
-_NCNAME_START = re.compile(r"[^\W\d]", re.UNICODE)
 _NUMBER = re.compile(r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
-_ERROR_CODE = re.compile(r"\[(?:err:)?([A-Z]{4}[0-9]{4})\]")
 
 __all__ = [
     "AbsoluteOnly",
@@ -112,14 +110,6 @@ AxisName: TypeAlias = Literal[
     "namespace",
     "namespace-or-top",
 ]
-
-
-def _error_code(exc: BaseException, default: str = "XPST0003") -> str:
-    code = getattr(exc, "code", None)
-    if isinstance(code, str) and code:
-        return code.rsplit(":", 1)[-1]
-    match = _ERROR_CODE.search(str(exc))
-    return default if match is None else match.group(1)
 
 
 def _static_error(
@@ -1115,7 +1105,7 @@ def _compile_expression(
         raise _static_error(
             context,
             f"invalid pattern predicate {source!r}: {exc}",
-            _error_code(exc),
+            error_code_from_exception(exc, "XPST0003"),
             location=location,
             cause=exc,
         ) from exc

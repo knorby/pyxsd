@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import io
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.xslt.support import element_children, transform
+from tests.xslt.support import stylesheet as _stylesheet
 
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
@@ -44,13 +47,7 @@ XSD_NS = "http://www.w3.org/2001/XMLSchema"
 MY_NS = "urn:my"
 APP_NS = "urn:app"
 
-
-def stylesheet(body: str, *, attributes: str = "") -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'xmlns:my="{MY_NS}" xmlns:app="{APP_NS}" version="3.0"{attributes}>'
-        f"{body}</xsl:stylesheet>"
-    ).encode()
+stylesheet = partial(_stylesheet, namespaces={"my": MY_NS, "app": APP_NS})
 
 
 def package(name: str, body: str, *, version: str = "1.0", attributes: str = "") -> str:
@@ -69,23 +66,6 @@ def transform_path(path: Path, input_source: bytes, *, delivery: str = "document
     return (
         XsltProcessor().compile(path).transform(source=input_source, delivery=delivery, **options)
     )
-
-
-def transform(
-    source: bytes,
-    input_source: bytes | None = None,
-    *,
-    delivery: str = "document",
-    **options: Any,
-):
-    compiled = compile_bytes(source)
-    if input_source is None:
-        return compiled.transform(delivery=delivery, **options)
-    return compiled.transform(source=input_source, delivery=delivery, **options)
-
-
-def element_children(node: Any) -> tuple[Any, ...]:
-    return tuple(child for child in node.children if child.kind is NodeKind.ELEMENT)
 
 
 def text_of(node: Any) -> str:

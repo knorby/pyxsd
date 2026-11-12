@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import io
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.xslt.support import stylesheet as _stylesheet
 
 from pyxsd.xdm import XdmAtomic, XdmSequence
 from pyxsd.xdm.nodes import XdmDocument
@@ -36,12 +38,7 @@ XSD_NS = "http://www.w3.org/2001/XMLSchema"
 FN_NS = "http://www.w3.org/2005/xpath-functions"
 MY_NS = "urn:my"
 
-
-def stylesheet(body: str, *, version: str = "3.0", attributes: str = "") -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'xmlns:my="{MY_NS}" version="{version}"{attributes}>{body}</xsl:stylesheet>'
-    ).encode()
+stylesheet = partial(_stylesheet, namespaces={"my": MY_NS})
 
 
 def transform(

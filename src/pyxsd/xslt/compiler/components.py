@@ -18,6 +18,8 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
 from pyxsd.locations import IssueLocation
+from pyxsd.namespaces import local_name as _local_name
+from pyxsd.namespaces import namespace_of as _namespace_of
 from pyxsd.xslt.compiler.context import StaticContext
 from pyxsd.xslt.compiler.expressions import CompiledSequenceType, compile_sequence_type
 from pyxsd.xslt.compiler.instructions import (
@@ -30,6 +32,7 @@ from pyxsd.xslt.compiler.instructions import (
 )
 from pyxsd.xslt.compiler.static import EffectiveElement, EffectiveModule
 from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.precedence import compare_precedence
 
 if TYPE_CHECKING:
     from pyxsd.xslt.compiler.packages import CompiledPackage, PackageDescriptor
@@ -54,7 +57,6 @@ _ACCEPT = f"{_XSLT}accept"
 _OVERRIDE = f"{_XSLT}override"
 _STYLESHEET = f"{_XSLT}stylesheet"
 _TRANSFORM = f"{_XSLT}transform"
-_PACKAGE = f"{_XSLT}package"
 _APPLY_TEMPLATES = f"{_XSLT}apply-templates"
 _CONTEXT_ITEM = f"{_XSLT}context-item"
 
@@ -103,16 +105,6 @@ def _error(
     return XsltStaticError(message, code=code, uri=uri, location=location)
 
 
-def _local_name(name: str) -> str:
-    return name.partition("}")[2] if name.startswith("{") else name
-
-
-def _namespace_of(name: str) -> str | None:
-    if not name.startswith("{"):
-        return None
-    return name[1:].partition("}")[0]
-
-
 def _expand_name(
     value: str,
     namespaces: Mapping[str, str],
@@ -159,16 +151,6 @@ def _expand_name(
             uri=uri,
         )
     return f"{{{bound_uri}}}{local}"
-
-
-def _cmp_precedence(left: tuple[int, ...], right: tuple[int, ...]) -> int:
-    """Compare import precedence: a shorter prefix is higher; later imports win."""
-    if left == right:
-        return 0
-    limit = min(len(left), len(right))
-    if left[:limit] == right[:limit]:
-        return 1 if len(left) < len(right) else -1
-    return 1 if left > right else -1
 
 
 def _yes_no(
@@ -1203,7 +1185,7 @@ def _group_declarations(
 
 
 def _compare_declarations(left: _Declaration, right: _Declaration) -> int:
-    precedence = _cmp_precedence(left.precedence, right.precedence)
+    precedence = compare_precedence(left.precedence, right.precedence)
     if precedence:
         return precedence
     return left.order - right.order
@@ -1216,7 +1198,7 @@ def _declared_mode_visibility(entries: Sequence[_Declaration]) -> str | None:
         value = _visibility(entry.element, entry.module, mode=True)
         if value is None:
             continue
-        if chosen_precedence is None or _cmp_precedence(entry.precedence, chosen_precedence) > 0:
+        if chosen_precedence is None or compare_precedence(entry.precedence, chosen_precedence) > 0:
             chosen = value
             chosen_precedence = entry.precedence
             continue
@@ -1233,7 +1215,7 @@ def _declared_mode_visibility(entries: Sequence[_Declaration]) -> str | None:
 def _highest_precedence(entries: Sequence[_Declaration]) -> tuple[int, ...]:
     return max(
         (entry.precedence for entry in entries),
-        key=cmp_to_key(_cmp_precedence),
+        key=cmp_to_key(compare_precedence),
     )
 
 

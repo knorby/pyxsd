@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import io
 from decimal import Decimal
+from functools import partial
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
 import pytest
+from tests.xslt.support import stylesheet as _stylesheet
+from tests.xslt.support import transform
 
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.xdm import XdmAtomic, XdmSequence
@@ -41,16 +44,10 @@ XSD_NS = "http://www.w3.org/2001/XMLSchema"
 APP_NS = "urn:example:app"
 DOC_NS = "urn:example:doc"
 
+stylesheet = partial(_stylesheet, namespaces={"app": APP_NS, "app2": APP_NS, "doc": DOC_NS})
+
 SOURCE = b"<doc><n>1</n><n>2</n><n>3</n></doc>"
 EXPECTED_BEFORE_AFTER_VALUES = ("0", "33", "1", "11", "12", "22", "23", "33")
-
-
-def stylesheet(body: str, *, version: str = "3.0") -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'xmlns:app="{APP_NS}" xmlns:app2="{APP_NS}" xmlns:doc="{DOC_NS}" '
-        f'version="{version}">{body}</xsl:stylesheet>'
-    ).encode()
 
 
 def package(name: str | None, body: str, *, version: str = "3.0") -> str:
@@ -69,19 +66,6 @@ def compile_stylesheet(source: bytes | str):
     if isinstance(source, str):
         source = source.encode()
     return compiled(source)
-
-
-def transform(
-    source: bytes,
-    input_source: bytes | XdmDocument | None = None,
-    *,
-    delivery: str = "document",
-    **options: Any,
-):
-    stylesheet_ = compiled(source)
-    if input_source is None:
-        return stylesheet_.transform(delivery=delivery, **options)
-    return stylesheet_.transform(source=input_source, delivery=delivery, **options)
 
 
 def values(result: Any) -> tuple[str, ...]:

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.xslt.support import stylesheet
 
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
@@ -23,13 +24,6 @@ from pyxsd.xslt.errors import XsltDynamicError, XsltStaticError
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
-
-
-def stylesheet(body: str, *, attributes: str = "") -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'version="3.0"{attributes}>{body}</xsl:stylesheet>'
-    ).encode()
 
 
 STRIP_ALL_STYLESHEET = stylesheet(
@@ -374,7 +368,7 @@ def test_nested_sibling_import_precedence_is_post_order(tmp_path: Path) -> None:
 
 
 def test_space_rule_rank_matches_compiler_precedence() -> None:
-    from pyxsd.xslt.compiler.static import _precedence_compare
+    from pyxsd.xslt.precedence import compare_precedence
     from pyxsd.xslt.runtime.whitespace import _Rule
 
     def rank(precedence: tuple[int, ...]) -> tuple[float, ...]:
@@ -391,7 +385,7 @@ def test_space_rule_rank_matches_compiler_precedence() -> None:
         ((1, 2), (1, 2)),
     )
     for left, right in cases:
-        comparison = _precedence_compare(left, right)
+        comparison = compare_precedence(left, right)
         expected = 1 if comparison > 0 else -1 if comparison < 0 else 0
         actual = (rank(left) > rank(right)) - (rank(left) < rank(right))
         assert actual == expected, (left, right)

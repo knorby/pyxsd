@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import dataclasses
 import io
+from functools import partial
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
 import pytest
+from tests.xslt.support import stylesheet as _stylesheet
 
 from pyxsd.xdm import XdmAtomic
 from pyxsd.xpath.environment import Focus
@@ -23,12 +25,7 @@ XSD_NS = "http://www.w3.org/2001/XMLSchema"
 MY_NS = "urn:my"
 TEST_NS = "urn:test"
 
-
-def stylesheet(body: str) -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'xmlns:my="{MY_NS}" xmlns:t="{TEST_NS}" version="3.0">{body}</xsl:stylesheet>'
-    ).encode()
+stylesheet = partial(_stylesheet, namespaces={"my": MY_NS, "t": TEST_NS})
 
 
 def transform(body: str, source: bytes) -> Any:

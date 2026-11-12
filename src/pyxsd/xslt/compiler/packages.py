@@ -60,7 +60,6 @@ from pyxsd.xslt.compiler.components import (
     _apply_accepts,
     _bind_component,
     _build_local_components,
-    _cmp_precedence,
     _compare_declarations,
     _component_key,
     _copy_component,
@@ -126,13 +125,12 @@ from pyxsd.xslt.compiler.static import (
     StaticPreprocessor,
 )
 from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.precedence import compare_precedence
 
 _PACKAGE_VERSION = re.compile(
     r"^(?P<numeric>[0-9]+(?:\.[0-9]+)*)(?:-(?P<name>[A-Za-z_][\w.\-]*))?$"
 )
 _INPUT_TYPE_ANNOTATIONS = frozenset({"strip", "preserve", "unspecified"})
-_VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
-_ERROR_CODE = re.compile(r"\[(?:err:)?([A-Z]{4}[0-9]{4})\]")
 
 PackageInput: TypeAlias = (
     str | os.PathLike[str] | bytes | io.IOBase | SourceModule | EffectiveModule
@@ -1533,7 +1531,7 @@ def _merged_attribute_value(
     code: str,
     message: str,
 ) -> str:
-    highest = max((entry[0] for entry in entries), key=cmp_to_key(_cmp_precedence))
+    highest = max((entry[0] for entry in entries), key=cmp_to_key(compare_precedence))
     chosen: tuple[str, _Declaration] | None = None
     for precedence, value, declaration in entries:
         if precedence != highest:

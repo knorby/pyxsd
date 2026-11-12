@@ -43,6 +43,7 @@ from pyxsd.xslt.compiler.plans import (
     _RuleContext,
 )
 from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltStaticError
+from pyxsd.xslt.precedence import compare_precedence
 from pyxsd.xslt.results import _append_complex_content, _NodeFactory
 from pyxsd.xslt.runtime.context import EvaluationContext
 from pyxsd.xslt.runtime.frames import (
@@ -81,16 +82,6 @@ __all__ = [
     "shallow_copy",
     "step_apply",
 ]
-
-
-def _precedence_compare(left: tuple[int, ...], right: tuple[int, ...]) -> int:
-    """Compare import precedence: a shorter prefix is higher; later imports win."""
-    if left == right:
-        return 0
-    limit = min(len(left), len(right))
-    if left[:limit] == right[:limit]:
-        return 1 if len(left) < len(right) else -1
-    return 1 if left > right else -1
 
 
 def _is_import_descendant(
@@ -480,7 +471,7 @@ class PatternIndex:
 
 
 def _compare_entries(left: _IndexedRule, right: _IndexedRule) -> int:
-    precedence = _precedence_compare(left.rule.precedence, right.rule.precedence)
+    precedence = compare_precedence(left.rule.precedence, right.rule.precedence)
     if precedence:
         return -precedence
     if left.priority != right.priority:

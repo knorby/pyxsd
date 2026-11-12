@@ -23,11 +23,9 @@ grouping keys use ``fn:deep-equal`` semantics rather than Python container or
 from __future__ import annotations
 
 import math
-import struct
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from decimal import Decimal
 from functools import cmp_to_key
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any, cast
@@ -37,6 +35,7 @@ from elementpath.exceptions import MissingContextError
 
 from pyxsd.xdm import XdmAtomic, XdmItem, XdmSequence
 from pyxsd.xdm.nodes import XdmNode
+from pyxsd.xdm.values import _as_float, _as_float32, _is_nan
 from pyxsd.xpath.environment import Focus
 from pyxsd.xslt.compiler.patterns import PatternMatcher
 from pyxsd.xslt.compiler.plans import (
@@ -179,31 +178,6 @@ def _family(item: XdmAtomic) -> str:
     if local in _BOOLEAN_LOCALS:
         return "boolean"
     return "other"
-
-
-def _is_nan(value: Any) -> bool:
-    if isinstance(value, float):
-        return math.isnan(value)
-    if isinstance(value, Decimal):
-        return value.is_nan()
-    return False
-
-
-def _as_float(value: Any) -> float:
-    try:
-        return float(value)
-    except OverflowError:
-        return math.inf if value > 0 else -math.inf
-    except (TypeError, ValueError):
-        return math.nan
-
-
-def _as_float32(value: Any) -> float:
-    number = _as_float(value)
-    try:
-        return struct.unpack(">f", struct.pack(">f", number))[0]
-    except OverflowError:
-        return math.inf if number > 0 else -math.inf
 
 
 def _bounded_number(value: Any) -> float:

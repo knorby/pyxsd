@@ -8,12 +8,14 @@ isolation, and the normative error codes.  Every stylesheet is inline.
 from __future__ import annotations
 
 import io
+from functools import partial
 from typing import Any
 
 import pytest
+from tests.xslt.support import element_children, transform
+from tests.xslt.support import stylesheet as _stylesheet
 
 from pyxsd.xdm import XdmAtomic
-from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltError
 from pyxsd.xslt.runtime.iteration import (
@@ -30,44 +32,22 @@ from pyxsd.xslt.runtime.iteration import (
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 MY_NS = "urn:my"
+
+stylesheet = partial(_stylesheet, namespaces={"my": MY_NS})
 HTML_CASE_INSENSITIVE = (
     "http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive"
 )
 UCA = "http://www.w3.org/2013/collation/UCA"
 
 
-def stylesheet(body: str, *, version: str = "3.0") -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'xmlns:my="{MY_NS}" version="{version}">{body}</xsl:stylesheet>'
-    ).encode()
-
-
 def compiled(source: bytes, **options: Any):
     return XsltProcessor(**options).compile(io.BytesIO(source))
-
-
-def transform(
-    source: bytes,
-    input_source: bytes | None = None,
-    *,
-    delivery: str = "document",
-    **options: Any,
-):
-    stylesheet_ = compiled(source)
-    if input_source is None:
-        return stylesheet_.transform(delivery=delivery, **options)
-    return stylesheet_.transform(source=input_source, delivery=delivery, **options)
 
 
 def error_code(call: Any) -> str | None:
     with pytest.raises(XsltError) as caught:
         call()
     return caught.value.code
-
-
-def element_children(node: Any) -> tuple[XdmNode, ...]:
-    return tuple(child for child in node.children if child.kind is NodeKind.ELEMENT)
 
 
 # ---------------------------------------------------------------------------

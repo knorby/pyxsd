@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Literal, NoReturn, TypeAlias
 from pyxsd.locations import IssueLocation
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xpath.engine import CompiledExpression, XPathEngine
-from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.errors import XsltStaticError, error_code_from_exception
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
     from pyxsd.xslt.compiler.context import StaticContext
@@ -94,7 +94,6 @@ _NAME_START = re.compile(
     r"[^\W\d]",
     re.UNICODE,
 )
-_ERROR_CODE = re.compile(r"\[(?:err:)?([A-Z]{4}[0-9]{4})\]")
 
 _ATOMIC_BUILTINS = frozenset(builtin_type_classes()) - {
     "anyType",
@@ -105,14 +104,6 @@ _SIMPLE_BUILTINS = frozenset(builtin_type_classes()) - {"anyType", "untyped"}
 _UNIFIED_ATOMIC = frozenset(set(_ATOMIC_BUILTINS) | {"untypedAtomic"})
 _UNIFIED_SIMPLE = frozenset(set(_SIMPLE_BUILTINS) | {"untypedAtomic"})
 _ELEMENT_BUILTINS = frozenset(set(_SIMPLE_BUILTINS) | {"anyType", "untyped", "untypedAtomic"})
-
-
-def _error_code(exc: BaseException, default: str = "XPST0003") -> str:
-    code = getattr(exc, "code", None)
-    if isinstance(code, str) and code:
-        return code.rsplit(":", 1)[-1]
-    match = _ERROR_CODE.search(str(exc))
-    return default if match is None else match.group(1)
 
 
 def _static_error(
@@ -909,7 +900,7 @@ def compile_xpath(
         raise _static_error(
             context,
             f"invalid XPath expression {source!r}: {exc}",
-            _error_code(exc),
+            error_code_from_exception(exc, "XPST0003"),
             location=location,
             cause=exc,
         ) from exc

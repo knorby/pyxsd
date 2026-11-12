@@ -22,7 +22,6 @@ from pyxsd.xslt.compiler.components import (
     _accepted_visibility,
     _AcceptRule,
     _bind_instruction,
-    _cmp_precedence,
     _component_key,
     _Declaration,
     _default_accepted_visibility,
@@ -44,6 +43,7 @@ from pyxsd.xslt.compiler.instructions import (
     normalize_element,
 )
 from pyxsd.xslt.compiler.static import EffectiveElement, EffectiveModule
+from pyxsd.xslt.precedence import compare_precedence
 
 if TYPE_CHECKING:
     from pyxsd.xslt.compiler.packages import CompiledPackage, PackageDescriptor, _Local
@@ -137,20 +137,6 @@ class Mode:
         if value is None:
             return "unspecified"
         return _TYPED_MODE_VALUES[value]
-
-
-@dataclass(frozen=True, slots=True)
-class _RawMode:
-    name: str | None
-    declarations: tuple[_Declaration, ...]
-    visibility: str
-    declared_visibility: str | None
-    declared: bool
-    properties: Mapping[str, str]
-    rules: tuple[_RuleDeclaration, ...]
-    order: int
-    module: EffectiveModule | None
-    location: IssueLocation | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,7 +286,7 @@ def _merged_mode_property(
     code: str,
     message: str,
 ) -> tuple[str, _Declaration]:
-    highest = max((entry[0] for entry in entries), key=cmp_to_key(_cmp_precedence))
+    highest = max((entry[0] for entry in entries), key=cmp_to_key(compare_precedence))
     chosen: tuple[str, _Declaration] | None = None
     for precedence, value, declaration in entries:
         if precedence != highest:

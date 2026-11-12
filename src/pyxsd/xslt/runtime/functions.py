@@ -36,6 +36,8 @@ from elementpath.xpath2 import XPath2Parser
 from elementpath.xpath3 import XPath31Parser
 
 from pyxsd import __version__
+from pyxsd.namespaces import local_name as _local_name
+from pyxsd.namespaces import namespace_of as _namespace_of
 from pyxsd.xdm import XdmAtomic, XdmItem, XdmSequence, as_xdm
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.nodes import XdmDocument, XdmNode
@@ -362,14 +364,6 @@ def _expand_name(
     if not is_ncname(value):
         raise XsltDynamicError(f"invalid QName {value!r} for {label}", code=code)
     return f"{{{default_namespace}}}{value}" if default_namespace else value
-
-
-def _local_name(name: str) -> str:
-    return name.partition("}")[2] if name.startswith("{") else name
-
-
-def _namespace_of(name: str) -> str | None:
-    return name[1:].partition("}")[0] if name.startswith("{") else None
 
 
 def _arity_matches(spec: FunctionArity | None, arity: int | None) -> bool:

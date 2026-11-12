@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import io
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.xslt.support import element_children
+from tests.xslt.support import stylesheet as _stylesheet
 
 from pyxsd.xdm import XdmAtomic
-from pyxsd.xdm.nodes import NodeKind
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.packages import PackageResolver
 from pyxsd.xslt.errors import XsltError, XsltStaticError
@@ -19,12 +21,7 @@ XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 MY_NS = "urn:my"
 
-
-def stylesheet(body: str, *, attributes: str = "") -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'xmlns:my="{MY_NS}" version="3.0"{attributes}>{body}</xsl:stylesheet>'
-    ).encode()
+stylesheet = partial(_stylesheet, namespaces={"my": MY_NS})
 
 
 def transform(
@@ -39,10 +36,6 @@ def transform(
     if input_source is None:
         return compiled.transform(delivery=delivery, **options)
     return compiled.transform(source=input_source, delivery=delivery, **options)
-
-
-def element_children(node: Any) -> tuple[Any, ...]:
-    return tuple(child for child in node.children if child.kind is NodeKind.ELEMENT)
 
 
 def error_code(call: Callable[[], object]) -> str | None:

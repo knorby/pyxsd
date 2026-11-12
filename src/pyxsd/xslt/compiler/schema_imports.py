@@ -26,6 +26,7 @@ from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xslt.compiler.components import _error
 from pyxsd.xslt.compiler.static import EffectiveElement, EffectiveModule
 from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.precedence import compare_precedence
 
 if TYPE_CHECKING:
     from pyxsd.xslt.compiler.packages import CompiledPackage
@@ -233,7 +234,7 @@ def _compile_schema_imports(
     for entries in by_namespace.values():
         highest = max(
             (precedence for precedence, _schema in entries),
-            key=cmp_to_key(_schema_precedence_compare),
+            key=cmp_to_key(compare_precedence),
         )
         selected.extend(schema for precedence, schema in entries if precedence == highest)
     if not selected:
@@ -367,13 +368,3 @@ class _ReadOnlySchemaPolicy:
         from pyxsd.namespaces import parse_with_namespaces
 
         return parse_with_namespaces(io.BytesIO(data.content), context)
-
-
-def _schema_precedence_compare(left: tuple[int, ...], right: tuple[int, ...]) -> int:
-    """Compare import precedence: a shorter prefix is higher; later imports win."""
-    if left == right:
-        return 0
-    limit = min(len(left), len(right))
-    if left[:limit] == right[:limit]:
-        return 1 if len(left) < len(right) else -1
-    return 1 if left > right else -1

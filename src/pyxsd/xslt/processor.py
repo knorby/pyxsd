@@ -28,6 +28,7 @@ from elementpath.helpers import is_ncname
 
 from pyxsd.document import Document
 from pyxsd.locations import IssueLocation
+from pyxsd.namespaces import namespace_of as _namespace
 from pyxsd.resource_policy import ResourcePolicyError
 from pyxsd.schema import Schema
 from pyxsd.xdm import (
@@ -4537,12 +4538,6 @@ def _expanded_name(name: str, namespaces: Mapping[str, str]) -> str:
     if uri is None:
         return name
     return f"{{{uri}}}{local}"
-
-
-def _namespace(name: str) -> str | None:
-    if not name.startswith("{"):
-        return None
-    return name[1:].partition("}")[0]
 
 
 def _has_plan_content(

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, overload
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation
@@ -98,12 +98,22 @@ def expanded_error_code(code: str | None) -> str | None:
     return value
 
 
-def error_code_from_exception(error: BaseException) -> str | None:
+@overload
+def error_code_from_exception(error: BaseException, default: None = None) -> str | None: ...
+
+
+@overload
+def error_code_from_exception(error: BaseException, default: str) -> str: ...
+
+
+def error_code_from_exception(error: BaseException, default: str | None = None) -> str | None:
     """Extract a specification error code from an exception without rewriting it.
 
     Standard error-namespace codes are returned in their familiar local form.
     A custom QName is preserved as an expanded name so an extension error in a
-    non-standard namespace can still match a coded ``xsl:catch``.
+    non-standard namespace can still match a coded ``xsl:catch``.  *default*
+    supplies the fallback used by callers whose boundary maps an unidentifiable
+    failure to a specific error code.
     """
     raw = getattr(error, "code", None)
     if isinstance(raw, str) and raw:
@@ -114,7 +124,7 @@ def error_code_from_exception(error: BaseException) -> str | None:
                 return expanded[len(prefix) :]
             return expanded
     match = _ERROR_CODE.search(str(error))
-    return None if match is None else match.group(1)
+    return default if match is None else match.group(1)
 
 
 def _split_expanded_name(value: str) -> tuple[str, str]:

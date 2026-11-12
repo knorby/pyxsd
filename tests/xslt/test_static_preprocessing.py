@@ -527,10 +527,10 @@ def test_string_value_rejects_function_items(tmp_path: Path) -> None:
 
 
 def test_error_code_extraction_and_fallback() -> None:
-    from pyxsd.xslt.compiler.static import _error_code
+    from pyxsd.xslt.errors import error_code_from_exception
 
-    assert _error_code(RuntimeError("[err:XPST0003] bad")) == "XPST0003"
-    assert _error_code(RuntimeError("no code")) == "XTSE0010"
+    assert error_code_from_exception(RuntimeError("[err:XPST0003] bad")) == "XPST0003"
+    assert error_code_from_exception(RuntimeError("no code"), "XTSE0010") == "XTSE0010"
 
 
 def test_static_variable_name_expansion_forms(tmp_path: Path) -> None:

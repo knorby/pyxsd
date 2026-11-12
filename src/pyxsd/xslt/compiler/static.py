@@ -19,7 +19,6 @@ attribute value template.
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -30,12 +29,15 @@ from elementpath.xpath2 import XPath2Parser
 from elementpath.xpath3 import XPath31Parser
 
 from pyxsd.locations import IssueLocation
+from pyxsd.namespaces import local_name as _local_name
+from pyxsd.namespaces import namespace_of as _namespace_of
 from pyxsd.xdm import XdmAtomic, XdmSequence, as_xdm
 from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xpath.engine import XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
 from pyxsd.xslt.compiler.modules import ModuleKind, SourceModule
-from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.errors import XsltStaticError, error_code_from_exception
+from pyxsd.xslt.precedence import compare_precedence
 from pyxsd.xslt.runtime.functions import (
     SYSTEM_PROPERTIES as _SYSTEM_PROPERTIES,
 )
@@ -249,30 +251,11 @@ _STATIC_FUNCTIONS: Mapping[str, Any] = MappingProxyType(
     }
 )
 
-_CODES = re.compile(r"\[(?:err:)?([A-Z]{4}[0-9]{4})\]")
-
-
-def _local_name(name: str) -> str:
-    if name.startswith("{"):
-        return name.partition("}")[2]
-    return name
-
-
-def _namespace_of(name: str) -> str | None:
-    if name.startswith("{"):
-        return name[1:].partition("}")[0]
-    return None
-
 
 def _name_of(node: XdmNode) -> str:
     name = node.name
     assert name is not None
     return name
-
-
-def _error_code(exc: BaseException, default: str = "XTSE0010") -> str:
-    match = _CODES.search(str(exc))
-    return default if match is None else match.group(1)
 
 
 def _ebv(sequence: XdmSequence, element: XdmNode) -> bool:
@@ -659,16 +642,6 @@ class _Binding:
     precedence: tuple[int, ...]
 
 
-def _precedence_compare(left: tuple[int, ...], right: tuple[int, ...]) -> int:
-    """Compare import precedence: a shorter prefix is higher; later imports win."""
-    if left == right:
-        return 0
-    limit = min(len(left), len(right))
-    if left[:limit] == right[:limit]:
-        return 1 if len(left) < len(right) else -1
-    return 1 if left > right else -1
-
-
 class _Scope:
     """Ordered static-variable bindings visible at one stylesheet position."""
 
@@ -685,7 +658,7 @@ class _Scope:
     ) -> None:
         previous = self._bindings.get(name)
         if previous is not None:
-            comparison = _precedence_compare(precedence, previous.precedence)
+            comparison = compare_precedence(precedence, previous.precedence)
             if comparison < 0:
                 return
             if comparison == 0 and previous.kind == kind and previous.value == value:
@@ -777,7 +750,7 @@ class _StaticEvaluator:
             compiled = self._engine.compile(expression, context)
             return self._engine.evaluate(compiled, environment, focus=Focus.absent())
         except Exception as exc:
-            code = _error_code(exc)
+            code = error_code_from_exception(exc, "XTSE0010")
             raise XsltStaticError(
                 f"static expression failed: {exc}",
                 code=code,

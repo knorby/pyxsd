@@ -27,7 +27,6 @@ from pyxsd.xslt.compiler.pattern_syntax import (
     AxisStep,
     NameTest,
     RelativePath,
-    _error_code,
 )
 from pyxsd.xslt.compiler.patterns import (
     CandidateFilter,
@@ -48,7 +47,7 @@ from pyxsd.xslt.compiler.patterns import (
     compile_pattern,
     default_priority,
 )
-from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.errors import XsltStaticError, error_code_from_exception
 from pyxsd.xslt.runtime.templates import PatternIndex, TemplateRule
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -1175,9 +1174,11 @@ def test_scanner_lexical_edges() -> None:
         with pytest.raises(XsltStaticError):
             compile_pattern(pattern, _context(variables=("v",)))
 
-    assert _error_code(ValueError("plain")) == "XPST0003"
-    assert _error_code(Exception("wrapped [err:XPST0008] here")) == "XPST0008"
-    assert _error_code(type("Coded", (Exception,), {"code": "XPST0017"})()) == "XPST0017"
+    assert error_code_from_exception(ValueError("plain"), "XPST0003") == "XPST0003"
+    assert error_code_from_exception(Exception("wrapped [err:XPST0008] here")) == "XPST0008"
+    assert (
+        error_code_from_exception(type("Coded", (Exception,), {"code": "XPST0017"})()) == "XPST0017"
+    )
     assert _local_name("{urn:a}b") == "b"
     assert _local_name("b") == "b"
     assert _namespace_of("b") is None

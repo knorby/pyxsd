@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import io
 import math
+from functools import partial
 from typing import Any
 
 import pytest
+from tests.xslt.support import stylesheet as _stylesheet
+from tests.xslt.support import transform as _transform
 
 from pyxsd.xdm import XdmAtomic
 from pyxsd.xslt import XsltProcessor
@@ -30,6 +33,9 @@ from pyxsd.xslt.runtime.iteration import (
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 MY_NS = "urn:my"
+
+stylesheet = partial(_stylesheet, namespaces={"my": MY_NS})
+transform = partial(_transform, delivery="raw")
 CODEPOINT = "http://www.w3.org/2005/xpath-functions/collation/codepoint"
 HTML_CASE_INSENSITIVE = (
     "http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive"
@@ -37,28 +43,8 @@ HTML_CASE_INSENSITIVE = (
 UCA = "http://www.w3.org/2013/collation/UCA"
 
 
-def stylesheet(body: str, *, version: str = "3.0", attributes: str = "") -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'xmlns:my="{MY_NS}" version="{version}"{attributes}>{body}</xsl:stylesheet>'
-    ).encode()
-
-
 def compiled(source: bytes, **options: Any):
     return XsltProcessor(**options).compile(io.BytesIO(source))
-
-
-def transform(
-    source: bytes,
-    input_source: bytes | None = None,
-    *,
-    delivery: str = "raw",
-    **options: Any,
-):
-    stylesheet_ = compiled(source)
-    if input_source is None:
-        return stylesheet_.transform(delivery=delivery, **options)
-    return stylesheet_.transform(source=input_source, delivery=delivery, **options)
 
 
 def error_code(call: Any) -> str | None:

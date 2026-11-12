@@ -28,6 +28,7 @@ from pyxsd.xpath.environment import FunctionArity, XPathStaticContext
 from pyxsd.xslt.compiler.expressions import CompiledSequenceType, compile_sequence_type
 from pyxsd.xslt.compiler.static import EffectiveElement, EffectiveModule
 from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.precedence import compare_precedence
 from pyxsd.xslt.profiles import LanguageProfile
 from pyxsd.xslt.runtime.functions import xslt_function_declarations
 
@@ -156,16 +157,6 @@ def _arity_matches(arity: FunctionArity, requested: int) -> bool:
         return arity == requested
     minimum, maximum = arity
     return minimum <= requested and (maximum is None or requested <= maximum)
-
-
-def _precedence_compare(left: tuple[int, ...], right: tuple[int, ...]) -> int:
-    """Compare import precedence: a shorter prefix is higher; later imports win."""
-    if left == right:
-        return 0
-    limit = min(len(left), len(right))
-    if left[:limit] == right[:limit]:
-        return 1 if len(left) < len(right) else -1
-    return 1 if left > right else -1
 
 
 @dataclass(frozen=True, slots=True)
@@ -1064,7 +1055,7 @@ def _collect_symbols(
                     previous = variables.get(variable.name)
                     if (
                         previous is None
-                        or _precedence_compare(variable.precedence, previous.precedence) > 0
+                        or compare_precedence(variable.precedence, previous.precedence) > 0
                     ):
                         variables[variable.name] = variable
             elif child.name == _FUNCTION:
@@ -1080,8 +1071,7 @@ def _collect_symbols(
                     previous_function = functions.get(key)
                     if (
                         previous_function is None
-                        or _precedence_compare(function.precedence, previous_function.precedence)
-                        > 0
+                        or compare_precedence(function.precedence, previous_function.precedence) > 0
                     ):
                         functions[key] = function
 

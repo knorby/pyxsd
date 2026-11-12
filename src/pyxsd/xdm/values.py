@@ -283,6 +283,8 @@ def _as_float(value: Any) -> float:
         return float(value)
     except OverflowError:
         return math.inf if value > 0 else -math.inf
+    except (TypeError, ValueError):
+        return math.nan
 
 
 def _as_float32(value: Any) -> float:

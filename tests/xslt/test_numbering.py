@@ -8,9 +8,11 @@ decimal-format static constraints, and the number-picture grammar.
 from __future__ import annotations
 
 import io
+from functools import partial
 from typing import Any
 
 import pytest
+from tests.xslt.support import stylesheet as _stylesheet
 
 from pyxsd.xdm import XdmAtomic
 from pyxsd.xslt import XsltProcessor
@@ -20,17 +22,12 @@ XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 MY_NS = "urn:my"
 
+stylesheet = partial(_stylesheet, namespaces={"my": MY_NS})
+
 SOURCE = b"""<doc>
   <chapter><title>A</title><section><title>B</title><p>x</p></section></chapter>
   <chapter><title>C</title></chapter>
 </doc>"""
-
-
-def stylesheet(body: str, *, version: str = "3.0") -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'xmlns:my="{MY_NS}" version="{version}">{body}</xsl:stylesheet>'
-    ).encode()
 
 
 def compiled(source: bytes, **options: Any):

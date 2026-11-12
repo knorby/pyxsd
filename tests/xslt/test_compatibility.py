@@ -11,9 +11,11 @@ instructions.
 from __future__ import annotations
 
 import io
+from functools import partial
 from typing import Any
 
 import pytest
+from tests.xslt.support import stylesheet as _stylesheet
 
 from pyxsd.xdm import XdmAtomic, XdmFunction
 from pyxsd.xdm.nodes import NodeKind, XdmDocument
@@ -35,13 +37,7 @@ XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 MY_NS = "urn:my"
 
-
-def stylesheet(body: str, *, version: str = "3.0", attributes: str = "") -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'xmlns:my="{MY_NS}" version="{version}"{attributes}>'
-        f"{body}</xsl:stylesheet>"
-    ).encode()
+stylesheet = partial(_stylesheet, namespaces={"my": MY_NS})
 
 
 def transform(

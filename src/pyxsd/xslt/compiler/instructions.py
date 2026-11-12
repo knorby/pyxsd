@@ -20,6 +20,8 @@ from types import MappingProxyType
 from typing import TypeAlias
 
 from pyxsd.locations import IssueLocation
+from pyxsd.namespaces import local_name as _local_name
+from pyxsd.namespaces import namespace_of as _namespace_of
 from pyxsd.xdm.nodes import NodeKind
 from pyxsd.xslt.compiler.static import EffectiveElement, EffectiveNode, EffectiveText
 
@@ -43,16 +45,6 @@ InstructionNode: TypeAlias = "Instruction | TextNode"
 def instruction_name(local_name: str) -> str:
     """Return the expanded XSLT instruction name for one local name."""
     return f"{{{XSLT_NS}}}{local_name}"
-
-
-def _local_name(name: str) -> str:
-    return name.partition("}")[2] if name.startswith("{") else name
-
-
-def _namespace_of(name: str) -> str | None:
-    if not name.startswith("{"):
-        return None
-    return name[1:].partition("}")[0]
 
 
 def _freeze(mapping: Mapping[str, str]) -> Mapping[str, str]:

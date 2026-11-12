@@ -32,6 +32,8 @@ from typing import Any, Literal, cast
 from urllib.parse import urljoin
 
 from pyxsd.locations import IssueLocation
+from pyxsd.namespaces import local_name as _local_name
+from pyxsd.namespaces import namespace_of as _namespace_of
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xdm.values import XdmAtomic, XdmItem, XdmSequence, as_xdm
@@ -129,16 +131,6 @@ __all__ = [
     "compile_pattern",
     "default_priority",
 ]
-
-
-def _local_name(name: str) -> str:
-    return name.partition("}")[2] if name.startswith("{") else name
-
-
-def _namespace_of(name: str) -> str | None:
-    if not name.startswith("{"):
-        return None
-    return name[1:].partition("}")[0]
 
 
 # ---------------------------------------------------------------------------

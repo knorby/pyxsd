@@ -8,9 +8,12 @@ pinned conformance corpus.
 from __future__ import annotations
 
 import io
+from functools import partial
 from typing import Any
 
 import pytest
+from tests.xslt.support import stylesheet as _stylesheet
+from tests.xslt.support import transform
 
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmMap
 from pyxsd.xdm.nodes import XdmDocument
@@ -30,25 +33,7 @@ XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 MY_NS = "urn:my"
 
-
-def stylesheet(body: str, *, attributes: str = "") -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'xmlns:my="{MY_NS}" version="3.0"{attributes}>{body}</xsl:stylesheet>'
-    ).encode()
-
-
-def transform(
-    source: bytes,
-    input_source: bytes | None = None,
-    *,
-    delivery: str = "document",
-    **options: Any,
-):
-    compiled = XsltProcessor().compile(io.BytesIO(source))
-    if input_source is None:
-        return compiled.transform(delivery=delivery, **options)
-    return compiled.transform(source=input_source, delivery=delivery, **options)
+stylesheet = partial(_stylesheet, namespaces={"my": MY_NS})
 
 
 def error_code(call: Any) -> str | None:

@@ -802,17 +802,17 @@ def test_merged_bind_parser_is_idempotent_with_prefixes() -> None:
 
 def test_schema_origin_and_precedence_helpers() -> None:
     from pyxsd.xdm.schema import _canonical_origin, _component_origin
-    from pyxsd.xslt.compiler.schema_imports import _schema_precedence_compare
+    from pyxsd.xslt.precedence import compare_precedence
 
     schema = object()
     assert _component_origin(schema, object()) == ("anonymous", id(schema))
     assert _canonical_origin("https://example.com/schema.xsd") == ("https://example.com/schema.xsd")
     assert _canonical_origin(1) == 1
-    assert _schema_precedence_compare((), ()) == 0
-    assert _schema_precedence_compare((), (1,)) == 1
-    assert _schema_precedence_compare((1,), ()) == -1
-    assert _schema_precedence_compare((2,), (1,)) == 1
-    assert _schema_precedence_compare((1,), (2,)) == -1
+    assert compare_precedence((), ()) == 0
+    assert compare_precedence((), (1,)) == 1
+    assert compare_precedence((1,), ()) == -1
+    assert compare_precedence((2,), (1,)) == 1
+    assert compare_precedence((1,), (2,)) == -1
 
 
 def test_schema_resource_policy_requires_read() -> None:
