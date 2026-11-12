@@ -17,6 +17,7 @@ from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath.engine import CompiledExpression, XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment
+from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.context import StaticContext, StaticVariable
 from pyxsd.xslt.compiler.expressions import (
     CompiledSequenceType,
@@ -195,6 +196,21 @@ def test_avt_errors_are_exact_static_errors(tmp_path: Path) -> None:
             compile_avt(source, context)
         assert _code(caught.value) == code
         assert caught.value.uri == context.uri
+        assert caught.value.location is not None
+
+
+def test_instruction_value_template_errors_are_exact(tmp_path: Path) -> None:
+    bodies = (
+        '<xsl:template match="/"><out a="{+}"/></xsl:template>',
+        '<xsl:template match="/"><xsl:element name="{+}"/></xsl:template>',
+        '<xsl:template match="/"><xsl:attribute name="{+}"/></xsl:template>',
+        '<xsl:template match="/"><xsl:value-of select="1" separator="{+}"/></xsl:template>',
+        '<xsl:template match="/"><xsl:text expand-text="yes">{+}</xsl:text></xsl:template>',
+    )
+    for body in bodies:
+        with pytest.raises(XsltStaticError) as caught:
+            XsltProcessor().compile(_module(tmp_path, _stylesheet(body)))
+        assert _code(caught.value) == "XPST0003"
         assert caught.value.location is not None
 
 

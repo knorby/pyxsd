@@ -32,11 +32,17 @@ __all__ = [
     "InstructionNode",
     "SequenceConstructor",
     "TextNode",
+    "instruction_name",
     "normalize_element",
     "normalize_sequence",
 ]
 
 InstructionNode: TypeAlias = "Instruction | TextNode"
+
+
+def instruction_name(local_name: str) -> str:
+    """Return the expanded XSLT instruction name for one local name."""
+    return f"{{{XSLT_NS}}}{local_name}"
 
 
 def _local_name(name: str) -> str:

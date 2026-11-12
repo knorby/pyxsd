@@ -59,6 +59,12 @@ from pyxsd.xslt.compiler.context import (
     StaticFunction,
     StaticVariable,
 )
+from pyxsd.xslt.compiler.dispatch import (
+    InstructionCompiler,
+    compile_instruction,
+    register_instruction_compilers,
+    supports_instruction,
+)
 from pyxsd.xslt.compiler.expressions import (
     CompiledSequenceType,
     CompiledValueTemplate,
@@ -68,7 +74,12 @@ from pyxsd.xslt.compiler.expressions import (
     compile_tvt,
     compile_xpath,
 )
-from pyxsd.xslt.compiler.instructions import ComponentReference, Instruction, TextNode
+from pyxsd.xslt.compiler.instructions import (
+    ComponentReference,
+    Instruction,
+    TextNode,
+    instruction_name,
+)
 from pyxsd.xslt.compiler.modules import ModuleLoader, SourceModule
 from pyxsd.xslt.compiler.packages import (
     CompiledPackage,
@@ -3400,667 +3411,868 @@ def _compile_instruction(
     context: StaticContext,
     module: EffectiveModule,
 ) -> _Plan:
-    exclusions = _exclusions(module)
+    """Compile one normalized instruction into its immutable plan.
+
+    Literal result elements stay explicit.  Every XSLT instruction family is
+    compiled by the dedicated compiler registered under its expanded name, and
+    an unregistered instruction keeps the explicit forwards-compatible or
+    unsupported handling.
+    """
     context = _instruction_context(context, instruction)
     context = _original_context(context, instruction)
-    location = instruction.location
     if instruction.literal:
-        attributes: list[tuple[str, str | CompiledValueTemplate]] = []
-        for attribute in instruction.attributes:
-            if attribute.namespace_uri == XSLT_NS:
-                continue
-            if attribute.namespace_uri is None and attribute.name in _LITERAL_XSLT_ATTRIBUTES:
-                continue
-            attributes.append(
-                (
-                    attribute.name,
-                    compile_avt(attribute.value, context, location=location),
-                )
+        return _compile_literal_result(instruction, context, module)
+    if not supports_instruction(instruction.name):
+        return _compile_unhandled_instruction(instruction, context, module)
+    return compile_instruction(instruction, context, module)
+
+
+def _compile_literal_result(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    attributes: list[tuple[str, str | CompiledValueTemplate]] = []
+    for attribute in instruction.attributes:
+        if attribute.namespace_uri == XSLT_NS:
+            continue
+        if attribute.namespace_uri is None and attribute.name in _LITERAL_XSLT_ATTRIBUTES:
+            continue
+        attributes.append(
+            (
+                attribute.name,
+                compile_avt(attribute.value, context, location=instruction.location),
             )
-        namespaces = _literal_namespaces(
-            instruction,
-            attributes,
-            exclusions,
         )
-        validation, type_name = _compile_construction_validation(
-            instruction,
-            context,
-            label="a literal result element",
-            literal=True,
-        )
-        return _LiteralPlan(
-            instruction=instruction,
-            attributes=tuple(attributes),
-            children=_compile_sequence(instruction.children, context, module),
-            namespaces=namespaces,
-            attribute_sets=tuple(
-                reference
-                for reference in instruction.references
-                if reference.kind == "attribute-set"
-            ),
-            validation=validation,
-            type_name=type_name,
-        )
-    local = instruction.local_name
-    if local == "element":
-        name = instruction.attribute("name")
-        if name is None:
-            raise XsltStaticError(
-                "xsl:element requires a name attribute",
-                code="XTSE0010",
-                uri=context.uri,
-                location=location,
-            )
-        validation, type_name = _compile_construction_validation(
-            instruction,
-            context,
-            label="xsl:element",
-        )
-        return _ElementPlan(
-            instruction=instruction,
-            name=compile_avt(name, context, location=location),
-            namespace=(
-                compile_avt(instruction.attribute("namespace") or "", context, location=location)
-                if instruction.attribute("namespace") is not None
-                else None
-            ),
-            namespaces=instruction.namespaces,
-            children=_compile_sequence(instruction.children, context, module),
-            attribute_sets=tuple(
-                reference
-                for reference in instruction.references
-                if reference.kind == "attribute-set"
-            ),
-            inherit_namespaces=_attribute_yes_no(
-                instruction, "inherit-namespaces", context, default=True
-            ),
-            validation=validation,
-            type_name=type_name,
-        )
-    if local == "document":
-        validation, type_name = _compile_construction_validation(
-            instruction,
-            context,
-            label="xsl:document",
-        )
-        return _DocumentPlan(
-            instruction=instruction,
-            children=_compile_sequence(instruction.children, context, module),
-            validation=validation,
-            type_name=type_name,
-        )
-    if local == "copy":
-        select = instruction.attribute("select")
-        validation, type_name = _compile_construction_validation(
-            instruction,
-            context,
-            label="xsl:copy",
-        )
-        return _CopyPlan(
-            instruction=instruction,
-            select=(
-                compile_xpath(select, context, location=location) if select is not None else None
-            ),
-            children=_compile_sequence(instruction.children, context, module),
-            copy_namespaces=_attribute_yes_no(
-                instruction, "copy-namespaces", context, default=True
-            ),
-            inherit_namespaces=_attribute_yes_no(
-                instruction, "inherit-namespaces", context, default=True
-            ),
-            attribute_sets=tuple(
-                reference
-                for reference in instruction.references
-                if reference.kind == "attribute-set"
-            ),
-            validation=validation,
-            type_name=type_name,
-        )
-    if local == "copy-of":
-        select = instruction.attribute("select")
-        if select is None:
-            raise XsltStaticError(
-                "xsl:copy-of requires a select attribute",
-                code="XTSE0010",
-                uri=context.uri,
-                location=location,
-            )
-        validation, type_name = _compile_construction_validation(
-            instruction,
-            context,
-            label="xsl:copy-of",
-        )
-        return _CopyOfPlan(
-            instruction=instruction,
-            select=compile_xpath(select, context, location=location),
-            copy_namespaces=_attribute_yes_no(
-                instruction, "copy-namespaces", context, default=True
-            ),
-            copy_accumulators=_attribute_yes_no(instruction, "copy-accumulators", context),
-            validation=validation,
-            type_name=type_name,
-        )
-    if local == "sequence":
-        select = instruction.attribute("select")
-        children = _compile_sequence(instruction.children, context, module)
-        if select is not None and _has_plan_content(children, allow_fallback=True):
-            raise XsltStaticError(
-                "xsl:sequence with a select attribute must have empty content except "
-                "for xsl:fallback",
-                code="XTSE3185",
-                uri=context.uri,
-                location=location,
-            )
-        return _SequencePlan(
-            instruction=instruction,
-            expression=(
-                compile_xpath(select, context, location=location) if select is not None else None
-            ),
-            children=children,
-        )
-    if local == "value-of":
-        select = instruction.attribute("select")
-        children = _compile_sequence(instruction.children, context, module)
-        if select is not None and _has_plan_content(children):
-            raise XsltStaticError(
-                "xsl:value-of with a select attribute must have empty content",
-                code="XTSE0870",
-                uri=context.uri,
-                location=location,
-            )
-        separator = instruction.attribute("separator")
-        separator_default = " " if select is not None else ""
-        return _ValueOfPlan(
-            instruction=instruction,
-            expression=(
-                compile_xpath(select, context, location=location) if select is not None else None
-            ),
-            children=children,
-            separator=(
-                compile_avt(separator, context, location=location)
-                if separator is not None
-                else separator_default
-            ),
-            explicit_separator=separator is not None,
-        )
-    if local == "text":
-        text = "".join(child.value for child in instruction.children if isinstance(child, TextNode))
-        expand = instruction.attribute("expand-text")
-        enabled = (
-            context.expand_text
-            if expand is None
-            else _yes_no(expand, instruction, "expand-text", context)
-        )
-        if enabled:
-            return _TvtPlan(compile_tvt(text, context.with_expand_text(True), location=location))
-        return _TextPlan(text)
-    if local == "for-each":
-        select = instruction.attribute("select")
-        if select is None:
-            raise XsltStaticError(
-                "xsl:for-each requires a select attribute",
-                code="XTSE0010",
-                uri=context.uri,
-                location=location,
-            )
-        _, body_children = _split_sort_children(instruction)
-        body = _mark_tail(_compile_sequence(body_children, context, module))
-        return _ForEachPlan(
-            instruction=instruction,
-            expression=compile_xpath(select, context, location=location),
-            sorts=_compile_sort_keys(instruction, context, module),
-            children=body,
-        )
-    if local == "iterate":
-        return _compile_iterate(instruction, context, module)
-    if local == "next-iteration":
-        return _compile_next_iteration(instruction, context, module)
-    if local == "break":
-        return _compile_break(instruction, context, module)
-    if local == "for-each-group":
-        return _compile_for_each_group(instruction, context, module)
-    if local == "merge":
-        return _compile_merge(instruction, context, module)
-    if local == "fork":
-        return _compile_fork(instruction, context, module)
-    if local == "source-document":
-        return _compile_source_document(instruction, context, module)
-    if local in ("merge-source", "merge-action", "merge-key"):
+    namespaces = _literal_namespaces(
+        instruction,
+        attributes,
+        _exclusions(module),
+    )
+    validation, type_name = _compile_construction_validation(
+        instruction,
+        context,
+        label="a literal result element",
+        literal=True,
+    )
+    return _LiteralPlan(
+        instruction=instruction,
+        attributes=tuple(attributes),
+        children=_compile_sequence(instruction.children, context, module),
+        namespaces=namespaces,
+        attribute_sets=tuple(
+            reference for reference in instruction.references if reference.kind == "attribute-set"
+        ),
+        validation=validation,
+        type_name=type_name,
+    )
+
+
+def _compile_element(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    name = instruction.attribute("name")
+    if name is None:
         raise XsltStaticError(
-            f"xsl:{local} is only permitted in a containing merge instruction",
+            "xsl:element requires a name attribute",
             code="XTSE0010",
             uri=context.uri,
-            location=location,
+            location=instruction.location,
         )
-    if local == "stream":
+    validation, type_name = _compile_construction_validation(
+        instruction,
+        context,
+        label="xsl:element",
+    )
+    return _ElementPlan(
+        instruction=instruction,
+        name=compile_avt(name, context, location=instruction.location),
+        namespace=(
+            compile_avt(
+                instruction.attribute("namespace") or "",
+                context,
+                location=instruction.location,
+            )
+            if instruction.attribute("namespace") is not None
+            else None
+        ),
+        namespaces=instruction.namespaces,
+        children=_compile_sequence(instruction.children, context, module),
+        attribute_sets=tuple(
+            reference for reference in instruction.references if reference.kind == "attribute-set"
+        ),
+        inherit_namespaces=_attribute_yes_no(
+            instruction, "inherit-namespaces", context, default=True
+        ),
+        validation=validation,
+        type_name=type_name,
+    )
+
+
+def _compile_document(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    validation, type_name = _compile_construction_validation(
+        instruction,
+        context,
+        label="xsl:document",
+    )
+    return _DocumentPlan(
+        instruction=instruction,
+        children=_compile_sequence(instruction.children, context, module),
+        validation=validation,
+        type_name=type_name,
+    )
+
+
+def _compile_copy(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    select = instruction.attribute("select")
+    validation, type_name = _compile_construction_validation(
+        instruction,
+        context,
+        label="xsl:copy",
+    )
+    return _CopyPlan(
+        instruction=instruction,
+        select=(
+            compile_xpath(select, context, location=instruction.location)
+            if select is not None
+            else None
+        ),
+        children=_compile_sequence(instruction.children, context, module),
+        copy_namespaces=_attribute_yes_no(instruction, "copy-namespaces", context, default=True),
+        inherit_namespaces=_attribute_yes_no(
+            instruction, "inherit-namespaces", context, default=True
+        ),
+        attribute_sets=tuple(
+            reference for reference in instruction.references if reference.kind == "attribute-set"
+        ),
+        validation=validation,
+        type_name=type_name,
+    )
+
+
+def _compile_copy_of(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    select = instruction.attribute("select")
+    if select is None:
         raise XsltStaticError(
-            "xsl:stream was renamed to xsl:source-document in XSLT 3.0",
+            "xsl:copy-of requires a select attribute",
             code="XTSE0010",
             uri=context.uri,
-            location=location,
+            location=instruction.location,
         )
-    if local == "perform-sort":
-        return _compile_perform_sort(instruction, context, module)
-    if local in ("sort", "on-completion"):
+    validation, type_name = _compile_construction_validation(
+        instruction,
+        context,
+        label="xsl:copy-of",
+    )
+    return _CopyOfPlan(
+        instruction=instruction,
+        select=compile_xpath(select, context, location=instruction.location),
+        copy_namespaces=_attribute_yes_no(instruction, "copy-namespaces", context, default=True),
+        copy_accumulators=_attribute_yes_no(instruction, "copy-accumulators", context),
+        validation=validation,
+        type_name=type_name,
+    )
+
+
+def _compile_sequence_instruction(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    select = instruction.attribute("select")
+    children = _compile_sequence(instruction.children, context, module)
+    if select is not None and _has_plan_content(children, allow_fallback=True):
         raise XsltStaticError(
-            f"xsl:{local} is only permitted in a containing instruction",
+            "xsl:sequence with a select attribute must have empty content except for xsl:fallback",
+            code="XTSE3185",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    return _SequencePlan(
+        instruction=instruction,
+        expression=(
+            compile_xpath(select, context, location=instruction.location)
+            if select is not None
+            else None
+        ),
+        children=children,
+    )
+
+
+def _compile_value_of(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    select = instruction.attribute("select")
+    children = _compile_sequence(instruction.children, context, module)
+    if select is not None and _has_plan_content(children):
+        raise XsltStaticError(
+            "xsl:value-of with a select attribute must have empty content",
+            code="XTSE0870",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    separator = instruction.attribute("separator")
+    separator_default = " " if select is not None else ""
+    return _ValueOfPlan(
+        instruction=instruction,
+        expression=(
+            compile_xpath(select, context, location=instruction.location)
+            if select is not None
+            else None
+        ),
+        children=children,
+        separator=(
+            compile_avt(separator, context, location=instruction.location)
+            if separator is not None
+            else separator_default
+        ),
+        explicit_separator=separator is not None,
+    )
+
+
+def _compile_text(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    text = "".join(child.value for child in instruction.children if isinstance(child, TextNode))
+    expand = instruction.attribute("expand-text")
+    enabled = (
+        context.expand_text
+        if expand is None
+        else _yes_no(expand, instruction, "expand-text", context)
+    )
+    if enabled:
+        return _TvtPlan(
+            compile_tvt(text, context.with_expand_text(True), location=instruction.location)
+        )
+    return _TextPlan(text)
+
+
+def _compile_for_each(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    select = instruction.attribute("select")
+    if select is None:
+        raise XsltStaticError(
+            "xsl:for-each requires a select attribute",
             code="XTSE0010",
             uri=context.uri,
-            location=location,
+            location=instruction.location,
         )
-    if local == "param":
-        name = instruction.attribute("name")
-        if not name:
-            raise XsltStaticError(
-                "xsl:param requires a name",
-                code="XTSE0010",
-                uri=context.uri,
-                location=location,
-            )
-        required = _attribute_yes_no(instruction, "required", context)
-        tunnel = _attribute_yes_no(instruction, "tunnel", context)
-        select = instruction.attribute("select")
-        children = _compile_sequence(instruction.children, context, module)
-        if select is not None and _has_plan_content(children):
-            raise XsltStaticError(
-                "a parameter with a select attribute must have empty content",
-                code="XTSE0620",
-                uri=context.uri,
-                location=location,
-            )
-        if required and (select is not None or _has_plan_content(children)):
-            raise XsltStaticError(
-                "a required parameter must not have a default value",
-                code="XTSE0010",
-                uri=context.uri,
-                location=location,
-            )
-        as_source = instruction.attribute("as")
-        return _ParamPlan(
-            instruction=instruction,
-            name=_expanded_name(name, instruction.namespaces),
-            required=required,
-            tunnel=tunnel,
-            expression=(
-                compile_xpath(select, context, location=location) if select is not None else None
-            ),
-            children=children,
-            has_as=as_source is not None,
-            sequence_type=(
-                compile_sequence_type(as_source, context, location=location)
-                if as_source is not None
-                else None
-            ),
-        )
-    if local == "variable":
-        name = instruction.attribute("name")
-        if not name:
-            raise XsltStaticError(
-                "xsl:variable requires a name",
-                code="XTSE0010",
-                uri=context.uri,
-                location=location,
-            )
-        select = instruction.attribute("select")
-        children = _compile_sequence(instruction.children, context, module)
-        if select is not None and _has_plan_content(children):
-            raise XsltStaticError(
-                "a variable with a select attribute must have empty content",
-                code="XTSE0620",
-                uri=context.uri,
-                location=location,
-            )
-        as_source = instruction.attribute("as")
-        return _VariablePlan(
-            instruction=instruction,
-            name=_expanded_name(name, instruction.namespaces),
-            expression=(
-                compile_xpath(select, context, location=location) if select is not None else None
-            ),
-            children=children,
-            has_as=as_source is not None,
-            sequence_type=(
-                compile_sequence_type(as_source, context, location=location)
-                if as_source is not None
-                else None
-            ),
-        )
-    if local == "attribute":
-        name = instruction.attribute("name")
-        if not name:
-            raise XsltStaticError(
-                "xsl:attribute requires a name",
-                code="XTSE0010",
-                uri=context.uri,
-                location=location,
-            )
-        select = instruction.attribute("select")
-        children = _compile_sequence(instruction.children, context, module)
-        if select is not None and _has_plan_content(children):
-            raise XsltStaticError(
-                "an attribute with a select attribute must have empty content",
-                code="XTSE0620",
-                uri=context.uri,
-                location=location,
-            )
-        validation, type_name = _compile_construction_validation(
-            instruction,
-            context,
-            label="xsl:attribute",
-            attribute=True,
-        )
-        separator = instruction.attribute("separator")
-        return _AttributePlan(
-            instruction=instruction,
-            name=compile_avt(name, context, location=location),
-            namespaces=instruction.namespaces,
-            expression=(
-                compile_xpath(select, context, location=location) if select is not None else None
-            ),
-            children=children,
-            namespace=(
-                compile_avt(instruction.attribute("namespace") or "", context, location=location)
-                if instruction.attribute("namespace") is not None
-                else None
-            ),
-            separator=(
-                compile_avt(separator, context, location=location) if separator is not None else " "
-            ),
-            validation=validation,
-            type_name=type_name,
-        )
-    if local in ("next-match", "apply-imports"):
-        return _OverridingPlan(
-            instruction=instruction,
-            kind=cast(Literal["next-match", "apply-imports"], local),
-            parameters=_compile_with_params(instruction, context, module),
-        )
-    if local == "result-document":
-        href = instruction.attribute("href")
-        method = instruction.attribute("method")
-        build_tree = instruction.attribute("build-tree")
-        format_name = instruction.attribute("format")
-        extra_attributes: list[tuple[str, str | CompiledValueTemplate]] = []
-        for attribute in instruction.attributes:
-            if attribute.name in {
-                "href",
-                "method",
-                "build-tree",
-                "format",
-                "type",
-                "validation",
-            }:
-                continue
-            extra_attributes.append(
-                (
-                    attribute.name,
-                    compile_avt(attribute.value, context, location=location),
-                )
-            )
-        validation, type_name = _compile_construction_validation(
-            instruction,
-            context,
-            label="xsl:result-document",
-        )
-        return _ResultDocumentPlan(
-            instruction=instruction,
-            href=(compile_avt(href, context, location=location) if href is not None else ""),
-            method=(
-                compile_avt(method, context, location=location) if method is not None else None
-            ),
-            build_tree=(
-                compile_avt(build_tree, context, location=location)
-                if build_tree is not None
-                else None
-            ),
-            format=(
-                compile_avt(format_name, context, location=location)
-                if format_name is not None
-                else None
-            ),
-            attributes=tuple(extra_attributes),
-            children=_compile_sequence(instruction.children, context, module),
-            validation=validation,
-            type_name=type_name,
-        )
-    if local == "analyze-string":
-        return _compile_analyze_string(instruction, context, module)
-    if local in ("matching-substring", "non-matching-substring"):
+    _, body_children = _split_sort_children(instruction)
+    body = _mark_tail(_compile_sequence(body_children, context, module))
+    return _ForEachPlan(
+        instruction=instruction,
+        expression=compile_xpath(select, context, location=instruction.location),
+        sorts=_compile_sort_keys(instruction, context, module),
+        children=body,
+    )
+
+
+def _compile_contained_merge(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    raise XsltStaticError(
+        f"xsl:{instruction.local_name} is only permitted in a containing merge instruction",
+        code="XTSE0010",
+        uri=context.uri,
+        location=instruction.location,
+    )
+
+
+def _compile_legacy_stream(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    raise XsltStaticError(
+        "xsl:stream was renamed to xsl:source-document in XSLT 3.0",
+        code="XTSE0010",
+        uri=context.uri,
+        location=instruction.location,
+    )
+
+
+def _compile_contained_sort(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    raise XsltStaticError(
+        f"xsl:{instruction.local_name} is only permitted in a containing instruction",
+        code="XTSE0010",
+        uri=context.uri,
+        location=instruction.location,
+    )
+
+
+def _compile_param(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    name = instruction.attribute("name")
+    if not name:
         raise XsltStaticError(
-            f"xsl:{local} is only permitted inside xsl:analyze-string",
+            "xsl:param requires a name",
             code="XTSE0010",
             uri=context.uri,
-            location=location,
+            location=instruction.location,
         )
-    if local == "number":
-        return _compile_number(instruction, context, module)
-    if local == "choose":
-        branches: list[tuple[CompiledExpression, tuple[_Plan, ...]]] = []
-        otherwise: tuple[_Plan, ...] | None = None
-        for child in instruction.children:
-            if isinstance(child, TextNode):
-                raise XsltStaticError(
-                    "xsl:choose permits only xsl:when and xsl:otherwise children",
-                    code="XTSE0010",
-                    uri=context.uri,
-                    location=child.location,
-                )
-            if child.is_xslt and child.local_name == "when":
-                test = child.attribute("test")
-                if test is None:
-                    raise XsltStaticError(
-                        "xsl:when requires a test attribute",
-                        code="XTSE0010",
-                        uri=context.uri,
-                        location=child.location,
-                    )
-                branches.append(
-                    (
-                        compile_xpath(test, context, location=child.location),
-                        _compile_sequence(child.children, context, module),
-                    )
-                )
-                continue
-            if child.is_xslt and child.local_name == "otherwise":
-                if otherwise is not None:
-                    raise XsltStaticError(
-                        "xsl:choose permits at most one xsl:otherwise",
-                        code="XTSE0010",
-                        uri=context.uri,
-                        location=child.location,
-                    )
-                otherwise = _compile_sequence(child.children, context, module)
-                continue
+    required = _attribute_yes_no(instruction, "required", context)
+    tunnel = _attribute_yes_no(instruction, "tunnel", context)
+    select = instruction.attribute("select")
+    children = _compile_sequence(instruction.children, context, module)
+    if select is not None and _has_plan_content(children):
+        raise XsltStaticError(
+            "a parameter with a select attribute must have empty content",
+            code="XTSE0620",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    if required and (select is not None or _has_plan_content(children)):
+        raise XsltStaticError(
+            "a required parameter must not have a default value",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    as_source = instruction.attribute("as")
+    return _ParamPlan(
+        instruction=instruction,
+        name=_expanded_name(name, instruction.namespaces),
+        required=required,
+        tunnel=tunnel,
+        expression=(
+            compile_xpath(select, context, location=instruction.location)
+            if select is not None
+            else None
+        ),
+        children=children,
+        has_as=as_source is not None,
+        sequence_type=(
+            compile_sequence_type(as_source, context, location=instruction.location)
+            if as_source is not None
+            else None
+        ),
+    )
+
+
+def _compile_variable(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    name = instruction.attribute("name")
+    if not name:
+        raise XsltStaticError(
+            "xsl:variable requires a name",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    select = instruction.attribute("select")
+    children = _compile_sequence(instruction.children, context, module)
+    if select is not None and _has_plan_content(children):
+        raise XsltStaticError(
+            "a variable with a select attribute must have empty content",
+            code="XTSE0620",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    as_source = instruction.attribute("as")
+    return _VariablePlan(
+        instruction=instruction,
+        name=_expanded_name(name, instruction.namespaces),
+        expression=(
+            compile_xpath(select, context, location=instruction.location)
+            if select is not None
+            else None
+        ),
+        children=children,
+        has_as=as_source is not None,
+        sequence_type=(
+            compile_sequence_type(as_source, context, location=instruction.location)
+            if as_source is not None
+            else None
+        ),
+    )
+
+
+def _compile_attribute(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    name = instruction.attribute("name")
+    if not name:
+        raise XsltStaticError(
+            "xsl:attribute requires a name",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    select = instruction.attribute("select")
+    children = _compile_sequence(instruction.children, context, module)
+    if select is not None and _has_plan_content(children):
+        raise XsltStaticError(
+            "an attribute with a select attribute must have empty content",
+            code="XTSE0620",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    validation, type_name = _compile_construction_validation(
+        instruction,
+        context,
+        label="xsl:attribute",
+        attribute=True,
+    )
+    separator = instruction.attribute("separator")
+    return _AttributePlan(
+        instruction=instruction,
+        name=compile_avt(name, context, location=instruction.location),
+        namespaces=instruction.namespaces,
+        expression=(
+            compile_xpath(select, context, location=instruction.location)
+            if select is not None
+            else None
+        ),
+        children=children,
+        namespace=(
+            compile_avt(
+                instruction.attribute("namespace") or "",
+                context,
+                location=instruction.location,
+            )
+            if instruction.attribute("namespace") is not None
+            else None
+        ),
+        separator=(
+            compile_avt(separator, context, location=instruction.location)
+            if separator is not None
+            else " "
+        ),
+        validation=validation,
+        type_name=type_name,
+    )
+
+
+def _compile_overriding(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    return _OverridingPlan(
+        instruction=instruction,
+        kind=cast(Literal["next-match", "apply-imports"], instruction.local_name),
+        parameters=_compile_with_params(instruction, context, module),
+    )
+
+
+def _compile_result_document(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    href = instruction.attribute("href")
+    method = instruction.attribute("method")
+    build_tree = instruction.attribute("build-tree")
+    format_name = instruction.attribute("format")
+    extra_attributes: list[tuple[str, str | CompiledValueTemplate]] = []
+    for attribute in instruction.attributes:
+        if attribute.name in {
+            "href",
+            "method",
+            "build-tree",
+            "format",
+            "type",
+            "validation",
+        }:
+            continue
+        extra_attributes.append(
+            (
+                attribute.name,
+                compile_avt(attribute.value, context, location=instruction.location),
+            )
+        )
+    validation, type_name = _compile_construction_validation(
+        instruction,
+        context,
+        label="xsl:result-document",
+    )
+    return _ResultDocumentPlan(
+        instruction=instruction,
+        href=(
+            compile_avt(href, context, location=instruction.location) if href is not None else ""
+        ),
+        method=(
+            compile_avt(method, context, location=instruction.location)
+            if method is not None
+            else None
+        ),
+        build_tree=(
+            compile_avt(build_tree, context, location=instruction.location)
+            if build_tree is not None
+            else None
+        ),
+        format=(
+            compile_avt(format_name, context, location=instruction.location)
+            if format_name is not None
+            else None
+        ),
+        attributes=tuple(extra_attributes),
+        children=_compile_sequence(instruction.children, context, module),
+        validation=validation,
+        type_name=type_name,
+    )
+
+
+def _compile_analyze_string_part(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    raise XsltStaticError(
+        f"xsl:{instruction.local_name} is only permitted inside xsl:analyze-string",
+        code="XTSE0010",
+        uri=context.uri,
+        location=instruction.location,
+    )
+
+
+def _compile_choose(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    branches: list[tuple[CompiledExpression, tuple[_Plan, ...]]] = []
+    otherwise: tuple[_Plan, ...] | None = None
+    for child in instruction.children:
+        if isinstance(child, TextNode):
             raise XsltStaticError(
                 "xsl:choose permits only xsl:when and xsl:otherwise children",
                 code="XTSE0010",
                 uri=context.uri,
                 location=child.location,
             )
-        return _ChoosePlan(
-            instruction=instruction,
-            branches=tuple(branches),
-            otherwise=otherwise,
-        )
-    if local == "if":
-        test = instruction.attribute("test")
-        if test is None:
-            raise XsltStaticError(
-                "xsl:if requires a test attribute",
-                code="XTSE0010",
-                uri=context.uri,
-                location=location,
-            )
-        return _ChoosePlan(
-            instruction=instruction,
-            branches=(
+        if child.is_xslt and child.local_name == "when":
+            test = child.attribute("test")
+            if test is None:
+                raise XsltStaticError(
+                    "xsl:when requires a test attribute",
+                    code="XTSE0010",
+                    uri=context.uri,
+                    location=child.location,
+                )
+            branches.append(
                 (
-                    compile_xpath(test, context, location=location),
-                    _compile_sequence(instruction.children, context, module),
-                ),
-            ),
-            otherwise=None,
-        )
-    if local == "try":
-        return _compile_try(instruction, context, module)
-    if local == "catch":
+                    compile_xpath(test, context, location=child.location),
+                    _compile_sequence(child.children, context, module),
+                )
+            )
+            continue
+        if child.is_xslt and child.local_name == "otherwise":
+            if otherwise is not None:
+                raise XsltStaticError(
+                    "xsl:choose permits at most one xsl:otherwise",
+                    code="XTSE0010",
+                    uri=context.uri,
+                    location=child.location,
+                )
+            otherwise = _compile_sequence(child.children, context, module)
+            continue
         raise XsltStaticError(
-            "xsl:catch is only permitted inside xsl:try",
+            "xsl:choose permits only xsl:when and xsl:otherwise children",
             code="XTSE0010",
             uri=context.uri,
-            location=location,
+            location=child.location,
         )
-    if local == "map":
-        if instruction.attribute("select") is not None:
-            raise XsltStaticError(
-                "xsl:map does not have a select attribute",
-                code="XTSE0010",
-                uri=context.uri,
-                location=location,
-            )
-        return _MapPlan(
-            instruction=instruction,
-            children=_compile_sequence(instruction.children, context, module),
+    return _ChoosePlan(
+        instruction=instruction,
+        branches=tuple(branches),
+        otherwise=otherwise,
+    )
+
+
+def _compile_if(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    test = instruction.attribute("test")
+    if test is None:
+        raise XsltStaticError(
+            "xsl:if requires a test attribute",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
         )
-    if local == "map-entry":
-        key = instruction.attribute("key")
-        if key is None:
-            raise XsltStaticError(
-                "xsl:map-entry requires a key attribute",
-                code="XTSE0010",
-                uri=context.uri,
-                location=location,
-            )
-        select = instruction.attribute("select")
-        children = _compile_sequence(instruction.children, context, module)
-        if select is not None and _has_plan_content(children, allow_fallback=True):
-            raise XsltStaticError(
-                "xsl:map-entry with a select attribute must have empty content except "
-                "for xsl:fallback",
-                code="XTSE3280",
-                uri=context.uri,
-                location=location,
-            )
-        return _MapEntryPlan(
-            instruction=instruction,
-            key=compile_xpath(key, context, location=location),
-            expression=(
-                compile_xpath(select, context, location=location) if select is not None else None
+    return _ChoosePlan(
+        instruction=instruction,
+        branches=(
+            (
+                compile_xpath(test, context, location=instruction.location),
+                _compile_sequence(instruction.children, context, module),
             ),
-            children=children,
+        ),
+        otherwise=None,
+    )
+
+
+def _compile_stray_catch(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    raise XsltStaticError(
+        "xsl:catch is only permitted inside xsl:try",
+        code="XTSE0010",
+        uri=context.uri,
+        location=instruction.location,
+    )
+
+
+def _compile_map(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    if instruction.attribute("select") is not None:
+        raise XsltStaticError(
+            "xsl:map does not have a select attribute",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
         )
-    if local == "evaluate":
-        return _compile_evaluate(instruction, context, module)
-    if local == "assert":
-        test = instruction.attribute("test")
-        if test is None:
-            raise XsltStaticError(
-                "xsl:assert requires a test attribute",
-                code="XTSE0010",
-                uri=context.uri,
-                location=location,
-            )
-        select = instruction.attribute("select")
-        error_code = instruction.attribute("error-code")
-        return _AssertPlan(
-            instruction=instruction,
-            test=compile_xpath(test, context, location=location),
-            select=(
-                compile_xpath(select, context, location=location) if select is not None else None
-            ),
-            children=_compile_sequence(instruction.children, context, module),
-            error_code=(
-                compile_avt(error_code, context, location=location)
-                if error_code is not None
-                else None
-            ),
-            enabled=_assertion_checking_enabled(context),
+    return _MapPlan(
+        instruction=instruction,
+        children=_compile_sequence(instruction.children, context, module),
+    )
+
+
+def _compile_map_entry(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    key = instruction.attribute("key")
+    if key is None:
+        raise XsltStaticError(
+            "xsl:map-entry requires a key attribute",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
         )
-    if local == "where-populated":
-        if instruction.attribute("select") is not None:
-            raise XsltStaticError(
-                "xsl:where-populated does not have a select attribute",
-                code="XTSE0010",
-                uri=context.uri,
-                location=location,
-            )
-        return _WherePopulatedPlan(
-            instruction=instruction,
-            children=_compile_sequence(instruction.children, context, module),
+    select = instruction.attribute("select")
+    children = _compile_sequence(instruction.children, context, module)
+    if select is not None and _has_plan_content(children, allow_fallback=True):
+        raise XsltStaticError(
+            "xsl:map-entry with a select attribute must have empty content except for xsl:fallback",
+            code="XTSE3280",
+            uri=context.uri,
+            location=instruction.location,
         )
-    if local in ("on-empty", "on-non-empty"):
-        select = instruction.attribute("select")
-        children = _compile_sequence(instruction.children, context, module)
-        if select is not None and _has_plan_content(children, allow_fallback=True):
-            raise XsltStaticError(
-                f"xsl:{local} with a select attribute must have empty content except "
-                "for xsl:fallback",
-                code="XTSE3185",
-                uri=context.uri,
-                location=location,
-            )
-        plan_type = _OnEmptyPlan if local == "on-empty" else _OnNonEmptyPlan
-        return plan_type(
-            instruction=instruction,
-            expression=(
-                compile_xpath(select, context, location=location) if select is not None else None
-            ),
-            children=children,
-        )
-    if local == "fallback":
-        return _FallbackPlan(
-            instruction=instruction,
-            children=_compile_sequence(instruction.children, context, module),
-        )
-    if local == "call-template":
-        reference = instruction.reference
-        if reference is None:
-            raise XsltStaticError(
-                "xsl:call-template requires a visible named template",
-                code="XTSE0650",
-                uri=context.uri,
-                location=location,
-            )
-        return _CallTemplatePlan(
-            instruction=instruction,
-            reference=reference,
-            parameters=_compile_with_params(instruction, context, module),
-        )
-    if local == "apply-templates":
-        select = instruction.attribute("select")
-        expression = (
-            compile_xpath(select, context, location=location)
+    return _MapEntryPlan(
+        instruction=instruction,
+        key=compile_xpath(key, context, location=instruction.location),
+        expression=(
+            compile_xpath(select, context, location=instruction.location)
             if select is not None
-            else compile_xpath("child::node()", context, location=location)
-        )
-        _, remaining = _split_sort_children(instruction)
-        return _ApplyTemplatesPlan(
-            instruction=instruction,
-            expression=expression,
-            mode=_instruction_mode(instruction),
-            parameters=_compile_with_params(
-                instruction,
-                context,
-                module,
-                children=remaining,
-            ),
-            sorts=_compile_sort_keys(instruction, context, module),
-        )
-    if local == "with-param":
+            else None
+        ),
+        children=children,
+    )
+
+
+def _compile_assert(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    test = instruction.attribute("test")
+    if test is None:
         raise XsltStaticError(
-            "xsl:with-param is only permitted inside a call or apply instruction",
+            "xsl:assert requires a test attribute",
             code="XTSE0010",
             uri=context.uri,
-            location=location,
+            location=instruction.location,
         )
+    select = instruction.attribute("select")
+    error_code = instruction.attribute("error-code")
+    return _AssertPlan(
+        instruction=instruction,
+        test=compile_xpath(test, context, location=instruction.location),
+        select=(
+            compile_xpath(select, context, location=instruction.location)
+            if select is not None
+            else None
+        ),
+        children=_compile_sequence(instruction.children, context, module),
+        error_code=(
+            compile_avt(error_code, context, location=instruction.location)
+            if error_code is not None
+            else None
+        ),
+        enabled=_assertion_checking_enabled(context),
+    )
+
+
+def _compile_where_populated(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    if instruction.attribute("select") is not None:
+        raise XsltStaticError(
+            "xsl:where-populated does not have a select attribute",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    return _WherePopulatedPlan(
+        instruction=instruction,
+        children=_compile_sequence(instruction.children, context, module),
+    )
+
+
+def _compile_conditional_content(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    select = instruction.attribute("select")
+    children = _compile_sequence(instruction.children, context, module)
+    if select is not None and _has_plan_content(children, allow_fallback=True):
+        raise XsltStaticError(
+            f"xsl:{instruction.local_name} with a select attribute must have empty content "
+            "except for xsl:fallback",
+            code="XTSE3185",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    plan_type = _OnEmptyPlan if instruction.local_name == "on-empty" else _OnNonEmptyPlan
+    return plan_type(
+        instruction=instruction,
+        expression=(
+            compile_xpath(select, context, location=instruction.location)
+            if select is not None
+            else None
+        ),
+        children=children,
+    )
+
+
+def _compile_fallback(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    return _FallbackPlan(
+        instruction=instruction,
+        children=_compile_sequence(instruction.children, context, module),
+    )
+
+
+def _compile_call_template(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    reference = instruction.reference
+    if reference is None:
+        raise XsltStaticError(
+            "xsl:call-template requires a visible named template",
+            code="XTSE0650",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    return _CallTemplatePlan(
+        instruction=instruction,
+        reference=reference,
+        parameters=_compile_with_params(instruction, context, module),
+    )
+
+
+def _compile_apply_templates(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    select = instruction.attribute("select")
+    expression = (
+        compile_xpath(select, context, location=instruction.location)
+        if select is not None
+        else compile_xpath("child::node()", context, location=instruction.location)
+    )
+    _, remaining = _split_sort_children(instruction)
+    return _ApplyTemplatesPlan(
+        instruction=instruction,
+        expression=expression,
+        mode=_instruction_mode(instruction),
+        parameters=_compile_with_params(
+            instruction,
+            context,
+            module,
+            children=remaining,
+        ),
+        sorts=_compile_sort_keys(instruction, context, module),
+    )
+
+
+def _compile_stray_with_param(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    raise XsltStaticError(
+        "xsl:with-param is only permitted inside a call or apply instruction",
+        code="XTSE0010",
+        uri=context.uri,
+        location=instruction.location,
+    )
+
+
+def _compile_unhandled_instruction(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    """Compile an instruction with no registered family compiler.
+
+    Forwards-compatible names keep the fallback handling; every other known
+    XSLT 3.0 element still compiles its expression attributes and content before
+    reporting the explicit unsupported plan.
+    """
+    local = instruction.local_name
     if instruction.is_xslt and local not in _XSLT30_ELEMENTS:
         return _compile_forward_instruction(instruction, context, module)
     select = instruction.attribute("select")
     if select is not None:
-        compile_xpath(select, context, location=location)
+        compile_xpath(select, context, location=instruction.location)
     test = instruction.attribute("test")
     if test is not None:
-        compile_xpath(test, context, location=location)
+        compile_xpath(test, context, location=instruction.location)
     _compile_sequence(instruction.children, context, module)
     return _UnsupportedPlan(instruction)
 
@@ -4222,6 +4434,61 @@ def _compile_evaluate(
         default_namespace=context.xpath_default_namespace,
         functions=_dynamic_function_declarations(context),
     )
+
+
+#: Every instruction family, keyed by expanded XSLT name.  Literal result
+#: elements and unregistered instructions stay outside this table.
+_INSTRUCTION_COMPILERS: Mapping[str, InstructionCompiler] = {
+    instruction_name("analyze-string"): _compile_analyze_string,
+    instruction_name("apply-imports"): _compile_overriding,
+    instruction_name("apply-templates"): _compile_apply_templates,
+    instruction_name("assert"): _compile_assert,
+    instruction_name("attribute"): _compile_attribute,
+    instruction_name("break"): _compile_break,
+    instruction_name("call-template"): _compile_call_template,
+    instruction_name("catch"): _compile_stray_catch,
+    instruction_name("choose"): _compile_choose,
+    instruction_name("copy"): _compile_copy,
+    instruction_name("copy-of"): _compile_copy_of,
+    instruction_name("document"): _compile_document,
+    instruction_name("element"): _compile_element,
+    instruction_name("evaluate"): _compile_evaluate,
+    instruction_name("fallback"): _compile_fallback,
+    instruction_name("for-each"): _compile_for_each,
+    instruction_name("for-each-group"): _compile_for_each_group,
+    instruction_name("fork"): _compile_fork,
+    instruction_name("if"): _compile_if,
+    instruction_name("iterate"): _compile_iterate,
+    instruction_name("map"): _compile_map,
+    instruction_name("map-entry"): _compile_map_entry,
+    instruction_name("matching-substring"): _compile_analyze_string_part,
+    instruction_name("merge"): _compile_merge,
+    instruction_name("merge-action"): _compile_contained_merge,
+    instruction_name("merge-key"): _compile_contained_merge,
+    instruction_name("merge-source"): _compile_contained_merge,
+    instruction_name("next-iteration"): _compile_next_iteration,
+    instruction_name("next-match"): _compile_overriding,
+    instruction_name("non-matching-substring"): _compile_analyze_string_part,
+    instruction_name("number"): _compile_number,
+    instruction_name("on-completion"): _compile_contained_sort,
+    instruction_name("on-empty"): _compile_conditional_content,
+    instruction_name("on-non-empty"): _compile_conditional_content,
+    instruction_name("param"): _compile_param,
+    instruction_name("perform-sort"): _compile_perform_sort,
+    instruction_name("result-document"): _compile_result_document,
+    instruction_name("sequence"): _compile_sequence_instruction,
+    instruction_name("sort"): _compile_contained_sort,
+    instruction_name("source-document"): _compile_source_document,
+    instruction_name("stream"): _compile_legacy_stream,
+    instruction_name("text"): _compile_text,
+    instruction_name("try"): _compile_try,
+    instruction_name("value-of"): _compile_value_of,
+    instruction_name("variable"): _compile_variable,
+    instruction_name("where-populated"): _compile_where_populated,
+    instruction_name("with-param"): _compile_stray_with_param,
+}
+
+register_instruction_compilers(_INSTRUCTION_COMPILERS)
 
 
 def _forwards_compatible(version: str) -> bool:

@@ -961,6 +961,80 @@ def test_unsupported_instruction_with_select_attribute_is_compiled() -> None:
         compiled.transform(initial_template="main")
 
 
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ('<xsl:value-of select="1 + 1"/>', "2"),
+        ('<xsl:text expand-text="yes">{1 + 1}</xsl:text>', "2"),
+        ("<xsl:sequence select=\"'s'\"/>", "s"),
+        ('<xsl:if test="true()">i</xsl:if>', "i"),
+        ('<xsl:choose><xsl:when test="true()">c</xsl:when></xsl:choose>', "c"),
+        ('<xsl:for-each select="1">f</xsl:for-each>', "f"),
+        ("<out>l</out>", "<out>l</out>"),
+        ('<xsl:element name="e">e</xsl:element>', "<e>e</e>"),
+        ("<xsl:document><d>d</d></xsl:document>", "<d>d</d>"),
+        ("<xsl:copy-of select=\"'copied'\"/>", "copied"),
+    ],
+)
+def test_instruction_dispatch_preserves_family_results(body: str, expected: str) -> None:
+    compiled = compile_bytes(xsl(f'<xsl:template name="main">{body}</xsl:template>'))
+
+    assert _xml(compiled.transform(initial_template="main").principal_tree) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "code", "element"),
+    [
+        ('<xsl:value-of select="+"><x/></xsl:value-of>', "XTSE0870", "value-of"),
+        ('<xsl:sequence select="+"><x/></xsl:sequence>', "XTSE3185", "sequence"),
+        ('<xsl:element><xsl:sequence select="+"/></xsl:element>', "XTSE0010", "element"),
+        ('<xsl:param select="+"><x/></xsl:param>', "XTSE0010", "param"),
+        ('<xsl:attribute><xsl:sequence select="+"/></xsl:attribute>', "XTSE0010", "attribute"),
+        ('<xsl:map-entry select="+"/>', "XTSE0010", "map-entry"),
+        ('<xsl:message select="+"/>', "XPST0003", "message"),
+        ("<xsl:catch/>", "XTSE0010", "catch"),
+        ('<xsl:with-param name="p"/>', "XTSE0010", "with-param"),
+        ("<xsl:sort/>", "XTSE0010", "sort"),
+        ("<xsl:merge-key/>", "XTSE0010", "merge-key"),
+        ("<xsl:stream/>", "XTSE0010", "stream"),
+        ("<xsl:matching-substring/>", "XTSE0010", "matching-substring"),
+    ],
+)
+def test_instruction_dispatch_preserves_static_error_precedence(
+    body: str, code: str, element: str
+) -> None:
+    with pytest.raises(XsltStaticError) as error:
+        compile_bytes(xsl(f'<xsl:template match="/">{body}</xsl:template>'))
+
+    assert error.value.code == code
+    location = error.value.location
+    assert location is not None
+    assert location.path[-1].name == f"{{{XSLT_NS}}}{element}"
+
+
+def test_instruction_dispatch_keeps_unsupported_and_forward_paths_explicit() -> None:
+    unsupported = compile_bytes(
+        xsl('<xsl:template name="main"><xsl:comment>text</xsl:comment></xsl:template>')
+    )
+    with pytest.raises(XsltError, match="not supported"):
+        unsupported.transform(initial_template="main", delivery="raw")
+
+    forward = compile_bytes(
+        xsl(
+            '<xsl:template name="main"><xsl:unknown><xsl:fallback>'
+            '<xsl:sequence select="1"/></xsl:fallback></xsl:unknown></xsl:template>',
+            version="4.0",
+        )
+    )
+    assert forward.transform(initial_template="main", delivery="raw").principal == (
+        XdmAtomic.integer(1),
+    )
+
+    with pytest.raises(XsltStaticError) as error:
+        compile_bytes(xsl('<xsl:template match="/"><xsl:unknown/></xsl:template>'))
+    assert error.value.code == "XTSE0010"
+
+
 def test_parameter_defaults_and_context_item() -> None:
     compiled = compile_bytes(
         xsl(
