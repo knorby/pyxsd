@@ -23,22 +23,24 @@ from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xdm.values import XdmAtomic, XdmMap
 from pyxsd.xpath.environment import ExpressionEnvironment
 from pyxsd.xslt.compiler.context import StaticContext, StaticVariable
-from pyxsd.xslt.compiler.patterns import (
+from pyxsd.xslt.compiler.pattern_syntax import (
     AxisStep,
+    NameTest,
+    RelativePath,
+    _error_code,
+)
+from pyxsd.xslt.compiler.patterns import (
     CandidateFilter,
     CandidateShape,
     CompiledPattern,
-    NameTest,
     PatternAlternative,
     PatternMatcher,
     PatternStatistics,
-    RelativePath,
     _axis_nodes,
     _builtin_class,
     _builtin_derives,
     _declaration_key,
     _effective_boolean_value,
-    _error_code,
     _is_descendant_or_self,
     _local_name,
     _namespace_of,
