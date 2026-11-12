@@ -13,9 +13,11 @@ import io
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from functools import partial
 from typing import Any
 
 import pytest
+from tests.xslt.support import stylesheet as _shared_stylesheet
 
 from pyxsd.xdm import XdmAtomic, XdmMap
 from pyxsd.xdm.annotations import OccurrenceAnnotation
@@ -183,11 +185,7 @@ def _stylesheet(body: str, *, attributes: str = "") -> bytes:
     ).encode()
 
 
-def _stylesheet_without_schema(body: str, *, attributes: str = "") -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'xmlns:v="{VAL}" version="3.0"{attributes}>{body}</xsl:stylesheet>'
-    ).encode()
+_stylesheet_without_schema = partial(_shared_stylesheet, namespaces={"v": VAL})
 
 
 def _compile(body: str, *, attributes: str = "", **options: Any):

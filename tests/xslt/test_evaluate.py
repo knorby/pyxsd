@@ -8,10 +8,12 @@ depends on the pinned conformance corpus.
 from __future__ import annotations
 
 import io
+from functools import partial
 from typing import Any
 
 import pytest
 from elementpath.datatypes import QName
+from tests.xslt.support import transform as _shared_transform
 
 from pyxsd.schema import Schema
 from pyxsd.xdm import XdmAtomic, XdmMap, as_xdm
@@ -53,17 +55,7 @@ def compiled(
     )
 
 
-def transform(
-    source: bytes,
-    input_source: bytes | None = None,
-    *,
-    delivery: str = "raw",
-    **options: Any,
-):
-    stylesheet_ = compiled(source)
-    if input_source is None:
-        return stylesheet_.transform(delivery=delivery, **options)
-    return stylesheet_.transform(source=input_source, delivery=delivery, **options)
+transform = partial(_shared_transform, delivery="raw")
 
 
 def error_code(call: Any) -> str | None:

@@ -12,10 +12,12 @@ behavior plus the compiled stylesheet's public ``schema_pool``.
 from __future__ import annotations
 
 import io
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.xslt.support import stylesheet as _shared_stylesheet
 
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.xslt import XsltProcessor
@@ -28,12 +30,7 @@ INVOICE = "urn:example:invoice"
 OTHER = "urn:example:other"
 
 
-def _stylesheet(body: str, *, attributes: str = "") -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'xmlns:inv="{INVOICE}" xmlns:o="{OTHER}" version="3.0"{attributes}>'
-        f"{body}</xsl:stylesheet>"
-    ).encode()
+_stylesheet = partial(_shared_stylesheet, namespaces={"inv": INVOICE, "o": OTHER})
 
 
 def _compile(source: Any, **options: Any):

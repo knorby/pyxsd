@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import io
 from decimal import Decimal
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.xslt.support import stylesheet as _shared_stylesheet
 
 from pyxsd.resource_policy import ResourceData
 from pyxsd.schema import Schema
@@ -228,12 +230,7 @@ NESTED_XSD = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{INVOICE}"
 </xs:schema>"""
 
 
-def _stylesheet(body: str, *, attributes: str = "") -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'xmlns:inv="{INVOICE}" version="3.0"{attributes}>'
-        f"{body}</xsl:stylesheet>"
-    ).encode()
+_stylesheet = partial(_shared_stylesheet, namespaces={"inv": INVOICE})
 
 
 def _import_schema(schema: str = INVOICE_XSD) -> str:

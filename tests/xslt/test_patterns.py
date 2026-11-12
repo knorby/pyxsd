@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.xslt.support import element_children as _element_children
 
 from pyxsd.binding import ParseModes
 from pyxsd.xdm.annotations import capture_schema_annotations
@@ -92,10 +93,6 @@ def _matches(
 
 def _document(xml: str) -> XdmDocument:
     return XdmDocument.parse(xml.encode("utf-8"))
-
-
-def _element_children(node: XdmNode) -> tuple[XdmNode, ...]:
-    return tuple(child for child in node.children if child.kind is NodeKind.ELEMENT)
 
 
 def _standalone_element(xml: str) -> XdmNode:

@@ -14,11 +14,13 @@ import dataclasses
 import io
 import sys
 from collections.abc import Mapping
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import pytest
 from elementpath.exceptions import MissingContextError
+from tests.xslt.support import stylesheet as _shared_stylesheet
 
 from pyxsd import xsd_data_types as xsd
 from pyxsd.locations import IssueLocation, PathStep
@@ -120,11 +122,7 @@ _IntegerNamedString.__name__ = "string"
 _BooleanNamedString.__name__ = "string"
 
 
-def _stylesheet(body: str) -> bytes:
-    return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
-        f'xmlns:my="{MY_NS}" version="3.0">{body}</xsl:stylesheet>'
-    ).encode()
+_stylesheet = partial(_shared_stylesheet, namespaces={"my": MY_NS})
 
 
 NAMED_TAIL = _stylesheet(

@@ -8,8 +8,9 @@ cache hits so an accidental whole-tree scan fails deterministically.
 from __future__ import annotations
 
 import pytest
+from tests.xslt.support import element_children as _element_children
 
-from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
+from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xdm.values import XdmAtomic
 from pyxsd.xpath.environment import ExpressionEnvironment
 from pyxsd.xslt.compiler.context import StaticContext
@@ -23,10 +24,6 @@ def _context() -> StaticContext:
 
 def _rule(pattern: str, order: int) -> TemplateRule:
     return TemplateRule(compile_pattern(pattern, _context()), declaration_order=order)
-
-
-def _element_children(node: XdmNode) -> tuple[XdmNode, ...]:
-    return tuple(child for child in node.children if child.kind is NodeKind.ELEMENT)
 
 
 def test_common_dispatch_avoids_equivalent_expression_scans() -> None:

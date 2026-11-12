@@ -11,10 +11,11 @@ from dataclasses import FrozenInstanceError
 from types import MappingProxyType
 
 import pytest
+from tests.xslt.support import element_children as _element_children
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmMap
-from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
+from pyxsd.xdm.nodes import NodeKind, XdmDocument
 from pyxsd.xslt.errors import XsltError
 from pyxsd.xslt.results import (
     Message,
@@ -41,10 +42,6 @@ def _factory() -> _NodeFactory:
 
 def _document(xml: bytes) -> XdmDocument:
     return XdmDocument.parse(xml)
-
-
-def _element_children(node: XdmNode) -> tuple[XdmNode, ...]:
-    return tuple(child for child in node.children if child.kind is NodeKind.ELEMENT)
 
 
 def test_result_entry_normalizes_and_freezes_views() -> None:

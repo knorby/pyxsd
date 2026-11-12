@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.xslt.support import element_children as _element_children
 
 from pyxsd.document import Document
 from pyxsd.schema import Schema
@@ -60,10 +61,6 @@ def compile_bytes(
         static_parameters=static_parameters,
         schema=schema,
     )
-
-
-def _element_children(node: XdmNode) -> tuple[XdmNode, ...]:
-    return tuple(child for child in node.children if child.kind is NodeKind.ELEMENT)
 
 
 def _text(node: XdmNode) -> str:
