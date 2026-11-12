@@ -318,6 +318,7 @@ def _assess_element(
     )
     if declaration is None:
         declaration = _element_declaration(schema_pool, node.name)
+    governing_declaration = _governing_declaration(declaration, adapter)
     nilled = _nilled_state(node, error_type=error_type, reason=reason)
     if nilled:
         if declaration is None or not declaration.isNillable():
@@ -335,7 +336,11 @@ def _assess_element(
                 reason,
             )
     if getattr(adapter, "name", None) == _ANY_TYPE:
-        _annotate_any_type(node)
+        _annotate_any_type(
+            node,
+            nilled=nilled,
+            governing_declaration=governing_declaration,
+        )
         _lax_validate_children(
             node,
             schema_pool,
@@ -348,6 +353,8 @@ def _assess_element(
             node,
             adapter,
             nilled=nilled,
+            declaration=declaration,
+            governing_declaration=governing_declaration,
             error_type=error_type,
             reason=reason,
         )
@@ -387,7 +394,7 @@ def _assess_element(
                     capture,
                     type_class,
                     instance,
-                    declaration=_governing_declaration(declaration, adapter),
+                    declaration=governing_declaration,
                     nilled=nilled,
                 )
             capture.finish(report)
@@ -639,10 +646,19 @@ def _validate_simple_element(
     adapter: Any,
     *,
     nilled: bool,
+    declaration: Any = None,
+    governing_declaration: Any = None,
     error_type: type[XdmInputError] = ConstructedValidationError,
     reason: str = "type",
 ) -> None:
-    """Assess an element occurrence against a simple type definition."""
+    """Assess an element occurrence against a simple type definition.
+
+    A global element declaration's ``default``/``fixed`` value participates
+    exactly as it does in the binder's primitive-root path: empty content takes
+    the declared value, a present value must match ``fixed``, and the
+    occurrence annotation retains the declaration constraints and governing
+    declaration.
+    """
     type_name = adapter.name
     for child in node.children:
         if child.kind is NodeKind.ELEMENT:
@@ -659,6 +675,15 @@ def _validate_simple_element(
                 f"{attribute.name!r}",
                 reason,
             )
+    default_value = _constraint(declaration, "getDefault")
+    fixed_value = _constraint(declaration, "getFixed")
+    has_text = any(child.kind is NodeKind.TEXT for child in node.children)
+    empty = not has_text
+    lexical = node.string_value
+    if empty and fixed_value is not None:
+        lexical = fixed_value
+    elif empty and default_value is not None:
+        lexical = default_value
     if nilled:
         node._apply_occurrence_annotation(
             _element_annotation(
@@ -668,22 +693,42 @@ def _validate_simple_element(
                 typed_values=(),
                 nilled=True,
                 id_kind=id_kind_for(getattr(adapter, "_type_class", None)),
+                default_value=default_value,
+                fixed_value=fixed_value,
+                value_source=_value_source(empty, default_value, fixed_value),
+                governing_declaration=governing_declaration,
             )
         )
         return
-    if not adapter.is_valid(node.string_value):
+    if not adapter.is_valid(lexical):
         raise _occurrence_error(
             error_type,
             f"the element {node.name!r} is not valid against {adapter.name!r}",
             reason,
         )
+    typed = adapter.cast(lexical)
+    if fixed_value is not None and not empty:
+        try:
+            fixed_typed = adapter.cast(fixed_value)
+        except (TypeError, ValueError):  # pragma: no cover - compiled fixed values are valid
+            fixed_typed = None
+        if fixed_typed is not None and xsd_value_key(typed) != xsd_value_key(fixed_typed):
+            raise _occurrence_error(
+                error_type,
+                f"the element {node.name!r} conflicts with its fixed value",
+                reason,
+            )
     node._apply_occurrence_annotation(
         _element_annotation(
             node,
             type_name=type_name,
             actual_type=getattr(adapter, "_type_class", None),
-            typed_values=_atomize(adapter.cast(node.string_value)),
+            typed_values=_atomize(typed),
             id_kind=id_kind_for(getattr(adapter, "_type_class", None)),
+            default_value=default_value,
+            fixed_value=fixed_value,
+            value_source=_value_source(empty, default_value, fixed_value),
+            governing_declaration=governing_declaration,
         )
     )
 
@@ -1096,6 +1141,21 @@ def _add_default_attributes(target: XdmNode, actual_type: Any) -> None:
         existing.add(name)
 
 
+def _value_source(
+    empty: bool,
+    default_value: str | None,
+    fixed_value: str | None,
+) -> str | None:
+    """The annotation's value origin, matching the binder's capture rule."""
+    if empty and fixed_value is not None:
+        return "fixed"
+    if empty and default_value is not None:
+        return "default"
+    if default_value is not None or fixed_value is not None:
+        return "instance"
+    return None
+
+
 def _constraint(descriptor: Any, getter: str) -> str | None:
     method = getattr(descriptor, getter, None)
     if method is None:  # pragma: no cover - attribute descriptors define both
@@ -1207,6 +1267,10 @@ def _element_annotation(
     typed_values: tuple[Any, ...],
     nilled: bool = False,
     id_kind: str | None = None,
+    default_value: str | None = None,
+    fixed_value: str | None = None,
+    value_source: str | None = None,
+    governing_declaration: Any = None,
 ) -> OccurrenceAnnotation:
     evidence = node.annotation
     return OccurrenceAnnotation(
@@ -1221,6 +1285,10 @@ def _element_annotation(
         nil_lexical=getattr(evidence, "nil_lexical", None),
         nil_declared=bool(getattr(evidence, "nil_declared", False)),
         id_kind=id_kind,
+        default_value=default_value,
+        fixed_value=fixed_value,
+        value_source=value_source,
+        governing_declaration=governing_declaration,
     )
 
 
@@ -1246,13 +1314,20 @@ def _attribute_annotation(
     )
 
 
-def _annotate_any_type(node: XdmNode) -> None:
+def _annotate_any_type(
+    node: XdmNode,
+    *,
+    nilled: bool = False,
+    governing_declaration: Any = None,
+) -> None:
     node._apply_occurrence_annotation(
         _element_annotation(
             node,
             type_name=_ANY_TYPE,
             actual_type=xsd.AnyType,
-            typed_values=(XdmAtomic.untyped_atomic(node.string_value),),
+            typed_values=() if nilled else (XdmAtomic.untyped_atomic(node.string_value),),
+            nilled=nilled,
+            governing_declaration=governing_declaration,
         )
     )
 

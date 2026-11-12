@@ -74,6 +74,11 @@ SCHEMA = f"""
   <xs:element name="amount" type="xs:decimal"/>
   <xs:element name="idDoc" type="c:IdDoc"/>
   <xs:element name="implicit"/>
+  <xs:element name="n" type="xs:int" default="7"/>
+  <xs:element name="m" type="xs:int" fixed="7"/>
+  <xs:element name="f" type="xs:string" fixed="bar"/>
+  <xs:element name="d" type="xs:string" default="foo"/>
+  <xs:element name="anyN" type="xs:anyType" nillable="true"/>
 </xs:schema>
 """
 
@@ -102,6 +107,10 @@ IDDOC_DECL_SOURCE = (
 ).encode()
 
 IMPLICIT_SOURCE = f'<c:implicit xmlns:c="{CONSISTENCY}"><c:child/></c:implicit>'.encode()
+
+ANY_NILLED_SOURCE = (
+    f'<c:anyN xmlns:c="{CONSISTENCY}" xmlns:xsi="{XSI_NS}" xsi:nil="true"/>'
+).encode()
 
 
 def _schema_and_pool() -> tuple[Schema, SchemaPool]:
@@ -297,6 +306,100 @@ def test_source_and_constructed_declaration_annotations_agree() -> None:
     assert nil_attribute is not None
     assert constructed_nil_attribute is not None
     assert _signature(nil_attribute) == _signature(constructed_nil_attribute)
+
+
+@pytest.mark.parametrize(
+    ("local", "default", "fixed", "value_source", "typed_value"),
+    [
+        ("n", "7", None, "default", "7"),
+        ("m", None, "7", "fixed", "7"),
+        ("f", None, "bar", "fixed", "bar"),
+        ("d", "foo", None, "default", "foo"),
+    ],
+)
+def test_simple_declaration_defaults_and_fixed_metadata(
+    local: str,
+    default: str | None,
+    fixed: str | None,
+    value_source: str,
+    typed_value: str,
+) -> None:
+    _, pool = _schema_and_pool()
+    source_bytes = f'<c:{local} xmlns:c="{CONSISTENCY}"/>'.encode()
+
+    source = parse_typed_document(source_bytes, schema_pool=pool, validation="strict")
+    constructed = XdmDocument.parse(source_bytes)
+    validate_occurrence(
+        constructed.root_element,
+        ValidationRequest("strict"),
+        schema_pool=pool,
+    )
+
+    _assert_annotations_agree(source.root_element, constructed.root_element)
+    annotation = source.root_element.annotation
+    assert annotation.default_value == default
+    assert annotation.fixed_value == fixed
+    assert annotation.value_source == value_source
+    assert annotation.governing_declaration is not None
+    assert tuple(value.lexical for value in annotation.typed_values) == (typed_value,)
+
+
+def test_simple_declaration_present_fixed_value_metadata() -> None:
+    _, pool = _schema_and_pool()
+    source_bytes = f'<c:f xmlns:c="{CONSISTENCY}">bar</c:f>'.encode()
+
+    source = parse_typed_document(source_bytes, schema_pool=pool, validation="strict")
+    constructed = XdmDocument.parse(source_bytes)
+    validate_occurrence(
+        constructed.root_element,
+        ValidationRequest("strict"),
+        schema_pool=pool,
+    )
+
+    _assert_annotations_agree(source.root_element, constructed.root_element)
+    annotation = source.root_element.annotation
+    assert annotation.fixed_value == "bar"
+    assert annotation.value_source == "instance"
+    assert annotation.governing_declaration is not None
+    assert tuple(value.lexical for value in annotation.typed_values) == ("bar",)
+
+
+def test_simple_declaration_fixed_value_mismatch_is_rejected() -> None:
+    _, pool = _schema_and_pool()
+    source_bytes = f'<c:f xmlns:c="{CONSISTENCY}">wrong</c:f>'.encode()
+
+    with pytest.raises(DocumentValidationError) as source_error:
+        parse_typed_document(source_bytes, schema_pool=pool, validation="strict")
+    assert source_error.value.reason == "invalid"
+
+    with pytest.raises(ConstructedValidationError) as constructed_error:
+        validate_occurrence(
+            XdmDocument.parse(source_bytes).root_element,
+            ValidationRequest("strict"),
+            schema_pool=pool,
+        )
+    assert constructed_error.value.reason == "invalid"
+
+
+def test_nilled_any_type_declarations_keep_nilled_state_and_metadata() -> None:
+    _, pool = _schema_and_pool()
+    any_type = f"{{{XSD_NS}}}anyType"
+
+    source = parse_typed_document(ANY_NILLED_SOURCE, schema_pool=pool, validation="strict")
+    constructed = XdmDocument.parse(ANY_NILLED_SOURCE)
+    validate_occurrence(
+        constructed.root_element,
+        ValidationRequest("strict"),
+        schema_pool=pool,
+    )
+
+    _assert_annotations_agree(source.root_element, constructed.root_element)
+    for node in (source.root_element, constructed.root_element):
+        annotation = node.annotation
+        assert annotation.type_name == any_type
+        assert annotation.nilled is True
+        assert annotation.typed_values == ()
+        assert annotation.governing_declaration is not None
 
 
 def test_declaration_implicit_any_type_uses_any_type_assessment() -> None:
