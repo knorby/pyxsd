@@ -21,12 +21,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from types import MappingProxyType
 from typing import Literal, TypeAlias
 
 from pyxsd.locations import IssueLocation
 from pyxsd.xpath.environment import Focus
 from pyxsd.xslt.errors import XsltDynamicError
+from pyxsd.xslt.runtime.context import EvaluationContext
 
 __all__ = [
     "NO_GROUP",
@@ -187,16 +187,11 @@ class Frame:
     identity: str | None = None
     program: object | None = None
     cursor: object = 0
-    variables: Mapping[str, object] = field(default_factory=dict)
-    tunnel_parameters: Mapping[str, object] = field(default_factory=dict)
-    focus: Focus = field(default_factory=Focus.absent)
+    context: EvaluationContext = field(default_factory=EvaluationContext)
     continuation: Continuation | None = None
     extent: object | None = None
     error_handler: ErrorHandler | None = None
-    package: str | None = None
-    mode: str | None = None
     location: IssueLocation | None = None
-    final_output: bool = True
     tail: bool = False
     values: tuple[object, ...] = ()
     input: object = NO_INPUT
@@ -208,40 +203,54 @@ class Frame:
     def __post_init__(self) -> None:
         if not isinstance(self.kind, str) or not self.kind:
             raise ValueError("a frame requires a non-empty kind")
-        if not isinstance(self.variables, Mapping):
-            raise TypeError("frame variables must be a mapping")
-        object.__setattr__(self, "variables", MappingProxyType(dict(self.variables)))
-        if not isinstance(self.tunnel_parameters, Mapping):
-            raise TypeError("frame tunnel parameters must be a mapping")
-        object.__setattr__(
-            self,
-            "tunnel_parameters",
-            MappingProxyType(dict(self.tunnel_parameters)),
-        )
-        if not isinstance(self.focus, Focus):
-            raise TypeError("a frame focus must be a Focus")
+        if not isinstance(self.context, EvaluationContext):
+            raise TypeError("a frame context must be an EvaluationContext")
         if self.error_handler is not None and not callable(self.error_handler):
             raise TypeError("a frame error handler must be callable")
         if self.conversion is not None and not callable(self.conversion):
             raise TypeError("a frame conversion must be callable")
-        if not isinstance(self.final_output, bool):
-            raise TypeError("final_output must be a boolean")
         if not isinstance(self.tail, bool):
             raise TypeError("tail must be a boolean")
         if not isinstance(self.values, tuple):
             raise TypeError("frame values must be a tuple")
         if self.identity is not None and not isinstance(self.identity, str):
             raise TypeError("a frame identity must be a string or None")
-        if self.package is not None and not isinstance(self.package, str):
-            raise TypeError("a frame package must be a string or None")
-        if self.mode is not None and not isinstance(self.mode, str):
-            raise TypeError("a frame mode must be a string or None")
         if self.location is not None and not isinstance(self.location, IssueLocation):
             raise TypeError("a frame location must be an IssueLocation or None")
         if self.group is not NO_GROUP and not isinstance(self.group, tuple):
             raise TypeError("a frame group must be an XDM sequence or NO_GROUP")
         if self.grouping_key is not NO_GROUP and not isinstance(self.grouping_key, tuple):
             raise TypeError("a frame grouping key must be an XDM sequence or NO_GROUP")
+
+    @property
+    def variables(self) -> Mapping[str, object]:
+        """Lexical variables owned by this frame's evaluation context."""
+        return self.context.locals
+
+    @property
+    def tunnel_parameters(self) -> Mapping[str, object]:
+        """Tunnel parameters owned by this frame's evaluation context."""
+        return self.context.tunnel_parameters
+
+    @property
+    def focus(self) -> Focus:
+        """The context item, position, and size of this frame."""
+        return self.context.focus
+
+    @property
+    def package(self) -> str | None:
+        """The package whose components this frame executes."""
+        return self.context.package_name
+
+    @property
+    def mode(self) -> str | None:
+        """The mode this frame executes in."""
+        return self.context.mode
+
+    @property
+    def final_output(self) -> bool:
+        """Whether this frame produces final rather than temporary output."""
+        return self.context.final_output
 
     def diagnostic(self) -> FrameDiagnostic:
         """One data-only diagnostic entry for this frame."""

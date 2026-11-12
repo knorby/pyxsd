@@ -29,6 +29,7 @@ from pyxsd.xslt.compiler.packages import Component, PackageResolver
 from pyxsd.xslt.compiler.patterns import compile_pattern
 from pyxsd.xslt.errors import XsltError
 from pyxsd.xslt.processor import _ABSENT, _Invocation, _prepare_invocation
+from pyxsd.xslt.runtime.context import EvaluationContext
 from pyxsd.xslt.runtime.templates import (
     PatternIndex,
     RuleDispatcher,
@@ -862,7 +863,10 @@ def test_local_variable_empty_as_and_attribute_set_cycles() -> None:
     assert component is not None
     invocation.evaluating_attribute_sets.append((component.owner, component.name))
     with pytest.raises(XsltError) as caught:
-        invocation._attribute_set_attributes(component, Focus.absent(), None)
+        invocation._attribute_set_attributes(
+            component,
+            EvaluationContext(focus=Focus.absent()),
+        )
     assert caught.value.code == "XTSE0720"
     with pytest.raises(XsltError) as caught:
         invocation._resolve_attribute_set(
@@ -1111,14 +1115,13 @@ def test_unnamed_mode_selector_and_environment_global_lookup() -> None:
             """
         )
     )
-    assert invocation._environment({}, None).variables == {}
+    assert invocation._environment(EvaluationContext()).variables == {}
     component = invocation.stylesheet._package_variables[None][0]
     invocation._global_value(component)
-    environment = invocation._environment({}, None)
+    environment = invocation._environment(EvaluationContext())
     assert environment.variables["g"] == (XdmAtomic.integer(1),)
     shadowed = invocation._environment(
-        {"g": (XdmAtomic.string("local"),)},
-        None,
+        EvaluationContext(locals={"g": (XdmAtomic.string("local"),)}),
         referenced={"g"},
     )
     assert shadowed.variables["g"] == (XdmAtomic.string("local"),)

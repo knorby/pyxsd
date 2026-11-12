@@ -20,6 +20,7 @@ from pyxsd.xslt.compiler.context import StaticContext
 from pyxsd.xslt.compiler.instructions import Instruction, TextNode
 from pyxsd.xslt.errors import XsltError, XsltStaticError
 from pyxsd.xslt.processor import _BreakPlan, _compile_next_iteration, _Invocation
+from pyxsd.xslt.runtime.context import EvaluationContext
 from pyxsd.xslt.runtime.frames import ExecutionLimits, Frame
 from pyxsd.xslt.runtime.iteration import IterationState
 
@@ -953,10 +954,7 @@ def test_direct_execution_of_an_iteration_control_plan_is_a_static_error() -> No
         _Invocation._execute_plan(  # type: ignore[arg-type]
             None,
             plan,
-            focus=Focus.absent(),
-            locals_={},
-            final_output=True,
-            package_name=None,
+            context=EvaluationContext(focus=Focus.absent()),
         )
     assert caught.value.code == "XTSE3120"
 

@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from types import MappingProxyType
-from typing import Any, Literal, TypeAlias, cast
+from typing import Any, Literal, cast
 from urllib.parse import urljoin, urlsplit
 
 from elementpath.datatypes import QName
@@ -85,6 +85,57 @@ from pyxsd.xslt.compiler.patterns import (
     PatternMatcher,
     compile_pattern,
 )
+from pyxsd.xslt.compiler.plans import (
+    _AnalyzeStringPlan,
+    _ApplyTemplatesPlan,
+    _AssertPlan,
+    _AttributePlan,
+    _BodyPlan,
+    _BreakPlan,
+    _CallTemplatePlan,
+    _CatchPlan,
+    _ChoosePlan,
+    _ComponentPlan,
+    _ConcatPlan,
+    _ConditionalSequencePlan,
+    _CopyOfPlan,
+    _CopyPlan,
+    _DocumentPlan,
+    _ElementPlan,
+    _EvaluatePlan,
+    _FallbackPlan,
+    _ForEachGroupPlan,
+    _ForEachPlan,
+    _ForkPlan,
+    _IteratePlan,
+    _LiteralPlan,
+    _MapEntryPlan,
+    _MapPlan,
+    _MergePlan,
+    _MergeSourcePlan,
+    _ModeLayerPlan,
+    _NextIterationPlan,
+    _NumberPlan,
+    _OnEmptyPlan,
+    _OnNonEmptyPlan,
+    _OverridingPlan,
+    _ParamPlan,
+    _PerformSortPlan,
+    _Plan,
+    _RestoreVariablesPlan,
+    _ResultDocumentPlan,
+    _RuleContext,
+    _SequencePlan,
+    _SourceDocumentPlan,
+    _TextPlan,
+    _TryPlan,
+    _TvtPlan,
+    _UnsupportedPlan,
+    _ValueOfPlan,
+    _VariablePlan,
+    _WherePopulatedPlan,
+    _WithParamPlan,
+)
 from pyxsd.xslt.compiler.static import (
     EffectiveAttribute,
     EffectiveElement,
@@ -122,6 +173,7 @@ from pyxsd.xslt.runtime.accumulators import (
     same_context_accumulator_call,
 )
 from pyxsd.xslt.runtime.builder import ResultBuilder, validate_constructed, validate_delivered
+from pyxsd.xslt.runtime.context import EvaluationContext
 from pyxsd.xslt.runtime.evaluate import (
     DynamicExpressionCache,
     StaticContextIdentity,
@@ -337,486 +389,7 @@ class XsltInvocationError(ValueError):
 
 
 # ---------------------------------------------------------------------------
-# Compiled plans
-
-
-@dataclass(frozen=True, slots=True)
-class _TextPlan:
-    value: str
-
-
-@dataclass(frozen=True, slots=True)
-class _TvtPlan:
-    template: CompiledValueTemplate
-
-
-@dataclass(frozen=True, slots=True)
-class _SequencePlan:
-    instruction: Instruction
-    expression: CompiledExpression | None
-    children: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _ValueOfPlan:
-    instruction: Instruction
-    expression: CompiledExpression | None
-    children: tuple[_Plan, ...]
-    separator: str | CompiledValueTemplate
-    explicit_separator: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class _LiteralPlan:
-    instruction: Instruction
-    attributes: tuple[tuple[str, str | CompiledValueTemplate], ...]
-    children: tuple[_Plan, ...]
-    namespaces: tuple[tuple[str, str], ...]
-    attribute_sets: tuple[ComponentReference, ...] = ()
-    validation: str = "strip"
-    type_name: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _ElementPlan:
-    instruction: Instruction
-    name: CompiledValueTemplate
-    namespace: CompiledValueTemplate | None
-    namespaces: Mapping[str, str]
-    children: tuple[_Plan, ...]
-    attribute_sets: tuple[ComponentReference, ...] = ()
-    inherit_namespaces: bool = True
-    validation: str = "strip"
-    type_name: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _DocumentPlan:
-    instruction: Instruction
-    children: tuple[_Plan, ...]
-    validation: str = "strip"
-    type_name: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _CopyPlan:
-    instruction: Instruction
-    select: CompiledExpression | None
-    children: tuple[_Plan, ...]
-    copy_namespaces: bool = True
-    inherit_namespaces: bool = True
-    attribute_sets: tuple[ComponentReference, ...] = ()
-    validation: str = "strip"
-    type_name: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _CopyOfPlan:
-    instruction: Instruction
-    select: CompiledExpression
-    copy_namespaces: bool = True
-    copy_accumulators: bool = False
-    validation: str = "strip"
-    type_name: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _ParamPlan:
-    instruction: Instruction
-    name: str
-    required: bool
-    tunnel: bool
-    expression: CompiledExpression | None
-    children: tuple[_Plan, ...]
-    has_as: bool
-    sequence_type: CompiledSequenceType | None
-
-
-@dataclass(frozen=True, slots=True)
-class _VariablePlan:
-    instruction: Instruction
-    name: str
-    expression: CompiledExpression | None
-    children: tuple[_Plan, ...]
-    has_as: bool
-    sequence_type: CompiledSequenceType | None
-
-
-@dataclass(frozen=True, slots=True)
-class _AttributePlan:
-    instruction: Instruction
-    name: str | CompiledValueTemplate
-    namespaces: Mapping[str, str]
-    expression: CompiledExpression | None
-    children: tuple[_Plan, ...]
-    namespace: CompiledValueTemplate | None = None
-    separator: CompiledValueTemplate | str | None = None
-    validation: str = "strip"
-    type_name: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _OverridingPlan:
-    instruction: Instruction
-    kind: Literal["next-match", "apply-imports"]
-    parameters: tuple[_WithParamPlan, ...]
-    tail: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class _RestoreVariablesPlan:
-    """Runtime-only marker restoring the lexical scope around a nested constructor."""
-
-    variables: Mapping[str, object]
-
-
-@dataclass(frozen=True, slots=True)
-class _WithParamPlan:
-    name: str
-    tunnel: bool
-    expression: CompiledExpression | None
-    children: tuple[_Plan, ...]
-    has_as: bool
-    sequence_type: CompiledSequenceType | None
-
-
-@dataclass(frozen=True, slots=True)
-class _CallTemplatePlan:
-    instruction: Instruction
-    reference: Any
-    parameters: tuple[_WithParamPlan, ...]
-    tail: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class _ApplyTemplatesPlan:
-    instruction: Instruction
-    expression: CompiledExpression
-    mode: str | None
-    parameters: tuple[_WithParamPlan, ...]
-    sorts: tuple[SortKey, ...] = ()
-    tail: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class _ForEachPlan:
-    instruction: Instruction
-    expression: CompiledExpression
-    sorts: tuple[SortKey, ...]
-    children: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _IteratePlan:
-    instruction: Instruction
-    expression: CompiledExpression
-    parameters: tuple[_ParamPlan, ...]
-    parameter_names: tuple[str, ...]
-    on_completion: Completion | None
-    children: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _NextIterationPlan:
-    instruction: Instruction
-    parameters: tuple[_WithParamPlan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _BreakPlan:
-    instruction: Instruction
-    expression: CompiledExpression | None
-    children: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _ForEachGroupPlan:
-    instruction: Instruction
-    expression: CompiledExpression
-    algorithm: str
-    key_expression: CompiledExpression | None
-    pattern: CompiledPattern | None
-    composite: bool
-    collation: str | CompiledValueTemplate | None
-    sorts: tuple[SortKey, ...]
-    children: tuple[_Plan, ...]
-    default_collation: str | None = None
-    base_uri: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _MergeSourcePlan:
-    instruction: Instruction
-    name: str | None
-    select: CompiledExpression
-    keys: tuple[SortKey, ...]
-    for_each_item: CompiledExpression | None = None
-    for_each_source: CompiledExpression | None = None
-    streamable: bool = False
-    sort_before_merge: bool = False
-    validation: str | None = None
-    type_name: str | None = None
-    base_uri: str | None = None
-    use_accumulators: frozenset[AccumulatorKey] = frozenset()
-
-
-@dataclass(frozen=True, slots=True)
-class _MergePlan:
-    instruction: Instruction
-    sources: tuple[_MergeSourcePlan, ...]
-    action: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _ForkPlan:
-    instruction: Instruction
-    branches: tuple[tuple[_Plan, ...], ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _SourceDocumentPlan:
-    instruction: Instruction
-    href: CompiledValueTemplate
-    children: tuple[_Plan, ...]
-    streamable: bool = False
-    validation: str | None = None
-    type_name: str | None = None
-    use_accumulators: frozenset[AccumulatorKey] = frozenset()
-
-
-@dataclass(frozen=True, slots=True)
-class _PerformSortPlan:
-    instruction: Instruction
-    expression: CompiledExpression | None
-    sorts: tuple[SortKey, ...]
-    children: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _ChoosePlan:
-    instruction: Instruction
-    branches: tuple[tuple[CompiledExpression, tuple[_Plan, ...]], ...]
-    otherwise: tuple[_Plan, ...] | None
-
-
-@dataclass(frozen=True, slots=True)
-class _CatchPlan:
-    """One compiled ``xsl:catch`` body and its error NameTests."""
-
-    instruction: Instruction
-    errors: tuple[str, ...] | None
-    expression: CompiledExpression | None
-    children: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _TryPlan:
-    """One compiled ``xsl:try`` with its body and ordered catch handlers."""
-
-    instruction: Instruction
-    expression: CompiledExpression | None
-    children: tuple[_Plan, ...]
-    catches: tuple[_CatchPlan, ...]
-    rollback_output: bool = True
-    tail: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class _MapPlan:
-    instruction: Instruction
-    children: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _MapEntryPlan:
-    instruction: Instruction
-    key: CompiledExpression
-    expression: CompiledExpression | None
-    children: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _EvaluatePlan:
-    instruction: Instruction
-    expression: CompiledExpression
-    sequence_type: CompiledSequenceType | None
-    base_uri: CompiledValueTemplate | None
-    schema_aware: CompiledValueTemplate | None
-    context_item: CompiledExpression | None
-    namespace_context: CompiledExpression | None
-    with_params: tuple[_WithParamPlan, ...]
-    with_params_expression: CompiledExpression | None
-    xpath_version: str
-    enabled: bool
-    namespaces: Mapping[str, str]
-    default_namespace: str | None
-    functions: Mapping[str, FunctionArity]
-
-
-@dataclass(frozen=True, slots=True)
-class _AssertPlan:
-    instruction: Instruction
-    test: CompiledExpression
-    select: CompiledExpression | None
-    children: tuple[_Plan, ...]
-    error_code: CompiledValueTemplate | None
-    enabled: bool
-
-
-@dataclass(frozen=True, slots=True)
-class _WherePopulatedPlan:
-    instruction: Instruction
-    children: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _OnEmptyPlan:
-    instruction: Instruction
-    expression: CompiledExpression | None
-    children: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _OnNonEmptyPlan:
-    instruction: Instruction
-    expression: CompiledExpression | None
-    children: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _ConditionalSequencePlan:
-    plans: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _FallbackPlan:
-    instruction: Instruction
-    children: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _ConcatPlan:
-    instruction: Instruction
-    parts: tuple[tuple[_Plan, ...], ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _ResultDocumentPlan:
-    instruction: Instruction
-    href: str | CompiledValueTemplate
-    method: str | CompiledValueTemplate | None
-    build_tree: str | CompiledValueTemplate | None
-    format: str | CompiledValueTemplate | None
-    attributes: tuple[tuple[str, str | CompiledValueTemplate], ...]
-    children: tuple[_Plan, ...]
-    validation: str = "strip"
-    type_name: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _AnalyzeStringPlan:
-    instruction: Instruction
-    expression: CompiledExpression
-    regex: CompiledValueTemplate
-    flags: CompiledValueTemplate | None
-    matching: tuple[_Plan, ...]
-    non_matching: tuple[_Plan, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _NumberPlan:
-    instruction: Instruction
-    value: CompiledExpression | None
-    select: CompiledExpression | None
-    level: str
-    count: CompiledPattern | None
-    from_pattern: CompiledPattern | None
-    format: CompiledValueTemplate | str
-    lang: CompiledValueTemplate | None
-    ordinal: CompiledValueTemplate | None
-    letter_value: CompiledValueTemplate | None
-    grouping_separator: CompiledValueTemplate | None
-    grouping_size: CompiledValueTemplate | None
-    start_at: CompiledValueTemplate | None
-
-
-@dataclass(frozen=True, slots=True)
-class _UnsupportedPlan:
-    instruction: Instruction
-
-
-_Plan: TypeAlias = (
-    _TextPlan
-    | _TvtPlan
-    | _SequencePlan
-    | _ValueOfPlan
-    | _LiteralPlan
-    | _ElementPlan
-    | _DocumentPlan
-    | _CopyPlan
-    | _CopyOfPlan
-    | _ParamPlan
-    | _VariablePlan
-    | _AttributePlan
-    | _WithParamPlan
-    | _CallTemplatePlan
-    | _ApplyTemplatesPlan
-    | _ForEachPlan
-    | _IteratePlan
-    | _NextIterationPlan
-    | _BreakPlan
-    | _ForEachGroupPlan
-    | _MergePlan
-    | _ForkPlan
-    | _SourceDocumentPlan
-    | _PerformSortPlan
-    | _OverridingPlan
-    | _RestoreVariablesPlan
-    | _ChoosePlan
-    | _TryPlan
-    | _MapPlan
-    | _MapEntryPlan
-    | _EvaluatePlan
-    | _AssertPlan
-    | _WherePopulatedPlan
-    | _OnEmptyPlan
-    | _OnNonEmptyPlan
-    | _ConditionalSequencePlan
-    | _FallbackPlan
-    | _ConcatPlan
-    | _ResultDocumentPlan
-    | _AnalyzeStringPlan
-    | _NumberPlan
-    | _UnsupportedPlan
-)
-
-
-@dataclass(frozen=True, slots=True)
-class _BodyPlan:
-    context: StaticContext
-    body: tuple[_Plan, ...]
-    owner: str | None
-    context_item: ContextItemSignature | None
-    result_type: CompiledSequenceType | None
-
-
-@dataclass(frozen=True, slots=True)
-class _ModeLayerPlan:
-    owner: str | None
-    rules: tuple[TemplateRule, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _ComponentPlan:
-    component: Component
-    context: StaticContext
-    select: CompiledExpression | None
-    body: tuple[_Plan, ...]
-    has_as: bool
-    sequence_type: CompiledSequenceType | None
-    attribute_set_parts: tuple[tuple[tuple[ComponentReference, ...], tuple[_Plan, ...]], ...] = ()
-    original_functions: Mapping[int, Component] = field(default_factory=dict)
-    original_variable: Component | None = None
+# Runtime-only plan state
 
 
 @dataclass(frozen=True, slots=True)
@@ -826,16 +399,6 @@ class _KeyDefinition:
     use: CompiledExpression
     owner: str | None
     composite: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class _RuleContext:
-    match: RuleMatch
-    focus: Focus
-    mode: str | None
-    package_name: str | None
-    tunnel_parameters: Mapping[str, XdmSequence]
-    mode_package: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -5903,9 +5466,7 @@ class _Invocation(Transformation):
     ) -> XdmSequence:
         return self._evaluate(
             definition.initial_value,
-            Focus.singleton(root),
-            {},
-            definition.owner,
+            EvaluationContext(focus=Focus.singleton(root), package_name=definition.owner),
         )
 
     def _evaluate_accumulator_rule(
@@ -5915,17 +5476,15 @@ class _Invocation(Transformation):
         node: XdmNode,
         old_value: XdmSequence,
     ) -> XdmSequence:
-        locals_: dict[str, XdmSequence] = {"value": old_value}
-        focus = Focus.singleton(node)
-        if rule.select is not None:
-            return self._evaluate(rule.select, focus, locals_, definition.owner)
-        return self._execute_plans(
-            rule.body,
-            focus=focus,
-            locals_=locals_,
+        context = EvaluationContext(
+            focus=Focus.singleton(node),
+            locals={"value": old_value},
             final_output=False,
             package_name=definition.owner,
         )
+        if rule.select is not None:
+            return self._evaluate(rule.select, context)
+        return self._execute_plans(rule.body, context=context)
 
     def _coerce_accumulator_value(
         self,
@@ -5976,15 +5535,18 @@ class _Invocation(Transformation):
             return self._execute_component(
                 options.function,
                 arguments=options.function_arguments,
-                final_output=False,
+                context=EvaluationContext(final_output=False),
             )
         if options.entry == "template":
             assert options.template is not None
+            global_item = options.global_context_item
             return self._execute_component(
                 options.template,
                 template_parameters=options.template_parameters,
-                tunnel_parameters=options.tunnel_parameters,
-                final_output=True,
+                context=EvaluationContext(
+                    focus=(Focus.absent() if global_item is None else Focus.singleton(global_item)),
+                    tunnel_parameters=options.tunnel_parameters or {},
+                ),
             )
         assert options.initial_match_selection is not _ABSENT
         selection = cast(XdmSequence, options.initial_match_selection)
@@ -6012,11 +5574,7 @@ class _Invocation(Transformation):
         *,
         arguments: tuple[XdmSequence, ...] = (),
         template_parameters: Mapping[str, XdmSequence] | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        final_output: bool,
-        focus: Focus | None = None,
-        mode: str | None = None,
-        rule_context: _RuleContext | None = None,
+        context: EvaluationContext,
         group: object = _INHERIT,
         grouping_key: object = _INHERIT,
     ) -> XdmSequence:
@@ -6024,11 +5582,7 @@ class _Invocation(Transformation):
             component,
             arguments=arguments,
             template_parameters=template_parameters,
-            tunnel_parameters=tunnel_parameters,
-            final_output=final_output,
-            focus=focus,
-            mode=mode,
-            rule_context=rule_context,
+            context=context,
             group=group,
             grouping_key=grouping_key,
         )
@@ -6052,11 +5606,7 @@ class _Invocation(Transformation):
         *,
         arguments: tuple[XdmSequence, ...] = (),
         template_parameters: Mapping[str, XdmSequence] | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        final_output: bool,
-        focus: Focus | None = None,
-        mode: str | None = None,
-        rule_context: _RuleContext | None = None,
+        context: EvaluationContext,
         group: object = _INHERIT,
         grouping_key: object = _INHERIT,
     ) -> Frame:
@@ -6066,29 +5616,25 @@ class _Invocation(Transformation):
         if component.kind == "function":
             resolved_focus = Focus.absent()
         else:
-            if focus is None:
-                resolved_focus = (
-                    Focus.singleton(self.options.global_context_item)
-                    if self.options.global_context_item is not None
-                    else Focus.absent()
-                )
-            else:
-                resolved_focus = focus
+            resolved_focus = context.focus
             context_signature = component.signature.context_item if component.signature else None
             resolved_focus = self._apply_context_item(context_signature, resolved_focus)
-        effective_rule_context = rule_context
+        effective_rule_context = context.rule_context
         if context_signature is not None and context_signature.use == "absent":
             effective_rule_context = None
-        effective_tunnel = tunnel_parameters or {}
+        component_context = replace(
+            context,
+            focus=resolved_focus,
+            locals={},
+            package_name=package_name,
+            original_functions={},
+        )
         locals_, index = self._bind_component_parameters(
             component,
             plan.body,
             arguments=arguments,
             template_parameters=template_parameters,
-            tunnel_parameters=effective_tunnel,
-            focus=resolved_focus,
-            package_name=package_name,
-            mode=mode,
+            context=component_context,
         )
         conversion = None
         declaration_as = component.declaration.attribute("as")
@@ -6120,14 +5666,14 @@ class _Invocation(Transformation):
             ),
             identity=self._component_identity(component),
             program=plan.body[index:],
-            variables=locals_,
-            tunnel_parameters=effective_tunnel,
-            focus=resolved_focus,
+            context=replace(
+                component_context,
+                locals=locals_,
+                rule_context=effective_rule_context,
+                original_functions=plan.original_functions,
+            ),
             continuation=None,
-            package=package_name,
-            mode=mode,
             location=component.location,
-            final_output=final_output,
             conversion=conversion,
             group=effective_group,
             grouping_key=effective_grouping_key,
@@ -6141,10 +5687,7 @@ class _Invocation(Transformation):
         *,
         arguments: tuple[XdmSequence, ...],
         template_parameters: Mapping[str, XdmSequence] | None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None,
-        focus: Focus,
-        package_name: str | None,
-        mode: str | None = None,
+        context: EvaluationContext,
     ) -> tuple[dict[str, XdmSequence], int]:
         locals_: dict[str, XdmSequence] = {}
         index = 0
@@ -6156,7 +5699,7 @@ class _Invocation(Transformation):
                 positional += 1
             else:
                 supplied = (
-                    (tunnel_parameters or {}).get(parameter.name)
+                    context.tunnel_parameters.get(parameter.name)
                     if parameter.tunnel
                     else (template_parameters or {}).get(parameter.name)
                 )
@@ -6165,11 +5708,7 @@ class _Invocation(Transformation):
                     if supplied is not None
                     else self._parameter_default(
                         parameter,
-                        focus,
-                        locals_,
-                        package_name,
-                        mode=mode,
-                        tunnel_parameters=tunnel_parameters,
+                        replace(context, locals=locals_),
                     )
                 )
             value = self._coerce_parameter(
@@ -6216,9 +5755,6 @@ class _Invocation(Transformation):
             input=NO_INPUT,
             values=frame.values + tuple(materialized),
         )
-
-    def _frame_variables(self, frame: Frame) -> Mapping[str, XdmSequence]:
-        return cast(Mapping[str, XdmSequence], frame.variables)
 
     def _inherited_group(
         self,
@@ -6285,23 +5821,6 @@ class _Invocation(Transformation):
                 self.current_merge_sources,
             ) = previous
 
-    def _frame_tunnel(self, frame: Frame) -> Mapping[str, XdmSequence]:
-        return cast(Mapping[str, XdmSequence], frame.tunnel_parameters)
-
-    def _rule_context(self, frame: Frame) -> _RuleContext | None:
-        component = frame.component
-        if isinstance(component, _RuleContext):
-            return component
-        if isinstance(component, _TemplateContext):
-            return component.rule_context
-        return None
-
-    def _original_functions(self, frame: Frame) -> Mapping[int, Component]:
-        component = frame.component
-        if isinstance(component, _TemplateContext):
-            return component.original_functions
-        return {}
-
     def _return_frame(self, frame: Frame) -> Return:
         value: object = tuple(frame.values)
         if frame.conversion is not None:
@@ -6315,8 +5834,6 @@ class _Invocation(Transformation):
         if cursor >= len(program):
             return self._return_frame(frame)
         plan = program[cursor]
-        rule_context = self._rule_context(frame)
-        original_functions = self._original_functions(frame)
         if isinstance(plan, (_NextIterationPlan, _BreakPlan)):
             return self._iteration_control(plan, frame)
         if isinstance(plan, _ForEachPlan):
@@ -6326,16 +5843,7 @@ class _Invocation(Transformation):
         if isinstance(plan, _ForEachGroupPlan):
             return self._start_iteration_plan(plan, frame, cursor)
         if isinstance(plan, _PerformSortPlan):
-            value = self._perform_sort(
-                plan,
-                frame.focus,
-                self._frame_variables(frame),
-                frame.package,
-                mode=frame.mode,
-                tunnel_parameters=self._frame_tunnel(frame),
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            value = self._perform_sort(plan, frame.context)
             return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
         if isinstance(plan, _ParamPlan):
             raise XsltError(
@@ -6343,21 +5851,15 @@ class _Invocation(Transformation):
                 code="XTDE0000",
             )
         if isinstance(plan, _VariablePlan):
-            value = self._variable_value(
-                plan,
-                frame.focus,
-                self._frame_variables(frame),
-                frame.package,
-                mode=frame.mode,
-                tunnel_parameters=self._frame_tunnel(frame),
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            value = self._variable_value(plan, frame.context)
             return Continue(
                 replace(
                     frame,
                     cursor=cursor + 1,
-                    variables={**frame.variables, plan.name: value},
+                    context=replace(
+                        frame.context,
+                        locals={**frame.context.locals, plan.name: value},
+                    ),
                 )
             )
         if isinstance(plan, _RestoreVariablesPlan):
@@ -6365,7 +5867,10 @@ class _Invocation(Transformation):
                 replace(
                     frame,
                     cursor=cursor + 1,
-                    variables=plan.variables,
+                    context=replace(
+                        frame.context,
+                        locals=cast(Mapping[str, XdmSequence], plan.variables),
+                    ),
                 )
             )
         if isinstance(plan, _SequencePlan):
@@ -6376,14 +5881,14 @@ class _Invocation(Transformation):
                     frame,
                     program=(
                         *plan.children,
-                        _RestoreVariablesPlan(frame.variables),
+                        _RestoreVariablesPlan(frame.context.locals),
                         *program[cursor + 1 :],
                     ),
                     cursor=0,
                 )
             )
         if isinstance(plan, _ChoosePlan):
-            branch = self._choose_branch(plan, frame, original_functions)
+            branch = self._choose_branch(plan, frame.context)
             if branch is None:
                 return Continue(replace(frame, cursor=cursor + 1))
             return Continue(
@@ -6391,7 +5896,7 @@ class _Invocation(Transformation):
                     frame,
                     program=(
                         *branch,
-                        _RestoreVariablesPlan(frame.variables),
+                        _RestoreVariablesPlan(frame.context.locals),
                         *program[cursor + 1 :],
                     ),
                     cursor=0,
@@ -6400,28 +5905,21 @@ class _Invocation(Transformation):
         if isinstance(plan, _TryPlan):
             return self._try_step(plan, frame, cursor)
         if isinstance(plan, _CallTemplatePlan):
-            return self._call_template_step(plan, frame, cursor, rule_context)
+            return self._call_template_step(plan, frame, cursor)
         if isinstance(plan, _ApplyTemplatesPlan):
             return self._apply_templates_step(plan, frame, cursor)
         if isinstance(plan, _OverridingPlan):
-            return self._overriding_step(plan, frame, cursor, rule_context)
+            return self._overriding_step(plan, frame, cursor)
         try:
-            value = self._execute_plan(
-                plan,
-                focus=frame.focus,
-                locals_=self._frame_variables(frame),
-                final_output=frame.final_output,
-                package_name=frame.package,
-                mode=frame.mode,
-                tunnel_parameters=self._frame_tunnel(frame),
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            value = self._execute_plan(plan, context=frame.context)
         except _IterationControlSignal as signal:
             control_frame = replace(
                 frame,
-                variables=signal.variables,
-                focus=signal.focus,
+                context=replace(
+                    frame.context,
+                    locals=signal.variables,
+                    focus=signal.focus,
+                ),
                 values=frame.values + signal.pending,
             )
             return self._iteration_control(signal.plan, control_frame)
@@ -6453,16 +5951,11 @@ class _Invocation(Transformation):
             component=frame.component,
             identity="xsl:try",
             program=self._try_body_program(plan),
-            variables=frame.variables,
-            tunnel_parameters=frame.tunnel_parameters,
-            focus=frame.focus,
+            context=frame.context,
             continuation=frame.continuation if replace_caller else None,
             extent=self.result_extent() if plan.rollback_output else None,
             error_handler=self._try_handler(plan, frame, base_values),
-            package=frame.package,
-            mode=frame.mode,
             location=plan.instruction.location,
-            final_output=frame.final_output,
             values=base_values,
             group=frame.group,
             grouping_key=frame.grouping_key,
@@ -6512,20 +6005,15 @@ class _Invocation(Transformation):
             catch = self._select_catch(plan, caught)
             if catch is None:
                 return None
-            variables: dict[str, object] = dict(frame.variables)
+            variables: dict[str, XdmSequence] = dict(frame.context.locals)
             variables.update(self._catch_variables(caught))
             catch_frame = Frame(
                 kind="instruction",
                 component=frame.component,
                 identity="xsl:catch",
                 program=self._catch_program(catch),
-                variables=variables,
-                tunnel_parameters=frame.tunnel_parameters,
-                focus=frame.focus,
-                package=frame.package,
-                mode=frame.mode,
+                context=replace(frame.context, locals=variables),
                 location=catch.instruction.location,
-                final_output=frame.final_output,
                 values=base_values,
                 group=frame.group,
                 grouping_key=frame.grouping_key,
@@ -6535,42 +6023,14 @@ class _Invocation(Transformation):
 
         return handler
 
-    def _run_try(
-        self,
-        plan: _TryPlan,
-        *,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
-    ) -> XdmSequence:
+    def _run_try(self, plan: _TryPlan, *, context: EvaluationContext) -> XdmSequence:
         """Run a try in a synchronous nested sequence constructor."""
         extent = self.result_extent() if plan.rollback_output else None
         try:
             if plan.expression is not None:
-                value = self._evaluate(
-                    plan.expression,
-                    focus,
-                    locals_,
-                    package_name,
-                    original_functions=original_functions,
-                )
+                value = self._evaluate(plan.expression, context)
             else:
-                value = self._execute_plans(
-                    plan.children,
-                    focus=focus,
-                    locals_=locals_,
-                    final_output=final_output,
-                    package_name=package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
-                )
+                value = self._execute_plans(plan.children, context=context)
         except BaseException as error:
             caught = self._catchable_error(error, self.diagnostics)
             catch = None if caught is None else self._select_catch(plan, caught)
@@ -6580,27 +6040,12 @@ class _Invocation(Transformation):
                 raise
             if extent is not None:
                 extent.rollback()
-            variables: dict[str, XdmSequence] = dict(locals_)
+            variables: dict[str, XdmSequence] = dict(context.locals)
             variables.update(self._catch_variables(caught))
+            catch_context = replace(context, locals=variables)
             if catch.expression is not None:
-                return self._evaluate(
-                    catch.expression,
-                    focus,
-                    variables,
-                    package_name,
-                    original_functions=original_functions,
-                )
-            return self._execute_plans(
-                catch.children,
-                focus=focus,
-                locals_=variables,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+                return self._evaluate(catch.expression, catch_context)
+            return self._execute_plans(catch.children, context=catch_context)
         else:
             if extent is not None:
                 extent.commit()
@@ -6667,28 +6112,11 @@ class _Invocation(Transformation):
         frame: Frame,
         cursor: int,
     ) -> FrameResult:
-        variables = self._frame_variables(frame)
-        rule_context = self._rule_context(frame)
-        originals = self._original_functions(frame)
+        context = frame.context
+        variables = context.locals
         if isinstance(plan, _ForEachPlan):
-            items = self._evaluate(
-                plan.expression,
-                frame.focus,
-                variables,
-                frame.package,
-                original_functions=originals,
-            )
-            items = self._sorted_items(
-                items,
-                plan.sorts,
-                frame.focus,
-                variables,
-                frame.package,
-                mode=frame.mode,
-                tunnel_parameters=self._frame_tunnel(frame),
-                rule_context=rule_context,
-                original_functions=originals,
-            )
+            items = self._evaluate(plan.expression, context)
+            items = self._sorted_items(items, plan.sorts, context)
             state = IterationState(
                 kind="for-each",
                 body=plan.children,
@@ -6699,23 +6127,8 @@ class _Invocation(Transformation):
                 base_variables=dict(variables),
             )
         elif isinstance(plan, _IteratePlan):
-            items = self._evaluate(
-                plan.expression,
-                frame.focus,
-                variables,
-                frame.package,
-                original_functions=originals,
-            )
-            parameters = self._initial_iteration_parameters(
-                plan.parameters,
-                frame.focus,
-                variables,
-                frame.package,
-                mode=frame.mode,
-                tunnel_parameters=self._frame_tunnel(frame),
-                rule_context=rule_context,
-                original_functions=originals,
-            )
+            items = self._evaluate(plan.expression, context)
+            parameters = self._initial_iteration_parameters(plan.parameters, context)
             state = IterationState(
                 kind="iterate",
                 body=plan.children,
@@ -6729,7 +6142,7 @@ class _Invocation(Transformation):
                 on_completion=plan.on_completion,
             )
         else:
-            groups = self._grouped_items(plan, frame, rule_context, originals)
+            groups = self._grouped_items(plan, frame)
             state = IterationState(
                 kind="for-each-group",
                 body=plan.children,
@@ -6750,13 +6163,8 @@ class _Invocation(Transformation):
             component=frame.component,
             identity=f"xsl:{state.kind}",
             program=state,
-            variables=frame.variables,
-            tunnel_parameters=frame.tunnel_parameters,
-            focus=frame.focus,
-            package=frame.package,
-            mode=frame.mode,
+            context=context,
             location=plan.instruction.location,
-            final_output=frame.final_output,
             group=frame.group,
             grouping_key=frame.grouping_key,
         )
@@ -6792,17 +6200,16 @@ class _Invocation(Transformation):
             component=frame.component,
             identity=f"iteration body {state.index + 1}",
             program=state.body,
-            variables=variables,
-            tunnel_parameters=frame.tunnel_parameters,
-            focus=Focus.singleton(
-                entry.item,
-                position=entry.position,
-                size=entry.size,
+            context=replace(
+                frame.context,
+                focus=Focus.singleton(
+                    entry.item,
+                    position=entry.position,
+                    size=entry.size,
+                ),
+                locals=variables,
             ),
-            package=frame.package,
-            mode=frame.mode,
             location=frame.location,
-            final_output=frame.final_output,
             group=NO_GROUP if group is None else group,
             grouping_key=NO_GROUP if grouping_key is None else grouping_key,
             iteration=state,
@@ -6816,26 +6223,14 @@ class _Invocation(Transformation):
         variables: dict[str, XdmSequence] = dict(state.base_variables)
         for name, value in state.parameters.items():
             self._bind(variables, name, value)
+        completion_context = replace(frame.context, focus=Focus.absent(), locals=variables)
         try:
             if completion.select is not None:
-                value = self._evaluate(
-                    completion.select,
-                    Focus.absent(),
-                    variables,
-                    frame.package,
-                    original_functions=self._original_functions(frame),
-                )
+                value = self._evaluate(completion.select, completion_context)
             else:
                 value = self._execute_plans(
                     completion.children,
-                    focus=Focus.absent(),
-                    locals_=variables,
-                    final_output=frame.final_output,
-                    package_name=frame.package,
-                    mode=frame.mode,
-                    tunnel_parameters=self._frame_tunnel(frame),
-                    rule_context=self._rule_context(frame),
-                    original_functions=self._original_functions(frame),
+                    context=completion_context,
                 )
         except MissingContextError as exc:
             error = XsltDynamicError(
@@ -6873,47 +6268,20 @@ class _Invocation(Transformation):
 
     def _break_value(self, plan: _BreakPlan, frame: Frame) -> XdmSequence:
         if plan.expression is not None:
-            return self._evaluate(
-                plan.expression,
-                frame.focus,
-                self._frame_variables(frame),
-                frame.package,
-                original_functions=self._original_functions(frame),
-            )
-        return self._execute_plans(
-            plan.children,
-            focus=frame.focus,
-            locals_=self._frame_variables(frame),
-            final_output=frame.final_output,
-            package_name=frame.package,
-            mode=frame.mode,
-            tunnel_parameters=self._frame_tunnel(frame),
-            rule_context=self._rule_context(frame),
-            original_functions=self._original_functions(frame),
-        )
+            return self._evaluate(plan.expression, frame.context)
+        return self._execute_plans(plan.children, context=frame.context)
 
     def _initial_iteration_parameters(
         self,
         parameters: tuple[_ParamPlan, ...],
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
-        *,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> dict[str, XdmSequence]:
         values: dict[str, XdmSequence] = {}
-        environment = dict(locals_)
+        environment = dict(context.locals)
         for parameter in parameters:
             value = self._parameter_default(
                 parameter,
-                focus,
-                environment,
-                package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
+                replace(context, locals=environment),
             )
             value = self._coerce_parameter(parameter, value, code="XTTE0590")
             self._bind(values, parameter.name, value)
@@ -6929,24 +6297,11 @@ class _Invocation(Transformation):
         values: dict[str, XdmSequence] = {}
         for parameter in parameters:
             if parameter.expression is not None:
-                value = self._evaluate(
-                    parameter.expression,
-                    frame.focus,
-                    self._frame_variables(frame),
-                    frame.package,
-                    original_functions=self._original_functions(frame),
-                )
+                value = self._evaluate(parameter.expression, frame.context)
             elif parameter.children:
                 sequence = self._execute_plans(
                     parameter.children,
-                    focus=frame.focus,
-                    locals_=self._frame_variables(frame),
-                    final_output=False,
-                    package_name=frame.package,
-                    mode=frame.mode,
-                    tunnel_parameters=self._frame_tunnel(frame),
-                    rule_context=self._rule_context(frame),
-                    original_functions=self._original_functions(frame),
+                    context=replace(frame.context, final_output=False),
                 )
                 value = sequence if parameter.has_as else (_build_result_tree(sequence),)
             else:
@@ -6965,32 +6320,12 @@ class _Invocation(Transformation):
 
     # -- merging, splitting, and source documents -------------------------
 
-    def _run_merge(
-        self,
-        plan: _MergePlan,
-        *,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
-    ) -> XdmSequence:
-        resolved = self._merge_resolved_keys(plan.sources, focus, locals_, package_name)
+    def _run_merge(self, plan: _MergePlan, *, context: EvaluationContext) -> XdmSequence:
+        resolved = self._merge_resolved_keys(plan.sources, context)
         inputs: list[tuple[MergeItem, ...]] = []
         sort_before_merge: list[bool] = []
         for source_index, source in enumerate(plan.sources):
-            for anchor_index, sequence in enumerate(
-                self._merge_input_sequences(
-                    source,
-                    focus,
-                    locals_,
-                    package_name,
-                    original_functions=original_functions,
-                )
-            ):
+            for anchor_index, sequence in enumerate(self._merge_input_sequences(source, context)):
                 items = tuple(
                     self._merge_item(
                         source,
@@ -6999,12 +6334,7 @@ class _Invocation(Transformation):
                         source_index=source_index,
                         anchor_index=anchor_index,
                         position=position,
-                        locals_=locals_,
-                        package_name=package_name,
-                        mode=mode,
-                        tunnel_parameters=tunnel_parameters,
-                        rule_context=rule_context,
-                        original_functions=original_functions,
+                        context=context,
                     )
                     for position, item in enumerate(sequence, start=1)
                 )
@@ -7042,14 +6372,7 @@ class _Invocation(Transformation):
                 result.extend(
                     self._execute_plans(
                         plan.action,
-                        focus=action_focus,
-                        locals_=locals_,
-                        final_output=final_output,
-                        package_name=package_name,
-                        mode=mode,
-                        tunnel_parameters=tunnel_parameters,
-                        rule_context=rule_context,
-                        original_functions=original_functions,
+                        context=replace(context, focus=action_focus),
                     )
                 )
         return tuple(result)
@@ -7057,9 +6380,7 @@ class _Invocation(Transformation):
     def _merge_resolved_keys(
         self,
         sources: tuple[_MergeSourcePlan, ...],
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
+        context: EvaluationContext,
     ) -> tuple[ResolvedSortKey, ...]:
         resolved_by_source: list[tuple[ResolvedSortKey, ...]] = []
         signatures_by_source: list[tuple[tuple[object, ...], ...]] = []
@@ -7067,12 +6388,7 @@ class _Invocation(Transformation):
             resolved: list[ResolvedSortKey] = []
             signatures: list[tuple[object, ...]] = []
             for key in source.keys:
-                key_resolved, signature = self._resolve_key_spec(
-                    key,
-                    focus,
-                    locals_,
-                    package_name,
-                )
+                key_resolved, signature = self._resolve_key_spec(key, context)
                 resolved.append(key_resolved)
                 signatures.append(signature)
             resolved_by_source.append(tuple(resolved))
@@ -7090,38 +6406,27 @@ class _Invocation(Transformation):
     def _merge_input_sequences(
         self,
         source: _MergeSourcePlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
-        *,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> tuple[XdmSequence, ...]:
+        package_name = context.package_name
         if source.for_each_item is not None:
-            anchors = self._evaluate(
-                source.for_each_item,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
-            )
+            anchors = self._evaluate(source.for_each_item, context)
             return tuple(
                 self._evaluate(
                     source.select,
-                    Focus.singleton(anchor, position=position, size=len(anchors)),
-                    locals_,
-                    package_name,
-                    original_functions=original_functions,
+                    replace(
+                        context,
+                        focus=Focus.singleton(
+                            anchor,
+                            position=position,
+                            size=len(anchors),
+                        ),
+                    ),
                 )
                 for position, anchor in enumerate(anchors, start=1)
             )
         if source.for_each_source is not None:
-            uri_values = self._evaluate(
-                source.for_each_source,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
-            )
+            uri_values = self._evaluate(source.for_each_source, context)
             atomics = atomize_key_sequence(uri_values)
             documents = tuple(
                 self.document_resources.resolve(
@@ -7145,22 +6450,18 @@ class _Invocation(Transformation):
             return tuple(
                 self._evaluate(
                     source.select,
-                    Focus.singleton(document, position=position, size=len(documents)),
-                    locals_,
-                    package_name,
-                    original_functions=original_functions,
+                    replace(
+                        context,
+                        focus=Focus.singleton(
+                            document,
+                            position=position,
+                            size=len(documents),
+                        ),
+                    ),
                 )
                 for position, document in enumerate(documents, start=1)
             )
-        return (
-            self._evaluate(
-                source.select,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
-            ),
-        )
+        return (self._evaluate(source.select, context),)
 
     def _merge_item(
         self,
@@ -7171,23 +6472,13 @@ class _Invocation(Transformation):
         source_index: int,
         anchor_index: int,
         position: int,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
-        mode: str | None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None,
-        rule_context: _RuleContext | None,
-        original_functions: Mapping[int, Component] | None,
+        context: EvaluationContext,
     ) -> MergeItem:
         comparison_key, current_key = self._merge_key_values(
             source,
             resolved,
             item,
-            locals_,
-            package_name,
-            mode=mode,
-            tunnel_parameters=tunnel_parameters,
-            rule_context=rule_context,
-            original_functions=original_functions,
+            context,
         )
         return MergeItem(
             item=item,
@@ -7203,37 +6494,18 @@ class _Invocation(Transformation):
         source: _MergeSourcePlan,
         resolved: tuple[ResolvedSortKey, ...],
         item: XdmItem,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
-        *,
-        mode: str | None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None,
-        rule_context: _RuleContext | None,
-        original_functions: Mapping[int, Component] | None,
+        context: EvaluationContext,
     ) -> tuple[tuple[XdmSequence, ...], tuple[XdmSequence, ...]]:
-        key_focus = Focus.singleton(item)
+        key_context = replace(context, focus=Focus.singleton(item))
         comparison_values: list[XdmSequence] = []
         current_values: list[XdmSequence] = []
         for key, resolved_key in zip(source.keys, resolved, strict=True):
             if key.select is not None:
-                value = self._evaluate(
-                    key.select,
-                    key_focus,
-                    locals_,
-                    package_name,
-                    original_functions=original_functions,
-                )
+                value = self._evaluate(key.select, key_context)
             else:
                 value = self._execute_plans(
                     key.children,
-                    focus=key_focus,
-                    locals_=locals_,
-                    final_output=False,
-                    package_name=package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
+                    context=replace(key_context, final_output=False),
                 )
             atomics = atomize_key_sequence(value)
             if len(atomics) > 1:
@@ -7254,50 +6526,20 @@ class _Invocation(Transformation):
                 comparison_values.append((atomic,))
         return tuple(comparison_values), tuple(current_values)
 
-    def _run_fork(
-        self,
-        plan: _ForkPlan,
-        *,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
-    ) -> XdmSequence:
+    def _run_fork(self, plan: _ForkPlan, *, context: EvaluationContext) -> XdmSequence:
         result: list[XdmItem] = []
         for branch in plan.branches:
-            result.extend(
-                self._execute_plans(
-                    branch,
-                    focus=focus,
-                    locals_=locals_,
-                    final_output=final_output,
-                    package_name=package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
-                )
-            )
+            result.extend(self._execute_plans(branch, context=context))
         return tuple(result)
 
     def _run_source_document(
         self,
         plan: _SourceDocumentPlan,
         *,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmSequence:
-        href = self._value_template(plan.href, focus, locals_, package_name).strip()
+        package_name = context.package_name
+        href = self._value_template(plan.href, context).strip()
         document = self.document_resources.resolve(
             href,
             base=plan.instruction.base_uri,
@@ -7311,20 +6553,10 @@ class _Invocation(Transformation):
             ),
             package=package_name,
         )
-        self.accumulators.restrict(
-            document,
-            plan.use_accumulators,
-        )
+        self.accumulators.restrict(document, plan.use_accumulators)
         return self._execute_plans(
             plan.children,
-            focus=Focus.singleton(document),
-            locals_=locals_,
-            final_output=final_output,
-            package_name=package_name,
-            mode=mode,
-            tunnel_parameters=tunnel_parameters,
-            rule_context=rule_context,
-            original_functions=original_functions,
+            context=replace(context, focus=Focus.singleton(document)),
         )
 
     # -- sort and group algorithms ---------------------------------------
@@ -7332,27 +6564,21 @@ class _Invocation(Transformation):
     def _resolved_sort_keys(
         self,
         sorts: tuple[SortKey, ...],
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
+        context: EvaluationContext,
     ) -> tuple[ResolvedSortKey, ...]:
-        return tuple(
-            self._resolve_key_spec(sort, focus, locals_, package_name)[0] for sort in sorts
-        )
+        return tuple(self._resolve_key_spec(sort, context)[0] for sort in sorts)
 
     def _resolve_key_spec(
         self,
         sort: SortKey,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
+        context: EvaluationContext,
     ) -> tuple[ResolvedSortKey, tuple[object, ...]]:
         """Resolve one sort/merge key and retain its effective-value signature."""
         label = sort.instruction.local_name
         order_value = None
         order = "ascending"
         if sort.order is not None:
-            order_value = self._value_source(sort.order, focus, locals_, package_name).strip()
+            order_value = self._value_source(sort.order, context).strip()
             order = order_value
             if order not in ("ascending", "descending"):
                 raise XsltDynamicError(
@@ -7363,12 +6589,7 @@ class _Invocation(Transformation):
         data_type_value = None
         data_type = "native"
         if sort.data_type is not None:
-            data_type_value = self._value_source(
-                sort.data_type,
-                focus,
-                locals_,
-                package_name,
-            ).strip()
+            data_type_value = self._value_source(sort.data_type, context).strip()
             local = (
                 data_type_value[2:].partition("}")[2]
                 if data_type_value.startswith("Q{")
@@ -7386,12 +6607,7 @@ class _Invocation(Transformation):
                 )
         case_order = None
         if sort.case_order is not None:
-            case_order = self._value_source(
-                sort.case_order,
-                focus,
-                locals_,
-                package_name,
-            ).strip()
+            case_order = self._value_source(sort.case_order, context).strip()
             if case_order not in ("upper-first", "lower-first"):
                 raise XsltDynamicError(
                     f"xsl:{label} case-order must be upper-first or lower-first, "
@@ -7400,7 +6616,7 @@ class _Invocation(Transformation):
                     location=sort.instruction.location,
                 )
         if sort.stable is not None:
-            stable = self._value_source(sort.stable, focus, locals_, package_name)
+            stable = self._value_source(sort.stable, context)
             if stable.strip() not in (
                 "yes",
                 "true",
@@ -7416,15 +6632,10 @@ class _Invocation(Transformation):
                 )
         language = ""
         if sort.lang is not None:
-            language = self._value_source(sort.lang, focus, locals_, package_name).strip()
+            language = self._value_source(sort.lang, context).strip()
         collation_uri = None
         if sort.collation is not None:
-            collation_uri = self._value_source(
-                sort.collation,
-                focus,
-                locals_,
-                package_name,
-            ).strip()
+            collation_uri = self._value_source(sort.collation, context).strip()
         collation = resolve_collation(
             collation_uri,
             code="XTDE1035",
@@ -7456,36 +6667,20 @@ class _Invocation(Transformation):
         size: int,
         sorts: tuple[SortKey, ...],
         resolved: tuple[ResolvedSortKey, ...],
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
-        *,
-        mode: str | None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None,
-        rule_context: _RuleContext | None,
-        original_functions: Mapping[int, Component] | None,
+        context: EvaluationContext,
     ) -> tuple[XdmSequence, ...]:
-        focus = Focus.singleton(item, position=position, size=size)
+        key_context = replace(
+            context,
+            focus=Focus.singleton(item, position=position, size=size),
+        )
         values: list[XdmSequence] = []
         for sort, key in zip(sorts, resolved, strict=True):
             if sort.select is not None:
-                value = self._evaluate(
-                    sort.select,
-                    focus,
-                    locals_,
-                    package_name,
-                    original_functions=original_functions,
-                )
+                value = self._evaluate(sort.select, key_context)
             else:
                 value = self._execute_plans(
                     sort.children,
-                    focus=focus,
-                    locals_=locals_,
-                    final_output=False,
-                    package_name=package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
+                    context=replace(key_context, final_output=False),
                 )
             atomics = atomize_key_sequence(value)
             if len(atomics) > 1:
@@ -7512,18 +6707,11 @@ class _Invocation(Transformation):
         self,
         items: XdmSequence,
         sorts: tuple[SortKey, ...],
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
-        *,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> tuple[XdmItem, ...]:
         if not sorts:
             return tuple(items)
-        resolved = self._resolved_sort_keys(sorts, focus, locals_, package_name)
+        resolved = self._resolved_sort_keys(sorts, context)
         key_values = tuple(
             self._sort_values_for(
                 item,
@@ -7531,12 +6719,7 @@ class _Invocation(Transformation):
                 len(items),
                 sorts,
                 resolved,
-                locals_,
-                package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
+                context,
             )
             for position, item in enumerate(items, start=1)
         )
@@ -7545,58 +6728,24 @@ class _Invocation(Transformation):
     def _perform_sort(
         self,
         plan: _PerformSortPlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
-        *,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmSequence:
         if plan.expression is not None:
-            items = self._evaluate(
-                plan.expression,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
-            )
+            items = self._evaluate(plan.expression, context)
         else:
             items = self._execute_plans(
                 plan.children,
-                focus=focus,
-                locals_=locals_,
-                final_output=False,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
+                context=replace(context, final_output=False),
             )
-        return self._sorted_items(
-            items,
-            plan.sorts,
-            focus,
-            locals_,
-            package_name,
-            mode=mode,
-            tunnel_parameters=tunnel_parameters,
-            rule_context=rule_context,
-            original_functions=original_functions,
-        )
+        return self._sorted_items(items, plan.sorts, context)
 
     def _group_collation(
         self,
         plan: _ForEachGroupPlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
+        context: EvaluationContext,
     ) -> Any:
         uri = (
-            None
-            if plan.collation is None
-            else self._value_source(plan.collation, focus, locals_, package_name).strip()
+            None if plan.collation is None else self._value_source(plan.collation, context).strip()
         )
         return resolve_collation(
             uri,
@@ -7609,28 +6758,24 @@ class _Invocation(Transformation):
         self,
         plan: _ForEachGroupPlan,
         frame: Frame,
-        rule_context: _RuleContext | None,
-        original_functions: Mapping[int, Component] | None,
     ) -> tuple[Any, ...]:
-        variables = self._frame_variables(frame)
-        population = self._evaluate(
-            plan.expression,
-            frame.focus,
-            variables,
-            frame.package,
-            original_functions=original_functions,
-        )
-        collation = self._group_collation(plan, frame.focus, variables, frame.package)
+        context = frame.context
+        population = self._evaluate(plan.expression, context)
+        collation = self._group_collation(plan, context)
         if plan.algorithm == GROUP_BY:
             assert plan.key_expression is not None
             key_sets = tuple(
                 grouping_key_set(
                     self._evaluate(
                         plan.key_expression,
-                        Focus.singleton(item, position=position, size=len(population)),
-                        variables,
-                        frame.package,
-                        original_functions=original_functions,
+                        replace(
+                            context,
+                            focus=Focus.singleton(
+                                item,
+                                position=position,
+                                size=len(population),
+                            ),
+                        ),
                     ),
                     composite=plan.composite,
                     collation=collation,
@@ -7644,10 +6789,14 @@ class _Invocation(Transformation):
                 adjacent_grouping_key(
                     self._evaluate(
                         plan.key_expression,
-                        Focus.singleton(item, position=position, size=len(population)),
-                        variables,
-                        frame.package,
-                        original_functions=original_functions,
+                        replace(
+                            context,
+                            focus=Focus.singleton(
+                                item,
+                                position=position,
+                                size=len(population),
+                            ),
+                        ),
                     ),
                     composite=plan.composite,
                 )
@@ -7657,7 +6806,7 @@ class _Invocation(Transformation):
         else:
             assert plan.pattern is not None
             matcher = PatternMatcher(plan.pattern)
-            environment = self._pattern_environment_for(plan.pattern, frame.package)
+            environment = self._pattern_environment_for(plan.pattern, context.package_name)
             with self._group_scope(None, None):
                 matches = tuple(matcher.matches(item, environment) for item in population)
             if plan.algorithm == GROUP_STARTING_WITH:
@@ -7666,12 +6815,7 @@ class _Invocation(Transformation):
                 groups = group_ending_with(population, matches)
         if not plan.sorts:
             return groups
-        resolved = self._resolved_sort_keys(
-            plan.sorts,
-            frame.focus,
-            variables,
-            frame.package,
-        )
+        resolved = self._resolved_sort_keys(plan.sorts, context)
         key_values: list[tuple[XdmSequence, ...]] = []
         for position, group in enumerate(groups, start=1):
             with self._group_scope(group.items, group.grouping_key):
@@ -7682,12 +6826,7 @@ class _Invocation(Transformation):
                         len(groups),
                         plan.sorts,
                         resolved,
-                        variables,
-                        frame.package,
-                        mode=frame.mode,
-                        tunnel_parameters=self._frame_tunnel(frame),
-                        rule_context=rule_context,
-                        original_functions=original_functions,
+                        context,
                     )
                 )
         return sort_records(groups, resolved, tuple(key_values))
@@ -7696,34 +6835,22 @@ class _Invocation(Transformation):
         self,
         plan: _ForEachPlan | _IteratePlan | _ForEachGroupPlan,
         *,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmSequence:
         component = (
             _TemplateContext(
                 cast(Component, None),
-                rule_context,
-                dict(original_functions or {}),
+                context.rule_context,
+                dict(context.original_functions),
             )
-            if rule_context is not None or original_functions
+            if context.rule_context is not None or context.original_functions
             else None
         )
         parent = Frame(
             kind="instruction",
             component=component,
             program=(plan,),
-            focus=focus,
-            variables=locals_,
-            tunnel_parameters=tunnel_parameters or {},
-            package=package_name,
-            mode=mode,
-            final_output=final_output,
+            context=context,
             group=NO_GROUP if self.current_group is None else self.current_group,
             grouping_key=(
                 NO_GROUP if self.current_grouping_key is None else self.current_grouping_key
@@ -7737,9 +6864,10 @@ class _Invocation(Transformation):
         frame: Frame,
         cursor: int,
     ) -> FrameResult:
-        originals = self._original_functions(frame)
+        context = frame.context
+        originals = context.original_functions
         functions: dict[tuple[str, int], HostFunction] = dict(
-            self.stylesheet_functions(frame.package)
+            self.stylesheet_functions(context.package_name)
         )
         for arity, component in originals.items():
             functions[(f"{{{XSLT_NS}}}original", arity)] = HostFunction(
@@ -7749,25 +6877,15 @@ class _Invocation(Transformation):
                 suspend=True,
             )
         machine: ContinuationMachine | None = None
-        if not self._expression_references_global(expression, frame.package):
-            environment = self._environment(
-                self._frame_variables(frame),
-                frame.package,
-                original_functions=originals,
-            )
+        if not self._expression_references_global(expression, context.package_name):
+            environment = self._environment(context)
             machine = self.xpath_machine(
                 expression,
                 environment.variables,
                 functions,
             )
         if machine is None:
-            value = self._evaluate(
-                expression,
-                frame.focus,
-                self._frame_variables(frame),
-                frame.package,
-                original_functions=originals,
-            )
+            value = self._evaluate(expression, context)
             return Continue(
                 replace(
                     frame,
@@ -7779,8 +6897,10 @@ class _Invocation(Transformation):
             kind="xpath",
             identity=f"xpath {expression.source}",
             program=_XPathState(machine),
-            focus=frame.focus,
-            package=frame.package,
+            context=EvaluationContext(
+                focus=context.focus,
+                package_name=context.package_name,
+            ),
             location=getattr(expression.static_context, "location", None),
             group=frame.group,
             grouping_key=frame.grouping_key,
@@ -7794,72 +6914,27 @@ class _Invocation(Transformation):
     def _choose_branch(
         self,
         plan: _ChoosePlan,
-        frame: Frame,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> tuple[_Plan, ...] | None:
         for test, branch in plan.branches:
-            if _effective_boolean(
-                self._evaluate(
-                    test,
-                    frame.focus,
-                    self._frame_variables(frame),
-                    frame.package,
-                    original_functions=original_functions,
-                )
-            ):
+            if _effective_boolean(self._evaluate(test, context)):
                 return branch
         return plan.otherwise
 
     def _plan_parameters(
         self,
         parameters: tuple[_WithParamPlan, ...],
-        frame: Frame,
-    ) -> tuple[Mapping[str, XdmSequence], Mapping[str, XdmSequence]]:
-        return self._plan_parameters_for(
-            parameters,
-            frame.focus,
-            self._frame_variables(frame),
-            frame.package,
-            mode=frame.mode,
-            tunnel_parameters=self._frame_tunnel(frame),
-            rule_context=self._rule_context(frame),
-            original_functions=self._original_functions(frame),
-        )
-
-    def _plan_parameters_for(
-        self,
-        parameters: tuple[_WithParamPlan, ...],
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
-        *,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> tuple[Mapping[str, XdmSequence], Mapping[str, XdmSequence]]:
         template: dict[str, XdmSequence] = {}
         tunnel: dict[str, XdmSequence] = {}
         for parameter in parameters:
             if parameter.expression is not None:
-                value = self._evaluate(
-                    parameter.expression,
-                    focus,
-                    locals_,
-                    package_name,
-                    original_functions=original_functions,
-                )
+                value = self._evaluate(parameter.expression, context)
             elif parameter.children:
                 value = self._execute_plans(
                     parameter.children,
-                    focus=focus,
-                    locals_=locals_,
-                    final_output=False,
-                    package_name=package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
+                    context=replace(context, final_output=False),
                 )
             else:
                 value = ()
@@ -7901,19 +6976,17 @@ class _Invocation(Transformation):
         plan: _CallTemplatePlan,
         frame: Frame,
         cursor: int,
-        rule_context: _RuleContext | None,
     ) -> FrameResult:
-        template, tunnel = self._plan_parameters(plan.parameters, frame)
-        effective_tunnel = {**self._frame_tunnel(frame), **tunnel}
+        context = frame.context
+        template, tunnel = self._plan_parameters(plan.parameters, context)
         component = self._resolve_template(plan.reference)
         child = self._component_frame(
             component,
             template_parameters=template,
-            tunnel_parameters=effective_tunnel,
-            final_output=frame.final_output,
-            focus=frame.focus,
-            mode=frame.mode,
-            rule_context=rule_context,
+            context=replace(
+                context,
+                tunnel_parameters={**context.tunnel_parameters, **tunnel},
+            ),
             group=frame.group,
             grouping_key=frame.grouping_key,
         )
@@ -7949,7 +7022,7 @@ class _Invocation(Transformation):
         a using package's mode keeps that package's override composition.
         """
         if mode == "#current":
-            context = self._rule_context(frame)
+            context = frame.context.rule_context
             return frame.package if context is None else context.mode_package
         return frame.package
 
@@ -7960,7 +7033,7 @@ class _Invocation(Transformation):
         item: XdmItem,
     ) -> RuleMatch | None:
         dispatcher = self._dispatcher(rule_context.mode, rule_context.mode_package)
-        environment = self._environment({}, rule_context.package_name)
+        environment = self._environment(EvaluationContext(package_name=rule_context.package_name))
         if plan.kind == "next-match":
             return dispatcher.next_match(
                 item,
@@ -7982,9 +7055,10 @@ class _Invocation(Transformation):
         plan: _OverridingPlan,
         frame: Frame,
         cursor: int,
-        rule_context: _RuleContext | None,
     ) -> FrameResult:
-        template, tunnel = self._plan_parameters(plan.parameters, frame)
+        context = frame.context
+        rule_context = context.rule_context
+        template, tunnel = self._plan_parameters(plan.parameters, context)
         if rule_context is None:
             raise XsltDynamicError(
                 "xsl:next-match and xsl:apply-imports require a current template rule",
@@ -8007,9 +7081,12 @@ class _Invocation(Transformation):
             return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
         child = self._rule_frame(
             match,
-            rule_context.focus,
+            replace(
+                context,
+                focus=rule_context.focus,
+                tunnel_parameters=effective_tunnel,
+            ),
             template,
-            effective_tunnel,
             mode_package=rule_context.mode_package,
             group=frame.group,
             grouping_key=frame.grouping_key,
@@ -8026,34 +7103,20 @@ class _Invocation(Transformation):
         frame: Frame,
         cursor: int,
     ) -> FrameResult:
-        items = self._evaluate(
-            plan.expression,
-            frame.focus,
-            self._frame_variables(frame),
-            frame.package,
-        )
-        items = self._sorted_items(
-            items,
-            plan.sorts,
-            frame.focus,
-            self._frame_variables(frame),
-            frame.package,
-            mode=frame.mode,
-            tunnel_parameters=self._frame_tunnel(frame),
-            rule_context=self._rule_context(frame),
-            original_functions=self._original_functions(frame),
-        )
-        resolved_mode = self._resolve_mode(plan.mode, frame.mode, frame.package)
+        context = frame.context
+        items = self._evaluate(plan.expression, context)
+        items = self._sorted_items(items, plan.sorts, context)
+        resolved_mode = self._resolve_mode(plan.mode, context.mode, context.package_name)
         mode_package = self._mode_package(plan.mode, frame)
         self._check_typed_mode(items, resolved_mode, mode_package)
-        template, tunnel = self._plan_parameters(plan.parameters, frame)
+        template, tunnel = self._plan_parameters(plan.parameters, context)
         child = self._apply_frame(
             items,
             resolved_mode,
             template,
-            {**self._frame_tunnel(frame), **tunnel},
+            {**context.tunnel_parameters, **tunnel},
             tail=plan.tail,
-            package_name=frame.package,
+            package_name=context.package_name,
             mode_package=mode_package,
             group=frame.group,
             grouping_key=frame.grouping_key,
@@ -8092,9 +7155,11 @@ class _Invocation(Transformation):
             kind="apply",
             identity=f"apply-templates mode={mode!r}",
             program=state,
-            tunnel_parameters=tunnel_parameters,
-            mode=mode,
-            package=package_name,
+            context=EvaluationContext(
+                package_name=package_name,
+                mode=mode,
+                tunnel_parameters=tunnel_parameters,
+            ),
             tail=tail,
             group=effective_group,
             grouping_key=effective_grouping_key,
@@ -8184,8 +7249,7 @@ class _Invocation(Transformation):
     ) -> ExpressionEnvironment:
         if locals_ is not None:
             return self._environment(
-                locals_,
-                package_name,
+                EvaluationContext(locals=locals_, package_name=package_name),
                 referenced=_pattern_variable_names(pattern),
                 static_context=pattern.context,
                 regex_captures=None,
@@ -8194,8 +7258,7 @@ class _Invocation(Transformation):
         environment = self._pattern_environments.get(key)
         if environment is None:
             environment = self._environment(
-                {},
-                package_name,
+                EvaluationContext(package_name=package_name),
                 referenced=_pattern_variable_names(pattern),
                 static_context=pattern.context,
                 regex_captures=None,
@@ -8206,9 +7269,8 @@ class _Invocation(Transformation):
     def _rule_frame(
         self,
         match: RuleMatch,
-        focus: Focus,
+        context: EvaluationContext,
         template_parameters: Mapping[str, XdmSequence],
-        tunnel_parameters: Mapping[str, XdmSequence],
         *,
         mode_package: str | None = None,
         group: object = _INHERIT,
@@ -8216,14 +7278,19 @@ class _Invocation(Transformation):
     ) -> Frame:
         rule = match.rule
         body = cast(_BodyPlan, rule.template)
-        rule_focus = self._apply_context_item(body.context_item, focus)
+        rule_focus = self._apply_context_item(body.context_item, context.focus)
+        rule_context = replace(
+            context,
+            focus=rule_focus,
+            final_output=True,
+            package_name=body.owner,
+            mode=rule.mode,
+            original_functions={},
+        )
         locals_, index = self._bind_template_parameters(
             body.body,
             template_parameters,
-            tunnel_parameters,
-            rule_focus,
-            body.owner,
-            mode=rule.mode,
+            rule_context,
         )
         conversion = None
         if body.result_type is not None:
@@ -8233,27 +7300,26 @@ class _Invocation(Transformation):
                 code="XTTE0505",
                 label="template rule result",
             )
-        context = _RuleContext(
+        active_rule = _RuleContext(
             match=match,
             focus=rule_focus,
             mode=rule.mode,
             package_name=body.owner,
-            tunnel_parameters=tunnel_parameters,
+            tunnel_parameters=context.tunnel_parameters,
             mode_package=mode_package,
         )
         effective_group, effective_grouping_key = self._inherited_group(group, grouping_key)
         frame = Frame(
             kind="rule",
-            component=context,
+            component=active_rule,
             identity=f"rule {rule.name or rule.pattern}",
             program=body.body[index:],
-            variables=locals_,
-            tunnel_parameters=tunnel_parameters,
-            focus=rule_focus,
-            package=body.owner,
-            mode=rule.mode,
+            context=replace(
+                rule_context,
+                locals=locals_,
+                rule_context=active_rule,
+            ),
             location=rule.pattern.context.location,
-            final_output=True,
             conversion=conversion,
             group=effective_group,
             grouping_key=effective_grouping_key,
@@ -8264,18 +7330,14 @@ class _Invocation(Transformation):
         self,
         body: tuple[_Plan, ...],
         template_parameters: Mapping[str, XdmSequence],
-        tunnel_parameters: Mapping[str, XdmSequence],
-        focus: Focus,
-        package_name: str | None,
-        *,
-        mode: str | None = None,
+        context: EvaluationContext,
     ) -> tuple[dict[str, XdmSequence], int]:
         locals_: dict[str, XdmSequence] = {}
         index = 0
         while index < len(body) and isinstance(body[index], _ParamPlan):
             parameter = cast(_ParamPlan, body[index])
             supplied = (
-                tunnel_parameters.get(parameter.name)
+                context.tunnel_parameters.get(parameter.name)
                 if parameter.tunnel
                 else template_parameters.get(parameter.name)
             )
@@ -8284,11 +7346,7 @@ class _Invocation(Transformation):
                 if supplied is not None
                 else self._parameter_default(
                     parameter,
-                    focus,
-                    locals_,
-                    package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
+                    replace(context, locals=locals_),
                 )
             )
             value = self._coerce_parameter(parameter, value, code="XTTE0590")
@@ -8306,7 +7364,7 @@ class _Invocation(Transformation):
         rule = self._dispatcher(state.mode, state.mode_package).select(
             item,
             state.mode,
-            self._environment({}, state.package_name),
+            self._environment(EvaluationContext(package_name=state.package_name)),
             self._pattern_environment,
         )
         next_state = replace(state, index=state.index + 1)
@@ -8320,9 +7378,12 @@ class _Invocation(Transformation):
             return Continue(replace(frame, program=next_state))
         rule_frame = self._rule_frame(
             rule,
-            focus,
+            EvaluationContext(
+                focus=focus,
+                package_name=state.package_name,
+                tunnel_parameters=state.tunnel_parameters,
+            ),
             state.template_parameters,
-            state.tunnel_parameters,
             mode_package=state.mode_package,
             group=state.group,
             grouping_key=state.grouping_key,
@@ -8683,7 +7744,7 @@ class _Invocation(Transformation):
         child = self._component_frame(
             cast(Component, target.component),
             arguments=arguments,
-            final_output=False,
+            context=EvaluationContext(final_output=False),
         )
         return Call(child, resume=frame, tail=False)
 
@@ -8748,35 +7809,20 @@ class _Invocation(Transformation):
     def _parameter_default(
         self,
         parameter: _ParamPlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
-        *,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
+        context: EvaluationContext,
     ) -> XdmSequence:
         if parameter.expression is not None:
-            return self._evaluate(parameter.expression, focus, locals_, package_name)
+            return self._evaluate(parameter.expression, context)
         if parameter.children:
-            if parameter.has_as:
-                return self._execute_plans(
-                    parameter.children,
-                    focus=focus,
-                    locals_=locals_,
-                    final_output=False,
-                    package_name=package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                )
-            sequence = self._execute_plans(
-                parameter.children,
-                focus=focus,
-                locals_=locals_,
+            default_context = replace(
+                context,
                 final_output=False,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
+                rule_context=None,
+                original_functions={},
             )
+            if parameter.has_as:
+                return self._execute_plans(parameter.children, context=default_context)
+            sequence = self._execute_plans(parameter.children, context=default_context)
             return (_build_result_tree(sequence),)
         if parameter.required:
             raise XsltError(
@@ -8879,33 +7925,20 @@ class _Invocation(Transformation):
                         code="XTDE0050",
                     )
                 focus = self._global_focus(component)
+                context = EvaluationContext(
+                    focus=focus,
+                    locals=original_locals,
+                    final_output=False,
+                    package_name=component.owner,
+                    original_functions=original_functions,
+                )
                 if plan.select is not None:
-                    value = self._evaluate(
-                        plan.select,
-                        focus,
-                        original_locals,
-                        component.owner,
-                        original_functions=original_functions,
-                    )
+                    value = self._evaluate(plan.select, context)
                 elif plan.body:
                     if plan.has_as:
-                        value = self._execute_plans(
-                            plan.body,
-                            focus=focus,
-                            locals_=original_locals,
-                            final_output=False,
-                            package_name=component.owner,
-                            original_functions=original_functions,
-                        )
+                        value = self._execute_plans(plan.body, context=context)
                     else:
-                        sequence = self._execute_plans(
-                            plan.body,
-                            focus=focus,
-                            locals_=original_locals,
-                            final_output=False,
-                            package_name=component.owner,
-                            original_functions=original_functions,
-                        )
+                        sequence = self._execute_plans(plan.body, context=context)
                         value = (_build_result_tree(sequence),)
                 elif plan.has_as:
                     value = ()
@@ -8945,17 +7978,10 @@ class _Invocation(Transformation):
         self,
         plans: Iterable[_Plan],
         *,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmSequence:
         result: list[XdmItem] = []
-        local_scope = dict(locals_)
+        local_scope = dict(context.locals)
         try:
             for plan in plans:
                 if isinstance(plan, _ParamPlan):
@@ -8966,26 +7992,13 @@ class _Invocation(Transformation):
                 if isinstance(plan, _VariablePlan):
                     local_scope[plan.name] = self._variable_value(
                         plan,
-                        focus,
-                        local_scope,
-                        package_name,
-                        mode=mode,
-                        tunnel_parameters=tunnel_parameters,
-                        rule_context=rule_context,
-                        original_functions=original_functions,
+                        replace(context, locals=local_scope),
                     )
                     continue
                 result.extend(
                     self._execute_plan(
                         plan,
-                        focus=focus,
-                        locals_=local_scope,
-                        final_output=final_output,
-                        package_name=package_name,
-                        mode=mode,
-                        tunnel_parameters=tunnel_parameters,
-                        rule_context=rule_context,
-                        original_functions=original_functions,
+                        context=replace(context, locals=local_scope),
                     )
                 )
         except _IterationControlSignal as signal:
@@ -8997,21 +8010,14 @@ class _Invocation(Transformation):
         self,
         plan: _Plan,
         *,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmSequence:
         if isinstance(plan, _TextPlan):
             return (self._text_node(plan.value),)
         if isinstance(plan, (_NextIterationPlan, _BreakPlan)):
             active = getattr(self, "_active_iteration_frame", None)
             if active is not None and isinstance(active.iteration, IterationState):
-                raise _IterationControlSignal(plan, locals_, focus)
+                raise _IterationControlSignal(plan, context.locals, context.focus)
             raise XsltStaticError(
                 f"xsl:{plan.instruction.local_name} requires an enclosing xsl:iterate",
                 code="XTSE3120",
@@ -9019,459 +8025,132 @@ class _Invocation(Transformation):
                 location=plan.instruction.location,
             )
         if isinstance(plan, (_ForEachPlan, _IteratePlan, _ForEachGroupPlan)):
-            return self._run_iteration_plan(
-                plan,
-                focus=focus,
-                locals_=locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            return self._run_iteration_plan(plan, context=context)
         if isinstance(plan, _MergePlan):
-            return self._run_merge(
-                plan,
-                focus=focus,
-                locals_=locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            return self._run_merge(plan, context=context)
         if isinstance(plan, _ForkPlan):
-            return self._run_fork(
-                plan,
-                focus=focus,
-                locals_=locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            return self._run_fork(plan, context=context)
         if isinstance(plan, _SourceDocumentPlan):
-            return self._run_source_document(
-                plan,
-                focus=focus,
-                locals_=locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            return self._run_source_document(plan, context=context)
         if isinstance(plan, _PerformSortPlan):
-            return self._perform_sort(
-                plan,
-                focus,
-                locals_,
-                package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            return self._perform_sort(plan, context)
         if isinstance(plan, _TvtPlan):
-            return (
-                self._text_node(self._value_template(plan.template, focus, locals_, package_name)),
-            )
+            return (self._text_node(self._value_template(plan.template, context)),)
         if isinstance(plan, _AttributePlan):
-            return self._attribute_value(
-                plan,
-                focus,
-                locals_,
-                final_output,
-                package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            return self._attribute_value(plan, context)
         if isinstance(plan, _SequencePlan):
             if plan.expression is not None:
-                return self._evaluate(
-                    plan.expression,
-                    focus,
-                    locals_,
-                    package_name,
-                    original_functions=original_functions,
-                )
-            return self._execute_plans(
-                plan.children,
-                focus=focus,
-                locals_=locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+                return self._evaluate(plan.expression, context)
+            return self._execute_plans(plan.children, context=context)
         if isinstance(plan, _ValueOfPlan):
             if plan.expression is not None:
-                values = self._evaluate(
-                    plan.expression,
-                    focus,
-                    locals_,
-                    package_name,
-                    original_functions=original_functions,
-                )
+                values = self._evaluate(plan.expression, context)
             else:
-                values = self._execute_plans(
-                    plan.children,
-                    focus=focus,
-                    locals_=locals_,
-                    final_output=final_output,
-                    package_name=package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
-                )
+                values = self._execute_plans(plan.children, context=context)
             if plan.expression is not None and not plan.explicit_separator:
                 profile = self.profile_for(plan.expression.static_context.xslt_version)
                 if profile.compatibility_mode:
                     return (self._text_node(profile.string_sequence(values)),)
-            separator = self._value_source(plan.separator, focus, locals_, package_name)
+            separator = self._value_source(plan.separator, context)
             text = _simple_content_string(values, separator)
             return (self._text_node(text),)
         if isinstance(plan, _LiteralPlan):
-            return (
-                self._literal_element(
-                    plan,
-                    focus,
-                    locals_,
-                    final_output,
-                    package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
-                ),
-            )
+            return (self._literal_element(plan, context),)
         if isinstance(plan, _ElementPlan):
-            return (
-                self._element_value(
-                    plan,
-                    focus,
-                    locals_,
-                    final_output,
-                    package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
-                ),
-            )
+            return (self._element_value(plan, context),)
         if isinstance(plan, _DocumentPlan):
-            return (
-                self._document_value(
-                    plan,
-                    focus,
-                    locals_,
-                    final_output,
-                    package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
-                ),
-            )
+            return (self._document_value(plan, context),)
         if isinstance(plan, _CopyPlan):
-            return self._copy_value(
-                plan,
-                focus,
-                locals_,
-                final_output,
-                package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            return self._copy_value(plan, context)
         if isinstance(plan, _CopyOfPlan):
-            return self._copy_of_value(
-                plan,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
-            )
+            return self._copy_of_value(plan, context)
         if isinstance(plan, _ChoosePlan):
             branch = None
             for test, candidate in plan.branches:
-                if _effective_boolean(
-                    self._evaluate(
-                        test,
-                        focus,
-                        locals_,
-                        package_name,
-                        original_functions=original_functions,
-                    )
-                ):
+                if _effective_boolean(self._evaluate(test, context)):
                     branch = candidate
                     break
             if branch is None:
                 branch = plan.otherwise
             if branch is None:
                 return ()
-            return self._execute_plans(
-                branch,
-                focus=focus,
-                locals_=locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            return self._execute_plans(branch, context=context)
         if isinstance(plan, _TryPlan):
-            return self._run_try(
-                plan,
-                focus=focus,
-                locals_=locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            return self._run_try(plan, context=context)
         if isinstance(plan, _MapPlan):
-            values = self._execute_plans(
-                plan.children,
-                focus=focus,
-                locals_=locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            values = self._execute_plans(plan.children, context=context)
             return (construct_map(values),)
         if isinstance(plan, _MapEntryPlan):
-            key = self._evaluate(
-                plan.key,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
-            )
+            key = self._evaluate(plan.key, context)
             if plan.expression is not None:
-                value = self._evaluate(
-                    plan.expression,
-                    focus,
-                    locals_,
-                    package_name,
-                    original_functions=original_functions,
-                )
+                value = self._evaluate(plan.expression, context)
             else:
                 value = self._execute_plans(
                     plan.children,
-                    focus=focus,
-                    locals_=locals_,
-                    final_output=False,
-                    package_name=package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
+                    context=replace(context, final_output=False),
                 )
             return (construct_map_entry(key, value),)
         if isinstance(plan, _EvaluatePlan):
-            return self._dynamic_evaluate(
-                plan,
-                focus,
-                locals_,
-                package_name,
-                final_output=final_output,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            return self._dynamic_evaluate(plan, context)
         if isinstance(plan, _AssertPlan):
-            self._assert_value(
-                plan,
-                focus,
-                locals_,
-                package_name,
-                final_output=final_output,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            self._assert_value(plan, context)
             return ()
         if isinstance(plan, _WherePopulatedPlan):
-            values = self._execute_plans(
-                plan.children,
-                focus=focus,
-                locals_=locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            values = self._execute_plans(plan.children, context=context)
             return tuple(item for item in values if not is_deemed_empty(item))
         if isinstance(plan, _ConditionalSequencePlan):
-            return self._execute_conditional_sequence(
-                plan,
-                focus,
-                locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            return self._execute_conditional_sequence(plan, context)
         if isinstance(plan, _FallbackPlan):
             return ()
         if isinstance(plan, _ConcatPlan):
             result: list[XdmItem] = []
             for part in plan.parts:
-                result.extend(
-                    self._execute_plans(
-                        part,
-                        focus=focus,
-                        locals_=locals_,
-                        final_output=final_output,
-                        package_name=package_name,
-                        mode=mode,
-                        tunnel_parameters=tunnel_parameters,
-                        rule_context=rule_context,
-                        original_functions=original_functions,
-                    )
-                )
+                result.extend(self._execute_plans(part, context=context))
             return tuple(result)
         if isinstance(plan, _CallTemplatePlan):
-            template, tunnel = self._plan_parameters_for(
-                plan.parameters,
-                focus,
-                locals_,
-                package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            template, tunnel = self._plan_parameters(plan.parameters, context)
             component = self._resolve_template(plan.reference)
             return self._execute_component(
                 component,
                 template_parameters=template,
-                tunnel_parameters={**(tunnel_parameters or {}), **tunnel},
-                final_output=final_output,
-                focus=focus,
-                mode=mode,
-                rule_context=rule_context,
+                context=replace(
+                    context,
+                    tunnel_parameters={**context.tunnel_parameters, **tunnel},
+                ),
             )
         if isinstance(plan, _ApplyTemplatesPlan):
-            items = self._evaluate(
-                plan.expression,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
+            items = self._evaluate(plan.expression, context)
+            items = self._sorted_items(items, plan.sorts, context)
+            resolved_mode = self._resolve_mode(
+                plan.mode,
+                context.mode,
+                context.package_name,
             )
-            items = self._sorted_items(
-                items,
-                plan.sorts,
-                focus,
-                locals_,
-                package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
-            resolved_mode = self._resolve_mode(plan.mode, mode, package_name)
+            active_rule = context.rule_context
             mode_package = (
-                rule_context.mode_package
-                if plan.mode == "#current" and rule_context is not None
-                else package_name
+                active_rule.mode_package
+                if plan.mode == "#current" and active_rule is not None
+                else context.package_name
             )
             self._check_typed_mode(items, resolved_mode, mode_package)
-            template, tunnel = self._plan_parameters_for(
-                plan.parameters,
-                focus,
-                locals_,
-                package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            template, tunnel = self._plan_parameters(plan.parameters, context)
             return self._apply_templates(
                 items,
                 resolved_mode,
                 template,
-                {**(tunnel_parameters or {}), **tunnel},
-                package_name=package_name,
+                {**context.tunnel_parameters, **tunnel},
+                package_name=context.package_name,
                 mode_package=mode_package,
             )
         if isinstance(plan, _OverridingPlan):
-            template, tunnel = self._plan_parameters_for(
-                plan.parameters,
-                focus,
-                locals_,
-                package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
-            return self._execute_overriding(
-                plan,
-                rule_context,
-                template,
-                tunnel,
-            )
+            return self._execute_overriding(plan, context)
         if isinstance(plan, _ResultDocumentPlan):
-            self._result_document(
-                plan,
-                focus,
-                locals_,
-                final_output,
-                package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-            )
+            self._result_document(plan, context)
             return ()
         if isinstance(plan, _AnalyzeStringPlan):
-            return self._run_analyze_string(
-                plan,
-                focus=focus,
-                locals_=locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            return self._run_analyze_string(plan, context=context)
         if isinstance(plan, _NumberPlan):
-            return self._run_number(
-                plan,
-                focus=focus,
-                locals_=locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            return self._run_number(plan, context=context)
         if isinstance(plan, _UnsupportedPlan):
             raise XsltError(
                 f"the instruction xsl:{plan.instruction.local_name} is not supported by the "
@@ -9485,19 +8164,11 @@ class _Invocation(Transformation):
     def _execute_conditional_sequence(
         self,
         plan: _ConditionalSequencePlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        *,
-        final_output: bool,
-        package_name: str | None,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmSequence:
         result: list[XdmItem] = []
         deferred: list[tuple[_OnNonEmptyPlan, Mapping[str, XdmSequence]]] = []
-        local_scope = dict(locals_)
+        local_scope = dict(context.locals)
         populated = False
         try:
             for item in plan.plans:
@@ -9506,78 +8177,29 @@ class _Invocation(Transformation):
                         "xsl:param is only supported at the start of a template or function",
                         code="XTDE0000",
                     )
+                item_context = replace(context, locals=local_scope)
                 if isinstance(item, _VariablePlan):
-                    local_scope[item.name] = self._variable_value(
-                        item,
-                        focus,
-                        local_scope,
-                        package_name,
-                        mode=mode,
-                        tunnel_parameters=tunnel_parameters,
-                        rule_context=rule_context,
-                        original_functions=original_functions,
-                    )
+                    local_scope[item.name] = self._variable_value(item, item_context)
                     continue
                 if isinstance(item, _OnNonEmptyPlan):
                     if populated:
-                        result.extend(
-                            self._conditional_value(
-                                item,
-                                focus,
-                                local_scope,
-                                final_output,
-                                package_name,
-                                mode=mode,
-                                tunnel_parameters=tunnel_parameters,
-                                rule_context=rule_context,
-                                original_functions=original_functions,
-                            )
-                        )
+                        result.extend(self._conditional_value(item, item_context))
                     else:
                         deferred.append((item, dict(local_scope)))
                     continue
                 if isinstance(item, _OnEmptyPlan):
                     if not populated:
                         result.clear()
-                        result.extend(
-                            self._conditional_value(
-                                item,
-                                focus,
-                                local_scope,
-                                final_output,
-                                package_name,
-                                mode=mode,
-                                tunnel_parameters=tunnel_parameters,
-                                rule_context=rule_context,
-                                original_functions=original_functions,
-                            )
-                        )
+                        result.extend(self._conditional_value(item, item_context))
                     continue
-                values = self._execute_plan(
-                    item,
-                    focus=focus,
-                    locals_=local_scope,
-                    final_output=final_output,
-                    package_name=package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
-                )
+                values = self._execute_plan(item, context=item_context)
                 for value in values:
                     if not populated and not is_vacuous(value):
                         for deferred_plan, deferred_scope in deferred:
                             result.extend(
                                 self._conditional_value(
                                     deferred_plan,
-                                    focus,
-                                    deferred_scope,
-                                    final_output,
-                                    package_name,
-                                    mode=mode,
-                                    tunnel_parameters=tunnel_parameters,
-                                    rule_context=rule_context,
-                                    original_functions=original_functions,
+                                    replace(context, locals=deferred_scope),
                                 )
                             )
                         deferred.clear()
@@ -9589,14 +8211,7 @@ class _Invocation(Transformation):
                     result.extend(
                         self._conditional_value(
                             deferred_plan,
-                            focus,
-                            deferred_scope,
-                            final_output,
-                            package_name,
-                            mode=mode,
-                            tunnel_parameters=tunnel_parameters,
-                            rule_context=rule_context,
-                            original_functions=original_functions,
+                            replace(context, locals=deferred_scope),
                         )
                     )
                 deferred.clear()
@@ -9607,63 +8222,22 @@ class _Invocation(Transformation):
     def _conditional_value(
         self,
         plan: _OnEmptyPlan | _OnNonEmptyPlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        *,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmSequence:
         if plan.expression is not None:
-            return self._evaluate(
-                plan.expression,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
-            )
-        return self._execute_plans(
-            plan.children,
-            focus=focus,
-            locals_=locals_,
-            final_output=final_output,
-            package_name=package_name,
-            mode=mode,
-            tunnel_parameters=tunnel_parameters,
-            rule_context=rule_context,
-            original_functions=original_functions,
-        )
+            return self._evaluate(plan.expression, context)
+        return self._execute_plans(plan.children, context=context)
 
     def _run_analyze_string(
         self,
         plan: _AnalyzeStringPlan,
         *,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        mode: str | None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None,
-        rule_context: _RuleContext | None,
-        original_functions: Mapping[int, Component] | None,
+        context: EvaluationContext,
     ) -> XdmSequence:
-        values = self._evaluate(
-            plan.expression,
-            focus,
-            locals_,
-            package_name,
-            original_functions=original_functions,
-        )
+        values = self._evaluate(plan.expression, context)
         text = _analyze_string_value(values)
-        regex_source = self._value_source(plan.regex, focus, locals_, package_name)
-        flags = (
-            self._value_source(plan.flags, focus, locals_, package_name)
-            if plan.flags is not None
-            else ""
-        )
+        regex_source = self._value_source(plan.regex, context)
+        flags = self._value_source(plan.flags, context) if plan.flags is not None else ""
         try:
             regex = compile_xpath_regex(regex_source, flags)
         except XPathRegexError as exc:
@@ -9675,59 +8249,30 @@ class _Invocation(Transformation):
             branch = plan.matching if substring.matched else plan.non_matching
             if not branch:
                 continue
-            branch_focus = Focus.singleton(
-                XdmAtomic.string(substring.value),
-                position=position,
-                size=len(substrings),
+            branch_context = replace(
+                context,
+                focus=Focus.singleton(
+                    XdmAtomic.string(substring.value),
+                    position=position,
+                    size=len(substrings),
+                ),
             )
             with self._regex_scope(substring.groups if substring.matched else None):
-                result.extend(
-                    self._execute_plans(
-                        branch,
-                        focus=branch_focus,
-                        locals_=locals_,
-                        final_output=final_output,
-                        package_name=package_name,
-                        mode=mode,
-                        tunnel_parameters=tunnel_parameters,
-                        rule_context=rule_context,
-                        original_functions=original_functions,
-                    )
-                )
+                result.extend(self._execute_plans(branch, context=branch_context))
         return tuple(result)
 
     def _run_number(
         self,
         plan: _NumberPlan,
         *,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        mode: str | None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None,
-        rule_context: _RuleContext | None,
-        original_functions: Mapping[int, Component] | None,
+        context: EvaluationContext,
     ) -> XdmSequence:
-        del final_output, mode, tunnel_parameters, rule_context
         if plan.value is not None:
-            values = self._evaluate(
-                plan.value,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
-            )
+            values = self._evaluate(plan.value, context)
             numbers = _number_values(values)
         else:
             if plan.select is not None:
-                selected = self._evaluate(
-                    plan.select,
-                    focus,
-                    locals_,
-                    package_name,
-                    original_functions=original_functions,
-                )
+                selected = self._evaluate(plan.select, context)
                 if len(selected) != 1 or not isinstance(selected[0], XdmNode):
                     raise XsltDynamicError(
                         "xsl:number select must evaluate to a single node",
@@ -9735,53 +8280,39 @@ class _Invocation(Transformation):
                     )
                 node = selected[0]
             else:
-                item = focus.item
+                item = context.focus.item
                 if not isinstance(item, XdmNode):
                     raise XsltDynamicError(
                         "xsl:number without select or value requires a context node",
                         code="XTTE0990",
                     )
                 node = item
-            count_match = self._number_matcher(plan.count, node, locals_, package_name)
+            count_match = self._number_matcher(plan.count, node, context)
             from_match = (
-                self._number_matcher(plan.from_pattern, node, locals_, package_name)
+                self._number_matcher(plan.from_pattern, node, context)
                 if plan.from_pattern is not None
                 else None
             )
             numbers = place_marker(node, plan.level, count_match, from_match)
-        start_at = (
-            self._value_source(plan.start_at, focus, locals_, package_name)
-            if plan.start_at is not None
-            else None
-        )
+        start_at = self._value_source(plan.start_at, context) if plan.start_at is not None else None
         numbers = _rebase_place_marker(numbers, start_at)
         format_ = (
             plan.format
             if isinstance(plan.format, str)
-            else self._value_source(plan.format, focus, locals_, package_name)
+            else self._value_source(plan.format, context)
         )
-        lang = (
-            self._value_source(plan.lang, focus, locals_, package_name)
-            if plan.lang is not None
-            else ""
-        )
-        ordinal = (
-            self._value_source(plan.ordinal, focus, locals_, package_name)
-            if plan.ordinal is not None
-            else "no"
-        )
+        lang = self._value_source(plan.lang, context) if plan.lang is not None else ""
+        ordinal = self._value_source(plan.ordinal, context) if plan.ordinal is not None else "no"
         letter_value = (
-            self._value_source(plan.letter_value, focus, locals_, package_name)
-            if plan.letter_value is not None
-            else ""
+            self._value_source(plan.letter_value, context) if plan.letter_value is not None else ""
         )
         grouping_separator = (
-            self._value_source(plan.grouping_separator, focus, locals_, package_name)
+            self._value_source(plan.grouping_separator, context)
             if plan.grouping_separator is not None
             else None
         )
         grouping_size = (
-            self._value_source(plan.grouping_size, focus, locals_, package_name)
+            self._value_source(plan.grouping_size, context)
             if plan.grouping_size is not None
             else None
         )
@@ -9800,8 +8331,7 @@ class _Invocation(Transformation):
         self,
         pattern: CompiledPattern | None,
         selected: XdmNode,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
+        context: EvaluationContext,
     ) -> Callable[[XdmNode], bool]:
         if pattern is None:
             kind = selected.kind
@@ -9814,8 +8344,8 @@ class _Invocation(Transformation):
         matcher = PatternMatcher(pattern)
         environment = self._pattern_environment_for(
             pattern,
-            package_name,
-            locals_=locals_,
+            context.package_name,
+            locals_=context.locals,
         )
 
         def matches(candidate: XdmNode) -> bool:
@@ -9826,30 +8356,14 @@ class _Invocation(Transformation):
     def _assert_value(
         self,
         plan: _AssertPlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
-        *,
-        final_output: bool,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> None:
         if not plan.enabled:
             return
         failure: BaseException | None = None
         satisfied = False
         try:
-            satisfied = _effective_boolean(
-                self._evaluate(
-                    plan.test,
-                    focus,
-                    locals_,
-                    package_name,
-                    original_functions=original_functions,
-                )
-            )
+            satisfied = _effective_boolean(self._evaluate(plan.test, context))
         except Exception as exc:
             failure = exc
         if satisfied:
@@ -9860,26 +8374,11 @@ class _Invocation(Transformation):
         try:
             message_values: list[XdmItem] = []
             if plan.select is not None:
-                message_values.extend(
-                    self._evaluate(
-                        plan.select,
-                        focus,
-                        locals_,
-                        package_name,
-                        original_functions=original_functions,
-                    )
-                )
+                message_values.extend(self._evaluate(plan.select, context))
             message_values.extend(
                 self._execute_plans(
                     plan.children,
-                    focus=focus,
-                    locals_=locals_,
-                    final_output=False,
-                    package_name=package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
+                    context=replace(context, final_output=False),
                 )
             )
             if message_values:
@@ -9892,7 +8391,7 @@ class _Invocation(Transformation):
         code = "XTMM9001"
         if plan.error_code is not None:
             try:
-                selected = self._value_source(plan.error_code, focus, locals_, package_name)
+                selected = self._value_source(plan.error_code, context)
                 code = _assertion_error_code(selected, plan.instruction.namespaces)
             except Exception as exc:
                 if message_failure is None:
@@ -9915,15 +8414,7 @@ class _Invocation(Transformation):
     def _dynamic_evaluate(
         self,
         plan: _EvaluatePlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
-        *,
-        final_output: bool,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmSequence:
         if not plan.enabled:
             raise XsltDynamicError(
@@ -9931,13 +8422,7 @@ class _Invocation(Transformation):
                 code="XTDE3175",
                 location=plan.instruction.location,
             )
-        target_values = self._evaluate(
-            plan.expression,
-            focus,
-            locals_,
-            package_name,
-            original_functions=original_functions,
-        )
+        target_values = self._evaluate(plan.expression, context)
         profile = self.profile_for(plan.expression.static_context.xslt_version)
         target = profile.string_sequence(target_values)
 
@@ -9945,24 +8430,11 @@ class _Invocation(Transformation):
         variable_types: dict[str, str] = {}
         for parameter in plan.with_params:
             if parameter.expression is not None:
-                value = self._evaluate(
-                    parameter.expression,
-                    focus,
-                    locals_,
-                    package_name,
-                    original_functions=original_functions,
-                )
+                value = self._evaluate(parameter.expression, context)
             else:
                 value = self._execute_plans(
                     parameter.children,
-                    focus=focus,
-                    locals_=locals_,
-                    final_output=False,
-                    package_name=package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
+                    context=replace(context, final_output=False),
                 )
             if parameter.sequence_type is not None:
                 value = _coerce_sequence(
@@ -9976,26 +8448,14 @@ class _Invocation(Transformation):
                 "item()*" if parameter.sequence_type is None else str(parameter.sequence_type)
             )
         if plan.with_params_expression is not None:
-            supplied = self._evaluate(
-                plan.with_params_expression,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
-            )
+            supplied = self._evaluate(plan.with_params_expression, context)
             for name, value in with_params_variables(supplied).items():
                 parameter_values[name] = value
                 variable_types[name] = "item()*"
 
         expression_focus = Focus.absent()
         if plan.context_item is not None:
-            context_values = self._evaluate(
-                plan.context_item,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
-            )
+            context_values = self._evaluate(plan.context_item, context)
             if len(context_values) > 1:
                 raise XsltDynamicError(
                     "xsl:evaluate/@context-item must return at most one item",
@@ -10008,13 +8468,7 @@ class _Invocation(Transformation):
         namespaces = dict(plan.namespaces)
         default_namespace = plan.default_namespace
         if plan.namespace_context is not None:
-            context_nodes = self._evaluate(
-                plan.namespace_context,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
-            )
+            context_nodes = self._evaluate(plan.namespace_context, context)
             if len(context_nodes) != 1 or not isinstance(context_nodes[0], XdmNode):
                 raise XsltDynamicError(
                     "xsl:evaluate/@namespace-context must return a single node",
@@ -10029,14 +8483,14 @@ class _Invocation(Transformation):
             default_namespace = context_nodes[0].in_scope_namespaces.get("")
 
         base_uri = (
-            self._value_source(plan.base_uri, focus, locals_, package_name)
+            self._value_source(plan.base_uri, context)
             if plan.base_uri is not None
             else plan.instruction.base_uri
         )
         schema_aware = False
         if plan.schema_aware is not None:
             schema_aware = _boolean_avt(
-                self._value_source(plan.schema_aware, focus, locals_, package_name),
+                self._value_source(plan.schema_aware, context),
                 "schema-aware",
             )
         schema = (
@@ -10045,6 +8499,7 @@ class _Invocation(Transformation):
             else None
         )
 
+        package_name = context.package_name
         available = self.fallback_functions(package_name)
         functions = {name: available[name] for name in plan.functions if name in available}
         identity = StaticContextIdentity(
@@ -10088,32 +8543,19 @@ class _Invocation(Transformation):
     def _literal_element(
         self,
         plan: _LiteralPlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        *,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmNode:
         factory = _NodeFactory()
         attributes: list[tuple[str, str]] = []
         for reference in plan.attribute_sets:
-            component = self._resolve_attribute_set(reference, package_name)
+            component = self._resolve_attribute_set(reference, context.package_name)
             attributes.extend(
                 (attribute.name or "", attribute.string_value)
-                for attribute in self._attribute_set_attributes(
-                    component,
-                    focus,
-                    package_name,
-                )
+                for attribute in self._attribute_set_attributes(component, context)
                 if attribute.kind is NodeKind.ATTRIBUTE
             )
         attributes.extend(
-            (name, self._value_source(value, focus, locals_, package_name))
-            for name, value in plan.attributes
+            (name, self._value_source(value, context)) for name, value in plan.attributes
         )
         element = factory.element(
             plan.instruction.name,
@@ -10121,44 +8563,24 @@ class _Invocation(Transformation):
             namespaces=dict(plan.namespaces),
             base_uri=plan.instruction.base_uri,
         )
-        content = self._execute_plans(
-            plan.children,
-            focus=focus,
-            locals_=locals_,
-            final_output=final_output,
-            package_name=package_name,
-            mode=mode,
-            tunnel_parameters=tunnel_parameters,
-            rule_context=rule_context,
-            original_functions=original_functions,
-        )
+        content = self._execute_plans(plan.children, context=context)
         _append_complex_content(factory, element, content, allow_attributes=True)
         validate_constructed(
             element,
             validation=plan.validation,
             type_name=plan.type_name,
-            schema_pool=self._package_schema_pool(package_name),
+            schema_pool=self._package_schema_pool(context.package_name),
         )
         return element
 
     def _element_value(
         self,
         plan: _ElementPlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        *,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmNode:
-        lexical = self._value_source(plan.name, focus, locals_, package_name)
+        lexical = self._value_source(plan.name, context)
         namespace_value = (
-            None
-            if plan.namespace is None
-            else self._value_source(plan.namespace, focus, locals_, package_name)
+            None if plan.namespace is None else self._value_source(plan.namespace, context)
         )
         name = _constructed_qname(
             lexical,
@@ -10171,14 +8593,10 @@ class _Invocation(Transformation):
         )
         attributes: list[tuple[str, str]] = []
         for reference in plan.attribute_sets:
-            component = self._resolve_attribute_set(reference, package_name)
+            component = self._resolve_attribute_set(reference, context.package_name)
             attributes.extend(
                 (attribute.name or "", attribute.string_value)
-                for attribute in self._attribute_set_attributes(
-                    component,
-                    focus,
-                    package_name,
-                )
+                for attribute in self._attribute_set_attributes(component, context)
                 if attribute.kind is NodeKind.ATTRIBUTE
             )
         builder = ResultBuilder.temporary(base_uri=plan.instruction.base_uri)
@@ -10191,17 +8609,7 @@ class _Invocation(Transformation):
                 inherit_namespaces=plan.inherit_namespaces,
             )
             builder.append(
-                self._execute_plans(
-                    plan.children,
-                    focus=focus,
-                    locals_=locals_,
-                    final_output=final_output,
-                    package_name=package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
-                ),
+                self._execute_plans(plan.children, context=context),
                 inherit_namespaces=plan.inherit_namespaces,
             )
             element = builder.root.root_element
@@ -10210,43 +8618,23 @@ class _Invocation(Transformation):
             element,
             validation=plan.validation,
             type_name=plan.type_name,
-            schema_pool=self._package_schema_pool(package_name),
+            schema_pool=self._package_schema_pool(context.package_name),
         )
         return element
 
     def _document_value(
         self,
         plan: _DocumentPlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        *,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmDocument:
-        pool = self._package_schema_pool(package_name)
+        pool = self._package_schema_pool(context.package_name)
         builder = ResultBuilder.document(
             base_uri=plan.instruction.base_uri,
             schema_pool=pool,
             final_output=False,
         )
         with builder.transaction():
-            builder.append(
-                self._execute_plans(
-                    plan.children,
-                    focus=focus,
-                    locals_=locals_,
-                    final_output=final_output,
-                    package_name=package_name,
-                    mode=mode,
-                    tunnel_parameters=tunnel_parameters,
-                    rule_context=rule_context,
-                    original_functions=original_functions,
-                )
-            )
+            builder.append(self._execute_plans(plan.children, context=context))
             document = builder.to_tree()
         return validate_delivered(
             document,
@@ -10258,24 +8646,10 @@ class _Invocation(Transformation):
     def _copy_value(
         self,
         plan: _CopyPlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        *,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmSequence:
         if plan.select is not None:
-            selected = self._evaluate(
-                plan.select,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
-            )
+            selected = self._evaluate(plan.select, context)
             if not selected:
                 return ()
             if len(selected) != 1:
@@ -10286,30 +8660,21 @@ class _Invocation(Transformation):
             item = selected[0]
             content_focus = Focus.singleton(item)
         else:
-            if focus.item is None:
+            if context.focus.item is None:
                 raise XsltDynamicError(
                     "xsl:copy requires an existing context item",
                     code="XTTE0945",
                 )
-            item = focus.item
-            content_focus = focus
+            item = context.focus.item
+            content_focus = context.focus
         if not isinstance(item, XdmNode):
             return (item,)
-        pool = self._package_schema_pool(package_name)
+        content_context = replace(context, focus=content_focus)
+        pool = self._package_schema_pool(context.package_name)
         factory = _NodeFactory(base_uri=item.base_uri)
         if item.kind is NodeKind.DOCUMENT:
             document = factory.document
-            content = self._execute_plans(
-                plan.children,
-                focus=content_focus,
-                locals_=locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            content = self._execute_plans(plan.children, context=content_context)
             _append_complex_content(
                 factory,
                 document,
@@ -10338,23 +8703,11 @@ class _Invocation(Transformation):
         if item.kind is NodeKind.ELEMENT:
             attributes: list[XdmNode] = []
             for reference in plan.attribute_sets:
-                component = self._resolve_attribute_set(reference, package_name)
-                attributes.extend(
-                    self._attribute_set_attributes(component, content_focus, package_name)
-                )
+                component = self._resolve_attribute_set(reference, context.package_name)
+                attributes.extend(self._attribute_set_attributes(component, content_context))
             if attributes:
                 _append_complex_content(factory, clone, attributes, allow_attributes=True)
-            content = self._execute_plans(
-                plan.children,
-                focus=content_focus,
-                locals_=locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            content = self._execute_plans(plan.children, context=content_context)
             if content:
                 _append_complex_content(
                     factory,
@@ -10389,20 +8742,10 @@ class _Invocation(Transformation):
     def _copy_of_value(
         self,
         plan: _CopyOfPlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
-        *,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmSequence:
-        items = self._evaluate(
-            plan.select,
-            focus,
-            locals_,
-            package_name,
-            original_functions=original_functions,
-        )
-        pool = self._package_schema_pool(package_name)
+        items = self._evaluate(plan.select, context)
+        pool = self._package_schema_pool(context.package_name)
         result: list[XdmItem] = []
         for item in items:
             if not isinstance(item, XdmNode):
@@ -10461,34 +8804,14 @@ class _Invocation(Transformation):
     def _variable_value(
         self,
         plan: _VariablePlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
-        *,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmSequence:
         if plan.expression is not None:
-            value = self._evaluate(
-                plan.expression,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
-            )
+            value = self._evaluate(plan.expression, context)
         elif plan.children:
             sequence = self._execute_plans(
                 plan.children,
-                focus=focus,
-                locals_=locals_,
-                final_output=False,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
+                context=replace(context, final_output=False),
             )
             value = sequence if plan.has_as else (_build_result_tree(sequence),)
         elif plan.has_as:
@@ -10507,21 +8830,11 @@ class _Invocation(Transformation):
     def _attribute_value(
         self,
         plan: _AttributePlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        *,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
-        rule_context: _RuleContext | None = None,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmSequence:
-        lexical = self._value_source(plan.name, focus, locals_, package_name)
+        lexical = self._value_source(plan.name, context)
         namespace_value = (
-            None
-            if plan.namespace is None
-            else self._value_source(plan.namespace, focus, locals_, package_name)
+            None if plan.namespace is None else self._value_source(plan.namespace, context)
         )
         prefix, separator, _ = lexical.partition(":")
         if not lexical:
@@ -10536,29 +8849,11 @@ class _Invocation(Transformation):
             prefix_code="XTDE0860",
         )
         if plan.expression is not None:
-            value = self._evaluate(
-                plan.expression,
-                focus,
-                locals_,
-                package_name,
-                original_functions=original_functions,
-            )
+            value = self._evaluate(plan.expression, context)
         else:
-            value = self._execute_plans(
-                plan.children,
-                focus=focus,
-                locals_=locals_,
-                final_output=final_output,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-                rule_context=rule_context,
-                original_functions=original_functions,
-            )
+            value = self._execute_plans(plan.children, context=context)
         separator_value = (
-            self._value_source(plan.separator, focus, locals_, package_name)
-            if plan.separator is not None
-            else " "
+            self._value_source(plan.separator, context) if plan.separator is not None else " "
         )
         attributes = construct_attribute(
             name,
@@ -10569,7 +8864,7 @@ class _Invocation(Transformation):
             cast(XdmNode, attributes[0]),
             validation=plan.validation,
             type_name=plan.type_name,
-            schema_pool=self._package_schema_pool(package_name),
+            schema_pool=self._package_schema_pool(context.package_name),
             operation="attribute",
         )
         return attributes
@@ -10577,10 +8872,9 @@ class _Invocation(Transformation):
     def _execute_overriding(
         self,
         plan: _OverridingPlan,
-        rule_context: _RuleContext | None,
-        template_parameters: Mapping[str, XdmSequence],
-        tunnel_parameters: Mapping[str, XdmSequence],
+        context: EvaluationContext,
     ) -> XdmSequence:
+        rule_context = context.rule_context
         if rule_context is None:
             raise XsltDynamicError(
                 "xsl:next-match and xsl:apply-imports require a current template rule",
@@ -10589,21 +8883,32 @@ class _Invocation(Transformation):
         item = rule_context.focus.item
         if item is None:  # pragma: no cover - a current rule always has a focus item
             raise XsltDynamicError("the current template rule has no context item")
+        template_parameters, tunnel_parameters = self._plan_parameters(
+            plan.parameters,
+            context,
+        )
+        effective_tunnel = {
+            **rule_context.tunnel_parameters,
+            **tunnel_parameters,
+        }
         match = self._overriding_rule(plan, rule_context, item)
         if match is None:
             return self._builtin_value(
                 item,
                 rule_context.mode,
                 template_parameters,
-                {**rule_context.tunnel_parameters, **tunnel_parameters},
+                effective_tunnel,
                 rule_context.package_name,
                 rule_context.mode_package,
             )
         frame = self._rule_frame(
             match,
-            rule_context.focus,
+            replace(
+                context,
+                focus=rule_context.focus,
+                tunnel_parameters=effective_tunnel,
+            ),
             template_parameters,
-            {**rule_context.tunnel_parameters, **tunnel_parameters},
             mode_package=rule_context.mode_package,
         )
         return cast(XdmSequence, self.execute_frame(frame))
@@ -10630,8 +8935,7 @@ class _Invocation(Transformation):
     def _attribute_set_attributes(
         self,
         component: Component,
-        focus: Focus,
-        package_name: str | None,
+        context: EvaluationContext,
     ) -> tuple[XdmNode, ...]:
         key = (component.owner, component.name)
         if key in self.evaluating_attribute_sets:
@@ -10645,18 +8949,32 @@ class _Invocation(Transformation):
             attributes: list[XdmNode] = []
             for references, body in plan.attribute_set_parts:
                 for reference in references:
-                    target = self._resolve_attribute_set(reference, component.owner or package_name)
-                    attributes.extend(self._attribute_set_attributes(target, focus, target.owner))
+                    target = self._resolve_attribute_set(
+                        reference,
+                        component.owner or context.package_name,
+                    )
+                    attributes.extend(
+                        self._attribute_set_attributes(
+                            target,
+                            replace(context, package_name=target.owner),
+                        )
+                    )
                 for instruction in body:
                     attributes.extend(
                         cast(
                             Iterable[XdmNode],
                             self._execute_plan(
                                 instruction,
-                                focus=focus,
-                                locals_={},
-                                final_output=False,
-                                package_name=component.owner,
+                                context=replace(
+                                    context,
+                                    locals={},
+                                    final_output=False,
+                                    package_name=component.owner,
+                                    mode=None,
+                                    tunnel_parameters={},
+                                    rule_context=None,
+                                    original_functions={},
+                                ),
                             ),
                         )
                     )
@@ -10667,30 +8985,16 @@ class _Invocation(Transformation):
     def _result_document(
         self,
         plan: _ResultDocumentPlan,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        final_output: bool,
-        package_name: str | None,
-        *,
-        mode: str | None = None,
-        tunnel_parameters: Mapping[str, XdmSequence] | None = None,
+        context: EvaluationContext,
     ) -> None:
-        if not final_output:
+        if not context.final_output:
             raise XsltError(
                 "xsl:result-document is not permitted in temporary output state",
                 code="XTDE1480",
             )
-        href = self._value_source(plan.href, focus, locals_, package_name)
-        method = (
-            self._value_source(plan.method, focus, locals_, package_name)
-            if plan.method is not None
-            else None
-        )
-        format_name = (
-            self._value_source(plan.format, focus, locals_, package_name)
-            if plan.format is not None
-            else None
-        )
+        href = self._value_source(plan.href, context)
+        method = self._value_source(plan.method, context) if plan.method is not None else None
+        format_name = self._value_source(plan.format, context) if plan.format is not None else None
         base_attributes: dict[str, str] = {}
         if format_name is not None:
             declaration = self.package.output(format_name)
@@ -10704,13 +9008,10 @@ class _Invocation(Transformation):
             declaration = self.package.output(None)
             if declaration is not None:
                 base_attributes.update(declaration.attributes)
-        evaluated = {
-            name: self._value_source(value, focus, locals_, package_name)
-            for name, value in plan.attributes
-        }
+        evaluated = {name: self._value_source(value, context) for name, value in plan.attributes}
         effective_method = method or base_attributes.get("method", "xml")
         build_tree = (
-            self._value_source(plan.build_tree, focus, locals_, package_name)
+            self._value_source(plan.build_tree, context)
             if plan.build_tree is not None
             else base_attributes.get("build-tree")
         )
@@ -10724,15 +9025,15 @@ class _Invocation(Transformation):
         try:
             sequence = self._execute_plans(
                 plan.children,
-                focus=focus,
-                locals_=locals_,
-                final_output=True,
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
+                context=replace(
+                    context,
+                    final_output=True,
+                    rule_context=None,
+                    original_functions={},
+                ),
             )
             tree = None
-            pool = self._package_schema_pool(package_name)
+            pool = self._package_schema_pool(context.package_name)
             if self._build_tree(build_tree, effective_method):
                 tree = _build_result_tree(sequence, output_uri=uri)
                 tree = validate_delivered(
@@ -10812,11 +9113,7 @@ class _Invocation(Transformation):
     def _evaluate(
         self,
         expression: CompiledExpression,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
-        *,
-        original_functions: Mapping[int, Component] | None = None,
+        context: EvaluationContext,
     ) -> XdmSequence:
         engine = XPathEngine(expression.version)
         attempted: set[str] = set()
@@ -10824,20 +9121,14 @@ class _Invocation(Transformation):
             try:
                 return engine.evaluate(
                     expression,
-                    self._environment(
-                        locals_,
-                        package_name,
-                        original_functions=original_functions,
-                        focus=focus,
-                        expression=expression,
-                    ),
-                    focus=focus,
+                    self._environment(context, expression=expression),
+                    focus=context.focus,
                 )
             except Exception as exc:
                 if not str(getattr(exc, "code", "")).endswith("XPST0008"):
                     raise
                 name = _unknown_variable_name(exc)
-                component = self._global_component(package_name, name)
+                component = self._global_component(context.package_name, name)
                 if component is None or name in attempted:
                     raise
                 attempted.add(name)
@@ -10867,17 +9158,16 @@ class _Invocation(Transformation):
 
     def _environment(
         self,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
+        context: EvaluationContext,
         *,
         referenced: set[str] | None = None,
-        original_functions: Mapping[int, Component] | None = None,
-        focus: Focus | None = None,
         expression: CompiledExpression | None = None,
         static_context: StaticContext | None = None,
         regex_captures: object | None = _INHERIT,
     ) -> ExpressionEnvironment:
         variables: dict[str, Any] = {}
+        package_name = context.package_name
+        locals_ = context.locals
         package = self.stylesheet._packages.get(package_name) or self.package
         for component in self.stylesheet._package_variables.get(package_name, ()):
             assert component.name is not None
@@ -10899,8 +9189,8 @@ class _Invocation(Transformation):
         for key, value in locals_.items():
             self._bind(variables, key, value)
         functions = dict(self.fallback_functions(package_name))
-        if original_functions:
-            for _arity, component in original_functions.items():
+        if context.original_functions:
+            for _arity, component in context.original_functions.items():
                 functions[f"{{{XSLT_NS}}}original"] = self._component_dispatcher(
                     f"{{{XSLT_NS}}}original",
                     [component],
@@ -10908,7 +9198,7 @@ class _Invocation(Transformation):
         decimal_formats = self._decimal_format_objects(package_name)
         bridge = self._context_bridge(
             package_name,
-            Focus.absent() if focus is None else focus,
+            context.focus,
             expression,
             static_context,
             regex_captures=regex_captures,
@@ -11096,9 +9386,10 @@ class _Invocation(Transformation):
                 with self._group_scope(None, None), self._merge_scope(None, None, ()):
                     values = self._evaluate(
                         definition.use,
-                        Focus.singleton(node),
-                        {},
-                        package_name,
+                        EvaluationContext(
+                            focus=Focus.singleton(node),
+                            package_name=package_name,
+                        ),
                     )
                 atomics = _key_atomics(values)
                 if definition.composite:
@@ -11121,7 +9412,7 @@ class _Invocation(Transformation):
         return self._execute_component(
             cast(Component, component),
             arguments=arguments,
-            final_output=False,
+            context=EvaluationContext(final_output=False),
         )
 
     def _bind(self, variables: dict[str, Any], name: str, value: XdmSequence) -> None:
@@ -11136,20 +9427,16 @@ class _Invocation(Transformation):
     def _value_source(
         self,
         source: str | CompiledValueTemplate,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
+        context: EvaluationContext,
     ) -> str:
         if isinstance(source, str):
             return source
-        return self._value_template(source, focus, locals_, package_name)
+        return self._value_template(source, context)
 
     def _value_template(
         self,
         template: CompiledValueTemplate,
-        focus: Focus,
-        locals_: Mapping[str, XdmSequence],
-        package_name: str | None,
+        context: EvaluationContext,
     ) -> str:
         parts: list[str] = []
         for part in template.parts:
@@ -11157,7 +9444,7 @@ class _Invocation(Transformation):
                 parts.append(part.text)
                 continue
             assert part.expression is not None
-            values = self._evaluate(part.expression, focus, locals_, package_name)
+            values = self._evaluate(part.expression, context)
             if not template.text_value_template:
                 profile = self.profile_for(part.expression.static_context.xslt_version)
                 if profile.compatibility_mode:

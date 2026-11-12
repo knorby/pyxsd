@@ -53,6 +53,7 @@ from pyxsd.xslt.processor import (
     _Invocation,
     _prepare_invocation,
 )
+from pyxsd.xslt.runtime.context import EvaluationContext
 from pyxsd.xslt.runtime.frames import (
     NO_INPUT,
     PYXSD_FRAME_EXHAUSTED,
@@ -1220,14 +1221,16 @@ def _run_script(
     entry = Frame(
         kind="entry",
         program=script,
-        variables=data.get("variables", {}),
+        context=EvaluationContext(
+            locals=data.get("variables", {}),
+            package_name="pkg",
+            mode="mode",
+        ),
         continuation=data.get("continuation"),
         extent=data.get("extent"),
         error_handler=data.get("error_handler"),
         conversion=data.get("conversion"),
         identity="entry",
-        package="pkg",
-        mode="mode",
         location=data.get("location"),
     )
     return scheduler.run(entry, step), scheduler
@@ -1651,28 +1654,18 @@ def test_execution_limits_validation() -> None:
 def test_frame_and_continuation_contracts() -> None:
     with pytest.raises(ValueError, match="kind"):
         Frame(kind="")
-    with pytest.raises(TypeError, match="variables"):
-        Frame(variables=[])  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="tunnel parameters"):
-        Frame(tunnel_parameters=[])  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="focus"):
-        Frame(focus="focus")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="context"):
+        Frame(context=[])  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="error handler"):
         Frame(error_handler=1)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="conversion"):
         Frame(conversion=1)  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="final_output"):
-        Frame(final_output=1)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="tail"):
         Frame(tail=1)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="values"):
         Frame(values=[])  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="identity"):
         Frame(identity=1)  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="package"):
-        Frame(package=1)  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="mode"):
-        Frame(mode=1)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="location"):
         Frame(location="here")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="frame group"):
@@ -2106,8 +2099,7 @@ def test_frame_diagnostic_and_input_contracts() -> None:
         kind="rule",
         identity="rule doc",
         component=object(),
-        package="pkg",
-        mode="m",
+        context=EvaluationContext(package_name="pkg", mode="m"),
         location=location,
     )
     diagnostic = frame.diagnostic()
