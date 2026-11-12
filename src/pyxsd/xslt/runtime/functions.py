@@ -27,7 +27,7 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from functools import lru_cache
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urljoin, urlsplit
 
 from elementpath.datatypes import QName
@@ -1221,7 +1221,28 @@ class XsltContextBridge:
         arguments: tuple[XdmSequence, ...],
     ) -> XdmSequence:
         del context_item
-        uri = _single_string(arguments, 0)
+        sequence = arguments[0]
+        if not sequence:
+            return ()
+        atomized: list[XdmAtomic] = []
+        for item in sequence:
+            if isinstance(item, XdmNode):
+                atomized.extend(cast("tuple[XdmAtomic, ...]", item.typed_value))
+            elif isinstance(item, XdmAtomic):
+                atomized.append(item)
+            else:
+                raise XsltDynamicError(
+                    "doc() requires a string, an untyped node, or an empty sequence",
+                    code="XPTY0004",
+                )
+        if not atomized:
+            return ()
+        if len(atomized) != 1:
+            raise XsltDynamicError(
+                "doc() requires at most one URI after atomization",
+                code="XPTY0004",
+            )
+        uri = _document_uri(atomized[0])
         document = self._resolve_document_or_recover(uri, self.base_uri)
         if document is None:
             raise XsltDynamicError(

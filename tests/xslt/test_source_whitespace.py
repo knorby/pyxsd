@@ -19,7 +19,7 @@ from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.static import SpaceRule
-from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.errors import XsltDynamicError, XsltStaticError
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
@@ -438,6 +438,67 @@ def test_doc_function_reports_unavailable_document_after_recovery() -> None:
     with pytest.raises(XsltDynamicError) as caught:
         compiled.transform(source=b"<root/>", delivery="document")
     assert caught.value.code == "FODC0002"
+
+
+def test_doc_function_converts_empty_and_node_arguments() -> None:
+    policy = MappingPolicy({"urn:x": b"<doc> <a/> <b> x </b> </doc>"})
+    body = (
+        '<xsl:strip-space elements="*"/>'
+        '<xsl:template match="/"><out>'
+        '<xsl:value-of select="count(doc(()))"/>'
+        "<xsl:text>|</xsl:text>"
+        '<xsl:value-of select="count(doc(/root/@u)//text())"/>'
+        "</out></xsl:template>"
+    )
+    result = transform(stylesheet(body), b'<root u="urn:x"/>', resource_policy=policy)
+    assert result.principal_tree.string_value == "0|1"
+
+
+def test_doc_function_rejects_multi_item_uri() -> None:
+    body = (
+        '<xsl:template match="/"><out><xsl:value-of '
+        "select=\"count(doc(('urn:a', 'urn:b')))\"/></out></xsl:template>"
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        transform(stylesheet(body), b"<root/>")
+    assert caught.value.code == "XPTY0004"
+
+
+def test_doc_function_rejects_non_atomic_item() -> None:
+    body = (
+        '<xsl:template match="/"><out><xsl:value-of '
+        'select="count(doc(map{}))"/></out></xsl:template>'
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        transform(stylesheet(body), b"<root/>")
+    assert caught.value.code == "XPTY0004"
+
+
+def test_doc_function_returns_empty_for_a_nilled_node() -> None:
+    from pyxsd.schema import Schema
+
+    schema_xml = (
+        f'<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t" targetNamespace="urn:t" '
+        'elementFormDefault="qualified">'
+        '<xs:element name="p" type="xs:string" nillable="true"/>'
+        "</xs:schema>"
+    )
+    schema = Schema.compile(io.BytesIO(schema_xml.encode()))
+    typed = schema.parse(
+        io.BytesIO(
+            b'<p xmlns="urn:t" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+            b'xsi:nil="true"/>'
+        ),
+        capture_xdm=True,
+    )
+    body = (
+        f"<xsl:import-schema>{schema_xml}</xsl:import-schema>"
+        '<xsl:template match="/"><out><xsl:value-of '
+        'select="count(doc(/t:p))"/></out></xsl:template>'
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(stylesheet(body, attributes=' xmlns:t="urn:t"')))
+    result = compiled.transform(source=typed, delivery="document", validation="preserve")
+    assert result.principal_tree.string_value == "0"
 
 
 def test_document_function_uses_explicit_package_rules() -> None:
