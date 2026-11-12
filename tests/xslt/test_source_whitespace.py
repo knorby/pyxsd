@@ -19,6 +19,7 @@ from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.static import SpaceRule
+from pyxsd.xslt.errors import XsltStaticError
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
@@ -113,12 +114,10 @@ def test_source_space_rules_and_xml_space(tmp_path: Path) -> None:
     )
     assert transform(strip, source).principal_tree.string_value == "0"
 
-    # A matching preserve-space declaration wins over the strip declaration for
-    # that element; the preserve wildcard does not override the exact strip
-    # match for the other element.
+    # A matching preserve-space declaration overrides the general strip rule.
     override = stylesheet(
-        '<xsl:strip-space elements="keep drop"/>'
-        '<xsl:preserve-space elements="* keep"/>'
+        '<xsl:strip-space elements="*"/>'
+        '<xsl:preserve-space elements="keep"/>'
         '<xsl:template match="/"><out><xsl:value-of '
         'select="count(//text())"/></out></xsl:template>'
     )
@@ -178,6 +177,67 @@ def test_unprefixed_name_test_uses_xpath_default_namespace() -> None:
         b'<doc><t:item xmlns:t="urn:t"> <x/> </t:item></doc>',
     )
     assert result.principal_tree.string_value == "0"
+
+
+def test_validated_simple_content_preserves_whitespace() -> None:
+    from pyxsd.schema import Schema
+
+    schema_xml = (
+        f'<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t" targetNamespace="urn:t" '
+        'elementFormDefault="qualified">'
+        '<xs:element name="p" type="xs:string"/>'
+        '<xs:complexType name="simple"><xs:simpleContent>'
+        '<xs:extension base="xs:string"/></xs:simpleContent></xs:complexType>'
+        '<xs:element name="q" type="t:simple"/>'
+        '<xs:element name="r"><xs:complexType><xs:sequence>'
+        '<xs:element name="c" type="xs:string"/>'
+        "</xs:sequence></xs:complexType></xs:element>"
+        '<xs:element name="a" type="xs:anyType"/>'
+        "</xs:schema>"
+    )
+    schema = Schema.compile(io.BytesIO(schema_xml.encode()))
+    body = (
+        f"<xsl:import-schema>{schema_xml}</xsl:import-schema>"
+        '<xsl:strip-space elements="*"/>'
+        '<xsl:template match="/"><out><xsl:value-of '
+        'select="count(//text())"/><xsl:text>|</xsl:text>'
+        '<xsl:value-of select="string-length(string(/*))"/></out></xsl:template>'
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(stylesheet(body)))
+
+    cases = (
+        (b'<p xmlns="urn:t">   </p>', "1|3"),
+        (b'<q xmlns="urn:t">   </q>', "1|3"),
+        (b'<r xmlns="urn:t"> <c> x </c> </r>', "1|3"),
+        (b'<a xmlns="urn:t">   </a>', "0|0"),
+    )
+    for xml, expected in cases:
+        typed = schema.parse(io.BytesIO(xml), capture_xdm=True)
+        result = compiled.transform(
+            source=typed,
+            delivery="document",
+            validation="preserve",
+        )
+        assert result.principal_tree.string_value == expected, xml
+
+
+def test_conflicting_same_level_space_name_tests_raise_xtse0270() -> None:
+    cases = (
+        ('<xsl:strip-space elements="keep"/><xsl:preserve-space elements="keep"/>', ""),
+        (
+            '<xsl:strip-space elements="p:keep"/><xsl:preserve-space elements="Q{urn:keep}keep"/>',
+            ' xmlns:p="urn:keep"',
+        ),
+        (
+            '<xsl:strip-space elements="missing:item keep"/>'
+            '<xsl:preserve-space elements="other:missing keep"/>',
+            "",
+        ),
+    )
+    for body, attributes in cases:
+        with pytest.raises(XsltStaticError) as caught:
+            XsltProcessor().compile(io.BytesIO(stylesheet(body, attributes=attributes)))
+        assert caught.value.code == "XTSE0270"
 
 
 def test_space_declaration_without_elements_is_ignored() -> None:
@@ -272,7 +332,70 @@ def test_import_precedence_selects_the_best_declaration(tmp_path: Path) -> None:
     )
 
 
-def test_source_document_applies_the_package_space_policy() -> None:
+def test_nested_sibling_import_precedence_is_post_order(tmp_path: Path) -> None:
+    # A imports B then C; B imports D; C imports E.  Post-order precedence is
+    # D < B < E < C < A, so E's preserve declaration beats B's strip
+    # declaration even though B's precedence path is shorter.
+    _write(tmp_path / "d.xsl", "")
+    _write(tmp_path / "b.xsl", '<xsl:import href="d.xsl"/><xsl:strip-space elements="doc"/>')
+    _write(tmp_path / "e.xsl", '<xsl:preserve-space elements="doc"/>')
+    _write(tmp_path / "c.xsl", '<xsl:import href="e.xsl"/>')
+    _write(
+        tmp_path / "a.xsl",
+        '<xsl:import href="b.xsl"/><xsl:import href="c.xsl"/>'
+        '<xsl:template match="/"><out><xsl:value-of '
+        'select="count(//text())"/></out></xsl:template>',
+    )
+    assert (
+        XsltProcessor()
+        .compile(tmp_path / "a.xsl")
+        .transform(source=b"<doc> <a/> <b> x </b> </doc>", delivery="document")
+        .principal_tree.string_value
+        == "4"
+    )
+
+    # Direct-import control: A imports strip-B then preserve-C; C is the later
+    # sibling and outranks B.
+    _write(tmp_path / "direct-b.xsl", '<xsl:strip-space elements="doc"/>')
+    _write(tmp_path / "direct-c.xsl", '<xsl:preserve-space elements="doc"/>')
+    _write(
+        tmp_path / "direct-a.xsl",
+        '<xsl:import href="direct-b.xsl"/><xsl:import href="direct-c.xsl"/>'
+        '<xsl:template match="/"><out><xsl:value-of '
+        'select="count(//text())"/></out></xsl:template>',
+    )
+    assert (
+        XsltProcessor()
+        .compile(tmp_path / "direct-a.xsl")
+        .transform(source=b"<doc> <a/> <b> x </b> </doc>", delivery="document")
+        .principal_tree.string_value
+        == "4"
+    )
+
+
+def test_space_rule_rank_matches_compiler_precedence() -> None:
+    from pyxsd.xslt.compiler.static import _precedence_compare
+    from pyxsd.xslt.runtime.whitespace import _Rule
+
+    def rank(precedence: tuple[int, ...]) -> tuple[float, ...]:
+        return _Rule(tests=(), preserve=False, precedence=precedence, order=0).rank
+
+    cases = (
+        ((), (1,)),
+        ((1,), (2,)),
+        ((1,), (1, 1)),
+        ((1, 1), (1,)),
+        ((2, 1), (1,)),
+        ((1,), (2, 1)),
+        ((1, 2), (1, 3)),
+        ((1, 2), (1, 2)),
+    )
+    for left, right in cases:
+        comparison = _precedence_compare(left, right)
+        expected = 1 if comparison > 0 else -1 if comparison < 0 else 0
+        actual = (rank(left) > rank(right)) - (rank(left) < rank(right))
+        assert actual == expected, (left, right)
+
     policy = MappingPolicy({"urn:source": b"<doc> <a/> <b> x </b> </doc>"})
     body = (
         '<xsl:strip-space elements="*"/>'
@@ -281,6 +404,55 @@ def test_source_document_applies_the_package_space_policy() -> None:
         "</xsl:source-document></out></xsl:template>"
     )
     result = transform(stylesheet(body), b"<root/>", resource_policy=policy)
+    assert result.principal_tree.string_value == "1"
+
+
+def test_document_function_reuses_one_filtered_tree() -> None:
+    policy = MappingPolicy({"urn:x": b"<doc> <a/> <b> x </b> </doc>"})
+    body = (
+        '<xsl:strip-space elements="*"/>'
+        '<xsl:template match="/"><out>'
+        "<xsl:value-of select=\"count(document('urn:x')//text())\"/>"
+        "<xsl:text>|</xsl:text>"
+        "<xsl:value-of select=\"count(document('urn:x')//text())\"/>"
+        "<xsl:text>|</xsl:text>"
+        "<xsl:value-of select=\"count(doc('urn:x')//text())\"/>"
+        "</out></xsl:template>"
+    )
+    result = transform(stylesheet(body), b"<root/>", resource_policy=policy)
+    assert result.principal_tree.string_value == "1|1|1"
+    assert [read[0] for read in policy.reads].count("urn:x") == 1
+
+
+def test_doc_function_reports_unavailable_document_after_recovery() -> None:
+    from pyxsd.xslt.errors import XsltDynamicError
+    from pyxsd.xslt.profiles import DOCUMENT_RETRIEVAL, RecoveryPolicy
+
+    body = (
+        '<xsl:template match="/"><out><xsl:value-of '
+        "select=\"count(doc('urn:missing'))\"/></out></xsl:template>"
+    )
+    compiled = XsltProcessor(
+        recovery_policy=RecoveryPolicy(rules=frozenset({DOCUMENT_RETRIEVAL.name}))
+    ).compile(io.BytesIO(stylesheet(body)))
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(source=b"<root/>", delivery="document")
+    assert caught.value.code == "FODC0002"
+
+
+def test_document_function_uses_explicit_package_rules() -> None:
+    policy = MappingPolicy({"urn:x": b"<doc> <a/> <b> x </b> </doc>"})
+    package = (
+        f'<xsl:package xmlns:xsl="{XSLT_NS}" name="urn:principal" version="3.0">'
+        "<xsl:mode/>"
+        '<xsl:strip-space elements="*"/>'
+        '<xsl:template match="/"><out>'
+        "<xsl:value-of select=\"count(document('urn:x')//text())\"/>"
+        "</out></xsl:template>"
+        "</xsl:package>"
+    )
+    compiled = XsltProcessor(resource_policy=policy).compile(io.BytesIO(package.encode()))
+    result = compiled.transform(source=b"<root/>", delivery="document")
     assert result.principal_tree.string_value == "1"
 
 
@@ -296,6 +468,8 @@ def test_library_package_rules_apply_to_its_own_source_document(tmp_path: Path) 
                 <xsl:source-document href="urn:source">
                   <xsl:value-of select="count(//text())"/>
                 </xsl:source-document>
+                <xsl:text>|</xsl:text>
+                <xsl:value-of select="count(document('urn:source')//text())"/>
               </xsl:template>
             </xsl:package>""",
         encoding="utf-8",
@@ -317,7 +491,8 @@ def test_library_package_rules_apply_to_its_own_source_document(tmp_path: Path) 
         resource_policy=policy,
     ).compile(io.BytesIO(principal.read_bytes()))
 
-    assert compiled.transform(delivery="document").principal_tree.string_value == "1"
+    assert compiled.transform(delivery="document").principal_tree.string_value == "1|1"
+    assert [read[0] for read in policy.reads].count("urn:source") == 1
 
 
 def test_merge_source_applies_the_package_space_policy() -> None:

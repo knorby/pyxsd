@@ -192,7 +192,7 @@ from pyxsd.xslt.runtime.text import (
     compile_xpath_regex,
 )
 from pyxsd.xslt.runtime.transformation import ComponentCall, Transformation
-from pyxsd.xslt.runtime.whitespace import apply_source_space_rules
+from pyxsd.xslt.runtime.whitespace import _shared_name_test, apply_source_space_rules
 
 __all__ = [
     "CompiledStylesheet",
@@ -2104,6 +2104,7 @@ def _package_space_rules(package: CompiledPackage) -> tuple[SpaceRule, ...]:
     NameTest priority, and then this order.
     """
     rules: list[SpaceRule] = []
+    locations: list[IssueLocation | None] = []
     seen: set[int] = set()
     names = (f"{{{XSLT_NS}}}strip-space", f"{{{XSLT_NS}}}preserve-space")
 
@@ -2138,11 +2139,26 @@ def _package_space_rules(package: CompiledPackage) -> tuple[SpaceRule, ...]:
                     precedence=module.precedence,
                 )
             )
+            locations.append(declaration.source_location())
         for dependent in (*module.includes, *module.imports):
             visit(dependent)
 
     for module in package.modules:
         visit(module)
+    for index, rule in enumerate(rules):
+        for previous_index in range(index):
+            previous = rules[previous_index]
+            if previous.precedence != rule.precedence or previous.preserve == rule.preserve:
+                continue
+            shared = _shared_name_test(previous, rule)
+            if shared is not None:
+                raise XsltStaticError(
+                    f"the NameTest {shared!r} appears in both xsl:strip-space and "
+                    "xsl:preserve-space at the same import precedence",
+                    code="XTSE0270",
+                    uri=rule.module,
+                    location=locations[index],
+                )
     return tuple(rules)
 
 

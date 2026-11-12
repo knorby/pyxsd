@@ -14,10 +14,12 @@ result trees and ``xsl:text`` content are outside this policy.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from pyxsd import xsd_data_types as xsd
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 
 if TYPE_CHECKING:
@@ -73,9 +75,12 @@ class _Rule:
         return max(priorities)
 
     @property
-    def rank(self) -> tuple[int, tuple[int, ...]]:
-        # A shorter precedence prefix is higher; later imports compare larger.
-        return (-len(self.precedence), self.precedence)
+    def rank(self) -> tuple[float, ...]:
+        # Post-order import precedence: an ancestor (shorter prefix) outranks
+        # its extensions, while later sibling imports outrank earlier ones.
+        # Appending a value greater than any import counter makes ordinary
+        # tuple comparison express exactly the compiler's comparator.
+        return (*self.precedence, math.inf)
 
 
 def _compile_name_test(
@@ -108,6 +113,29 @@ def _compile_name_test(
     return _NameTest(namespace, local, False, False, _EXACT_PRIORITY)
 
 
+def _shared_name_test(left: SpaceRule, right: SpaceRule) -> str | None:
+    """Return a NameTest that both declarations match, after expansion.
+
+    Two NameTests are the same when they match the same set of names, so the
+    comparison uses the compiled match shape rather than the source spelling.
+    """
+    right_tests: dict[tuple[bool, bool, str | None, str | None], str] = {}
+    for token in right.elements:
+        compiled = _compile_name_test(token, right.namespaces)
+        if compiled is not None:
+            right_tests[
+                (compiled.any_namespace, compiled.any_local, compiled.namespace, compiled.local)
+            ] = token
+    for token in left.elements:
+        compiled = _compile_name_test(token, left.namespaces)
+        if compiled is None:
+            continue
+        key = (compiled.any_namespace, compiled.any_local, compiled.namespace, compiled.local)
+        if key in right_tests:
+            return token
+    return None
+
+
 def _compile_rule(rule: SpaceRule, order: int) -> _Rule:
     tests: list[_NameTest] = []
     for token in rule.elements:
@@ -125,12 +153,12 @@ def _compile_rule(rule: SpaceRule, order: int) -> _Rule:
 def _best_match(name: str, rules: Sequence[_Rule]) -> _Rule | None:
     """Return the declaration selected by precedence, priority, then order."""
     best: _Rule | None = None
-    best_key: tuple[int, tuple[int, ...], float, int] | None = None
+    best_key: tuple[tuple[float, ...], float, int] | None = None
     for rule in rules:
         priority = rule.priority_for(name)
         if priority is None:
             continue
-        key = (*rule.rank, priority, rule.order)
+        key: tuple[tuple[float, ...], float, int] = (rule.rank, priority, rule.order)
         if best_key is None or key > best_key:
             best = rule
             best_key = key
@@ -154,6 +182,25 @@ def _xml_space_preserve(element: XdmNode, inherited: bool) -> bool:
     return inherited
 
 
+def _has_simple_content(element: XdmNode) -> bool:
+    """Whether a validated element has a simple type or simple content.
+
+    XSLT 3.0 section 4.4.2 preserves whitespace-only text children of such
+    elements regardless of any strip-space declaration.  Only a full schema
+    assessment carries the runtime type needed for the decision; untyped and
+    stripped annotations never qualify.
+    """
+    annotation = element.annotation
+    if getattr(annotation, "validation_attempted", None) != "full":
+        return False
+    actual = getattr(annotation, "actual_type", None)
+    if not isinstance(actual, type) or actual is xsd.AnyType:
+        return False
+    if getattr(actual, "_contentKind_", None) != "complex":
+        return True
+    return isinstance(getattr(actual, "_simpleContentType_", None), type)
+
+
 def _is_xml_whitespace(value: str) -> bool:
     return all(character in _XML_WHITESPACE for character in value)
 
@@ -166,7 +213,11 @@ def _selected_text(document: XdmDocument, rules: Sequence[_Rule]) -> set[int]:
         node, inherited = stack.pop()
         if node.kind is NodeKind.ELEMENT:
             xml_preserve = _xml_space_preserve(node, inherited)
-            preserve = xml_preserve or _preserves_whitespace(node.name or "", rules)
+            preserve = (
+                xml_preserve
+                or _has_simple_content(node)
+                or _preserves_whitespace(node.name or "", rules)
+            )
             for child in node.children:
                 if child.kind is NodeKind.TEXT and _is_xml_whitespace(child.string_value):
                     if not preserve:

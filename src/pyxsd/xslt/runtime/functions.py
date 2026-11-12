@@ -613,6 +613,7 @@ class XsltContextBridge:
         table: dict[str, ContextFunction] = {
             f"{{{FN_NS}}}current": ContextFunction(self._direct_current, self._dynamic_current),
             f"{{{FN_NS}}}document": ContextFunction(self._document_function),
+            f"{{{FN_NS}}}doc": ContextFunction(self._doc_function),
             f"{{{FN_NS}}}system-property": ContextFunction(self._system_property_function),
             f"{{{FN_NS}}}function-available": ContextFunction(self._function_available_function),
             f"{{{FN_NS}}}element-available": ContextFunction(self._element_available_function),
@@ -932,21 +933,23 @@ class XsltContextBridge:
         else:
             target = urljoin(base, uri)
         documents = getattr(self.transformation, "documents", {})
-        document = documents.get(target)
-        if isinstance(document, XdmDocument):
-            self._allow_all_accumulators(document)
-            return document
+        resources = getattr(self.transformation, "document_resources", None)
+        if resources is None:
+            document = documents.get(target)
+            if isinstance(document, XdmDocument):
+                self._allow_all_accumulators(document)
+                return document
         module_document = self._stylesheet_document(target)
         if module_document is not None:
             self._allow_all_accumulators(module_document)
             return module_document
-        resources = getattr(self.transformation, "document_resources", None)
         if resources is not None:
             document = resources.resolve(
                 target,
                 base=None,
                 schema_pool=self._schema_pool(),
                 input_type_annotations=self._input_type_annotations(),
+                package=self.package_name,
             )
             self._allow_all_accumulators(document)
             return document
@@ -1211,6 +1214,21 @@ class XsltContextBridge:
         if len(arguments) > 1:
             node = _single_node(arguments[1], "document() second argument")
         return self.document(uri_sequence, node)
+
+    def _doc_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        uri = _single_string(arguments, 0)
+        document = self._resolve_document_or_recover(uri, self.base_uri)
+        if document is None:
+            raise XsltDynamicError(
+                f"the document {uri!r} is not available to this transformation",
+                code="FODC0002",
+            )
+        return (document,)
 
     def _system_property_function(
         self,
