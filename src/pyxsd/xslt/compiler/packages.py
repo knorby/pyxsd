@@ -86,6 +86,19 @@ _XSD_NS = "http://www.w3.org/2001/XMLSchema"
 _XSD_SCHEMA = f"{{{_XSD_NS}}}schema"
 _INPUT_TYPE_ANNOTATIONS = frozenset({"strip", "preserve", "unspecified"})
 _VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
+_TYPED_MODE_VALUES: Mapping[str, str] = MappingProxyType(
+    {
+        "yes": "yes",
+        "true": "yes",
+        "1": "yes",
+        "no": "no",
+        "false": "no",
+        "0": "no",
+        "strict": "strict",
+        "lax": "lax",
+        "unspecified": "unspecified",
+    }
+)
 
 _COMPONENT_KINDS = frozenset({"template", "function", "variable", "attribute-set", "mode"})
 _DECLARATION_VISIBILITIES = frozenset({"public", "private", "final", "abstract"})
@@ -524,6 +537,14 @@ class Mode:
     @property
     def rules(self) -> tuple[ModeRule, ...]:
         return tuple(rule for layer in self.rule_layers for rule in layer.rules)
+
+    @property
+    def typed(self) -> str:
+        """The normalized effective ``typed`` policy of this mode."""
+        value = self.properties.get("typed")
+        if value is None:
+            return "unspecified"
+        return _TYPED_MODE_VALUES[value]
 
 
 @dataclass(frozen=True, slots=True)
@@ -3923,9 +3944,24 @@ def _merge_mode_properties(
             code="XTSE0545",
             message=f"mode declarations disagree about {local!r}",
         )
+        if local == "typed":
+            value = _typed_mode_value(value, declaration)
         properties[local] = value
         property_namespaces[local] = declaration.element.in_scope_namespaces
     return MappingProxyType(properties), MappingProxyType(property_namespaces)
+
+
+def _typed_mode_value(value: str, declaration: _Declaration) -> str:
+    """Normalize one ``typed`` mode attribute and reject invalid values."""
+    policy = _TYPED_MODE_VALUES.get(value.strip())
+    if policy is None:
+        raise _error(
+            f"the typed attribute has an invalid value {value!r}",
+            "XTSE0020",
+            element=declaration.element,
+            module=declaration.module,
+        )
+    return policy
 
 
 def _instruction_mode_references(

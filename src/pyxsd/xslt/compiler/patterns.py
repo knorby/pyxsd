@@ -25,7 +25,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, Literal, NoReturn, TypeAlias, cast
@@ -80,6 +80,17 @@ _TYPE_KIND_KINDS: dict[str, frozenset[NodeKind]] = {
     "document-node": frozenset({NodeKind.DOCUMENT}),
 }
 _KIND_TEST_NAMES = frozenset(_TYPE_KIND_KINDS)
+_TYPED_POLICIES: dict[str, str] = {
+    "yes": "yes",
+    "true": "yes",
+    "1": "yes",
+    "no": "no",
+    "false": "no",
+    "0": "no",
+    "strict": "strict",
+    "lax": "lax",
+    "unspecified": "unspecified",
+}
 _NUMERIC_LOCALS = frozenset(
     {
         "decimal",
@@ -585,11 +596,14 @@ class _Parser:
         context: StaticContext,
         location: IssueLocation | None,
         tokens: tuple[_Token, ...],
+        *,
+        typed: str = "unspecified",
     ) -> None:
         self.source = source
         self.context = context
         self.location = location
         self.tokens = tokens
+        self.typed = typed
         self.index = 0
 
     # -- token helpers ---------------------------------------------------------
@@ -636,16 +650,98 @@ class _Parser:
             flattened.extend(_flatten_alternative(alternative))
         alternatives: list[PatternAlternative] = []
         for index, alternative in enumerate(flattened):
+            # The default priority is based on the pattern syntax as written
+            # (section 6.5), so compute it before the typed-mode
+            # reinterpretation changes the matching structure.
+            priority = _priority_for_intersect_except(alternative)
+            matching = self._typed_alternative(alternative)
             alternatives.append(
                 PatternAlternative(
                     index=index,
-                    priority=_priority_for_intersect_except(alternative),
-                    path=alternative,
-                    filter=_candidate_filter(alternative),
-                    requires_forward=_requires_forward(alternative),
+                    priority=priority,
+                    path=matching,
+                    filter=_candidate_filter(matching),
+                    requires_forward=_requires_forward(matching),
                 )
             )
         return tuple(alternatives)
+
+    # -- typed-mode pattern interpretation -------------------------------------
+
+    def _typed_alternative(self, expr: IntersectExceptExpr) -> IntersectExceptExpr:
+        if self.typed not in ("strict", "lax"):
+            return expr
+        return IntersectExceptExpr(
+            self._typed_path(expr.first),
+            tuple((operator, self._typed_path(path)) for operator, path in expr.rest),
+        )
+
+    def _typed_path(self, path: PathExpr) -> PathExpr:
+        if isinstance(path, RelativePath):
+            return self._typed_relative(path)
+        if isinstance(path, AbsolutePath):
+            return AbsolutePath(self._typed_relative(path.relative))
+        if isinstance(path, DescendantPath):
+            return DescendantPath(self._typed_relative(path.relative))
+        if isinstance(path, RootedPath):
+            following = None if path.following is None else self._typed_relative(path.following)
+            return replace(path, following=following)
+        return path
+
+    def _typed_relative(self, relative: RelativePath) -> RelativePath:
+        steps: list[tuple[str, StepExpr]] = [
+            (separator, self._typed_step(step, first=index == 0))
+            for index, (separator, step) in enumerate(relative.steps)
+        ]
+        return RelativePath(tuple(steps))
+
+    def _typed_step(self, step: StepExpr, *, first: bool) -> StepExpr:
+        if isinstance(step, PostfixStep):
+            # A parenthesized step contains further RelativePathExprP
+            # alternatives, each with its own first step.
+            return PostfixStep(
+                UnionExpr(
+                    tuple(
+                        self._typed_alternative(alternative)
+                        for alternative in step.union.alternatives
+                    )
+                ),
+                step.predicates,
+            )
+        if not first or not isinstance(step.node_test, NameTest):
+            return step
+        name = step.node_test.name
+        if name is None or _principal_kind(step.axis) != "element":
+            return step
+        replacement = self._typed_name_test(name)
+        if replacement is None:
+            return step
+        return AxisStep(step.axis, step.top_axis, replacement, step.predicates)
+
+    def _typed_name_test(self, name: str) -> KindTest | None:
+        """Return ``schema-element(name)`` for a typed-mode first step.
+
+        ``None`` means the lax mode retains the original name test because
+        the in-scope schema components have no global declaration for it.
+        """
+        pool = self.context.schema
+        declaration = None if pool is None else pool.get_element(name)
+        if declaration is None:
+            if self.typed == "strict":
+                raise _static_error(
+                    self.context,
+                    f"the element name {name!r} in a strict typed-mode pattern "
+                    "has no global element declaration",
+                    "XTSE3105",
+                    location=self.location,
+                )
+            return None
+        declarations = self._element_declarations(name)
+        return KindTest(
+            ItemType("schema-element", name=name, lexical=name),
+            name,
+            declarations,
+        )
 
     def _predicate_pattern(self) -> tuple[PatternAlternative, ...]:
         self._advance()
@@ -835,8 +931,14 @@ class _Parser:
             return () if declaration is None else (item_type.name,)
         if pool.get_element(item_type.name) is None:  # pragma: no cover - checked first
             return ()
-        members = pool.get_substitution_group(item_type.name) or frozenset()
-        names = {item_type.name}
+        return self._element_declarations(item_type.name)
+
+    def _element_declarations(self, name: str) -> tuple[str, ...]:
+        """The declaration names accepted by ``schema-element(name)``."""
+        pool = self.context.schema
+        assert pool is not None
+        members = pool.get_substitution_group(name) or frozenset()
+        names = {name}
         names.update(member.name for member in members if member.name is not None)
         return tuple(sorted(names))
 
@@ -2261,18 +2363,36 @@ def compile_pattern(
     source: str,
     context: StaticContext,
     *,
+    typed: str = "unspecified",
     location: IssueLocation | None = None,
 ) -> CompiledPattern:
-    """Parse one Pattern30 in *context* and freeze its normative alternatives."""
+    """Parse one Pattern30 in *context* and freeze its normative alternatives.
+
+    *typed* selects the mode's ``xsl:mode/@typed`` policy.  ``strict`` and
+    ``lax`` reinterpret first-step element name tests as
+    ``schema-element`` tests as required by XSLT 3.0 section 6.6.3; the
+    other policies leave the pattern unchanged.
+    """
     if not isinstance(context, StaticContext):
         raise TypeError("context must be a StaticContext")
     if not isinstance(source, str):
         raise TypeError("a pattern source must be a string")
     if not source.strip():
         raise _static_error(context, "a pattern must not be empty", "XTSE0340", location=location)
+    policy = _normalized_typed_policy(typed)
     tokens = _Scanner(source, context, location).scan()
-    alternatives = _Parser(source, context, location, tokens).parse()
+    alternatives = _Parser(source, context, location, tokens, typed=policy).parse()
     return CompiledPattern(source, context, alternatives)
+
+
+def _normalized_typed_policy(value: str) -> str:
+    """Validate a ``typed`` mode policy and normalize boolean synonyms."""
+    if not isinstance(value, str):
+        raise TypeError("typed must be a string")
+    policy = _TYPED_POLICIES.get(value.strip())
+    if policy is None:
+        raise ValueError(f"unknown typed mode policy {value!r}")
+    return policy
 
 
 def default_priority(

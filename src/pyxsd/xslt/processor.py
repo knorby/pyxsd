@@ -1945,7 +1945,12 @@ def _compile_package_modes(
                     profile,
                     collation,
                 )
-                pattern = compile_pattern(rule.pattern, context, location=rule.location)
+                pattern = compile_pattern(
+                    rule.pattern,
+                    context,
+                    typed=mode.typed,
+                    location=rule.location,
+                )
                 body = _mark_tail(_compile_sequence(rule.body.children, context, module))
                 _validate_iteration_controls(body, None)
                 as_source = rule.declaration.attribute("as")
