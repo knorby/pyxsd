@@ -46,12 +46,14 @@ SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{DOC}"
   <xs:element name="name" type="xs:string"/>
   <xs:element name="base" type="xs:string"/>
   <xs:element name="derived" type="xs:string" substitutionGroup="doc:base"/>
+  <xs:element name="deeper" type="xs:string" substitutionGroup="doc:derived"/>
   <xs:attribute name="code" type="xs:integer"/>
 </xs:schema>"""
 
 INT_SOURCE = f'<doc:amount xmlns:doc="{DOC}">5</doc:amount>'.encode()
 NAME_SOURCE = f'<doc:name xmlns:doc="{DOC}">x</doc:name>'.encode()
 DERIVED_SOURCE = f'<doc:derived xmlns:doc="{DOC}">v</doc:derived>'.encode()
+DEEPER_SOURCE = f'<doc:deeper xmlns:doc="{DOC}">v</doc:deeper>'.encode()
 NESTED_SOURCE = (
     f'<doc:root xmlns:doc="{DOC}"><doc:amount>5</doc:amount><doc:name>x</doc:name></doc:root>'
 ).encode()
@@ -203,6 +205,11 @@ def test_name_test_matches_substitution_group_members(typed: str) -> None:
     pool = _schema_pool()
     matcher = _matcher("doc:base", typed=typed, schema=pool)
     assert _matches(matcher, _annotated(DERIVED_SOURCE).root_element)
+    # XPath 3.0 section 2.5.5.4 includes indirect members of the group.
+    assert _matches(matcher, _annotated(DEEPER_SOURCE).root_element)
+
+    explicit = compile_pattern("schema-element(doc:base)", _pattern_context(pool))
+    assert _matches(PatternMatcher(explicit), _annotated(DEEPER_SOURCE).root_element)
 
 
 def test_lax_reinterprets_only_names_with_a_global_declaration() -> None:
@@ -314,14 +321,15 @@ def test_compile_pattern_validates_the_typed_policy() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_strict_mode_matches_a_substitution_group_member() -> None:
+@pytest.mark.parametrize("source", [DERIVED_SOURCE, DEEPER_SOURCE])
+def test_strict_mode_matches_a_substitution_group_member(source: bytes) -> None:
     body = (
         '<xsl:mode name="s" typed="strict"/>'
         '<xsl:template name="main"><out><xsl:apply-templates select="/*" mode="s"/>'
         "</out></xsl:template>"
         '<xsl:template match="doc:base" mode="s"><base/></xsl:template>'
     )
-    assert _element_names(_transform(body, source=DERIVED_SOURCE)) == ("base",)
+    assert _element_names(_transform(body, source=source)) == ("base",)
 
 
 @pytest.mark.parametrize("typed", ["strict", "lax"])
@@ -441,6 +449,53 @@ def test_initial_mode_accepts_typed_input(typed: str) -> None:
     assert result.principal_tree.root_element.local_name == "out"
 
 
+@pytest.mark.parametrize("on_no_match", ["deep-skip", "shallow-skip"])
+def test_typed_mode_builtin_children_check_uses_the_mode_package(on_no_match: str) -> None:
+    body = f'<xsl:mode name="m" typed="yes" on-no-match="{on_no_match}"/>'
+    compiled = _compile(body)
+    assert (
+        _error_code(lambda: compiled.transform(b"<in/>", initial_mode="m", delivery="raw"))
+        == "XTTE3100"
+    )
+
+
+def test_typed_mode_builtin_array_check_uses_the_mode_package() -> None:
+    body = (
+        '<xsl:mode name="m" typed="yes"/>'
+        '<xsl:template name="main"><out>'
+        '<xsl:apply-templates select="[1, 2]" mode="m"/></out></xsl:template>'
+    )
+    result = _transform(body, validation="strip")
+    assert result.principal_tree.root_element.string_value == "12"
+
+
+def test_next_match_builtin_uses_the_current_mode_package() -> None:
+    body = (
+        '<xsl:mode name="m" typed="strict"/>'
+        '<xsl:template name="main"><out><xsl:apply-templates select="/*" mode="m"/>'
+        "</out></xsl:template>"
+        '<xsl:template match="*" mode="m"><xsl:next-match/></xsl:template>'
+    )
+    result = _transform(body)
+    assert result.principal_tree.root_element.string_value == "5"
+
+
+@pytest.mark.parametrize("typed", ["no", "false", "0"])
+def test_initial_mode_rejects_typed_input(typed: str) -> None:
+    body = (
+        f'<xsl:mode name="m" typed="{typed}"/>'
+        '<xsl:template match="*" mode="m"><out/></xsl:template>'
+    )
+    assert (
+        _error_code(
+            lambda: _compile(body).transform(
+                INT_SOURCE, initial_mode="m", validation="strict", delivery="raw"
+            )
+        )
+        == "XTTE3110"
+    )
+
+
 @pytest.mark.parametrize("typed", ["yes", "true", "1", "strict", "lax"])
 def test_explicit_apply_templates_rejects_untyped_input(typed: str) -> None:
     body = (
@@ -529,6 +584,40 @@ def test_invalid_typed_value_is_a_static_error() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Extension attributes on xsl:mode
+# ---------------------------------------------------------------------------
+
+
+def test_foreign_typed_extension_attribute_is_ignored() -> None:
+    body = '<xsl:mode name="m" xmlns:foo="urn:foo" foo:typed="bar"/><xsl:template name="main"/>'
+    compiled = _compile(body)
+    mode = compiled.package.mode("m")
+    assert mode is not None
+    assert mode.typed == "unspecified"
+
+
+def test_foreign_strict_attribute_does_not_reinterpret_patterns() -> None:
+    body = (
+        '<xsl:mode name="s" xmlns:foo="urn:foo" foo:typed="strict"/>'
+        '<xsl:template name="main"><out><xsl:apply-templates select="/*" mode="s"/>'
+        "</out></xsl:template>"
+        '<xsl:template match="doc:base" mode="s"><base/></xsl:template>'
+    )
+    assert _element_names(_transform(body, source=DERIVED_SOURCE)) == ()
+
+
+def test_foreign_typed_does_not_conflict_with_the_xslt_attribute() -> None:
+    body = (
+        '<xsl:mode name="m" typed="yes" xmlns:foo="urn:foo" foo:typed="strict"/>'
+        '<xsl:template name="main"/>'
+    )
+    compiled = _compile(body)
+    mode = compiled.package.mode("m")
+    assert mode is not None
+    assert mode.typed == "yes"
+
+
+# ---------------------------------------------------------------------------
 # Package-local schema context for XTSE3105
 # ---------------------------------------------------------------------------
 
@@ -569,6 +658,98 @@ def test_library_strict_rule_uses_the_library_schema_context() -> None:
     mode = dependency.mode("{urn:lib}m")
     assert mode is not None
     assert mode.typed == "strict"
+
+
+def test_library_private_mode_keeps_its_own_typed_policy() -> None:
+    library = _package(
+        '<xsl:mode name="m" typed="strict"/>'
+        '<xsl:template name="lib:run" visibility="public">'
+        '<xsl:apply-templates select="/*" mode="m"/></xsl:template>'
+        '<xsl:template match="*" mode="m"><lib-matched/></xsl:template>'
+    )
+    principal = _principal(
+        '<xsl:use-package name="urn:lib"/>'
+        '<xsl:mode name="m" typed="unspecified"/>'
+        '<xsl:template name="main"><xsl:call-template name="lib:run"/></xsl:template>'
+    )
+    compiled = XsltProcessor(resolver=PackageResolver.from_sources(library)).compile(
+        io.BytesIO(principal)
+    )
+    assert (
+        _error_code(lambda: compiled.transform(b"<in/>", initial_template="main", delivery="raw"))
+        == "XTTE3100"
+    )
+
+
+def test_principal_mode_does_not_override_a_library_private_mode() -> None:
+    library = _package(
+        '<xsl:mode name="m" typed="unspecified"/>'
+        '<xsl:template name="lib:run" visibility="public">'
+        '<out><xsl:apply-templates select="/*" mode="m"/></out></xsl:template>'
+        '<xsl:template match="*" mode="m"><lib-matched/></xsl:template>'
+    )
+    principal = _principal(
+        '<xsl:use-package name="urn:lib"/>'
+        '<xsl:mode name="m" typed="strict"/>'
+        '<xsl:template name="main"><xsl:call-template name="lib:run"/></xsl:template>'
+    )
+    compiled = XsltProcessor(resolver=PackageResolver.from_sources(library)).compile(
+        io.BytesIO(principal)
+    )
+    result = compiled.transform(b"<in/>", initial_template="main", delivery="document")
+    assert _element_names(result) == ("lib-matched",)
+
+
+def test_public_mode_current_keeps_the_using_package_rules() -> None:
+    library = _package(
+        "<xsl:mode/>"
+        '<xsl:mode name="lib:m" visibility="public"/>'
+        '<xsl:template match="a" mode="lib:m">'
+        '<q><xsl:apply-templates select="b" mode="#current"/></q></xsl:template>'
+        '<xsl:template match="b" mode="lib:m"><qb/></xsl:template>'
+    )
+    principal = _principal(
+        '<xsl:use-package name="urn:lib">'
+        '<xsl:accept component="mode" names="lib:m" visibility="public"/>'
+        "<xsl:override>"
+        '<xsl:template match="a" mode="lib:m"><p><xsl:next-match/></p></xsl:template>'
+        '<xsl:template match="b" mode="lib:m"><pb/></xsl:template>'
+        "</xsl:override>"
+        "</xsl:use-package>"
+        '<xsl:template name="main"><xsl:apply-templates select="/*" mode="lib:m"/>'
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor(resolver=PackageResolver.from_sources(library)).compile(
+        io.BytesIO(principal)
+    )
+    result = compiled.transform(b"<a><b/></a>", initial_template="main", delivery="document")
+    assert _element_names(result) == ("q", "pb")
+
+
+def test_public_mode_current_in_a_rule_body_keeps_the_using_package_rules() -> None:
+    library = _package(
+        "<xsl:mode/>"
+        '<xsl:mode name="lib:m" visibility="public"/>'
+        '<xsl:template match="a" mode="lib:m">'
+        '<xsl:apply-templates select="b" mode="#current"/></xsl:template>'
+        '<xsl:template match="b" mode="lib:m"><qb/></xsl:template>'
+    )
+    principal = _principal(
+        '<xsl:use-package name="urn:lib">'
+        '<xsl:accept component="mode" names="lib:m" visibility="public"/>'
+        "<xsl:override>"
+        '<xsl:template match="a" mode="lib:m"><p><xsl:next-match/></p></xsl:template>'
+        '<xsl:template match="b" mode="lib:m"><pb/></xsl:template>'
+        "</xsl:override>"
+        "</xsl:use-package>"
+        '<xsl:template name="main"><xsl:apply-templates select="/*" mode="lib:m"/>'
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor(resolver=PackageResolver.from_sources(library)).compile(
+        io.BytesIO(principal)
+    )
+    result = compiled.transform(b"<a><b/></a>", initial_template="main", delivery="document")
+    assert _element_names(result) == ("pb",)
 
 
 def test_principal_strict_rule_does_not_borrow_the_library_schema() -> None:

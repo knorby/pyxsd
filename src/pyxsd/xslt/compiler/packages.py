@@ -3929,6 +3929,11 @@ def _merge_mode_properties(
     entries: dict[str, list[tuple[tuple[int, ...], str, _Declaration]]] = {}
     for declaration in declarations:
         for attribute in declaration.element.attributes:
+            # Only attributes in no namespace are XSLT-defined properties of
+            # xsl:mode.  An attribute in a foreign namespace is an extension
+            # attribute and must be ignored (section 3.2).
+            if attribute.namespace_uri is not None:
+                continue
             local = attribute.local_name
             assert local is not None
             if local in ("name", "visibility") or attribute.name.startswith("_"):

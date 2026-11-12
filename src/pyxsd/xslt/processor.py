@@ -835,6 +835,7 @@ class _RuleContext:
     mode: str | None
     package_name: str | None
     tunnel_parameters: Mapping[str, XdmSequence]
+    mode_package: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -852,6 +853,7 @@ class _ApplyState:
     tunnel_parameters: Mapping[str, XdmSequence]
     index: int = 0
     package_name: str | None = None
+    mode_package: str | None = None
     group: object = NO_GROUP
     grouping_key: object = NO_GROUP
 
@@ -5989,6 +5991,7 @@ class _Invocation(Transformation):
             options.template_parameters,
             options.tunnel_parameters,
             package_name=self.package.name,
+            mode_package=self.package.name,
         )
 
     # -- components and parameters ----------------------------------------
@@ -7932,13 +7935,26 @@ class _Invocation(Transformation):
             return package.default_mode
         return mode
 
+    def _mode_package(self, mode: str | None, frame: Frame) -> str | None:
+        """The package whose composed mode a mode reference selects.
+
+        An explicit mode reference binds in the package containing the
+        instruction.  ``#current`` instead keeps the package of the mode
+        that selected the current template rule, so a base rule invoked from
+        a using package's mode keeps that package's override composition.
+        """
+        if mode == "#current":
+            context = self._rule_context(frame)
+            return frame.package if context is None else context.mode_package
+        return frame.package
+
     def _overriding_rule(
         self,
         plan: _OverridingPlan,
         rule_context: _RuleContext,
         item: XdmItem,
     ) -> RuleMatch | None:
-        dispatcher = self._dispatcher(rule_context.mode, rule_context.package_name)
+        dispatcher = self._dispatcher(rule_context.mode, rule_context.mode_package)
         environment = self._environment({}, rule_context.package_name)
         if plan.kind == "next-match":
             return dispatcher.next_match(
@@ -7981,6 +7997,7 @@ class _Invocation(Transformation):
                 template,
                 effective_tunnel,
                 rule_context.package_name,
+                rule_context.mode_package,
             )
             return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
         child = self._rule_frame(
@@ -7988,6 +8005,7 @@ class _Invocation(Transformation):
             rule_context.focus,
             template,
             effective_tunnel,
+            mode_package=rule_context.mode_package,
             group=frame.group,
             grouping_key=frame.grouping_key,
         )
@@ -8021,7 +8039,8 @@ class _Invocation(Transformation):
             original_functions=self._original_functions(frame),
         )
         resolved_mode = self._resolve_mode(plan.mode, frame.mode, frame.package)
-        self._check_typed_mode(items, resolved_mode, frame.package)
+        mode_package = self._mode_package(plan.mode, frame)
+        self._check_typed_mode(items, resolved_mode, mode_package)
         template, tunnel = self._plan_parameters(plan.parameters, frame)
         child = self._apply_frame(
             items,
@@ -8030,6 +8049,7 @@ class _Invocation(Transformation):
             {**self._frame_tunnel(frame), **tunnel},
             tail=plan.tail,
             package_name=frame.package,
+            mode_package=mode_package,
             group=frame.group,
             grouping_key=frame.grouping_key,
         )
@@ -8048,6 +8068,7 @@ class _Invocation(Transformation):
         *,
         tail: bool = False,
         package_name: str | None = None,
+        mode_package: str | None = None,
         group: object = _INHERIT,
         grouping_key: object = _INHERIT,
     ) -> Frame:
@@ -8058,6 +8079,7 @@ class _Invocation(Transformation):
             template_parameters=template_parameters,
             tunnel_parameters=tunnel_parameters,
             package_name=package_name,
+            mode_package=mode_package,
             group=effective_group,
             grouping_key=effective_grouping_key,
         )
@@ -8076,23 +8098,22 @@ class _Invocation(Transformation):
     def _mode_layers(
         self,
         mode: str | None,
-        package_name: str | None,
+        mode_package: str | None,
     ) -> tuple[_ModeLayerPlan, ...]:
-        principal = self.stylesheet._package_modes.get(self.package.name, {})
-        if mode is not None and mode in principal:
-            return principal.get(mode, ())
-        package_modes = self.stylesheet._package_modes.get(package_name, {})
+        package_modes = self.stylesheet._package_modes.get(
+            mode_package, self.stylesheet._package_modes.get(self.package.name, {})
+        )
         return package_modes.get(mode, ())
 
-    def _dispatcher(self, mode: str | None, package_name: str | None = None) -> RuleDispatcher:
-        key = (mode, package_name)
+    def _dispatcher(self, mode: str | None, mode_package: str | None = None) -> RuleDispatcher:
+        key = (mode, mode_package)
         dispatcher = self._mode_dispatchers.get(key)
         if dispatcher is None:
             layers = tuple(
                 (layer_index, PatternIndex(layer.rules))
-                for layer_index, layer in enumerate(self._mode_layers(mode, package_name))
+                for layer_index, layer in enumerate(self._mode_layers(mode, mode_package))
             )
-            properties = self._mode_properties(mode, package_name)
+            properties = self._mode_properties(mode, mode_package)
             dispatcher = RuleDispatcher(
                 layers,
                 on_multiple_match=properties.get("on-multiple-match", "use-last"),
@@ -8103,21 +8124,17 @@ class _Invocation(Transformation):
     def _mode_properties(
         self,
         mode: str | None,
-        package_name: str | None = None,
+        mode_package: str | None = None,
     ) -> Mapping[str, str]:
-        if mode is None:
-            package = self.stylesheet._packages[package_name]
-            declaration = package.mode(mode)
-            return {} if declaration is None else declaration.properties
-        principal = self.stylesheet._packages[self.package.name]
-        declaration = principal.mode(mode)
-        if declaration is not None:
-            return declaration.properties
-        package = self.stylesheet._packages[package_name]
+        # A mode reference resolves in the package that owns the selected
+        # mode.  A used package's private mode may reuse a name that the
+        # using package also declares, so the mode's package wins over the
+        # principal package.
+        package = self.stylesheet._packages.get(
+            mode_package, self.stylesheet._packages[self.package.name]
+        )
         declaration = package.mode(mode)
-        if declaration is None:
-            return {}
-        return declaration.properties
+        return {} if declaration is None else declaration.properties
 
     def _check_typed_mode(
         self,
@@ -8188,6 +8205,7 @@ class _Invocation(Transformation):
         template_parameters: Mapping[str, XdmSequence],
         tunnel_parameters: Mapping[str, XdmSequence],
         *,
+        mode_package: str | None = None,
         group: object = _INHERIT,
         grouping_key: object = _INHERIT,
     ) -> Frame:
@@ -8216,6 +8234,7 @@ class _Invocation(Transformation):
             mode=rule.mode,
             package_name=body.owner,
             tunnel_parameters=tunnel_parameters,
+            mode_package=mode_package,
         )
         effective_group, effective_grouping_key = self._inherited_group(group, grouping_key)
         frame = Frame(
@@ -8279,7 +8298,7 @@ class _Invocation(Transformation):
             return self._return_frame(frame)
         item = state.items[state.index]
         focus = Focus.singleton(item, position=state.index + 1, size=len(state.items))
-        rule = self._dispatcher(state.mode, state.package_name).select(
+        rule = self._dispatcher(state.mode, state.mode_package).select(
             item,
             state.mode,
             self._environment({}, state.package_name),
@@ -8299,6 +8318,7 @@ class _Invocation(Transformation):
             focus,
             state.template_parameters,
             state.tunnel_parameters,
+            mode_package=state.mode_package,
             group=state.group,
             grouping_key=state.grouping_key,
         )
@@ -8311,7 +8331,7 @@ class _Invocation(Transformation):
         resume: Frame,
         tail: bool,
     ) -> FrameResult | None:
-        variant = self._builtin_variant(state.mode, state.package_name)
+        variant = self._builtin_variant(state.mode, state.mode_package)
         if variant == "fail":
             raise XsltDynamicError(
                 "no template rule matches and the mode forbids the built-in rule",
@@ -8332,7 +8352,7 @@ class _Invocation(Transformation):
                 if not item.members:
                     return None
                 members = _array_member_items(item)
-                self._check_typed_mode(members, state.mode, state.package_name)
+                self._check_typed_mode(members, state.mode, state.mode_package)
                 child = self._apply_frame(
                     members,
                     state.mode,
@@ -8340,6 +8360,7 @@ class _Invocation(Transformation):
                     state.tunnel_parameters,
                     tail=tail,
                     package_name=state.package_name,
+                    mode_package=state.mode_package,
                     group=state.group,
                     grouping_key=state.grouping_key,
                 )
@@ -8352,7 +8373,7 @@ class _Invocation(Transformation):
             ):
                 if not item.children:
                     return None
-                self._check_typed_mode(item.children, state.mode, state.package_name)
+                self._check_typed_mode(item.children, state.mode, state.mode_package)
                 child = self._apply_frame(
                     item.children,
                     state.mode,
@@ -8360,6 +8381,7 @@ class _Invocation(Transformation):
                     state.tunnel_parameters,
                     tail=tail,
                     package_name=state.package_name,
+                    mode_package=state.mode_package,
                     group=state.group,
                     grouping_key=state.grouping_key,
                 )
@@ -8381,7 +8403,7 @@ class _Invocation(Transformation):
             return None
         if variant == "deep-skip":
             if isinstance(item, XdmNode) and item.kind is NodeKind.DOCUMENT:
-                self._check_typed_mode(item.children, state.mode, state.package_name)
+                self._check_typed_mode(item.children, state.mode, state.mode_package)
                 child = self._apply_frame(
                     item.children,
                     state.mode,
@@ -8389,6 +8411,7 @@ class _Invocation(Transformation):
                     state.tunnel_parameters,
                     tail=tail,
                     package_name=state.package_name,
+                    mode_package=state.mode_package,
                     group=state.group,
                     grouping_key=state.grouping_key,
                 )
@@ -8407,6 +8430,7 @@ class _Invocation(Transformation):
                         state.template_parameters,
                         state.tunnel_parameters,
                         package_name=state.package_name,
+                        mode_package=state.mode_package,
                     )
                 if attributes:
                     resume = replace(
@@ -8415,7 +8439,7 @@ class _Invocation(Transformation):
                     )
                 if not item.children:
                     return Continue(resume)
-                self._check_typed_mode(item.children, state.mode, state.package_name)
+                self._check_typed_mode(item.children, state.mode, state.mode_package)
                 child = self._apply_frame(
                     item.children,
                     state.mode,
@@ -8423,6 +8447,7 @@ class _Invocation(Transformation):
                     state.tunnel_parameters,
                     tail=tail,
                     package_name=state.package_name,
+                    mode_package=state.mode_package,
                     group=state.group,
                     grouping_key=state.grouping_key,
                 )
@@ -8446,8 +8471,8 @@ class _Invocation(Transformation):
             )
         )
 
-    def _builtin_variant(self, mode: str | None, package_name: str | None = None) -> str:
-        variant = self._mode_properties(mode, package_name).get("on-no-match", "text-only-copy")
+    def _builtin_variant(self, mode: str | None, mode_package: str | None = None) -> str:
+        variant = self._mode_properties(mode, mode_package).get("on-no-match", "text-only-copy")
         if variant not in {
             "text-only-copy",
             "deep-copy",
@@ -8469,9 +8494,10 @@ class _Invocation(Transformation):
         template_parameters: Mapping[str, XdmSequence],
         tunnel_parameters: Mapping[str, XdmSequence],
         package_name: str | None = None,
+        mode_package: str | None = None,
     ) -> XdmSequence:
         """Evaluate the built-in rule for *item* outside the apply frame."""
-        variant = self._builtin_variant(mode, package_name)
+        variant = self._builtin_variant(mode, mode_package)
         if variant == "fail":
             raise XsltDynamicError(
                 "no template rule matches and the mode forbids the built-in rule",
@@ -8487,6 +8513,7 @@ class _Invocation(Transformation):
                     template_parameters,
                     tunnel_parameters,
                     package_name=package_name,
+                    mode_package=mode_package,
                 )
             return ()
         if variant == "text-only-copy":
@@ -8498,6 +8525,7 @@ class _Invocation(Transformation):
                         template_parameters,
                         tunnel_parameters,
                         package_name=package_name,
+                        mode_package=mode_package,
                     )
                 if item.kind in (NodeKind.TEXT, NodeKind.ATTRIBUTE):
                     return (self._text_node(item.string_value),)
@@ -8513,6 +8541,7 @@ class _Invocation(Transformation):
                     template_parameters,
                     tunnel_parameters,
                     package_name=package_name,
+                    mode_package=mode_package,
                 )
             return ()
         if variant == "shallow-skip":
@@ -8529,6 +8558,7 @@ class _Invocation(Transformation):
                             template_parameters,
                             tunnel_parameters,
                             package_name=package_name,
+                            mode_package=mode_package,
                         )
                     )
                 values.extend(
@@ -8538,6 +8568,7 @@ class _Invocation(Transformation):
                         template_parameters,
                         tunnel_parameters,
                         package_name=package_name,
+                        mode_package=mode_package,
                     )
                 )
                 return tuple(values)
@@ -8555,6 +8586,7 @@ class _Invocation(Transformation):
                     template_parameters,
                     tunnel_parameters,
                     package_name=package_name,
+                    mode_package=mode_package,
                 ),
             ),
         )
@@ -8582,6 +8614,7 @@ class _Invocation(Transformation):
                 template_parameters,
                 state.tunnel_parameters,
                 package_name=state.package_name,
+                mode_package=state.mode_package,
             )
             _append_complex_content(factory, document, children, allow_attributes=False)
             document._finalize_document_order()
@@ -8602,6 +8635,7 @@ class _Invocation(Transformation):
             template_parameters,
             state.tunnel_parameters,
             package_name=state.package_name,
+            mode_package=state.mode_package,
         )
         _append_complex_content(factory, element, attributes, allow_attributes=True)
         children = self._apply_templates(
@@ -8610,6 +8644,7 @@ class _Invocation(Transformation):
             template_parameters,
             state.tunnel_parameters,
             package_name=state.package_name,
+            mode_package=state.mode_package,
         )
         _append_complex_content(factory, element, children, allow_attributes=False)
         return element
@@ -9356,7 +9391,12 @@ class _Invocation(Transformation):
                 original_functions=original_functions,
             )
             resolved_mode = self._resolve_mode(plan.mode, mode, package_name)
-            self._check_typed_mode(items, resolved_mode, package_name)
+            mode_package = (
+                rule_context.mode_package
+                if plan.mode == "#current" and rule_context is not None
+                else package_name
+            )
+            self._check_typed_mode(items, resolved_mode, mode_package)
             template, tunnel = self._plan_parameters_for(
                 plan.parameters,
                 focus,
@@ -9373,6 +9413,7 @@ class _Invocation(Transformation):
                 template,
                 {**(tunnel_parameters or {}), **tunnel},
                 package_name=package_name,
+                mode_package=mode_package,
             )
         if isinstance(plan, _OverridingPlan):
             template, tunnel = self._plan_parameters_for(
@@ -10544,12 +10585,14 @@ class _Invocation(Transformation):
                 template_parameters,
                 {**rule_context.tunnel_parameters, **tunnel_parameters},
                 rule_context.package_name,
+                rule_context.mode_package,
             )
         frame = self._rule_frame(
             match,
             rule_context.focus,
             template_parameters,
             {**rule_context.tunnel_parameters, **tunnel_parameters},
+            mode_package=rule_context.mode_package,
         )
         return cast(XdmSequence, self.execute_frame(frame))
 
@@ -10738,14 +10781,16 @@ class _Invocation(Transformation):
         tunnel_parameters: Mapping[str, XdmSequence],
         *,
         package_name: str | None = None,
+        mode_package: str | None = None,
     ) -> XdmSequence:
-        self._check_typed_mode(items, mode, package_name)
+        self._check_typed_mode(items, mode, mode_package)
         frame = self._apply_frame(
             items,
             mode,
             template_parameters,
             tunnel_parameters,
             package_name=package_name,
+            mode_package=mode_package,
         )
         with self._merge_scope(None, None, ()):
             return cast(XdmSequence, self.execute_frame(frame))

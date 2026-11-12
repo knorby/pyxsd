@@ -934,12 +934,23 @@ class _Parser:
         return self._element_declarations(item_type.name)
 
     def _element_declarations(self, name: str) -> tuple[str, ...]:
-        """The declaration names accepted by ``schema-element(name)``."""
+        """The declaration names accepted by ``schema-element(name)``.
+
+        XPath 3.0 section 2.5.5.4 includes direct and indirect members of the
+        substitution group, while the schema pool exposes only direct edges.
+        """
         pool = self.context.schema
         assert pool is not None
-        members = pool.get_substitution_group(name) or frozenset()
         names = {name}
-        names.update(member.name for member in members if member.name is not None)
+        pending = {name}
+        while pending:
+            discovered: set[str] = set()
+            for current in pending:
+                for member in pool.get_substitution_group(current) or frozenset():
+                    assert member.name is not None
+                    discovered.add(member.name)
+            pending = discovered - names
+            names.update(pending)
         return tuple(sorted(names))
 
     def _name_test(self, axis: str, raw: str) -> NameTest:
