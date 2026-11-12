@@ -16,7 +16,7 @@ process-global cache exists here.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Collection, Hashable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Literal, TypeVar
@@ -93,6 +93,22 @@ class AccumulatorDefinition:
 class _AccumulatorValues:
     before: dict[XdmNode, XdmSequence] = field(default_factory=dict)
     after: dict[XdmNode, XdmSequence] = field(default_factory=dict)
+
+
+def _corresponding_nodes(
+    source: XdmNode,
+    target: XdmNode,
+) -> Iterator[tuple[XdmNode, XdmNode]]:
+    """Yield structurally corresponding source/target nodes in document order.
+
+    A deep copy preserves child order and node kinds, so the pair walk never
+    consults node identity, document order, or any mutable cache state.
+    """
+    if source.kind is not target.kind:
+        return
+    yield source, target
+    for source_child, target_child in zip(source.children, target.children, strict=False):
+        yield from _corresponding_nodes(source_child, target_child)
 
 
 class AccumulatorManager:
@@ -215,6 +231,70 @@ class AccumulatorManager:
                 "the accumulator value is not available for this node",
                 code="XTTE3360",
             ) from exc
+
+    def copy_values(
+        self,
+        source: XdmNode,
+        target: XdmNode,
+        *,
+        enabled: bool,
+        names: Collection[str],
+    ) -> None:
+        """Transfer cached values between structurally corresponding trees.
+
+        *names* are the expanded accumulator names applicable in the
+        destination package.  With *enabled* true, every named accumulator that
+        is applicable to the source tree and already has cached values receives
+        a fresh per-tree cache on *target*: pre-descent and post-descent values
+        are assigned to the target nodes that correspond to their source nodes
+        by structural occurrence, never by cache or node reference.  The source
+        cache is not mutated and the destination may traverse its copy without
+        disturbing it.  Source applicability, including a restriction, is
+        mirrored on the destination tree.  A disabled copy, an excluded name,
+        or a source tree without a cached value leaves the destination to
+        compute independently.
+        """
+        if not enabled:
+            return
+        if not isinstance(source, XdmNode) or not isinstance(target, XdmNode):
+            raise TypeError("accumulator copy endpoints must be XDM nodes")
+        if target.kind not in (NodeKind.DOCUMENT, NodeKind.ELEMENT):
+            return
+        source_tree = self._tree_key(source.root)
+        target_tree = self._tree_key(target.root)
+        if source_tree == target_tree:
+            return
+        restriction = self._restrictions.get(source_tree)
+        if restriction is None:
+            self._restrictions.pop(target_tree, None)
+        else:
+            self._restrictions[target_tree] = restriction
+        wanted = frozenset(names)
+        if not wanted:
+            return
+        cached = tuple(
+            (key, values) for (tree, key), values in self._values.items() if tree == source_tree
+        )
+        pairs = tuple(_corresponding_nodes(source, target))
+        for key, values in cached:
+            if key[1] not in wanted:
+                continue
+            if restriction is not None and key not in restriction:
+                continue
+            copied = _AccumulatorValues(
+                before={
+                    target_node: values.before[source_node]
+                    for source_node, target_node in pairs
+                    if source_node in values.before
+                },
+                after={
+                    target_node: values.after[source_node]
+                    for source_node, target_node in pairs
+                    if source_node in values.after
+                },
+            )
+            if copied.before or copied.after:
+                self._values[(target_tree, key)] = copied
 
     def _compute(
         self,

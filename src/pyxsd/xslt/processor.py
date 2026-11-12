@@ -5878,6 +5878,15 @@ class _Invocation(Transformation):
             return None
         return self.stylesheet._accumulators.get((component.owner, component.name))
 
+    def _destination_accumulator_names(self, package_name: str | None) -> frozenset[str]:
+        """Expanded accumulator names visible in the destination package."""
+        package = self.stylesheet._packages.get(package_name, self.package)
+        return frozenset(
+            cast(str, component.name)
+            for component in package.components.values()
+            if component.kind == "accumulator" and not component.hidden
+        )
+
     def _accumulator_rule_matches(
         self,
         definition: AccumulatorDefinition,
@@ -10409,6 +10418,15 @@ class _Invocation(Transformation):
                 parent=None,
                 deep=True,
                 copy_namespaces=plan.copy_namespaces,
+            )
+            names = (
+                self._destination_accumulator_names(package_name) if plan.copy_accumulators else ()
+            )
+            self.accumulators.copy_values(
+                item,
+                clone,
+                enabled=plan.copy_accumulators,
+                names=names,
             )
             self._check_namespace_sensitive_copy(clone, plan)
             if clone.kind is NodeKind.DOCUMENT:

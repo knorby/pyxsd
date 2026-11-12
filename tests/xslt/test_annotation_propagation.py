@@ -105,6 +105,23 @@ def test_copy_of_preserve_retains_annotations_and_typed_values() -> None:
     )
 
 
+def test_copy_accumulators_does_not_disturb_preserved_annotations() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:variable name="c" as="element()">'
+        '<xsl:copy-of select="/v:Order" validation="preserve" copy-accumulators="yes"/>'
+        "</xsl:variable>"
+        '<xsl:sequence select="$c instance of element(*, v:Order)"/>'
+        '<xsl:sequence select="sum($c//v:value)"/>'
+        "</xsl:template>"
+    )
+
+    assert _values(_transform(body, processor_options={"validation": "strict"})) == (
+        "true",
+        "4.0",
+    )
+
+
 def test_copy_of_strip_removes_annotations_and_typed_values() -> None:
     body = (
         '<xsl:template name="main">'
