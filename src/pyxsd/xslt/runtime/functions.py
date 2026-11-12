@@ -23,6 +23,7 @@ properties, and the names of XSLT elements for ``element-available``.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
@@ -1521,7 +1522,11 @@ def _json_value_to_xdm(value: object) -> XdmItem | None:
     if isinstance(value, bool):
         return XdmAtomic.boolean(value)
     if isinstance(value, (int, float)):
-        return XdmAtomic.double(float(value))
+        try:
+            number = float(value)
+        except OverflowError:
+            number = math.inf if value > 0 else -math.inf
+        return XdmAtomic.double(number)
     if isinstance(value, str):
         return XdmAtomic.string(value)
     if isinstance(value, list):

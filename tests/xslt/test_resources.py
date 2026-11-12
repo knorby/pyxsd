@@ -624,6 +624,19 @@ def test_json_doc_empty_uri_is_an_empty_sequence() -> None:
     assert compiled.transform().principal_tree.string_value == "0"
 
 
+def test_json_doc_maps_out_of_range_numbers_to_infinity() -> None:
+    payload = b"[" + b"1" + b"0" * 400 + b",-1" + b"0" * 400 + b"]"
+    policy = _json_doc_policy(payload)
+    compiled = XsltProcessor(resource_policy=policy).compile(
+        io.BytesIO(
+            _json_expression(
+                "json-doc('urn:test:json')?1 > 1e308 and json-doc('urn:test:json')?2 &lt; -1e308"
+            )
+        )
+    )
+    assert compiled.transform().principal_tree.string_value == "true"
+
+
 def test_json_doc_accepts_an_empty_options_map() -> None:
     policy = _json_doc_policy(b'{"a":1}')
     compiled = XsltProcessor(resource_policy=policy).compile(
