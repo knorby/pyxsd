@@ -1322,11 +1322,7 @@ class XsltContextBridge:
         uri = _optional_string(arguments, 0)
         if uri is None:
             return ()
-        if len(arguments) > 1 and arguments[1]:
-            raise XsltDynamicError(
-                "json-doc options are not supported by this processor",
-                code="FOJS0005",
-            )
+        _json_doc_options(arguments)
         resources = self._invocation_resources(uri, code="FOUT1170")
         text = resources.read_text(uri, base=self.base_uri)
         value = _parse_json_document(text)
@@ -1466,6 +1462,20 @@ def _optional_string(arguments: tuple[XdmSequence, ...], index: int) -> str | No
     if index >= len(arguments) or not arguments[index]:
         return None
     return _single_string(arguments, index)
+
+
+def _json_doc_options(arguments: tuple[XdmSequence, ...]) -> None:
+    """Validate json-doc's optional options map without implementing entries."""
+    if len(arguments) < 2 or not arguments[1]:
+        return
+    options = arguments[1]
+    if len(options) != 1 or not isinstance(options[0], XdmMap):
+        raise XsltDynamicError("json-doc options must be a single map", code="XPTY0004")
+    if options[0].size:
+        raise XsltDynamicError(
+            "json-doc options are not supported by this processor",
+            code="FOJS0005",
+        )
 
 
 def _parse_json_document(text: str) -> XdmItem | None:

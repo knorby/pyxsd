@@ -624,14 +624,32 @@ def test_json_doc_empty_uri_is_an_empty_sequence() -> None:
     assert compiled.transform().principal_tree.string_value == "0"
 
 
-def test_json_doc_rejects_options() -> None:
+def test_json_doc_accepts_an_empty_options_map() -> None:
     policy = _json_doc_policy(b'{"a":1}')
     compiled = XsltProcessor(resource_policy=policy).compile(
-        io.BytesIO(_json_expression("json-doc('urn:test:json', map{})"))
+        io.BytesIO(_json_expression("json-doc('urn:test:json', map{})?a = 1"))
+    )
+    assert compiled.transform().principal_tree.string_value == "true"
+
+
+def test_json_doc_rejects_unsupported_options() -> None:
+    policy = _json_doc_policy(b'{"a":1}')
+    compiled = XsltProcessor(resource_policy=policy).compile(
+        io.BytesIO(_json_expression("json-doc('urn:test:json', map{'liberal': true()})"))
     )
     with pytest.raises(XsltDynamicError) as caught:
         compiled.transform()
     assert caught.value.code == "FOJS0005"
+    assert policy.reads == []
+
+
+def test_json_doc_requires_an_options_map() -> None:
+    compiled = XsltProcessor().compile(
+        io.BytesIO(_json_expression("json-doc('urn:test:json', 'not a map')"))
+    )
+    with pytest.raises(Exception) as caught:
+        compiled.transform()
+    assert "XPTY0004" in str(caught.value)
 
 
 def test_pure_json_functions_parse_convert_and_serialize() -> None:
