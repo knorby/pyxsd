@@ -86,6 +86,49 @@ def current_context() -> SchemaContext | None:
     return stack[-1] if stack else None
 
 
+def _host_stack() -> list[dict[int, Any]]:
+    stack = getattr(_local, "host_stack", None)
+    if stack is None:
+        stack = []
+        _local.host_stack = stack
+    return stack
+
+
+def overridden_parser_host(schema: Any) -> Any:
+    """Return the invocation-local parser host for *schema*, or ``None``.
+
+    Generated classes look up their parser-like host through their ``schema``
+    stamp.  A construction-validation run installs a private host copy here so
+    binding indexes and namespace state never touch the compiled schema's
+    shared host.  The stack is thread-local; unrelated compilations and parses
+    keep using the schema's own host.
+    """
+    if schema is None:
+        return None
+    stack = _host_stack()
+    if not stack:
+        return None
+    return stack[-1].get(id(schema))
+
+
+@contextmanager
+def parser_host_override(schema: Any, host: Any) -> Iterator[None]:
+    """Route generated-class host lookups for *schema* to *host*.
+
+    The override is scoped to the current thread and restored on exit.  It is
+    used by constructed-node validation, which must run against a private host
+    copy without mutating the compiled schema's shared binding indexes.
+    """
+    stack = _host_stack()
+    overrides = dict(stack[-1]) if stack else {}
+    overrides[id(schema)] = host
+    stack.append(overrides)
+    try:
+        yield
+    finally:
+        stack.pop()
+
+
 def ambient_context() -> SchemaContext:
     """Returns the thread's fallback context for direct API use.
 

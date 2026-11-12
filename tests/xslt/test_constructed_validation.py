@@ -10,6 +10,8 @@ it to obtain an annotation.
 from __future__ import annotations
 
 import io
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from typing import Any
 
@@ -53,6 +55,9 @@ SCHEMA = f"""
   <xs:simpleType name="Code">
     <xs:restriction base="xs:NCName"/>
   </xs:simpleType>
+  <xs:simpleType name="Amount2">
+    <xs:restriction base="v:Amount"/>
+  </xs:simpleType>
   <xs:simpleType name="QNameLike">
     <xs:restriction base="xs:QName"/>
   </xs:simpleType>
@@ -94,6 +99,11 @@ SCHEMA = f"""
       <xs:element name="count" type="xs:int" default="7" minOccurs="0"/>
     </xs:sequence>
   </xs:complexType>
+  <xs:complexType name="RequiredDefaulted">
+    <xs:sequence>
+      <xs:element name="count" type="xs:int" default="7"/>
+    </xs:sequence>
+  </xs:complexType>
   <xs:complexType name="LaxWild">
     <xs:sequence>
       <xs:element name="known" type="xs:string"/>
@@ -114,14 +124,34 @@ SCHEMA = f"""
       <xs:element name="id" type="xs:ID"/>
     </xs:sequence>
   </xs:complexType>
+  <xs:complexType name="QNameDoc">
+    <xs:attribute name="ref" type="xs:QName"/>
+  </xs:complexType>
+  <xs:complexType name="Entry">
+    <xs:attribute name="key" type="xs:string"/>
+  </xs:complexType>
+  <xs:complexType name="UniqueDoc">
+    <xs:sequence>
+      <xs:element name="entry" type="v:Entry" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
   <xs:element name="Order" type="v:Order"/>
   <xs:element name="amount" type="v:Amount"/>
   <xs:element name="defaulted" type="v:Defaulted"/>
+  <xs:element name="requiredDefaulted" type="v:RequiredDefaulted"/>
   <xs:element name="laxWild" type="v:LaxWild"/>
   <xs:element name="strictWild" type="v:StrictWild"/>
   <xs:element name="idDoc" type="v:IdDoc"/>
   <xs:element name="nilledOrder" type="v:Order" nillable="true"/>
+  <xs:element name="qnameDoc" type="v:QNameDoc"/>
+  <xs:element name="uniqueDoc" type="v:UniqueDoc">
+    <xs:unique name="u">
+      <xs:selector xpath="v:entry"/>
+      <xs:field xpath="@key"/>
+    </xs:unique>
+  </xs:element>
   <xs:attribute name="status" type="v:Code"/>
+  <xs:attribute name="fixedStatus" type="xs:string" fixed="X"/>
   <xs:attribute name="glob" type="xs:string" default="g"/>
 </xs:schema>
 """
@@ -159,6 +189,16 @@ def _transform(
 ):
     compiled = _compile(body, attributes=attributes, **(processor_options or {}))
     return compiled.transform(source, initial_template="main", delivery=delivery, **options)
+
+
+def _transform_without_schema(
+    body: str,
+    *,
+    delivery: str = "document",
+    **options: Any,
+):
+    compiled = XsltProcessor().compile(io.BytesIO(_stylesheet_without_schema(body)))
+    return compiled.transform(initial_template="main", delivery=delivery, **options)
 
 
 def _error_code(call: Any) -> str | None:
@@ -852,17 +892,44 @@ def test_lax_without_a_schema_pool_annotates_any_type() -> None:
     assert result.principal[0].type_name == f"{{{XSD_NS}}}anyType"
 
 
-def test_type_without_a_schema_pool_is_xtte1540() -> None:
-    body = (
+def test_builtin_named_types_do_not_require_an_imported_schema() -> None:
+    element = (
         '<xsl:template name="main">'
-        '<xsl:element name="out" type="xs:decimal">1</xsl:element>'
+        '<xsl:variable name="o"><xsl:element name="out" type="xs:string">hello</xsl:element></xsl:variable>'
+        '<xsl:sequence select="string($o/*)"/>'
+        '<xsl:sequence select="$o/* instance of element(*, xs:string)"/>'
         "</xsl:template>"
     )
-    compiled = XsltProcessor().compile(io.BytesIO(_stylesheet_without_schema(body)))
+    assert _values(_transform_without_schema(element)) == ("hello", "true")
 
-    assert _error_code(lambda: compiled.transform(initial_template="main", delivery="raw")) == (
-        "XTTE1540"
+    attribute = (
+        '<xsl:template name="main">'
+        '<xsl:variable name="a" as="attribute()">'
+        '<xsl:attribute name="a" type="xs:int">3</xsl:attribute>'
+        "</xsl:variable>"
+        '<xsl:sequence select="$a instance of attribute(*, xs:int)"/>'
+        "</xsl:template>"
     )
+    assert _values(_transform_without_schema(attribute)) == ("true",)
+
+    document = (
+        '<xsl:template name="main">'
+        '<xsl:document type="xs:string"><out>hello</out></xsl:document>'
+        "</xsl:template>"
+    )
+    result = _transform_without_schema(document, delivery="raw")
+    assert result.principal[0].root_element.type_name == f"{{{XSD_NS}}}string"
+
+    result_document = (
+        '<xsl:template name="main">'
+        f'<xsl:result-document href="{OUT_URI}" type="xs:string"><out>hello</out></xsl:result-document>'
+        "</xsl:template>"
+    )
+    delivered = _transform_without_schema(result_document, delivery="raw")
+    assert delivered.secondary[OUT_URI].document.root_element.type_name == f"{{{XSD_NS}}}string"
+
+    copied = '<xsl:template name="main"><xsl:copy-of select="42" type="xs:integer"/></xsl:template>'
+    assert _values(_transform_without_schema(copied, delivery="raw")) == ("42",)
 
 
 def test_named_simple_type_rejects_element_children() -> None:
@@ -1033,10 +1100,29 @@ def test_document_type_and_copy_document_nodes() -> None:
     )
     assert _values(_transform(typed_document)) == ("true",)
 
-    copied = (
+    shallow = (
         '<xsl:template name="main">'
         '<xsl:variable name="c">'
         '<xsl:copy select="/" validation="preserve"/>'
+        "</xsl:variable>"
+        '<xsl:sequence select="count($c/node())"/>'
+        "</xsl:template>"
+    )
+    assert _values(
+        _transform(
+            shallow,
+            source=b'<v:Order xmlns:v="urn:example:validation"><v:line code="1">'
+            b"<v:value>1.25</v:value></v:line></v:Order>",
+            processor_options={"validation": "strict"},
+        )
+    ) == ("0",)
+
+    copied = (
+        '<xsl:template name="main">'
+        '<xsl:variable name="c">'
+        '<xsl:copy select="/" validation="preserve" xsl:default-validation="preserve">'
+        '<xsl:copy-of select="/" validation="preserve"/>'
+        "</xsl:copy>"
         "</xsl:variable>"
         '<xsl:sequence select="$c/v:Order instance of element(*, v:Order)"/>'
         "</xsl:template>"
@@ -1342,7 +1428,7 @@ def test_xsl_copy_select_forms_and_empty_element_copy() -> None:
     assert _values(_transform(empty, delivery="raw")) == ()
 
     multiple = '<xsl:template name="main"><xsl:copy select="(1, 2)"/></xsl:template>'
-    assert _error_code(lambda: _transform(multiple, delivery="raw")) == "XPTY0004"
+    assert _error_code(lambda: _transform(multiple, delivery="raw")) == "XTTE3180"
 
     atomic = '<xsl:template name="main"><xsl:copy select="\'text\'"/></xsl:template>'
     assert _values(_transform(atomic, delivery="raw")) == ("text",)
@@ -1351,7 +1437,7 @@ def test_xsl_copy_select_forms_and_empty_element_copy() -> None:
     compiled = _compile(no_context)
     assert (
         _error_code(lambda: compiled.transform(initial_function="v:f", delivery="raw"))
-        == "XPDY0002"
+        == "XTTE0945"
     )
 
     body = (
@@ -1481,3 +1567,379 @@ def test_typed_mode_skips_non_element_items_and_accepts_typed_nodes() -> None:
 def test_construction_validation_value_is_xtse0020() -> None:
     body = '<xsl:template name="main"><xsl:element name="out" validation="bogus"/></xsl:template>'
     assert _error_code(lambda: _compile(body)) == "XTSE0020"
+
+
+def test_named_simple_type_attributes_and_xsi_type_overrides() -> None:
+    extra_attribute = (
+        '<xsl:template name="main">'
+        '<xsl:element name="v:amount" type="v:Amount">'
+        '<xsl:attribute name="extra">x</xsl:attribute>12.5'
+        "</xsl:element>"
+        "</xsl:template>"
+    )
+    assert _error_code(lambda: _transform(extra_attribute)) == "XTTE1540"
+
+    invalid_override = (
+        '<xsl:template name="main">'
+        '<xsl:element name="v:amount" type="v:Amount">'
+        f'<xsl:attribute name="xsi:type" namespace="{XSI_NS}">v:Code</xsl:attribute>12.5'
+        "</xsl:element>"
+        "</xsl:template>"
+    )
+    assert _error_code(lambda: _transform(invalid_override)) == "XTTE1540"
+
+    derived = (
+        '<xsl:template name="main">'
+        '<xsl:variable name="o">'
+        '<xsl:element name="v:amount" type="v:Amount">'
+        f'<xsl:attribute name="xsi:type" namespace="{XSI_NS}">v:Amount2</xsl:attribute>12.5'
+        "</xsl:element>"
+        "</xsl:variable>"
+        '<xsl:sequence select="$o/*"/>'
+        "</xsl:template>"
+    )
+    result = _transform(derived, delivery="raw")
+    assert result.principal[0].type_name == f"{{{VAL}}}Amount2"
+
+
+def test_named_type_document_constraints() -> None:
+    idref = (
+        '<xsl:template name="main">'
+        '<xsl:document type="v:IdDoc">'
+        '<xsl:element name="v:idDoc">'
+        '<xsl:element name="v:ref"><xsl:text>missing</xsl:text></xsl:element>'
+        '<xsl:element name="v:id"><xsl:text>one</xsl:text></xsl:element>'
+        "</xsl:element>"
+        "</xsl:document>"
+        "</xsl:template>"
+    )
+    assert _error_code(lambda: _transform(idref)) == "XTTE1555"
+
+    duplicate_key = (
+        '<xsl:template name="main">'
+        '<xsl:document type="v:UniqueDoc">'
+        '<xsl:element name="v:uniqueDoc">'
+        '<xsl:element name="v:entry"><xsl:attribute name="key">k</xsl:attribute></xsl:element>'
+        '<xsl:element name="v:entry"><xsl:attribute name="key">k</xsl:attribute></xsl:element>'
+        "</xsl:element>"
+        "</xsl:document>"
+        "</xsl:template>"
+    )
+    assert _error_code(lambda: _transform(duplicate_key)) == "XTTE1555"
+
+
+def test_lax_validation_checks_declared_attributes_and_any_type_children() -> None:
+    invalid_attribute = (
+        '<xsl:template name="main">'
+        '<xsl:element name="v:undeclared" validation="lax">'
+        '<xsl:attribute name="v:status">has space</xsl:attribute>'
+        "</xsl:element>"
+        "</xsl:template>"
+    )
+    assert _error_code(lambda: _transform(invalid_attribute)) == "XTTE1515"
+
+    valid_attribute = (
+        '<xsl:template name="main">'
+        '<xsl:variable name="o">'
+        '<xsl:element name="v:undeclared" validation="lax">'
+        '<xsl:attribute name="v:status">ok</xsl:attribute>'
+        "</xsl:element>"
+        "</xsl:variable>"
+        '<xsl:sequence select="$o/*/@v:status instance of attribute(*, v:Code)"/>'
+        "</xsl:template>"
+    )
+    assert _values(_transform(valid_attribute)) == ("true",)
+
+    invalid_any_type_child = (
+        '<xsl:template name="main">'
+        '<xsl:element name="v:any" type="xs:anyType">'
+        '<xsl:element name="v:Order"><xsl:attribute name="id">X</xsl:attribute></xsl:element>'
+        "</xsl:element>"
+        "</xsl:template>"
+    )
+    assert _error_code(lambda: _transform(invalid_any_type_child)) == "XTTE1540"
+
+
+def test_validation_inserts_defaulted_element_nodes() -> None:
+    strict = (
+        '<xsl:template name="main">'
+        '<xsl:variable name="o"><xsl:element name="v:defaulted" validation="strict"/></xsl:variable>'
+        '<xsl:sequence select="count($o/v:defaulted/v:count)"/>'
+        '<xsl:sequence select="data($o/v:defaulted/v:count)"/>'
+        '<xsl:sequence select="string($o/v:defaulted/v:count)"/>'
+        "</xsl:template>"
+    )
+    assert _values(_transform(strict)) == ("1", "7", "")
+
+    typed = (
+        '<xsl:template name="main">'
+        '<xsl:variable name="o"><xsl:element name="v:defaulted" type="v:Defaulted"/></xsl:variable>'
+        '<xsl:sequence select="count($o/v:defaulted/v:count)"/>'
+        '<xsl:sequence select="data($o/v:defaulted/v:count)"/>'
+        "</xsl:template>"
+    )
+    assert _values(_transform(typed)) == ("1", "7")
+
+
+def test_initial_typed_mode_invocation_checks_the_selected_nodes() -> None:
+    stylesheet = (
+        '<xsl:mode name="m" typed="yes"/>'
+        '<xsl:template match="*" mode="m"><xsl:text>ok</xsl:text></xsl:template>'
+    )
+    compiled = _compile(stylesheet)
+
+    assert (
+        _error_code(
+            lambda: compiled.transform(
+                source=b"<in/>",
+                initial_mode="m",
+                delivery="raw",
+            )
+        )
+        == "XTTE3100"
+    )
+
+    typed = compiled.transform(
+        source=(
+            b'<v:Order xmlns:v="urn:example:validation"><v:line code="1" '
+            b'note="n"><v:value>1.25</v:value></v:line></v:Order>'
+        ),
+        initial_mode="m",
+        validation="strict",
+        delivery="raw",
+    )
+    assert typed.principal[0].string_value == "ok"
+
+
+def test_fixed_attribute_constraints_are_enforced() -> None:
+    valid = (
+        '<xsl:template name="main">'
+        '<xsl:variable name="a" as="attribute()">'
+        '<xsl:attribute name="v:fixedStatus" validation="strict">X</xsl:attribute>'
+        "</xsl:variable>"
+        '<xsl:sequence select="string($a)"/>'
+        "</xsl:template>"
+    )
+    assert _values(_transform(valid)) == ("X",)
+
+    invalid = (
+        '<xsl:template name="main">'
+        '<xsl:attribute name="v:fixedStatus" validation="strict">Y</xsl:attribute>'
+        "</xsl:template>"
+    )
+    assert _error_code(lambda: _transform(invalid)) == "XTTE1510"
+
+
+def test_xsl_copy_select_runs_the_constructor_with_the_selected_focus() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:copy select="/doc/foo"><xsl:value-of select="."/></xsl:copy>'
+        "</xsl:template>"
+    )
+    result = _transform(body, source=b"<doc><foo>hello</foo><bar>bye</bar></doc>", delivery="raw")
+    assert result.principal[0].string_value == "hello"
+
+
+def test_xsl_copy_type_on_attribute_is_xtte1535() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:copy select="/root/@v:status" type="v:Line"/>'
+        "</xsl:template>"
+    )
+    assert (
+        _error_code(
+            lambda: _transform(
+                body,
+                source=b'<root xmlns:v="urn:example:validation" v:status="ok"/>',
+            )
+        )
+        == "XTTE1535"
+    )
+
+
+def test_namespace_sensitive_copy_without_namespaces_is_xtte0950() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:copy-of select="/v:qnameDoc/@ref" validation="preserve" copy-namespaces="no"/>'
+        "</xsl:template>"
+    )
+    assert (
+        _error_code(
+            lambda: _transform(
+                body,
+                source=(
+                    b'<v:qnameDoc xmlns:v="urn:example:validation" xmlns:q="urn:q" ref="q:value"/>'
+                ),
+                processor_options={"validation": "strict"},
+            )
+        )
+        == "XTTE0950"
+    )
+
+
+def test_xsl_copy_inherit_namespaces_controls_constructor_children() -> None:
+    source = (
+        b'<v:Order xmlns:v="urn:example:validation" xmlns:extra="urn:extra">'
+        b'<v:line code="1" note="n"><v:value>1.25</v:value></v:line></v:Order>'
+    )
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:variable name="c">'
+        '<xsl:copy select="/v:Order" inherit-namespaces="no" validation="preserve">'
+        '<xsl:element name="plain"><xsl:text>x</xsl:text></xsl:element>'
+        "</xsl:copy>"
+        "</xsl:variable>"
+        '<xsl:sequence select="$c/v:Order"/>'
+        "</xsl:template>"
+    )
+    plain = _transform(body, source=source, delivery="raw").principal[0].children[0]
+    assert "extra" not in plain.in_scope_namespaces
+
+    inherited = body.replace('inherit-namespaces="no"', 'inherit-namespaces="yes"')
+    plain = _transform(inherited, source=source, delivery="raw").principal[0].children[0]
+    assert plain.in_scope_namespaces["extra"] == "urn:extra"
+
+
+def test_concurrent_schema_aware_validation_is_invocation_local() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:variable name="o">'
+        '<xsl:element name="v:Order" type="v:Order">'
+        '<xsl:attribute name="id">X</xsl:attribute>'
+        '<xsl:element name="v:line" type="v:Line">'
+        '<xsl:attribute name="code">1</xsl:attribute>'
+        '<xsl:attribute name="note">n</xsl:attribute>'
+        '<xsl:element name="v:value"><xsl:text>1.25</xsl:text></xsl:element>'
+        "</xsl:element>"
+        "</xsl:element>"
+        "</xsl:variable>"
+        '<xsl:sequence select="$o/* instance of element(*, v:Order)"/>'
+        '<xsl:sequence select="sum($o//v:value)"/>'
+        "</xsl:template>"
+    )
+    compiled = _compile(body)
+    failures: list[tuple[int, int]] = []
+    barrier = threading.Barrier(8)
+
+    def worker() -> None:
+        try:
+            barrier.wait()
+            for iteration in range(20):
+                result = compiled.transform(initial_template="main", delivery="raw")
+                if not result.principal[0].value or result.principal[1].lexical != "1.25":
+                    failures.append((threading.get_ident(), iteration))
+        except BaseException:
+            barrier.abort()
+            raise
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(worker) for _ in range(8)]
+        for future in futures:
+            future.result()
+
+    assert failures == []
+
+
+def test_lax_validation_leaves_undeclared_attributes_untyped() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:variable name="o">'
+        '<xsl:element name="v:undeclared" validation="lax">'
+        '<xsl:attribute name="plain">x</xsl:attribute>'
+        "</xsl:element>"
+        "</xsl:variable>"
+        '<xsl:sequence select="$o/*/@plain instance of attribute(*, xs:untypedAtomic)"/>'
+        "</xsl:template>"
+    )
+    assert _values(_transform(body)) == ("true",)
+
+
+def test_simple_type_rejects_nilled_occurrence() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:element name="v:amount" type="v:Amount">'
+        f'<xsl:attribute name="xsi:nil" namespace="{XSI_NS}">true</xsl:attribute>'
+        "</xsl:element>"
+        "</xsl:template>"
+    )
+    assert _error_code(lambda: _transform(body)) == "XTTE1540"
+
+
+def test_namespace_sensitive_detection_uses_typed_values_and_false_path() -> None:
+    from pyxsd import xsd_data_types as xsd
+    from pyxsd.xdm.annotations import OccurrenceAnnotation
+    from pyxsd.xdm.validation import namespace_sensitive
+
+    document = XdmDocument.parse(b"<root/>")
+    node = document.root_element
+    assert not namespace_sensitive(node)
+    node._apply_occurrence_annotation(
+        OccurrenceAnnotation(
+            type_name=f"{{{XSD_NS}}}string",
+            validation_attempted="full",
+            typed_values=(
+                XdmAtomic.string("first"),
+                XdmAtomic.typed(xsd.QName("x"), xsd.QName),
+            ),
+        )
+    )
+    assert namespace_sensitive(node)
+
+
+def test_required_defaulted_element_is_not_duplicated() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:variable name="o">'
+        '<xsl:element name="v:requiredDefaulted" type="v:RequiredDefaulted">'
+        '<xsl:element name="v:count"/>'
+        "</xsl:element>"
+        "</xsl:variable>"
+        '<xsl:sequence select="count($o/v:requiredDefaulted/v:count)"/>'
+        '<xsl:sequence select="data($o/v:requiredDefaulted/v:count)"/>'
+        "</xsl:template>"
+    )
+    assert _values(_transform(body)) == ("1", "7")
+
+
+def test_defaulted_element_created_with_default_and_fresh_prefix() -> None:
+    from pyxsd.xdm.annotations import OccurrenceAnnotation
+    from pyxsd.xdm.validation import _append_element_node
+
+    document = XdmDocument.parse(b'<root xmlns="urn:target"/>')
+    child = _append_element_node(
+        document.root_element,
+        "{urn:other}child",
+        OccurrenceAnnotation(type_name="{urn:other}T", validation_attempted="full"),
+    )
+    assert child.namespace_uri == "urn:other"
+    assert child.prefix == "ns1"
+    assert any(node.prefix == "ns1" for node in document.root_element.namespace_nodes)
+
+    no_namespace = _append_element_node(
+        document.root_element,
+        "plain",
+        OccurrenceAnnotation(type_name=None, validation_attempted="full"),
+    )
+    assert no_namespace.prefix == ""
+    assert no_namespace.namespace_uri is None
+
+    default_document = XdmDocument.parse(b'<root xmlns="urn:other"/>')
+    default_child = _append_element_node(
+        default_document.root_element,
+        "{urn:other}child",
+        OccurrenceAnnotation(type_name="{urn:other}T", validation_attempted="full"),
+    )
+    assert default_child.prefix == ""
+    assert default_child.namespace_uri == "urn:other"
+
+
+def test_non_namespace_sensitive_copy_without_namespaces_succeeds() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:variable name="a" as="attribute()">'
+        '<xsl:copy-of select="/root/@plain" validation="preserve" copy-namespaces="no"/>'
+        "</xsl:variable>"
+        '<xsl:sequence select="string($a)"/>'
+        "</xsl:template>"
+    )
+    assert _values(_transform(body, source=b'<root plain="x"/>', delivery="raw")) == ("x",)

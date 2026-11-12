@@ -44,6 +44,7 @@ from pyxsd.xdm import (
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
+from pyxsd.xdm.validation import namespace_sensitive
 from pyxsd.xpath.continuation import (
     ContinuationMachine,
     HostFunction,
@@ -3815,7 +3816,9 @@ def _compile_instruction(
                 for reference in instruction.references
                 if reference.kind == "attribute-set"
             ),
-            inherit_namespaces=_attribute_yes_no(instruction, "inherit-namespaces", context),
+            inherit_namespaces=_attribute_yes_no(
+                instruction, "inherit-namespaces", context, default=True
+            ),
             validation=validation,
             type_name=type_name,
         )
@@ -3844,8 +3847,12 @@ def _compile_instruction(
                 compile_xpath(select, context, location=location) if select is not None else None
             ),
             children=_compile_sequence(instruction.children, context, module),
-            copy_namespaces=_attribute_yes_no(instruction, "copy-namespaces", context),
-            inherit_namespaces=_attribute_yes_no(instruction, "inherit-namespaces", context),
+            copy_namespaces=_attribute_yes_no(
+                instruction, "copy-namespaces", context, default=True
+            ),
+            inherit_namespaces=_attribute_yes_no(
+                instruction, "inherit-namespaces", context, default=True
+            ),
             attribute_sets=tuple(
                 reference
                 for reference in instruction.references
@@ -3871,7 +3878,9 @@ def _compile_instruction(
         return _CopyOfPlan(
             instruction=instruction,
             select=compile_xpath(select, context, location=location),
-            copy_namespaces=_attribute_yes_no(instruction, "copy-namespaces", context),
+            copy_namespaces=_attribute_yes_no(
+                instruction, "copy-namespaces", context, default=True
+            ),
             copy_accumulators=_attribute_yes_no(instruction, "copy-accumulators", context),
             validation=validation,
             type_name=type_name,
@@ -4797,10 +4806,12 @@ def _attribute_yes_no(
     instruction: Instruction,
     attribute: str,
     context: StaticContext,
+    *,
+    default: bool = False,
 ) -> bool:
     value = instruction.attribute(attribute)
     if value is None:
-        return False
+        return default
     return _yes_no(value, instruction, attribute, context)
 
 
@@ -5890,9 +5901,17 @@ class _Invocation(Transformation):
                 final_output=True,
             )
         assert options.initial_match_selection is not _ABSENT
+        selection = cast(XdmSequence, options.initial_match_selection)
+        mode_name = options.mode.name if options.mode is not None else None
+        self._check_typed_mode(
+            selection,
+            mode_name,
+            self.package.name,
+            expand_documents=True,
+        )
         return self._apply_templates(
-            cast(XdmSequence, options.initial_match_selection),
-            options.mode.name if options.mode is not None else None,
+            selection,
+            mode_name,
             options.template_parameters,
             options.tunnel_parameters,
             package_name=self.package.name,
@@ -8029,11 +8048,22 @@ class _Invocation(Transformation):
         items: XdmSequence,
         mode: str | None,
         package_name: str | None,
+        *,
+        expand_documents: bool = False,
     ) -> None:
         typed = self._mode_properties(mode, package_name).get("typed", "unspecified")
         if typed == "unspecified":
             return
+        expanded: list[XdmNode] = []
         for item in items:
+            if isinstance(item, XdmNode):
+                expanded.append(item)
+                if expand_documents and item.kind is NodeKind.DOCUMENT:
+                    root = cast(XdmDocument, item).root_element
+                    expanded.append(root)
+                    expanded.extend(root.descendants)
+                    expanded.extend(root.attributes)
+        for item in expanded:
             if not isinstance(item, XdmNode) or item.kind not in (
                 NodeKind.ELEMENT,
                 NodeKind.ATTRIBUTE,
@@ -10055,7 +10085,8 @@ class _Invocation(Transformation):
                     tunnel_parameters=tunnel_parameters,
                     rule_context=rule_context,
                     original_functions=original_functions,
-                )
+                ),
+                inherit_namespaces=plan.inherit_namespaces,
             )
             element = builder.root.root_element
             builder.to_tree()
@@ -10133,22 +10164,28 @@ class _Invocation(Transformation):
                 return ()
             if len(selected) != 1:
                 raise XsltDynamicError(
-                    "xsl:copy select must evaluate to at most one item",
-                    code="XPTY0004",
+                    "xsl:copy select must evaluate to exactly one item",
+                    code="XTTE3180",
                 )
             item = selected[0]
+            content_focus = Focus.singleton(item)
         else:
             if focus.item is None:
-                raise XsltDynamicError("xsl:copy requires a context item", code="XPDY0002")
+                raise XsltDynamicError(
+                    "xsl:copy requires an existing context item",
+                    code="XTTE0945",
+                )
             item = focus.item
+            content_focus = focus
         if not isinstance(item, XdmNode):
             return (item,)
         pool = self._package_schema_pool(package_name)
         factory = _NodeFactory(base_uri=item.base_uri)
         if item.kind is NodeKind.DOCUMENT:
+            document = factory.document
             content = self._execute_plans(
                 plan.children,
-                focus=focus,
+                focus=content_focus,
                 locals_=locals_,
                 final_output=final_output,
                 package_name=package_name,
@@ -10157,20 +10194,14 @@ class _Invocation(Transformation):
                 rule_context=rule_context,
                 original_functions=original_functions,
             )
-            if content:
-                document = factory.document
-                _append_complex_content(factory, document, content, allow_attributes=False)
-                document._finalize_document_order()
-            else:
-                document = cast(
-                    XdmDocument,
-                    factory.clone(
-                        item,
-                        parent=None,
-                        deep=True,
-                        copy_namespaces=plan.copy_namespaces,
-                    ),
-                )
+            _append_complex_content(
+                factory,
+                document,
+                content,
+                allow_attributes=False,
+                inherit_namespaces=plan.inherit_namespaces,
+            )
+            document._finalize_document_order()
             return (
                 validate_delivered(
                     document,
@@ -10185,16 +10216,20 @@ class _Invocation(Transformation):
             deep=False,
             copy_namespaces=plan.copy_namespaces,
         )
+        if item.kind is NodeKind.ATTRIBUTE:
+            self._check_copy_type(item, plan.type_name, pool)
         if item.kind is NodeKind.ELEMENT:
             attributes: list[XdmNode] = []
             for reference in plan.attribute_sets:
                 component = self._resolve_attribute_set(reference, package_name)
-                attributes.extend(self._attribute_set_attributes(component, focus, package_name))
+                attributes.extend(
+                    self._attribute_set_attributes(component, content_focus, package_name)
+                )
             if attributes:
                 _append_complex_content(factory, clone, attributes, allow_attributes=True)
             content = self._execute_plans(
                 plan.children,
-                focus=focus,
+                focus=content_focus,
                 locals_=locals_,
                 final_output=final_output,
                 package_name=package_name,
@@ -10204,7 +10239,14 @@ class _Invocation(Transformation):
                 original_functions=original_functions,
             )
             if content:
-                _append_complex_content(factory, clone, content, allow_attributes=True)
+                _append_complex_content(
+                    factory,
+                    clone,
+                    content,
+                    allow_attributes=True,
+                    inherit_namespaces=plan.inherit_namespaces,
+                )
+        self._check_namespace_sensitive_copy(clone, plan)
         validate_constructed(
             clone,
             validation=plan.validation,
@@ -10213,6 +10255,19 @@ class _Invocation(Transformation):
             operation="copy",
         )
         return (clone,)
+
+    def _check_namespace_sensitive_copy(
+        self,
+        node: XdmNode,
+        plan: _CopyPlan | _CopyOfPlan,
+    ) -> None:
+        if plan.copy_namespaces or plan.validation != "preserve" or plan.type_name is not None:
+            return
+        if namespace_sensitive(node):
+            raise XsltDynamicError(
+                "namespace-sensitive content cannot be copied without namespace nodes",
+                code="XTTE0950",
+            )
 
     def _copy_of_value(
         self,
@@ -10243,6 +10298,7 @@ class _Invocation(Transformation):
                 deep=True,
                 copy_namespaces=plan.copy_namespaces,
             )
+            self._check_namespace_sensitive_copy(clone, plan)
             if clone.kind is NodeKind.DOCUMENT:
                 result.append(
                     validate_delivered(

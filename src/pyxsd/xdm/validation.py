@@ -18,14 +18,24 @@ normalization actually creates a document node.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import copy
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
+from types import SimpleNamespace
 from typing import Any, Literal, cast
 
 from pyxsd import xsd_data_types as xsd
 from pyxsd.derivation import combinedBlock, is_valid_xsi_type
 from pyxsd.locations import ParseProvenance
-from pyxsd.namespaces import XSD_NS, XSI_NS, clark
-from pyxsd.schema_context import SchemaContext, active_context, context_provenance, context_report
+from pyxsd.namespaces import XSD_NS, XSI_NS, NamespaceContext, clark
+from pyxsd.schema_context import (
+    SchemaContext,
+    active_context,
+    context_provenance,
+    context_report,
+    parser_host_override,
+)
 from pyxsd.validation import ValidationReport
 from pyxsd.xdm.annotations import (
     UNTYPED,
@@ -38,12 +48,14 @@ from pyxsd.xdm.annotations import (
 from pyxsd.xdm.document import element_from_xdm
 from pyxsd.xdm.errors import XdmInputError
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
-from pyxsd.xdm.schema import SchemaPool, _attribute_descriptors
+from pyxsd.xdm.schema import SchemaPool, _attribute_descriptors, _element_descriptors
 from pyxsd.xdm.values import XdmAtomic
+from pyxsd.xsd_data_types import xsd_value_key
 
 __all__ = [
     "ConstructedValidationError",
     "ValidationRequest",
+    "namespace_sensitive",
     "validate_document",
     "validate_occurrence",
 ]
@@ -52,6 +64,80 @@ _ANY_TYPE = clark(XSD_NS, "anyType")
 _VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
 _OPERATIONS = frozenset({"element", "attribute", "copy", "copy-of"})
 _ID_CODES = frozenset({"idref-unresolved", "id-duplicate"})
+_DOCUMENT_CONSTRAINT_CODES = frozenset(
+    {
+        "idref-unresolved",
+        "id-duplicate",
+        "identity-key",
+        "identity-keyref",
+        "identity-unique",
+    }
+)
+_BUILTIN_POOL: SchemaPool | None = None
+
+
+def _builtin_pool() -> SchemaPool:
+    """The immutable built-in-type pool, used when no schema was imported."""
+    global _BUILTIN_POOL
+    if _BUILTIN_POOL is None:
+        _BUILTIN_POOL = SchemaPool()
+    return _BUILTIN_POOL
+
+
+def _lookup_type(schema_pool: SchemaPool | None, name: str) -> Any:
+    """Resolve a named type from the package pool or the built-in XSD set."""
+    if schema_pool is not None:
+        adapter = schema_pool.get_type(name)
+        if adapter is not None:
+            return adapter
+    if name.startswith(f"{{{XSD_NS}}}"):
+        return _builtin_pool().get_type(name)
+    return None
+
+
+@contextmanager
+def _isolated_schema(
+    schema: Any,
+    *,
+    parents: dict[int, Any] | None = None,
+) -> Iterator[tuple[Any, Any, SchemaContext, NamespaceContext]]:
+    """Yield a private schema/host/context view for one validation run.
+
+    ``Schema.parse`` and the generated binder keep per-parse binding indexes
+    and the active report/provenance on a shared host/context.  Constructed
+    validation clones both for the duration of one assessment, and routes
+    generated-class host lookups through :func:`parser_host_override`, so
+    concurrent transformations cannot overwrite one another's annotations.
+    """
+    namespace_context = NamespaceContext()
+    base_host = getattr(schema, "_host", None)
+    if base_host is None:  # pragma: no cover - compiled schemas carry a host
+        host: Any = SimpleNamespace(
+            report=getattr(schema, "report", None),
+            components=getattr(schema, "components", None),
+            mode=getattr(schema, "mode", None),
+            namespaceContext=namespace_context,
+            classes=getattr(schema, "classes", {}),
+        )
+    else:
+        host = copy.copy(base_host)
+        host.namespaceContext = namespace_context
+    host._elementParents = {} if parents is None else parents
+    host._elementTypes = {}
+    base_context = getattr(schema, "_schema_context", None)
+    context = (
+        replace(base_context)
+        if base_context is not None
+        else SchemaContext(components=getattr(schema, "components", None))
+    )
+    context.report = None
+    context.provenance = None
+    isolated = copy.copy(schema)
+    isolated._host = host
+    isolated._schema_context = context
+    isolated.namespace_context = namespace_context
+    with parser_host_override(schema, host):
+        yield isolated, host, context, namespace_context
 
 
 class ConstructedValidationError(XdmInputError):
@@ -161,7 +247,35 @@ def validate_document(
             reason="document-shape",
         )
     _validate_element(elements[0], request, schema_pool, operation="element", document_root=True)
+    if request.type_name is not None:
+        _check_document_constraints(elements[0], request.type_name, schema_pool)
     document._finalize_document_order()
+
+
+def _check_document_constraints(
+    node: XdmNode,
+    type_name: str,
+    schema_pool: SchemaPool | None,
+) -> None:
+    """Apply document-level ID/IDREF and identity constraints for a typed document."""
+    schema = schema_pool.schema_for_element(node.name) if schema_pool is not None else None
+    if schema is None:
+        adapter = _lookup_type(schema_pool, type_name)
+        schema = getattr(getattr(adapter, "schema", None), "_schema", None)
+    if schema is None:
+        return
+    with _isolated_schema(schema) as (isolated, _host, _context, namespace_context):
+        element = element_from_xdm(node, namespace_context)
+        _normalize_empty_text(element)
+        parsed = isolated.parse(element, capture_xdm=True)
+    if any(
+        getattr(issue, "code", None) in _DOCUMENT_CONSTRAINT_CODES
+        for issue in _instance_errors(parsed.report, document=True)
+    ):
+        raise ConstructedValidationError(
+            "the constructed document has unsatisfied document-level constraints",
+            reason="document-constraint",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +314,7 @@ def _validate_element_declaration(
     schema_pool: SchemaPool | None,
     *,
     document_root: bool = False,
+    lax_reason: Literal["lax-invalid", "type"] = "lax-invalid",
 ) -> None:
     adapter = schema_pool.get_element(node.name) if schema_pool is not None else None
     if adapter is None:
@@ -217,38 +332,59 @@ def _validate_element_declaration(
             f"the declaration for {node.name!r} has no compiled schema",
             reason="unknown" if mode == "strict" else "lax-invalid",
         )
-    element = element_from_xdm(node, schema.namespace_context)
-    _normalize_empty_text(element)
-    parsed = schema.parse(element, capture_xdm=True)
+    with _isolated_schema(schema) as (isolated, _host, _context, namespace_context):
+        element = element_from_xdm(node, namespace_context)
+        _normalize_empty_text(element)
+        parsed = isolated.parse(element, capture_xdm=True)
     errors = _instance_errors(parsed.report, document=document_root)
     if errors:
-        if document_root and any(getattr(issue, "code", None) in _ID_CODES for issue in errors):
+        if document_root and any(
+            getattr(issue, "code", None) in _DOCUMENT_CONSTRAINT_CODES for issue in errors
+        ):
             raise ConstructedValidationError(
                 "the constructed document has unresolved ID/IDREF constraints",
                 reason="document-constraint",
             )
         raise ConstructedValidationError(
             f"the constructed element {node.name!r} is not valid against its declaration",
-            reason="invalid" if mode == "strict" else "lax-invalid",
+            reason="invalid" if mode == "strict" else lax_reason,
         )
     _apply_parsed_tree(node, parsed.to_xdm().root_element)
     node.document._finalize_document_order()
 
 
-def _lax_validate_children(node: XdmNode, schema_pool: SchemaPool | None) -> None:
+def _lax_validate_children(
+    node: XdmNode,
+    schema_pool: SchemaPool | None,
+    *,
+    reason: Literal["lax-invalid", "type"] = "lax-invalid",
+) -> None:
     if schema_pool is None:
         return
-    stack = [child for child in reversed(node.children) if child.kind is NodeKind.ELEMENT]
+    stack = [node]
     while stack:
-        child = stack.pop()
-        if schema_pool.get_element(child.name) is not None:
-            _validate_element_declaration(child, "lax", schema_pool)
-        else:
-            stack.extend(
-                grandchild
-                for grandchild in reversed(child.children)
-                if grandchild.kind is NodeKind.ELEMENT
-            )
+        current = stack.pop()
+        for attribute in current.attributes:
+            if schema_pool.get_attribute(attribute.name) is not None:
+                _validate_attribute_declaration(
+                    attribute,
+                    "lax",
+                    schema_pool,
+                    lax_reason=reason,
+                )
+        current_children = [
+            child for child in reversed(current.children) if child.kind is NodeKind.ELEMENT
+        ]
+        for child in current_children:
+            if schema_pool.get_element(child.name) is not None:
+                _validate_element_declaration(
+                    child,
+                    "lax",
+                    schema_pool,
+                    lax_reason=reason,
+                )
+            else:
+                stack.append(child)
 
 
 def _validate_element_type(
@@ -271,41 +407,18 @@ def _validate_element_type(
         return
     if type_name == _ANY_TYPE:
         _annotate_any_type(node)
-        _lax_validate_children(node, schema_pool)
+        _lax_validate_children(node, schema_pool, reason="type")
         return
-    if schema_pool is None:
-        raise ConstructedValidationError(
-            f"the type {type_name!r} is not in scope",
-            reason="type",
-        )
-    adapter = schema_pool.get_type(type_name)
+    adapter = _lookup_type(schema_pool, type_name)
     if adapter is None:
         raise ConstructedValidationError(
             f"the type {type_name!r} is not in scope",
             reason="type",
         )
-    if adapter.is_simple():
-        if any(child.kind is NodeKind.ELEMENT for child in node.children):
-            raise ConstructedValidationError(
-                f"the constructed element {node.name!r} is not valid against {type_name!r}",
-                reason="type",
-            )
-        if not adapter.is_valid(node.string_value):
-            raise ConstructedValidationError(
-                f"the constructed element {node.name!r} is not valid against {type_name!r}",
-                reason="type",
-            )
-        value = adapter.cast(node.string_value)
-        node._apply_occurrence_annotation(
-            _element_annotation(
-                node,
-                type_name=adapter.name,
-                actual_type=getattr(adapter, "_type_class", None),
-                typed_values=_atomize(value),
-            )
-        )
-        return
     actual = _actual_type(node, adapter, schema_pool)
+    if actual.is_simple():
+        _validate_simple_element(node, actual)
+        return
     _validate_element_class(
         node,
         actual,
@@ -314,7 +427,45 @@ def _validate_element_type(
     )
 
 
-def _actual_type(node: XdmNode, requested: Any, schema_pool: SchemaPool) -> Any:
+def _validate_simple_element(node: XdmNode, adapter: Any) -> None:
+    """Assess a constructed element against a simple type definition."""
+    if any(child.kind is NodeKind.ELEMENT for child in node.children):
+        raise ConstructedValidationError(
+            f"the constructed element {node.name!r} is not valid against {adapter.name!r}",
+            reason="type",
+        )
+    for attribute in node.attributes:
+        if attribute.namespace_uri != XSI_NS:
+            raise ConstructedValidationError(
+                f"the simple-typed element {node.name!r} cannot carry the attribute "
+                f"{attribute.name!r}",
+                reason="type",
+            )
+    nil = node.attribute(f"{{{XSI_NS}}}nil")
+    if nil is not None and nil.string_value.strip() in ("true", "1"):
+        raise ConstructedValidationError(
+            f"the simple-typed element {node.name!r} cannot be nilled without a nillable "
+            "declaration",
+            reason="type",
+        )
+    value: Any
+    if not adapter.is_valid(node.string_value):
+        raise ConstructedValidationError(
+            f"the constructed element {node.name!r} is not valid against {adapter.name!r}",
+            reason="type",
+        )
+    value = adapter.cast(node.string_value)
+    node._apply_occurrence_annotation(
+        _element_annotation(
+            node,
+            type_name=adapter.name,
+            actual_type=getattr(adapter, "_type_class", None),
+            typed_values=_atomize(value),
+        )
+    )
+
+
+def _actual_type(node: XdmNode, requested: Any, schema_pool: SchemaPool | None) -> Any:
     """Resolve an ``xsi:type`` override over the stipulated requested type."""
     lexical = node.attribute(f"{{{XSI_NS}}}type")
     if lexical is None:
@@ -324,7 +475,7 @@ def _actual_type(node: XdmNode, requested: Any, schema_pool: SchemaPool) -> Any:
         resolved = _resolve_qname(lexical.string_value, node.in_scope_namespaces)
     if resolved is None or resolved == requested.name:
         return requested
-    actual = schema_pool.get_type(resolved)
+    actual = _lookup_type(schema_pool, resolved)
     if actual is None:
         raise ConstructedValidationError(
             f"the xsi:type {resolved!r} is not in scope",
@@ -359,17 +510,12 @@ def _validate_element_class(
             f"the type {getattr(adapter, 'name', None)!r} has no compiled definition",
             reason=reason,
         )
-    element = element_from_xdm(node, schema.namespace_context)
-    _normalize_empty_text(element)
-    provenance = ParseProvenance(element, None)
-    report = ValidationReport()
-    context = _schema_context(schema)
-    host = getattr(schema, "_host", None)
-    parents = _parent_index(element)
-    if host is not None:  # pragma: no cover - compiled schemas carry a host
-        host._elementParents = parents
-        host._elementTypes = {}
-    try:
+    with _isolated_schema(schema) as (_isolated, _host, context, namespace_context):
+        element = element_from_xdm(node, namespace_context)
+        _normalize_empty_text(element)
+        provenance = ParseProvenance(element, None)
+        report = ValidationReport()
+        _host._elementParents = _parent_index(element)
         with capturing_occurrences() as capture:
             with (
                 active_context(context),
@@ -385,10 +531,6 @@ def _validate_element_class(
                     instance,
                 )
             capture.finish(report)
-    finally:
-        if host is not None:  # pragma: no cover - compiled schemas carry a host
-            host._elementParents.clear()
-            host._elementTypes.clear()
     errors = _instance_errors(report, document=document_root)
     if errors:
         raise ConstructedValidationError(
@@ -454,6 +596,8 @@ def _validate_attribute_declaration(
     node: XdmNode,
     mode: str,
     schema_pool: SchemaPool | None,
+    *,
+    lax_reason: Literal["lax-invalid", "type"] = "lax-invalid",
 ) -> None:
     adapter = schema_pool.get_attribute(node.name) if schema_pool is not None else None
     if adapter is None:
@@ -468,16 +612,27 @@ def _validate_attribute_declaration(
     if type_adapter is None:  # pragma: no cover - attribute declarations resolve a type
         raise ConstructedValidationError(
             f"the attribute {node.name!r} has no resolved type",
-            reason="invalid" if mode == "strict" else "lax-invalid",
+            reason="invalid" if mode == "strict" else lax_reason,
         )
     _check_attribute_qname(type_adapter)
     value = node.string_value
     if not type_adapter.is_valid(value):
         raise ConstructedValidationError(
             f"the constructed attribute {node.name!r} is not valid against its declaration",
-            reason="invalid" if mode == "strict" else "lax-invalid",
+            reason="invalid" if mode == "strict" else lax_reason,
         )
     typed = type_adapter.cast(value)
+    fixed = _constraint(getattr(adapter, "_er", None), "getFixed")
+    if fixed is not None:
+        try:
+            fixed_value = type_adapter.cast(fixed)
+        except (TypeError, ValueError):  # pragma: no cover - compiled fixed values are valid
+            fixed_value = fixed
+        if xsd_value_key(typed) != xsd_value_key(fixed_value):
+            raise ConstructedValidationError(
+                f"the constructed attribute {node.name!r} conflicts with its fixed value",
+                reason="invalid" if mode == "strict" else lax_reason,
+            )
     node._apply_occurrence_annotation(
         _attribute_annotation(
             node,
@@ -502,12 +657,7 @@ def _validate_attribute_type(
     if type_name == UNTYPED_ATOMIC:
         _annotate_untyped_atomic_attribute(node)
         return
-    if schema_pool is None:
-        raise ConstructedValidationError(
-            f"the type {type_name!r} is not in scope",
-            reason="type",
-        )
-    adapter = schema_pool.get_type(type_name)
+    adapter = _lookup_type(schema_pool, type_name)
     if adapter is None:
         raise ConstructedValidationError(
             f"the type {type_name!r} is not in scope",
@@ -533,6 +683,23 @@ def _validate_attribute_type(
             typed_values=_atomize(typed),
         )
     )
+
+
+def namespace_sensitive(node: XdmNode) -> bool:
+    """Whether a copied node's content has namespace-sensitive type information."""
+    stack: list[XdmNode] = [node]
+    while stack:
+        current = stack.pop()
+        annotation = current.annotation
+        if _uses_qname_or_notation(getattr(annotation, "actual_type", None)):
+            return True
+        for value in getattr(annotation, "typed_values", ()):
+            type_name = getattr(value, "type_name", "")
+            if type_name.endswith("}QName") or type_name.endswith("}NOTATION"):
+                return True
+        stack.extend(reversed(current.children))
+        stack.extend(current.attributes)
+    return False
 
 
 def _check_attribute_qname(adapter: Any) -> None:
@@ -621,6 +788,7 @@ def _apply_parsed_tree(target: XdmNode, parsed: XdmNode) -> None:
                 reason="invalid",
             )
         stack.extend(zip(target_children, parsed_children, strict=True))
+        _add_default_elements(target_node, getattr(parsed_node.annotation, "actual_type", None))
 
 
 def _apply_capture(
@@ -664,6 +832,53 @@ def _apply_capture(
                 reason="invalid",
             )
         stack.extend(zip(target_children, source_children, strict=True))
+        _add_default_elements(
+            target_node,
+            getattr(annotation, "actual_type", None) if annotation is not None else None,
+        )
+
+
+def _add_default_elements(target: XdmNode, actual_type: Any) -> None:
+    """Create absent defaulted element occurrences required by a content model."""
+    if not isinstance(actual_type, type):
+        return
+    existing = {child.name for child in target.children if child.kind is NodeKind.ELEMENT}
+    for descriptor in _element_descriptors(actual_type):
+        default = _constraint(descriptor, "getDefault")
+        fixed = _constraint(descriptor, "getFixed")
+        lexical = default if default is not None else fixed
+        if lexical is None:
+            continue
+        minimum = getattr(descriptor, "getMinOccurs", lambda: 1)()
+        if minimum != 0:
+            continue
+        name = _element_instance_name(descriptor, actual_type)
+        if not isinstance(name, str) or name in existing:
+            continue
+        type_class = descriptor.getType()
+        typed_values: tuple[Any, ...]
+        if isinstance(type_class, type):
+            try:
+                typed_values = _atomize(type_class(lexical))
+            except (TypeError, ValueError):  # pragma: no cover - compiled defaults are valid
+                typed_values = (XdmAtomic.untyped_atomic(lexical),)
+        else:  # pragma: no cover - element declarations resolve a type
+            typed_values = (XdmAtomic.untyped_atomic(lexical),)
+        annotation = OccurrenceAnnotation(
+            type_name=schema_type_name(type_class),
+            nilled=False,
+            validity="valid",
+            validation_attempted="full",
+            actual_type=type_class,
+            typed_values=typed_values,
+            default_value=default,
+            fixed_value=fixed,
+            value_source="default" if default is not None else "fixed",
+        )
+        child = _append_element_node(target, name, annotation)
+        _add_default_attributes(child, type_class)
+        _add_default_elements(child, type_class)
+        existing.add(name)
 
 
 def _add_default_attributes(target: XdmNode, actual_type: Any) -> None:
@@ -712,6 +927,64 @@ def _constraint(descriptor: Any, getter: str) -> str | None:
     except Exception:  # pragma: no cover - malformed declarations are reported earlier
         return None
     return value if isinstance(value, str) else None
+
+
+def _element_instance_name(descriptor: Any, actual_type: type[Any]) -> str | None:
+    schema = getattr(actual_type, "schema", None)
+    method = getattr(descriptor, "expandedInstanceName", None)
+    if method is not None:
+        try:
+            return method(parser=getattr(schema, "_host", None))
+        except Exception:  # pragma: no cover - unresolved refs fall back below
+            pass
+    name = getattr(descriptor, "expandedName", None) or getattr(
+        descriptor, "name", None
+    )  # pragma: no cover - descriptors expose a name
+    return name if isinstance(name, str) else None  # pragma: no cover - descriptors expose a name
+
+
+def _append_element_node(
+    parent: XdmNode,
+    name: str,
+    annotation: OccurrenceAnnotation,
+) -> XdmNode:
+    namespace, _, _ = name[1:].partition("}") if name.startswith("{") else ("", "", name)
+    namespace_uri = namespace or None
+    scope = dict(parent.in_scope_namespaces)
+    prefix = ""
+    if namespace_uri is not None:
+        prefix = next(
+            (candidate for candidate, uri in scope.items() if candidate and uri == namespace_uri),
+            "",
+        )
+        if not prefix:
+            if scope.get("") == namespace_uri:
+                prefix = ""
+            else:
+                prefix = _new_prefix(scope)
+                scope[prefix] = namespace_uri
+                _append_namespace_node(parent, prefix, namespace_uri, scope)
+    node = XdmNode(
+        NodeKind.ELEMENT,
+        document=parent.document,
+        node_id=-1,
+        source_name=parent._source_name,
+        source_index=parent._source_index,
+        parent=parent,
+        name=name,
+        annotations=cast(Any, annotation),
+        base_uri=parent.base_uri,
+        document_uri=parent.document_uri,
+        in_scope_namespaces=scope,
+        prefix=prefix,
+        namespace_uri=namespace_uri,
+    )
+    parent._append_child(node)
+    parent._in_scope_namespaces = scope
+    parent._namespace_declarations = tuple(
+        (declared_prefix, uri) for declared_prefix, uri in scope.items() if declared_prefix != "xml"
+    )
+    return node
 
 
 def _attribute_instance_name(descriptor: Any, actual_type: type[Any]) -> str | None:
@@ -940,13 +1213,6 @@ def _normalize_empty_text(element: Any) -> None:
         if current.tail == "":
             current.tail = None
         stack.extend(current)
-
-
-def _schema_context(schema: Any) -> SchemaContext:
-    context = getattr(schema, "_schema_context", None)
-    if context is None:  # pragma: no cover - compiled schemas carry a context
-        context = SchemaContext(components=schema.components)
-    return context
 
 
 def _parent_index(element: Any) -> dict[int, Any]:

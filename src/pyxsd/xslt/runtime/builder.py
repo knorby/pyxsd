@@ -839,6 +839,7 @@ def _append_complex_content(
     sequence: Iterable[object],
     *,
     allow_attributes: bool,
+    inherit_namespaces: bool = True,
 ) -> None:
     """Apply XSLT complex-content construction to *sequence* under *parent*."""
     last_atomic = False
@@ -861,6 +862,7 @@ def _append_complex_content(
                 parent,
                 item.children,
                 allow_attributes=allow_attributes,
+                inherit_namespaces=inherit_namespaces,
             )
             last_atomic = False
             continue
@@ -889,7 +891,7 @@ def _append_complex_content(
             continue
         clone = _clone_for_content(factory, item, parent)
         if clone.kind is NodeKind.ELEMENT:
-            _attach_element(factory, parent, clone)
+            _attach_element(factory, parent, clone, inherit_namespaces=inherit_namespaces)
         else:
             factory._append(parent, clone)
         last_atomic = False
@@ -1219,7 +1221,12 @@ class ResultBuilder:
         self._factory._append(parent, node)
         return node
 
-    def append(self, sequence: Iterable[object]) -> None:
+    def append(
+        self,
+        sequence: Iterable[object],
+        *,
+        inherit_namespaces: bool = True,
+    ) -> None:
         """Attach one sequence as complex content of the current parent."""
         parent = self.current
         _append_complex_content(
@@ -1227,6 +1234,7 @@ class ResultBuilder:
             parent,
             sequence,
             allow_attributes=parent.kind is not NodeKind.DOCUMENT,
+            inherit_namespaces=inherit_namespaces,
         )
 
     def clone(

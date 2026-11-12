@@ -20,7 +20,12 @@ from pyxsd.derivation import (
 )
 from pyxsd.extensions import run_validation_hooks
 from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
-from pyxsd.schema_context import current_context, source_location, source_scoped
+from pyxsd.schema_context import (
+    current_context,
+    overridden_parser_host,
+    source_location,
+    source_scoped,
+)
 from pyxsd.validation import IssueSeverity, report_or_log
 from pyxsd.wildcards import NAMESPACE_ANY, WildcardSpec
 from pyxsd.xdm.annotations import (
@@ -395,7 +400,11 @@ class SchemaBase:
         owning schema (hand-written overlay bases, or classes built
         before their compile finished).
         """
-        return getattr(getattr(cls, "schema", None), "_host", None)
+        schema = getattr(cls, "schema", None)
+        override = overridden_parser_host(schema)
+        if override is not None:
+            return override
+        return getattr(schema, "_host", None)
 
     @classmethod
     def _report_error(cls, message, *, code, element=None, **diagnostic):
