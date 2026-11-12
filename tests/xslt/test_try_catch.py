@@ -427,7 +427,7 @@ def test_error_function_argument_forms(
 
 
 def test_error_qname_falls_back_for_non_ncname_codes() -> None:
-    from pyxsd.xslt.processor import _error_qname
+    from pyxsd.xslt.runtime.instructions import _error_qname
 
     typed = _error_qname("{urn:custom}E1")
     fallback = _error_qname("1bad-code")

@@ -49,7 +49,6 @@ from pyxsd.xslt import (
 from pyxsd.xslt.errors import XsltError
 from pyxsd.xslt.processor import (
     _ABSENT,
-    _effective_boolean,
     _Invocation,
     _prepare_invocation,
 )
@@ -69,6 +68,8 @@ from pyxsd.xslt.runtime.frames import (
     Scheduler,
     SchedulerViolation,
 )
+from pyxsd.xslt.runtime.instructions import _effective_boolean
+from pyxsd.xslt.runtime.templates import resolve_mode, resolve_template
 from pyxsd.xslt.runtime.transformation import ComponentCall, Transformation
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -1137,12 +1138,12 @@ def test_missing_runtime_template_and_unsupported_suspension_are_explicit() -> N
 
     fake = type("Fake", (), {"package": _Package()})()
     with pytest.raises(XsltError) as caught:
-        _Invocation._resolve_template(fake, _Reference())
+        resolve_template(fake, _Reference())  # type: ignore[arg-type]
     assert caught.value.code == "XTDE0040"
 
-    assert _Invocation._resolve_mode(fake, "#current", "current") == "current"
-    assert _Invocation._resolve_mode(fake, "#default", None) == "default"
-    assert _Invocation._resolve_mode(fake, "explicit", None) == "explicit"
+    assert resolve_mode(fake, "#current", "current") == "current"  # type: ignore[arg-type]
+    assert resolve_mode(fake, "#default", None) == "default"  # type: ignore[arg-type]
+    assert resolve_mode(fake, "explicit", None) == "explicit"  # type: ignore[arg-type]
 
     with pytest.raises(XsltError, match="not a stylesheet function"):
         _Invocation._suspend_xpath(object(), Frame(), Suspension(HostRequest(object())))

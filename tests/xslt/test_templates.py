@@ -35,6 +35,8 @@ from pyxsd.xslt.runtime.templates import (
     RuleDispatcher,
     RuleMatch,
     TemplateRule,
+    builtin_value,
+    builtin_variant,
 )
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -619,48 +621,48 @@ def test_builtin_value_covers_every_on_no_match_variant() -> None:
     attribute = doc.attributes[0]
     text = child.children[0]
 
-    assert invocation._builtin_value(doc, "text-only-copy", {}, {})[0].string_value == "text"
-    assert invocation._builtin_value(attribute, "text-only-copy", {}, {})[0].string_value == "A"
+    assert builtin_value(invocation, doc, "text-only-copy", {}, {})[0].string_value == "text"
+    assert builtin_value(invocation, attribute, "text-only-copy", {}, {})[0].string_value == "A"
     assert (
-        invocation._builtin_value(XdmAtomic.integer(7), "text-only-copy", {}, {})[0].string_value
+        builtin_value(invocation, XdmAtomic.integer(7), "text-only-copy", {}, {})[0].string_value
         == "7"
     )
-    assert invocation._builtin_value(text, "text-only-copy", {}, {})[0].string_value == "text"
+    assert builtin_value(invocation, text, "text-only-copy", {}, {})[0].string_value == "text"
     comment = next(node for node in document.descendants if node.kind is NodeKind.COMMENT)
-    assert invocation._builtin_value(comment, "text-only-copy", {}, {}) == ()
-    assert invocation._builtin_value(document, "deep-skip", {}, {}) == ()
-    assert invocation._builtin_value(document, "shallow-skip", {}, {}) == ()
+    assert builtin_value(invocation, comment, "text-only-copy", {}, {}) == ()
+    assert builtin_value(invocation, document, "deep-skip", {}, {}) == ()
+    assert builtin_value(invocation, document, "shallow-skip", {}, {}) == ()
     function_item = XdmFunction(lambda arguments, environment, captured: (), arity=0)
-    assert invocation._builtin_value(function_item, "shallow-skip", {}, {}) == ()
+    assert builtin_value(invocation, function_item, "shallow-skip", {}, {}) == ()
     array = XdmArray((XdmAtomic.integer(1), XdmAtomic.integer(2)))
     assert [
-        item.string_value for item in invocation._builtin_value(array, "text-only-copy", {}, {})
+        item.string_value for item in builtin_value(invocation, array, "text-only-copy", {}, {})
     ] == ["1", "2"]
-    assert invocation._builtin_value(array, "shallow-skip", {}, {}) == ()
-    assert invocation._builtin_value(array, "copy", {}, {}) == (array,)
-    assert invocation._builtin_value(array, "shallow", {}, {}) == (array,)
-    assert invocation._builtin_value(array, "deep-skip", {}, {}) == ()
-    assert invocation._builtin_value(doc, "deep-skip", {}, {}) == ()
-    assert invocation._builtin_value(child, "shallow-skip", {}, {}) == ()
-    assert invocation._builtin_value(XdmAtomic.integer(3), "shallow-skip", {}, {}) == ()
-    assert invocation._builtin_value(XdmAtomic.integer(3), "shallow", {}, {}) == (
+    assert builtin_value(invocation, array, "shallow-skip", {}, {}) == ()
+    assert builtin_value(invocation, array, "copy", {}, {}) == (array,)
+    assert builtin_value(invocation, array, "shallow", {}, {}) == (array,)
+    assert builtin_value(invocation, array, "deep-skip", {}, {}) == ()
+    assert builtin_value(invocation, doc, "deep-skip", {}, {}) == ()
+    assert builtin_value(invocation, child, "shallow-skip", {}, {}) == ()
+    assert builtin_value(invocation, XdmAtomic.integer(3), "shallow-skip", {}, {}) == ()
+    assert builtin_value(invocation, XdmAtomic.integer(3), "shallow", {}, {}) == (
         XdmAtomic.integer(3),
     )
-    deep = invocation._builtin_value(doc, "copy", {}, {})[0]
+    deep = builtin_value(invocation, doc, "copy", {}, {})[0]
     assert isinstance(deep, XdmNode) and deep.string_value == "text"
-    assert invocation._builtin_value(XdmAtomic.integer(2), "copy", {}, {}) == (
+    assert builtin_value(invocation, XdmAtomic.integer(2), "copy", {}, {}) == (
         XdmAtomic.integer(2),
     )
-    shallow = invocation._builtin_value(doc, "shallow", {}, {})[0]
+    shallow = builtin_value(invocation, doc, "shallow", {}, {})[0]
     assert isinstance(shallow, XdmNode) and shallow.name == "doc"
-    shallow_document = invocation._builtin_value(document, "shallow", {}, {})[0]
+    shallow_document = builtin_value(invocation, document, "shallow", {}, {})[0]
     assert isinstance(shallow_document, XdmNode)
     assert shallow_document.kind is NodeKind.DOCUMENT
     with pytest.raises(XsltError) as caught:
-        invocation._builtin_value(doc, "fail", {}, {})
+        builtin_value(invocation, doc, "fail", {}, {})
     assert caught.value.code == "XTDE0555"
     with pytest.raises(XsltError) as caught:
-        invocation._builtin_variant("invalid")
+        builtin_variant(invocation, "invalid")
     assert caught.value.code == "XTSE0020"
 
 

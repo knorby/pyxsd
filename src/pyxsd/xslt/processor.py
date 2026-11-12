@@ -13,19 +13,17 @@ dynamic error instead of being approximated.
 
 from __future__ import annotations
 
-import math
 import os
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass, replace
-from decimal import ROUND_FLOOR, Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import Any, Literal, cast
 from urllib.parse import urljoin, urlsplit
 
-from elementpath.datatypes import QName
-from elementpath.exceptions import ElementPathError, MissingContextError
+from elementpath.exceptions import ElementPathError
 from elementpath.helpers import is_ncname
 
 from pyxsd.document import Document
@@ -44,7 +42,6 @@ from pyxsd.xdm import (
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
-from pyxsd.xdm.validation import namespace_sensitive
 from pyxsd.xpath.continuation import (
     ContinuationMachine,
     HostFunction,
@@ -135,7 +132,6 @@ from pyxsd.xslt.compiler.plans import (
     _Plan,
     _RestoreVariablesPlan,
     _ResultDocumentPlan,
-    _RuleContext,
     _SequencePlan,
     _SourceDocumentPlan,
     _TextPlan,
@@ -167,47 +163,64 @@ from pyxsd.xslt.results import (
     ResultEntry,
     ResultShapeError,
     TransformationResult,
-    _append_complex_content,
     _build_result_tree,
     _NodeFactory,
 )
 from pyxsd.xslt.runtime.accumulators import (
     AccumulatorDefinition,
     AccumulatorKey,
-    AccumulatorManager,
     AccumulatorRule,
     RulePhase,
+    create_accumulator_manager,
     expand_accumulator_name,
     find_cycle,
     iter_accumulator_call_spans,
     parse_accumulator_names,
     same_context_accumulator_call,
 )
-from pyxsd.xslt.runtime.builder import ResultBuilder, validate_constructed, validate_delivered
+from pyxsd.xslt.runtime.builder import validate_delivered
 from pyxsd.xslt.runtime.context import EvaluationContext
 from pyxsd.xslt.runtime.evaluate import (
     DynamicExpressionCache,
-    StaticContextIdentity,
-    evaluate_dynamic,
-    with_params_variables,
+    execute_dynamic_evaluate,
 )
 from pyxsd.xslt.runtime.frames import (
+    _INHERIT,
     NO_GROUP,
     NO_INPUT,
     Call,
-    CatchResult,
     Continue,
     Frame,
     FrameResult,
     Return,
+    _IterationControlSignal,
+    _TemplateContext,
 )
 from pyxsd.xslt.runtime.functions import ABSENT, XsltContextBridge
 from pyxsd.xslt.runtime.instructions import (
-    construct_attribute,
-    construct_map,
-    construct_map_entry,
-    is_deemed_empty,
-    is_vacuous,
+    _item_string,
+    attribute_value,
+    choose_branch,
+    copy_of_value,
+    copy_value,
+    document_value,
+    element_value,
+    execute_analyze_string,
+    execute_assert,
+    execute_choose,
+    execute_concat,
+    execute_conditional_sequence,
+    execute_fork,
+    execute_map,
+    execute_map_entry,
+    execute_number,
+    execute_source_document,
+    execute_try,
+    execute_value_of,
+    execute_where_populated,
+    literal_element,
+    try_step,
+    variable_value,
 )
 from pyxsd.xslt.runtime.iteration import (
     GROUP_ADJACENT,
@@ -215,44 +228,34 @@ from pyxsd.xslt.runtime.iteration import (
     GROUP_ENDING_WITH,
     GROUP_STARTING_WITH,
     Completion,
-    IterationItem,
     IterationState,
-    MergeItem,
-    ResolvedSortKey,
     SortKey,
-    adjacent_grouping_key,
-    atomize_key_sequence,
-    check_merge_order,
-    group_adjacent,
-    group_by,
-    group_ending_with,
-    group_starting_with,
-    grouping_key_set,
-    merge_groups,
-    promote_merge_keys,
-    resolve_collation,
-    sort_merge_input,
-    sort_records,
+    execute_iteration,
+    execute_merge,
+    iteration_control,
+    perform_sort,
+    start_iteration_plan,
+    step_iterate,
 )
 from pyxsd.xslt.runtime.numbering import (
     DecimalFormat,
     decimal_format_attributes,
     effective_decimal_formats,
-    format_place_marker,
-    place_marker,
     validate_decimal_formats,
 )
 from pyxsd.xslt.runtime.resources import DocumentResources
 from pyxsd.xslt.runtime.templates import (
     PatternIndex,
     RuleDispatcher,
-    RuleMatch,
     TemplateRule,
-)
-from pyxsd.xslt.runtime.text import (
-    XPathRegexError,
-    analyze_string,
-    compile_xpath_regex,
+    apply_templates,
+    apply_templates_step,
+    call_template_step,
+    execute_apply_templates,
+    execute_call_template,
+    execute_overriding,
+    overriding_step,
+    step_apply,
 )
 from pyxsd.xslt.runtime.transformation import ComponentCall, Transformation
 from pyxsd.xslt.runtime.whitespace import _shared_name_test, apply_source_space_rules
@@ -272,7 +275,6 @@ FN_NS = "http://www.w3.org/2005/xpath-functions"
 
 _ABSENT = object()
 _AbsentType = object
-_INHERIT = object()
 _DELIVERIES = frozenset({"stylesheet", "raw", "document"})
 _VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
 UNTYPED_TYPE = "{http://www.w3.org/2001/XMLSchema}untyped"
@@ -410,24 +412,6 @@ class _KeyDefinition:
     use: CompiledExpression
     owner: str | None
     composite: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class _TemplateContext:
-    component: Component
-
-
-@dataclass(frozen=True, slots=True)
-class _ApplyState:
-    items: XdmSequence
-    mode: str | None
-    template_parameters: Mapping[str, XdmSequence]
-    tunnel_parameters: Mapping[str, XdmSequence]
-    index: int = 0
-    package_name: str | None = None
-    mode_package: str | None = None
-    group: object = NO_GROUP
-    grouping_key: object = NO_GROUP
 
 
 @dataclass(frozen=True, slots=True)
@@ -2693,7 +2677,6 @@ def _compile_validation_type(
 
 
 def _is_builtin_type_name(name: str) -> bool:
-    from pyxsd.xdm.annotations import builtin_type_classes
 
     namespace, _, local = name[1:].partition("}") if name.startswith("{") else ("", "", name)
     return namespace == "http://www.w3.org/2001/XMLSchema" and (
@@ -2765,19 +2748,6 @@ def _require_simple_construction_type(
             uri=context.uri,
             location=instruction.location,
         )
-
-
-def _merge_source_names(sources: tuple[_MergeSourcePlan, ...]) -> tuple[str, ...]:
-    """Name each merge source in stylesheet order.
-
-    An unnamed source receives an implementation-dependent name that cannot
-    collide with an authored NCName, so ``current-merge-group()`` still returns
-    its items in source order while the single-argument form cannot address it.
-    """
-    return tuple(
-        source.name if source.name is not None else f"#merge-source-{index}"
-        for index, source in enumerate(sources)
-    )
 
 
 def _compile_analyze_string(
@@ -4569,131 +4539,10 @@ def _expanded_name(name: str, namespaces: Mapping[str, str]) -> str:
     return f"{{{uri}}}{local}"
 
 
-def _constructed_qname(
-    lexical: str,
-    namespace_value: str | None,
-    namespaces: Mapping[str, str],
-    *,
-    default_namespace: bool,
-    code: str,
-    namespace_code: str | None = None,
-    prefix_code: str | None = None,
-) -> str:
-    """Resolve a dynamically constructed element or attribute name."""
-    text = lexical.strip()
-    if not text:
-        raise XsltDynamicError("a constructed name must not be empty", code=code)
-    if text.startswith("Q{"):
-        close = text.find("}")
-        if close < 0 or not is_ncname(text[close + 1 :]):
-            raise XsltDynamicError(f"the constructed name {text!r} is not a valid QName", code=code)
-        namespace = text[2:close]
-        local = text[close + 1 :]
-        return f"{{{namespace}}}{local}" if namespace else local
-    if text.startswith("{"):
-        return text
-    prefix, separator, local = text.partition(":")
-    if not separator:
-        prefix, local = "", text
-    if not is_ncname(local) or (separator and not is_ncname(prefix)):
-        raise XsltDynamicError(f"the constructed name {text!r} is not a valid QName", code=code)
-    if namespace_value is not None:
-        if namespace_value == "http://www.w3.org/2000/xmlns/":
-            raise XsltDynamicError(
-                "the xmlns namespace cannot be used for a constructed name",
-                code=namespace_code or code,
-            )
-        return f"{{{namespace_value}}}{local}" if namespace_value else local
-    if separator:
-        uri = namespaces.get(prefix)
-        if uri is None:
-            raise XsltDynamicError(
-                f"the namespace prefix {prefix!r} is not bound in the static context",
-                code=prefix_code or code,
-            )
-        return f"{{{uri}}}{local}"
-    if default_namespace:
-        uri = namespaces.get("")
-        if uri:
-            return f"{{{uri}}}{text}"
-    return text
-
-
 def _namespace(name: str) -> str | None:
     if not name.startswith("{"):
         return None
     return name[1:].partition("}")[0]
-
-
-def _assertion_error_code(value: str, namespaces: Mapping[str, str]) -> str:
-    """Resolve one effective ``xsl:assert/@error-code`` EQName.
-
-    An invalid EQName defaults to the assertion code XTMM9001 as XSLT 3.0
-    section 23.2 requires.  Standard error-namespace names are stored in their
-    familiar local form, while a custom namespace keeps its expanded form.
-    """
-    text = value.strip()
-    default = "XTMM9001"
-    if not text:
-        return default
-    if text.startswith("Q{"):
-        close = text.find("}")
-        if close < 0:
-            return default
-        namespace = text[2:close]
-        local = text[close + 1 :]
-        if not is_ncname(local):
-            return default
-        expanded = f"{{{namespace}}}{local}" if namespace else local
-    else:
-        if text.startswith("{"):
-            return default
-        prefix, separator, local = text.partition(":")
-        if separator:
-            if not is_ncname(prefix) or not is_ncname(local):
-                return default
-            bound = namespaces.get(prefix)
-            if not bound:
-                return default
-            expanded = f"{{{bound}}}{local}"
-        else:
-            if not is_ncname(text):
-                return default
-            expanded = text
-    standard = f"{{{ERROR_NAMESPACE}}}"
-    if expanded.startswith(standard):
-        return expanded[len(standard) :]
-    return expanded
-
-
-def _boolean_avt(value: str, attribute: str) -> bool:
-    normalized = value.strip()
-    if normalized in ("yes", "true", "1"):
-        return True
-    if normalized in ("no", "false", "0"):
-        return False
-    raise XsltDynamicError(
-        f"the effective value of {attribute} is not a boolean: {value!r}",
-        code="XTDE0030",
-    )
-
-
-def _dynamic_variable_names(
-    values: Mapping[str, XdmSequence],
-    namespaces: Mapping[str, str],
-) -> dict[str, XdmSequence]:
-    """Bind dynamic variables by expanded and in-scope lexical names."""
-    result: dict[str, XdmSequence] = {}
-    for name, value in values.items():
-        result[name] = value
-        if not name.startswith("{"):
-            continue
-        namespace, _, local = name[1:].partition("}")
-        for prefix, uri in namespaces.items():
-            if prefix and uri == namespace:
-                result[f"{prefix}:{local}"] = value
-                break
-    return result
 
 
 def _has_plan_content(
@@ -5292,291 +5141,6 @@ def _matches_item_type(item: XdmItem, item_type: ItemType) -> bool:
     return False  # pragma: no cover - every ItemType kind is handled above
 
 
-def _item_string(item: XdmItem) -> str:
-    if isinstance(item, XdmAtomic):
-        return item.lexical
-    if isinstance(item, XdmNode):
-        return item.string_value
-    raise XsltError(
-        "atomization of a function item is not permitted here",
-        code="FOTY0013",
-    )
-
-
-def _simple_content_string(sequence: XdmSequence, separator: str) -> str:
-    values: list[str] = []
-    pending_text = ""
-    for item in sequence:
-        if isinstance(item, XdmNode) and item.kind is NodeKind.TEXT:
-            pending_text += item.string_value
-            continue
-        if pending_text:
-            values.append(pending_text)
-            pending_text = ""
-        values.append(_item_string(item))
-    if pending_text:
-        values.append(pending_text)
-    return separator.join(values)
-
-
-_STRING_ATOMIC_LOCALS = frozenset(
-    {
-        "anyURI",
-        "ENTITIES",
-        "ENTITY",
-        "ID",
-        "IDREF",
-        "IDREFS",
-        "language",
-        "Name",
-        "NCName",
-        "NMTOKEN",
-        "NMTOKENS",
-        "normalizedString",
-        "string",
-        "token",
-        "untypedAtomic",
-    }
-)
-_NUMERIC_ATOMIC_LOCALS = frozenset(
-    {
-        "byte",
-        "decimal",
-        "double",
-        "float",
-        "int",
-        "integer",
-        "long",
-        "negativeInteger",
-        "nonNegativeInteger",
-        "nonPositiveInteger",
-        "positiveInteger",
-        "short",
-        "unsignedByte",
-        "unsignedInt",
-        "unsignedLong",
-        "unsignedShort",
-    }
-)
-_START_AT = re.compile(r"-?[0-9]+")
-
-
-def _analyze_string_value(sequence: XdmSequence) -> str:
-    """Apply the function conversion rules for ``xsl:analyze-string/@select``."""
-    if not sequence:
-        return ""
-    if len(sequence) > 1:
-        raise XsltDynamicError(
-            "xsl:analyze-string select must be a single string",
-            code="XPTY0004",
-        )
-    item = sequence[0]
-    if isinstance(item, XdmNode):
-        return item.string_value
-    if isinstance(item, XdmAtomic):
-        local = (
-            item.type_name.partition("}")[2]
-            if item.type_name.startswith("{")
-            else item.type_name.rpartition(":")[2]
-        )
-        if local in _STRING_ATOMIC_LOCALS:
-            return item.lexical
-    raise XsltDynamicError(
-        "xsl:analyze-string select must be a string or node",
-        code="XPTY0004",
-    )
-
-
-def _number_values(sequence: XdmSequence) -> tuple[int, ...]:
-    """Convert an atomized ``xsl:number/@value`` sequence to integers."""
-    numbers: list[int] = []
-    for item in sequence:
-        if isinstance(item, XdmNode):
-            atomics = tuple(value for value in item.typed_value if isinstance(value, XdmAtomic))
-        elif isinstance(item, XdmAtomic):
-            atomics = (item,)
-        else:
-            raise XsltDynamicError(
-                "xsl:number value cannot atomize a function item",
-                code="FOTY0013",
-            )
-        for atomic in atomics:
-            rounded = _rounded_integer(atomic)
-            if rounded is None or rounded < 0:
-                raise XsltDynamicError(
-                    "xsl:number value must convert to a non-negative integer",
-                    code="XTDE0980",
-                )
-            numbers.append(rounded)
-    return tuple(numbers)
-
-
-def _rounded_integer(item: XdmAtomic) -> int | None:
-    local = (
-        item.type_name.partition("}")[2]
-        if item.type_name.startswith("{")
-        else item.type_name.rpartition(":")[2]
-    )
-    value: object = item.value
-    if local not in _NUMERIC_ATOMIC_LOCALS:
-        if local not in _STRING_ATOMIC_LOCALS:
-            return None
-        lexical = item.lexical.strip()
-        if lexical in ("INF", "+INF", "-INF", "NaN"):
-            return None
-        try:
-            value = Decimal(lexical)
-        except InvalidOperation:
-            return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, Decimal):
-        return int((value + Decimal("0.5")).to_integral_value(rounding=ROUND_FLOOR))
-    assert isinstance(value, float)
-    if math.isnan(value) or math.isinf(value):
-        return None
-    return math.floor(value + 0.5)
-
-
-def _rebase_place_marker(
-    numbers: Sequence[int],
-    start_at: str | None,
-) -> tuple[int, ...]:
-    if start_at is None:
-        return tuple(numbers)
-    parts = start_at.split()
-    if not parts or any(_START_AT.fullmatch(part) is None for part in parts):
-        raise XsltDynamicError(
-            "xsl:number start-at must be a whitespace-separated integer sequence",
-            code="XTDE0030",
-        )
-    starts = [int(part) for part in parts]
-    return tuple(
-        number + (starts[index] if index < len(starts) else starts[-1]) - 1
-        for index, number in enumerate(numbers)
-    )
-
-
-_EBV_STRING_TYPES = frozenset(
-    {
-        "anyURI",
-        "ENTITY",
-        "ID",
-        "IDREF",
-        "language",
-        "Name",
-        "NCName",
-        "NMTOKEN",
-        "normalizedString",
-        "string",
-        "token",
-        "untypedAtomic",
-    }
-)
-_EBV_NUMERIC_TYPES = frozenset(
-    {
-        "byte",
-        "decimal",
-        "double",
-        "float",
-        "int",
-        "integer",
-        "long",
-        "negativeInteger",
-        "nonNegativeInteger",
-        "nonPositiveInteger",
-        "positiveInteger",
-        "short",
-        "unsignedByte",
-        "unsignedInt",
-        "unsignedLong",
-        "unsignedShort",
-    }
-)
-_BUILTIN_TYPE_NAMES: dict[type[Any], str] | None = None
-
-
-def _builtin_class_names() -> Mapping[type[Any], str]:
-    """Map every canonical built-in datatype class to its XSD local name."""
-    global _BUILTIN_TYPE_NAMES
-    if _BUILTIN_TYPE_NAMES is None:
-        _BUILTIN_TYPE_NAMES = {value: name for name, value in builtin_type_classes().items()}
-    return _BUILTIN_TYPE_NAMES
-
-
-def _primitive_local_name(item: XdmAtomic) -> str:
-    """Classify an atomic value by its nearest built-in datatype ancestor."""
-    names = _builtin_class_names()
-    datatype = item.datatype
-    if datatype is not None:
-        for base in datatype.__mro__:
-            name = names.get(base)
-            if name is not None:
-                return name
-    for base in type(item.value).__mro__:
-        name = names.get(base)
-        if name is not None:
-            return name
-    return item.type_name.rpartition("}")[2]
-
-
-def _effective_boolean(sequence: XdmSequence) -> bool:
-    """Evaluate the XPath effective boolean value of one XDM sequence.
-
-    Nodes are true by their presence.  A single boolean, string-family, or
-    numeric atomic follows the specification's value rules.  A multi-item
-    atomic sequence, a function item, or an unsupported atomic type raises
-    ``FORG0006`` instead of guessing from the first item.
-    """
-    if not sequence:
-        return False
-    first = sequence[0]
-    if isinstance(first, XdmNode):
-        return True
-    if not isinstance(first, XdmAtomic):
-        raise XsltError(
-            "the effective boolean value of a function item is not defined",
-            code="FORG0006",
-        )
-    if len(sequence) != 1:
-        raise XsltError(
-            "the effective boolean value of a multi-item atomic sequence is not defined",
-            code="FORG0006",
-        )
-    local = _primitive_local_name(first)
-    if local == "boolean":
-        return bool(first.value)
-    if local in _EBV_STRING_TYPES:
-        return first.lexical != ""
-    if local in _EBV_NUMERIC_TYPES:
-        value = first.value
-        # NaN is the only numeric value not equal to itself.
-        if value != value:
-            return False
-        return value != 0
-    raise XsltError(
-        f"the effective boolean value of {local or 'this atomic type'} is not defined",
-        code="FORG0006",
-    )
-
-
-def _error_qname(code: str) -> XdmAtomic:
-    """Return one expanded error code as an ``xs:QName`` atomic item.
-
-    Implementation codes are not required to be lexical QNames.  A code whose
-    local part is not an NCName is preserved as a string rather than making a
-    caught error unreadable; all specification and ``fn:error`` codes use the
-    typed branch.
-    """
-    if code.startswith("{"):
-        uri, _, local = code[1:].partition("}")
-    else:
-        uri, local = "", code
-    if is_ncname(local):
-        return cast(XdmAtomic, as_xdm(QName(uri, local))[0])
-    return XdmAtomic.string(code)
-
-
 def _require_absolute(uri: str, label: str) -> str:
     if not isinstance(uri, str) or not uri or not urlsplit(uri).scheme:
         raise XsltInvocationError(f"{label} must be a non-empty absolute URI, got {uri!r}")
@@ -5585,35 +5149,6 @@ def _require_absolute(uri: str, label: str) -> str:
 
 # ---------------------------------------------------------------------------
 # Invocation execution
-
-
-class _IterationControlSignal(Exception):
-    """A valid iterate-body control reached through synchronous conditional content.
-
-    ``xsl:on-non-empty`` and ``xsl:on-empty`` are executed by the conditional
-    sequence evaluator, which normally returns a value synchronously.  A
-    control instruction in that content must instead unwind to the body frame so
-    the iteration frame can observe it.  The signal carries the conditional
-    output produced before the control and the lexical focus at the control.
-    """
-
-    __slots__ = ("focus", "pending", "plan", "variables")
-
-    def __init__(
-        self,
-        plan: _NextIterationPlan | _BreakPlan,
-        variables: Mapping[str, XdmSequence],
-        focus: Focus,
-    ) -> None:
-        super().__init__(plan.instruction.local_name)
-        self.plan = plan
-        self.variables = dict(variables)
-        self.focus = focus
-        self.pending: tuple[XdmItem, ...] = ()
-
-    def prepend(self, values: Sequence[XdmItem]) -> None:
-        """Add already-produced conditional output before this control."""
-        self.pending = (*values, *self.pending)
 
 
 class _Invocation(Transformation):
@@ -5647,15 +5182,8 @@ class _Invocation(Transformation):
             input_type_annotations=options.input_type_annotations or "unspecified",
             space_rules=stylesheet._space_rules,
         )
-        self.accumulators = AccumulatorManager(
-            lookup=self._accumulator_definition,
-            evaluate_initial=self._evaluate_accumulator_initial,
-            evaluate_rule=self._evaluate_accumulator_rule,
-            coerce=self._coerce_accumulator_value,
-            matches=self._accumulator_rule_matches,
-            all_definitions=lambda: self.stylesheet._accumulators.values(),
-        )
         self._accumulator_matchers: dict[int, PatternMatcher] = {}
+        self.accumulators = create_accumulator_manager(self)
         self._mark_initial_selection()
 
     def _package_schema_pool(self, package_name: str | None) -> object:
@@ -5695,73 +5223,6 @@ class _Invocation(Transformation):
         global_item = options.global_context_item
         if isinstance(global_item, XdmNode):
             self.accumulators.allow_all(global_item.root)
-
-    def _accumulator_definition(
-        self,
-        package_name: str | None,
-        expanded_name: str,
-    ) -> AccumulatorDefinition | None:
-        package = self.stylesheet._packages.get(package_name) or self.package
-        component = package.accumulator(expanded_name)
-        if component is None or component.name is None:
-            return None
-        return self.stylesheet._accumulators.get((component.owner, component.name))
-
-    def _accumulator_copy_names(self) -> frozenset[str]:
-        """Expanded names of every compiled accumulator considered at a copy."""
-        return frozenset(definition.name for definition in self.stylesheet._accumulators.values())
-
-    def _accumulator_rule_matches(
-        self,
-        definition: AccumulatorDefinition,
-        rule: AccumulatorRule,
-        node: XdmNode,
-    ) -> bool:
-        matcher = self._accumulator_matchers.get(id(rule.pattern))
-        if matcher is None:
-            matcher = PatternMatcher(rule.pattern)
-            self._accumulator_matchers[id(rule.pattern)] = matcher
-        environment = self._pattern_environment_for(rule.pattern, definition.owner)
-        return matcher.matches(node, environment)
-
-    def _evaluate_accumulator_initial(
-        self,
-        definition: AccumulatorDefinition,
-        root: XdmNode,
-    ) -> XdmSequence:
-        return self._evaluate(
-            definition.initial_value,
-            EvaluationContext(focus=Focus.singleton(root), package_name=definition.owner),
-        )
-
-    def _evaluate_accumulator_rule(
-        self,
-        definition: AccumulatorDefinition,
-        rule: AccumulatorRule,
-        node: XdmNode,
-        old_value: XdmSequence,
-    ) -> XdmSequence:
-        context = EvaluationContext(
-            focus=Focus.singleton(node),
-            locals={"value": old_value},
-            final_output=False,
-            package_name=definition.owner,
-        )
-        if rule.select is not None:
-            return self._evaluate(rule.select, context)
-        return self._execute_plans(rule.body, context=context)
-
-    def _coerce_accumulator_value(
-        self,
-        sequence: XdmSequence,
-        definition: AccumulatorDefinition,
-    ) -> XdmSequence:
-        return _coerce_sequence(
-            sequence,
-            definition.sequence_type,
-            code="XPTY0004",
-            label=f"accumulator {definition.name!r}",
-        )
 
     # -- top level ---------------------------------------------------------
 
@@ -5817,7 +5278,8 @@ class _Invocation(Transformation):
         selection = cast(XdmSequence, options.initial_match_selection)
         mode_name = options.mode.name if options.mode is not None else None
         self._check_typed_mode(selection, mode_name, self.package.name)
-        return self._apply_templates(
+        return apply_templates(
+            self,
             selection,
             mode_name,
             options.template_parameters,
@@ -5998,9 +5460,9 @@ class _Invocation(Transformation):
             if frame.kind == "xpath":
                 return self._step_xpath(frame)
             if frame.kind == "apply":
-                return self._step_apply(frame)
+                return step_apply(self, frame)
             if frame.kind == "iteration":
-                return self._step_iterate(frame)
+                return step_iterate(self, frame)
             return self._step_instruction(frame)
         finally:
             self.current_group, self.current_grouping_key = previous
@@ -6096,15 +5558,15 @@ class _Invocation(Transformation):
             return self._return_frame(frame)
         plan = program[cursor]
         if isinstance(plan, (_NextIterationPlan, _BreakPlan)):
-            return self._iteration_control(plan, frame)
+            return iteration_control(self, plan, frame)
         if isinstance(plan, _ForEachPlan):
-            return self._start_iteration_plan(plan, frame, cursor)
+            return start_iteration_plan(self, plan, frame, cursor)
         if isinstance(plan, _IteratePlan):
-            return self._start_iteration_plan(plan, frame, cursor)
+            return start_iteration_plan(self, plan, frame, cursor)
         if isinstance(plan, _ForEachGroupPlan):
-            return self._start_iteration_plan(plan, frame, cursor)
+            return start_iteration_plan(self, plan, frame, cursor)
         if isinstance(plan, _PerformSortPlan):
-            value = self._perform_sort(plan, frame.context)
+            value = perform_sort(plan, self, frame.context)
             return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
         if isinstance(plan, _ParamPlan):
             raise XsltError(
@@ -6112,7 +5574,7 @@ class _Invocation(Transformation):
                 code="XTDE0000",
             )
         if isinstance(plan, _VariablePlan):
-            value = self._variable_value(plan, frame.context)
+            value = variable_value(plan, self, frame.context)
             return Continue(
                 replace(
                     frame,
@@ -6149,7 +5611,7 @@ class _Invocation(Transformation):
                 )
             )
         if isinstance(plan, _ChoosePlan):
-            branch = self._choose_branch(plan, frame.context)
+            branch = choose_branch(self, plan, frame.context)
             if branch is None:
                 return Continue(replace(frame, cursor=cursor + 1))
             return Continue(
@@ -6164,13 +5626,13 @@ class _Invocation(Transformation):
                 )
             )
         if isinstance(plan, _TryPlan):
-            return self._try_step(plan, frame, cursor)
+            return try_step(self, plan, frame, cursor)
         if isinstance(plan, _CallTemplatePlan):
-            return self._call_template_step(plan, frame, cursor)
+            return call_template_step(self, plan, frame, cursor)
         if isinstance(plan, _ApplyTemplatesPlan):
-            return self._apply_templates_step(plan, frame, cursor)
+            return apply_templates_step(self, plan, frame, cursor)
         if isinstance(plan, _OverridingPlan):
-            return self._overriding_step(plan, frame, cursor)
+            return overriding_step(self, plan, frame, cursor)
         try:
             value = self._execute_plan(plan, context=frame.context)
         except _IterationControlSignal as signal:
@@ -6183,937 +5645,16 @@ class _Invocation(Transformation):
                 ),
                 values=frame.values + signal.pending,
             )
-            return self._iteration_control(signal.plan, control_frame)
+            return iteration_control(self, signal.plan, control_frame)
         return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
 
     # -- try/catch ---------------------------------------------------------
 
-    def _try_step(self, plan: _TryPlan, frame: Frame, cursor: int) -> FrameResult:
-        """Run one try body as a child frame with a catch error handler.
-
-        A tail try whose caller has no remaining work can replace that caller,
-        transferring already-produced output and the caller's continuation to
-        the try frame.  The handler therefore starts a catch frame with the
-        same committed output, and a tail call in the catch body can replace
-        the catch frame without growing the explicit stack.
-        """
-        program = cast(tuple[_Plan, ...], frame.program or ())
-        remaining = program[cursor + 1 :]
-        replace_caller = (
-            plan.tail
-            and all(isinstance(item, _RestoreVariablesPlan) for item in remaining)
-            and frame.error_handler is None
-            and frame.extent is None
-            and frame.conversion is None
-        )
-        base_values = frame.values if replace_caller else ()
-        child = Frame(
-            kind="instruction",
-            component=frame.component,
-            identity="xsl:try",
-            program=self._try_body_program(plan),
-            context=frame.context,
-            continuation=frame.continuation if replace_caller else None,
-            extent=self.result_extent() if plan.rollback_output else None,
-            error_handler=self._try_handler(plan, frame, base_values),
-            location=plan.instruction.location,
-            values=base_values,
-            group=frame.group,
-            grouping_key=frame.grouping_key,
-            iteration=frame.iteration,
-        )
-        if replace_caller:
-            return Continue(child)
-        return Call(child, resume=replace(frame, cursor=cursor + 1), tail=False)
-
-    @staticmethod
-    def _try_body_program(plan: _TryPlan) -> tuple[_Plan, ...]:
-        if plan.expression is None:
-            return plan.children
-        return (
-            _SequencePlan(
-                instruction=plan.instruction,
-                expression=plan.expression,
-                children=(),
-            ),
-        )
-
-    @staticmethod
-    def _catch_program(catch: _CatchPlan) -> tuple[_Plan, ...]:
-        if catch.expression is None:
-            return catch.children
-        return (
-            _SequencePlan(
-                instruction=catch.instruction,
-                expression=catch.expression,
-                children=(),
-            ),
-        )
-
-    def _try_handler(
-        self,
-        plan: _TryPlan,
-        frame: Frame,
-        base_values: tuple[object, ...],
-    ) -> Any:
-        def handler(
-            error: BaseException,
-            stack: tuple[Any, ...],
-        ) -> CatchResult | None:
-            caught = self._catchable_error(error, stack)
-            if caught is None:
-                return None
-            catch = self._select_catch(plan, caught)
-            if catch is None:
-                return None
-            variables: dict[str, XdmSequence] = dict(frame.context.locals)
-            variables.update(self._catch_variables(caught))
-            catch_frame = Frame(
-                kind="instruction",
-                component=frame.component,
-                identity="xsl:catch",
-                program=self._catch_program(catch),
-                context=replace(frame.context, locals=variables),
-                location=catch.instruction.location,
-                values=base_values,
-                group=frame.group,
-                grouping_key=frame.grouping_key,
-                iteration=frame.iteration,
-            )
-            return CatchResult(frame=catch_frame)
-
-        return handler
-
-    def _run_try(self, plan: _TryPlan, *, context: EvaluationContext) -> XdmSequence:
-        """Run a try in a synchronous nested sequence constructor."""
-        extent = self.result_extent() if plan.rollback_output else None
-        try:
-            if plan.expression is not None:
-                value = self._evaluate(plan.expression, context)
-            else:
-                value = self._execute_plans(plan.children, context=context)
-        except BaseException as error:
-            caught = self._catchable_error(error, self.diagnostics)
-            catch = None if caught is None else self._select_catch(plan, caught)
-            if caught is None or catch is None:
-                if extent is not None:
-                    extent.rollback()
-                raise
-            if extent is not None:
-                extent.rollback()
-            variables: dict[str, XdmSequence] = dict(context.locals)
-            variables.update(self._catch_variables(caught))
-            catch_context = replace(context, locals=variables)
-            if catch.expression is not None:
-                return self._evaluate(catch.expression, catch_context)
-            return self._execute_plans(catch.children, context=catch_context)
-        else:
-            if extent is not None:
-                extent.commit()
-            return value
-
-    def _catchable_error(
-        self,
-        error: BaseException,
-        stack: tuple[Any, ...] | None,
-    ) -> XsltError | None:
-        """Return the deliberate XSLT dynamic error a catch may consume.
-
-        XPath engine errors are converted here with their original exception
-        retained as the cause.  Static errors, foreign callback failures, and
-        every other Python exception keep their identity and are not caught.
-        """
-        if isinstance(error, XsltError):
-            return error if error.catchable else None
-        if isinstance(error, (ElementPathError, XPathEvaluationError)):
-            code = error_code_from_exception(error)
-            if code is None or is_static_error_code(code):
-                return None
-            return self.boundary_error(error, stack=stack, catchable=True)
-        return None
-
-    @staticmethod
-    def _select_catch(plan: _TryPlan, error: XsltError) -> _CatchPlan | None:
-        for catch in plan.catches:
-            if error.matches_catch(
-                catch.errors,
-                namespaces=catch.instruction.namespaces,
-            ):
-                return catch
-        return None
-
-    @staticmethod
-    def _catch_variables(error: XsltError) -> dict[str, XdmSequence]:
-        variables: dict[str, XdmSequence] = {}
-        code = error.expanded_code or ""
-        variables[f"{{{ERROR_NAMESPACE}}}code"] = (_error_qname(code),)
-        variables[f"{{{ERROR_NAMESPACE}}}description"] = (
-            (XdmAtomic.string(error.description),) if error.has_description else ()
-        )
-        variables[f"{{{ERROR_NAMESPACE}}}value"] = tuple(error.value)
-        module = (
-            error.module or error.uri or (None if error.location is None else error.location.source)
-        )
-        variables[f"{{{ERROR_NAMESPACE}}}module"] = (
-            () if module is None else (XdmAtomic.string(module),)
-        )
-        variables[f"{{{ERROR_NAMESPACE}}}line-number"] = (
-            () if error.line_number is None else (XdmAtomic.integer(error.line_number),)
-        )
-        variables[f"{{{ERROR_NAMESPACE}}}column-number"] = (
-            () if error.column_number is None else (XdmAtomic.integer(error.column_number),)
-        )
-        return variables
-
     # -- iteration, sorting, and grouping ---------------------------------
-
-    def _start_iteration_plan(
-        self,
-        plan: _ForEachPlan | _IteratePlan | _ForEachGroupPlan,
-        frame: Frame,
-        cursor: int,
-    ) -> FrameResult:
-        context = frame.context
-        variables = context.locals
-        if isinstance(plan, _ForEachPlan):
-            items = self._evaluate(plan.expression, context)
-            items = self._sorted_items(items, plan.sorts, context)
-            state = IterationState(
-                kind="for-each",
-                body=plan.children,
-                items=tuple(
-                    IterationItem(item, position, len(items))
-                    for position, item in enumerate(items, start=1)
-                ),
-                base_variables=dict(variables),
-            )
-        elif isinstance(plan, _IteratePlan):
-            items = self._evaluate(plan.expression, context)
-            parameters = self._initial_iteration_parameters(plan.parameters, context)
-            state = IterationState(
-                kind="iterate",
-                body=plan.children,
-                items=tuple(
-                    IterationItem(item, position, len(items))
-                    for position, item in enumerate(items, start=1)
-                ),
-                base_variables=dict(variables),
-                parameters=parameters,
-                parameter_plans={parameter.name: parameter for parameter in plan.parameters},
-                on_completion=plan.on_completion,
-            )
-        else:
-            groups = self._grouped_items(plan, frame)
-            state = IterationState(
-                kind="for-each-group",
-                body=plan.children,
-                items=tuple(
-                    IterationItem(
-                        group.initial_item,
-                        position,
-                        len(groups),
-                        group.items,
-                        group.grouping_key,
-                    )
-                    for position, group in enumerate(groups, start=1)
-                ),
-                base_variables=dict(variables),
-            )
-        child = Frame(
-            kind="iteration",
-            component=frame.component,
-            identity=f"xsl:{state.kind}",
-            program=state,
-            context=context,
-            location=plan.instruction.location,
-            group=frame.group,
-            grouping_key=frame.grouping_key,
-        )
-        return Call(child, resume=replace(frame, cursor=cursor + 1))
-
-    def _step_iterate(self, frame: Frame) -> FrameResult:
-        state = cast(IterationState, frame.program)
-        body_returned = frame.input is not NO_INPUT
-        frame = self._consume_input(frame)
-        if body_returned:
-            if state.control == "break":
-                state.control = None
-                return self._return_frame(frame)
-            if state.control == "next":
-                state.parameters = state.pending_parameters or state.parameters
-                state.pending_parameters = None
-            state.control = None
-            state.index += 1
-        if state.index >= len(state.items):
-            return self._complete_iteration(frame, state)
-        entry = state.items[state.index]
-        variables: dict[str, XdmSequence] = dict(state.base_variables)
-        if state.kind == "iterate":
-            for name, value in state.parameters.items():
-                self._bind(variables, name, value)
-        group = frame.group if entry.group is None else entry.group
-        if entry.group is None:
-            grouping_key = frame.grouping_key
-        else:
-            grouping_key = NO_GROUP if entry.grouping_key is None else entry.grouping_key
-        child = Frame(
-            kind="instruction",
-            component=frame.component,
-            identity=f"iteration body {state.index + 1}",
-            program=state.body,
-            context=replace(
-                frame.context,
-                focus=Focus.singleton(
-                    entry.item,
-                    position=entry.position,
-                    size=entry.size,
-                ),
-                locals=variables,
-            ),
-            location=frame.location,
-            group=NO_GROUP if group is None else group,
-            grouping_key=NO_GROUP if grouping_key is None else grouping_key,
-            iteration=state,
-        )
-        return Call(child, resume=frame, tail=False)
-
-    def _complete_iteration(self, frame: Frame, state: IterationState) -> FrameResult:
-        completion = state.on_completion
-        if completion is None:
-            return self._return_frame(frame)
-        variables: dict[str, XdmSequence] = dict(state.base_variables)
-        for name, value in state.parameters.items():
-            self._bind(variables, name, value)
-        completion_context = replace(frame.context, focus=Focus.absent(), locals=variables)
-        try:
-            if completion.select is not None:
-                value = self._evaluate(completion.select, completion_context)
-            else:
-                value = self._execute_plans(
-                    completion.children,
-                    context=completion_context,
-                )
-        except MissingContextError as exc:
-            error = XsltDynamicError(
-                "xsl:on-completion has no context item",
-                code="XPDY0002",
-                location=completion.instruction.location,
-                cause=exc,
-            )
-            error.__cause__ = exc
-            error.__suppress_context__ = True
-            raise error from exc
-        return self._return_frame(replace(frame, values=frame.values + tuple(value)))
-
-    def _iteration_control(
-        self,
-        plan: _NextIterationPlan | _BreakPlan,
-        frame: Frame,
-    ) -> FrameResult:
-        state = frame.iteration
-        if not isinstance(state, IterationState) or state.kind != "iterate":
-            raise XsltStaticError(
-                f"xsl:{plan.instruction.local_name} requires an enclosing xsl:iterate",
-                code="XTSE3120",
-                uri=plan.instruction.module,
-                location=plan.instruction.location,
-            )
-        if isinstance(plan, _NextIterationPlan):
-            supplied = self._iteration_parameter_values(plan.parameters, frame, state)
-            state.pending_parameters = {**state.parameters, **supplied}
-            state.control = "next"
-            return self._return_frame(frame)
-        value = self._break_value(plan, frame)
-        state.control = "break"
-        return self._return_frame(replace(frame, values=frame.values + tuple(value)))
-
-    def _break_value(self, plan: _BreakPlan, frame: Frame) -> XdmSequence:
-        if plan.expression is not None:
-            return self._evaluate(plan.expression, frame.context)
-        return self._execute_plans(plan.children, context=frame.context)
-
-    def _initial_iteration_parameters(
-        self,
-        parameters: tuple[_ParamPlan, ...],
-        context: EvaluationContext,
-    ) -> dict[str, XdmSequence]:
-        values: dict[str, XdmSequence] = {}
-        environment = dict(context.locals)
-        for parameter in parameters:
-            value = self._parameter_default(
-                parameter,
-                replace(context, locals=environment),
-            )
-            value = self._coerce_parameter(parameter, value, code="XTTE0590")
-            self._bind(values, parameter.name, value)
-            self._bind(environment, parameter.name, value)
-        return values
-
-    def _iteration_parameter_values(
-        self,
-        parameters: tuple[_WithParamPlan, ...],
-        frame: Frame,
-        state: IterationState,
-    ) -> dict[str, XdmSequence]:
-        values: dict[str, XdmSequence] = {}
-        for parameter in parameters:
-            if parameter.expression is not None:
-                value = self._evaluate(parameter.expression, frame.context)
-            elif parameter.children:
-                sequence = self._execute_plans(
-                    parameter.children,
-                    context=replace(frame.context, final_output=False),
-                )
-                value = sequence if parameter.has_as else (_build_result_tree(sequence),)
-            else:
-                value = () if parameter.has_as else (XdmAtomic.string(""),)
-            if parameter.sequence_type is not None:
-                value = _coerce_sequence(
-                    value,
-                    parameter.sequence_type,
-                    code="XTTE0590",
-                    label=f"parameter {parameter.name!r}",
-                )
-            declared = state.parameter_plans[parameter.name]
-            value = self._coerce_parameter(declared, value, code="XTTE0590")
-            self._bind(values, parameter.name, value)
-        return values
 
     # -- merging, splitting, and source documents -------------------------
 
-    def _run_merge(self, plan: _MergePlan, *, context: EvaluationContext) -> XdmSequence:
-        resolved = self._merge_resolved_keys(plan.sources, context)
-        inputs: list[tuple[MergeItem, ...]] = []
-        sort_before_merge: list[bool] = []
-        for source_index, source in enumerate(plan.sources):
-            for anchor_index, sequence in enumerate(self._merge_input_sequences(source, context)):
-                items = tuple(
-                    self._merge_item(
-                        source,
-                        resolved,
-                        item,
-                        source_index=source_index,
-                        anchor_index=anchor_index,
-                        position=position,
-                        context=context,
-                    )
-                    for position, item in enumerate(sequence, start=1)
-                )
-                inputs.append(items)
-                sort_before_merge.append(source.sort_before_merge)
-        comparison_keys = promote_merge_keys(inputs, resolved)
-        for index, input_sequence in enumerate(inputs):
-            if sort_before_merge[index]:
-                inputs[index] = sort_merge_input(
-                    input_sequence,
-                    resolved,
-                    comparison_keys=comparison_keys,
-                )
-        for input_sequence in inputs:
-            check_merge_order(input_sequence, resolved, comparison_keys=comparison_keys)
-        groups = merge_groups(inputs, resolved, comparison_keys=comparison_keys)
-        names = _merge_source_names(plan.sources)
-        result: list[XdmItem] = []
-        for position, group in enumerate(groups, start=1):
-            members: dict[str, list[XdmItem]] = {name: [] for name in names}
-            for item in group.items:
-                members[names[item.source]].append(item.item)
-            group_map: dict[str, XdmSequence] = {
-                name: tuple(values) for name, values in members.items()
-            }
-            action_focus = Focus.singleton(
-                group.items[0].item,
-                position=position,
-                size=len(groups),
-            )
-            key_sequence: XdmSequence = tuple(
-                atomic for component in group.key for atomic in component
-            )
-            with self._merge_scope(group_map, key_sequence, names):
-                result.extend(
-                    self._execute_plans(
-                        plan.action,
-                        context=replace(context, focus=action_focus),
-                    )
-                )
-        return tuple(result)
-
-    def _merge_resolved_keys(
-        self,
-        sources: tuple[_MergeSourcePlan, ...],
-        context: EvaluationContext,
-    ) -> tuple[ResolvedSortKey, ...]:
-        resolved_by_source: list[tuple[ResolvedSortKey, ...]] = []
-        signatures_by_source: list[tuple[tuple[object, ...], ...]] = []
-        for source in sources:
-            resolved: list[ResolvedSortKey] = []
-            signatures: list[tuple[object, ...]] = []
-            for key in source.keys:
-                key_resolved, signature = self._resolve_key_spec(key, context)
-                resolved.append(key_resolved)
-                signatures.append(signature)
-            resolved_by_source.append(tuple(resolved))
-            signatures_by_source.append(tuple(signatures))
-        baseline = signatures_by_source[0]
-        for other_signatures in signatures_by_source[1:]:
-            if other_signatures != baseline:
-                raise XsltDynamicError(
-                    "xsl:merge-key definitions in corresponding positions must have the "
-                    "same effective lang, order, collation, case-order, and data-type",
-                    code="XTDE2210",
-                )
-        return resolved_by_source[0]
-
-    def _merge_input_sequences(
-        self,
-        source: _MergeSourcePlan,
-        context: EvaluationContext,
-    ) -> tuple[XdmSequence, ...]:
-        package_name = context.package_name
-        if source.for_each_item is not None:
-            anchors = self._evaluate(source.for_each_item, context)
-            return tuple(
-                self._evaluate(
-                    source.select,
-                    replace(
-                        context,
-                        focus=Focus.singleton(
-                            anchor,
-                            position=position,
-                            size=len(anchors),
-                        ),
-                    ),
-                )
-                for position, anchor in enumerate(anchors, start=1)
-            )
-        if source.for_each_source is not None:
-            uri_values = self._evaluate(source.for_each_source, context)
-            atomics = atomize_key_sequence(uri_values)
-            documents = tuple(
-                self.document_resources.resolve(
-                    atomic.lexical,
-                    base=source.base_uri,
-                    validation=source.validation,
-                    type_name=source.type_name,
-                    schema_pool=self._package_schema_pool(package_name),
-                    input_type_annotations=self._document_annotations(
-                        package_name,
-                        validation=source.validation,
-                        type_name=source.type_name,
-                    ),
-                    package=package_name,
-                )
-                for atomic in atomics
-            )
-            keys = source.use_accumulators
-            for document in documents:
-                self.accumulators.restrict(document, keys)
-            return tuple(
-                self._evaluate(
-                    source.select,
-                    replace(
-                        context,
-                        focus=Focus.singleton(
-                            document,
-                            position=position,
-                            size=len(documents),
-                        ),
-                    ),
-                )
-                for position, document in enumerate(documents, start=1)
-            )
-        return (self._evaluate(source.select, context),)
-
-    def _merge_item(
-        self,
-        source: _MergeSourcePlan,
-        resolved: tuple[ResolvedSortKey, ...],
-        item: XdmItem,
-        *,
-        source_index: int,
-        anchor_index: int,
-        position: int,
-        context: EvaluationContext,
-    ) -> MergeItem:
-        comparison_key, current_key = self._merge_key_values(
-            source,
-            resolved,
-            item,
-            context,
-        )
-        return MergeItem(
-            item=item,
-            source=source_index,
-            anchor=anchor_index,
-            position=position,
-            key=comparison_key,
-            current_key=current_key,
-        )
-
-    def _merge_key_values(
-        self,
-        source: _MergeSourcePlan,
-        resolved: tuple[ResolvedSortKey, ...],
-        item: XdmItem,
-        context: EvaluationContext,
-    ) -> tuple[tuple[XdmSequence, ...], tuple[XdmSequence, ...]]:
-        key_context = replace(context, focus=Focus.singleton(item))
-        comparison_values: list[XdmSequence] = []
-        current_values: list[XdmSequence] = []
-        for key, resolved_key in zip(source.keys, resolved, strict=True):
-            if key.select is not None:
-                value = self._evaluate(key.select, key_context)
-            else:
-                value = self._execute_plans(
-                    key.children,
-                    context=replace(key_context, final_output=False),
-                )
-            atomics = atomize_key_sequence(value)
-            if len(atomics) > 1:
-                raise XsltDynamicError(
-                    "a merge key value must contain at most one item after atomization",
-                    code="XTTE1020",
-                    location=key.instruction.location,
-                )
-            if not atomics:
-                comparison_values.append(())
-                current_values.append(())
-                continue
-            atomic = atomics[0]
-            current_values.append((atomic,))
-            if resolved_key.data_type == "text":
-                comparison_values.append((XdmAtomic.string(atomic.lexical),))
-            else:
-                comparison_values.append((atomic,))
-        return tuple(comparison_values), tuple(current_values)
-
-    def _run_fork(self, plan: _ForkPlan, *, context: EvaluationContext) -> XdmSequence:
-        result: list[XdmItem] = []
-        for branch in plan.branches:
-            result.extend(self._execute_plans(branch, context=context))
-        return tuple(result)
-
-    def _run_source_document(
-        self,
-        plan: _SourceDocumentPlan,
-        *,
-        context: EvaluationContext,
-    ) -> XdmSequence:
-        package_name = context.package_name
-        href = self._value_template(plan.href, context).strip()
-        document = self.document_resources.resolve(
-            href,
-            base=plan.instruction.base_uri,
-            validation=plan.validation,
-            type_name=plan.type_name,
-            schema_pool=self._package_schema_pool(package_name),
-            input_type_annotations=self._document_annotations(
-                package_name,
-                validation=plan.validation,
-                type_name=plan.type_name,
-            ),
-            package=package_name,
-        )
-        self.accumulators.restrict(document, plan.use_accumulators)
-        return self._execute_plans(
-            plan.children,
-            context=replace(context, focus=Focus.singleton(document)),
-        )
-
     # -- sort and group algorithms ---------------------------------------
-
-    def _resolved_sort_keys(
-        self,
-        sorts: tuple[SortKey, ...],
-        context: EvaluationContext,
-    ) -> tuple[ResolvedSortKey, ...]:
-        return tuple(self._resolve_key_spec(sort, context)[0] for sort in sorts)
-
-    def _resolve_key_spec(
-        self,
-        sort: SortKey,
-        context: EvaluationContext,
-    ) -> tuple[ResolvedSortKey, tuple[object, ...]]:
-        """Resolve one sort/merge key and retain its effective-value signature."""
-        label = sort.instruction.local_name
-        order_value = None
-        order = "ascending"
-        if sort.order is not None:
-            order_value = self._value_source(sort.order, context).strip()
-            order = order_value
-            if order not in ("ascending", "descending"):
-                raise XsltDynamicError(
-                    f"xsl:{label} order must be ascending or descending, got {order!r}",
-                    code="XTDE0030",
-                    location=sort.instruction.location,
-                )
-        data_type_value = None
-        data_type = "native"
-        if sort.data_type is not None:
-            data_type_value = self._value_source(sort.data_type, context).strip()
-            local = (
-                data_type_value[2:].partition("}")[2]
-                if data_type_value.startswith("Q{")
-                else data_type_value.rpartition(":")[2]
-            )
-            if local == "text":
-                data_type = "text"
-            elif local == "number":
-                data_type = "number"
-            elif not local:
-                raise XsltDynamicError(
-                    f"xsl:{label} data-type must not be empty",
-                    code="XTDE0030",
-                    location=sort.instruction.location,
-                )
-        case_order = None
-        if sort.case_order is not None:
-            case_order = self._value_source(sort.case_order, context).strip()
-            if case_order not in ("upper-first", "lower-first"):
-                raise XsltDynamicError(
-                    f"xsl:{label} case-order must be upper-first or lower-first, "
-                    f"got {case_order!r}",
-                    code="XTDE0030",
-                    location=sort.instruction.location,
-                )
-        if sort.stable is not None:
-            stable = self._value_source(sort.stable, context)
-            if stable.strip() not in (
-                "yes",
-                "true",
-                "1",
-                "no",
-                "false",
-                "0",
-            ):
-                raise XsltDynamicError(
-                    f"xsl:{label} stable has an invalid boolean value {stable!r}",
-                    code="XTDE0030",
-                    location=sort.instruction.location,
-                )
-        language = ""
-        if sort.lang is not None:
-            language = self._value_source(sort.lang, context).strip()
-        collation_uri = None
-        if sort.collation is not None:
-            collation_uri = self._value_source(sort.collation, context).strip()
-        collation = resolve_collation(
-            collation_uri,
-            code="XTDE1035",
-            default=None,
-            base_uri=sort.base_uri,
-            language=language if collation_uri is None else "",
-            case_order=case_order if collation_uri is None else None,
-        )
-        signature = (
-            order_value,
-            language if sort.lang is not None else None,
-            collation.uri if collation_uri is not None else None,
-            case_order,
-            data_type_value,
-        )
-        return (
-            ResolvedSortKey(
-                order=order,
-                collation=collation,
-                data_type=data_type,
-            ),
-            signature,
-        )
-
-    def _sort_values_for(
-        self,
-        item: XdmItem,
-        position: int,
-        size: int,
-        sorts: tuple[SortKey, ...],
-        resolved: tuple[ResolvedSortKey, ...],
-        context: EvaluationContext,
-    ) -> tuple[XdmSequence, ...]:
-        key_context = replace(
-            context,
-            focus=Focus.singleton(item, position=position, size=size),
-        )
-        values: list[XdmSequence] = []
-        for sort, key in zip(sorts, resolved, strict=True):
-            if sort.select is not None:
-                value = self._evaluate(sort.select, key_context)
-            else:
-                value = self._execute_plans(
-                    sort.children,
-                    context=replace(key_context, final_output=False),
-                )
-            atomics = atomize_key_sequence(value)
-            if len(atomics) > 1:
-                compatibility = self.profile_for(sort.xslt_version).compatibility_mode
-                if compatibility:
-                    atomics = atomics[:1]
-                else:
-                    raise XsltDynamicError(
-                        "a sort key value must contain at most one item after atomization",
-                        code="XTTE1020",
-                        location=sort.instruction.location,
-                    )
-            if not atomics:
-                values.append(())
-                continue
-            atomic = atomics[0]
-            if key.data_type == "text":
-                values.append((XdmAtomic.string(atomic.lexical),))
-            else:
-                values.append((atomic,))
-        return tuple(values)
-
-    def _sorted_items(
-        self,
-        items: XdmSequence,
-        sorts: tuple[SortKey, ...],
-        context: EvaluationContext,
-    ) -> tuple[XdmItem, ...]:
-        if not sorts:
-            return tuple(items)
-        resolved = self._resolved_sort_keys(sorts, context)
-        key_values = tuple(
-            self._sort_values_for(
-                item,
-                position,
-                len(items),
-                sorts,
-                resolved,
-                context,
-            )
-            for position, item in enumerate(items, start=1)
-        )
-        return sort_records(tuple(items), resolved, key_values)
-
-    def _perform_sort(
-        self,
-        plan: _PerformSortPlan,
-        context: EvaluationContext,
-    ) -> XdmSequence:
-        if plan.expression is not None:
-            items = self._evaluate(plan.expression, context)
-        else:
-            items = self._execute_plans(
-                plan.children,
-                context=replace(context, final_output=False),
-            )
-        return self._sorted_items(items, plan.sorts, context)
-
-    def _group_collation(
-        self,
-        plan: _ForEachGroupPlan,
-        context: EvaluationContext,
-    ) -> Any:
-        uri = (
-            None if plan.collation is None else self._value_source(plan.collation, context).strip()
-        )
-        return resolve_collation(
-            uri,
-            code="XTDE1110",
-            default=plan.default_collation,
-            base_uri=plan.base_uri,
-        )
-
-    def _grouped_items(
-        self,
-        plan: _ForEachGroupPlan,
-        frame: Frame,
-    ) -> tuple[Any, ...]:
-        context = frame.context
-        population = self._evaluate(plan.expression, context)
-        collation = self._group_collation(plan, context)
-        if plan.algorithm == GROUP_BY:
-            assert plan.key_expression is not None
-            key_sets = tuple(
-                grouping_key_set(
-                    self._evaluate(
-                        plan.key_expression,
-                        replace(
-                            context,
-                            focus=Focus.singleton(
-                                item,
-                                position=position,
-                                size=len(population),
-                            ),
-                        ),
-                    ),
-                    composite=plan.composite,
-                    collation=collation,
-                )
-                for position, item in enumerate(population, start=1)
-            )
-            groups = group_by(population, key_sets, collation)
-        elif plan.algorithm == GROUP_ADJACENT:
-            assert plan.key_expression is not None
-            keys = tuple(
-                adjacent_grouping_key(
-                    self._evaluate(
-                        plan.key_expression,
-                        replace(
-                            context,
-                            focus=Focus.singleton(
-                                item,
-                                position=position,
-                                size=len(population),
-                            ),
-                        ),
-                    ),
-                    composite=plan.composite,
-                )
-                for position, item in enumerate(population, start=1)
-            )
-            groups = group_adjacent(population, keys, collation)
-        else:
-            assert plan.pattern is not None
-            matcher = PatternMatcher(plan.pattern)
-            environment = self._pattern_environment_for(plan.pattern, context.package_name)
-            with self._group_scope(None, None):
-                matches = tuple(matcher.matches(item, environment) for item in population)
-            if plan.algorithm == GROUP_STARTING_WITH:
-                groups = group_starting_with(population, matches)
-            else:
-                groups = group_ending_with(population, matches)
-        if not plan.sorts:
-            return groups
-        resolved = self._resolved_sort_keys(plan.sorts, context)
-        key_values: list[tuple[XdmSequence, ...]] = []
-        for position, group in enumerate(groups, start=1):
-            with self._group_scope(group.items, group.grouping_key):
-                key_values.append(
-                    self._sort_values_for(
-                        group.initial_item,
-                        position,
-                        len(groups),
-                        plan.sorts,
-                        resolved,
-                        context,
-                    )
-                )
-        return sort_records(groups, resolved, tuple(key_values))
-
-    def _run_iteration_plan(
-        self,
-        plan: _ForEachPlan | _IteratePlan | _ForEachGroupPlan,
-        *,
-        context: EvaluationContext,
-    ) -> XdmSequence:
-        component = (
-            _TemplateContext(cast(Component, None))
-            if context.rule_context is not None or context.original_functions
-            else None
-        )
-        parent = Frame(
-            kind="instruction",
-            component=component,
-            program=(plan,),
-            context=context,
-            group=NO_GROUP if self.current_group is None else self.current_group,
-            grouping_key=(
-                NO_GROUP if self.current_grouping_key is None else self.current_grouping_key
-            ),
-        )
-        return cast(XdmSequence, self.execute_frame(parent))
 
     def _start_expression(
         self,
@@ -7168,16 +5709,6 @@ class _Invocation(Transformation):
             tail=False,
         )
 
-    def _choose_branch(
-        self,
-        plan: _ChoosePlan,
-        context: EvaluationContext,
-    ) -> tuple[_Plan, ...] | None:
-        for test, branch in plan.branches:
-            if _effective_boolean(self._evaluate(test, context)):
-                return branch
-        return plan.otherwise
-
     def _plan_parameters(
         self,
         parameters: tuple[_WithParamPlan, ...],
@@ -7204,226 +5735,6 @@ class _Invocation(Transformation):
                 )
             (tunnel if parameter.tunnel else template)[parameter.name] = value
         return MappingProxyType(template), MappingProxyType(tunnel)
-
-    def _resolve_template(self, reference: Any) -> Component:
-        stylesheet = getattr(self, "stylesheet", None)
-        packages = getattr(stylesheet, "_packages", {})
-        package = packages.get(
-            getattr(reference, "containing", None) or getattr(self.package, "name", None)
-        )
-        if package is None:
-            package = self.package
-        if getattr(reference, "original", False):
-            target = package.original_target(
-                reference.name,
-                kind="template",
-            )
-            if target is not None:
-                return target
-        component = package.component("template", reference.name)
-        if component is None:
-            raise XsltError(
-                f"the named template {reference.name!r} is not visible at run time",
-                code="XTDE0040",
-            )
-        return component
-
-    def _call_template_step(
-        self,
-        plan: _CallTemplatePlan,
-        frame: Frame,
-        cursor: int,
-    ) -> FrameResult:
-        context = frame.context
-        template, tunnel = self._plan_parameters(plan.parameters, context)
-        component = self._resolve_template(plan.reference)
-        child = self._component_frame(
-            component,
-            template_parameters=template,
-            context=replace(
-                context,
-                tunnel_parameters={**context.tunnel_parameters, **tunnel},
-            ),
-            group=frame.group,
-            grouping_key=frame.grouping_key,
-        )
-        return Call(
-            child,
-            resume=replace(frame, cursor=cursor + 1),
-            tail=plan.tail,
-        )
-
-    def _resolve_mode(
-        self,
-        mode: str | None,
-        current: str | None,
-        package_name: str | None = None,
-    ) -> str | None:
-        if mode == "#current":
-            return current
-        if mode == "#default":
-            stylesheet = getattr(self, "stylesheet", None)
-            packages = getattr(stylesheet, "_packages", {})
-            package = packages.get(package_name)
-            if package is None:
-                package = self.package
-            return package.default_mode
-        return mode
-
-    def _mode_package(self, mode: str | None, frame: Frame) -> str | None:
-        """The package whose composed mode a mode reference selects.
-
-        An explicit mode reference binds in the package containing the
-        instruction.  ``#current`` instead keeps the package of the mode
-        that selected the current template rule, so a base rule invoked from
-        a using package's mode keeps that package's override composition.
-        """
-        if mode == "#current":
-            context = frame.context.rule_context
-            return frame.package if context is None else context.mode_package
-        return frame.package
-
-    def _overriding_rule(
-        self,
-        plan: _OverridingPlan,
-        rule_context: _RuleContext,
-        item: XdmItem,
-    ) -> RuleMatch | None:
-        dispatcher = self._dispatcher(rule_context.mode, rule_context.mode_package)
-        environment = self._environment(EvaluationContext(package_name=rule_context.package_name))
-        if plan.kind == "next-match":
-            return dispatcher.next_match(
-                item,
-                rule_context.match,
-                rule_context.mode,
-                environment,
-                self._pattern_environment,
-            )
-        return dispatcher.apply_imports(
-            item,
-            rule_context.match,
-            rule_context.mode,
-            environment,
-            self._pattern_environment,
-        )
-
-    def _overriding_step(
-        self,
-        plan: _OverridingPlan,
-        frame: Frame,
-        cursor: int,
-    ) -> FrameResult:
-        context = frame.context
-        rule_context = context.rule_context
-        template, tunnel = self._plan_parameters(plan.parameters, context)
-        if rule_context is None:
-            raise XsltDynamicError(
-                "xsl:next-match and xsl:apply-imports require a current template rule",
-                code="XTDE0560",
-            )
-        item = rule_context.focus.item
-        if item is None:  # pragma: no cover - a current rule always has a focus item
-            raise XsltDynamicError("the current template rule has no context item")
-        effective_tunnel = {**rule_context.tunnel_parameters, **tunnel}
-        match = self._overriding_rule(plan, rule_context, item)
-        if match is None:
-            value = self._builtin_value(
-                item,
-                rule_context.mode,
-                template,
-                effective_tunnel,
-                rule_context.package_name,
-                rule_context.mode_package,
-            )
-            return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
-        child = self._rule_frame(
-            match,
-            replace(
-                context,
-                focus=rule_context.focus,
-                tunnel_parameters=effective_tunnel,
-            ),
-            template,
-            mode_package=rule_context.mode_package,
-            group=frame.group,
-            grouping_key=frame.grouping_key,
-        )
-        return Call(
-            child,
-            resume=replace(frame, cursor=cursor + 1),
-            tail=plan.tail,
-        )
-
-    def _apply_templates_step(
-        self,
-        plan: _ApplyTemplatesPlan,
-        frame: Frame,
-        cursor: int,
-    ) -> FrameResult:
-        context = frame.context
-        items = self._evaluate(
-            plan.expression,
-            replace(context, original_functions={}),
-        )
-        items = self._sorted_items(items, plan.sorts, context)
-        resolved_mode = self._resolve_mode(plan.mode, context.mode, context.package_name)
-        mode_package = self._mode_package(plan.mode, frame)
-        self._check_typed_mode(items, resolved_mode, mode_package)
-        template, tunnel = self._plan_parameters(plan.parameters, context)
-        child = self._apply_frame(
-            items,
-            resolved_mode,
-            template,
-            {**context.tunnel_parameters, **tunnel},
-            tail=plan.tail,
-            package_name=context.package_name,
-            mode_package=mode_package,
-            group=frame.group,
-            grouping_key=frame.grouping_key,
-        )
-        return Call(
-            child,
-            resume=replace(frame, cursor=cursor + 1),
-            tail=plan.tail,
-        )
-
-    def _apply_frame(
-        self,
-        items: XdmSequence,
-        mode: str | None,
-        template_parameters: Mapping[str, XdmSequence],
-        tunnel_parameters: Mapping[str, XdmSequence],
-        *,
-        tail: bool = False,
-        package_name: str | None = None,
-        mode_package: str | None = None,
-        group: object = _INHERIT,
-        grouping_key: object = _INHERIT,
-    ) -> Frame:
-        effective_group, effective_grouping_key = self._inherited_group(group, grouping_key)
-        state = _ApplyState(
-            items=items,
-            mode=mode,
-            template_parameters=template_parameters,
-            tunnel_parameters=tunnel_parameters,
-            package_name=package_name,
-            mode_package=mode_package,
-            group=effective_group,
-            grouping_key=effective_grouping_key,
-        )
-        return Frame(
-            kind="apply",
-            identity=f"apply-templates mode={mode!r}",
-            program=state,
-            context=EvaluationContext(
-                package_name=package_name,
-                mode=mode,
-                tunnel_parameters=tunnel_parameters,
-            ),
-            tail=tail,
-            group=effective_group,
-            grouping_key=effective_grouping_key,
-        )
 
     def _mode_layers(
         self,
@@ -7526,455 +5837,6 @@ class _Invocation(Transformation):
             self._pattern_environments[key] = environment
         return environment
 
-    def _rule_frame(
-        self,
-        match: RuleMatch,
-        context: EvaluationContext,
-        template_parameters: Mapping[str, XdmSequence],
-        *,
-        mode_package: str | None = None,
-        group: object = _INHERIT,
-        grouping_key: object = _INHERIT,
-    ) -> Frame:
-        rule = match.rule
-        body = cast(_BodyPlan, rule.template)
-        rule_focus = self._apply_context_item(body.context_item, context.focus)
-        rule_context = replace(
-            context,
-            focus=rule_focus,
-            final_output=True,
-            package_name=body.owner,
-            mode=rule.mode,
-            original_functions={},
-        )
-        locals_, index = self._bind_template_parameters(
-            body.body,
-            template_parameters,
-            rule_context,
-        )
-        conversion = None
-        if body.result_type is not None:
-            conversion = lambda value: _coerce_sequence(  # noqa: E731
-                cast(XdmSequence, value),
-                body.result_type,
-                code="XTTE0505",
-                label="template rule result",
-            )
-        active_rule = _RuleContext(
-            match=match,
-            focus=rule_focus,
-            mode=rule.mode,
-            package_name=body.owner,
-            tunnel_parameters=context.tunnel_parameters,
-            mode_package=mode_package,
-        )
-        effective_group, effective_grouping_key = self._inherited_group(group, grouping_key)
-        frame = Frame(
-            kind="rule",
-            component=active_rule,
-            identity=f"rule {rule.name or rule.pattern}",
-            program=body.body[index:],
-            context=replace(
-                rule_context,
-                locals=locals_,
-                rule_context=active_rule,
-            ),
-            location=rule.pattern.context.location,
-            conversion=conversion,
-            group=effective_group,
-            grouping_key=effective_grouping_key,
-        )
-        return self.frame_boundary(frame) if conversion is not None else frame
-
-    def _bind_template_parameters(
-        self,
-        body: tuple[_Plan, ...],
-        template_parameters: Mapping[str, XdmSequence],
-        context: EvaluationContext,
-    ) -> tuple[dict[str, XdmSequence], int]:
-        locals_: dict[str, XdmSequence] = {}
-        index = 0
-        while index < len(body) and isinstance(body[index], _ParamPlan):
-            parameter = cast(_ParamPlan, body[index])
-            supplied = (
-                context.tunnel_parameters.get(parameter.name)
-                if parameter.tunnel
-                else template_parameters.get(parameter.name)
-            )
-            value = (
-                supplied
-                if supplied is not None
-                else self._parameter_default(
-                    parameter,
-                    replace(context, locals=locals_),
-                )
-            )
-            value = self._coerce_parameter(parameter, value, code="XTTE0590")
-            self._bind(locals_, parameter.name, value)
-            index += 1
-        return locals_, index
-
-    def _step_apply(self, frame: Frame) -> FrameResult:
-        frame = self._consume_input(frame)
-        state = cast(_ApplyState, frame.program)
-        if state.index >= len(state.items):
-            return self._return_frame(frame)
-        item = state.items[state.index]
-        focus = Focus.singleton(item, position=state.index + 1, size=len(state.items))
-        rule = self._dispatcher(state.mode, state.mode_package).select(
-            item,
-            state.mode,
-            self._environment(EvaluationContext(package_name=state.package_name)),
-            self._pattern_environment,
-        )
-        next_state = replace(state, index=state.index + 1)
-        resume = replace(frame, program=next_state)
-        last = state.index + 1 == len(state.items)
-        tail = frame.tail and last
-        if rule is None:
-            builtin = self._builtin_step(item, state, resume, tail)
-            if builtin is not None:
-                return builtin
-            return Continue(replace(frame, program=next_state))
-        rule_frame = self._rule_frame(
-            rule,
-            EvaluationContext(
-                focus=focus,
-                package_name=state.package_name,
-                tunnel_parameters=state.tunnel_parameters,
-            ),
-            state.template_parameters,
-            mode_package=state.mode_package,
-            group=state.group,
-            grouping_key=state.grouping_key,
-        )
-        return Call(rule_frame, resume=resume, tail=tail)
-
-    def _builtin_step(
-        self,
-        item: XdmItem,
-        state: _ApplyState,
-        resume: Frame,
-        tail: bool,
-    ) -> FrameResult | None:
-        variant = self._builtin_variant(state.mode, state.mode_package)
-        if variant == "fail":
-            raise XsltDynamicError(
-                "no template rule matches and the mode forbids the built-in rule",
-                code="XTDE0555",
-            )
-        if isinstance(item, XdmArray):
-            if variant in ("deep-copy", "shallow-copy"):
-                return Continue(
-                    replace(
-                        resume,
-                        values=(
-                            *resume.values,
-                            self._copy_item(item, deep=variant == "deep-copy"),
-                        ),
-                    )
-                )
-            if variant in ("text-only-copy", "shallow-skip"):
-                if not item.members:
-                    return None
-                members = _array_member_items(item)
-                self._check_typed_mode(members, state.mode, state.mode_package)
-                child = self._apply_frame(
-                    members,
-                    state.mode,
-                    state.template_parameters,
-                    state.tunnel_parameters,
-                    tail=tail,
-                    package_name=state.package_name,
-                    mode_package=state.mode_package,
-                    group=state.group,
-                    grouping_key=state.grouping_key,
-                )
-                return Call(child, resume=resume, tail=tail)
-            return None
-        if variant == "text-only-copy":
-            if isinstance(item, XdmNode) and item.kind in (
-                NodeKind.DOCUMENT,
-                NodeKind.ELEMENT,
-            ):
-                if not item.children:
-                    return None
-                self._check_typed_mode(item.children, state.mode, state.mode_package)
-                child = self._apply_frame(
-                    item.children,
-                    state.mode,
-                    state.template_parameters,
-                    state.tunnel_parameters,
-                    tail=tail,
-                    package_name=state.package_name,
-                    mode_package=state.mode_package,
-                    group=state.group,
-                    grouping_key=state.grouping_key,
-                )
-                return Call(child, resume=resume, tail=tail)
-            if isinstance(item, XdmNode) and item.kind in (NodeKind.TEXT, NodeKind.ATTRIBUTE):
-                return Continue(
-                    replace(
-                        resume,
-                        values=(*resume.values, self._text_node(item.string_value)),
-                    )
-                )
-            if isinstance(item, XdmAtomic):
-                return Continue(
-                    replace(
-                        resume,
-                        values=(*resume.values, self._text_node(item.lexical)),
-                    )
-                )
-            return None
-        if variant == "deep-skip":
-            if isinstance(item, XdmNode) and item.kind is NodeKind.DOCUMENT:
-                self._check_typed_mode(item.children, state.mode, state.mode_package)
-                child = self._apply_frame(
-                    item.children,
-                    state.mode,
-                    state.template_parameters,
-                    state.tunnel_parameters,
-                    tail=tail,
-                    package_name=state.package_name,
-                    mode_package=state.mode_package,
-                    group=state.group,
-                    grouping_key=state.grouping_key,
-                )
-                return Call(child, resume=resume, tail=tail)
-            return None
-        if variant == "shallow-skip":
-            if isinstance(item, XdmNode) and item.kind in (
-                NodeKind.DOCUMENT,
-                NodeKind.ELEMENT,
-            ):
-                attributes: XdmSequence = ()
-                if item.kind is NodeKind.ELEMENT:
-                    attributes = self._apply_templates(
-                        item.attributes,
-                        state.mode,
-                        state.template_parameters,
-                        state.tunnel_parameters,
-                        package_name=state.package_name,
-                        mode_package=state.mode_package,
-                    )
-                if attributes:
-                    resume = replace(
-                        resume,
-                        values=resume.values + tuple(attributes),
-                    )
-                if not item.children:
-                    return Continue(resume)
-                self._check_typed_mode(item.children, state.mode, state.mode_package)
-                child = self._apply_frame(
-                    item.children,
-                    state.mode,
-                    state.template_parameters,
-                    state.tunnel_parameters,
-                    tail=tail,
-                    package_name=state.package_name,
-                    mode_package=state.mode_package,
-                    group=state.group,
-                    grouping_key=state.grouping_key,
-                )
-                return Call(child, resume=resume, tail=tail)
-            return None
-        if variant == "deep-copy":
-            return Continue(
-                replace(
-                    resume,
-                    values=(*resume.values, self._copy_item(item, deep=True)),
-                )
-            )
-        assert variant == "shallow-copy"
-        return Continue(
-            replace(
-                resume,
-                values=(
-                    *resume.values,
-                    self._shallow_copy(item, state.mode, state.template_parameters, state),
-                ),
-            )
-        )
-
-    def _builtin_variant(self, mode: str | None, mode_package: str | None = None) -> str:
-        variant = self._mode_properties(mode, mode_package).get("on-no-match", "text-only-copy")
-        if variant not in {
-            "text-only-copy",
-            "deep-copy",
-            "shallow-copy",
-            "deep-skip",
-            "shallow-skip",
-            "fail",
-        }:
-            raise XsltStaticError(
-                f"invalid on-no-match value {variant!r}",
-                code="XTSE0020",
-            )
-        return variant
-
-    def _builtin_value(
-        self,
-        item: XdmItem,
-        mode: str | None,
-        template_parameters: Mapping[str, XdmSequence],
-        tunnel_parameters: Mapping[str, XdmSequence],
-        package_name: str | None = None,
-        mode_package: str | None = None,
-    ) -> XdmSequence:
-        """Evaluate the built-in rule for *item* outside the apply frame."""
-        variant = self._builtin_variant(mode, mode_package)
-        if variant == "fail":
-            raise XsltDynamicError(
-                "no template rule matches and the mode forbids the built-in rule",
-                code="XTDE0555",
-            )
-        if isinstance(item, XdmArray):
-            if variant in ("deep-copy", "shallow-copy"):
-                return (item,)
-            if variant in ("text-only-copy", "shallow-skip"):
-                return self._apply_templates(
-                    _array_member_items(item),
-                    mode,
-                    template_parameters,
-                    tunnel_parameters,
-                    package_name=package_name,
-                    mode_package=mode_package,
-                )
-            return ()
-        if variant == "text-only-copy":
-            if isinstance(item, XdmNode):
-                if item.kind in (NodeKind.DOCUMENT, NodeKind.ELEMENT):
-                    return self._apply_templates(
-                        item.children,
-                        mode,
-                        template_parameters,
-                        tunnel_parameters,
-                        package_name=package_name,
-                        mode_package=mode_package,
-                    )
-                if item.kind in (NodeKind.TEXT, NodeKind.ATTRIBUTE):
-                    return (self._text_node(item.string_value),)
-                return ()
-            if isinstance(item, XdmAtomic):
-                return (self._text_node(item.lexical),)
-            return ()
-        if variant == "deep-skip":
-            if isinstance(item, XdmNode) and item.kind is NodeKind.DOCUMENT:
-                return self._apply_templates(
-                    item.children,
-                    mode,
-                    template_parameters,
-                    tunnel_parameters,
-                    package_name=package_name,
-                    mode_package=mode_package,
-                )
-            return ()
-        if variant == "shallow-skip":
-            if isinstance(item, XdmNode) and item.kind in (
-                NodeKind.DOCUMENT,
-                NodeKind.ELEMENT,
-            ):
-                values: list[XdmItem] = []
-                if item.kind is NodeKind.ELEMENT:
-                    values.extend(
-                        self._apply_templates(
-                            item.attributes,
-                            mode,
-                            template_parameters,
-                            tunnel_parameters,
-                            package_name=package_name,
-                            mode_package=mode_package,
-                        )
-                    )
-                values.extend(
-                    self._apply_templates(
-                        item.children,
-                        mode,
-                        template_parameters,
-                        tunnel_parameters,
-                        package_name=package_name,
-                        mode_package=mode_package,
-                    )
-                )
-                return tuple(values)
-            return ()
-        if variant == "deep-copy":
-            return (self._copy_item(item, deep=True),)
-        return (
-            self._shallow_copy(
-                item,
-                mode,
-                template_parameters,
-                _ApplyState(
-                    (),
-                    mode,
-                    template_parameters,
-                    tunnel_parameters,
-                    package_name=package_name,
-                    mode_package=mode_package,
-                ),
-            ),
-        )
-
-    def _copy_item(self, item: XdmItem, *, deep: bool) -> XdmItem:
-        if not isinstance(item, XdmNode):
-            return item
-        return _NodeFactory().clone(item, parent=None, deep=deep)
-
-    def _shallow_copy(
-        self,
-        item: XdmItem,
-        mode: str | None,
-        template_parameters: Mapping[str, XdmSequence],
-        state: _ApplyState,
-    ) -> XdmItem:
-        if not isinstance(item, XdmNode):
-            return item
-        if item.kind is NodeKind.DOCUMENT:
-            factory = _NodeFactory(base_uri=item.base_uri)
-            document = factory.document
-            children = self._apply_templates(
-                item.children,
-                mode,
-                template_parameters,
-                state.tunnel_parameters,
-                package_name=state.package_name,
-                mode_package=state.mode_package,
-            )
-            _append_complex_content(factory, document, children, allow_attributes=False)
-            document._finalize_document_order()
-            return document
-        if item.kind is not NodeKind.ELEMENT:
-            return _NodeFactory().clone(item, parent=None, deep=False)
-        factory = _NodeFactory(base_uri=item.base_uri)
-        element = factory.element(
-            item.name or "",
-            namespaces=dict(item.in_scope_namespaces),
-            base_uri=item.base_uri,
-            annotation=item.annotation,
-            prefix=item.prefix,
-        )
-        attributes = self._apply_templates(
-            item.attributes,
-            mode,
-            template_parameters,
-            state.tunnel_parameters,
-            package_name=state.package_name,
-            mode_package=state.mode_package,
-        )
-        _append_complex_content(factory, element, attributes, allow_attributes=True)
-        children = self._apply_templates(
-            item.children,
-            mode,
-            template_parameters,
-            state.tunnel_parameters,
-            package_name=state.package_name,
-            mode_package=state.mode_package,
-        )
-        _append_complex_content(factory, element, children, allow_attributes=False)
-        return element
-
     def _step_xpath(self, frame: Frame) -> FrameResult:
         state = cast(_XPathState, frame.program)
         machine = state.machine
@@ -8036,6 +5898,19 @@ class _Invocation(Transformation):
             position=focus.position,
             size=focus.size,
         )
+
+    def _coerce(
+        self,
+        value: XdmSequence,
+        sequence_type: CompiledSequenceType | None,
+        *,
+        code: str,
+        label: str,
+    ) -> XdmSequence:
+        """Apply one compiled sequence type through the invocation's coercion."""
+        if sequence_type is None:
+            return value
+        return _coerce_sequence(value, sequence_type, code=code, label=label)
 
     def _coerce_parameter(
         self,
@@ -8252,8 +6127,9 @@ class _Invocation(Transformation):
                         code="XTDE0000",
                     )
                 if isinstance(plan, _VariablePlan):
-                    local_scope[plan.name] = self._variable_value(
+                    local_scope[plan.name] = variable_value(
                         plan,
+                        self,
                         replace(context, locals=local_scope),
                     )
                     continue
@@ -8287,132 +6163,69 @@ class _Invocation(Transformation):
                 location=plan.instruction.location,
             )
         if isinstance(plan, (_ForEachPlan, _IteratePlan, _ForEachGroupPlan)):
-            return self._run_iteration_plan(plan, context=context)
+            return execute_iteration(plan, self, context=context)
         if isinstance(plan, _MergePlan):
-            return self._run_merge(plan, context=context)
+            return execute_merge(plan, self, context=context)
         if isinstance(plan, _ForkPlan):
-            return self._run_fork(plan, context=context)
+            return execute_fork(plan, self, context=context)
         if isinstance(plan, _SourceDocumentPlan):
-            return self._run_source_document(plan, context=context)
+            return execute_source_document(plan, self, context=context)
         if isinstance(plan, _PerformSortPlan):
-            return self._perform_sort(plan, context)
+            return perform_sort(plan, self, context)
         if isinstance(plan, _TvtPlan):
             return (self._text_node(self._value_template(plan.template, context)),)
         if isinstance(plan, _AttributePlan):
-            return self._attribute_value(plan, context)
+            return attribute_value(plan, self, context)
         if isinstance(plan, _SequencePlan):
             if plan.expression is not None:
                 return self._evaluate(plan.expression, context)
             return self._execute_plans(plan.children, context=context)
         if isinstance(plan, _ValueOfPlan):
-            if plan.expression is not None:
-                values = self._evaluate(plan.expression, context)
-            else:
-                values = self._execute_plans(plan.children, context=context)
-            if plan.expression is not None and not plan.explicit_separator:
-                profile = self.profile_for(plan.expression.static_context.xslt_version)
-                if profile.compatibility_mode:
-                    return (self._text_node(profile.string_sequence(values)),)
-            separator = self._value_source(plan.separator, context)
-            text = _simple_content_string(values, separator)
-            return (self._text_node(text),)
+            return execute_value_of(plan, self, context)
         if isinstance(plan, _LiteralPlan):
-            return (self._literal_element(plan, context),)
+            return (literal_element(plan, self, context),)
         if isinstance(plan, _ElementPlan):
-            return (self._element_value(plan, context),)
+            return (element_value(plan, self, context),)
         if isinstance(plan, _DocumentPlan):
-            return (self._document_value(plan, context),)
+            return (document_value(plan, self, context),)
         if isinstance(plan, _CopyPlan):
-            return self._copy_value(plan, context)
+            return copy_value(plan, self, context)
         if isinstance(plan, _CopyOfPlan):
-            return self._copy_of_value(plan, context)
+            return copy_of_value(plan, self, context)
         if isinstance(plan, _ChoosePlan):
-            branch = None
-            for test, candidate in plan.branches:
-                if _effective_boolean(self._evaluate(test, context)):
-                    branch = candidate
-                    break
-            if branch is None:
-                branch = plan.otherwise
-            if branch is None:
-                return ()
-            return self._execute_plans(branch, context=context)
+            return execute_choose(plan, self, context)
         if isinstance(plan, _TryPlan):
-            return self._run_try(plan, context=context)
+            return execute_try(plan, self, context=context)
         if isinstance(plan, _MapPlan):
-            values = self._execute_plans(plan.children, context=context)
-            return (construct_map(values),)
+            return execute_map(plan, self, context)
         if isinstance(plan, _MapEntryPlan):
-            key = self._evaluate(plan.key, context)
-            if plan.expression is not None:
-                value = self._evaluate(plan.expression, context)
-            else:
-                value = self._execute_plans(
-                    plan.children,
-                    context=replace(context, final_output=False),
-                )
-            return (construct_map_entry(key, value),)
+            return execute_map_entry(plan, self, context)
         if isinstance(plan, _EvaluatePlan):
-            return self._dynamic_evaluate(plan, context)
+            return execute_dynamic_evaluate(plan, self, context)
         if isinstance(plan, _AssertPlan):
-            self._assert_value(plan, context)
+            execute_assert(plan, self, context)
             return ()
         if isinstance(plan, _WherePopulatedPlan):
-            values = self._execute_plans(plan.children, context=context)
-            return tuple(item for item in values if not is_deemed_empty(item))
+            return execute_where_populated(plan, self, context)
         if isinstance(plan, _ConditionalSequencePlan):
-            return self._execute_conditional_sequence(plan, context)
+            return execute_conditional_sequence(plan, self, context)
         if isinstance(plan, _FallbackPlan):
             return ()
         if isinstance(plan, _ConcatPlan):
-            result: list[XdmItem] = []
-            for part in plan.parts:
-                result.extend(self._execute_plans(part, context=context))
-            return tuple(result)
+            return execute_concat(plan, self, context)
         if isinstance(plan, _CallTemplatePlan):
-            template, tunnel = self._plan_parameters(plan.parameters, context)
-            component = self._resolve_template(plan.reference)
-            return self._execute_component(
-                component,
-                template_parameters=template,
-                context=replace(
-                    context,
-                    tunnel_parameters={**context.tunnel_parameters, **tunnel},
-                ),
-            )
+            return execute_call_template(plan, self, context)
         if isinstance(plan, _ApplyTemplatesPlan):
-            items = self._evaluate(plan.expression, context)
-            items = self._sorted_items(items, plan.sorts, context)
-            resolved_mode = self._resolve_mode(
-                plan.mode,
-                context.mode,
-                context.package_name,
-            )
-            active_rule = context.rule_context
-            mode_package = (
-                active_rule.mode_package
-                if plan.mode == "#current" and active_rule is not None
-                else context.package_name
-            )
-            self._check_typed_mode(items, resolved_mode, mode_package)
-            template, tunnel = self._plan_parameters(plan.parameters, context)
-            return self._apply_templates(
-                items,
-                resolved_mode,
-                template,
-                {**context.tunnel_parameters, **tunnel},
-                package_name=context.package_name,
-                mode_package=mode_package,
-            )
+            return execute_apply_templates(plan, self, context)
         if isinstance(plan, _OverridingPlan):
-            return self._execute_overriding(plan, context)
+            return execute_overriding(plan, self, context)
         if isinstance(plan, _ResultDocumentPlan):
             self._result_document(plan, context)
             return ()
         if isinstance(plan, _AnalyzeStringPlan):
-            return self._run_analyze_string(plan, context=context)
+            return execute_analyze_string(plan, self, context=context)
         if isinstance(plan, _NumberPlan):
-            return self._run_number(plan, context=context)
+            return execute_number(plan, self, context=context)
         if isinstance(plan, _UnsupportedPlan):
             raise XsltError(
                 f"the instruction xsl:{plan.instruction.local_name} is not supported by the "
@@ -8422,758 +6235,6 @@ class _Invocation(Transformation):
         raise TypeError(  # pragma: no cover - every _Plan arm is handled above
             f"unknown compiled plan {type(plan).__name__}"
         )
-
-    def _execute_conditional_sequence(
-        self,
-        plan: _ConditionalSequencePlan,
-        context: EvaluationContext,
-    ) -> XdmSequence:
-        result: list[XdmItem] = []
-        deferred: list[tuple[_OnNonEmptyPlan, Mapping[str, XdmSequence]]] = []
-        local_scope = dict(context.locals)
-        populated = False
-        try:
-            for item in plan.plans:
-                if isinstance(item, _ParamPlan):
-                    raise XsltError(
-                        "xsl:param is only supported at the start of a template or function",
-                        code="XTDE0000",
-                    )
-                item_context = replace(context, locals=local_scope)
-                if isinstance(item, _VariablePlan):
-                    local_scope[item.name] = self._variable_value(item, item_context)
-                    continue
-                if isinstance(item, _OnNonEmptyPlan):
-                    if populated:
-                        result.extend(self._conditional_value(item, item_context))
-                    else:
-                        deferred.append((item, dict(local_scope)))
-                    continue
-                if isinstance(item, _OnEmptyPlan):
-                    if not populated:
-                        result.clear()
-                        result.extend(self._conditional_value(item, item_context))
-                    continue
-                values = self._execute_plan(item, context=item_context)
-                for value in values:
-                    if not populated and not is_vacuous(value):
-                        for deferred_plan, deferred_scope in deferred:
-                            result.extend(
-                                self._conditional_value(
-                                    deferred_plan,
-                                    replace(context, locals=deferred_scope),
-                                )
-                            )
-                        deferred.clear()
-                        populated = True
-                    result.append(value)
-        except _IterationControlSignal as signal:
-            if not populated and any(not is_vacuous(value) for value in signal.pending):
-                for deferred_plan, deferred_scope in deferred:
-                    result.extend(
-                        self._conditional_value(
-                            deferred_plan,
-                            replace(context, locals=deferred_scope),
-                        )
-                    )
-                deferred.clear()
-            signal.prepend(result)
-            raise
-        return tuple(result)
-
-    def _conditional_value(
-        self,
-        plan: _OnEmptyPlan | _OnNonEmptyPlan,
-        context: EvaluationContext,
-    ) -> XdmSequence:
-        if plan.expression is not None:
-            return self._evaluate(plan.expression, context)
-        return self._execute_plans(plan.children, context=context)
-
-    def _run_analyze_string(
-        self,
-        plan: _AnalyzeStringPlan,
-        *,
-        context: EvaluationContext,
-    ) -> XdmSequence:
-        values = self._evaluate(plan.expression, context)
-        text = _analyze_string_value(values)
-        regex_source = self._value_source(plan.regex, context)
-        flags = self._value_source(plan.flags, context) if plan.flags is not None else ""
-        try:
-            regex = compile_xpath_regex(regex_source, flags)
-        except XPathRegexError as exc:
-            code = "XTDE1145" if exc.code == "FORX0001" else "XTDE1140"
-            raise XsltDynamicError(str(exc), code=code) from exc
-        substrings = analyze_string(regex, text)
-        result: list[XdmItem] = []
-        for position, substring in enumerate(substrings, start=1):
-            branch = plan.matching if substring.matched else plan.non_matching
-            if not branch:
-                continue
-            branch_context = replace(
-                context,
-                focus=Focus.singleton(
-                    XdmAtomic.string(substring.value),
-                    position=position,
-                    size=len(substrings),
-                ),
-            )
-            with self._regex_scope(substring.groups if substring.matched else None):
-                result.extend(self._execute_plans(branch, context=branch_context))
-        return tuple(result)
-
-    def _run_number(
-        self,
-        plan: _NumberPlan,
-        *,
-        context: EvaluationContext,
-    ) -> XdmSequence:
-        if plan.value is not None:
-            values = self._evaluate(plan.value, context)
-            numbers = _number_values(values)
-        else:
-            if plan.select is not None:
-                selected = self._evaluate(plan.select, context)
-                if len(selected) != 1 or not isinstance(selected[0], XdmNode):
-                    raise XsltDynamicError(
-                        "xsl:number select must evaluate to a single node",
-                        code="XTTE1000",
-                    )
-                node = selected[0]
-            else:
-                item = context.focus.item
-                if not isinstance(item, XdmNode):
-                    raise XsltDynamicError(
-                        "xsl:number without select or value requires a context node",
-                        code="XTTE0990",
-                    )
-                node = item
-            count_match = self._number_matcher(plan.count, node, context)
-            from_match = (
-                self._number_matcher(plan.from_pattern, node, context)
-                if plan.from_pattern is not None
-                else None
-            )
-            numbers = place_marker(node, plan.level, count_match, from_match)
-        start_at = self._value_source(plan.start_at, context) if plan.start_at is not None else None
-        numbers = _rebase_place_marker(numbers, start_at)
-        format_ = (
-            plan.format
-            if isinstance(plan.format, str)
-            else self._value_source(plan.format, context)
-        )
-        lang = self._value_source(plan.lang, context) if plan.lang is not None else ""
-        ordinal = self._value_source(plan.ordinal, context) if plan.ordinal is not None else "no"
-        letter_value = (
-            self._value_source(plan.letter_value, context) if plan.letter_value is not None else ""
-        )
-        grouping_separator = (
-            self._value_source(plan.grouping_separator, context)
-            if plan.grouping_separator is not None
-            else None
-        )
-        grouping_size = (
-            self._value_source(plan.grouping_size, context)
-            if plan.grouping_size is not None
-            else None
-        )
-        text = format_place_marker(
-            numbers,
-            format_,
-            lang=lang,
-            ordinal=ordinal.strip().lower() in ("yes", "1", "true"),
-            letter_value=letter_value,
-            grouping_separator=grouping_separator,
-            grouping_size=grouping_size,
-        )
-        return (self._text_node(text),)
-
-    def _number_matcher(
-        self,
-        pattern: CompiledPattern | None,
-        selected: XdmNode,
-        context: EvaluationContext,
-    ) -> Callable[[XdmNode], bool]:
-        if pattern is None:
-            kind = selected.kind
-            name = selected.name
-
-            def implied(candidate: XdmNode) -> bool:
-                return candidate.kind is kind and candidate.name == name
-
-            return implied
-        matcher = PatternMatcher(pattern)
-        environment = self._pattern_environment_for(
-            pattern,
-            context.package_name,
-            locals_=context.locals,
-        )
-
-        def matches(candidate: XdmNode) -> bool:
-            return matcher.matches(candidate, environment)
-
-        return matches
-
-    def _assert_value(
-        self,
-        plan: _AssertPlan,
-        context: EvaluationContext,
-    ) -> None:
-        if not plan.enabled:
-            return
-        failure: BaseException | None = None
-        satisfied = False
-        try:
-            satisfied = _effective_boolean(self._evaluate(plan.test, context))
-        except Exception as exc:
-            failure = exc
-        if satisfied:
-            return
-        message_failure: BaseException | None = None
-        detail = ""
-        value: tuple[XdmItem, ...] = ()
-        try:
-            message_values: list[XdmItem] = []
-            if plan.select is not None:
-                message_values.extend(self._evaluate(plan.select, context))
-            message_values.extend(
-                self._execute_plans(
-                    plan.children,
-                    context=replace(context, final_output=False),
-                )
-            )
-            if message_values:
-                document = _build_result_tree(message_values)
-                detail = document.string_value.strip()
-                value = (document,)
-        except Exception as exc:
-            message_failure = exc
-            detail = f"message construction failed: {exc}"
-        code = "XTMM9001"
-        if plan.error_code is not None:
-            try:
-                selected = self._value_source(plan.error_code, context)
-                code = _assertion_error_code(selected, plan.instruction.namespaces)
-            except Exception as exc:
-                if message_failure is None:
-                    message_failure = exc
-                    if not detail:
-                        detail = f"message construction failed: {exc}"
-                code = "XTMM9001"
-        if detail:
-            message = f"assertion failed: {detail} (test: {plan.test.source})"
-        else:
-            message = f"assertion failed: {plan.test.source} evaluated to false"
-        raise XsltDynamicError(
-            message,
-            code=code,
-            location=plan.instruction.location,
-            cause=failure or message_failure,
-            value=value,
-        )
-
-    def _dynamic_evaluate(
-        self,
-        plan: _EvaluatePlan,
-        context: EvaluationContext,
-    ) -> XdmSequence:
-        if not plan.enabled:
-            raise XsltDynamicError(
-                "xsl:evaluate is disabled for this transformation",
-                code="XTDE3175",
-                location=plan.instruction.location,
-            )
-        target_values = self._evaluate(plan.expression, context)
-        profile = self.profile_for(plan.expression.static_context.xslt_version)
-        target = profile.string_sequence(target_values)
-
-        parameter_values: dict[str, XdmSequence] = {}
-        variable_types: dict[str, str] = {}
-        for parameter in plan.with_params:
-            if parameter.expression is not None:
-                value = self._evaluate(parameter.expression, context)
-            else:
-                value = self._execute_plans(
-                    parameter.children,
-                    context=replace(context, final_output=False),
-                )
-            if parameter.sequence_type is not None:
-                value = _coerce_sequence(
-                    value,
-                    parameter.sequence_type,
-                    code="XTTE0590",
-                    label=f"parameter {parameter.name!r}",
-                )
-            parameter_values[parameter.name] = value
-            variable_types[parameter.name] = (
-                "item()*" if parameter.sequence_type is None else str(parameter.sequence_type)
-            )
-        if plan.with_params_expression is not None:
-            supplied = self._evaluate(plan.with_params_expression, context)
-            for name, value in with_params_variables(supplied).items():
-                parameter_values[name] = value
-                variable_types[name] = "item()*"
-
-        expression_focus = Focus.absent()
-        if plan.context_item is not None:
-            context_values = self._evaluate(plan.context_item, context)
-            if len(context_values) > 1:
-                raise XsltDynamicError(
-                    "xsl:evaluate/@context-item must return at most one item",
-                    code="XTTE3210",
-                    location=plan.instruction.location,
-                )
-            if context_values:
-                expression_focus = Focus.singleton(context_values[0])
-
-        namespaces = dict(plan.namespaces)
-        default_namespace = plan.default_namespace
-        if plan.namespace_context is not None:
-            context_nodes = self._evaluate(plan.namespace_context, context)
-            if len(context_nodes) != 1 or not isinstance(context_nodes[0], XdmNode):
-                raise XsltDynamicError(
-                    "xsl:evaluate/@namespace-context must return a single node",
-                    code="XTTE3170",
-                    location=plan.instruction.location,
-                )
-            namespaces = {
-                prefix: uri
-                for prefix, uri in context_nodes[0].in_scope_namespaces.items()
-                if prefix
-            }
-            default_namespace = context_nodes[0].in_scope_namespaces.get("")
-
-        base_uri = (
-            self._value_source(plan.base_uri, context)
-            if plan.base_uri is not None
-            else plan.instruction.base_uri
-        )
-        schema_aware = False
-        if plan.schema_aware is not None:
-            schema_aware = _boolean_avt(
-                self._value_source(plan.schema_aware, context),
-                "schema-aware",
-            )
-        schema = (
-            self.stylesheet.schema_pool
-            if schema_aware and self.stylesheet.processor.schema_aware
-            else None
-        )
-
-        package_name = context.package_name
-        available = self.fallback_functions(package_name)
-        functions = {name: available[name] for name in plan.functions if name in available}
-        identity = StaticContextIdentity(
-            xpath_version=plan.xpath_version,
-            namespaces=namespaces,
-            default_namespace=default_namespace,
-            base_uri=base_uri,
-            variable_types=variable_types,
-            functions=plan.functions,
-            schema=schema,
-            schema_aware=schema_aware,
-            default_collation=plan.expression.static_context.default_collation,
-            xslt_version=plan.expression.static_context.xslt_version,
-            package_name=package_name,
-        )
-        variables = _dynamic_variable_names(parameter_values, namespaces)
-        environment = ExpressionEnvironment(
-            variables=variables,
-            functions=functions,
-            decimal_formats=self._decimal_formats(package_name),
-            current_datetime=self.current_datetime,
-            implicit_timezone=self.implicit_timezone,
-            base_uri=base_uri,
-        )
-        result = evaluate_dynamic(
-            target,
-            identity,
-            environment,
-            focus=expression_focus,
-            cache=self.dynamic_expressions,
-        )
-        if plan.sequence_type is not None:
-            result = _coerce_sequence(
-                result,
-                plan.sequence_type,
-                code="XPTY0004",
-                label="xsl:evaluate result",
-            )
-        return result
-
-    def _literal_element(
-        self,
-        plan: _LiteralPlan,
-        context: EvaluationContext,
-    ) -> XdmNode:
-        factory = _NodeFactory()
-        attributes: list[tuple[str, str]] = []
-        for reference in plan.attribute_sets:
-            component = self._resolve_attribute_set(reference, context.package_name)
-            attributes.extend(
-                (attribute.name or "", attribute.string_value)
-                for attribute in self._attribute_set_attributes(component, context)
-                if attribute.kind is NodeKind.ATTRIBUTE
-            )
-        attributes.extend(
-            (name, self._value_source(value, context)) for name, value in plan.attributes
-        )
-        element = factory.element(
-            plan.instruction.name,
-            attributes=tuple(attributes),
-            namespaces=dict(plan.namespaces),
-            base_uri=plan.instruction.base_uri,
-        )
-        content = self._execute_plans(plan.children, context=context)
-        _append_complex_content(factory, element, content, allow_attributes=True)
-        validate_constructed(
-            element,
-            validation=plan.validation,
-            type_name=plan.type_name,
-            schema_pool=self._package_schema_pool(context.package_name),
-        )
-        return element
-
-    def _element_value(
-        self,
-        plan: _ElementPlan,
-        context: EvaluationContext,
-    ) -> XdmNode:
-        lexical = self._value_source(plan.name, context)
-        namespace_value = (
-            None if plan.namespace is None else self._value_source(plan.namespace, context)
-        )
-        name = _constructed_qname(
-            lexical,
-            namespace_value,
-            plan.namespaces,
-            default_namespace=True,
-            code="XTDE0820",
-            namespace_code="XTDE0835",
-            prefix_code="XTDE0830",
-        )
-        attributes: list[tuple[str, str]] = []
-        for reference in plan.attribute_sets:
-            component = self._resolve_attribute_set(reference, context.package_name)
-            attributes.extend(
-                (attribute.name or "", attribute.string_value)
-                for attribute in self._attribute_set_attributes(component, context)
-                if attribute.kind is NodeKind.ATTRIBUTE
-            )
-        builder = ResultBuilder.temporary(base_uri=plan.instruction.base_uri)
-        with builder.transaction():
-            builder.element(
-                name,
-                attributes=tuple(attributes),
-                namespaces=dict(plan.namespaces),
-                base_uri=plan.instruction.base_uri,
-                inherit_namespaces=plan.inherit_namespaces,
-            )
-            builder.append(
-                self._execute_plans(plan.children, context=context),
-                inherit_namespaces=plan.inherit_namespaces,
-            )
-            element = builder.root.root_element
-            builder.to_tree()
-        validate_constructed(
-            element,
-            validation=plan.validation,
-            type_name=plan.type_name,
-            schema_pool=self._package_schema_pool(context.package_name),
-        )
-        return element
-
-    def _document_value(
-        self,
-        plan: _DocumentPlan,
-        context: EvaluationContext,
-    ) -> XdmDocument:
-        pool = self._package_schema_pool(context.package_name)
-        builder = ResultBuilder.document(
-            base_uri=plan.instruction.base_uri,
-            schema_pool=pool,
-            final_output=False,
-        )
-        with builder.transaction():
-            builder.append(self._execute_plans(plan.children, context=context))
-            document = builder.to_tree()
-        return validate_delivered(
-            document,
-            validation=plan.validation,
-            type_name=plan.type_name,
-            schema_pool=pool,
-        )
-
-    def _copy_value(
-        self,
-        plan: _CopyPlan,
-        context: EvaluationContext,
-    ) -> XdmSequence:
-        if plan.select is not None:
-            selected = self._evaluate(plan.select, context)
-            if not selected:
-                return ()
-            if len(selected) != 1:
-                raise XsltDynamicError(
-                    "xsl:copy select must evaluate to exactly one item",
-                    code="XTTE3180",
-                )
-            item = selected[0]
-            content_focus = Focus.singleton(item)
-        else:
-            if context.focus.item is None:
-                raise XsltDynamicError(
-                    "xsl:copy requires an existing context item",
-                    code="XTTE0945",
-                )
-            item = context.focus.item
-            content_focus = context.focus
-        if not isinstance(item, XdmNode):
-            return (item,)
-        content_context = replace(context, focus=content_focus)
-        pool = self._package_schema_pool(context.package_name)
-        factory = _NodeFactory(base_uri=item.base_uri)
-        if item.kind is NodeKind.DOCUMENT:
-            document = factory.document
-            content = self._execute_plans(plan.children, context=content_context)
-            _append_complex_content(
-                factory,
-                document,
-                content,
-                allow_attributes=False,
-                inherit_namespaces=plan.inherit_namespaces,
-            )
-            document._finalize_document_order()
-            self._check_namespace_sensitive_copy(document, plan)
-            return (
-                validate_delivered(
-                    document,
-                    validation=plan.validation,
-                    type_name=plan.type_name,
-                    schema_pool=pool,
-                ),
-            )
-        clone = factory.clone(
-            item,
-            parent=None,
-            deep=False,
-            copy_namespaces=plan.copy_namespaces,
-        )
-        if item.kind is NodeKind.ATTRIBUTE:
-            self._check_copy_type(item, plan.type_name, pool)
-        if item.kind is NodeKind.ELEMENT:
-            attributes: list[XdmNode] = []
-            for reference in plan.attribute_sets:
-                component = self._resolve_attribute_set(reference, context.package_name)
-                attributes.extend(self._attribute_set_attributes(component, content_context))
-            if attributes:
-                _append_complex_content(factory, clone, attributes, allow_attributes=True)
-            content = self._execute_plans(plan.children, context=content_context)
-            if content:
-                _append_complex_content(
-                    factory,
-                    clone,
-                    content,
-                    allow_attributes=True,
-                    inherit_namespaces=plan.inherit_namespaces,
-                )
-        self._check_namespace_sensitive_copy(clone, plan)
-        validate_constructed(
-            clone,
-            validation=plan.validation,
-            type_name=plan.type_name,
-            schema_pool=pool,
-            operation="copy",
-        )
-        return (clone,)
-
-    def _check_namespace_sensitive_copy(
-        self,
-        node: XdmNode,
-        plan: _CopyPlan | _CopyOfPlan,
-    ) -> None:
-        if plan.copy_namespaces or plan.validation != "preserve" or plan.type_name is not None:
-            return
-        if namespace_sensitive(node):
-            raise XsltDynamicError(
-                "namespace-sensitive content cannot be copied without namespace nodes",
-                code="XTTE0950",
-            )
-
-    def _copy_of_value(
-        self,
-        plan: _CopyOfPlan,
-        context: EvaluationContext,
-    ) -> XdmSequence:
-        items = self._evaluate(plan.select, context)
-        pool = self._package_schema_pool(context.package_name)
-        result: list[XdmItem] = []
-        for item in items:
-            if not isinstance(item, XdmNode):
-                result.append(item)
-                continue
-            self._check_copy_type(item, plan.type_name, pool)
-            clone = _NodeFactory().clone(
-                item,
-                parent=None,
-                deep=True,
-                copy_namespaces=plan.copy_namespaces,
-            )
-            names = self._accumulator_copy_names() if plan.copy_accumulators else ()
-            self.accumulators.copy_values(
-                item,
-                clone,
-                enabled=plan.copy_accumulators,
-                names=names,
-            )
-            self._check_namespace_sensitive_copy(clone, plan)
-            if clone.kind is NodeKind.DOCUMENT:
-                result.append(
-                    validate_delivered(
-                        cast(XdmDocument, clone),
-                        validation=plan.validation,
-                        type_name=plan.type_name,
-                        schema_pool=pool,
-                    )
-                )
-                continue
-            validate_constructed(
-                clone,
-                validation=plan.validation,
-                type_name=plan.type_name,
-                schema_pool=pool,
-                operation="copy-of",
-            )
-            result.append(clone)
-        return tuple(result)
-
-    def _check_copy_type(
-        self,
-        item: XdmNode,
-        type_name: str | None,
-        schema_pool: Any,
-    ) -> None:
-        if type_name is None or item.kind is not NodeKind.ATTRIBUTE:
-            return
-        adapter = schema_pool.get_type(type_name) if schema_pool is not None else None
-        if adapter is not None and not adapter.is_simple():
-            raise XsltDynamicError(
-                "a copy of an attribute cannot be validated against a complex type",
-                code="XTTE1535",
-            )
-
-    def _variable_value(
-        self,
-        plan: _VariablePlan,
-        context: EvaluationContext,
-    ) -> XdmSequence:
-        if plan.expression is not None:
-            value = self._evaluate(plan.expression, context)
-        elif plan.children:
-            sequence = self._execute_plans(
-                plan.children,
-                context=replace(context, final_output=False),
-            )
-            value = sequence if plan.has_as else (_build_result_tree(sequence),)
-        elif plan.has_as:
-            value = ()
-        else:
-            value = (XdmAtomic.string(""),)
-        if plan.sequence_type is not None:
-            value = _coerce_sequence(
-                value,
-                plan.sequence_type,
-                code="XTTE0570",
-                label=f"variable {plan.name!r}",
-            )
-        return value
-
-    def _attribute_value(
-        self,
-        plan: _AttributePlan,
-        context: EvaluationContext,
-    ) -> XdmSequence:
-        lexical = self._value_source(plan.name, context)
-        namespace_value = (
-            None if plan.namespace is None else self._value_source(plan.namespace, context)
-        )
-        prefix, separator, _ = lexical.partition(":")
-        if not lexical:
-            raise XsltDynamicError("an attribute name must not be empty", code="XTDE0850")
-        name = _constructed_qname(
-            lexical,
-            namespace_value,
-            plan.namespaces,
-            default_namespace=False,
-            code="XTDE0850",
-            namespace_code="XTDE0865",
-            prefix_code="XTDE0860",
-        )
-        if plan.expression is not None:
-            value = self._evaluate(plan.expression, context)
-        else:
-            value = self._execute_plans(plan.children, context=context)
-        separator_value = (
-            self._value_source(plan.separator, context) if plan.separator is not None else " "
-        )
-        attributes = construct_attribute(
-            name,
-            _simple_content_string(value, separator_value),
-            prefix=prefix if separator else None,
-        )
-        validate_constructed(
-            cast(XdmNode, attributes[0]),
-            validation=plan.validation,
-            type_name=plan.type_name,
-            schema_pool=self._package_schema_pool(context.package_name),
-            operation="attribute",
-        )
-        return attributes
-
-    def _execute_overriding(
-        self,
-        plan: _OverridingPlan,
-        context: EvaluationContext,
-    ) -> XdmSequence:
-        rule_context = context.rule_context
-        template_parameters, tunnel_parameters = self._plan_parameters(
-            plan.parameters,
-            context,
-        )
-        if rule_context is None:
-            raise XsltDynamicError(
-                "xsl:next-match and xsl:apply-imports require a current template rule",
-                code="XTDE0560",
-            )
-        item = rule_context.focus.item
-        if item is None:  # pragma: no cover - a current rule always has a focus item
-            raise XsltDynamicError("the current template rule has no context item")
-        effective_tunnel = {
-            **rule_context.tunnel_parameters,
-            **tunnel_parameters,
-        }
-        match = self._overriding_rule(plan, rule_context, item)
-        if match is None:
-            return self._builtin_value(
-                item,
-                rule_context.mode,
-                template_parameters,
-                effective_tunnel,
-                rule_context.package_name,
-                rule_context.mode_package,
-            )
-        frame = self._rule_frame(
-            match,
-            replace(
-                context,
-                focus=rule_context.focus,
-                tunnel_parameters=effective_tunnel,
-            ),
-            template_parameters,
-            mode_package=rule_context.mode_package,
-        )
-        return cast(XdmSequence, self.execute_frame(frame))
 
     def _resolve_attribute_set(
         self,
@@ -9347,28 +6408,6 @@ class _Invocation(Transformation):
         return _NodeFactory().text(value)
 
     # -- modes and built-in templates -------------------------------------
-
-    def _apply_templates(
-        self,
-        items: XdmSequence,
-        mode: str | None,
-        template_parameters: Mapping[str, XdmSequence],
-        tunnel_parameters: Mapping[str, XdmSequence],
-        *,
-        package_name: str | None = None,
-        mode_package: str | None = None,
-    ) -> XdmSequence:
-        self._check_typed_mode(items, mode, mode_package)
-        frame = self._apply_frame(
-            items,
-            mode,
-            template_parameters,
-            tunnel_parameters,
-            package_name=package_name,
-            mode_package=mode_package,
-        )
-        with self._merge_scope(None, None, ()):
-            return cast(XdmSequence, self.execute_frame(frame))
 
     # -- expressions and values -------------------------------------------
 
@@ -9783,10 +6822,6 @@ def _key_atomics(sequence: XdmSequence) -> tuple[XdmAtomic, ...]:
             continue
         raise XsltDynamicError("a key value cannot atomize a function item", code="FOTY0013")
     return tuple(atomics)
-
-
-def _array_member_items(item: XdmArray) -> XdmSequence:
-    return tuple(member for sequence in item.members for member in sequence)
 
 
 def _key_value(item: XdmAtomic) -> object:

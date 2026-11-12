@@ -1,4 +1,4 @@
-"""Explicit XSLT iteration state and normative sorting/grouping algorithms.
+"""Explicit XSLT iteration state, execution, and normative sorting/grouping.
 
 Iteration is heap state, not Python loop state.  An :class:`IterationState`
 records the input sequence, the processing position, the current iteration
@@ -6,6 +6,12 @@ parameters, and any pending ``xsl:next-iteration`` or ``xsl:break`` control.
 The processor owns one scheduler frame for the iteration and a fresh body frame
 per item, so parameters and early exit survive suspension and never depend on a
 Python ``for``/``while`` temporary.
+
+The module also executes ``xsl:for-each``, ``xsl:iterate``,
+``xsl:for-each-group``, ``xsl:merge``, and sorting.  Each entry point receives
+the invocation coordinator and an immutable evaluation context, and uses the
+coordinator's shared expression, plan, frame, resource, and accumulator
+services.
 
 Sorting and grouping use XDM value semantics directly.  Strings are compared
 with the selected collation (the codepoint collation by default), numbers use
@@ -24,12 +30,42 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from functools import cmp_to_key
 from itertools import pairwise
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urljoin, urlsplit
+
+from elementpath.exceptions import MissingContextError
 
 from pyxsd.xdm import XdmAtomic, XdmItem, XdmSequence
 from pyxsd.xdm.nodes import XdmNode
-from pyxsd.xslt.errors import XsltDynamicError
+from pyxsd.xpath.environment import Focus
+from pyxsd.xslt.compiler.patterns import PatternMatcher
+from pyxsd.xslt.compiler.plans import (
+    _BreakPlan,
+    _ForEachGroupPlan,
+    _ForEachPlan,
+    _IteratePlan,
+    _MergePlan,
+    _MergeSourcePlan,
+    _NextIterationPlan,
+    _ParamPlan,
+    _PerformSortPlan,
+    _WithParamPlan,
+)
+from pyxsd.xslt.errors import XsltDynamicError, XsltStaticError
+from pyxsd.xslt.results import _build_result_tree
+from pyxsd.xslt.runtime.context import EvaluationContext
+from pyxsd.xslt.runtime.frames import (
+    NO_GROUP,
+    NO_INPUT,
+    Call,
+    Frame,
+    FrameResult,
+    _TemplateContext,
+)
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
+    from pyxsd.xslt.compiler.packages import Component
+    from pyxsd.xslt.processor import _Invocation
 
 __all__ = [
     "CODEPOINT_COLLATION",
@@ -51,17 +87,24 @@ __all__ = [
     "compare_merge_key_sets",
     "compare_sort_key_sets",
     "deep_equal_sequences",
+    "execute_iteration",
+    "execute_merge",
     "group_adjacent",
     "group_by",
     "group_ending_with",
     "group_starting_with",
     "grouping_key_set",
+    "iteration_control",
     "merge_groups",
     "merge_key_equal",
+    "perform_sort",
     "promote_merge_keys",
     "resolve_collation",
     "sort_merge_input",
     "sort_records",
+    "sorted_items",
+    "start_iteration_plan",
+    "step_iterate",
 ]
 
 CODEPOINT_COLLATION = "http://www.w3.org/2005/xpath-functions/collation/codepoint"
@@ -1118,3 +1161,756 @@ def adjacent_grouping_key(
             code="XTTE1100",
         )
     return (atomics[0],)
+
+
+# ---------------------------------------------------------------------------
+# Instruction-family execution
+
+
+def start_iteration_plan(
+    invocation: _Invocation,
+    plan: _ForEachPlan | _IteratePlan | _ForEachGroupPlan,
+    frame: Frame,
+    cursor: int,
+) -> FrameResult:
+    context = frame.context
+    variables = context.locals
+    if isinstance(plan, _ForEachPlan):
+        items = invocation._evaluate(plan.expression, context)
+        items = sorted_items(invocation, items, plan.sorts, context)
+        state = IterationState(
+            kind="for-each",
+            body=plan.children,
+            items=tuple(
+                IterationItem(item, position, len(items))
+                for position, item in enumerate(items, start=1)
+            ),
+            base_variables=dict(variables),
+        )
+    elif isinstance(plan, _IteratePlan):
+        items = invocation._evaluate(plan.expression, context)
+        parameters = initial_iteration_parameters(invocation, plan.parameters, context)
+        state = IterationState(
+            kind="iterate",
+            body=plan.children,
+            items=tuple(
+                IterationItem(item, position, len(items))
+                for position, item in enumerate(items, start=1)
+            ),
+            base_variables=dict(variables),
+            parameters=parameters,
+            parameter_plans={parameter.name: parameter for parameter in plan.parameters},
+            on_completion=plan.on_completion,
+        )
+    else:
+        groups = grouped_items(invocation, plan, frame)
+        state = IterationState(
+            kind="for-each-group",
+            body=plan.children,
+            items=tuple(
+                IterationItem(
+                    group.initial_item,
+                    position,
+                    len(groups),
+                    group.items,
+                    group.grouping_key,
+                )
+                for position, group in enumerate(groups, start=1)
+            ),
+            base_variables=dict(variables),
+        )
+    child = Frame(
+        kind="iteration",
+        component=frame.component,
+        identity=f"xsl:{state.kind}",
+        program=state,
+        context=context,
+        location=plan.instruction.location,
+        group=frame.group,
+        grouping_key=frame.grouping_key,
+    )
+    return Call(child, resume=replace(frame, cursor=cursor + 1))
+
+
+def step_iterate(invocation: _Invocation, frame: Frame) -> FrameResult:
+    state = cast(IterationState, frame.program)
+    body_returned = frame.input is not NO_INPUT
+    frame = invocation._consume_input(frame)
+    if body_returned:
+        if state.control == "break":
+            state.control = None
+            return invocation._return_frame(frame)
+        if state.control == "next":
+            state.parameters = state.pending_parameters or state.parameters
+            state.pending_parameters = None
+        state.control = None
+        state.index += 1
+    if state.index >= len(state.items):
+        return complete_iteration(invocation, frame, state)
+    entry = state.items[state.index]
+    variables: dict[str, XdmSequence] = dict(state.base_variables)
+    if state.kind == "iterate":
+        for name, value in state.parameters.items():
+            invocation._bind(variables, name, value)
+    group = frame.group if entry.group is None else entry.group
+    if entry.group is None:
+        grouping_key = frame.grouping_key
+    else:
+        grouping_key = NO_GROUP if entry.grouping_key is None else entry.grouping_key
+    child = Frame(
+        kind="instruction",
+        component=frame.component,
+        identity=f"iteration body {state.index + 1}",
+        program=state.body,
+        context=replace(
+            frame.context,
+            focus=Focus.singleton(
+                entry.item,
+                position=entry.position,
+                size=entry.size,
+            ),
+            locals=variables,
+        ),
+        location=frame.location,
+        group=NO_GROUP if group is None else group,
+        grouping_key=NO_GROUP if grouping_key is None else grouping_key,
+        iteration=state,
+    )
+    return Call(child, resume=frame, tail=False)
+
+
+def complete_iteration(invocation: _Invocation, frame: Frame, state: IterationState) -> FrameResult:
+    completion = state.on_completion
+    if completion is None:
+        return invocation._return_frame(frame)
+    variables: dict[str, XdmSequence] = dict(state.base_variables)
+    for name, value in state.parameters.items():
+        invocation._bind(variables, name, value)
+    completion_context = replace(frame.context, focus=Focus.absent(), locals=variables)
+    try:
+        if completion.select is not None:
+            value = invocation._evaluate(completion.select, completion_context)
+        else:
+            value = invocation._execute_plans(
+                completion.children,
+                context=completion_context,
+            )
+    except MissingContextError as exc:
+        error = XsltDynamicError(
+            "xsl:on-completion has no context item",
+            code="XPDY0002",
+            location=completion.instruction.location,
+            cause=exc,
+        )
+        error.__cause__ = exc
+        error.__suppress_context__ = True
+        raise error from exc
+    return invocation._return_frame(replace(frame, values=frame.values + tuple(value)))
+
+
+def iteration_control(
+    invocation: _Invocation,
+    plan: _NextIterationPlan | _BreakPlan,
+    frame: Frame,
+) -> FrameResult:
+    state = frame.iteration
+    if not isinstance(state, IterationState) or state.kind != "iterate":
+        raise XsltStaticError(
+            f"xsl:{plan.instruction.local_name} requires an enclosing xsl:iterate",
+            code="XTSE3120",
+            uri=plan.instruction.module,
+            location=plan.instruction.location,
+        )
+    if isinstance(plan, _NextIterationPlan):
+        supplied = iteration_parameter_values(invocation, plan.parameters, frame, state)
+        state.pending_parameters = {**state.parameters, **supplied}
+        state.control = "next"
+        return invocation._return_frame(frame)
+    value = break_value(invocation, plan, frame)
+    state.control = "break"
+    return invocation._return_frame(replace(frame, values=frame.values + tuple(value)))
+
+
+def break_value(invocation: _Invocation, plan: _BreakPlan, frame: Frame) -> XdmSequence:
+    if plan.expression is not None:
+        return invocation._evaluate(plan.expression, frame.context)
+    return invocation._execute_plans(plan.children, context=frame.context)
+
+
+def initial_iteration_parameters(
+    invocation: _Invocation,
+    parameters: tuple[_ParamPlan, ...],
+    context: EvaluationContext,
+) -> dict[str, XdmSequence]:
+    values: dict[str, XdmSequence] = {}
+    environment = dict(context.locals)
+    for parameter in parameters:
+        value = invocation._parameter_default(
+            parameter,
+            replace(context, locals=environment),
+        )
+        value = invocation._coerce_parameter(parameter, value, code="XTTE0590")
+        invocation._bind(values, parameter.name, value)
+        invocation._bind(environment, parameter.name, value)
+    return values
+
+
+def iteration_parameter_values(
+    invocation: _Invocation,
+    parameters: tuple[_WithParamPlan, ...],
+    frame: Frame,
+    state: IterationState,
+) -> dict[str, XdmSequence]:
+    values: dict[str, XdmSequence] = {}
+    for parameter in parameters:
+        if parameter.expression is not None:
+            value = invocation._evaluate(parameter.expression, frame.context)
+        elif parameter.children:
+            sequence = invocation._execute_plans(
+                parameter.children,
+                context=replace(frame.context, final_output=False),
+            )
+            value = sequence if parameter.has_as else (_build_result_tree(sequence),)
+        else:
+            value = () if parameter.has_as else (XdmAtomic.string(""),)
+        if parameter.sequence_type is not None:
+            value = invocation._coerce(
+                value,
+                parameter.sequence_type,
+                code="XTTE0590",
+                label=f"parameter {parameter.name!r}",
+            )
+        declared = state.parameter_plans[parameter.name]
+        value = invocation._coerce_parameter(declared, value, code="XTTE0590")
+        invocation._bind(values, parameter.name, value)
+    return values
+
+
+def execute_merge(
+    plan: _MergePlan, invocation: _Invocation, *, context: EvaluationContext
+) -> XdmSequence:
+    resolved = merge_resolved_keys(invocation, plan.sources, context)
+    inputs: list[tuple[MergeItem, ...]] = []
+    sort_before_merge: list[bool] = []
+    for source_index, source in enumerate(plan.sources):
+        for anchor_index, sequence in enumerate(merge_input_sequences(invocation, source, context)):
+            items = tuple(
+                merge_item(
+                    invocation,
+                    source,
+                    resolved,
+                    item,
+                    source_index=source_index,
+                    anchor_index=anchor_index,
+                    position=position,
+                    context=context,
+                )
+                for position, item in enumerate(sequence, start=1)
+            )
+            inputs.append(items)
+            sort_before_merge.append(source.sort_before_merge)
+    comparison_keys = promote_merge_keys(inputs, resolved)
+    for index, input_sequence in enumerate(inputs):
+        if sort_before_merge[index]:
+            inputs[index] = sort_merge_input(
+                input_sequence,
+                resolved,
+                comparison_keys=comparison_keys,
+            )
+    for input_sequence in inputs:
+        check_merge_order(input_sequence, resolved, comparison_keys=comparison_keys)
+    groups = merge_groups(inputs, resolved, comparison_keys=comparison_keys)
+    names = _merge_source_names(plan.sources)
+    result: list[XdmItem] = []
+    for position, group in enumerate(groups, start=1):
+        members: dict[str, list[XdmItem]] = {name: [] for name in names}
+        for item in group.items:
+            members[names[item.source]].append(item.item)
+        group_map: dict[str, XdmSequence] = {
+            name: tuple(values) for name, values in members.items()
+        }
+        action_focus = Focus.singleton(
+            group.items[0].item,
+            position=position,
+            size=len(groups),
+        )
+        key_sequence: XdmSequence = tuple(atomic for component in group.key for atomic in component)
+        with invocation._merge_scope(group_map, key_sequence, names):
+            result.extend(
+                invocation._execute_plans(
+                    plan.action,
+                    context=replace(context, focus=action_focus),
+                )
+            )
+    return tuple(result)
+
+
+def merge_resolved_keys(
+    invocation: _Invocation,
+    sources: tuple[_MergeSourcePlan, ...],
+    context: EvaluationContext,
+) -> tuple[ResolvedSortKey, ...]:
+    resolved_by_source: list[tuple[ResolvedSortKey, ...]] = []
+    signatures_by_source: list[tuple[tuple[object, ...], ...]] = []
+    for source in sources:
+        resolved: list[ResolvedSortKey] = []
+        signatures: list[tuple[object, ...]] = []
+        for key in source.keys:
+            key_resolved, signature = resolve_key_spec(invocation, key, context)
+            resolved.append(key_resolved)
+            signatures.append(signature)
+        resolved_by_source.append(tuple(resolved))
+        signatures_by_source.append(tuple(signatures))
+    baseline = signatures_by_source[0]
+    for other_signatures in signatures_by_source[1:]:
+        if other_signatures != baseline:
+            raise XsltDynamicError(
+                "xsl:merge-key definitions in corresponding positions must have the "
+                "same effective lang, order, collation, case-order, and data-type",
+                code="XTDE2210",
+            )
+    return resolved_by_source[0]
+
+
+def merge_input_sequences(
+    invocation: _Invocation,
+    source: _MergeSourcePlan,
+    context: EvaluationContext,
+) -> tuple[XdmSequence, ...]:
+    package_name = context.package_name
+    if source.for_each_item is not None:
+        anchors = invocation._evaluate(source.for_each_item, context)
+        return tuple(
+            invocation._evaluate(
+                source.select,
+                replace(
+                    context,
+                    focus=Focus.singleton(
+                        anchor,
+                        position=position,
+                        size=len(anchors),
+                    ),
+                ),
+            )
+            for position, anchor in enumerate(anchors, start=1)
+        )
+    if source.for_each_source is not None:
+        uri_values = invocation._evaluate(source.for_each_source, context)
+        atomics = atomize_key_sequence(uri_values)
+        documents = tuple(
+            invocation.document_resources.resolve(
+                atomic.lexical,
+                base=source.base_uri,
+                validation=source.validation,
+                type_name=source.type_name,
+                schema_pool=invocation._package_schema_pool(package_name),
+                input_type_annotations=invocation._document_annotations(
+                    package_name,
+                    validation=source.validation,
+                    type_name=source.type_name,
+                ),
+                package=package_name,
+            )
+            for atomic in atomics
+        )
+        keys = source.use_accumulators
+        for document in documents:
+            invocation.accumulators.restrict(document, keys)
+        return tuple(
+            invocation._evaluate(
+                source.select,
+                replace(
+                    context,
+                    focus=Focus.singleton(
+                        document,
+                        position=position,
+                        size=len(documents),
+                    ),
+                ),
+            )
+            for position, document in enumerate(documents, start=1)
+        )
+    return (invocation._evaluate(source.select, context),)
+
+
+def merge_item(
+    invocation: _Invocation,
+    source: _MergeSourcePlan,
+    resolved: tuple[ResolvedSortKey, ...],
+    item: XdmItem,
+    *,
+    source_index: int,
+    anchor_index: int,
+    position: int,
+    context: EvaluationContext,
+) -> MergeItem:
+    comparison_key, current_key = merge_key_values(
+        invocation,
+        source,
+        resolved,
+        item,
+        context,
+    )
+    return MergeItem(
+        item=item,
+        source=source_index,
+        anchor=anchor_index,
+        position=position,
+        key=comparison_key,
+        current_key=current_key,
+    )
+
+
+def merge_key_values(
+    invocation: _Invocation,
+    source: _MergeSourcePlan,
+    resolved: tuple[ResolvedSortKey, ...],
+    item: XdmItem,
+    context: EvaluationContext,
+) -> tuple[tuple[XdmSequence, ...], tuple[XdmSequence, ...]]:
+    key_context = replace(context, focus=Focus.singleton(item))
+    comparison_values: list[XdmSequence] = []
+    current_values: list[XdmSequence] = []
+    for key, resolved_key in zip(source.keys, resolved, strict=True):
+        if key.select is not None:
+            value = invocation._evaluate(key.select, key_context)
+        else:
+            value = invocation._execute_plans(
+                key.children,
+                context=replace(key_context, final_output=False),
+            )
+        atomics = atomize_key_sequence(value)
+        if len(atomics) > 1:
+            raise XsltDynamicError(
+                "a merge key value must contain at most one item after atomization",
+                code="XTTE1020",
+                location=key.instruction.location,
+            )
+        if not atomics:
+            comparison_values.append(())
+            current_values.append(())
+            continue
+        atomic = atomics[0]
+        current_values.append((atomic,))
+        if resolved_key.data_type == "text":
+            comparison_values.append((XdmAtomic.string(atomic.lexical),))
+        else:
+            comparison_values.append((atomic,))
+    return tuple(comparison_values), tuple(current_values)
+
+
+def resolved_sort_keys(
+    invocation: _Invocation,
+    sorts: tuple[SortKey, ...],
+    context: EvaluationContext,
+) -> tuple[ResolvedSortKey, ...]:
+    return tuple(resolve_key_spec(invocation, sort, context)[0] for sort in sorts)
+
+
+def resolve_key_spec(
+    invocation: _Invocation,
+    sort: SortKey,
+    context: EvaluationContext,
+) -> tuple[ResolvedSortKey, tuple[object, ...]]:
+    """Resolve one sort/merge key and retain its effective-value signature."""
+    label = sort.instruction.local_name
+    order_value = None
+    order = "ascending"
+    if sort.order is not None:
+        order_value = invocation._value_source(sort.order, context).strip()
+        order = order_value
+        if order not in ("ascending", "descending"):
+            raise XsltDynamicError(
+                f"xsl:{label} order must be ascending or descending, got {order!r}",
+                code="XTDE0030",
+                location=sort.instruction.location,
+            )
+    data_type_value = None
+    data_type = "native"
+    if sort.data_type is not None:
+        data_type_value = invocation._value_source(sort.data_type, context).strip()
+        local = (
+            data_type_value[2:].partition("}")[2]
+            if data_type_value.startswith("Q{")
+            else data_type_value.rpartition(":")[2]
+        )
+        if local == "text":
+            data_type = "text"
+        elif local == "number":
+            data_type = "number"
+        elif not local:
+            raise XsltDynamicError(
+                f"xsl:{label} data-type must not be empty",
+                code="XTDE0030",
+                location=sort.instruction.location,
+            )
+    case_order = None
+    if sort.case_order is not None:
+        case_order = invocation._value_source(sort.case_order, context).strip()
+        if case_order not in ("upper-first", "lower-first"):
+            raise XsltDynamicError(
+                f"xsl:{label} case-order must be upper-first or lower-first, got {case_order!r}",
+                code="XTDE0030",
+                location=sort.instruction.location,
+            )
+    if sort.stable is not None:
+        stable = invocation._value_source(sort.stable, context)
+        if stable.strip() not in (
+            "yes",
+            "true",
+            "1",
+            "no",
+            "false",
+            "0",
+        ):
+            raise XsltDynamicError(
+                f"xsl:{label} stable has an invalid boolean value {stable!r}",
+                code="XTDE0030",
+                location=sort.instruction.location,
+            )
+    language = ""
+    if sort.lang is not None:
+        language = invocation._value_source(sort.lang, context).strip()
+    collation_uri = None
+    if sort.collation is not None:
+        collation_uri = invocation._value_source(sort.collation, context).strip()
+    collation = resolve_collation(
+        collation_uri,
+        code="XTDE1035",
+        default=None,
+        base_uri=sort.base_uri,
+        language=language if collation_uri is None else "",
+        case_order=case_order if collation_uri is None else None,
+    )
+    signature = (
+        order_value,
+        language if sort.lang is not None else None,
+        collation.uri if collation_uri is not None else None,
+        case_order,
+        data_type_value,
+    )
+    return (
+        ResolvedSortKey(
+            order=order,
+            collation=collation,
+            data_type=data_type,
+        ),
+        signature,
+    )
+
+
+def sort_values_for(
+    invocation: _Invocation,
+    item: XdmItem,
+    position: int,
+    size: int,
+    sorts: tuple[SortKey, ...],
+    resolved: tuple[ResolvedSortKey, ...],
+    context: EvaluationContext,
+) -> tuple[XdmSequence, ...]:
+    key_context = replace(
+        context,
+        focus=Focus.singleton(item, position=position, size=size),
+    )
+    values: list[XdmSequence] = []
+    for sort, key in zip(sorts, resolved, strict=True):
+        if sort.select is not None:
+            value = invocation._evaluate(sort.select, key_context)
+        else:
+            value = invocation._execute_plans(
+                sort.children,
+                context=replace(key_context, final_output=False),
+            )
+        atomics = atomize_key_sequence(value)
+        if len(atomics) > 1:
+            compatibility = invocation.profile_for(sort.xslt_version).compatibility_mode
+            if compatibility:
+                atomics = atomics[:1]
+            else:
+                raise XsltDynamicError(
+                    "a sort key value must contain at most one item after atomization",
+                    code="XTTE1020",
+                    location=sort.instruction.location,
+                )
+        if not atomics:
+            values.append(())
+            continue
+        atomic = atomics[0]
+        if key.data_type == "text":
+            values.append((XdmAtomic.string(atomic.lexical),))
+        else:
+            values.append((atomic,))
+    return tuple(values)
+
+
+def sorted_items(
+    invocation: _Invocation,
+    items: XdmSequence,
+    sorts: tuple[SortKey, ...],
+    context: EvaluationContext,
+) -> tuple[XdmItem, ...]:
+    if not sorts:
+        return tuple(items)
+    resolved = resolved_sort_keys(invocation, sorts, context)
+    key_values = tuple(
+        sort_values_for(
+            invocation,
+            item,
+            position,
+            len(items),
+            sorts,
+            resolved,
+            context,
+        )
+        for position, item in enumerate(items, start=1)
+    )
+    return sort_records(tuple(items), resolved, key_values)
+
+
+def perform_sort(
+    plan: _PerformSortPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    if plan.expression is not None:
+        items = invocation._evaluate(plan.expression, context)
+    else:
+        items = invocation._execute_plans(
+            plan.children,
+            context=replace(context, final_output=False),
+        )
+    return sorted_items(invocation, items, plan.sorts, context)
+
+
+def group_collation(
+    invocation: _Invocation,
+    plan: _ForEachGroupPlan,
+    context: EvaluationContext,
+) -> Any:
+    uri = (
+        None
+        if plan.collation is None
+        else invocation._value_source(plan.collation, context).strip()
+    )
+    return resolve_collation(
+        uri,
+        code="XTDE1110",
+        default=plan.default_collation,
+        base_uri=plan.base_uri,
+    )
+
+
+def grouped_items(
+    invocation: _Invocation,
+    plan: _ForEachGroupPlan,
+    frame: Frame,
+) -> tuple[Any, ...]:
+    context = frame.context
+    population = invocation._evaluate(plan.expression, context)
+    collation = group_collation(invocation, plan, context)
+    if plan.algorithm == GROUP_BY:
+        assert plan.key_expression is not None
+        key_sets = tuple(
+            grouping_key_set(
+                invocation._evaluate(
+                    plan.key_expression,
+                    replace(
+                        context,
+                        focus=Focus.singleton(
+                            item,
+                            position=position,
+                            size=len(population),
+                        ),
+                    ),
+                ),
+                composite=plan.composite,
+                collation=collation,
+            )
+            for position, item in enumerate(population, start=1)
+        )
+        groups = group_by(population, key_sets, collation)
+    elif plan.algorithm == GROUP_ADJACENT:
+        assert plan.key_expression is not None
+        keys = tuple(
+            adjacent_grouping_key(
+                invocation._evaluate(
+                    plan.key_expression,
+                    replace(
+                        context,
+                        focus=Focus.singleton(
+                            item,
+                            position=position,
+                            size=len(population),
+                        ),
+                    ),
+                ),
+                composite=plan.composite,
+            )
+            for position, item in enumerate(population, start=1)
+        )
+        groups = group_adjacent(population, keys, collation)
+    else:
+        assert plan.pattern is not None
+        matcher = PatternMatcher(plan.pattern)
+        environment = invocation._pattern_environment_for(plan.pattern, context.package_name)
+        with invocation._group_scope(None, None):
+            matches = tuple(matcher.matches(item, environment) for item in population)
+        if plan.algorithm == GROUP_STARTING_WITH:
+            groups = group_starting_with(population, matches)
+        else:
+            groups = group_ending_with(population, matches)
+    if not plan.sorts:
+        return groups
+    resolved = resolved_sort_keys(invocation, plan.sorts, context)
+    key_values: list[tuple[XdmSequence, ...]] = []
+    for position, group in enumerate(groups, start=1):
+        with invocation._group_scope(group.items, group.grouping_key):
+            key_values.append(
+                sort_values_for(
+                    invocation,
+                    group.initial_item,
+                    position,
+                    len(groups),
+                    plan.sorts,
+                    resolved,
+                    context,
+                )
+            )
+    return sort_records(groups, resolved, tuple(key_values))
+
+
+def execute_iteration(
+    plan: _ForEachPlan | _IteratePlan | _ForEachGroupPlan,
+    invocation: _Invocation,
+    *,
+    context: EvaluationContext,
+) -> XdmSequence:
+    component = (
+        _TemplateContext(cast(Component, None))
+        if context.rule_context is not None or context.original_functions
+        else None
+    )
+    parent = Frame(
+        kind="instruction",
+        component=component,
+        program=(plan,),
+        context=context,
+        group=NO_GROUP if invocation.current_group is None else invocation.current_group,
+        grouping_key=(
+            NO_GROUP if invocation.current_grouping_key is None else invocation.current_grouping_key
+        ),
+    )
+    return cast(XdmSequence, invocation.execute_frame(parent))
+
+
+def _merge_source_names(sources: tuple[_MergeSourcePlan, ...]) -> tuple[str, ...]:
+    """Name each merge source in stylesheet order.
+
+    An unnamed source receives an implementation-dependent name that cannot
+    collide with an authored NCName, so ``current-merge-group()`` still returns
+    its items in source order while the single-argument form cannot address it.
+    """
+    return tuple(
+        source.name if source.name is not None else f"#merge-source-{index}"
+        for index, source in enumerate(sources)
+    )

@@ -18,11 +18,12 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pyxsd.xdm import XdmAtomic, XdmMap, XdmSequence
+from pyxsd.xdm.nodes import XdmNode
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath.engine import CompiledExpression, XPathEngine
 from pyxsd.xpath.environment import (
@@ -31,7 +32,12 @@ from pyxsd.xpath.environment import (
     FunctionArity,
     XPathStaticContext,
 )
+from pyxsd.xslt.compiler.plans import _EvaluatePlan
 from pyxsd.xslt.errors import XsltDynamicError, error_code_from_exception
+from pyxsd.xslt.runtime.context import EvaluationContext
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
+    from pyxsd.xslt.processor import _Invocation
 
 __all__ = [
     "DEFAULT_DYNAMIC_CACHE_SIZE",
@@ -39,6 +45,7 @@ __all__ = [
     "StaticContextIdentity",
     "compile_cache_key",
     "evaluate_dynamic",
+    "execute_dynamic_evaluate",
     "with_params_variables",
 ]
 
@@ -333,3 +340,161 @@ def evaluate_dynamic(
             code=code,
             cause=exc,
         ) from exc
+
+
+def _boolean_avt(value: str, attribute: str) -> bool:
+    normalized = value.strip()
+    if normalized in ("yes", "true", "1"):
+        return True
+    if normalized in ("no", "false", "0"):
+        return False
+    raise XsltDynamicError(
+        f"the effective value of {attribute} is not a boolean: {value!r}",
+        code="XTDE0030",
+    )
+
+
+def _dynamic_variable_names(
+    values: Mapping[str, XdmSequence],
+    namespaces: Mapping[str, str],
+) -> dict[str, XdmSequence]:
+    """Bind dynamic variables by expanded and in-scope lexical names."""
+    result: dict[str, XdmSequence] = {}
+    for name, value in values.items():
+        result[name] = value
+        if not name.startswith("{"):
+            continue
+        namespace, _, local = name[1:].partition("}")
+        for prefix, uri in namespaces.items():
+            if prefix and uri == namespace:
+                result[f"{prefix}:{local}"] = value
+                break
+    return result
+
+
+def execute_dynamic_evaluate(
+    plan: _EvaluatePlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    """Evaluate one compiled ``xsl:evaluate`` instruction."""
+    if not plan.enabled:
+        raise XsltDynamicError(
+            "xsl:evaluate is disabled for this transformation",
+            code="XTDE3175",
+            location=plan.instruction.location,
+        )
+    target_values = invocation._evaluate(plan.expression, context)
+    profile = invocation.profile_for(plan.expression.static_context.xslt_version)
+    target = profile.string_sequence(target_values)
+
+    parameter_values: dict[str, XdmSequence] = {}
+    variable_types: dict[str, str] = {}
+    for parameter in plan.with_params:
+        if parameter.expression is not None:
+            value = invocation._evaluate(parameter.expression, context)
+        else:
+            value = invocation._execute_plans(
+                parameter.children,
+                context=replace(context, final_output=False),
+            )
+        value = invocation._coerce(
+            value,
+            parameter.sequence_type,
+            code="XTTE0590",
+            label=f"parameter {parameter.name!r}",
+        )
+        parameter_values[parameter.name] = value
+        variable_types[parameter.name] = (
+            "item()*" if parameter.sequence_type is None else str(parameter.sequence_type)
+        )
+    if plan.with_params_expression is not None:
+        supplied = invocation._evaluate(plan.with_params_expression, context)
+        for name, value in with_params_variables(supplied).items():
+            parameter_values[name] = value
+            variable_types[name] = "item()*"
+
+    expression_focus = Focus.absent()
+    if plan.context_item is not None:
+        context_values = invocation._evaluate(plan.context_item, context)
+        if len(context_values) > 1:
+            raise XsltDynamicError(
+                "xsl:evaluate/@context-item must return at most one item",
+                code="XTTE3210",
+                location=plan.instruction.location,
+            )
+        if context_values:
+            expression_focus = Focus.singleton(context_values[0])
+
+    namespaces = dict(plan.namespaces)
+    default_namespace = plan.default_namespace
+    if plan.namespace_context is not None:
+        context_nodes = invocation._evaluate(plan.namespace_context, context)
+        if len(context_nodes) != 1 or not isinstance(context_nodes[0], XdmNode):
+            raise XsltDynamicError(
+                "xsl:evaluate/@namespace-context must return a single node",
+                code="XTTE3170",
+                location=plan.instruction.location,
+            )
+        namespaces = {
+            prefix: uri for prefix, uri in context_nodes[0].in_scope_namespaces.items() if prefix
+        }
+        default_namespace = context_nodes[0].in_scope_namespaces.get("")
+
+    base_uri = (
+        invocation._value_source(plan.base_uri, context)
+        if plan.base_uri is not None
+        else plan.instruction.base_uri
+    )
+    schema_aware = False
+    if plan.schema_aware is not None:
+        schema_aware = _boolean_avt(
+            invocation._value_source(plan.schema_aware, context),
+            "schema-aware",
+        )
+    schema = (
+        invocation.stylesheet.schema_pool
+        if schema_aware and invocation.stylesheet.processor.schema_aware
+        else None
+    )
+
+    package_name = context.package_name
+    available = invocation.fallback_functions(package_name)
+    functions = {name: available[name] for name in plan.functions if name in available}
+    identity = StaticContextIdentity(
+        xpath_version=plan.xpath_version,
+        namespaces=namespaces,
+        default_namespace=default_namespace,
+        base_uri=base_uri,
+        variable_types=variable_types,
+        functions=plan.functions,
+        schema=schema,
+        schema_aware=schema_aware,
+        default_collation=plan.expression.static_context.default_collation,
+        xslt_version=plan.expression.static_context.xslt_version,
+        package_name=package_name,
+    )
+    variables = _dynamic_variable_names(parameter_values, namespaces)
+    environment = ExpressionEnvironment(
+        variables=variables,
+        functions=functions,
+        decimal_formats=invocation._decimal_formats(package_name),
+        current_datetime=invocation.current_datetime,
+        implicit_timezone=invocation.implicit_timezone,
+        base_uri=base_uri,
+    )
+    result = evaluate_dynamic(
+        target,
+        identity,
+        environment,
+        focus=expression_focus,
+        cache=invocation.dynamic_expressions,
+    )
+    if plan.sequence_type is not None:
+        result = invocation._coerce(
+            result,
+            plan.sequence_type,
+            code="XPTY0004",
+            label="xsl:evaluate result",
+        )
+    return result

@@ -752,7 +752,9 @@ def test_iteration_control_rejects_shared_state_outside_iterate() -> None:
         children=(),
     )
     with pytest.raises(XsltStaticError) as caught:
-        _Invocation._iteration_control(  # type: ignore[arg-type]
+        from pyxsd.xslt.runtime.iteration import iteration_control
+
+        iteration_control(  # type: ignore[arg-type]
             None,
             plan,
             Frame(iteration=state),

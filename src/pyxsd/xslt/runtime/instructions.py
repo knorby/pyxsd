@@ -1,4 +1,4 @@
-"""Immutable construction instructions and their XDM sequence results.
+"""XSLT construction and sequence-instruction execution.
 
 A construction instruction is data: it names the node kind, the evaluated
 simple-content or attribute values, and any nested sequence constructor.  Every
@@ -7,6 +7,12 @@ constructor.  Nodes are produced by :class:`~pyxsd.xslt.runtime.builder.ResultBu
 directly through the XDM layer; an instruction never serializes a node and
 reparses it to pass its value to the next instruction.
 
+The module also owns the complete execution bodies for construction,
+conditional, map, assertion, numbering, analysis, try/catch, and grounded
+construct instructions.  They receive the invocation coordinator and an
+immutable :class:`~pyxsd.xslt.runtime.context.EvaluationContext`, and use the
+invocation's shared evaluation services instead of a second evaluation path.
+
 Literal result elements retain the compiled instruction's static namespace and
 base-URI context.  ``xsl:namespace-alias`` remappings are applied by the
 builder while the retained namespace nodes are installed.
@@ -14,20 +20,83 @@ builder while the retained namespace nodes are installed.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+import math
+import re
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from types import MappingProxyType
-from typing import TypeAlias, cast
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
-from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence
+from elementpath.datatypes import QName
+from elementpath.exceptions import ElementPathError
+from elementpath.helpers import is_ncname
+
+from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
+from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmDocument, XdmNode
+from pyxsd.xdm.validation import namespace_sensitive
+from pyxsd.xpath.continuation import XPathEvaluationError
+from pyxsd.xpath.environment import Focus
 from pyxsd.xslt.compiler.instructions import Instruction
-from pyxsd.xslt.errors import XsltDynamicError
+from pyxsd.xslt.compiler.patterns import CompiledPattern, PatternMatcher
+from pyxsd.xslt.compiler.plans import (
+    _AnalyzeStringPlan,
+    _AssertPlan,
+    _AttributePlan,
+    _CatchPlan,
+    _ChoosePlan,
+    _ConcatPlan,
+    _ConditionalSequencePlan,
+    _CopyOfPlan,
+    _CopyPlan,
+    _DocumentPlan,
+    _ElementPlan,
+    _ForkPlan,
+    _LiteralPlan,
+    _MapEntryPlan,
+    _MapPlan,
+    _NumberPlan,
+    _OnEmptyPlan,
+    _OnNonEmptyPlan,
+    _ParamPlan,
+    _Plan,
+    _RestoreVariablesPlan,
+    _SequencePlan,
+    _SourceDocumentPlan,
+    _TryPlan,
+    _ValueOfPlan,
+    _VariablePlan,
+    _WherePopulatedPlan,
+)
+from pyxsd.xslt.errors import (
+    ERROR_NAMESPACE,
+    XsltDynamicError,
+    XsltError,
+    error_code_from_exception,
+    is_static_error_code,
+)
+from pyxsd.xslt.results import _append_complex_content, _build_result_tree, _NodeFactory
+from pyxsd.xslt.runtime.accumulators import accumulator_copy_names
 from pyxsd.xslt.runtime.builder import (
     ResultBuilder,
     validate_constructed,
     validate_delivered,
 )
+from pyxsd.xslt.runtime.context import EvaluationContext
+from pyxsd.xslt.runtime.frames import (
+    Call,
+    CatchResult,
+    Continue,
+    Frame,
+    FrameResult,
+    _IterationControlSignal,
+)
+from pyxsd.xslt.runtime.numbering import format_place_marker, place_marker
+from pyxsd.xslt.runtime.text import XPathRegexError, analyze_string, compile_xpath_regex
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
+    from pyxsd.xslt.processor import _Invocation
 
 __all__ = [
     "AttributeInstruction",
@@ -44,6 +113,8 @@ __all__ = [
     "SequenceInstruction",
     "TemporaryTreeInstruction",
     "TextInstruction",
+    "attribute_value",
+    "choose_branch",
     "construct_attribute",
     "construct_grounded_document",
     "construct_instruction",
@@ -51,8 +122,28 @@ __all__ = [
     "construct_map",
     "construct_map_entry",
     "construct_sequence",
+    "copy_of_value",
+    "copy_value",
+    "document_value",
+    "element_value",
+    "execute_analyze_string",
+    "execute_assert",
+    "execute_choose",
+    "execute_concat",
+    "execute_conditional_sequence",
+    "execute_fork",
+    "execute_map",
+    "execute_map_entry",
+    "execute_number",
+    "execute_source_document",
+    "execute_try",
+    "execute_value_of",
+    "execute_where_populated",
     "is_deemed_empty",
     "is_vacuous",
+    "literal_element",
+    "try_step",
+    "variable_value",
 ]
 
 
@@ -658,3 +749,1300 @@ def construct_into(
     with builder.transaction():
         builder.append(sequence)
     return sequence
+
+
+# ---------------------------------------------------------------------------
+# Instruction-family execution
+
+
+def _constructed_qname(
+    lexical: str,
+    namespace_value: str | None,
+    namespaces: Mapping[str, str],
+    *,
+    default_namespace: bool,
+    code: str,
+    namespace_code: str | None = None,
+    prefix_code: str | None = None,
+) -> str:
+    """Resolve a dynamically constructed element or attribute name."""
+    text = lexical.strip()
+    if not text:
+        raise XsltDynamicError("a constructed name must not be empty", code=code)
+    if text.startswith("Q{"):
+        close = text.find("}")
+        if close < 0 or not is_ncname(text[close + 1 :]):
+            raise XsltDynamicError(f"the constructed name {text!r} is not a valid QName", code=code)
+        namespace = text[2:close]
+        local = text[close + 1 :]
+        return f"{{{namespace}}}{local}" if namespace else local
+    if text.startswith("{"):
+        return text
+    prefix, separator, local = text.partition(":")
+    if not separator:
+        prefix, local = "", text
+    if not is_ncname(local) or (separator and not is_ncname(prefix)):
+        raise XsltDynamicError(f"the constructed name {text!r} is not a valid QName", code=code)
+    if namespace_value is not None:
+        if namespace_value == "http://www.w3.org/2000/xmlns/":
+            raise XsltDynamicError(
+                "the xmlns namespace cannot be used for a constructed name",
+                code=namespace_code or code,
+            )
+        return f"{{{namespace_value}}}{local}" if namespace_value else local
+    if separator:
+        uri = namespaces.get(prefix)
+        if uri is None:
+            raise XsltDynamicError(
+                f"the namespace prefix {prefix!r} is not bound in the static context",
+                code=prefix_code or code,
+            )
+        return f"{{{uri}}}{local}"
+    if default_namespace:
+        uri = namespaces.get("")
+        if uri:
+            return f"{{{uri}}}{text}"
+    return text
+
+
+def _assertion_error_code(value: str, namespaces: Mapping[str, str]) -> str:
+    """Resolve one effective ``xsl:assert/@error-code`` EQName.
+
+    An invalid EQName defaults to the assertion code XTMM9001 as XSLT 3.0
+    section 23.2 requires.  Standard error-namespace names are stored in their
+    familiar local form, while a custom namespace keeps its expanded form.
+    """
+    text = value.strip()
+    default = "XTMM9001"
+    if not text:
+        return default
+    if text.startswith("Q{"):
+        close = text.find("}")
+        if close < 0:
+            return default
+        namespace = text[2:close]
+        local = text[close + 1 :]
+        if not is_ncname(local):
+            return default
+        expanded = f"{{{namespace}}}{local}" if namespace else local
+    else:
+        if text.startswith("{"):
+            return default
+        prefix, separator, local = text.partition(":")
+        if separator:
+            if not is_ncname(prefix) or not is_ncname(local):
+                return default
+            bound = namespaces.get(prefix)
+            if not bound:
+                return default
+            expanded = f"{{{bound}}}{local}"
+        else:
+            if not is_ncname(text):
+                return default
+            expanded = text
+    standard = f"{{{ERROR_NAMESPACE}}}"
+    if expanded.startswith(standard):
+        return expanded[len(standard) :]
+    return expanded
+
+
+def _item_string(item: XdmItem) -> str:
+    if isinstance(item, XdmAtomic):
+        return item.lexical
+    if isinstance(item, XdmNode):
+        return item.string_value
+    raise XsltError(
+        "atomization of a function item is not permitted here",
+        code="FOTY0013",
+    )
+
+
+def _simple_content_string(sequence: XdmSequence, separator: str) -> str:
+    values: list[str] = []
+    pending_text = ""
+    for item in sequence:
+        if isinstance(item, XdmNode) and item.kind is NodeKind.TEXT:
+            pending_text += item.string_value
+            continue
+        if pending_text:
+            values.append(pending_text)
+            pending_text = ""
+        values.append(_item_string(item))
+    if pending_text:
+        values.append(pending_text)
+    return separator.join(values)
+
+
+_STRING_ATOMIC_LOCALS = frozenset(
+    {
+        "anyURI",
+        "ENTITIES",
+        "ENTITY",
+        "ID",
+        "IDREF",
+        "IDREFS",
+        "language",
+        "Name",
+        "NCName",
+        "NMTOKEN",
+        "NMTOKENS",
+        "normalizedString",
+        "string",
+        "token",
+        "untypedAtomic",
+    }
+)
+
+
+_NUMERIC_ATOMIC_LOCALS = frozenset(
+    {
+        "byte",
+        "decimal",
+        "double",
+        "float",
+        "int",
+        "integer",
+        "long",
+        "negativeInteger",
+        "nonNegativeInteger",
+        "nonPositiveInteger",
+        "positiveInteger",
+        "short",
+        "unsignedByte",
+        "unsignedInt",
+        "unsignedLong",
+        "unsignedShort",
+    }
+)
+
+
+_START_AT = re.compile(r"-?[0-9]+")
+
+
+def _analyze_string_value(sequence: XdmSequence) -> str:
+    """Apply the function conversion rules for ``xsl:analyze-string/@select``."""
+    if not sequence:
+        return ""
+    if len(sequence) > 1:
+        raise XsltDynamicError(
+            "xsl:analyze-string select must be a single string",
+            code="XPTY0004",
+        )
+    item = sequence[0]
+    if isinstance(item, XdmNode):
+        return item.string_value
+    if isinstance(item, XdmAtomic):
+        local = (
+            item.type_name.partition("}")[2]
+            if item.type_name.startswith("{")
+            else item.type_name.rpartition(":")[2]
+        )
+        if local in _STRING_ATOMIC_LOCALS:
+            return item.lexical
+    raise XsltDynamicError(
+        "xsl:analyze-string select must be a string or node",
+        code="XPTY0004",
+    )
+
+
+def _number_values(sequence: XdmSequence) -> tuple[int, ...]:
+    """Convert an atomized ``xsl:number/@value`` sequence to integers."""
+    numbers: list[int] = []
+    for item in sequence:
+        if isinstance(item, XdmNode):
+            atomics = tuple(value for value in item.typed_value if isinstance(value, XdmAtomic))
+        elif isinstance(item, XdmAtomic):
+            atomics = (item,)
+        else:
+            raise XsltDynamicError(
+                "xsl:number value cannot atomize a function item",
+                code="FOTY0013",
+            )
+        for atomic in atomics:
+            rounded = _rounded_integer(atomic)
+            if rounded is None or rounded < 0:
+                raise XsltDynamicError(
+                    "xsl:number value must convert to a non-negative integer",
+                    code="XTDE0980",
+                )
+            numbers.append(rounded)
+    return tuple(numbers)
+
+
+def _rounded_integer(item: XdmAtomic) -> int | None:
+    local = (
+        item.type_name.partition("}")[2]
+        if item.type_name.startswith("{")
+        else item.type_name.rpartition(":")[2]
+    )
+    value: object = item.value
+    if local not in _NUMERIC_ATOMIC_LOCALS:
+        if local not in _STRING_ATOMIC_LOCALS:
+            return None
+        lexical = item.lexical.strip()
+        if lexical in ("INF", "+INF", "-INF", "NaN"):
+            return None
+        try:
+            value = Decimal(lexical)
+        except InvalidOperation:
+            return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, Decimal):
+        return int((value + Decimal("0.5")).to_integral_value(rounding=ROUND_FLOOR))
+    assert isinstance(value, float)
+    if math.isnan(value) or math.isinf(value):
+        return None
+    return math.floor(value + 0.5)
+
+
+def _rebase_place_marker(
+    numbers: Sequence[int],
+    start_at: str | None,
+) -> tuple[int, ...]:
+    if start_at is None:
+        return tuple(numbers)
+    parts = start_at.split()
+    if not parts or any(_START_AT.fullmatch(part) is None for part in parts):
+        raise XsltDynamicError(
+            "xsl:number start-at must be a whitespace-separated integer sequence",
+            code="XTDE0030",
+        )
+    starts = [int(part) for part in parts]
+    return tuple(
+        number + (starts[index] if index < len(starts) else starts[-1]) - 1
+        for index, number in enumerate(numbers)
+    )
+
+
+_EBV_STRING_TYPES = frozenset(
+    {
+        "anyURI",
+        "ENTITY",
+        "ID",
+        "IDREF",
+        "language",
+        "Name",
+        "NCName",
+        "NMTOKEN",
+        "normalizedString",
+        "string",
+        "token",
+        "untypedAtomic",
+    }
+)
+
+
+_EBV_NUMERIC_TYPES = frozenset(
+    {
+        "byte",
+        "decimal",
+        "double",
+        "float",
+        "int",
+        "integer",
+        "long",
+        "negativeInteger",
+        "nonNegativeInteger",
+        "nonPositiveInteger",
+        "positiveInteger",
+        "short",
+        "unsignedByte",
+        "unsignedInt",
+        "unsignedLong",
+        "unsignedShort",
+    }
+)
+
+
+_BUILTIN_TYPE_NAMES: dict[type[Any], str] | None = None
+
+
+def _builtin_class_names() -> Mapping[type[Any], str]:
+    """Map every canonical built-in datatype class to its XSD local name."""
+    global _BUILTIN_TYPE_NAMES
+    if _BUILTIN_TYPE_NAMES is None:
+        _BUILTIN_TYPE_NAMES = {value: name for name, value in builtin_type_classes().items()}
+    return _BUILTIN_TYPE_NAMES
+
+
+def _primitive_local_name(item: XdmAtomic) -> str:
+    """Classify an atomic value by its nearest built-in datatype ancestor."""
+    names = _builtin_class_names()
+    datatype = item.datatype
+    if datatype is not None:
+        for base in datatype.__mro__:
+            name = names.get(base)
+            if name is not None:
+                return name
+    for base in type(item.value).__mro__:
+        name = names.get(base)
+        if name is not None:
+            return name
+    return item.type_name.rpartition("}")[2]
+
+
+def _effective_boolean(sequence: XdmSequence) -> bool:
+    """Evaluate the XPath effective boolean value of one XDM sequence.
+
+    Nodes are true by their presence.  A single boolean, string-family, or
+    numeric atomic follows the specification's value rules.  A multi-item
+    atomic sequence, a function item, or an unsupported atomic type raises
+    ``FORG0006`` instead of guessing from the first item.
+    """
+    if not sequence:
+        return False
+    first = sequence[0]
+    if isinstance(first, XdmNode):
+        return True
+    if not isinstance(first, XdmAtomic):
+        raise XsltError(
+            "the effective boolean value of a function item is not defined",
+            code="FORG0006",
+        )
+    if len(sequence) != 1:
+        raise XsltError(
+            "the effective boolean value of a multi-item atomic sequence is not defined",
+            code="FORG0006",
+        )
+    local = _primitive_local_name(first)
+    if local == "boolean":
+        return bool(first.value)
+    if local in _EBV_STRING_TYPES:
+        return first.lexical != ""
+    if local in _EBV_NUMERIC_TYPES:
+        value = first.value
+        # NaN is the only numeric value not equal to itself.
+        if value != value:
+            return False
+        return value != 0
+    raise XsltError(
+        f"the effective boolean value of {local or 'this atomic type'} is not defined",
+        code="FORG0006",
+    )
+
+
+def _error_qname(code: str) -> XdmAtomic:
+    """Return one expanded error code as an ``xs:QName`` atomic item.
+
+    Implementation codes are not required to be lexical QNames.  A code whose
+    local part is not an NCName is preserved as a string rather than making a
+    caught error unreadable; all specification and ``fn:error`` codes use the
+    typed branch.
+    """
+    if code.startswith("{"):
+        uri, _, local = code[1:].partition("}")
+    else:
+        uri, local = "", code
+    if is_ncname(local):
+        return cast(XdmAtomic, as_xdm(QName(uri, local))[0])
+    return XdmAtomic.string(code)
+
+
+def literal_element(
+    plan: _LiteralPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmNode:
+    factory = _NodeFactory()
+    attributes: list[tuple[str, str]] = []
+    for reference in plan.attribute_sets:
+        component = invocation._resolve_attribute_set(reference, context.package_name)
+        attributes.extend(
+            (attribute.name or "", attribute.string_value)
+            for attribute in invocation._attribute_set_attributes(component, context)
+            if attribute.kind is NodeKind.ATTRIBUTE
+        )
+    attributes.extend(
+        (name, invocation._value_source(value, context)) for name, value in plan.attributes
+    )
+    element = factory.element(
+        plan.instruction.name,
+        attributes=tuple(attributes),
+        namespaces=dict(plan.namespaces),
+        base_uri=plan.instruction.base_uri,
+    )
+    content = invocation._execute_plans(plan.children, context=context)
+    _append_complex_content(factory, element, content, allow_attributes=True)
+    validate_constructed(
+        element,
+        validation=plan.validation,
+        type_name=plan.type_name,
+        schema_pool=invocation._package_schema_pool(context.package_name),
+    )
+    return element
+
+
+def element_value(
+    plan: _ElementPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmNode:
+    lexical = invocation._value_source(plan.name, context)
+    namespace_value = (
+        None if plan.namespace is None else invocation._value_source(plan.namespace, context)
+    )
+    name = _constructed_qname(
+        lexical,
+        namespace_value,
+        plan.namespaces,
+        default_namespace=True,
+        code="XTDE0820",
+        namespace_code="XTDE0835",
+        prefix_code="XTDE0830",
+    )
+    attributes: list[tuple[str, str]] = []
+    for reference in plan.attribute_sets:
+        component = invocation._resolve_attribute_set(reference, context.package_name)
+        attributes.extend(
+            (attribute.name or "", attribute.string_value)
+            for attribute in invocation._attribute_set_attributes(component, context)
+            if attribute.kind is NodeKind.ATTRIBUTE
+        )
+    builder = ResultBuilder.temporary(base_uri=plan.instruction.base_uri)
+    with builder.transaction():
+        builder.element(
+            name,
+            attributes=tuple(attributes),
+            namespaces=dict(plan.namespaces),
+            base_uri=plan.instruction.base_uri,
+            inherit_namespaces=plan.inherit_namespaces,
+        )
+        builder.append(
+            invocation._execute_plans(plan.children, context=context),
+            inherit_namespaces=plan.inherit_namespaces,
+        )
+        element = builder.root.root_element
+        builder.to_tree()
+    validate_constructed(
+        element,
+        validation=plan.validation,
+        type_name=plan.type_name,
+        schema_pool=invocation._package_schema_pool(context.package_name),
+    )
+    return element
+
+
+def document_value(
+    plan: _DocumentPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmDocument:
+    pool = invocation._package_schema_pool(context.package_name)
+    builder = ResultBuilder.document(
+        base_uri=plan.instruction.base_uri,
+        schema_pool=pool,
+        final_output=False,
+    )
+    with builder.transaction():
+        builder.append(invocation._execute_plans(plan.children, context=context))
+        document = builder.to_tree()
+    return validate_delivered(
+        document,
+        validation=plan.validation,
+        type_name=plan.type_name,
+        schema_pool=pool,
+    )
+
+
+def copy_value(
+    plan: _CopyPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    if plan.select is not None:
+        selected = invocation._evaluate(plan.select, context)
+        if not selected:
+            return ()
+        if len(selected) != 1:
+            raise XsltDynamicError(
+                "xsl:copy select must evaluate to exactly one item",
+                code="XTTE3180",
+            )
+        item = selected[0]
+        content_focus = Focus.singleton(item)
+    else:
+        if context.focus.item is None:
+            raise XsltDynamicError(
+                "xsl:copy requires an existing context item",
+                code="XTTE0945",
+            )
+        item = context.focus.item
+        content_focus = context.focus
+    if not isinstance(item, XdmNode):
+        return (item,)
+    content_context = replace(context, focus=content_focus)
+    pool = invocation._package_schema_pool(context.package_name)
+    factory = _NodeFactory(base_uri=item.base_uri)
+    if item.kind is NodeKind.DOCUMENT:
+        document = factory.document
+        content = invocation._execute_plans(plan.children, context=content_context)
+        _append_complex_content(
+            factory,
+            document,
+            content,
+            allow_attributes=False,
+            inherit_namespaces=plan.inherit_namespaces,
+        )
+        document._finalize_document_order()
+        check_namespace_sensitive_copy(document, plan)
+        return (
+            validate_delivered(
+                document,
+                validation=plan.validation,
+                type_name=plan.type_name,
+                schema_pool=pool,
+            ),
+        )
+    clone = factory.clone(
+        item,
+        parent=None,
+        deep=False,
+        copy_namespaces=plan.copy_namespaces,
+    )
+    if item.kind is NodeKind.ATTRIBUTE:
+        check_copy_type(item, plan.type_name, pool)
+    if item.kind is NodeKind.ELEMENT:
+        attributes: list[XdmNode] = []
+        for reference in plan.attribute_sets:
+            component = invocation._resolve_attribute_set(reference, context.package_name)
+            attributes.extend(invocation._attribute_set_attributes(component, content_context))
+        if attributes:
+            _append_complex_content(factory, clone, attributes, allow_attributes=True)
+        content = invocation._execute_plans(plan.children, context=content_context)
+        if content:
+            _append_complex_content(
+                factory,
+                clone,
+                content,
+                allow_attributes=True,
+                inherit_namespaces=plan.inherit_namespaces,
+            )
+    check_namespace_sensitive_copy(clone, plan)
+    validate_constructed(
+        clone,
+        validation=plan.validation,
+        type_name=plan.type_name,
+        schema_pool=pool,
+        operation="copy",
+    )
+    return (clone,)
+
+
+def check_namespace_sensitive_copy(
+    node: XdmNode,
+    plan: _CopyPlan | _CopyOfPlan,
+) -> None:
+    if plan.copy_namespaces or plan.validation != "preserve" or plan.type_name is not None:
+        return
+    if namespace_sensitive(node):
+        raise XsltDynamicError(
+            "namespace-sensitive content cannot be copied without namespace nodes",
+            code="XTTE0950",
+        )
+
+
+def copy_of_value(
+    plan: _CopyOfPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    items = invocation._evaluate(plan.select, context)
+    pool = invocation._package_schema_pool(context.package_name)
+    result: list[XdmItem] = []
+    for item in items:
+        if not isinstance(item, XdmNode):
+            result.append(item)
+            continue
+        check_copy_type(item, plan.type_name, pool)
+        clone = _NodeFactory().clone(
+            item,
+            parent=None,
+            deep=True,
+            copy_namespaces=plan.copy_namespaces,
+        )
+        names = accumulator_copy_names(invocation) if plan.copy_accumulators else ()
+        invocation.accumulators.copy_values(
+            item,
+            clone,
+            enabled=plan.copy_accumulators,
+            names=names,
+        )
+        check_namespace_sensitive_copy(clone, plan)
+        if clone.kind is NodeKind.DOCUMENT:
+            result.append(
+                validate_delivered(
+                    cast(XdmDocument, clone),
+                    validation=plan.validation,
+                    type_name=plan.type_name,
+                    schema_pool=pool,
+                )
+            )
+            continue
+        validate_constructed(
+            clone,
+            validation=plan.validation,
+            type_name=plan.type_name,
+            schema_pool=pool,
+            operation="copy-of",
+        )
+        result.append(clone)
+    return tuple(result)
+
+
+def check_copy_type(
+    item: XdmNode,
+    type_name: str | None,
+    schema_pool: Any,
+) -> None:
+    if type_name is None or item.kind is not NodeKind.ATTRIBUTE:
+        return
+    adapter = schema_pool.get_type(type_name) if schema_pool is not None else None
+    if adapter is not None and not adapter.is_simple():
+        raise XsltDynamicError(
+            "a copy of an attribute cannot be validated against a complex type",
+            code="XTTE1535",
+        )
+
+
+def variable_value(
+    plan: _VariablePlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    if plan.expression is not None:
+        value = invocation._evaluate(plan.expression, context)
+    elif plan.children:
+        sequence = invocation._execute_plans(
+            plan.children,
+            context=replace(context, final_output=False),
+        )
+        value = sequence if plan.has_as else (_build_result_tree(sequence),)
+    elif plan.has_as:
+        value = ()
+    else:
+        value = (XdmAtomic.string(""),)
+    if plan.sequence_type is not None:
+        value = invocation._coerce(
+            value,
+            plan.sequence_type,
+            code="XTTE0570",
+            label=f"variable {plan.name!r}",
+        )
+    return value
+
+
+def attribute_value(
+    plan: _AttributePlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    lexical = invocation._value_source(plan.name, context)
+    namespace_value = (
+        None if plan.namespace is None else invocation._value_source(plan.namespace, context)
+    )
+    prefix, separator, _ = lexical.partition(":")
+    if not lexical:
+        raise XsltDynamicError("an attribute name must not be empty", code="XTDE0850")
+    name = _constructed_qname(
+        lexical,
+        namespace_value,
+        plan.namespaces,
+        default_namespace=False,
+        code="XTDE0850",
+        namespace_code="XTDE0865",
+        prefix_code="XTDE0860",
+    )
+    if plan.expression is not None:
+        value = invocation._evaluate(plan.expression, context)
+    else:
+        value = invocation._execute_plans(plan.children, context=context)
+    separator_value = (
+        invocation._value_source(plan.separator, context) if plan.separator is not None else " "
+    )
+    attributes = construct_attribute(
+        name,
+        _simple_content_string(value, separator_value),
+        prefix=prefix if separator else None,
+    )
+    validate_constructed(
+        cast(XdmNode, attributes[0]),
+        validation=plan.validation,
+        type_name=plan.type_name,
+        schema_pool=invocation._package_schema_pool(context.package_name),
+        operation="attribute",
+    )
+    return attributes
+
+
+def execute_fork(
+    plan: _ForkPlan, invocation: _Invocation, *, context: EvaluationContext
+) -> XdmSequence:
+    result: list[XdmItem] = []
+    for branch in plan.branches:
+        result.extend(invocation._execute_plans(branch, context=context))
+    return tuple(result)
+
+
+def execute_source_document(
+    plan: _SourceDocumentPlan,
+    invocation: _Invocation,
+    *,
+    context: EvaluationContext,
+) -> XdmSequence:
+    package_name = context.package_name
+    href = invocation._value_template(plan.href, context).strip()
+    document = invocation.document_resources.resolve(
+        href,
+        base=plan.instruction.base_uri,
+        validation=plan.validation,
+        type_name=plan.type_name,
+        schema_pool=invocation._package_schema_pool(package_name),
+        input_type_annotations=invocation._document_annotations(
+            package_name,
+            validation=plan.validation,
+            type_name=plan.type_name,
+        ),
+        package=package_name,
+    )
+    invocation.accumulators.restrict(document, plan.use_accumulators)
+    return invocation._execute_plans(
+        plan.children,
+        context=replace(context, focus=Focus.singleton(document)),
+    )
+
+
+def execute_analyze_string(
+    plan: _AnalyzeStringPlan,
+    invocation: _Invocation,
+    *,
+    context: EvaluationContext,
+) -> XdmSequence:
+    values = invocation._evaluate(plan.expression, context)
+    text = _analyze_string_value(values)
+    regex_source = invocation._value_source(plan.regex, context)
+    flags = invocation._value_source(plan.flags, context) if plan.flags is not None else ""
+    try:
+        regex = compile_xpath_regex(regex_source, flags)
+    except XPathRegexError as exc:
+        code = "XTDE1145" if exc.code == "FORX0001" else "XTDE1140"
+        raise XsltDynamicError(str(exc), code=code) from exc
+    substrings = analyze_string(regex, text)
+    result: list[XdmItem] = []
+    for position, substring in enumerate(substrings, start=1):
+        branch = plan.matching if substring.matched else plan.non_matching
+        if not branch:
+            continue
+        branch_context = replace(
+            context,
+            focus=Focus.singleton(
+                XdmAtomic.string(substring.value),
+                position=position,
+                size=len(substrings),
+            ),
+        )
+        with invocation._regex_scope(substring.groups if substring.matched else None):
+            result.extend(invocation._execute_plans(branch, context=branch_context))
+    return tuple(result)
+
+
+def execute_number(
+    plan: _NumberPlan,
+    invocation: _Invocation,
+    *,
+    context: EvaluationContext,
+) -> XdmSequence:
+    if plan.value is not None:
+        values = invocation._evaluate(plan.value, context)
+        numbers = _number_values(values)
+    else:
+        if plan.select is not None:
+            selected = invocation._evaluate(plan.select, context)
+            if len(selected) != 1 or not isinstance(selected[0], XdmNode):
+                raise XsltDynamicError(
+                    "xsl:number select must evaluate to a single node",
+                    code="XTTE1000",
+                )
+            node = selected[0]
+        else:
+            item = context.focus.item
+            if not isinstance(item, XdmNode):
+                raise XsltDynamicError(
+                    "xsl:number without select or value requires a context node",
+                    code="XTTE0990",
+                )
+            node = item
+        count_match = number_matcher(invocation, plan.count, node, context)
+        from_match = (
+            number_matcher(invocation, plan.from_pattern, node, context)
+            if plan.from_pattern is not None
+            else None
+        )
+        numbers = place_marker(node, plan.level, count_match, from_match)
+    start_at = (
+        invocation._value_source(plan.start_at, context) if plan.start_at is not None else None
+    )
+    numbers = _rebase_place_marker(numbers, start_at)
+    format_ = (
+        plan.format
+        if isinstance(plan.format, str)
+        else invocation._value_source(plan.format, context)
+    )
+    lang = invocation._value_source(plan.lang, context) if plan.lang is not None else ""
+    ordinal = invocation._value_source(plan.ordinal, context) if plan.ordinal is not None else "no"
+    letter_value = (
+        invocation._value_source(plan.letter_value, context)
+        if plan.letter_value is not None
+        else ""
+    )
+    grouping_separator = (
+        invocation._value_source(plan.grouping_separator, context)
+        if plan.grouping_separator is not None
+        else None
+    )
+    grouping_size = (
+        invocation._value_source(plan.grouping_size, context)
+        if plan.grouping_size is not None
+        else None
+    )
+    text = format_place_marker(
+        numbers,
+        format_,
+        lang=lang,
+        ordinal=ordinal.strip().lower() in ("yes", "1", "true"),
+        letter_value=letter_value,
+        grouping_separator=grouping_separator,
+        grouping_size=grouping_size,
+    )
+    return (invocation._text_node(text),)
+
+
+def number_matcher(
+    invocation: _Invocation,
+    pattern: CompiledPattern | None,
+    selected: XdmNode,
+    context: EvaluationContext,
+) -> Callable[[XdmNode], bool]:
+    if pattern is None:
+        kind = selected.kind
+        name = selected.name
+
+        def implied(candidate: XdmNode) -> bool:
+            return candidate.kind is kind and candidate.name == name
+
+        return implied
+    matcher = PatternMatcher(pattern)
+    environment = invocation._pattern_environment_for(
+        pattern,
+        context.package_name,
+        locals_=context.locals,
+    )
+
+    def matches(candidate: XdmNode) -> bool:
+        return matcher.matches(candidate, environment)
+
+    return matches
+
+
+def execute_assert(
+    plan: _AssertPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> None:
+    if not plan.enabled:
+        return
+    failure: BaseException | None = None
+    satisfied = False
+    try:
+        satisfied = _effective_boolean(invocation._evaluate(plan.test, context))
+    except Exception as exc:
+        failure = exc
+    if satisfied:
+        return
+    message_failure: BaseException | None = None
+    detail = ""
+    value: tuple[XdmItem, ...] = ()
+    try:
+        message_values: list[XdmItem] = []
+        if plan.select is not None:
+            message_values.extend(invocation._evaluate(plan.select, context))
+        message_values.extend(
+            invocation._execute_plans(
+                plan.children,
+                context=replace(context, final_output=False),
+            )
+        )
+        if message_values:
+            document = _build_result_tree(message_values)
+            detail = document.string_value.strip()
+            value = (document,)
+    except Exception as exc:
+        message_failure = exc
+        detail = f"message construction failed: {exc}"
+    code = "XTMM9001"
+    if plan.error_code is not None:
+        try:
+            selected = invocation._value_source(plan.error_code, context)
+            code = _assertion_error_code(selected, plan.instruction.namespaces)
+        except Exception as exc:
+            if message_failure is None:
+                message_failure = exc
+                if not detail:
+                    detail = f"message construction failed: {exc}"
+            code = "XTMM9001"
+    if detail:
+        message = f"assertion failed: {detail} (test: {plan.test.source})"
+    else:
+        message = f"assertion failed: {plan.test.source} evaluated to false"
+    raise XsltDynamicError(
+        message,
+        code=code,
+        location=plan.instruction.location,
+        cause=failure or message_failure,
+        value=value,
+    )
+
+
+def execute_conditional_sequence(
+    plan: _ConditionalSequencePlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    result: list[XdmItem] = []
+    deferred: list[tuple[_OnNonEmptyPlan, Mapping[str, XdmSequence]]] = []
+    local_scope = dict(context.locals)
+    populated = False
+    try:
+        for item in plan.plans:
+            if isinstance(item, _ParamPlan):
+                raise XsltError(
+                    "xsl:param is only supported at the start of a template or function",
+                    code="XTDE0000",
+                )
+            item_context = replace(context, locals=local_scope)
+            if isinstance(item, _VariablePlan):
+                local_scope[item.name] = variable_value(item, invocation, item_context)
+                continue
+            if isinstance(item, _OnNonEmptyPlan):
+                if populated:
+                    result.extend(conditional_value(invocation, item, item_context))
+                else:
+                    deferred.append((item, dict(local_scope)))
+                continue
+            if isinstance(item, _OnEmptyPlan):
+                if not populated:
+                    result.clear()
+                    result.extend(conditional_value(invocation, item, item_context))
+                continue
+            values = invocation._execute_plan(item, context=item_context)
+            for value in values:
+                if not populated and not is_vacuous(value):
+                    for deferred_plan, deferred_scope in deferred:
+                        result.extend(
+                            conditional_value(
+                                invocation,
+                                deferred_plan,
+                                replace(context, locals=deferred_scope),
+                            )
+                        )
+                    deferred.clear()
+                    populated = True
+                result.append(value)
+    except _IterationControlSignal as signal:
+        if not populated and any(not is_vacuous(value) for value in signal.pending):
+            for deferred_plan, deferred_scope in deferred:
+                result.extend(
+                    conditional_value(
+                        invocation,
+                        deferred_plan,
+                        replace(context, locals=deferred_scope),
+                    )
+                )
+            deferred.clear()
+        signal.prepend(result)
+        raise
+    return tuple(result)
+
+
+def conditional_value(
+    invocation: _Invocation,
+    plan: _OnEmptyPlan | _OnNonEmptyPlan,
+    context: EvaluationContext,
+) -> XdmSequence:
+    if plan.expression is not None:
+        return invocation._evaluate(plan.expression, context)
+    return invocation._execute_plans(plan.children, context=context)
+
+
+def choose_branch(
+    invocation: _Invocation,
+    plan: _ChoosePlan,
+    context: EvaluationContext,
+) -> tuple[_Plan, ...] | None:
+    for test, branch in plan.branches:
+        if _effective_boolean(invocation._evaluate(test, context)):
+            return branch
+    return plan.otherwise
+
+
+def try_step(invocation: _Invocation, plan: _TryPlan, frame: Frame, cursor: int) -> FrameResult:
+    """Run one try body as a child frame with a catch error handler.
+
+    A tail try whose caller has no remaining work can replace that caller,
+    transferring already-produced output and the caller's continuation to
+    the try frame.  The handler therefore starts a catch frame with the
+    same committed output, and a tail call in the catch body can replace
+    the catch frame without growing the explicit stack.
+    """
+    program = cast(tuple[_Plan, ...], frame.program or ())
+    remaining = program[cursor + 1 :]
+    replace_caller = (
+        plan.tail
+        and all(isinstance(item, _RestoreVariablesPlan) for item in remaining)
+        and frame.error_handler is None
+        and frame.extent is None
+        and frame.conversion is None
+    )
+    base_values = frame.values if replace_caller else ()
+    child = Frame(
+        kind="instruction",
+        component=frame.component,
+        identity="xsl:try",
+        program=try_body_program(plan),
+        context=frame.context,
+        continuation=frame.continuation if replace_caller else None,
+        extent=invocation.result_extent() if plan.rollback_output else None,
+        error_handler=try_handler(invocation, plan, frame, base_values),
+        location=plan.instruction.location,
+        values=base_values,
+        group=frame.group,
+        grouping_key=frame.grouping_key,
+        iteration=frame.iteration,
+    )
+    if replace_caller:
+        return Continue(child)
+    return Call(child, resume=replace(frame, cursor=cursor + 1), tail=False)
+
+
+def try_body_program(plan: _TryPlan) -> tuple[_Plan, ...]:
+    if plan.expression is None:
+        return plan.children
+    return (
+        _SequencePlan(
+            instruction=plan.instruction,
+            expression=plan.expression,
+            children=(),
+        ),
+    )
+
+
+def catch_program(catch: _CatchPlan) -> tuple[_Plan, ...]:
+    if catch.expression is None:
+        return catch.children
+    return (
+        _SequencePlan(
+            instruction=catch.instruction,
+            expression=catch.expression,
+            children=(),
+        ),
+    )
+
+
+def try_handler(
+    invocation: _Invocation,
+    plan: _TryPlan,
+    frame: Frame,
+    base_values: tuple[object, ...],
+) -> Any:
+    def handler(
+        error: BaseException,
+        stack: tuple[Any, ...],
+    ) -> CatchResult | None:
+        caught = catchable_error(invocation, error, stack)
+        if caught is None:
+            return None
+        catch = select_catch(plan, caught)
+        if catch is None:
+            return None
+        variables: dict[str, XdmSequence] = dict(frame.context.locals)
+        variables.update(catch_variables(caught))
+        catch_frame = Frame(
+            kind="instruction",
+            component=frame.component,
+            identity="xsl:catch",
+            program=catch_program(catch),
+            context=replace(frame.context, locals=variables),
+            location=catch.instruction.location,
+            values=base_values,
+            group=frame.group,
+            grouping_key=frame.grouping_key,
+            iteration=frame.iteration,
+        )
+        return CatchResult(frame=catch_frame)
+
+    return handler
+
+
+def execute_try(
+    plan: _TryPlan, invocation: _Invocation, *, context: EvaluationContext
+) -> XdmSequence:
+    """Run a try in a synchronous nested sequence constructor."""
+    extent = invocation.result_extent() if plan.rollback_output else None
+    try:
+        if plan.expression is not None:
+            value = invocation._evaluate(plan.expression, context)
+        else:
+            value = invocation._execute_plans(plan.children, context=context)
+    except BaseException as error:
+        caught = catchable_error(invocation, error, invocation.diagnostics)
+        catch = None if caught is None else select_catch(plan, caught)
+        if caught is None or catch is None:
+            if extent is not None:
+                extent.rollback()
+            raise
+        if extent is not None:
+            extent.rollback()
+        variables: dict[str, XdmSequence] = dict(context.locals)
+        variables.update(catch_variables(caught))
+        catch_context = replace(context, locals=variables)
+        if catch.expression is not None:
+            return invocation._evaluate(catch.expression, catch_context)
+        return invocation._execute_plans(catch.children, context=catch_context)
+    else:
+        if extent is not None:
+            extent.commit()
+        return value
+
+
+def catchable_error(
+    invocation: _Invocation,
+    error: BaseException,
+    stack: tuple[Any, ...] | None,
+) -> XsltError | None:
+    """Return the deliberate XSLT dynamic error a catch may consume.
+
+    XPath engine errors are converted here with their original exception
+    retained as the cause.  Static errors, foreign callback failures, and
+    every other Python exception keep their identity and are not caught.
+    """
+    if isinstance(error, XsltError):
+        return error if error.catchable else None
+    if isinstance(error, (ElementPathError, XPathEvaluationError)):
+        code = error_code_from_exception(error)
+        if code is None or is_static_error_code(code):
+            return None
+        return invocation.boundary_error(error, stack=stack, catchable=True)
+    return None
+
+
+def select_catch(plan: _TryPlan, error: XsltError) -> _CatchPlan | None:
+    for catch in plan.catches:
+        if error.matches_catch(
+            catch.errors,
+            namespaces=catch.instruction.namespaces,
+        ):
+            return catch
+    return None
+
+
+def catch_variables(error: XsltError) -> dict[str, XdmSequence]:
+    variables: dict[str, XdmSequence] = {}
+    code = error.expanded_code or ""
+    variables[f"{{{ERROR_NAMESPACE}}}code"] = (_error_qname(code),)
+    variables[f"{{{ERROR_NAMESPACE}}}description"] = (
+        (XdmAtomic.string(error.description),) if error.has_description else ()
+    )
+    variables[f"{{{ERROR_NAMESPACE}}}value"] = tuple(error.value)
+    module = (
+        error.module or error.uri or (None if error.location is None else error.location.source)
+    )
+    variables[f"{{{ERROR_NAMESPACE}}}module"] = (
+        () if module is None else (XdmAtomic.string(module),)
+    )
+    variables[f"{{{ERROR_NAMESPACE}}}line-number"] = (
+        () if error.line_number is None else (XdmAtomic.integer(error.line_number),)
+    )
+    variables[f"{{{ERROR_NAMESPACE}}}column-number"] = (
+        () if error.column_number is None else (XdmAtomic.integer(error.column_number),)
+    )
+    return variables
+
+
+def execute_value_of(
+    plan: _ValueOfPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    """Evaluate one ``xsl:value-of`` into its constructed text node."""
+    if plan.expression is not None:
+        values = invocation._evaluate(plan.expression, context)
+    else:
+        values = invocation._execute_plans(plan.children, context=context)
+    if plan.expression is not None and not plan.explicit_separator:
+        profile = invocation.profile_for(plan.expression.static_context.xslt_version)
+        if profile.compatibility_mode:
+            return (invocation._text_node(profile.string_sequence(values)),)
+    separator = invocation._value_source(plan.separator, context)
+    text = _simple_content_string(values, separator)
+    return (invocation._text_node(text),)
+
+
+def execute_choose(
+    plan: _ChoosePlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    """Evaluate the first satisfied ``xsl:when`` or ``xsl:otherwise``."""
+    branch = choose_branch(invocation, plan, context)
+    if branch is None:
+        return ()
+    return invocation._execute_plans(branch, context=context)
+
+
+def execute_map(
+    plan: _MapPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    """Construct one ``xsl:map`` from its already merged entries."""
+    values = invocation._execute_plans(plan.children, context=context)
+    return (construct_map(values),)
+
+
+def execute_map_entry(
+    plan: _MapEntryPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    """Construct one ``xsl:map-entry`` key and value."""
+    key = invocation._evaluate(plan.key, context)
+    if plan.expression is not None:
+        value = invocation._evaluate(plan.expression, context)
+    else:
+        value = invocation._execute_plans(
+            plan.children,
+            context=replace(context, final_output=False),
+        )
+    return (construct_map_entry(key, value),)
+
+
+def execute_where_populated(
+    plan: _WherePopulatedPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    """Evaluate ``xsl:where-populated`` content and drop deemed-empty items."""
+    values = invocation._execute_plans(plan.children, context=context)
+    return tuple(item for item in values if not is_deemed_empty(item))
+
+
+def execute_concat(
+    plan: _ConcatPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    """Evaluate every ``xsl:fork``-style concatenated part in order."""
+    result: list[XdmItem] = []
+    for part in plan.parts:
+        result.extend(invocation._execute_plans(part, context=context))
+    return tuple(result)

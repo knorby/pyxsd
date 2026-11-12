@@ -9,8 +9,11 @@ and applies the highest-priority start/end rule at each visit.
 
 The module also owns the static helpers used by compilation: ``use-accumulators``
 token parsing, EQName expansion, literal accumulator-call discovery for cycle
-analysis, and cycle detection.  No event parser, streaming cursor, or
-process-global cache exists here.
+analysis, and cycle detection.  It owns the invocation integration as well:
+accumulator lookup, rule pattern matching, initial/rule value evaluation,
+typed coercion, and manager construction.  These entry points use the
+invocation's shared environment, plan, and pattern services; no event parser,
+streaming cursor, or process-global cache exists here.
 """
 
 from __future__ import annotations
@@ -19,20 +22,33 @@ import re
 from collections.abc import Callable, Collection, Hashable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from elementpath.helpers import is_ncname
 
 from pyxsd.locations import IssueLocation
 from pyxsd.xdm import XdmSequence
 from pyxsd.xdm.nodes import NodeKind, XdmNode
+from pyxsd.xpath.environment import Focus
+from pyxsd.xslt.compiler.patterns import PatternMatcher
 from pyxsd.xslt.errors import XsltDynamicError, XsltError, error_code_from_exception
+from pyxsd.xslt.runtime.context import EvaluationContext
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
+    from pyxsd.xslt.processor import _Invocation
 
 __all__ = [
     "AccumulatorDefinition",
     "AccumulatorKey",
     "AccumulatorManager",
     "AccumulatorRule",
+    "accumulator_copy_names",
+    "accumulator_definition",
+    "accumulator_rule_matches",
+    "coerce_accumulator_value",
+    "create_accumulator_manager",
+    "evaluate_accumulator_initial",
+    "evaluate_accumulator_rule",
     "expand_accumulator_name",
     "find_cycle",
     "iter_accumulator_call_spans",
@@ -388,6 +404,106 @@ class AccumulatorManager:
         if selected is None:
             return current
         return self._coerce(self._evaluate_rule(definition, selected, node, current), definition)
+
+
+# ---------------------------------------------------------------------------
+# Invocation integration
+
+
+def accumulator_definition(
+    invocation: _Invocation,
+    package_name: str | None,
+    expanded_name: str,
+) -> AccumulatorDefinition | None:
+    """Resolve one accumulator component into its compiled definition."""
+    package = invocation.stylesheet._packages.get(package_name) or invocation.package
+    component = package.accumulator(expanded_name)
+    if component is None or component.name is None:
+        return None
+    return invocation.stylesheet._accumulators.get((component.owner, component.name))
+
+
+def accumulator_copy_names(invocation: _Invocation) -> frozenset[str]:
+    """Expanded names of every compiled accumulator considered at a copy."""
+    return frozenset(definition.name for definition in invocation.stylesheet._accumulators.values())
+
+
+def accumulator_rule_matches(
+    invocation: _Invocation,
+    definition: AccumulatorDefinition,
+    rule: AccumulatorRule,
+    node: XdmNode,
+) -> bool:
+    """Match one accumulator rule pattern against a visited node."""
+    matcher = invocation._accumulator_matchers.get(id(rule.pattern))
+    if matcher is None:
+        matcher = PatternMatcher(rule.pattern)
+        invocation._accumulator_matchers[id(rule.pattern)] = matcher
+    environment = invocation._pattern_environment_for(rule.pattern, definition.owner)
+    return matcher.matches(node, environment)
+
+
+def evaluate_accumulator_initial(
+    invocation: _Invocation,
+    definition: AccumulatorDefinition,
+    root: XdmNode,
+) -> XdmSequence:
+    """Evaluate one accumulator initial value with the tree root as focus."""
+    return invocation._evaluate(
+        definition.initial_value,
+        EvaluationContext(focus=Focus.singleton(root), package_name=definition.owner),
+    )
+
+
+def evaluate_accumulator_rule(
+    invocation: _Invocation,
+    definition: AccumulatorDefinition,
+    rule: AccumulatorRule,
+    node: XdmNode,
+    old_value: XdmSequence,
+) -> XdmSequence:
+    """Evaluate one accumulator rule with ``$value`` bound to the old value."""
+    context = EvaluationContext(
+        focus=Focus.singleton(node),
+        locals={"value": old_value},
+        final_output=False,
+        package_name=definition.owner,
+    )
+    if rule.select is not None:
+        return invocation._evaluate(rule.select, context)
+    return invocation._execute_plans(rule.body, context=context)
+
+
+def coerce_accumulator_value(
+    invocation: _Invocation,
+    sequence: XdmSequence,
+    definition: AccumulatorDefinition,
+) -> XdmSequence:
+    """Apply an accumulator's declared sequence type to one value."""
+    return invocation._coerce(
+        sequence,
+        definition.sequence_type,
+        code="XPTY0004",
+        label=f"accumulator {definition.name!r}",
+    )
+
+
+def create_accumulator_manager(invocation: _Invocation) -> AccumulatorManager:
+    """Build the invocation-local accumulator cache over the compiled data."""
+    return AccumulatorManager(
+        lookup=lambda package_name, name: accumulator_definition(invocation, package_name, name),
+        evaluate_initial=lambda definition, root: evaluate_accumulator_initial(
+            invocation, definition, root
+        ),
+        evaluate_rule=lambda definition, rule, node, value: evaluate_accumulator_rule(
+            invocation, definition, rule, node, value
+        ),
+        coerce=lambda value, definition: coerce_accumulator_value(invocation, value, definition),
+        matches=lambda definition, rule, node: accumulator_rule_matches(
+            invocation, definition, rule, node
+        ),
+        all_definitions=lambda: invocation.stylesheet._accumulators.values(),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -991,7 +991,7 @@ def test_assertion_error_code_failure_without_a_message_reports_it() -> None:
 
 
 def test_assertion_error_code_rejects_a_prefix_bound_to_an_empty_namespace() -> None:
-    from pyxsd.xslt.processor import _assertion_error_code
+    from pyxsd.xslt.runtime.instructions import _assertion_error_code
 
     assert _assertion_error_code("p:bad", {"p": ""}) == "XTMM9001"
 

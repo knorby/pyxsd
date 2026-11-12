@@ -1,4 +1,4 @@
-"""Compiled template rules and indexed, candidate-aware pattern dispatch.
+"""Compiled template rules, pattern dispatch, and template application.
 
 The index is deliberately policy-free: it splits union patterns into their
 normative alternatives, orders candidates by import precedence, priority, and
@@ -8,26 +8,79 @@ Package visibility, modes, ``on-multiple-match``, ``apply-imports``, and
 ``next-match`` are expressed by :class:`RuleDispatcher`, which composes one
 index per package layer using only the compiled component graph.  Runtime
 dispatch never changes package visibility or patches a component.
+
+The module also executes ``xsl:apply-templates``, ``xsl:call-template``,
+``xsl:next-match``/``xsl:apply-imports``, and the built-in template rules.
+Rule frames, template parameter binding, shallow copying, and the apply
+scheduler state live here; they use the invocation's shared environment and
+frame services rather than a second dispatch path.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Hashable, Iterable, Iterator
-from dataclasses import dataclass
+from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from functools import cmp_to_key
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
-from pyxsd.xdm.values import XdmItem
-from pyxsd.xpath.environment import ExpressionEnvironment
+from pyxsd.xdm.nodes import NodeKind, XdmNode
+from pyxsd.xdm.values import XdmArray, XdmAtomic, XdmItem, XdmSequence
+from pyxsd.xpath.environment import ExpressionEnvironment, Focus
+from pyxsd.xslt.compiler.packages import Component
 from pyxsd.xslt.compiler.patterns import (
     CompiledPattern,
     PatternMatcher,
     PatternStatistics,
 )
-from pyxsd.xslt.errors import XsltDynamicError
+from pyxsd.xslt.compiler.plans import (
+    _ApplyTemplatesPlan,
+    _BodyPlan,
+    _CallTemplatePlan,
+    _OverridingPlan,
+    _ParamPlan,
+    _Plan,
+    _RuleContext,
+)
+from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltStaticError
+from pyxsd.xslt.results import _append_complex_content, _NodeFactory
+from pyxsd.xslt.runtime.context import EvaluationContext
+from pyxsd.xslt.runtime.frames import (
+    _INHERIT,
+    NO_GROUP,
+    Call,
+    Continue,
+    Frame,
+    FrameResult,
+)
+from pyxsd.xslt.runtime.iteration import sorted_items
 
-__all__ = ["PatternIndex", "RuleDispatcher", "RuleMatch", "TemplateRule"]
+if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
+    from pyxsd.xslt.processor import _Invocation
+
+__all__ = [
+    "PatternIndex",
+    "RuleDispatcher",
+    "RuleMatch",
+    "TemplateRule",
+    "apply_frame",
+    "apply_templates",
+    "apply_templates_step",
+    "builtin_step",
+    "builtin_value",
+    "builtin_variant",
+    "call_template_step",
+    "copy_item",
+    "execute_overriding",
+    "overriding_rule",
+    "overriding_step",
+    "resolve_mode",
+    "resolve_mode_package",
+    "resolve_template",
+    "rule_frame",
+    "shallow_copy",
+    "step_apply",
+]
 
 
 def _precedence_compare(left: tuple[int, ...], right: tuple[int, ...]) -> int:
@@ -437,3 +490,852 @@ def _compare_entries(left: _IndexedRule, right: _IndexedRule) -> int:
     if left.alternative_order != right.alternative_order:
         return -1 if left.alternative_order > right.alternative_order else 1
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Template application execution
+
+
+@dataclass(frozen=True, slots=True)
+class _ApplyState:
+    items: XdmSequence
+    mode: str | None
+    template_parameters: Mapping[str, XdmSequence]
+    tunnel_parameters: Mapping[str, XdmSequence]
+    index: int = 0
+    package_name: str | None = None
+    mode_package: str | None = None
+    group: object = NO_GROUP
+    grouping_key: object = NO_GROUP
+
+
+def _array_member_items(item: XdmArray) -> XdmSequence:
+    return tuple(member for sequence in item.members for member in sequence)
+
+
+def rule_frame(
+    invocation: _Invocation,
+    match: RuleMatch,
+    context: EvaluationContext,
+    template_parameters: Mapping[str, XdmSequence],
+    *,
+    mode_package: str | None = None,
+    group: object = _INHERIT,
+    grouping_key: object = _INHERIT,
+) -> Frame:
+    rule = match.rule
+    body = cast(_BodyPlan, rule.template)
+    rule_focus = invocation._apply_context_item(body.context_item, context.focus)
+    rule_context = replace(
+        context,
+        focus=rule_focus,
+        final_output=True,
+        package_name=body.owner,
+        mode=rule.mode,
+        original_functions={},
+    )
+    locals_, index = bind_template_parameters(
+        invocation,
+        body.body,
+        template_parameters,
+        rule_context,
+    )
+    conversion = None
+    if body.result_type is not None:
+        conversion = lambda value: invocation._coerce(  # noqa: E731
+            cast(XdmSequence, value),
+            body.result_type,
+            code="XTTE0505",
+            label="template rule result",
+        )
+    active_rule = _RuleContext(
+        match=match,
+        focus=rule_focus,
+        mode=rule.mode,
+        package_name=body.owner,
+        tunnel_parameters=context.tunnel_parameters,
+        mode_package=mode_package,
+    )
+    effective_group, effective_grouping_key = invocation._inherited_group(group, grouping_key)
+    frame = Frame(
+        kind="rule",
+        component=active_rule,
+        identity=f"rule {rule.name or rule.pattern}",
+        program=body.body[index:],
+        context=replace(
+            rule_context,
+            locals=locals_,
+            rule_context=active_rule,
+        ),
+        location=rule.pattern.context.location,
+        conversion=conversion,
+        group=effective_group,
+        grouping_key=effective_grouping_key,
+    )
+    return invocation.frame_boundary(frame) if conversion is not None else frame
+
+
+def bind_template_parameters(
+    invocation: _Invocation,
+    body: tuple[_Plan, ...],
+    template_parameters: Mapping[str, XdmSequence],
+    context: EvaluationContext,
+) -> tuple[dict[str, XdmSequence], int]:
+    locals_: dict[str, XdmSequence] = {}
+    index = 0
+    while index < len(body) and isinstance(body[index], _ParamPlan):
+        parameter = cast(_ParamPlan, body[index])
+        supplied = (
+            context.tunnel_parameters.get(parameter.name)
+            if parameter.tunnel
+            else template_parameters.get(parameter.name)
+        )
+        value = (
+            supplied
+            if supplied is not None
+            else invocation._parameter_default(
+                parameter,
+                replace(context, locals=locals_),
+            )
+        )
+        value = invocation._coerce_parameter(parameter, value, code="XTTE0590")
+        invocation._bind(locals_, parameter.name, value)
+        index += 1
+    return locals_, index
+
+
+def apply_frame(
+    invocation: _Invocation,
+    items: XdmSequence,
+    mode: str | None,
+    template_parameters: Mapping[str, XdmSequence],
+    tunnel_parameters: Mapping[str, XdmSequence],
+    *,
+    tail: bool = False,
+    package_name: str | None = None,
+    mode_package: str | None = None,
+    group: object = _INHERIT,
+    grouping_key: object = _INHERIT,
+) -> Frame:
+    effective_group, effective_grouping_key = invocation._inherited_group(group, grouping_key)
+    state = _ApplyState(
+        items=items,
+        mode=mode,
+        template_parameters=template_parameters,
+        tunnel_parameters=tunnel_parameters,
+        package_name=package_name,
+        mode_package=mode_package,
+        group=effective_group,
+        grouping_key=effective_grouping_key,
+    )
+    return Frame(
+        kind="apply",
+        identity=f"apply-templates mode={mode!r}",
+        program=state,
+        context=EvaluationContext(
+            package_name=package_name,
+            mode=mode,
+            tunnel_parameters=tunnel_parameters,
+        ),
+        tail=tail,
+        group=effective_group,
+        grouping_key=effective_grouping_key,
+    )
+
+
+def step_apply(invocation: _Invocation, frame: Frame) -> FrameResult:
+    frame = invocation._consume_input(frame)
+    state = cast(_ApplyState, frame.program)
+    if state.index >= len(state.items):
+        return invocation._return_frame(frame)
+    item = state.items[state.index]
+    focus = Focus.singleton(item, position=state.index + 1, size=len(state.items))
+    rule = invocation._dispatcher(state.mode, state.mode_package).select(
+        item,
+        state.mode,
+        invocation._environment(EvaluationContext(package_name=state.package_name)),
+        invocation._pattern_environment,
+    )
+    next_state = replace(state, index=state.index + 1)
+    resume = replace(frame, program=next_state)
+    last = state.index + 1 == len(state.items)
+    tail = frame.tail and last
+    if rule is None:
+        builtin = builtin_step(invocation, item, state, resume, tail)
+        if builtin is not None:
+            return builtin
+        return Continue(replace(frame, program=next_state))
+    child = rule_frame(
+        invocation,
+        rule,
+        EvaluationContext(
+            focus=focus,
+            package_name=state.package_name,
+            tunnel_parameters=state.tunnel_parameters,
+        ),
+        state.template_parameters,
+        mode_package=state.mode_package,
+        group=state.group,
+        grouping_key=state.grouping_key,
+    )
+    return Call(child, resume=resume, tail=tail)
+
+
+def builtin_step(
+    invocation: _Invocation,
+    item: XdmItem,
+    state: _ApplyState,
+    resume: Frame,
+    tail: bool,
+) -> FrameResult | None:
+    variant = builtin_variant(invocation, state.mode, state.mode_package)
+    if variant == "fail":
+        raise XsltDynamicError(
+            "no template rule matches and the mode forbids the built-in rule",
+            code="XTDE0555",
+        )
+    if isinstance(item, XdmArray):
+        if variant in ("deep-copy", "shallow-copy"):
+            return Continue(
+                replace(
+                    resume,
+                    values=(
+                        *resume.values,
+                        copy_item(item, deep=variant == "deep-copy"),
+                    ),
+                )
+            )
+        if variant in ("text-only-copy", "shallow-skip"):
+            if not item.members:
+                return None
+            members = _array_member_items(item)
+            invocation._check_typed_mode(members, state.mode, state.mode_package)
+            child = apply_frame(
+                invocation,
+                members,
+                state.mode,
+                state.template_parameters,
+                state.tunnel_parameters,
+                tail=tail,
+                package_name=state.package_name,
+                mode_package=state.mode_package,
+                group=state.group,
+                grouping_key=state.grouping_key,
+            )
+            return Call(child, resume=resume, tail=tail)
+        return None
+    if variant == "text-only-copy":
+        if isinstance(item, XdmNode) and item.kind in (
+            NodeKind.DOCUMENT,
+            NodeKind.ELEMENT,
+        ):
+            if not item.children:
+                return None
+            invocation._check_typed_mode(item.children, state.mode, state.mode_package)
+            child = apply_frame(
+                invocation,
+                item.children,
+                state.mode,
+                state.template_parameters,
+                state.tunnel_parameters,
+                tail=tail,
+                package_name=state.package_name,
+                mode_package=state.mode_package,
+                group=state.group,
+                grouping_key=state.grouping_key,
+            )
+            return Call(child, resume=resume, tail=tail)
+        if isinstance(item, XdmNode) and item.kind in (NodeKind.TEXT, NodeKind.ATTRIBUTE):
+            return Continue(
+                replace(
+                    resume,
+                    values=(*resume.values, invocation._text_node(item.string_value)),
+                )
+            )
+        if isinstance(item, XdmAtomic):
+            return Continue(
+                replace(
+                    resume,
+                    values=(*resume.values, invocation._text_node(item.lexical)),
+                )
+            )
+        return None
+    if variant == "deep-skip":
+        if isinstance(item, XdmNode) and item.kind is NodeKind.DOCUMENT:
+            invocation._check_typed_mode(item.children, state.mode, state.mode_package)
+            child = apply_frame(
+                invocation,
+                item.children,
+                state.mode,
+                state.template_parameters,
+                state.tunnel_parameters,
+                tail=tail,
+                package_name=state.package_name,
+                mode_package=state.mode_package,
+                group=state.group,
+                grouping_key=state.grouping_key,
+            )
+            return Call(child, resume=resume, tail=tail)
+        return None
+    if variant == "shallow-skip":
+        if isinstance(item, XdmNode) and item.kind in (
+            NodeKind.DOCUMENT,
+            NodeKind.ELEMENT,
+        ):
+            attributes: XdmSequence = ()
+            if item.kind is NodeKind.ELEMENT:
+                attributes = apply_templates(
+                    invocation,
+                    item.attributes,
+                    state.mode,
+                    state.template_parameters,
+                    state.tunnel_parameters,
+                    package_name=state.package_name,
+                    mode_package=state.mode_package,
+                )
+            if attributes:
+                resume = replace(
+                    resume,
+                    values=resume.values + tuple(attributes),
+                )
+            if not item.children:
+                return Continue(resume)
+            invocation._check_typed_mode(item.children, state.mode, state.mode_package)
+            child = apply_frame(
+                invocation,
+                item.children,
+                state.mode,
+                state.template_parameters,
+                state.tunnel_parameters,
+                tail=tail,
+                package_name=state.package_name,
+                mode_package=state.mode_package,
+                group=state.group,
+                grouping_key=state.grouping_key,
+            )
+            return Call(child, resume=resume, tail=tail)
+        return None
+    if variant == "deep-copy":
+        return Continue(
+            replace(
+                resume,
+                values=(*resume.values, copy_item(item, deep=True)),
+            )
+        )
+    assert variant == "shallow-copy"
+    return Continue(
+        replace(
+            resume,
+            values=(
+                *resume.values,
+                shallow_copy(invocation, item, state.mode, state.template_parameters, state),
+            ),
+        )
+    )
+
+
+def builtin_variant(
+    invocation: _Invocation, mode: str | None, mode_package: str | None = None
+) -> str:
+    variant = invocation._mode_properties(mode, mode_package).get("on-no-match", "text-only-copy")
+    if variant not in {
+        "text-only-copy",
+        "deep-copy",
+        "shallow-copy",
+        "deep-skip",
+        "shallow-skip",
+        "fail",
+    }:
+        raise XsltStaticError(
+            f"invalid on-no-match value {variant!r}",
+            code="XTSE0020",
+        )
+    return variant
+
+
+def builtin_value(
+    invocation: _Invocation,
+    item: XdmItem,
+    mode: str | None,
+    template_parameters: Mapping[str, XdmSequence],
+    tunnel_parameters: Mapping[str, XdmSequence],
+    package_name: str | None = None,
+    mode_package: str | None = None,
+) -> XdmSequence:
+    """Evaluate the built-in rule for *item* outside the apply frame."""
+    variant = builtin_variant(invocation, mode, mode_package)
+    if variant == "fail":
+        raise XsltDynamicError(
+            "no template rule matches and the mode forbids the built-in rule",
+            code="XTDE0555",
+        )
+    if isinstance(item, XdmArray):
+        if variant in ("deep-copy", "shallow-copy"):
+            return (item,)
+        if variant in ("text-only-copy", "shallow-skip"):
+            return apply_templates(
+                invocation,
+                _array_member_items(item),
+                mode,
+                template_parameters,
+                tunnel_parameters,
+                package_name=package_name,
+                mode_package=mode_package,
+            )
+        return ()
+    if variant == "text-only-copy":
+        if isinstance(item, XdmNode):
+            if item.kind in (NodeKind.DOCUMENT, NodeKind.ELEMENT):
+                return apply_templates(
+                    invocation,
+                    item.children,
+                    mode,
+                    template_parameters,
+                    tunnel_parameters,
+                    package_name=package_name,
+                    mode_package=mode_package,
+                )
+            if item.kind in (NodeKind.TEXT, NodeKind.ATTRIBUTE):
+                return (invocation._text_node(item.string_value),)
+            return ()
+        if isinstance(item, XdmAtomic):
+            return (invocation._text_node(item.lexical),)
+        return ()
+    if variant == "deep-skip":
+        if isinstance(item, XdmNode) and item.kind is NodeKind.DOCUMENT:
+            return apply_templates(
+                invocation,
+                item.children,
+                mode,
+                template_parameters,
+                tunnel_parameters,
+                package_name=package_name,
+                mode_package=mode_package,
+            )
+        return ()
+    if variant == "shallow-skip":
+        if isinstance(item, XdmNode) and item.kind in (
+            NodeKind.DOCUMENT,
+            NodeKind.ELEMENT,
+        ):
+            values: list[XdmItem] = []
+            if item.kind is NodeKind.ELEMENT:
+                values.extend(
+                    apply_templates(
+                        invocation,
+                        item.attributes,
+                        mode,
+                        template_parameters,
+                        tunnel_parameters,
+                        package_name=package_name,
+                        mode_package=mode_package,
+                    )
+                )
+            values.extend(
+                apply_templates(
+                    invocation,
+                    item.children,
+                    mode,
+                    template_parameters,
+                    tunnel_parameters,
+                    package_name=package_name,
+                    mode_package=mode_package,
+                )
+            )
+            return tuple(values)
+        return ()
+    if variant == "deep-copy":
+        return (copy_item(item, deep=True),)
+    return (
+        shallow_copy(
+            invocation,
+            item,
+            mode,
+            template_parameters,
+            _ApplyState(
+                (),
+                mode,
+                template_parameters,
+                tunnel_parameters,
+                package_name=package_name,
+                mode_package=mode_package,
+            ),
+        ),
+    )
+
+
+def copy_item(item: XdmItem, *, deep: bool) -> XdmItem:
+    if not isinstance(item, XdmNode):
+        return item
+    return _NodeFactory().clone(item, parent=None, deep=deep)
+
+
+def shallow_copy(
+    invocation: _Invocation,
+    item: XdmItem,
+    mode: str | None,
+    template_parameters: Mapping[str, XdmSequence],
+    state: _ApplyState,
+) -> XdmItem:
+    if not isinstance(item, XdmNode):
+        return item
+    if item.kind is NodeKind.DOCUMENT:
+        factory = _NodeFactory(base_uri=item.base_uri)
+        document = factory.document
+        children = apply_templates(
+            invocation,
+            item.children,
+            mode,
+            template_parameters,
+            state.tunnel_parameters,
+            package_name=state.package_name,
+            mode_package=state.mode_package,
+        )
+        _append_complex_content(factory, document, children, allow_attributes=False)
+        document._finalize_document_order()
+        return document
+    if item.kind is not NodeKind.ELEMENT:
+        return _NodeFactory().clone(item, parent=None, deep=False)
+    factory = _NodeFactory(base_uri=item.base_uri)
+    element = factory.element(
+        item.name or "",
+        namespaces=dict(item.in_scope_namespaces),
+        base_uri=item.base_uri,
+        annotation=item.annotation,
+        prefix=item.prefix,
+    )
+    attributes = apply_templates(
+        invocation,
+        item.attributes,
+        mode,
+        template_parameters,
+        state.tunnel_parameters,
+        package_name=state.package_name,
+        mode_package=state.mode_package,
+    )
+    _append_complex_content(factory, element, attributes, allow_attributes=True)
+    children = apply_templates(
+        invocation,
+        item.children,
+        mode,
+        template_parameters,
+        state.tunnel_parameters,
+        package_name=state.package_name,
+        mode_package=state.mode_package,
+    )
+    _append_complex_content(factory, element, children, allow_attributes=False)
+    return element
+
+
+def call_template_step(
+    invocation: _Invocation,
+    plan: _CallTemplatePlan,
+    frame: Frame,
+    cursor: int,
+) -> FrameResult:
+    context = frame.context
+    template, tunnel = invocation._plan_parameters(plan.parameters, context)
+    component = resolve_template(invocation, plan.reference)
+    child = invocation._component_frame(
+        component,
+        template_parameters=template,
+        context=replace(
+            context,
+            tunnel_parameters={**context.tunnel_parameters, **tunnel},
+        ),
+        group=frame.group,
+        grouping_key=frame.grouping_key,
+    )
+    return Call(
+        child,
+        resume=replace(frame, cursor=cursor + 1),
+        tail=plan.tail,
+    )
+
+
+def apply_templates_step(
+    invocation: _Invocation,
+    plan: _ApplyTemplatesPlan,
+    frame: Frame,
+    cursor: int,
+) -> FrameResult:
+    context = frame.context
+    items = invocation._evaluate(
+        plan.expression,
+        replace(context, original_functions={}),
+    )
+    items = sorted_items(invocation, items, plan.sorts, context)
+    resolved_mode = resolve_mode(invocation, plan.mode, context.mode, context.package_name)
+    mode_package = resolve_mode_package(invocation, plan.mode, frame)
+    invocation._check_typed_mode(items, resolved_mode, mode_package)
+    template, tunnel = invocation._plan_parameters(plan.parameters, context)
+    child = apply_frame(
+        invocation,
+        items,
+        resolved_mode,
+        template,
+        {**context.tunnel_parameters, **tunnel},
+        tail=plan.tail,
+        package_name=context.package_name,
+        mode_package=mode_package,
+        group=frame.group,
+        grouping_key=frame.grouping_key,
+    )
+    return Call(
+        child,
+        resume=replace(frame, cursor=cursor + 1),
+        tail=plan.tail,
+    )
+
+
+def overriding_step(
+    invocation: _Invocation,
+    plan: _OverridingPlan,
+    frame: Frame,
+    cursor: int,
+) -> FrameResult:
+    context = frame.context
+    rule_context = context.rule_context
+    template, tunnel = invocation._plan_parameters(plan.parameters, context)
+    if rule_context is None:
+        raise XsltDynamicError(
+            "xsl:next-match and xsl:apply-imports require a current template rule",
+            code="XTDE0560",
+        )
+    item = rule_context.focus.item
+    if item is None:  # pragma: no cover - a current rule always has a focus item
+        raise XsltDynamicError("the current template rule has no context item")
+    effective_tunnel = {**rule_context.tunnel_parameters, **tunnel}
+    match = overriding_rule(invocation, plan, rule_context, item)
+    if match is None:
+        value = builtin_value(
+            invocation,
+            item,
+            rule_context.mode,
+            template,
+            effective_tunnel,
+            rule_context.package_name,
+            rule_context.mode_package,
+        )
+        return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
+    child = rule_frame(
+        invocation,
+        match,
+        replace(
+            context,
+            focus=rule_context.focus,
+            tunnel_parameters=effective_tunnel,
+        ),
+        template,
+        mode_package=rule_context.mode_package,
+        group=frame.group,
+        grouping_key=frame.grouping_key,
+    )
+    return Call(
+        child,
+        resume=replace(frame, cursor=cursor + 1),
+        tail=plan.tail,
+    )
+
+
+def execute_overriding(
+    plan: _OverridingPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    rule_context = context.rule_context
+    template_parameters, tunnel_parameters = invocation._plan_parameters(
+        plan.parameters,
+        context,
+    )
+    if rule_context is None:
+        raise XsltDynamicError(
+            "xsl:next-match and xsl:apply-imports require a current template rule",
+            code="XTDE0560",
+        )
+    item = rule_context.focus.item
+    if item is None:  # pragma: no cover - a current rule always has a focus item
+        raise XsltDynamicError("the current template rule has no context item")
+    effective_tunnel = {
+        **rule_context.tunnel_parameters,
+        **tunnel_parameters,
+    }
+    match = overriding_rule(invocation, plan, rule_context, item)
+    if match is None:
+        return builtin_value(
+            invocation,
+            item,
+            rule_context.mode,
+            template_parameters,
+            effective_tunnel,
+            rule_context.package_name,
+            rule_context.mode_package,
+        )
+    frame = rule_frame(
+        invocation,
+        match,
+        replace(
+            context,
+            focus=rule_context.focus,
+            tunnel_parameters=effective_tunnel,
+        ),
+        template_parameters,
+        mode_package=rule_context.mode_package,
+    )
+    return cast(XdmSequence, invocation.execute_frame(frame))
+
+
+def overriding_rule(
+    invocation: _Invocation,
+    plan: _OverridingPlan,
+    rule_context: _RuleContext,
+    item: XdmItem,
+) -> RuleMatch | None:
+    dispatcher = invocation._dispatcher(rule_context.mode, rule_context.mode_package)
+    environment = invocation._environment(EvaluationContext(package_name=rule_context.package_name))
+    if plan.kind == "next-match":
+        return dispatcher.next_match(
+            item,
+            rule_context.match,
+            rule_context.mode,
+            environment,
+            invocation._pattern_environment,
+        )
+    return dispatcher.apply_imports(
+        item,
+        rule_context.match,
+        rule_context.mode,
+        environment,
+        invocation._pattern_environment,
+    )
+
+
+def apply_templates(
+    invocation: _Invocation,
+    items: XdmSequence,
+    mode: str | None,
+    template_parameters: Mapping[str, XdmSequence],
+    tunnel_parameters: Mapping[str, XdmSequence],
+    *,
+    package_name: str | None = None,
+    mode_package: str | None = None,
+) -> XdmSequence:
+    invocation._check_typed_mode(items, mode, mode_package)
+    frame = apply_frame(
+        invocation,
+        items,
+        mode,
+        template_parameters,
+        tunnel_parameters,
+        package_name=package_name,
+        mode_package=mode_package,
+    )
+    with invocation._merge_scope(None, None, ()):
+        return cast(XdmSequence, invocation.execute_frame(frame))
+
+
+def resolve_template(invocation: _Invocation, reference: Any) -> Component:
+    stylesheet = getattr(invocation, "stylesheet", None)
+    packages = getattr(stylesheet, "_packages", {})
+    package = packages.get(
+        getattr(reference, "containing", None) or getattr(invocation.package, "name", None)
+    )
+    if package is None:
+        package = invocation.package
+    if getattr(reference, "original", False):
+        target = package.original_target(
+            reference.name,
+            kind="template",
+        )
+        if target is not None:
+            return target
+    component = package.component("template", reference.name)
+    if component is None:
+        raise XsltError(
+            f"the named template {reference.name!r} is not visible at run time",
+            code="XTDE0040",
+        )
+    return component
+
+
+def resolve_mode(
+    invocation: _Invocation,
+    mode: str | None,
+    current: str | None,
+    package_name: str | None = None,
+) -> str | None:
+    if mode == "#current":
+        return current
+    if mode == "#default":
+        stylesheet = getattr(invocation, "stylesheet", None)
+        packages = getattr(stylesheet, "_packages", {})
+        package = packages.get(package_name)
+        if package is None:
+            package = invocation.package
+        return package.default_mode
+    return mode
+
+
+def resolve_mode_package(invocation: _Invocation, mode: str | None, frame: Frame) -> str | None:
+    """The package whose composed mode a mode reference selects.
+
+    An explicit mode reference binds in the package containing the
+    instruction.  ``#current`` instead keeps the package of the mode
+    that selected the current template rule, so a base rule invoked from
+    a using package's mode keeps that package's override composition.
+    """
+    if mode == "#current":
+        context = frame.context.rule_context
+        return frame.package if context is None else context.mode_package
+    return frame.package
+
+
+def execute_call_template(
+    plan: _CallTemplatePlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    """Run one ``xsl:call-template`` in a synchronous nested constructor."""
+    template, tunnel = invocation._plan_parameters(plan.parameters, context)
+    component = resolve_template(invocation, plan.reference)
+    return invocation._execute_component(
+        component,
+        template_parameters=template,
+        context=replace(
+            context,
+            tunnel_parameters={**context.tunnel_parameters, **tunnel},
+        ),
+    )
+
+
+def execute_apply_templates(
+    plan: _ApplyTemplatesPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    """Run one ``xsl:apply-templates`` in a synchronous nested constructor."""
+    items = invocation._evaluate(plan.expression, context)
+    items = sorted_items(invocation, items, plan.sorts, context)
+    resolved_mode = resolve_mode(
+        invocation,
+        plan.mode,
+        context.mode,
+        context.package_name,
+    )
+    active_rule = context.rule_context
+    mode_package = (
+        active_rule.mode_package
+        if plan.mode == "#current" and active_rule is not None
+        else context.package_name
+    )
+    invocation._check_typed_mode(items, resolved_mode, mode_package)
+    template, tunnel = invocation._plan_parameters(plan.parameters, context)
+    return apply_templates(
+        invocation,
+        items,
+        resolved_mode,
+        template,
+        {**context.tunnel_parameters, **tunnel},
+        package_name=context.package_name,
+        mode_package=mode_package,
+    )

@@ -19,19 +19,25 @@ never presented as the transformation's resource diagnostic.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from pyxsd.locations import IssueLocation
 from pyxsd.xpath.environment import Focus
 from pyxsd.xslt.errors import XsltDynamicError
 from pyxsd.xslt.runtime.context import EvaluationContext
 
+if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
+    from pyxsd.xdm import XdmItem, XdmSequence
+    from pyxsd.xslt.compiler.packages import Component
+    from pyxsd.xslt.compiler.plans import _BreakPlan, _NextIterationPlan
+
 __all__ = [
     "NO_GROUP",
     "NO_INPUT",
     "PYXSD_FRAME_EXHAUSTED",
+    "_INHERIT",
     "Call",
     "CatchResult",
     "Continuation",
@@ -45,6 +51,8 @@ __all__ = [
     "Return",
     "Scheduler",
     "SchedulerViolation",
+    "_IterationControlSignal",
+    "_TemplateContext",
 ]
 
 #: Stable implementation error code for transformation resource limits.
@@ -55,6 +63,47 @@ NO_INPUT = object()
 
 #: Sentinel distinguishing an absent current group/key from an empty sequence.
 NO_GROUP = object()
+
+
+class _IterationControlSignal(Exception):
+    """A valid iterate-body control reached through synchronous conditional content.
+
+    ``xsl:on-non-empty`` and ``xsl:on-empty`` are executed by the conditional
+    sequence evaluator, which normally returns a value synchronously.  A
+    control instruction in that content must instead unwind to the body frame so
+    the iteration frame can observe it.  The signal carries the conditional
+    output produced before the control and the lexical focus at the control.
+    """
+
+    __slots__ = ("focus", "pending", "plan", "variables")
+
+    def __init__(
+        self,
+        plan: _NextIterationPlan | _BreakPlan,
+        variables: Mapping[str, XdmSequence],
+        focus: Focus,
+    ) -> None:
+        super().__init__(plan.instruction.local_name)
+        self.plan = plan
+        self.variables = dict(variables)
+        self.focus = focus
+        self.pending: tuple[XdmItem, ...] = ()
+
+    def prepend(self, values: Sequence[XdmItem]) -> None:
+        """Add already-produced conditional output before this control."""
+        self.pending = (*values, *self.pending)
+
+
+#: Sentinel selecting the caller's current group state instead of a literal value.
+_INHERIT = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _TemplateContext:
+    """Opaque component identity retained by a recomposition frame."""
+
+    component: Component
+
 
 ContinuationKind: TypeAlias = Literal["resume", "append", "convert"]
 

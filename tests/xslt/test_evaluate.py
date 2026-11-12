@@ -982,7 +982,7 @@ def test_dynamic_function_declarations_accept_lexical_names() -> None:
 
 
 def test_dynamic_variable_names_leave_unbound_names_expanded() -> None:
-    from pyxsd.xslt.processor import _dynamic_variable_names
+    from pyxsd.xslt.runtime.evaluate import _dynamic_variable_names
 
     values = {"{urn:unbound}value": (XdmAtomic.integer(1),)}
     assert _dynamic_variable_names(values, {"my": MY_NS}) == values
