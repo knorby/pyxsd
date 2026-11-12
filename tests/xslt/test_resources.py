@@ -536,3 +536,120 @@ def test_collection_resolver_is_validated_at_construction() -> None:
         XsltProcessor(collection_resolver=object())
     with pytest.raises(TypeError, match="collection resolver"):
         DocumentResources({}, collection_resolver=object())
+
+
+# ---------------------------------------------------------------------------
+# json-doc and the pure JSON functions
+
+
+def _json_doc_policy(payload: bytes):
+    class Policy:
+        def __init__(self) -> None:
+            self.reads: list[tuple[str, str | None, str]] = []
+
+        def read(self, source, *, base, purpose):
+            stream = _stylesheet_stream(source)
+            if stream is not None:
+                return stream
+            self.reads.append((source, base, purpose))
+            return ResourceData(source, payload)
+
+    return Policy()
+
+
+def _json_expression(expression: str) -> bytes:
+    return stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        f'<out><xsl:value-of select="{expression}"/></out>'
+        "</xsl:template>"
+    )
+
+
+def test_json_doc_reads_through_the_text_policy() -> None:
+    policy = _json_doc_policy(b'{"name":"value","items":[1,true,null]}')
+    source = _json_expression(
+        "concat(json-doc('urn:test:json')?name, ':', array:size(json-doc('urn:test:json')?items))"
+    )
+    compiled = XsltProcessor(resource_policy=policy).compile(io.BytesIO(source))
+    assert compiled.transform().principal_tree.string_value == "value:3"
+    assert policy.reads == [("urn:test:json", None, "text")]
+
+
+def test_json_doc_invalid_json_is_a_dynamic_error() -> None:
+    compiled = XsltProcessor(resource_policy=_json_doc_policy(b'{"broken"')).compile(
+        io.BytesIO(_json_expression("json-doc('urn:test:json')?broken"))
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform()
+    assert caught.value.code == "FOJS0001"
+
+
+def test_json_doc_preserves_the_first_duplicate_member() -> None:
+    policy = _json_doc_policy(b'{"a":1,"a":2}')
+    compiled = XsltProcessor(resource_policy=policy).compile(
+        io.BytesIO(_json_expression("json-doc('urn:test:json')?a = 1"))
+    )
+    assert compiled.transform().principal_tree.string_value == "true"
+
+
+def test_json_doc_rejects_non_finite_constants() -> None:
+    compiled = XsltProcessor(resource_policy=_json_doc_policy(b"NaN")).compile(
+        io.BytesIO(_json_expression("json-doc('urn:test:json')"))
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform()
+    assert caught.value.code == "FOJS0001"
+
+
+def test_json_doc_empty_uri_is_an_empty_sequence() -> None:
+    source = _json_expression("count(json-doc(()))")
+    compiled = XsltProcessor().compile(io.BytesIO(source))
+    assert compiled.transform().principal_tree.string_value == "0"
+
+
+def test_json_doc_rejects_options() -> None:
+    policy = _json_doc_policy(b'{"a":1}')
+    compiled = XsltProcessor(resource_policy=policy).compile(
+        io.BytesIO(_json_expression("json-doc('urn:test:json', map{})"))
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform()
+    assert caught.value.code == "FOJS0005"
+
+
+def test_pure_json_functions_parse_convert_and_serialize() -> None:
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template"><out>'
+        "<xsl:value-of select=\"parse-json('{&quot;a&quot;:[1,2]}')?a?2\"/>"
+        "<xsl:value-of select=\"json-to-xml('{&quot;a&quot;:1}') "
+        'instance of document-node()"/>'
+        "<xsl:value-of select=\"xml-to-json(json-to-xml('{&quot;a&quot;:1}'))\"/>"
+        "</out></xsl:template>"
+    )
+    assert transform(source).principal_tree.string_value == '2true{"a":1}'
+
+
+def test_pure_json_functions_report_their_errors() -> None:
+    parse_error = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<out><xsl:value-of select=\"parse-json('{bad')\"/></out>"
+        "</xsl:template>"
+    )
+    with pytest.raises(Exception, match="FOJS0001"):
+        transform(parse_error)
+
+    convert_error = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<out><xsl:value-of select=\"json-to-xml('{bad')\"/></out>"
+        "</xsl:template>"
+    )
+    with pytest.raises(Exception, match="FOJS0001"):
+        transform(convert_error)
+
+    serialize_error = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<out><xsl:value-of select=\"xml-to-json(parse-json('1'))\"/></out>"
+        "</xsl:template>"
+    )
+    with pytest.raises(Exception, match="XPTY0004"):
+        transform(serialize_error)

@@ -22,6 +22,7 @@ properties, and the names of XSLT elements for ``element-available``.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
@@ -38,7 +39,7 @@ from elementpath.xpath3 import XPath31Parser
 from pyxsd import __version__
 from pyxsd.namespaces import local_name as _local_name
 from pyxsd.namespaces import namespace_of as _namespace_of
-from pyxsd.xdm import XdmAtomic, XdmItem, XdmSequence, as_xdm
+from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.nodes import XdmDocument, XdmNode
 from pyxsd.xpath.environment import Focus, FunctionArity
@@ -612,6 +613,7 @@ class XsltContextBridge:
             f"{{{FN_NS}}}unparsed-text-lines": ContextFunction(self._unparsed_text_lines_function),
             f"{{{FN_NS}}}collection": ContextFunction(self._collection_function),
             f"{{{FN_NS}}}uri-collection": ContextFunction(self._uri_collection_function),
+            f"{{{FN_NS}}}json-doc": ContextFunction(self._json_doc_function),
             f"{{{FN_NS}}}system-property": ContextFunction(self._system_property_function),
             f"{{{FN_NS}}}function-available": ContextFunction(self._function_available_function),
             f"{{{FN_NS}}}element-available": ContextFunction(self._element_available_function),
@@ -1311,6 +1313,25 @@ class XsltContextBridge:
             XdmAtomic.any_uri(value) for value in resources.collection_uris(uri, base=self.base_uri)
         )
 
+    def _json_doc_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        uri = _optional_string(arguments, 0)
+        if uri is None:
+            return ()
+        if len(arguments) > 1 and arguments[1]:
+            raise XsltDynamicError(
+                "json-doc options are not supported by this processor",
+                code="FOJS0005",
+            )
+        resources = self._invocation_resources(uri, code="FOUT1170")
+        text = resources.read_text(uri, base=self.base_uri)
+        value = _parse_json_document(text)
+        return () if value is None else (value,)
+
     def _system_property_function(
         self,
         context_item: XdmItem | None,
@@ -1445,6 +1466,61 @@ def _optional_string(arguments: tuple[XdmSequence, ...], index: int) -> str | No
     if index >= len(arguments) or not arguments[index]:
         return None
     return _single_string(arguments, index)
+
+
+def _parse_json_document(text: str) -> XdmItem | None:
+    """Parse JSON text into one XDM value under the XPath 3.1 mapping rules."""
+    try:
+        value = json.loads(
+            text,
+            object_pairs_hook=_first_json_member,
+            parse_constant=_reject_json_constant,
+        )
+    except ValueError as exc:
+        raise XsltDynamicError(
+            "the JSON document is not valid JSON",
+            code="FOJS0001",
+            cause=exc,
+        ) from exc
+    return _json_value_to_xdm(value)
+
+
+def _first_json_member(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Apply the default ``use-first`` duplicate-member rule."""
+    members: dict[str, object] = {}
+    for key, value in pairs:
+        members.setdefault(key, value)
+    return members
+
+
+def _reject_json_constant(value: str) -> None:
+    """Reject NaN and the infinities outside JSON's number grammar."""
+    raise ValueError(f"non-finite JSON number {value!r}")
+
+
+def _json_member(value: object) -> XdmSequence:
+    """Convert one array member or object value into an XDM sequence."""
+    item = _json_value_to_xdm(value)
+    return () if item is None else (item,)
+
+
+def _json_value_to_xdm(value: object) -> XdmItem | None:
+    """Convert one decoded JSON value, mapping ``null`` to the empty sequence."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return XdmAtomic.boolean(value)
+    if isinstance(value, (int, float)):
+        return XdmAtomic.double(float(value))
+    if isinstance(value, str):
+        return XdmAtomic.string(value)
+    if isinstance(value, list):
+        return XdmArray(_json_member(member) for member in value)
+    if isinstance(value, dict):
+        return XdmMap(
+            (XdmAtomic.string(key), _json_member(member)) for key, member in value.items()
+        )
+    raise TypeError(f"{type(value).__name__} is not a JSON value")  # pragma: no cover
 
 
 def _single_node(sequence: XdmSequence, label: str) -> XdmNode:
