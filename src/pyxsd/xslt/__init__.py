@@ -12,6 +12,7 @@ from pyxsd.xslt.inspection import (
     StylesheetInspection,
     inspect_stylesheet,
 )
+from pyxsd.xslt.policy import OutputPolicy
 from pyxsd.xslt.processor import (
     CompiledStylesheet,
     XsltInvocationError,
@@ -30,6 +31,7 @@ __all__ = [
     "ExecutionLimits",
     "InspectionDiagnostic",
     "Message",
+    "OutputPolicy",
     "ResultEntry",
     "ResultShapeError",
     "StylesheetInspection",

@@ -805,15 +805,15 @@ def _constructed_qname(
     return text
 
 
-def _assertion_error_code(value: str, namespaces: Mapping[str, str]) -> str:
-    """Resolve one effective ``xsl:assert/@error-code`` EQName.
+def _diagnostic_error_code(
+    value: str, namespaces: Mapping[str, str], *, default: str = "XTMM9001"
+) -> str:
+    """Resolve an effective diagnostic ``error-code`` EQName.
 
-    An invalid EQName defaults to the assertion code XTMM9001 as XSLT 3.0
-    section 23.2 requires.  Standard error-namespace names are stored in their
-    familiar local form, while a custom namespace keeps its expanded form.
+    An invalid EQName uses the caller's default. Standard error-namespace names
+    use their familiar local form; a custom namespace keeps its expanded form.
     """
     text = value.strip()
-    default = "XTMM9001"
     if not text:
         return default
     if text.startswith("Q{"):
@@ -1683,7 +1683,7 @@ def execute_assert(
     if plan.error_code is not None:
         try:
             selected = invocation._value_source(plan.error_code, context)
-            code = _assertion_error_code(selected, plan.instruction.namespaces)
+            code = _diagnostic_error_code(selected, plan.instruction.namespaces)
         except Exception as exc:
             if message_failure is None:
                 message_failure = exc

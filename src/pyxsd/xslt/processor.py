@@ -122,6 +122,7 @@ from pyxsd.xslt.compiler.plans import (
     _MapPlan,
     _MergePlan,
     _MergeSourcePlan,
+    _MessagePlan,
     _ModeLayerPlan,
     _NextIterationPlan,
     _NumberPlan,
@@ -159,8 +160,10 @@ from pyxsd.xslt.errors import (
     error_code_from_exception,
     is_static_error_code,
 )
+from pyxsd.xslt.policy import OutputPolicy
 from pyxsd.xslt.profiles import RecoveryPolicy
 from pyxsd.xslt.results import (
+    Message,
     ResultEntry,
     ResultShapeError,
     TransformationResult,
@@ -199,8 +202,10 @@ from pyxsd.xslt.runtime.frames import (
 )
 from pyxsd.xslt.runtime.functions import ABSENT, XsltContextBridge
 from pyxsd.xslt.runtime.instructions import (
+    _diagnostic_error_code,
     _item_string,
     attribute_value,
+    catchable_error,
     choose_branch,
     copy_of_value,
     copy_value,
@@ -432,6 +437,10 @@ class XsltProcessor:
     Native XSLT 2.0/1.0 profiles and extension registries belong to later
     tasks; this processor rejects a profile it cannot execute instead of
     silently running different semantics.
+
+    ``remote_resource_policy`` separately authorizes stylesheet-driven remote
+    document reads. Its trusted implementation must constrain origins, redirects,
+    timeouts and resource consumption. It does not authorize output writes.
     """
 
     language: str = "3.0"
@@ -443,11 +452,13 @@ class XsltProcessor:
     default_collation: str | None = None
     implicit_timezone: Any = None
     resource_policy: Any = None
+    remote_resource_policy: Any = None
     xml_policy: Any = None
     xml_limits: Any = None
     resolver: PackageResolver | None = None
     static_options: Mapping[str, Any] = field(default_factory=dict)
     recovery_policy: RecoveryPolicy | None = None
+    output_policy: OutputPolicy | None = None
 
     def __post_init__(self) -> None:
         if self.language != "3.0":
@@ -470,6 +481,14 @@ class XsltProcessor:
             self.recovery_policy, RecoveryPolicy
         ):
             raise TypeError("recovery_policy must be a RecoveryPolicy or None")
+        if self.output_policy is not None and not callable(
+            getattr(self.output_policy, "authorize", None)
+        ):
+            raise TypeError("output_policy must provide authorize()")
+        if self.remote_resource_policy is not None and not callable(
+            getattr(self.remote_resource_policy, "read", None)
+        ):
+            raise TypeError("remote_resource_policy must provide read()")
         if not isinstance(self.static_options, Mapping):
             raise TypeError("static options must be a mapping")
         options: dict[str, Any] = {}
@@ -3210,7 +3229,7 @@ def _plan_children(plan: _Plan) -> tuple[tuple[_Plan, ...], ...]:
         return (plan.children,)
     if isinstance(plan, _MapEntryPlan):
         return (plan.children,)
-    if isinstance(plan, _AssertPlan):
+    if isinstance(plan, (_AssertPlan, _MessagePlan)):
         return (plan.children,)
     if isinstance(plan, _WherePopulatedPlan):
         return (plan.children,)
@@ -4076,6 +4095,59 @@ def _compile_map_entry(
     )
 
 
+def _compile_message(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    allowed = {
+        "select",
+        "terminate",
+        "error-code",
+        "default-collation",
+        "default-mode",
+        "default-validation",
+        "exclude-result-prefixes",
+        "expand-text",
+        "extension-element-prefixes",
+        "use-when",
+        "version",
+        "xpath-default-namespace",
+    }
+    for attribute in instruction.attributes:
+        if (
+            attribute.namespace_uri is None
+            and attribute.name not in allowed
+            and Decimal(context.version) <= Decimal("3.0")
+        ):
+            raise XsltStaticError(
+                f"unknown xsl:message attribute {attribute.name!r}",
+                code="XTSE0090",
+                uri=context.uri,
+                location=instruction.location,
+            )
+    select = instruction.attribute("select")
+    terminate = instruction.attribute("terminate")
+    error_code = instruction.attribute("error-code")
+    return _MessagePlan(
+        instruction=instruction,
+        select=(
+            compile_xpath(select, context, location=instruction.location)
+            if select is not None
+            else None
+        ),
+        children=_compile_sequence(instruction.children, context, module),
+        terminate=compile_avt(
+            "no" if terminate is None else terminate, context, location=instruction.location
+        ),
+        error_code=(
+            compile_avt(error_code, context, location=instruction.location)
+            if error_code is not None
+            else None
+        ),
+    )
+
+
 def _compile_assert(
     instruction: Instruction,
     context: StaticContext,
@@ -4414,6 +4486,7 @@ _INSTRUCTION_COMPILERS: Mapping[str, InstructionCompiler] = {
     instruction_name("apply-imports"): _compile_overriding,
     instruction_name("apply-templates"): _compile_apply_templates,
     instruction_name("assert"): _compile_assert,
+    instruction_name("message"): _compile_message,
     instruction_name("attribute"): _compile_attribute,
     instruction_name("break"): _compile_break,
     instruction_name("call-template"): _compile_call_template,
@@ -5165,12 +5238,14 @@ class _Invocation(Transformation):
         self.current_merge_key: XdmSequence | None = None
         self.current_merge_sources: tuple[str, ...] = ()
         self.current_regex_groups: tuple[str, ...] | None = None
+        self.messages: list[Message] = []
         validation_type = options.validation_type
         if validation_type is not None and stylesheet.schema_pool is not None:
             validation_type = _expanded_name(validation_type, self.package.namespaces)
         self.document_resources = DocumentResources(
             self.documents,
             policy=getattr(stylesheet.processor, "resource_policy", None),
+            remote_policy=stylesheet.processor.remote_resource_policy,
             schema_pool=stylesheet.schema_pool,
             validation=options.validation,
             validation_type=validation_type,
@@ -5222,6 +5297,9 @@ class _Invocation(Transformation):
     # -- top level ---------------------------------------------------------
 
     def run(self) -> TransformationResult:
+        policy = self.stylesheet.processor.output_policy
+        if policy is not None and self.options.output_uri is not None:
+            policy.authorize(self.options.output_uri, principal=True)
         sequence = self._execute_entry()
         tree = None
         if self.options.delivery == "document" or (
@@ -5246,7 +5324,7 @@ class _Invocation(Transformation):
         return TransformationResult(
             entry,
             secondary=self.secondary,
-            messages=(),
+            messages=tuple(self.messages),
         )
 
     def _execute_entry(self) -> XdmSequence:
@@ -6200,6 +6278,34 @@ class _Invocation(Transformation):
         if isinstance(plan, _AssertPlan):
             execute_assert(plan, self, context)
             return ()
+        if isinstance(plan, _MessagePlan):
+            try:
+                values = () if plan.select is None else self._evaluate(plan.select, context)
+                values += self._execute_plans(
+                    plan.children, context=replace(context, final_output=False)
+                )
+                text = _build_result_tree(values).string_value
+            except (XsltError, ElementPathError, XPathEvaluationError) as error:
+                if catchable_error(self, error, self.diagnostics) is None:
+                    raise
+                text = ""
+            terminate = self._value_source(plan.terminate, context).strip()
+            if terminate not in ("yes", "true", "1", "no", "false", "0"):
+                raise XsltDynamicError("invalid xsl:message terminate value", code="XTDE0030")
+            terminating = terminate in ("yes", "true", "1")
+            code = (
+                "XTMM9000"
+                if plan.error_code is None
+                else _diagnostic_error_code(
+                    self._value_source(plan.error_code, context),
+                    plan.instruction.namespaces,
+                    default="XTMM9000",
+                )
+            )
+            self.messages.append(Message(text, code=code, terminate=terminating))
+            if terminating:
+                raise XsltDynamicError(text, code=code, location=plan.instruction.location)
+            return ()
         if isinstance(plan, _WherePopulatedPlan):
             return execute_where_populated(plan, self, context)
         if isinstance(plan, _ConditionalSequencePlan):
@@ -6334,6 +6440,8 @@ class _Invocation(Transformation):
             else base_attributes.get("build-tree")
         )
         uri = self._secondary_uri(href)
+        if self.stylesheet.processor.output_policy is not None:
+            self.stylesheet.processor.output_policy.authorize(uri, principal=False)
         if uri in self.final_uris:
             raise XsltError(
                 f"the transformation produced two final result trees with URI {uri!r}",

@@ -3,7 +3,10 @@
 A document is available to an instruction only when the invocation already
 holds it or an application-supplied resource policy admits a read.  There is no
 implicit filesystem or network retrieval, no streaming cursor, and no
-bounded-memory claim.  One invocation owns one resolver, so cached documents
+bounded-memory claim. Remote URI schemes require a separate application policy;
+that trusted policy is responsible for origins, redirects, timeouts and budgets.
+File URIs and application-resolved URNs use the ordinary resource policy.
+One invocation owns one resolver, so cached documents
 and canonical URI identities never leak between transformations.
 """
 
@@ -14,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urljoin, urlsplit
 
 from pyxsd.exceptions import PyXSDError
-from pyxsd.resource_policy import ResourceData
+from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.xdm.document import DocumentValidationError, parse_typed_document
 from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xslt.errors import XsltDynamicError
@@ -56,12 +59,13 @@ def resolve_document_uri(uri: str, base: str | None) -> str:
         )
     if urlsplit(value).scheme:
         return value
-    if base is None:
+    target = urljoin(base, value) if base is not None else value
+    if not urlsplit(target).scheme:
         raise XsltDynamicError(
             f"the relative document URI {uri!r} has no base URI",
             code="XTDE1162",
         )
-    return urljoin(base, value)
+    return target
 
 
 class DocumentResources:
@@ -81,6 +85,7 @@ class DocumentResources:
         documents: MutableMapping[str, XdmDocument],
         *,
         policy: object = None,
+        remote_policy: object = None,
         schema_pool: object = None,
         validation: str = "strip",
         validation_type: str | None = None,
@@ -91,6 +96,8 @@ class DocumentResources:
             raise TypeError("document resources require a mutable document mapping")
         if policy is not None and not callable(getattr(policy, "read", None)):
             raise TypeError("a document resource policy must provide read()")
+        if remote_policy is not None and not callable(getattr(remote_policy, "read", None)):
+            raise TypeError("a remote resource policy must provide read()")
         if validation not in _VALIDATION_MODES:
             raise ValueError(f"invalid validation mode {validation!r}")
         if validation_type is not None and not isinstance(validation_type, str):
@@ -101,6 +108,7 @@ class DocumentResources:
             raise TypeError("source space rules must be a package mapping")
         self.documents = documents
         self.policy = cast(_DocumentPolicy | None, policy)
+        self.remote_policy = cast(_DocumentPolicy | None, remote_policy)
         self.schema_pool = schema_pool
         self.validation = validation
         self.validation_type = validation_type
@@ -159,7 +167,13 @@ class DocumentResources:
             existing = self.documents.get(target)
             if existing is not None and not isinstance(existing, XdmDocument):  # pragma: no cover
                 raise TypeError("a document registry entry must be an XdmDocument")
-            if self.policy is None:
+            remote = urlsplit(target).scheme not in ("file", "urn")
+            policy = self.remote_policy if remote else self.policy
+            if remote and policy is None and self.policy is not None:
+                raise ResourcePolicyError(
+                    f"remote stylesheet document access denied for {target!r}"
+                )
+            if policy is None:
                 if existing is None:
                     raise XsltDynamicError(
                         f"the document {uri!r} is not available to this transformation",
@@ -168,7 +182,7 @@ class DocumentResources:
                 document = existing
             else:
                 try:
-                    data = self.policy.read(target, base=None, purpose=DOCUMENT_PURPOSE)
+                    data = policy.read(target, base=None, purpose=DOCUMENT_PURPOSE)
                 except OSError as exc:
                     raise XsltDynamicError(
                         f"the document {uri!r} could not be read",

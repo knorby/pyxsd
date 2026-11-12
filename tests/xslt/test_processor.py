@@ -951,7 +951,7 @@ def test_text_value_templates_and_nested_sequences() -> None:
 
 def test_unsupported_instruction_with_select_attribute_is_compiled() -> None:
     compiled = compile_bytes(
-        xsl('<xsl:template name="main"><xsl:message select="1 + 1"/></xsl:template>')
+        xsl('<xsl:template name="main"><xsl:comment select="1 + 1"/></xsl:template>')
     )
 
     with pytest.raises(XsltError, match="not supported"):
@@ -989,7 +989,7 @@ def test_instruction_dispatch_preserves_family_results(body: str, expected: str)
         ('<xsl:attribute><xsl:sequence select="+"/></xsl:attribute>', "XTSE0010", "attribute"),
         ('<xsl:map-entry select="+"/>', "XTSE0010", "map-entry"),
         ('<xsl:message select="+"/>', "XPST0003", "message"),
-        ('<xsl:message test="+"/>', "XPST0003", "message"),
+        ('<xsl:comment test="+"/>', "XPST0003", "comment"),
         ("<xsl:catch/>", "XTSE0010", "catch"),
         ('<xsl:with-param name="p"/>', "XTSE0010", "with-param"),
         ("<xsl:sort/>", "XTSE0010", "sort"),

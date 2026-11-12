@@ -642,6 +642,13 @@ def test_resolve_document_uri_contract() -> None:
         resolve_document_uri(1, None)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("base", ["relative/base/", "urn:opaque"])
+def test_relative_document_uri_requires_a_resolving_base(base: str) -> None:
+    with pytest.raises(XsltError) as caught:
+        resolve_document_uri("doc.xml", base)
+    assert caught.value.code == "XTDE1162"
+
+
 def test_document_resources_cache_and_explicit_policy_reads() -> None:
     policy = MappingPolicy({"urn:doc": b"<doc/>"})
     documents: dict[str, XdmDocument] = {}

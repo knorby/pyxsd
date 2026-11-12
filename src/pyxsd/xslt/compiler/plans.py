@@ -399,6 +399,15 @@ class _EvaluatePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class _MessagePlan:
+    instruction: Instruction
+    select: CompiledExpression | None
+    children: tuple[_Plan, ...]
+    terminate: str | CompiledValueTemplate
+    error_code: CompiledValueTemplate | None
+
+
+@dataclass(frozen=True, slots=True)
 class _AssertPlan:
     instruction: Instruction
     test: CompiledExpression
@@ -522,6 +531,7 @@ _Plan: TypeAlias = (
     | _MapPlan
     | _MapEntryPlan
     | _EvaluatePlan
+    | _MessagePlan
     | _AssertPlan
     | _WherePopulatedPlan
     | _OnEmptyPlan

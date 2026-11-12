@@ -525,7 +525,7 @@ def test_nested_fallback_processing_in_a_later_version() -> None:
 def test_known_but_unimplemented_instructions_keep_explicit_errors() -> None:
     source = stylesheet(
         """
-        <xsl:template name="main"><xsl:message select="'hello'"/></xsl:template>
+        <xsl:template name="main"><xsl:comment select="'hello'"/></xsl:template>
         """
     )
     with pytest.raises(XsltError, match="not supported"):
@@ -977,9 +977,9 @@ def test_assertion_error_code_failure_without_a_message_reports_it() -> None:
 
 
 def test_assertion_error_code_rejects_a_prefix_bound_to_an_empty_namespace() -> None:
-    from pyxsd.xslt.runtime.instructions import _assertion_error_code
+    from pyxsd.xslt.runtime.instructions import _diagnostic_error_code
 
-    assert _assertion_error_code("p:bad", {"p": ""}) == "XTMM9001"
+    assert _diagnostic_error_code("p:bad", {"p": ""}) == "XTMM9001"
 
 
 def test_assertion_test_failure_takes_cause_precedence_over_error_code_failure() -> None:
