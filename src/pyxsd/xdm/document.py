@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import io
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -59,7 +58,6 @@ __all__ = [
 _VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
 _INPUT_TYPE_ANNOTATIONS = frozenset({"strip", "preserve", "unspecified"})
 _XSD_UNTYPED = f"{{{XSD_NS}}}untyped"
-_XSD_UNTYPED_ATOMIC = f"{{{XSD_NS}}}untypedAtomic"
 _XSD_ANY_TYPE = f"{{{XSD_NS}}}anyType"
 
 _CHANGED_MESSAGE = (
@@ -369,6 +367,7 @@ def parse_typed_document(
             source,
             schema_pool=schema_pool,
             type_name=type_name,
+            validation=validation,
             strip=input_type_annotations == "strip",
             document_uri=document_uri,
             base_uri=base_uri,
@@ -440,40 +439,6 @@ def _validated_document(
 ) -> XdmDocument:
     """Validate *source* through one pool schema and return its grounded tree."""
     captured = _capture_source(source)
-    untyped = XdmDocument.parse(
-        captured.data,
-        source_name=captured.source_name,
-        document_uri=captured.document_uri,
-    )
-    root_name = untyped.root_element.name
-    schema = schema_pool.schema_for_element(root_name) if schema_pool is not None else None
-    if schema is None:
-        if validation == "strict":
-            raise DocumentValidationError(
-                f"no global element declaration for {root_name!r} is in the "
-                "in-scope schema definitions",
-                reason="unknown",
-            )
-        target = _grounded_copy(
-            captured,
-            schema_pool=schema_pool,
-            document_uri=document_uri,
-            base_uri=base_uri,
-            source_name=source_name,
-        )
-        if schema_pool is not None:
-            _lax_validate_known_children(target, schema_pool)
-        if strip:
-            strip_type_annotations(target)
-        return target
-
-    parsed = _parse_payload(schema, captured.data)
-    errors = _instance_errors(parsed.report)
-    if errors:
-        raise DocumentValidationError(
-            "the source document is not valid against the imported schema",
-            reason="invalid" if validation == "strict" else "lax-invalid",
-        )
     target = _grounded_copy(
         captured,
         schema_pool=schema_pool,
@@ -481,7 +446,30 @@ def _validated_document(
         base_uri=base_uri,
         source_name=source_name,
     )
-    copy_type_annotations(parsed.to_xdm(), target)
+    root = target.root_element
+    adapter = schema_pool.get_element(root.name) if schema_pool is not None else None
+    if adapter is None:
+        if validation == "strict":
+            raise DocumentValidationError(
+                f"no global element declaration for {root.name!r} is in the "
+                "in-scope schema definitions",
+                reason="unknown",
+            )
+        if schema_pool is not None:
+            _lax_validate_known_children(target, schema_pool)
+        if strip:
+            strip_type_annotations(target)
+        return target
+
+    from pyxsd.xdm.validation import _assess_declaration
+
+    _assess_declaration(
+        root,
+        adapter,
+        document_root=True,
+        error_type=DocumentValidationError,
+        reason="invalid" if validation == "strict" else "lax-invalid",
+    )
     if strip:
         strip_type_annotations(target)
     return target
@@ -516,14 +504,6 @@ def _validated_bound_document(
     return document
 
 
-def _parse_payload(schema: Any, payload: bytes) -> Any:
-    """Bind one source revision through a private schema/host view."""
-    from pyxsd.xdm.validation import _isolated_schema
-
-    with _isolated_schema(schema) as (isolated, _host, _context, _namespace_context):
-        return isolated.parse(io.BytesIO(payload), capture_xdm=True)
-
-
 def _capture_source(source: Any) -> CaptureSource:
     if isinstance(source, XdmDocument):
         return CaptureSource.from_content(
@@ -552,31 +532,23 @@ def _grounded_copy(
 
 def _lax_validate_known_children(document: XdmDocument, schema_pool: SchemaPool) -> None:
     """Validate declared descendants of an undeclared root with lax semantics."""
+    from pyxsd.xdm.validation import _assess_declaration
+
     stack: list[XdmNode] = [document.root_element]
     while stack:
         node = stack.pop()
         if node.kind is not NodeKind.ELEMENT:
             continue
-        schema = schema_pool.schema_for_element(node.name)
-        if schema is None:
+        adapter = schema_pool.get_element(node.name)
+        if adapter is None:
             stack.extend(reversed(node.children))
             continue
-        from pyxsd.xdm.validation import _isolated_schema
-
-        with _isolated_schema(schema) as (
-            isolated,
-            _host,
-            _context,
-            namespace_context,
-        ):
-            element = element_from_xdm(node, namespace_context)
-            parsed = isolated.parse(element, capture_xdm=True)
-        if _instance_errors(parsed.report):
-            raise DocumentValidationError(
-                "the source document is not valid against the imported schema",
-                reason="lax-invalid",
-            )
-        _copy_subtree_annotations(parsed.to_xdm().root_element, node)
+        _assess_declaration(
+            node,
+            adapter,
+            error_type=DocumentValidationError,
+            reason="lax-invalid",
+        )
 
 
 def _type_validated_document(
@@ -584,6 +556,7 @@ def _type_validated_document(
     *,
     schema_pool: SchemaPool | None,
     type_name: str,
+    validation: str,
     strip: bool,
     document_uri: str | None,
     base_uri: str | None,
@@ -606,36 +579,24 @@ def _type_validated_document(
         source_name=source_name,
     )
     root = document.root_element
-    if type_name == _XSD_UNTYPED_ATOMIC:
-        if any(child.kind is NodeKind.ELEMENT for child in root.children):
-            raise DocumentValidationError(
-                "xs:untypedAtomic validation rejects element children",
-                reason="type",
-            )
-        root._apply_occurrence_annotation(XdmAnnotation(UNTYPED_ATOMIC, None))
-        return document
     if type_name == _XSD_ANY_TYPE:
         if strip:
             strip_type_annotations(document)
         return document
-    if schema_pool is None:
-        raise DocumentValidationError(
-            f"the type {type_name!r} is not in the in-scope schema definitions",
-            reason="type",
-        )
-    requested = schema_pool.get_type(type_name)
+    from pyxsd.xdm.validation import _assess_element, _lookup_type
+
+    requested = _lookup_type(schema_pool, type_name)
     if requested is None:
         raise DocumentValidationError(
             f"the type {type_name!r} is not in the in-scope schema definitions",
             reason="type",
         )
-    from pyxsd.xdm.validation import _assess_element
-
-    element_adapter = schema_pool.get_element(root.name)
+    element_adapter = schema_pool.get_element(root.name) if schema_pool is not None else None
     declaration = None if element_adapter is None else getattr(element_adapter, "_er", None)
     _assess_element(
         root,
         requested,
+        document_root=validation in ("strict", "lax"),
         declaration=declaration,
         error_type=DocumentValidationError,
         reason="type",

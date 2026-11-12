@@ -14,11 +14,18 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import pytest
+
 from pyxsd.schema import Schema
-from pyxsd.xdm.document import parse_typed_document
+from pyxsd.xdm.document import DocumentValidationError, parse_typed_document
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
-from pyxsd.xdm.validation import ValidationRequest, validate_occurrence
+from pyxsd.xdm.validation import (
+    ConstructedValidationError,
+    ValidationRequest,
+    validate_document,
+    validate_occurrence,
+)
 from pyxsd.xslt import XsltProcessor
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -66,6 +73,7 @@ SCHEMA = f"""
   <xs:element name="price" type="c:Price" nillable="true"/>
   <xs:element name="amount" type="xs:decimal"/>
   <xs:element name="idDoc" type="c:IdDoc"/>
+  <xs:element name="implicit"/>
 </xs:schema>
 """
 
@@ -92,6 +100,8 @@ IDDOC_SOURCE = (
 IDDOC_DECL_SOURCE = (
     f'<c:idDoc xmlns:c="{CONSISTENCY}"><c:ref>missing</c:ref><c:id>one</c:id></c:idDoc>'
 ).encode()
+
+IMPLICIT_SOURCE = f'<c:implicit xmlns:c="{CONSISTENCY}"><c:child/></c:implicit>'.encode()
 
 
 def _schema_and_pool() -> tuple[Schema, SchemaPool]:
@@ -139,24 +149,26 @@ def _signature(node: XdmNode):
         node.name,
         annotation.type_name,
         annotation.nilled,
-        annotation.validity,
-        annotation.validation_attempted,
-        annotation.actual_type,
-        tuple((value.type_name, value.lexical) for value in annotation.typed_values),
-        annotation.default_value,
-        annotation.fixed_value,
-        annotation.value_source,
-        annotation.id_kind,
-        annotation.governing_declaration,
-        annotation.local_declaration,
-        annotation.anonymous_type,
-        annotation.repeated,
-        annotation.wildcard,
-        annotation.substitution_group_head,
-        annotation.xsi_type,
-        annotation.xsi_type_lexical,
-        annotation.nil_lexical,
-        annotation.nil_declared,
+        getattr(annotation, "validity", None),
+        getattr(annotation, "validation_attempted", None),
+        getattr(annotation, "actual_type", None),
+        tuple(
+            (value.type_name, value.lexical) for value in getattr(annotation, "typed_values", ())
+        ),
+        getattr(annotation, "default_value", None),
+        getattr(annotation, "fixed_value", None),
+        getattr(annotation, "value_source", None),
+        getattr(annotation, "id_kind", None),
+        getattr(annotation, "governing_declaration", None),
+        getattr(annotation, "local_declaration", None),
+        getattr(annotation, "anonymous_type", None),
+        getattr(annotation, "repeated", None),
+        getattr(annotation, "wildcard", None),
+        getattr(annotation, "substitution_group_head", None),
+        getattr(annotation, "xsi_type", None),
+        getattr(annotation, "xsi_type_lexical", None),
+        getattr(annotation, "nil_lexical", None),
+        getattr(annotation, "nil_declared", None),
     )
 
 
@@ -180,7 +192,16 @@ def _primed_host() -> tuple[Schema, SchemaPool, Any, Any]:
     schema, pool = _schema_and_pool()
     schema.parse(io.BytesIO(COMPLEX_SOURCE))
     host = schema._host
+    host._elementParents[10**9] = "parent-sentinel"
+    host._elementTypes[10**9 + 1] = "type-sentinel"
     return schema, pool, host._elementParents, host._elementTypes
+
+
+def _assert_host_unchanged(schema: Schema, parents: Any, types: Any) -> None:
+    assert schema._host._elementParents is parents
+    assert schema._host._elementTypes is types
+    assert parents[10**9] == "parent-sentinel"
+    assert types[10**9 + 1] == "type-sentinel"
 
 
 def test_validation_preserves_the_compiled_host() -> None:
@@ -188,8 +209,7 @@ def test_validation_preserves_the_compiled_host() -> None:
 
     parse_typed_document(COMPLEX_SOURCE, schema_pool=pool, type_name=INVOICE_TYPE)
 
-    assert schema._host._elementParents is parents
-    assert schema._host._elementTypes is types
+    _assert_host_unchanged(schema, parents, types)
 
 
 def test_nilled_validation_preserves_the_compiled_host() -> None:
@@ -197,8 +217,7 @@ def test_nilled_validation_preserves_the_compiled_host() -> None:
 
     parse_typed_document(NILLED_SOURCE, schema_pool=pool, type_name=PRICE_TYPE)
 
-    assert schema._host._elementParents is parents
-    assert schema._host._elementTypes is types
+    _assert_host_unchanged(schema, parents, types)
 
 
 def test_declaration_validation_preserves_the_compiled_host() -> None:
@@ -206,23 +225,189 @@ def test_declaration_validation_preserves_the_compiled_host() -> None:
 
     parse_typed_document(COMPLEX_SOURCE, schema_pool=pool, validation="strict")
 
-    assert schema._host._elementParents is parents
-    assert schema._host._elementTypes is types
+    _assert_host_unchanged(schema, parents, types)
 
 
-def test_ignored_document_ids_do_not_invalidate_occurrences() -> None:
+def test_requested_type_with_strict_validation_checks_document_ids() -> None:
     _, pool = _schema_and_pool()
 
-    document = parse_typed_document(IDDOC_SOURCE, schema_pool=pool, type_name=IDDOC_TYPE)
+    with pytest.raises(DocumentValidationError) as caught:
+        parse_typed_document(
+            IDDOC_SOURCE,
+            schema_pool=pool,
+            validation="strict",
+            type_name=IDDOC_TYPE,
+        )
+    assert caught.value.reason == "type"
 
-    assert document.root_element.annotation.validity == "valid"
-    reference, identifier = [
-        child for child in document.root_element.children if child.kind is NodeKind.ELEMENT
-    ]
-    assert reference.annotation.id_kind == "IDREF"
-    assert reference.annotation.validity == "valid"
-    assert identifier.annotation.id_kind == "ID"
-    assert identifier.annotation.validity == "valid"
+    accepted = parse_typed_document(
+        IDDOC_SOURCE,
+        schema_pool=pool,
+        validation="strip",
+        type_name=IDDOC_TYPE,
+    )
+    assert accepted.root_element.annotation.validity == "valid"
+
+
+def test_declaration_identity_constraints_agree() -> None:
+    _, pool = _schema_and_pool()
+
+    with pytest.raises(DocumentValidationError) as source_error:
+        parse_typed_document(IDDOC_DECL_SOURCE, schema_pool=pool, validation="strict")
+    assert source_error.value.reason == "invalid"
+
+    with pytest.raises(ConstructedValidationError) as constructed_error:
+        validate_document(
+            XdmDocument.parse(IDDOC_DECL_SOURCE),
+            ValidationRequest("strict"),
+            schema_pool=pool,
+        )
+    assert constructed_error.value.reason == "document-constraint"
+
+
+def test_source_and_constructed_declaration_annotations_agree() -> None:
+    _, pool = _schema_and_pool()
+
+    source = parse_typed_document(COMPLEX_SOURCE, schema_pool=pool, validation="strict")
+    constructed = XdmDocument.parse(COMPLEX_SOURCE)
+    validate_occurrence(
+        constructed.root_element,
+        ValidationRequest("strict"),
+        schema_pool=pool,
+    )
+    _assert_annotations_agree(source.root_element, constructed.root_element)
+    kind = next(
+        attribute for attribute in source.root_element.attributes if attribute.name == "kind"
+    )
+    assert kind.string_value == "std"
+    assert kind.annotation.value_source == "default"
+
+    nilled = parse_typed_document(NILLED_SOURCE, schema_pool=pool, validation="strict")
+    constructed_nilled = XdmDocument.parse(NILLED_SOURCE)
+    validate_occurrence(
+        constructed_nilled.root_element,
+        ValidationRequest("strict"),
+        schema_pool=pool,
+    )
+    _assert_annotations_agree(nilled.root_element, constructed_nilled.root_element)
+    assert nilled.root_element.nilled is True
+    assert nilled.root_element.annotation.typed_values == ()
+    nil_attribute = nilled.root_element.attribute(f"{{{XSI_NS}}}nil")
+    constructed_nil_attribute = constructed_nilled.root_element.attribute(f"{{{XSI_NS}}}nil")
+    assert nil_attribute is not None
+    assert constructed_nil_attribute is not None
+    assert _signature(nil_attribute) == _signature(constructed_nil_attribute)
+
+
+def test_declaration_implicit_any_type_uses_any_type_assessment() -> None:
+    _, pool = _schema_and_pool()
+    any_type = f"{{{XSD_NS}}}anyType"
+
+    source = parse_typed_document(IMPLICIT_SOURCE, schema_pool=pool, validation="strict")
+    constructed = XdmDocument.parse(IMPLICIT_SOURCE)
+    validate_occurrence(
+        constructed.root_element,
+        ValidationRequest("strict"),
+        schema_pool=pool,
+    )
+
+    assert source.root_element.type_name == any_type
+    assert constructed.root_element.type_name == any_type
+    _assert_annotations_agree(source.root_element, constructed.root_element)
+
+
+def test_invalid_declaration_xsi_type_is_rejected_consistently() -> None:
+    _, pool = _schema_and_pool()
+    invalid = (
+        f'<c:Invoice xmlns:c="{CONSISTENCY}" xmlns:xsi="{XSI_NS}" '
+        'xsi:type="c:Missing"><c:line code="1"><c:value>1</c:value></c:line>'
+        "</c:Invoice>"
+    ).encode()
+
+    with pytest.raises(DocumentValidationError) as source_error:
+        parse_typed_document(invalid, schema_pool=pool, validation="strict")
+    assert source_error.value.reason == "invalid"
+
+    with pytest.raises(ConstructedValidationError) as constructed_error:
+        validate_occurrence(
+            XdmDocument.parse(invalid).root_element,
+            ValidationRequest("strict"),
+            schema_pool=pool,
+        )
+    assert constructed_error.value.reason == "invalid"
+
+
+def test_invalid_xsi_nil_lexical_is_rejected_for_requested_types() -> None:
+    _, pool = _schema_and_pool()
+    invalid = (
+        f'<c:amount xmlns:c="{CONSISTENCY}" xmlns:xsi="{XSI_NS}" xsi:nil="yes">12.50</c:amount>'
+    ).encode()
+
+    with pytest.raises(DocumentValidationError) as source_error:
+        parse_typed_document(invalid, schema_pool=pool, type_name=AMOUNT_TYPE)
+    assert source_error.value.reason == "type"
+
+    with pytest.raises(ConstructedValidationError) as constructed_error:
+        validate_occurrence(
+            XdmDocument.parse(invalid).root_element,
+            ValidationRequest("strip", AMOUNT_TYPE),
+            schema_pool=pool,
+        )
+    assert constructed_error.value.reason == "type"
+
+
+def test_invalid_xsi_nil_lexical_is_rejected_for_declarations() -> None:
+    _, pool = _schema_and_pool()
+    invalid = (
+        f'<c:amount xmlns:c="{CONSISTENCY}" xmlns:xsi="{XSI_NS}" xsi:nil="yes">12.50</c:amount>'
+    ).encode()
+
+    with pytest.raises(DocumentValidationError) as source_error:
+        parse_typed_document(invalid, schema_pool=pool, validation="strict")
+    assert source_error.value.reason == "invalid"
+
+    with pytest.raises(ConstructedValidationError) as constructed_error:
+        validate_occurrence(
+            XdmDocument.parse(invalid).root_element,
+            ValidationRequest("strict"),
+            schema_pool=pool,
+        )
+    assert constructed_error.value.reason == "invalid"
+
+
+def test_untyped_atomic_requested_type_resolves_xsi_type() -> None:
+    _, pool = _schema_and_pool()
+    untyped_type = f"{{{XSD_NS}}}untypedAtomic"
+    same = (
+        f'<c:amount xmlns:c="{CONSISTENCY}" xmlns:xs="{XSD_NS}" '
+        f'xmlns:xsi="{XSI_NS}" xsi:type="xs:untypedAtomic">12.50</c:amount>'
+    ).encode()
+
+    source = parse_typed_document(same, schema_pool=pool, type_name=untyped_type)
+    constructed = XdmDocument.parse(same)
+    validate_occurrence(
+        constructed.root_element,
+        ValidationRequest("strip", untyped_type),
+        schema_pool=pool,
+    )
+    assert source.root_element.type_name == untyped_type
+    assert source.root_element.annotation.xsi_type == untyped_type
+    _assert_annotations_agree(source.root_element, constructed.root_element)
+
+    override = (
+        f'<c:amount xmlns:c="{CONSISTENCY}" xmlns:xs="{XSD_NS}" '
+        f'xmlns:xsi="{XSI_NS}" xsi:type="xs:decimal">12.50</c:amount>'
+    ).encode()
+    with pytest.raises(DocumentValidationError) as source_error:
+        parse_typed_document(override, schema_pool=pool, type_name=untyped_type)
+    assert source_error.value.reason == "type"
+    with pytest.raises(ConstructedValidationError) as constructed_error:
+        validate_occurrence(
+            XdmDocument.parse(override).root_element,
+            ValidationRequest("strip", untyped_type),
+            schema_pool=pool,
+        )
+    assert constructed_error.value.reason == "type"
 
 
 def test_ignored_fragment_ids_do_not_invalidate_constructed_declarations() -> None:

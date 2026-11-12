@@ -66,9 +66,10 @@ class XdmAnnotation:
     node kind has no type annotation.  ``nilled`` is the XDM nilled property,
     present only on elements.  ``xsi_type``, ``nil_lexical``, and
     ``nil_declared`` are recorded source evidence from an unvalidated parse;
-    they do not change the XDM properties.  ``validity`` and
-    ``governing_declaration`` are provisional fields for the later
-    schema-aware annotation layer.
+    they do not change the XDM properties.  ``id_kind`` preserves the
+    ``is-id``/``is-idref`` classification across annotation stripping.
+    ``validity`` and ``governing_declaration`` are provisional fields for the
+    later schema-aware annotation layer.
     """
 
     type_name: str | None

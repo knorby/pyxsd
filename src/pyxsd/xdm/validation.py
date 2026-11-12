@@ -81,6 +81,25 @@ _DOCUMENT_CONSTRAINT_CODES = frozenset(
 _BUILTIN_POOL: SchemaPool | None = None
 
 
+class _UntypedAtomicAdapter:
+    """Adapter for ``xs:untypedAtomic``, which has no generated type class."""
+
+    _type_class = None
+    name = UNTYPED_ATOMIC
+
+    def __init__(self, schema_pool: SchemaPool | None) -> None:
+        self.maps = schema_pool
+
+    def is_simple(self) -> bool:
+        return True
+
+    def is_valid(self, value: Any) -> bool:
+        return True
+
+    def cast(self, value: Any) -> Any:
+        return XdmAtomic.untyped_atomic(value)
+
+
 def _builtin_pool() -> SchemaPool:
     """The immutable built-in-type pool, used when no schema was imported."""
     global _BUILTIN_POOL
@@ -91,6 +110,8 @@ def _builtin_pool() -> SchemaPool:
 
 def _lookup_type(schema_pool: SchemaPool | None, name: str) -> Any:
     """Resolve a named type from the package pool or the built-in XSD set."""
+    if name == UNTYPED_ATOMIC:
+        return _UntypedAtomicAdapter(schema_pool)
     if schema_pool is not None:
         adapter = schema_pool.get_type(name)
         if adapter is not None:
@@ -261,35 +282,7 @@ def validate_document(
             reason="document-shape",
         )
     _validate_element(elements[0], request, schema_pool, operation="element", document_root=True)
-    if request.type_name is not None:
-        _check_document_constraints(elements[0], request.type_name, schema_pool)
     document._finalize_document_order()
-
-
-def _check_document_constraints(
-    node: XdmNode,
-    type_name: str,
-    schema_pool: SchemaPool | None,
-) -> None:
-    """Apply document-level ID/IDREF and identity constraints for a typed document."""
-    schema = schema_pool.schema_for_element(node.name) if schema_pool is not None else None
-    if schema is None:
-        adapter = _lookup_type(schema_pool, type_name)
-        schema = getattr(getattr(adapter, "schema", None), "_schema", None)
-    if schema is None:
-        return
-    with _isolated_schema(schema) as (isolated, _host, _context, namespace_context):
-        element = element_from_xdm(node, namespace_context)
-        _normalize_empty_text(element)
-        parsed = isolated.parse(element, capture_xdm=True)
-    if any(
-        getattr(issue, "code", None) in _DOCUMENT_CONSTRAINT_CODES
-        for issue in _instance_errors(parsed.report, document=True)
-    ):
-        raise ConstructedValidationError(
-            "the constructed document has unsatisfied document-level constraints",
-            reason="document-constraint",
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -325,14 +318,36 @@ def _assess_element(
     )
     if declaration is None:
         declaration = _element_declaration(schema_pool, node.name)
-    nilled = _is_nilled(node)
+    nilled = _nilled_state(node, error_type=error_type, reason=reason)
+    if nilled:
+        if declaration is None or not declaration.isNillable():
+            raise _occurrence_error(
+                error_type,
+                f"the element {node.name!r} cannot be nilled without a nillable declaration",
+                reason,
+            )
+        if any(
+            child.kind is NodeKind.ELEMENT or child.kind is NodeKind.TEXT for child in node.children
+        ):
+            raise _occurrence_error(
+                error_type,
+                f"the nilled element {node.name!r} cannot carry content",
+                reason,
+            )
+    if getattr(adapter, "name", None) == _ANY_TYPE:
+        _annotate_any_type(node)
+        _lax_validate_children(
+            node,
+            schema_pool,
+            reason=reason,
+            error_type=error_type,
+        )
+        return
     if adapter.is_simple():
         _validate_simple_element(
             node,
             adapter,
-            schema_pool=schema_pool,
             nilled=nilled,
-            declaration=declaration,
             error_type=error_type,
             reason=reason,
         )
@@ -343,20 +358,6 @@ def _assess_element(
         raise _occurrence_error(
             error_type,
             f"the type {getattr(adapter, 'name', None)!r} has no compiled definition",
-            reason,
-        )
-    if nilled and (declaration is None or not declaration.isNillable()):
-        raise _occurrence_error(
-            error_type,
-            f"the element {node.name!r} cannot be nilled without a nillable declaration",
-            reason,
-        )
-    if nilled and any(
-        child.kind is NodeKind.ELEMENT or child.kind is NodeKind.TEXT for child in node.children
-    ):
-        raise _occurrence_error(
-            error_type,
-            f"the nilled element {node.name!r} cannot carry content",
             reason,
         )
     with _isolated_schema(schema) as (_isolated, host, context, namespace_context):
@@ -378,6 +379,8 @@ def _assess_element(
                     error_type=error_type,
                     reason=reason,
                 )
+                if declaration is not None:
+                    instance._descriptor_ = declaration
                 _capture_root(
                     node,
                     element,
@@ -400,7 +403,7 @@ def _assess_element(
             raise _occurrence_error(
                 error_type,
                 "the validated document has unsatisfied document-level constraints",
-                "document-constraint",
+                ("document-constraint" if error_type is ConstructedValidationError else reason),
             )
         raise _occurrence_error(
             error_type,
@@ -416,6 +419,94 @@ def _assess_element(
         reason=reason,
     )
     node.document._finalize_document_order()
+
+
+def _assess_declaration(
+    node: XdmNode,
+    adapter: Any,
+    *,
+    document_root: bool = False,
+    error_type: type[XdmInputError],
+    reason: str,
+) -> None:
+    """Assess one occurrence declared by a global element declaration.
+
+    The declaration's own resolver selects the actual type (including
+    ``xsi:type`` overrides, conditional type alternatives, substitution-group
+    head types, and abstract-declaration rejection); the selected type then
+    goes through the same :func:`_assess_element` occurrence path used by
+    requested-type validation.
+    """
+    schema_pool = getattr(adapter, "maps", None)
+    schema = schema_pool.schema_for_element(node.name) if schema_pool is not None else None
+    declaration = getattr(adapter, "_er", None)
+    if schema is None or declaration is None:  # pragma: no cover - pool and ER agree
+        raise _occurrence_error(
+            error_type,
+            f"the declaration for {node.name!r} has no compiled schema",
+            reason,
+        )
+    from pyxsd.instance_binding import class_for_root
+
+    report = ValidationReport()
+    with _isolated_schema(schema) as (
+        isolated,
+        _host,
+        _context,
+        namespace_context,
+    ):
+        element = element_from_xdm(node, namespace_context)
+        _normalize_empty_text(element)
+        type_class = class_for_root(isolated, declaration, element, report)
+    if _instance_issues(report) or type_class is None:
+        raise _occurrence_error(
+            error_type,
+            f"the element {node.name!r} is not valid against its declaration",
+            reason,
+        )
+    _assess_element(
+        node,
+        _type_adapter_for_class(schema_pool, type_class, schema, declaration),
+        document_root=document_root,
+        declaration=declaration,
+        error_type=error_type,
+        reason=reason,
+    )
+
+
+def _type_adapter_for_class(
+    schema_pool: SchemaPool | None,
+    type_class: type[Any],
+    schema: Any,
+    declaration: Any,
+) -> Any:
+    """Adapt a declaration-selected generated class for occurrence assessment."""
+    from pyxsd.schema_base import SchemaBase
+
+    if type_class is SchemaBase:
+        adapter = _lookup_type(schema_pool, _ANY_TYPE)
+        if adapter is None:  # pragma: no cover - the built-in pool provides it
+            raise ConstructedValidationError(
+                "the implicit anyType declaration has no compiled definition",
+                reason="type",
+            )
+        return adapter
+    if schema_pool is None:  # pragma: no cover - a declaration implies a pool
+        raise ConstructedValidationError(
+            "the declaration has no schema pool",
+            reason="type",
+        )
+    adapter = schema_pool.type_for_class(type_class)
+    if getattr(adapter, "schema", None) is None:
+        from pyxsd.xdm.schema import PyxsdSchemaProxy, PyxsdType
+
+        adapter = PyxsdType(
+            schema_pool,
+            type_class,
+            er=declaration,
+            proxy=PyxsdSchemaProxy(schema, schema_pool),
+        )
+    return adapter
 
 
 def _validate_element(
@@ -450,56 +541,39 @@ def _validate_element_declaration(
     schema_pool: SchemaPool | None,
     *,
     document_root: bool = False,
-    lax_reason: Literal["lax-invalid", "type"] = "lax-invalid",
+    lax_reason: str = "lax-invalid",
+    error_type: type[XdmInputError] = ConstructedValidationError,
 ) -> None:
     adapter = schema_pool.get_element(node.name) if schema_pool is not None else None
     if adapter is None:
         if mode == "strict":
-            raise ConstructedValidationError(
+            raise _occurrence_error(
+                error_type,
                 f"no global element declaration for {node.name!r} is in scope",
-                reason="unknown",
+                "unknown",
             )
         _annotate_any_type(node)
-        _lax_validate_children(node, schema_pool)
+        _lax_validate_children(
+            node,
+            schema_pool,
+            error_type=error_type,
+        )
         return
-    schema = schema_pool.schema_for_element(node.name) if schema_pool is not None else None
-    if schema is None:  # pragma: no cover - the pool adapter and schema agree
-        raise ConstructedValidationError(
-            f"the declaration for {node.name!r} has no compiled schema",
-            reason="unknown" if mode == "strict" else "lax-invalid",
-        )
-    with _isolated_schema(schema) as (isolated, _host, _context, namespace_context):
-        element = element_from_xdm(node, namespace_context)
-        _normalize_empty_text(element)
-        parsed = isolated.parse(element, capture_xdm=True)
-    errors = _instance_errors(parsed.report, document=document_root)
-    if errors:
-        if document_root and any(
-            getattr(issue, "code", None) in _DOCUMENT_CONSTRAINT_CODES for issue in errors
-        ):
-            raise ConstructedValidationError(
-                "the constructed document has unresolved ID/IDREF constraints",
-                reason="document-constraint",
-            )
-        raise ConstructedValidationError(
-            f"the constructed element {node.name!r} is not valid against its declaration",
-            reason="invalid" if mode == "strict" else lax_reason,
-        )
-    parsed_tree = parsed.to_xdm()
-    _finish_xdm_validity(
-        parsed_tree.root_element,
-        _instance_issues(parsed.report),
-        ignore_codes=frozenset() if document_root else _ID_CODES,
+    _assess_declaration(
+        node,
+        adapter,
+        document_root=document_root,
+        error_type=error_type,
+        reason="invalid" if mode == "strict" else lax_reason,
     )
-    _apply_parsed_tree(node, parsed_tree.root_element)
-    node.document._finalize_document_order()
 
 
 def _lax_validate_children(
     node: XdmNode,
     schema_pool: SchemaPool | None,
     *,
-    reason: Literal["lax-invalid", "type"] = "lax-invalid",
+    reason: str = "lax-invalid",
+    error_type: type[XdmInputError] = ConstructedValidationError,
 ) -> None:
     if schema_pool is None:
         return
@@ -513,6 +587,7 @@ def _lax_validate_children(
                     "lax",
                     schema_pool,
                     lax_reason=reason,
+                    error_type=error_type,
                 )
         current_children = [
             child for child in reversed(current.children) if child.kind is NodeKind.ELEMENT
@@ -524,6 +599,7 @@ def _lax_validate_children(
                     "lax",
                     schema_pool,
                     lax_reason=reason,
+                    error_type=error_type,
                 )
             else:
                 stack.append(child)
@@ -538,9 +614,6 @@ def _validate_element_type(
 ) -> None:
     if type_name == UNTYPED:
         _strip_subtree(node)
-        return
-    if type_name == UNTYPED_ATOMIC:
-        _validate_simple_element(node, None, schema_pool=schema_pool, untyped_atomic=True)
         return
     if type_name == _ANY_TYPE:
         _annotate_any_type(node)
@@ -565,19 +638,14 @@ def _validate_simple_element(
     node: XdmNode,
     adapter: Any,
     *,
-    schema_pool: SchemaPool | None,
-    untyped_atomic: bool = False,
-    nilled: bool | None = None,
-    declaration: Any = None,
+    nilled: bool,
     error_type: type[XdmInputError] = ConstructedValidationError,
     reason: str = "type",
 ) -> None:
     """Assess an element occurrence against a simple type definition."""
-    type_name = UNTYPED_ATOMIC if untyped_atomic else adapter.name
-    if nilled is None:
-        nilled = _is_nilled(node)
+    type_name = adapter.name
     for child in node.children:
-        if child.kind is NodeKind.ELEMENT or (nilled and child.kind is NodeKind.TEXT):
+        if child.kind is NodeKind.ELEMENT:
             raise _occurrence_error(
                 error_type,
                 f"the element {node.name!r} is not valid against {type_name!r}",
@@ -592,46 +660,30 @@ def _validate_simple_element(
                 reason,
             )
     if nilled:
-        if declaration is None:
-            declaration = _element_declaration(schema_pool, node.name)
-        if declaration is None or not declaration.isNillable():
-            raise _occurrence_error(
-                error_type,
-                f"the simple-typed element {node.name!r} cannot be nilled without a "
-                "nillable declaration",
-                reason,
-            )
         node._apply_occurrence_annotation(
             _element_annotation(
                 node,
                 type_name=type_name,
-                actual_type=None if untyped_atomic else getattr(adapter, "_type_class", None),
+                actual_type=getattr(adapter, "_type_class", None),
                 typed_values=(),
                 nilled=True,
-                id_kind=None
-                if untyped_atomic
-                else id_kind_for(getattr(adapter, "_type_class", None)),
+                id_kind=id_kind_for(getattr(adapter, "_type_class", None)),
             )
         )
         return
-    typed_values: tuple[Any, ...]
-    if untyped_atomic:
-        typed_values = (XdmAtomic.untyped_atomic(node.string_value),)
-    else:
-        if not adapter.is_valid(node.string_value):
-            raise _occurrence_error(
-                error_type,
-                f"the element {node.name!r} is not valid against {adapter.name!r}",
-                reason,
-            )
-        typed_values = _atomize(adapter.cast(node.string_value))
+    if not adapter.is_valid(node.string_value):
+        raise _occurrence_error(
+            error_type,
+            f"the element {node.name!r} is not valid against {adapter.name!r}",
+            reason,
+        )
     node._apply_occurrence_annotation(
         _element_annotation(
             node,
             type_name=type_name,
-            actual_type=None if untyped_atomic else getattr(adapter, "_type_class", None),
-            typed_values=typed_values,
-            id_kind=None if untyped_atomic else id_kind_for(getattr(adapter, "_type_class", None)),
+            actual_type=getattr(adapter, "_type_class", None),
+            typed_values=_atomize(adapter.cast(node.string_value)),
+            id_kind=id_kind_for(getattr(adapter, "_type_class", None)),
         )
     )
 
@@ -641,10 +693,24 @@ def _element_declaration(schema_pool: SchemaPool | None, name: str | None) -> An
     return None if adapter is None else getattr(adapter, "_er", None)
 
 
-def _is_nilled(node: XdmNode) -> bool:
-    """Whether the occurrence's lexical ``xsi:nil`` asks for a nilled element."""
+def _nilled_state(
+    node: XdmNode,
+    *,
+    error_type: type[XdmInputError],
+    reason: str,
+) -> bool:
+    """Return the nilled property, rejecting an invalid ``xsi:nil`` lexical."""
     nil = node.attribute(f"{{{XSI_NS}}}nil")
-    return nil is not None and nil.string_value.strip() in ("true", "1")
+    if nil is None:
+        return False
+    lexical = nil.string_value.strip()
+    if lexical not in ("true", "false", "1", "0"):
+        raise _occurrence_error(
+            error_type,
+            f"the xsi:nil value {nil.string_value!r} on {node.name!r} is not a boolean",
+            reason,
+        )
+    return lexical in ("true", "1")
 
 
 def _actual_type(
@@ -664,6 +730,12 @@ def _actual_type(
         resolved = _resolve_qname(lexical.string_value, node.in_scope_namespaces)
     if resolved is None or resolved == requested.name:
         return requested
+    if requested.name == UNTYPED_ATOMIC or resolved == UNTYPED_ATOMIC:
+        raise _occurrence_error(
+            error_type,
+            f"the xsi:type {resolved!r} is not validly derived from {requested.name!r}",
+            reason,
+        )
     actual = _lookup_type(schema_pool, resolved)
     if actual is None:
         raise _occurrence_error(
@@ -770,29 +842,33 @@ def _validate_attribute_declaration(
     mode: str,
     schema_pool: SchemaPool | None,
     *,
-    lax_reason: Literal["lax-invalid", "type"] = "lax-invalid",
+    lax_reason: str = "lax-invalid",
+    error_type: type[XdmInputError] = ConstructedValidationError,
 ) -> None:
     adapter = schema_pool.get_attribute(node.name) if schema_pool is not None else None
     if adapter is None:
         if mode == "strict":
-            raise ConstructedValidationError(
+            raise _occurrence_error(
+                error_type,
                 f"no global attribute declaration for {node.name!r} is in scope",
-                reason="unknown",
+                "unknown",
             )
         _annotate_untyped_atomic_attribute(node)
         return
     type_adapter = adapter.type
     if type_adapter is None:  # pragma: no cover - attribute declarations resolve a type
-        raise ConstructedValidationError(
+        raise _occurrence_error(
+            error_type,
             f"the attribute {node.name!r} has no resolved type",
-            reason="invalid" if mode == "strict" else lax_reason,
+            "invalid" if mode == "strict" else lax_reason,
         )
     _check_attribute_qname(type_adapter)
     value = node.string_value
     if not type_adapter.is_valid(value):
-        raise ConstructedValidationError(
-            f"the constructed attribute {node.name!r} is not valid against its declaration",
-            reason="invalid" if mode == "strict" else lax_reason,
+        raise _occurrence_error(
+            error_type,
+            f"the attribute {node.name!r} is not valid against its declaration",
+            "invalid" if mode == "strict" else lax_reason,
         )
     typed = type_adapter.cast(value)
     fixed = _constraint(getattr(adapter, "_er", None), "getFixed")
@@ -802,9 +878,10 @@ def _validate_attribute_declaration(
         except (TypeError, ValueError):  # pragma: no cover - compiled fixed values are valid
             fixed_value = fixed
         if xsd_value_key(typed) != xsd_value_key(fixed_value):
-            raise ConstructedValidationError(
-                f"the constructed attribute {node.name!r} conflicts with its fixed value",
-                reason="invalid" if mode == "strict" else lax_reason,
+            raise _occurrence_error(
+                error_type,
+                f"the attribute {node.name!r} conflicts with its fixed value",
+                "invalid" if mode == "strict" else lax_reason,
             )
     node._apply_occurrence_annotation(
         _attribute_annotation(
@@ -905,53 +982,6 @@ def _uses_qname_or_notation(type_class: Any) -> bool:
 # Annotation application and defaulted values
 
 
-def _finish_xdm_validity(
-    root: XdmNode,
-    errors: tuple[Any, ...],
-    *,
-    ignore_codes: frozenset[str] = frozenset(),
-) -> None:
-    """Recalculate PSVI validity after excluding ignored instance errors.
-
-    ``Schema.parse`` finishes its capture with every error, including
-    document-wide constraints a fragment assessment does not enforce.  When
-    those errors are discarded, an occurrence they touched must not keep the
-    ``invalid`` PSVI validity they left behind.
-    """
-    non_ignored: set[tuple[tuple[Any, ...], str | None]] = set()
-    ignored: set[tuple[tuple[Any, ...], str | None]] = set()
-    for issue in errors:
-        location = issue.location
-        if location is None:  # pragma: no cover - reportable errors carry a location
-            continue
-        key = (location.path, location.attribute)
-        target = ignored if issue.code in ignore_codes else non_ignored
-        target.add(key)
-        for stop in range(1, len(location.path) + 1):
-            target.add((location.path[:stop], None))
-    stack = [root]
-    while stack:
-        node = stack.pop()
-        if node.kind in (NodeKind.ELEMENT, NodeKind.ATTRIBUTE):
-            location = node.source_location()
-            assert location is not None
-            key = (location.path, location.attribute)
-            annotation = node.annotation
-            if (
-                getattr(annotation, "validity", None) == "invalid"
-                and key not in non_ignored
-                and key in ignored
-            ):
-                validity = (
-                    "valid"
-                    if getattr(annotation, "validation_attempted", "none") == "full"
-                    else "notKnown"
-                )
-                node._apply_occurrence_annotation(replace(annotation, validity=validity))
-        stack.extend(reversed(node.children))
-        stack.extend(node.attributes)
-
-
 def _validated_annotation(annotation: OccurrenceAnnotation, node: XdmNode) -> OccurrenceAnnotation:
     """Map a wildcard's not-known assessment to the XSLT annotation rule.
 
@@ -980,36 +1010,6 @@ def _validated_annotation(annotation: OccurrenceAnnotation, node: XdmNode) -> Oc
         nil_lexical=getattr(annotation, "nil_lexical", None),
         nil_declared=bool(getattr(annotation, "nil_declared", False)),
     )
-
-
-def _apply_parsed_tree(target: XdmNode, parsed: XdmNode) -> None:
-    """Copy annotations and defaulted nodes from a validated tree."""
-    stack: list[tuple[XdmNode, XdmNode]] = [(target, parsed)]
-    while stack:
-        target_node, parsed_node = stack.pop()
-        target_node._apply_occurrence_annotation(
-            _validated_annotation(cast(OccurrenceAnnotation, parsed_node.annotation), target_node)
-        )
-        _add_default_attributes(target_node, getattr(parsed_node.annotation, "actual_type", None))
-        parsed_attributes = {attribute.name: attribute for attribute in parsed_node.attributes}
-        for attribute in target_node.attributes:
-            source = parsed_attributes.get(attribute.name)
-            if source is not None:
-                attribute._apply_occurrence_annotation(
-                    _validated_annotation(cast(OccurrenceAnnotation, source.annotation), attribute)
-                )
-        target_children = [
-            child for child in target_node.children if child.kind is NodeKind.ELEMENT
-        ]
-        parsed_children = [
-            child for child in parsed_node.children if child.kind is NodeKind.ELEMENT
-        ]
-        if len(target_children) != len(parsed_children):  # pragma: no cover - internal invariant
-            raise ConstructedValidationError(
-                "the validated tree does not match the constructed occurrence",
-                reason="invalid",
-            )
-        stack.extend(zip(target_children, parsed_children, strict=True))
 
 
 def _apply_capture(

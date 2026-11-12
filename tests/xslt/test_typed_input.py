@@ -825,6 +825,19 @@ def test_copy_and_strip_annotation_contracts() -> None:
         strip_type_annotations(object())  # type: ignore[arg-type]
 
 
+def test_copy_type_annotations_copies_attribute_annotations() -> None:
+    from pyxsd.xdm.document import copy_type_annotations
+    from pyxsd.xdm.nodes import XdmDocument
+
+    source = XdmDocument.parse(b'<root a="1"><child/></root>')
+    target = XdmDocument.parse(b'<root a="2"><child/></root>')
+
+    assert copy_type_annotations(source, target) is target
+    source_attribute = source.root_element.attributes[0]
+    target_attribute = target.root_element.attributes[0]
+    assert target_attribute.annotation is source_attribute.annotation
+
+
 def test_document_resources_constructor_validation() -> None:
     from pyxsd.xslt.runtime.resources import DocumentResources
 
