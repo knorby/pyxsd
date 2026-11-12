@@ -295,6 +295,7 @@ def _assess_element(
     *,
     document_root: bool = False,
     declaration: Any = None,
+    declaration_mode: bool = False,
     error_type: type[XdmInputError],
     reason: str,
 ) -> None:
@@ -355,6 +356,7 @@ def _assess_element(
             nilled=nilled,
             declaration=declaration,
             governing_declaration=governing_declaration,
+            apply_declaration_constraints=declaration_mode,
             error_type=error_type,
             reason=reason,
         )
@@ -476,6 +478,7 @@ def _assess_declaration(
         _type_adapter_for_class(schema_pool, type_class, schema, declaration),
         document_root=document_root,
         declaration=declaration,
+        declaration_mode=True,
         error_type=error_type,
         reason=reason,
     )
@@ -648,16 +651,19 @@ def _validate_simple_element(
     nilled: bool,
     declaration: Any = None,
     governing_declaration: Any = None,
+    apply_declaration_constraints: bool = False,
     error_type: type[XdmInputError] = ConstructedValidationError,
     reason: str = "type",
 ) -> None:
     """Assess an element occurrence against a simple type definition.
 
-    A global element declaration's ``default``/``fixed`` value participates
-    exactly as it does in the binder's primitive-root path: empty content takes
-    the declared value, a present value must match ``fixed``, and the
-    occurrence annotation retains the declaration constraints and governing
-    declaration.
+    A governing global element declaration's ``default``/``fixed`` value
+    participates exactly as it does in the binder's primitive-root path: empty
+    content takes the declared value, a present value must match ``fixed``,
+    and the occurrence annotation retains the declaration constraints and
+    governing declaration. Requested/named-type assessment leaves the
+    requested type as the authority and does not borrow constraints from a
+    non-governing declaration.
     """
     type_name = adapter.name
     for child in node.children:
@@ -675,8 +681,9 @@ def _validate_simple_element(
                 f"{attribute.name!r}",
                 reason,
             )
-    default_value = _constraint(declaration, "getDefault")
-    fixed_value = _constraint(declaration, "getFixed")
+    constraint_source = declaration if apply_declaration_constraints else None
+    default_value = _constraint(constraint_source, "getDefault")
+    fixed_value = _constraint(constraint_source, "getFixed")
     has_text = any(child.kind is NodeKind.TEXT for child in node.children)
     empty = not has_text
     lexical = node.string_value

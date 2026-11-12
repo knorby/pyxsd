@@ -78,6 +78,7 @@ SCHEMA = f"""
   <xs:element name="m" type="xs:int" fixed="7"/>
   <xs:element name="f" type="xs:string" fixed="bar"/>
   <xs:element name="d" type="xs:string" default="foo"/>
+  <xs:element name="x" type="xs:int" fixed="7"/>
   <xs:element name="anyN" type="xs:anyType" nillable="true"/>
 </xs:schema>
 """
@@ -362,6 +363,85 @@ def test_simple_declaration_present_fixed_value_metadata() -> None:
     assert annotation.value_source == "instance"
     assert annotation.governing_declaration is not None
     assert tuple(value.lexical for value in annotation.typed_values) == ("bar",)
+
+
+def test_non_governing_declaration_facets_are_ignored_for_requested_types() -> None:
+    _, pool = _schema_and_pool()
+    decimal_type = f"{{{XSD_NS}}}decimal"
+    string_type = f"{{{XSD_NS}}}string"
+
+    present = f'<c:x xmlns:c="{CONSISTENCY}">12</c:x>'.encode()
+    source = parse_typed_document(present, schema_pool=pool, type_name=decimal_type)
+    constructed = XdmDocument.parse(present)
+    validate_occurrence(
+        constructed.root_element,
+        ValidationRequest("strip", decimal_type),
+        schema_pool=pool,
+    )
+    _assert_annotations_agree(source.root_element, constructed.root_element)
+    annotation = source.root_element.annotation
+    assert annotation.default_value is None
+    assert annotation.fixed_value is None
+    assert annotation.value_source is None
+    assert annotation.governing_declaration is None
+    assert tuple(value.lexical for value in annotation.typed_values) == ("12",)
+
+    empty_fixed = f'<c:x xmlns:c="{CONSISTENCY}"/>'.encode()
+    with pytest.raises(DocumentValidationError) as source_error:
+        parse_typed_document(empty_fixed, schema_pool=pool, type_name=decimal_type)
+    assert source_error.value.reason == "type"
+    with pytest.raises(ConstructedValidationError) as constructed_error:
+        validate_occurrence(
+            XdmDocument.parse(empty_fixed).root_element,
+            ValidationRequest("strip", decimal_type),
+            schema_pool=pool,
+        )
+    assert constructed_error.value.reason == "type"
+
+    empty_default = f'<c:d xmlns:c="{CONSISTENCY}"/>'.encode()
+    source = parse_typed_document(empty_default, schema_pool=pool, type_name=string_type)
+    constructed = XdmDocument.parse(empty_default)
+    validate_occurrence(
+        constructed.root_element,
+        ValidationRequest("strip", string_type),
+        schema_pool=pool,
+    )
+    _assert_annotations_agree(source.root_element, constructed.root_element)
+    annotation = source.root_element.annotation
+    assert annotation.default_value is None
+    assert annotation.fixed_value is None
+    assert annotation.value_source is None
+    assert tuple(value.lexical for value in annotation.typed_values) == ("",)
+
+
+def test_governing_declaration_fixed_facets_still_apply() -> None:
+    _, pool = _schema_and_pool()
+    valid = f'<c:x xmlns:c="{CONSISTENCY}">7</c:x>'.encode()
+    invalid = f'<c:x xmlns:c="{CONSISTENCY}">12</c:x>'.encode()
+
+    source = parse_typed_document(valid, schema_pool=pool, validation="strict")
+    constructed = XdmDocument.parse(valid)
+    validate_occurrence(
+        constructed.root_element,
+        ValidationRequest("strict"),
+        schema_pool=pool,
+    )
+    _assert_annotations_agree(source.root_element, constructed.root_element)
+    annotation = source.root_element.annotation
+    assert annotation.fixed_value == "7"
+    assert annotation.governing_declaration is not None
+    assert tuple(value.lexical for value in annotation.typed_values) == ("7",)
+
+    with pytest.raises(DocumentValidationError) as source_error:
+        parse_typed_document(invalid, schema_pool=pool, validation="strict")
+    assert source_error.value.reason == "invalid"
+    with pytest.raises(ConstructedValidationError) as constructed_error:
+        validate_occurrence(
+            XdmDocument.parse(invalid).root_element,
+            ValidationRequest("strict"),
+            schema_pool=pool,
+        )
+    assert constructed_error.value.reason == "invalid"
 
 
 def test_simple_declaration_fixed_value_mismatch_is_rejected() -> None:
