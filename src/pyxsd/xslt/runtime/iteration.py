@@ -1860,7 +1860,7 @@ def execute_iteration(
     context: EvaluationContext,
 ) -> XdmSequence:
     component = (
-        _TemplateContext(cast(Component, None))
+        _TemplateContext(cast("Component", None))
         if context.rule_context is not None or context.original_functions
         else None
     )

@@ -13,6 +13,7 @@ from functools import partial
 from typing import Any
 
 import pytest
+from tests.xslt.support import element_children
 from tests.xslt.support import stylesheet as _stylesheet
 from tests.xslt.support import transform as _transform
 
@@ -954,3 +955,48 @@ def test_next_iteration_ignores_a_preserved_whitespace_text_instruction() -> Non
     )
     plan = _compile_next_iteration(instruction, StaticContext(), None)  # type: ignore[arg-type]
     assert plan.parameters == ()
+
+
+def test_iteration_nested_in_a_literal_result_inside_a_matched_rule() -> None:
+    """Iteration below literal content in a matched rule executes normally."""
+    source = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:apply-templates select="root"/>
+        </xsl:template>
+        <xsl:template match="root">
+          <out>
+            <grouped>
+              <xsl:for-each-group select="n" group-by="@k">
+                <g key="{current-grouping-key()}">
+                  <xsl:value-of select="current-group()" separator=","/>
+                </g>
+              </xsl:for-each-group>
+            </grouped>
+            <each>
+              <xsl:for-each select="n">
+                <i><xsl:value-of select="."/></i>
+              </xsl:for-each>
+            </each>
+            <iterated>
+              <xsl:iterate select="n">
+                <i><xsl:value-of select="concat(position(), ':', .)"/></i>
+              </xsl:iterate>
+            </iterated>
+          </out>
+        </xsl:template>
+        """
+    )
+    result = transform(
+        source,
+        input_source=(b'<root><n k="a">1</n><n k="b">2</n><n k="a">3</n></root>'),
+    )
+
+    root = result.principal[0]
+    grouped, each, iterated = element_children(root)
+    assert [
+        (group.attribute("key").string_value, group.string_value)
+        for group in element_children(grouped)
+    ] == [("a", "1,3"), ("b", "2")]
+    assert [item.string_value for item in element_children(each)] == ["1", "2", "3"]
+    assert [item.string_value for item in element_children(iterated)] == ["1:1", "2:2", "3:3"]
