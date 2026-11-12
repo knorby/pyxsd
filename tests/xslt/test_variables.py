@@ -237,6 +237,125 @@ def test_used_package_globals_are_statically_visible() -> None:
     XsltProcessor(resolver=resolver).compile(io.BytesIO(principal.encode()))
 
 
+def test_map_constructor_values_are_statically_checked() -> None:
+    forms = {
+        "select": """
+            <xsl:template name="unused">
+              <xsl:sequence select="map {'a': $missing}"/>
+            </xsl:template>
+        """,
+        "avt": """
+            <xsl:template name="unused">
+              <out x="{map {'a': $missing}}"/>
+            </xsl:template>
+        """,
+        "tvt": """
+            <xsl:template name="unused">
+              <out xsl:expand-text="yes">{map {'a': $missing}}</out>
+            </xsl:template>
+        """,
+        "pattern": """<xsl:template match="item[map {'a': $missing}]"/>""",
+    }
+    for label, body in forms.items():
+        with pytest.raises(XsltStaticError) as caught:
+            XsltProcessor().compile(stylesheet(body))
+        assert caught.value.code == "XPST0008", label
+
+    XsltProcessor().compile(
+        stylesheet(
+            """
+            <xsl:variable name="missing" select="1"/>
+            <xsl:template name="unused">
+              <xsl:sequence select="map {'a': $missing}"/>
+            </xsl:template>
+            """
+        )
+    )
+
+
+def test_local_eqname_variable_and_parameter_declarations() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="Q{v}var" select="1"/>
+        <xsl:template match="/">
+          <out v="{$Q{v}var}">
+            <xsl:apply-templates select="*">
+              <xsl:with-param name="Q{}mod" select="*"/>
+            </xsl:apply-templates>
+          </out>
+        </xsl:template>
+        <xsl:template match="*">
+          <xsl:param name="Q{}mod"/>
+          <xsl:apply-templates>
+            <xsl:with-param name="Q{}mod" select="$Q{}mod"/>
+          </xsl:apply-templates>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b"<doc><item/></doc>")
+    out = element_children(result.principal_tree)[0]
+    attribute = out.attribute("v")
+    assert attribute is not None
+    assert attribute.string_value == "1"
+
+
+def test_local_eqname_parameter_forms() -> None:
+    source = stylesheet(
+        """
+        <xsl:function name="my:identity" as="xs:string">
+          <xsl:param name="Q{urn:q}f" as="xs:string"/>
+          <xsl:sequence select="$Q{urn:q}f"/>
+        </xsl:function>
+        <xsl:template name="named">
+          <xsl:param name="Q{urn:q}t" select="'t'"/>
+          <xsl:sequence select="$Q{urn:q}t"/>
+        </xsl:template>
+        <xsl:template name="main">
+          <xsl:variable name="Q{urn:q}v" select="'v'"/>
+          <xsl:iterate select="1">
+            <xsl:param name="Q{urn:q}i" select="'i'"/>
+            <xsl:on-completion
+              select="concat($Q{urn:q}v, my:identity('f'), $Q{urn:q}i, '|')"/>
+            <xsl:next-iteration/>
+          </xsl:iterate>
+          <xsl:call-template name="named"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b"<doc/>", initial_template="main")
+    assert "".join(result.principal_tree.string_value.split()) == "vfi|t"
+
+
+def test_private_package_variables_are_not_statically_visible() -> None:
+    library = (
+        f'<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:lib="urn:library" '
+        'name="urn:library" package-version="1.0" version="3.0">'
+        '<xsl:variable name="lib:priv" select="1" visibility="private"/>'
+        '<xsl:variable name="lib:pub" select="2" visibility="public"/>'
+        "</xsl:package>"
+    )
+
+    def principal(reference: str) -> bytes:
+        return (
+            f'<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:lib="urn:library" '
+            'name="urn:principal" version="3.0">'
+            '<xsl:use-package name="urn:library" package-version="1.0">'
+            '<xsl:accept component="variable" names="lib:pub" visibility="public"/>'
+            "</xsl:use-package>"
+            '<xsl:template name="unused">'
+            f'<xsl:value-of select="${reference}"/>'
+            "</xsl:template>"
+            "</xsl:package>"
+        ).encode()
+
+    resolver = PackageResolver.from_sources(library)
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor(resolver=resolver).compile(io.BytesIO(principal("lib:priv")))
+    assert caught.value.code == "XPST0008"
+
+    XsltProcessor(resolver=resolver).compile(io.BytesIO(principal("lib:pub")))
+
+
 def test_variable_select_and_content_are_mutually_exclusive() -> None:
     source = stylesheet(
         """

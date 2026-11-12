@@ -256,6 +256,17 @@ def test_compile_xpath_tracks_only_free_variable_references(tmp_path: Path) -> N
         else:
             compile_xpath(source, context)
 
+    with pytest.raises(XsltStaticError) as caught:
+        compile_xpath("map {'a': $missing}", context)
+    assert _code(caught.value) == "XPST0008"
+
+    mapped = XPathEngine("3.1").compile(
+        "map {'a': $free, 'b': map {'c': $free2}}",
+        context.xpath_static_context(),
+    )
+    assert mapped.variable_names == frozenset({"free", "free2"})
+    assert mapped.free_variable_names == frozenset({"free", "free2"})
+
     context = context.with_variable_name("x").with_variable_name("p")
     assert compile_xpath("for $x in 1 return $x + $p", context).free_variable_names == (
         frozenset({"p"})

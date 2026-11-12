@@ -584,7 +584,12 @@ def test_pattern_predicates_require_statically_visible_variables() -> None:
         compile_pattern("item[$missing]", _context())
     assert _code(caught.value) == "XPST0008"
 
+    with pytest.raises(XsltStaticError) as caught:
+        compile_pattern("item[map {'a': $missing}]", _context())
+    assert _code(caught.value) == "XPST0008"
+
     compile_pattern("item[$v]", _context(variables=("v",)))
+    compile_pattern("item[map {'a': $v}]", _context(variables=("v",)))
     compile_pattern("item[for $x in @code return $x = 'a']", _context())
     compile_pattern("item[current() = $v]", _context(variables=("v",)))
 

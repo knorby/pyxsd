@@ -605,6 +605,7 @@ def _expression_variable_names(
         if isinstance(token, VariableToken):
             names.add(_expanded_variable_name(token.value, static_context))
         stack.extend(getattr(token, "_items", ()) or ())
+        stack.extend(getattr(token, "_values", ()) or ())
     return frozenset(names)
 
 
@@ -648,6 +649,8 @@ def _expression_free_variable_names(
             return
         for item in items:
             visit(item, bound)
+        for value in getattr(token, "_values", ()) or ():
+            visit(value, bound)
 
     visit(root, frozenset())
     return frozenset(names)

@@ -2194,6 +2194,8 @@ def _context_for(
     variables = dict(base.variables)
     functions = dict(base.functions)
     for component in package.components.values():
+        if component.hidden:
+            continue
         if component.kind == "variable" and component.name is not None:
             if component.name not in variables:
                 kind = (
@@ -4714,6 +4716,13 @@ def _literal_namespaces(
 
 
 def _expanded_name(name: str, namespaces: Mapping[str, str]) -> str:
+    if name.startswith("Q{"):
+        close = name.find("}")
+        if close >= 0 and close + 1 < len(name):
+            eqname_uri = name[2:close]
+            local = name[close + 1 :]
+            return local if not eqname_uri else f"{{{eqname_uri}}}{local}"
+        return name
     if name.startswith("{"):
         return name
     prefix, separator, local = name.partition(":")

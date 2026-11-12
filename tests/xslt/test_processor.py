@@ -1912,6 +1912,10 @@ def test_template_parameter_name_validation_and_unknown_prefixes() -> None:
 
     assert _expanded_name("{urn:x}p", {}) == "{urn:x}p"
     assert _expanded_name("missing:p", {}) == "missing:p"
+    assert _expanded_name("Q{urn:x}p", {}) == "{urn:x}p"
+    assert _expanded_name("Q{}p", {}) == "p"
+    assert _expanded_name("Q{}", {}) == "Q{}"
+    assert _expanded_name("Q{broken", {}) == "Q{broken"
 
 
 def test_literal_namespaces_skip_unused_default_even_when_excluded() -> None:
