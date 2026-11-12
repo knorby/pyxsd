@@ -12,14 +12,14 @@ and canonical URI identities never leak between transformations.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urljoin, urlsplit
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.xdm.document import DocumentValidationError, parse_typed_document
-from pyxsd.xdm.nodes import XdmDocument
+from pyxsd.xdm.nodes import XdmDocument, XdmNode
 from pyxsd.xslt.errors import XsltDynamicError
 from pyxsd.xslt.runtime.whitespace import apply_source_space_rules
 
@@ -89,6 +89,7 @@ class DocumentResources:
         *,
         policy: object = None,
         remote_policy: object = None,
+        collection_resolver: Callable[[str | None], Sequence[XdmNode]] | None = None,
         schema_pool: object = None,
         validation: str = "strip",
         validation_type: str | None = None,
@@ -101,6 +102,8 @@ class DocumentResources:
             raise TypeError("a document resource policy must provide read()")
         if remote_policy is not None and not callable(getattr(remote_policy, "read", None)):
             raise TypeError("a remote resource policy must provide read()")
+        if collection_resolver is not None and not callable(collection_resolver):
+            raise TypeError("a collection resolver must be callable")
         if validation not in _VALIDATION_MODES:
             raise ValueError(f"invalid validation mode {validation!r}")
         if validation_type is not None and not isinstance(validation_type, str):
@@ -112,6 +115,7 @@ class DocumentResources:
         self.documents = documents
         self.policy = cast(_DocumentPolicy | None, policy)
         self.remote_policy = cast(_DocumentPolicy | None, remote_policy)
+        self.collection_resolver = collection_resolver
         self.schema_pool = schema_pool
         self.validation = validation
         self.validation_type = validation_type
@@ -123,6 +127,7 @@ class DocumentResources:
             XdmDocument,
         ] = {}
         self._texts: dict[tuple[str, str | None], str] = {}
+        self._collections: dict[str | None, tuple[XdmNode, ...]] = {}
 
     def resolve(
         self,
@@ -289,6 +294,50 @@ class DocumentResources:
         if lines and lines[-1] == "":
             lines.pop()
         return tuple(lines)
+
+    def collection(self, uri: str | None, *, base: str | None) -> tuple[XdmNode, ...]:
+        """Return one application-supplied collection, cached per invocation.
+
+        ``uri`` is ``None`` for the default collection.  A missing resolver and
+        an empty named collection are both ``FODC0002``; an empty default
+        collection is a valid empty sequence.  The resolver is application
+        data, not a byte-resource policy, so it never reads a file or network.
+        """
+        target = None if uri is None else resolve_document_uri(uri, base)
+        cached = self._collections.get(target)
+        if cached is not None:
+            return cached
+        resolver = self.collection_resolver
+        if resolver is None:
+            raise XsltDynamicError(
+                "no default collection is available to this transformation"
+                if target is None
+                else f"the collection {target!r} is not available to this transformation",
+                code="FODC0002",
+            )
+        items = tuple(resolver(target))
+        if any(not isinstance(item, XdmNode) for item in items):
+            raise TypeError("a collection resolver must return documents or nodes")
+        if target is not None and not items:
+            raise XsltDynamicError(
+                f"the collection {target!r} is not available to this transformation",
+                code="FODC0002",
+            )
+        self._collections[target] = items
+        return items
+
+    def collection_uris(self, uri: str | None, *, base: str | None) -> tuple[str, ...]:
+        """Return the document URI of every item in one collection."""
+        uris: list[str] = []
+        for item in self.collection(uri, base=base):
+            document_uri = item.owner_document_uri
+            if document_uri is None:
+                raise XsltDynamicError(
+                    "a collection member has no document URI",
+                    code="FODC0002",
+                )
+            uris.append(document_uri)
+        return tuple(uris)
 
     def _policy_for(self, target: str, *, label: str) -> _DocumentPolicy | None:
         """Select the policy that owns one absolute target and scheme."""

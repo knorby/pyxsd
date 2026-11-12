@@ -453,6 +453,7 @@ class XsltProcessor:
     implicit_timezone: Any = None
     resource_policy: Any = None
     remote_resource_policy: Any = None
+    collection_resolver: Callable[[str | None], Sequence[XdmNode]] | None = None
     xml_policy: Any = None
     xml_limits: Any = None
     resolver: PackageResolver | None = None
@@ -489,6 +490,8 @@ class XsltProcessor:
             getattr(self.remote_resource_policy, "read", None)
         ):
             raise TypeError("remote_resource_policy must provide read()")
+        if self.collection_resolver is not None and not callable(self.collection_resolver):
+            raise TypeError("collection_resolver must be callable")
         if not isinstance(self.static_options, Mapping):
             raise TypeError("static options must be a mapping")
         options: dict[str, Any] = {}
@@ -5246,6 +5249,7 @@ class _Invocation(Transformation):
             self.documents,
             policy=getattr(stylesheet.processor, "resource_policy", None),
             remote_policy=stylesheet.processor.remote_resource_policy,
+            collection_resolver=stylesheet.processor.collection_resolver,
             schema_pool=stylesheet.schema_pool,
             validation=options.validation,
             validation_type=validation_type,

@@ -1452,6 +1452,26 @@ def test_document_sequences_base_nodes_and_exact_errors(tmp_path: Path) -> None:
     ).principal == (XdmAtomic.integer(1),)
 
 
+def test_text_and_collection_functions_require_invocation_resources() -> None:
+    overrides = bridge().function_overrides()
+
+    def invoke(name: str, *items: Any) -> XdmSequence:
+        return overrides[f"{{{FN_NS}}}{name}"](None, (tuple(items),) if items else ())
+
+    with pytest.raises(XsltError) as caught:
+        invoke("unparsed-text", XdmAtomic.string("urn:text"))
+    assert caught.value.code == "FOUT1170"
+    with pytest.raises(XsltError) as caught:
+        invoke("unparsed-text-lines", XdmAtomic.string("urn:text"))
+    assert caught.value.code == "FOUT1170"
+    with pytest.raises(XsltError) as caught:
+        invoke("collection")
+    assert caught.value.code == "FODC0002"
+    with pytest.raises(XsltError) as caught:
+        invoke("uri-collection", XdmAtomic.string("urn:set"))
+    assert caught.value.code == "FODC0002"
+
+
 def test_versions_gate_generate_id_document_and_availability() -> None:
     two = stylesheet(
         """

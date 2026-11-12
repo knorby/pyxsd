@@ -6,6 +6,8 @@ import pytest
 from tests.xslt.support import stylesheet, transform
 
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError, validate_purpose
+from pyxsd.xdm import XdmAtomic
+from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltDynamicError
 from pyxsd.xslt.runtime.resources import DocumentResources
@@ -336,3 +338,201 @@ def test_unparsed_text_encoding_argument_selects_the_decoder() -> None:
     )
     compiled = XsltProcessor(resource_policy=Policy()).compile(io.BytesIO(source))
     assert compiled.transform().principal_tree.string_value == "café"
+
+
+# ---------------------------------------------------------------------------
+# collection and uri-collection
+
+
+def _collection_document(xml: bytes, uri: str | None) -> XdmDocument:
+    return XdmDocument.parse(xml, document_uri=uri)
+
+
+def test_collection_resolver_returns_nodes() -> None:
+    document = _collection_document(b"<root><item/></root>", "urn:doc:one")
+    seen: list[str | None] = []
+
+    def resolver(uri: str | None):
+        seen.append(uri)
+        return (document.root_element,)
+
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<out><xsl:value-of select=\"count(collection('urn:set'))\"/></out>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor(collection_resolver=resolver).compile(io.BytesIO(source))
+    result = compiled.transform()
+    assert result.principal_tree.string_value == "1"
+    assert seen == ["urn:set"]
+
+
+def test_collection_resolves_a_relative_uri_against_the_static_base() -> None:
+    document = _collection_document(b"<root/>", "urn:doc:one")
+    seen: list[str | None] = []
+
+    def resolver(uri: str | None):
+        seen.append(uri)
+        return (document.root_element,)
+
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<out><xsl:value-of select=\"count(collection('data'))\"/></out>"
+        "</xsl:template>",
+        attributes=' xml:base="https://example.test/sets/"',
+    )
+    compiled = XsltProcessor(collection_resolver=resolver).compile(io.BytesIO(source))
+    assert compiled.transform().principal_tree.string_value == "1"
+    assert seen == ["https://example.test/sets/data"]
+
+
+def test_collection_without_a_resolver_is_an_error() -> None:
+    missing = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<out><xsl:value-of select=\"count(collection('urn:set'))\"/></out>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(missing))
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform()
+    assert caught.value.code == "FODC0002"
+
+    default = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        '<out><xsl:value-of select="count(collection())"/></out>'
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(default))
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform()
+    assert caught.value.code == "FODC0002"
+
+
+def test_collection_resolver_empty_named_result_is_an_error() -> None:
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<out><xsl:value-of select=\"count(collection('urn:set'))\"/></out>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor(collection_resolver=lambda uri: ()).compile(io.BytesIO(source))
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform()
+    assert caught.value.code == "FODC0002"
+
+
+def test_default_collection_may_be_empty() -> None:
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        '<out><xsl:value-of select="count(collection())"/>'
+        '<xsl:value-of select="count(uri-collection())"/></out>'
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor(collection_resolver=lambda uri: ()).compile(io.BytesIO(source))
+    assert compiled.transform().principal_tree.string_value == "00"
+
+
+def test_collection_resolver_exceptions_propagate() -> None:
+    def resolver(uri: str | None):
+        raise RuntimeError(f"no such collection {uri}")
+
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<out><xsl:value-of select=\"count(collection('urn:set'))\"/></out>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor(collection_resolver=resolver).compile(io.BytesIO(source))
+    with pytest.raises(RuntimeError, match="no such collection"):
+        compiled.transform()
+
+
+def test_uri_collection_returns_document_uris() -> None:
+    first = _collection_document(b"<one/>", "urn:doc:one")
+    second = _collection_document(b"<two/>", "urn:doc:two")
+
+    def resolver(uri: str | None):
+        assert uri == "urn:set"
+        return (first, second)
+
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<out><xsl:value-of select=\"string-join(uri-collection('urn:set'), ' ')\"/></out>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor(collection_resolver=resolver).compile(io.BytesIO(source))
+    assert compiled.transform().principal_tree.string_value == "urn:doc:one urn:doc:two"
+
+
+def test_uri_collection_requires_an_item_document_uri() -> None:
+    document = XdmDocument.parse(b"<root/>")
+
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<out><xsl:value-of select=\"count(uri-collection('urn:set'))\"/></out>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor(collection_resolver=lambda uri: (document,)).compile(
+        io.BytesIO(source)
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform()
+    assert caught.value.code == "FODC0002"
+
+
+def test_collection_resolver_must_return_nodes() -> None:
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<out><xsl:value-of select=\"count(collection('urn:set'))\"/></out>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor(
+        collection_resolver=lambda uri: (XdmAtomic.string("not a node"),)
+    ).compile(io.BytesIO(source))
+    with pytest.raises(TypeError, match="nodes"):
+        compiled.transform()
+
+
+def test_collection_is_cached_per_invocation() -> None:
+    document = _collection_document(b"<root/>", "urn:doc:one")
+    calls: list[str | None] = []
+
+    def resolver(uri: str | None):
+        calls.append(uri)
+        return (document,)
+
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<out><xsl:value-of select=\"count(collection('urn:set'))"
+        " + count(collection('urn:set'))\"/></out>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor(collection_resolver=resolver).compile(io.BytesIO(source))
+    assert compiled.transform().principal_tree.string_value == "2"
+    assert calls == ["urn:set"]
+    assert compiled.transform().principal_tree.string_value == "2"
+    assert calls == ["urn:set", "urn:set"]
+
+
+def test_collection_accepts_an_empty_uri_as_the_default_collection() -> None:
+    document = _collection_document(b"<root/>", "urn:doc:one")
+    seen: list[str | None] = []
+
+    def resolver(uri: str | None):
+        seen.append(uri)
+        return (document,)
+
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        '<out><xsl:value-of select="count(collection(()))"/>'
+        '<xsl:value-of select="count(uri-collection(()))"/></out>'
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor(collection_resolver=resolver).compile(io.BytesIO(source))
+    assert compiled.transform().principal_tree.string_value == "11"
+    assert seen == [None]
+
+
+def test_collection_resolver_is_validated_at_construction() -> None:
+    with pytest.raises(TypeError, match="collection_resolver"):
+        XsltProcessor(collection_resolver=object())
+    with pytest.raises(TypeError, match="collection resolver"):
+        DocumentResources({}, collection_resolver=object())
