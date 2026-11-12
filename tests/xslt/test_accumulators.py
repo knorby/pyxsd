@@ -703,6 +703,91 @@ def test_copy_of_without_accumulators_recomputes_from_destination_content() -> N
     assert values(transform(stylesheet(body), initial_template="main")) == ("24", "56", "1")
 
 
+def test_copy_accumulators_use_source_values_without_prior_cache() -> None:
+    """The source value is copied even when it was never requested first."""
+    body = """
+        <xsl:mode use-accumulators="#all"/>
+        <xsl:accumulator name="app:count" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:template name="main">
+          <xsl:variable name="source"><doc><n/><n/><n/></doc></xsl:variable>
+          <xsl:variable name="copied" as="element()">
+            <xsl:copy-of select="$source/doc/n[3]" copy-accumulators="yes"/>
+          </xsl:variable>
+          <xsl:for-each select="$copied">
+            <xsl:sequence select="accumulator-before('app:count')"/>
+            <xsl:sequence select="accumulator-after('app:count')"/>
+          </xsl:for-each>
+        </xsl:template>
+    """
+    assert values(transform(stylesheet(body), initial_template="main")) == ("3", "3")
+
+
+def test_copy_of_text_comment_and_processing_instruction_roots() -> None:
+    """Accumulator values exist for every node kind except attributes/namespaces."""
+    body = """
+        <xsl:mode use-accumulators="#all"/>
+        <xsl:accumulator name="app:chars" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="text()"
+            phase="start" select="$value + string-length(.)"/>
+          <xsl:accumulator-rule match="comment()" phase="start" select="$value + 10"/>
+          <xsl:accumulator-rule match="processing-instruction()"
+            phase="start" select="$value + 100"/>
+        </xsl:accumulator>
+        <xsl:template name="main">
+          <xsl:for-each select="/doc/n/text()">
+            <xsl:sequence select="accumulator-before('app:chars')"/>
+            <xsl:sequence select="accumulator-after('app:chars')"/>
+          </xsl:for-each>
+          <xsl:for-each select="/doc/comment()[2]">
+            <xsl:sequence select="accumulator-before('app:chars')"/>
+            <xsl:sequence select="accumulator-after('app:chars')"/>
+          </xsl:for-each>
+          <xsl:for-each select="/doc/processing-instruction()[2]">
+            <xsl:sequence select="accumulator-before('app:chars')"/>
+            <xsl:sequence select="accumulator-after('app:chars')"/>
+          </xsl:for-each>
+          <xsl:variable name="copied-text" as="text()">
+            <xsl:copy-of select="/doc/n/text()" copy-accumulators="yes"/>
+          </xsl:variable>
+          <xsl:variable name="copied-comment" as="comment()">
+            <xsl:copy-of select="/doc/comment()[2]" copy-accumulators="yes"/>
+          </xsl:variable>
+          <xsl:variable name="copied-pi" as="processing-instruction()">
+            <xsl:copy-of select="/doc/processing-instruction()[2]" copy-accumulators="yes"/>
+          </xsl:variable>
+          <xsl:for-each select="$copied-text">
+            <xsl:sequence select="accumulator-before('app:chars')"/>
+            <xsl:sequence select="accumulator-after('app:chars')"/>
+          </xsl:for-each>
+          <xsl:for-each select="$copied-comment">
+            <xsl:sequence select="accumulator-before('app:chars')"/>
+            <xsl:sequence select="accumulator-after('app:chars')"/>
+          </xsl:for-each>
+          <xsl:for-each select="$copied-pi">
+            <xsl:sequence select="accumulator-before('app:chars')"/>
+            <xsl:sequence select="accumulator-after('app:chars')"/>
+          </xsl:for-each>
+        </xsl:template>
+    """
+    source = b"<doc>ab<n>cde</n><!--one--><?pi first?><!--two--><?pi second?></doc>"
+    assert values(transform(stylesheet(body), source, initial_template="main")) == (
+        "5",
+        "5",
+        "125",
+        "125",
+        "225",
+        "225",
+        "5",
+        "5",
+        "125",
+        "125",
+        "225",
+        "225",
+    )
+
+
 def test_copy_accumulator_values_do_not_cross_transformations() -> None:
     """Each transformation owns an independent accumulator cache."""
     body = """
@@ -737,8 +822,14 @@ def test_copy_accumulator_values_do_not_cross_transformations() -> None:
     assert values(second) == ("3", "3")
 
 
-def test_copy_accumulators_are_limited_to_the_destination_package() -> None:
-    """A private library accumulator is not transplanted into a copy."""
+def test_copy_accumulators_follow_source_applicability_across_packages() -> None:
+    """A source-applicable accumulator is copied regardless of its package.
+
+    XSLT 3.0 18.2.2 makes applicability to the copied tree depend on the
+    source tree, not on the package containing the ``xsl:copy-of``.  The
+    library accumulator is private to the library, but its value on the
+    source subtree is still the value of the copy.
+    """
     library = package(
         "urn:example:lib",
         """
@@ -777,7 +868,7 @@ def test_copy_accumulators_are_limited_to_the_destination_package() -> None:
         initial_template="main",
         delivery="document",
     )
-    assert values(result) == ("2", "1")
+    assert values(result) == ("2", "2")
 
 
 def test_source_document_use_accumulators_controls_applicability() -> None:
@@ -1988,6 +2079,7 @@ def _manager(
     evaluate_rule: Any = None,
     coerce: Any = None,
     matches: Any = None,
+    all_definitions: Any = None,
 ) -> AccumulatorManager:
     if evaluate_initial is None:
 
@@ -2023,13 +2115,16 @@ def _manager(
             del definition, rule
             return node.kind is NodeKind.ELEMENT and node.local_name == "n"
 
-    return AccumulatorManager(
-        lookup=lambda package_name, expanded_name: definition if expanded_name == "a" else None,
-        evaluate_initial=evaluate_initial,
-        evaluate_rule=evaluate_rule,
-        coerce=coerce,
-        matches=matches,
-    )
+    manager_options: dict[str, Any] = {
+        "lookup": lambda package_name, expanded_name: definition if expanded_name == "a" else None,
+        "evaluate_initial": evaluate_initial,
+        "evaluate_rule": evaluate_rule,
+        "coerce": coerce,
+        "matches": matches,
+    }
+    if all_definitions is not None:
+        manager_options["all_definitions"] = all_definitions
+    return AccumulatorManager(**manager_options)
 
 
 def test_manager_before_after_and_cache_reuse() -> None:
@@ -2080,14 +2175,24 @@ def test_manager_copy_values_maps_cached_values_by_structural_occurrence() -> No
     assert manager.value(definition, target_n2, "before") == (XdmAtomic.integer(12),)
     assert manager.value(definition, target_n2, "after") == (XdmAtomic.integer(22),)
 
-    source_cache = manager._values[(id(source), definition.key)]
-    target_cache = manager._values[(id(target), definition.key)]
-    assert target_cache is not source_cache
-    assert target_cache.before is not source_cache.before
-    assert target_cache.after is not source_cache.after
-
     assert manager.value(definition, source_n2, "before") == (XdmAtomic.integer(12),)
     assert manager.value(definition, source_n2, "after") == (XdmAtomic.integer(22),)
+
+
+def test_manager_copy_values_evaluates_a_cold_source_cache() -> None:
+    source = XdmDocument.parse(b"<doc><n/><n/></doc>")
+    definition = _manager_definition(AccumulatorRule(phase="start", order=0))
+    manager = _manager(definition, all_definitions=lambda: (definition,))
+    source_n2 = source.root_element.children[1]
+
+    target = _NodeFactory().clone(source_n2, parent=None, deep=True)
+    manager.copy_values(source_n2, target, enabled=True, names={"a"})
+    assert manager.value(definition, target, "before") == (XdmAtomic.integer(2),)
+    assert manager.value(definition, target, "after") == (XdmAtomic.integer(2),)
+
+    excluded = _NodeFactory().clone(source_n2, parent=None, deep=True)
+    manager.copy_values(source_n2, excluded, enabled=True, names={"b"})
+    assert manager.value(definition, excluded, "before") == (XdmAtomic.integer(1),)
 
 
 def test_manager_copy_values_honors_enabled_names_and_applicability() -> None:
@@ -2104,6 +2209,10 @@ def test_manager_copy_values_honors_enabled_names_and_applicability() -> None:
 
     def copied_element() -> XdmNode:
         return _NodeFactory().clone(source_n2, parent=None, deep=True)
+
+    divergent = copied_element()
+    manager.copy_values(source_n2, divergent, enabled=True, names={"a"})
+    assert manager.value(definition, divergent, "before") == (XdmAtomic.integer(2),)
 
     manager.copy_values(source_n2, source_n2, enabled=True, names={"a"})
     assert manager.value(definition, source_n2, "before") == (XdmAtomic.integer(2),)
@@ -2124,7 +2233,7 @@ def test_manager_copy_values_honors_enabled_names_and_applicability() -> None:
     manager.copy_values(source, mismatched, enabled=True, names={"a"})
     assert manager.value(definition, mismatched, "before") == (XdmAtomic.integer(1),)
 
-    manager.restrict(source, frozenset({definition.key}))
+    manager.restrict(source, frozenset({definition.key, (None, "missing")}))
     allowed = _NodeFactory().clone(source, parent=None, deep=True)
     assert isinstance(allowed, XdmDocument)
     manager.copy_values(source, allowed, enabled=True, names={"a"})
@@ -2137,6 +2246,13 @@ def test_manager_copy_values_honors_enabled_names_and_applicability() -> None:
     manager.copy_values(source_n2, restricted, enabled=True, names={"a"})
     with pytest.raises(XsltDynamicError) as caught:
         manager.value(definition, restricted, "before")
+    assert caught.value.code == "XTDE3362"
+
+    manager.restrict(source, frozenset({(None, "missing")}))
+    unknown = copied_element()
+    manager.copy_values(source_n2, unknown, enabled=True, names={"missing"})
+    with pytest.raises(XsltDynamicError) as caught:
+        manager.value(definition, unknown, "before")
     assert caught.value.code == "XTDE3362"
 
     manager.allow_all(source)
@@ -2192,7 +2308,6 @@ def test_manager_copy_values_skips_an_empty_cache() -> None:
     target = _NodeFactory().clone(source, parent=None, deep=True)
     assert isinstance(target, XdmDocument)
     manager.copy_values(source, target, enabled=True, names={"a"})
-    assert (id(target), definition.key) not in manager._values
     assert manager.value(definition, target, "before") == (XdmAtomic.integer(0),)
 
 
@@ -2212,10 +2327,26 @@ def test_manager_copy_values_ignores_attribute_endpoints() -> None:
     source = XdmDocument.parse(b'<doc><n k="x"/></doc>')
     definition = _manager_definition(AccumulatorRule(phase="start", order=0))
     manager = _manager(definition)
-    source_attribute = source.root_element.children[0].attributes[0]
-    target_attribute = _NodeFactory().clone(source_attribute, parent=None, deep=True)
+    target_attribute = _NodeFactory().clone(
+        source.root_element.children[0].attributes[0],
+        parent=None,
+        deep=True,
+    )
     manager.copy_values(source, target_attribute, enabled=True, names={"a"})
-    assert (id(target_attribute), definition.key) not in manager._values
+    with pytest.raises(XsltDynamicError) as caught:
+        manager.value(definition, target_attribute, "before")
+    assert caught.value.code == "XTTE3360"
+
+
+def test_manager_copy_values_handles_a_source_attribute_endpoint() -> None:
+    """A source attribute endpoint does not transplant tree-root values."""
+    source = XdmDocument.parse(b'<doc><n k="x"/></doc>')
+    definition = _manager_definition(AccumulatorRule(phase="start", order=0))
+    manager = _manager(definition, all_definitions=lambda: (definition,))
+    source_attribute = source.root_element.children[0].attributes[0]
+    target = _NodeFactory().clone(source.root_element.children[0], parent=None, deep=True)
+    manager.copy_values(source_attribute, target, enabled=True, names={"a"})
+    assert manager.value(definition, target, "before") == (XdmAtomic.integer(1),)
 
 
 def test_manager_applicability_restriction_and_upgrade() -> None:

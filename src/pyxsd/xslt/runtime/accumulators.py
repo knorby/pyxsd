@@ -131,12 +131,14 @@ class AccumulatorManager:
         ],
         coerce: Callable[[XdmSequence, AccumulatorDefinition], XdmSequence],
         matches: Callable[[AccumulatorDefinition, AccumulatorRule, XdmNode], bool],
+        all_definitions: Callable[[], Iterable[AccumulatorDefinition]] | None = None,
     ) -> None:
         self._lookup = lookup
         self._evaluate_initial = evaluate_initial
         self._evaluate_rule = evaluate_rule
         self._coerce = coerce
         self._matches = matches
+        self._all_definitions = all_definitions
         self._values: dict[tuple[int, AccumulatorKey], _AccumulatorValues] = {}
         self._errors: dict[tuple[int, AccumulatorKey], XsltError] = {}
         self._evaluating: set[tuple[int, AccumulatorKey]] = set()
@@ -242,25 +244,26 @@ class AccumulatorManager:
     ) -> None:
         """Transfer cached values between structurally corresponding trees.
 
-        *names* are the expanded accumulator names applicable in the
-        destination package.  With *enabled* true, every named accumulator that
-        is applicable to the source tree and already has cached values receives
-        a fresh per-tree cache on *target*: pre-descent and post-descent values
-        are assigned to the target nodes that correspond to their source nodes
-        by structural occurrence, never by cache or node reference.  The source
-        cache is not mutated and the destination may traverse its copy without
-        disturbing it.  Source applicability, including a restriction, is
-        mirrored on the destination tree.  A disabled copy, an excluded name,
-        or a source tree without a cached value leaves the destination to
+        *names* are the expanded names to consider for this transfer; source
+        applicability alone decides which are copied.  With *enabled* true,
+        every applicable accumulator that has source values, or whose value can
+        be evaluated from the source tree, receives a fresh per-tree cache on
+        *target*: pre-descent and post-descent values are assigned to the target
+        nodes that correspond to their source nodes by structural occurrence,
+        never by cache or node reference.  The source cache is not mutated and
+        the destination may traverse its copy without disturbing it.  Source
+        applicability, including a restriction, is mirrored on the destination
+        tree.  A disabled copy or an excluded name leaves the destination to
         compute independently.
         """
         if not enabled:
             return
         if not isinstance(source, XdmNode) or not isinstance(target, XdmNode):
             raise TypeError("accumulator copy endpoints must be XDM nodes")
-        if target.kind not in (NodeKind.DOCUMENT, NodeKind.ELEMENT):
+        if target.kind in (NodeKind.ATTRIBUTE, NodeKind.NAMESPACE):
             return
-        source_tree = self._tree_key(source.root)
+        source_root = source.root
+        source_tree = self._tree_key(source_root)
         target_tree = self._tree_key(target.root)
         if source_tree == target_tree:
             return
@@ -272,6 +275,10 @@ class AccumulatorManager:
         wanted = frozenset(names)
         if not wanted:
             return
+        for definition in self._applicable_definitions(restriction, wanted):
+            cache_key = (source_tree, definition.key)
+            if cache_key not in self._values:
+                self._compute(definition, source_root, cache_key)
         cached = tuple(
             (key, values) for (tree, key), values in self._values.items() if tree == source_tree
         )
@@ -295,6 +302,27 @@ class AccumulatorManager:
             )
             if copied.before or copied.after:
                 self._values[(target_tree, key)] = copied
+
+    def _applicable_definitions(
+        self,
+        restriction: frozenset[AccumulatorKey] | None,
+        wanted: frozenset[str],
+    ) -> tuple[AccumulatorDefinition, ...]:
+        """Definitions applicable to the source tree and named for this copy."""
+        if restriction is None:
+            if self._all_definitions is None:
+                return ()
+            return tuple(
+                definition for definition in self._all_definitions() if definition.name in wanted
+            )
+        definitions: list[AccumulatorDefinition] = []
+        for key in restriction:
+            if key[1] not in wanted:
+                continue
+            definition = self._lookup(key[0], key[1])
+            if definition is not None:
+                definitions.append(definition)
+        return tuple(definitions)
 
     def _compute(
         self,

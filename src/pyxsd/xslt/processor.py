@@ -5825,6 +5825,7 @@ class _Invocation(Transformation):
             evaluate_rule=self._evaluate_accumulator_rule,
             coerce=self._coerce_accumulator_value,
             matches=self._accumulator_rule_matches,
+            all_definitions=lambda: self.stylesheet._accumulators.values(),
         )
         self._accumulator_matchers: dict[int, PatternMatcher] = {}
         self._mark_initial_selection()
@@ -5878,14 +5879,9 @@ class _Invocation(Transformation):
             return None
         return self.stylesheet._accumulators.get((component.owner, component.name))
 
-    def _destination_accumulator_names(self, package_name: str | None) -> frozenset[str]:
-        """Expanded accumulator names visible in the destination package."""
-        package = self.stylesheet._packages.get(package_name, self.package)
-        return frozenset(
-            cast(str, component.name)
-            for component in package.components.values()
-            if component.kind == "accumulator" and not component.hidden
-        )
+    def _accumulator_copy_names(self) -> frozenset[str]:
+        """Expanded names of every compiled accumulator considered at a copy."""
+        return frozenset(definition.name for definition in self.stylesheet._accumulators.values())
 
     def _accumulator_rule_matches(
         self,
@@ -10419,9 +10415,7 @@ class _Invocation(Transformation):
                 deep=True,
                 copy_namespaces=plan.copy_namespaces,
             )
-            names = (
-                self._destination_accumulator_names(package_name) if plan.copy_accumulators else ()
-            )
+            names = self._accumulator_copy_names() if plan.copy_accumulators else ()
             self.accumulators.copy_values(
                 item,
                 clone,
