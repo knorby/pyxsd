@@ -113,6 +113,27 @@ ANY_NILLED_SOURCE = (
     f'<c:anyN xmlns:c="{CONSISTENCY}" xmlns:xsi="{XSI_NS}" xsi:nil="true"/>'
 ).encode()
 
+BOUND = "urn:example:bound"
+BOUND_A = f"""
+<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{BOUND}"
+    xmlns:b="{BOUND}" elementFormDefault="qualified">
+  <xs:element name="root" type="xs:int"/>
+</xs:schema>
+"""
+BOUND_B = f"""
+<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{BOUND}"
+    xmlns:b="{BOUND}" elementFormDefault="qualified">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="req" type="xs:string"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+"""
+BOUND_SOURCE = f'<b:root xmlns:b="{BOUND}">5</b:root>'.encode()
+
 
 def _schema_and_pool() -> tuple[Schema, SchemaPool]:
     schema = Schema.compile(io.BytesIO(SCHEMA.encode()))
@@ -236,6 +257,20 @@ def test_declaration_validation_preserves_the_compiled_host() -> None:
     parse_typed_document(COMPLEX_SOURCE, schema_pool=pool, validation="strict")
 
     _assert_host_unchanged(schema, parents, types)
+
+
+def test_bound_document_revalidates_against_the_supplied_pool() -> None:
+    schema_a = Schema.compile(io.BytesIO(BOUND_A.encode()))
+    document = schema_a.parse(io.BytesIO(BOUND_SOURCE), capture_xdm=True)
+
+    captured = parse_typed_document(document)
+    assert captured.root_element.type_name == f"{{{XSD_NS}}}untyped"
+
+    schema_b = Schema.compile(io.BytesIO(BOUND_B.encode()))
+    pool_b = SchemaPool.from_schema(schema_b)
+    with pytest.raises(DocumentValidationError) as caught:
+        parse_typed_document(document, schema_pool=pool_b, validation="strict")
+    assert caught.value.reason == "invalid"
 
 
 def test_requested_type_with_strict_validation_checks_document_ids() -> None:
@@ -713,6 +748,38 @@ def _check_constructed(compiled) -> None:
     assert value.type_name == AMOUNT_TYPE
 
 
+def _check_declaration_source(pool: SchemaPool) -> None:
+    document = parse_typed_document(COMPLEX_SOURCE, schema_pool=pool, validation="strict")
+    root = document.root_element
+    assert root.type_name == INVOICE_TYPE
+    assert root.annotation.governing_declaration is not None
+    root_attributes = {attribute.name: attribute for attribute in root.attributes}
+    assert root_attributes["id"].type_name == f"{{{XSD_NS}}}ID"
+    assert root_attributes["kind"].type_name == f"{{{XSD_NS}}}string"
+    line = next(child for child in root.children if child.kind is NodeKind.ELEMENT)
+    assert line.type_name == LINE_TYPE
+    attributes = {attribute.name: attribute for attribute in line.attributes}
+    assert attributes["code"].type_name == f"{{{XSD_NS}}}int"
+    value = next(child for child in line.children if child.kind is NodeKind.ELEMENT)
+    assert value.type_name == AMOUNT_TYPE
+
+
+def _check_document(pool: SchemaPool) -> None:
+    document = XdmDocument.parse(COMPLEX_SOURCE)
+    validate_document(document, ValidationRequest("strict"), schema_pool=pool)
+    root = document.root_element
+    assert root.type_name == INVOICE_TYPE
+    root_attributes = {attribute.name: attribute for attribute in root.attributes}
+    assert root_attributes["id"].type_name == f"{{{XSD_NS}}}ID"
+    assert root_attributes["kind"].type_name == f"{{{XSD_NS}}}string"
+    line = next(child for child in root.children if child.kind is NodeKind.ELEMENT)
+    assert line.type_name == LINE_TYPE
+    attributes = {attribute.name: attribute for attribute in line.attributes}
+    assert attributes["code"].type_name == f"{{{XSD_NS}}}int"
+    value = next(child for child in line.children if child.kind is NodeKind.ELEMENT)
+    assert value.type_name == AMOUNT_TYPE
+
+
 def test_concurrent_occurrence_validation() -> None:
     compiled = _compiled_stylesheet()
     pool = compiled.schema_pool
@@ -727,6 +794,8 @@ def test_concurrent_occurrence_validation() -> None:
             for _ in range(10):
                 _check_requested_source(pool)
                 _check_nilled_source(pool)
+                _check_declaration_source(pool)
+                _check_document(pool)
                 _check_constructed(compiled)
                 iteration += 1
         except BaseException:

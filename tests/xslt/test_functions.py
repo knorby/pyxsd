@@ -549,6 +549,51 @@ def test_key_match_predicate_resolves_lazy_global_before_or_after_use() -> None:
     )
 
 
+def test_original_function_body_runs_nested_iteration(tmp_path: Path) -> None:
+    library = tmp_path / "library-iteration.xsl"
+    library.write_text(
+        _package(
+            "urn:library-iteration",
+            """
+            <xsl:function name="my:label" as="xs:string" visibility="public">
+              <xsl:param name="value" as="xs:string"/>
+              <xsl:sequence select="concat('base:', $value)"/>
+            </xsl:function>
+            """,
+        ),
+        encoding="utf-8",
+    )
+    principal = tmp_path / "principal-iteration.xsl"
+    principal.write_text(
+        _package(
+            "urn:principal-iteration",
+            """
+            <xsl:use-package name="urn:library-iteration" package-version="1.0">
+              <xsl:override>
+                <xsl:function name="my:label" as="xs:string" visibility="public">
+                  <xsl:param name="value" as="xs:string"/>
+                  <xsl:variable name="groups" as="xs:string*">
+                    <xsl:for-each-group select="(1, 2, 3)" group-by=". mod 2">
+                      <xsl:sequence select="string-join(current-group() ! string(.), ',')"/>
+                    </xsl:for-each-group>
+                  </xsl:variable>
+                  <xsl:sequence
+                      select="concat(string-join($groups, '|'), ':', xsl:original($value))"/>
+                </xsl:function>
+              </xsl:override>
+            </xsl:use-package>
+            <xsl:template name="xsl:initial-template" visibility="public">
+              <xsl:sequence select="my:label('x')"/>
+            </xsl:template>
+            """,
+        ),
+        encoding="utf-8",
+    )
+    compiled = XsltProcessor(resolver=PackageResolver.from_sources(library)).compile(principal)
+    result = compiled.transform(delivery="raw")
+    assert result.principal == (XdmAtomic.string("1,3|2:base:x"),)
+
+
 def test_library_key_match_predicate_uses_library_lazy_global(tmp_path: Path) -> None:
     library = tmp_path / "library.xsl"
     library.write_text(

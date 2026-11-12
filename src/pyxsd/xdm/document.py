@@ -392,14 +392,17 @@ def parse_typed_document(
     from pyxsd.document import Document
 
     if isinstance(source, Document):
+        document = source.to_xdm()
         if validation in ("strict", "lax"):
-            return _validated_bound_document(
-                source,
+            return _validated_document(
+                document,
                 schema_pool=schema_pool,
                 validation=validation,
                 strip=strip,
+                document_uri=document_uri if document_uri is not None else document.document_uri,
+                base_uri=base_uri if base_uri is not None else document.base_uri,
+                source_name=source_name,
             )
-        document = source.to_xdm()
         if strip:
             return strip_type_annotations(_untyped_copy(document))
         return document
@@ -473,35 +476,6 @@ def _validated_document(
     if strip:
         strip_type_annotations(target)
     return target
-
-
-def _validated_bound_document(
-    source: Any,
-    *,
-    schema_pool: SchemaPool | None,
-    validation: str,
-    strip: bool,
-) -> XdmDocument:
-    """Validate an already-bound Document through its coherent capture."""
-    document = source.to_xdm()
-    if source.root is None:
-        if validation == "strict":
-            raise DocumentValidationError(
-                "the source document has no global element declaration",
-                reason="unknown",
-            )
-        if schema_pool is not None:
-            _lax_validate_known_children(document, schema_pool)
-        return strip_type_annotations(_untyped_copy(document)) if strip else document
-    errors = _instance_errors(source.report)
-    if errors:
-        raise DocumentValidationError(
-            "the source document is not valid against its schema",
-            reason="invalid" if validation == "strict" else "lax-invalid",
-        )
-    if strip:
-        return strip_type_annotations(_untyped_copy(document))
-    return document
 
 
 def _capture_source(source: Any) -> CaptureSource:
@@ -662,16 +636,6 @@ def _untyped_copy(document: XdmDocument) -> XdmDocument:
         document_uri=document.document_uri,
         base_uri=document.base_uri,
         schema_pool=document.schema_pool,
-    )
-
-
-def _instance_errors(report: Any) -> tuple[Any, ...]:
-    from pyxsd.validation import IssueSeverity
-
-    return tuple(
-        issue
-        for issue in report
-        if issue.phase == "instance" and issue.severity is IssueSeverity.ERROR
     )
 
 
