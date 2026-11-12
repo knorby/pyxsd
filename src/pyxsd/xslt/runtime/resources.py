@@ -31,6 +31,9 @@ __all__ = ["DocumentResources", "resolve_document_uri"]
 #: Resource-policy purpose for an XSLT source document.  Source documents are
 #: XML instances, so the core policy vocabulary already covers them.
 DOCUMENT_PURPOSE = "instance"
+
+#: Resource-policy purpose for a raw text resource read.
+TEXT_PURPOSE = "text"
 _VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
 _INPUT_TYPE_ANNOTATIONS = frozenset({"strip", "preserve", "unspecified"})
 _UNSET = object()
@@ -119,6 +122,7 @@ class DocumentResources:
             tuple[str, str, str | None, int, str, str | None],
             XdmDocument,
         ] = {}
+        self._texts: dict[tuple[str, str | None], str] = {}
 
     def resolve(
         self,
@@ -167,12 +171,7 @@ class DocumentResources:
             existing = self.documents.get(target)
             if existing is not None and not isinstance(existing, XdmDocument):  # pragma: no cover
                 raise TypeError("a document registry entry must be an XdmDocument")
-            remote = urlsplit(target).scheme not in ("file", "urn")
-            policy = self.remote_policy if remote else self.policy
-            if remote and policy is None and self.policy is not None:
-                raise ResourcePolicyError(
-                    f"remote stylesheet document access denied for {target!r}"
-                )
+            policy = self._policy_for(target, label="document")
             if policy is None:
                 if existing is None:
                     raise XsltDynamicError(
@@ -222,3 +221,79 @@ class DocumentResources:
         filtered = apply_source_space_rules(document, rules=rules)
         self._variants[key] = filtered
         return filtered
+
+    def read_text(
+        self,
+        uri: str,
+        *,
+        base: str | None,
+        encoding: str | None = None,
+    ) -> str:
+        """Return one authorized text resource with normalized newlines.
+
+        The URI identifies the resource; the effective policy is the same one
+        :meth:`resolve` uses for source documents.  A missing authorization is
+        ``FOUT1170``, an unsupported encoding is ``FOUT1190``, and a policy
+        denial keeps its own :class:`ResourcePolicyError` identity.  The cache
+        belongs to this invocation and is keyed by target and encoding.
+        """
+        target = resolve_document_uri(uri, base)
+        key = (target, encoding)
+        if key in self._texts:
+            return self._texts[key]
+        policy = self._policy_for(target, label="text")
+        if policy is None:
+            raise XsltDynamicError(
+                f"the text resource {uri!r} is not available to this transformation",
+                code="FOUT1170",
+            )
+        try:
+            data = policy.read(target, base=None, purpose=TEXT_PURPOSE)
+        except OSError as exc:
+            raise XsltDynamicError(
+                f"the text resource {uri!r} could not be read",
+                code="FOUT1170",
+                cause=exc,
+            ) from exc
+        if not isinstance(data, ResourceData):
+            raise TypeError("a resource policy read must return ResourceData")
+        name = "utf-8" if encoding is None else encoding
+        try:
+            text = data.content.decode(name)
+        except LookupError as exc:
+            raise XsltDynamicError(
+                f"the text encoding {name!r} is not supported",
+                code="FOUT1190",
+                cause=exc,
+            ) from exc
+        except UnicodeDecodeError as exc:
+            raise XsltDynamicError(
+                f"the text resource {uri!r} could not be decoded as {name}",
+                code="FOUT1170",
+                cause=exc,
+            ) from exc
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        self._texts[key] = normalized
+        return normalized
+
+    def read_text_lines(
+        self,
+        uri: str,
+        *,
+        base: str | None,
+        encoding: str | None = None,
+    ) -> tuple[str, ...]:
+        """Return the lines of one text resource after newline normalization."""
+        text = self.read_text(uri, base=base, encoding=encoding)
+        lines = text.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
+        return tuple(lines)
+
+    def _policy_for(self, target: str, *, label: str) -> _DocumentPolicy | None:
+        """Select the policy that owns one absolute target and scheme."""
+        remote = urlsplit(target).scheme not in ("file", "urn")
+        policy = self.remote_policy if remote else self.policy
+        if remote and policy is None and self.policy is not None:
+            raise ResourcePolicyError(f"remote stylesheet {label} access denied for {target!r}")
+        return policy

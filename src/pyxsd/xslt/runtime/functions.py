@@ -608,6 +608,8 @@ class XsltContextBridge:
             f"{{{FN_NS}}}current": ContextFunction(self._direct_current, self._dynamic_current),
             f"{{{FN_NS}}}document": ContextFunction(self._document_function),
             f"{{{FN_NS}}}doc": ContextFunction(self._doc_function),
+            f"{{{FN_NS}}}unparsed-text": ContextFunction(self._unparsed_text_function),
+            f"{{{FN_NS}}}unparsed-text-lines": ContextFunction(self._unparsed_text_lines_function),
             f"{{{FN_NS}}}system-property": ContextFunction(self._system_property_function),
             f"{{{FN_NS}}}function-available": ContextFunction(self._function_available_function),
             f"{{{FN_NS}}}element-available": ContextFunction(self._element_available_function),
@@ -1245,6 +1247,42 @@ class XsltContextBridge:
             )
         return (document,)
 
+    def _unparsed_text_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        uri, encoding = _text_arguments(arguments)
+        if uri is None:
+            return ()
+        resources = getattr(self.transformation, "document_resources", None)
+        if resources is None:
+            raise XsltDynamicError(
+                f"the text resource {uri!r} is not available to this transformation",
+                code="FOUT1170",
+            )
+        text = resources.read_text(uri, base=self.base_uri, encoding=encoding)
+        return (XdmAtomic.string(text),)
+
+    def _unparsed_text_lines_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        uri, encoding = _text_arguments(arguments)
+        if uri is None:
+            return ()
+        resources = getattr(self.transformation, "document_resources", None)
+        if resources is None:
+            raise XsltDynamicError(
+                f"the text resource {uri!r} is not available to this transformation",
+                code="FOUT1170",
+            )
+        lines = resources.read_text_lines(uri, base=self.base_uri, encoding=encoding)
+        return tuple(XdmAtomic.string(line) for line in lines)
+
     def _system_property_function(
         self,
         context_item: XdmItem | None,
@@ -1367,6 +1405,15 @@ def _document_uri(item: XdmAtomic) -> str:
             code="XPTY0004",
         )
     return item.lexical
+
+
+def _text_arguments(arguments: tuple[XdmSequence, ...]) -> tuple[str | None, str | None]:
+    """Return the optional URI and encoding of one text-resource call."""
+    if not arguments or not arguments[0]:
+        return None, None
+    uri = _single_string(arguments, 0)
+    encoding = _single_string(arguments, 1) if len(arguments) > 1 and arguments[1] else None
+    return uri, encoding
 
 
 def _single_node(sequence: XdmSequence, label: str) -> XdmNode:

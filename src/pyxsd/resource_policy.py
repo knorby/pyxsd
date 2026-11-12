@@ -23,10 +23,12 @@ from pyxsd.validation import ValidationReport
 #: ``"schema"`` is an explicitly supplied schema, a schema a caller mapped for
 #: a namespace, or an ordinary schema dependency; ``"schema-hint"`` is a schema
 #: an instance document selected through ``xsi:schemaLocation`` or
-#: ``xsi:noNamespaceSchemaLocation``; ``"instance"`` is an instance document.
-ResourcePurpose = Literal["schema", "schema-hint", "instance"]
+#: ``xsi:noNamespaceSchemaLocation``; ``"instance"`` is an instance document;
+#: ``"text"`` is a raw text resource read by a stylesheet; and
+#: ``"collection"`` names an application-supplied collection of nodes.
+ResourcePurpose = Literal["schema", "schema-hint", "instance", "text", "collection"]
 
-_PURPOSES: Final = frozenset(("schema", "schema-hint", "instance"))
+_PURPOSES: Final = frozenset(("schema", "schema-hint", "instance", "text", "collection"))
 
 
 def validate_purpose(purpose: str) -> ResourcePurpose:
@@ -38,7 +40,8 @@ def validate_purpose(purpose: str) -> ResourcePurpose:
     """
     if purpose not in _PURPOSES:
         raise ValueError(
-            f"unknown resource purpose {purpose!r}; expected 'schema', 'schema-hint', or 'instance'"
+            f"unknown resource purpose {purpose!r}; expected 'schema', 'schema-hint', "
+            "'instance', 'text', or 'collection'"
         )
     return cast(ResourcePurpose, purpose)
 
