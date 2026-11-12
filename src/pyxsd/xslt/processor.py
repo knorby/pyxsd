@@ -5903,12 +5903,7 @@ class _Invocation(Transformation):
         assert options.initial_match_selection is not _ABSENT
         selection = cast(XdmSequence, options.initial_match_selection)
         mode_name = options.mode.name if options.mode is not None else None
-        self._check_typed_mode(
-            selection,
-            mode_name,
-            self.package.name,
-            expand_documents=True,
-        )
+        self._check_typed_mode(selection, mode_name, self.package.name)
         return self._apply_templates(
             selection,
             mode_name,
@@ -8048,22 +8043,11 @@ class _Invocation(Transformation):
         items: XdmSequence,
         mode: str | None,
         package_name: str | None,
-        *,
-        expand_documents: bool = False,
     ) -> None:
         typed = self._mode_properties(mode, package_name).get("typed", "unspecified")
         if typed == "unspecified":
             return
-        expanded: list[XdmNode] = []
         for item in items:
-            if isinstance(item, XdmNode):
-                expanded.append(item)
-                if expand_documents and item.kind is NodeKind.DOCUMENT:
-                    root = cast(XdmDocument, item).root_element
-                    expanded.append(root)
-                    expanded.extend(root.descendants)
-                    expanded.extend(root.attributes)
-        for item in expanded:
             if not isinstance(item, XdmNode) or item.kind not in (
                 NodeKind.ELEMENT,
                 NodeKind.ATTRIBUTE,
@@ -8266,8 +8250,10 @@ class _Invocation(Transformation):
             if variant in ("text-only-copy", "shallow-skip"):
                 if not item.members:
                     return None
+                members = _array_member_items(item)
+                self._check_typed_mode(members, state.mode, state.package_name)
                 child = self._apply_frame(
-                    _array_member_items(item),
+                    members,
                     state.mode,
                     state.template_parameters,
                     state.tunnel_parameters,
@@ -8285,6 +8271,7 @@ class _Invocation(Transformation):
             ):
                 if not item.children:
                     return None
+                self._check_typed_mode(item.children, state.mode, state.package_name)
                 child = self._apply_frame(
                     item.children,
                     state.mode,
@@ -8313,6 +8300,7 @@ class _Invocation(Transformation):
             return None
         if variant == "deep-skip":
             if isinstance(item, XdmNode) and item.kind is NodeKind.DOCUMENT:
+                self._check_typed_mode(item.children, state.mode, state.package_name)
                 child = self._apply_frame(
                     item.children,
                     state.mode,
@@ -8346,6 +8334,7 @@ class _Invocation(Transformation):
                     )
                 if not item.children:
                     return Continue(resume)
+                self._check_typed_mode(item.children, state.mode, state.package_name)
                 child = self._apply_frame(
                     item.children,
                     state.mode,
@@ -10202,6 +10191,7 @@ class _Invocation(Transformation):
                 inherit_namespaces=plan.inherit_namespaces,
             )
             document._finalize_document_order()
+            self._check_namespace_sensitive_copy(document, plan)
             return (
                 validate_delivered(
                     document,
@@ -10668,6 +10658,7 @@ class _Invocation(Transformation):
         *,
         package_name: str | None = None,
     ) -> XdmSequence:
+        self._check_typed_mode(items, mode, package_name)
         frame = self._apply_frame(
             items,
             mode,

@@ -48,7 +48,7 @@ from pyxsd.xdm.annotations import (
 from pyxsd.xdm.document import element_from_xdm
 from pyxsd.xdm.errors import XdmInputError
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
-from pyxsd.xdm.schema import SchemaPool, _attribute_descriptors, _element_descriptors
+from pyxsd.xdm.schema import SchemaPool, _attribute_descriptors
 from pyxsd.xdm.values import XdmAtomic
 from pyxsd.xsd_data_types import xsd_value_key
 
@@ -398,12 +398,7 @@ def _validate_element_type(
         _strip_subtree(node)
         return
     if type_name == UNTYPED_ATOMIC:
-        if any(child.kind is NodeKind.ELEMENT for child in node.children):
-            raise ConstructedValidationError(
-                f"the constructed element {node.name!r} is not valid against xs:untypedAtomic",
-                reason="type",
-            )
-        _annotate_untyped_atomic_element(node)
+        _validate_simple_element(node, None, schema_pool=schema_pool, untyped_atomic=True)
         return
     if type_name == _ANY_TYPE:
         _annotate_any_type(node)
@@ -417,7 +412,7 @@ def _validate_element_type(
         )
     actual = _actual_type(node, adapter, schema_pool)
     if actual.is_simple():
-        _validate_simple_element(node, actual)
+        _validate_simple_element(node, actual, schema_pool=schema_pool)
         return
     _validate_element_class(
         node,
@@ -427,42 +422,71 @@ def _validate_element_type(
     )
 
 
-def _validate_simple_element(node: XdmNode, adapter: Any) -> None:
+def _validate_simple_element(
+    node: XdmNode,
+    adapter: Any,
+    *,
+    schema_pool: SchemaPool | None,
+    untyped_atomic: bool = False,
+) -> None:
     """Assess a constructed element against a simple type definition."""
-    if any(child.kind is NodeKind.ELEMENT for child in node.children):
-        raise ConstructedValidationError(
-            f"the constructed element {node.name!r} is not valid against {adapter.name!r}",
-            reason="type",
-        )
+    type_name = UNTYPED_ATOMIC if untyped_atomic else adapter.name
+    nil = node.attribute(f"{{{XSI_NS}}}nil")
+    nilled = nil is not None and nil.string_value.strip() in ("true", "1")
+    for child in node.children:
+        if child.kind is NodeKind.ELEMENT or (nilled and child.kind is NodeKind.TEXT):
+            raise ConstructedValidationError(
+                f"the constructed element {node.name!r} is not valid against {type_name!r}",
+                reason="type",
+            )
     for attribute in node.attributes:
-        if attribute.namespace_uri != XSI_NS:
+        if attribute.namespace_uri != XSI_NS or attribute.local_name not in ("type", "nil"):
             raise ConstructedValidationError(
                 f"the simple-typed element {node.name!r} cannot carry the attribute "
                 f"{attribute.name!r}",
                 reason="type",
             )
-    nil = node.attribute(f"{{{XSI_NS}}}nil")
-    if nil is not None and nil.string_value.strip() in ("true", "1"):
-        raise ConstructedValidationError(
-            f"the simple-typed element {node.name!r} cannot be nilled without a nillable "
-            "declaration",
-            reason="type",
+    if nilled:
+        declaration = _element_declaration(schema_pool, node.name)
+        if declaration is None or not declaration.isNillable():
+            raise ConstructedValidationError(
+                f"the simple-typed element {node.name!r} cannot be nilled without a "
+                "nillable declaration",
+                reason="type",
+            )
+        node._apply_occurrence_annotation(
+            _element_annotation(
+                node,
+                type_name=type_name,
+                actual_type=None if untyped_atomic else getattr(adapter, "_type_class", None),
+                typed_values=(),
+                nilled=True,
+            )
         )
-    value: Any
-    if not adapter.is_valid(node.string_value):
-        raise ConstructedValidationError(
-            f"the constructed element {node.name!r} is not valid against {adapter.name!r}",
-            reason="type",
-        )
-    value = adapter.cast(node.string_value)
+        return
+    typed_values: tuple[Any, ...]
+    if untyped_atomic:
+        typed_values = (XdmAtomic.untyped_atomic(node.string_value),)
+    else:
+        if not adapter.is_valid(node.string_value):
+            raise ConstructedValidationError(
+                f"the constructed element {node.name!r} is not valid against {adapter.name!r}",
+                reason="type",
+            )
+        typed_values = _atomize(adapter.cast(node.string_value))
     node._apply_occurrence_annotation(
         _element_annotation(
             node,
-            type_name=adapter.name,
-            actual_type=getattr(adapter, "_type_class", None),
-            typed_values=_atomize(value),
+            type_name=type_name,
+            actual_type=None if untyped_atomic else getattr(adapter, "_type_class", None),
+            typed_values=typed_values,
         )
     )
+
+
+def _element_declaration(schema_pool: SchemaPool | None, name: str | None) -> Any:
+    adapter = schema_pool.get_element(name) if schema_pool is not None else None
+    return None if adapter is None else getattr(adapter, "_er", None)
 
 
 def _actual_type(node: XdmNode, requested: Any, schema_pool: SchemaPool | None) -> Any:
@@ -531,8 +555,19 @@ def _validate_element_class(
                     instance,
                 )
             capture.finish(report)
+    if document_root:
+        from pyxsd.instance_binding import check_identity_constraints_entry
+
+        check_identity_constraints_entry(schema, instance, report)
     errors = _instance_errors(report, document=document_root)
     if errors:
+        if document_root and any(
+            getattr(issue, "code", None) in _DOCUMENT_CONSTRAINT_CODES for issue in errors
+        ):
+            raise ConstructedValidationError(
+                "the constructed document has unsatisfied document-level constraints",
+                reason="document-constraint",
+            )
         raise ConstructedValidationError(
             f"the constructed element {node.name!r} is not valid against "
             f"{getattr(adapter, 'name', None)!r}",
@@ -788,7 +823,6 @@ def _apply_parsed_tree(target: XdmNode, parsed: XdmNode) -> None:
                 reason="invalid",
             )
         stack.extend(zip(target_children, parsed_children, strict=True))
-        _add_default_elements(target_node, getattr(parsed_node.annotation, "actual_type", None))
 
 
 def _apply_capture(
@@ -832,53 +866,6 @@ def _apply_capture(
                 reason="invalid",
             )
         stack.extend(zip(target_children, source_children, strict=True))
-        _add_default_elements(
-            target_node,
-            getattr(annotation, "actual_type", None) if annotation is not None else None,
-        )
-
-
-def _add_default_elements(target: XdmNode, actual_type: Any) -> None:
-    """Create absent defaulted element occurrences required by a content model."""
-    if not isinstance(actual_type, type):
-        return
-    existing = {child.name for child in target.children if child.kind is NodeKind.ELEMENT}
-    for descriptor in _element_descriptors(actual_type):
-        default = _constraint(descriptor, "getDefault")
-        fixed = _constraint(descriptor, "getFixed")
-        lexical = default if default is not None else fixed
-        if lexical is None:
-            continue
-        minimum = getattr(descriptor, "getMinOccurs", lambda: 1)()
-        if minimum != 0:
-            continue
-        name = _element_instance_name(descriptor, actual_type)
-        if not isinstance(name, str) or name in existing:
-            continue
-        type_class = descriptor.getType()
-        typed_values: tuple[Any, ...]
-        if isinstance(type_class, type):
-            try:
-                typed_values = _atomize(type_class(lexical))
-            except (TypeError, ValueError):  # pragma: no cover - compiled defaults are valid
-                typed_values = (XdmAtomic.untyped_atomic(lexical),)
-        else:  # pragma: no cover - element declarations resolve a type
-            typed_values = (XdmAtomic.untyped_atomic(lexical),)
-        annotation = OccurrenceAnnotation(
-            type_name=schema_type_name(type_class),
-            nilled=False,
-            validity="valid",
-            validation_attempted="full",
-            actual_type=type_class,
-            typed_values=typed_values,
-            default_value=default,
-            fixed_value=fixed,
-            value_source="default" if default is not None else "fixed",
-        )
-        child = _append_element_node(target, name, annotation)
-        _add_default_attributes(child, type_class)
-        _add_default_elements(child, type_class)
-        existing.add(name)
 
 
 def _add_default_attributes(target: XdmNode, actual_type: Any) -> None:
@@ -927,64 +914,6 @@ def _constraint(descriptor: Any, getter: str) -> str | None:
     except Exception:  # pragma: no cover - malformed declarations are reported earlier
         return None
     return value if isinstance(value, str) else None
-
-
-def _element_instance_name(descriptor: Any, actual_type: type[Any]) -> str | None:
-    schema = getattr(actual_type, "schema", None)
-    method = getattr(descriptor, "expandedInstanceName", None)
-    if method is not None:
-        try:
-            return method(parser=getattr(schema, "_host", None))
-        except Exception:  # pragma: no cover - unresolved refs fall back below
-            pass
-    name = getattr(descriptor, "expandedName", None) or getattr(
-        descriptor, "name", None
-    )  # pragma: no cover - descriptors expose a name
-    return name if isinstance(name, str) else None  # pragma: no cover - descriptors expose a name
-
-
-def _append_element_node(
-    parent: XdmNode,
-    name: str,
-    annotation: OccurrenceAnnotation,
-) -> XdmNode:
-    namespace, _, _ = name[1:].partition("}") if name.startswith("{") else ("", "", name)
-    namespace_uri = namespace or None
-    scope = dict(parent.in_scope_namespaces)
-    prefix = ""
-    if namespace_uri is not None:
-        prefix = next(
-            (candidate for candidate, uri in scope.items() if candidate and uri == namespace_uri),
-            "",
-        )
-        if not prefix:
-            if scope.get("") == namespace_uri:
-                prefix = ""
-            else:
-                prefix = _new_prefix(scope)
-                scope[prefix] = namespace_uri
-                _append_namespace_node(parent, prefix, namespace_uri, scope)
-    node = XdmNode(
-        NodeKind.ELEMENT,
-        document=parent.document,
-        node_id=-1,
-        source_name=parent._source_name,
-        source_index=parent._source_index,
-        parent=parent,
-        name=name,
-        annotations=cast(Any, annotation),
-        base_uri=parent.base_uri,
-        document_uri=parent.document_uri,
-        in_scope_namespaces=scope,
-        prefix=prefix,
-        namespace_uri=namespace_uri,
-    )
-    parent._append_child(node)
-    parent._in_scope_namespaces = scope
-    parent._namespace_declarations = tuple(
-        (declared_prefix, uri) for declared_prefix, uri in scope.items() if declared_prefix != "xml"
-    )
-    return node
 
 
 def _attribute_instance_name(descriptor: Any, actual_type: type[Any]) -> str | None:
@@ -1128,17 +1057,6 @@ def _annotate_any_type(node: XdmNode) -> None:
             node,
             type_name=_ANY_TYPE,
             actual_type=xsd.AnyType,
-            typed_values=(XdmAtomic.untyped_atomic(node.string_value),),
-        )
-    )
-
-
-def _annotate_untyped_atomic_element(node: XdmNode) -> None:
-    node._apply_occurrence_annotation(
-        _element_annotation(
-            node,
-            type_name=UNTYPED_ATOMIC,
-            actual_type=None,
             typed_values=(XdmAtomic.untyped_atomic(node.string_value),),
         )
     )
