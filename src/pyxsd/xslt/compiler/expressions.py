@@ -21,6 +21,7 @@ arbitrary XPath expression.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, NoReturn, TypeAlias
 
@@ -44,6 +45,7 @@ __all__ = [
     "compile_sequence_type",
     "compile_tvt",
     "compile_xpath",
+    "validate_variable_references",
 ]
 
 Occurrence: TypeAlias = Literal["", "?", "*", "+"]
@@ -858,6 +860,28 @@ class CompiledValueTemplate:
         return self.source
 
 
+def validate_variable_references(
+    context: StaticContext,
+    names: Iterable[str],
+    *,
+    source: str,
+    location: IssueLocation | None = None,
+) -> None:
+    """Reject free variable references absent from the static context."""
+    missing = sorted(set(names) - context.variable_names)
+    if not missing:
+        return
+    rendered = ", ".join(repr(name) for name in missing)
+    noun = "variable" if len(missing) == 1 else "variables"
+    verb = "is" if len(missing) == 1 else "are"
+    raise _static_error(
+        context,
+        f"the {noun} {rendered} referenced by {source!r} {verb} not declared in the static context",
+        "XPST0008",
+        location=location,
+    )
+
+
 def compile_xpath(
     source: str,
     context: StaticContext,
@@ -880,7 +904,7 @@ def compile_xpath(
         )
     engine = XPathEngine(context.xpath_version)
     try:
-        return engine.compile(source, context.xpath_static_context())
+        compiled = engine.compile(source, context.xpath_static_context())
     except Exception as exc:
         raise _static_error(
             context,
@@ -889,6 +913,13 @@ def compile_xpath(
             location=location,
             cause=exc,
         ) from exc
+    validate_variable_references(
+        context,
+        compiled.free_variable_names,
+        source=source,
+        location=location,
+    )
+    return compiled
 
 
 def compile_avt(

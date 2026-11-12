@@ -580,6 +580,7 @@ class CompiledExpression:
     version: str
     continuation_plan: continuation.CompiledExpression | None = field(default=None)
     variable_names: frozenset[str] = frozenset()
+    free_variable_names: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.source or not self.source.strip():
@@ -589,6 +590,7 @@ class CompiledExpression:
         if self.version not in _PARSERS:
             raise ValueError(f"unsupported XPath version: {self.version!r}")
         object.__setattr__(self, "variable_names", frozenset(self.variable_names))
+        object.__setattr__(self, "free_variable_names", frozenset(self.free_variable_names))
 
 
 def _expression_variable_names(
@@ -603,6 +605,51 @@ def _expression_variable_names(
         if isinstance(token, VariableToken):
             names.add(_expanded_variable_name(token.value, static_context))
         stack.extend(getattr(token, "_items", ()) or ())
+    return frozenset(names)
+
+
+def _expression_free_variable_names(
+    root: Any,
+    static_context: XPathStaticContext,
+) -> frozenset[str]:
+    """Return expanded variable names *root* references from an outer scope.
+
+    XPath binders (``for``/``let``/``some``/``every`` and inline function
+    parameters) introduce names that are local to the expression, so a static
+    visibility check must not treat those references as free.  The walk follows
+    the parsed tree rather than the source text, which keeps string literals,
+    comments, and locally bound names out of the result.
+    """
+    names: set[str] = set()
+
+    def expand(value: str) -> str:
+        return _expanded_variable_name(value, static_context)
+
+    def visit(token: Any, bound: frozenset[str]) -> None:
+        if isinstance(token, VariableToken):
+            name = expand(token.value)
+            if name not in bound:
+                names.add(name)
+            return
+
+        symbol = getattr(token, "symbol", None)
+        items = tuple(getattr(token, "_items", ()) or ())
+        if symbol in ("for", "let", "some", "every"):
+            local = bound
+            for index in range(0, len(items) - 1, 2):
+                visit(items[index + 1], local)
+                binding = items[index]
+                local = local | {expand(binding.value)}
+            visit(items[-1], local)
+            return
+        if symbol == "function" and getattr(token, "body", None) is not None:
+            local = bound | {expand(varname) for varname in getattr(token, "varnames", ()) or ()}
+            visit(token.body, local)
+            return
+        for item in items:
+            visit(item, bound)
+
+    visit(root, frozenset())
     return frozenset(names)
 
 
@@ -666,6 +713,7 @@ class XPathEngine:
         )
         root_token = parser.parse(source)
         variable_names = _expression_variable_names(root_token, static_context)
+        free_variable_names = _expression_free_variable_names(root_token, static_context)
 
         plan: continuation.CompiledExpression | None = None
         if self._version == "3.1":
@@ -685,6 +733,7 @@ class XPathEngine:
             version=self._version,
             continuation_plan=plan,
             variable_names=variable_names,
+            free_variable_names=free_variable_names,
         )
 
     def evaluate(

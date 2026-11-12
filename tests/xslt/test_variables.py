@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import io
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from pyxsd.xdm import XdmAtomic
 from pyxsd.xdm.nodes import NodeKind
-from pyxsd.xpath.continuation import XPathEvaluationError
 from pyxsd.xslt import XsltProcessor
+from pyxsd.xslt.compiler.packages import PackageResolver
 from pyxsd.xslt.errors import XsltError, XsltStaticError
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -98,6 +99,22 @@ def test_local_variable_value_forms_and_coercion() -> None:
     )
 
 
+STYLESHEET_WITH_UNUSED_MISSING_VARIABLE = stylesheet(
+    """
+    <xsl:template name="unused">
+      <xsl:value-of select="$missing"/>
+    </xsl:template>
+    <xsl:template name="main"><out/></xsl:template>
+    """
+)
+
+
+def test_unused_template_variable_is_a_static_error() -> None:
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(STYLESHEET_WITH_UNUSED_MISSING_VARIABLE)
+    assert caught.value.code == "XPST0008"
+
+
 def test_local_variable_scope_ends_with_its_sequence_constructor() -> None:
     scoped = stylesheet(
         """
@@ -117,8 +134,8 @@ def test_local_variable_scope_ends_with_its_sequence_constructor() -> None:
         </xsl:template>
         """
     )
-    with pytest.raises(XPathEvaluationError) as caught:
-        transform(escaped, initial_template="main")
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(escaped)
     assert caught.value.code == "XPST0008"
 
 
@@ -131,8 +148,8 @@ def test_local_variables_are_visible_only_after_declaration() -> None:
         </xsl:template>
         """
     )
-    with pytest.raises(XPathEvaluationError) as caught:
-        transform(early, initial_template="main")
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(early)
     assert caught.value.code == "XPST0008"
 
 
@@ -156,6 +173,68 @@ def test_forward_global_references_are_lazy_and_circularity_is_reported() -> Non
         """
     )
     assert error_code(lambda: transform(circular, initial_template="main")) == "XTDE0640"
+
+
+def test_included_module_globals_are_statically_visible(tmp_path: Path) -> None:
+    included = tmp_path / "included.xsl"
+    included.write_text(
+        stylesheet('<xsl:variable name="from_lib" select="1"/>').decode(),
+        encoding="utf-8",
+    )
+    principal = tmp_path / "principal.xsl"
+    principal.write_text(
+        stylesheet(
+            """
+            <xsl:include href="included.xsl"/>
+            <xsl:template name="unused">
+              <xsl:value-of select="$from_lib"/>
+            </xsl:template>
+            <xsl:template name="main"><out/></xsl:template>
+            """
+        ).decode(),
+        encoding="utf-8",
+    )
+    XsltProcessor().compile(principal)
+
+    broken = tmp_path / "broken.xsl"
+    broken.write_text(
+        stylesheet(
+            """
+            <xsl:template name="unused">
+              <xsl:value-of select="$missing"/>
+            </xsl:template>
+            """
+        ).decode(),
+        encoding="utf-8",
+    )
+    principal.write_text(
+        stylesheet('<xsl:include href="broken.xsl"/>').decode(),
+        encoding="utf-8",
+    )
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(principal)
+    assert caught.value.code == "XPST0008"
+
+
+def test_used_package_globals_are_statically_visible() -> None:
+    library = (
+        f'<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:lib="urn:library" '
+        'name="urn:library" package-version="1.0" version="3.0">'
+        '<xsl:variable name="lib:g" select="1" visibility="public"/>'
+        "</xsl:package>"
+    )
+    principal = (
+        f'<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:lib="urn:library" '
+        'name="urn:principal" version="3.0">'
+        '<xsl:use-package name="urn:library" package-version="1.0">'
+        '<xsl:accept component="variable" names="lib:g" visibility="public"/>'
+        "</xsl:use-package>"
+        '<xsl:template name="unused"><xsl:value-of select="$lib:g"/></xsl:template>'
+        '<xsl:template name="main"><out/></xsl:template>'
+        "</xsl:package>"
+    )
+    resolver = PackageResolver.from_sources(library)
+    XsltProcessor(resolver=resolver).compile(io.BytesIO(principal.encode()))
 
 
 def test_variable_select_and_content_are_mutually_exclusive() -> None:
@@ -239,6 +318,40 @@ def test_next_match_and_apply_imports_accept_lexical_and_tunnel_parameters() -> 
     )
     result = transform(source, b"<doc><item/></doc>")
     assert result.principal_tree.string_value == "topnext:tunnel"
+
+
+def test_iteration_parameters_are_statically_visible_in_body_and_completion() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1 to 2">
+            <xsl:param name="total" select="0"/>
+            <xsl:on-completion select="$total"/>
+            <xsl:next-iteration>
+              <xsl:with-param name="total" select="$total + ."/>
+            </xsl:next-iteration>
+          </xsl:iterate>
+        </xsl:template>
+        """
+    )
+    result = transform(source, initial_template="main", delivery="raw")
+    assert result.principal == (XdmAtomic.integer(3),)
+
+
+def test_iteration_parameters_are_not_visible_in_their_select() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="$total">
+            <xsl:param name="total" select="0"/>
+            <xsl:sequence select="$total"/>
+          </xsl:iterate>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(source)
+    assert caught.value.code == "XPST0008"
 
 
 def test_parameter_after_content_inside_construction_is_reported() -> None:

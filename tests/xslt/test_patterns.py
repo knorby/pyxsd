@@ -579,6 +579,16 @@ def test_variable_rooted_patterns() -> None:
     assert _code(caught.value) == "XPST0008"
 
 
+def test_pattern_predicates_require_statically_visible_variables() -> None:
+    with pytest.raises(XsltStaticError) as caught:
+        compile_pattern("item[$missing]", _context())
+    assert _code(caught.value) == "XPST0008"
+
+    compile_pattern("item[$v]", _context(variables=("v",)))
+    compile_pattern("item[for $x in @code return $x = 'a']", _context())
+    compile_pattern("item[current() = $v]", _context(variables=("v",)))
+
+
 def test_key_and_id_rooted_functions(tmp_path: Path) -> None:
     compiled, schema = _schema_pool(tmp_path)
     document = _annotated(compiled, schema, f'<t:item xmlns:t="{DOC_NS}" t:code="x">value</t:item>')

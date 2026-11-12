@@ -38,7 +38,11 @@ from pyxsd.xdm.values import XdmAtomic, XdmItem, XdmSequence, as_xdm
 from pyxsd.xpath.engine import CompiledExpression, XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
 from pyxsd.xslt.compiler.context import StaticContext
-from pyxsd.xslt.compiler.expressions import ItemType, compile_sequence_type
+from pyxsd.xslt.compiler.expressions import (
+    ItemType,
+    compile_sequence_type,
+    validate_variable_references,
+)
 from pyxsd.xslt.errors import XsltStaticError
 
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
@@ -894,7 +898,7 @@ class _Parser:
         return raw
 
     def _variable_value(self, expanded: str, lexical: str) -> XdmSequence | None:
-        if self.context.variable(expanded) is None:
+        if expanded not in self.context.variable_names:
             self._fail(
                 f"the variable {lexical!r} is not declared in the static context",
                 "XPST0008",
@@ -1118,7 +1122,7 @@ def _compile_expression(
     rewritten = _rewrite_current(source, context, location)
     engine = XPathEngine(context.xpath_version)
     try:
-        return engine.compile(rewritten, static_context)
+        compiled = engine.compile(rewritten, static_context)
     except Exception as exc:
         raise _static_error(
             context,
@@ -1127,6 +1131,13 @@ def _compile_expression(
             location=location,
             cause=exc,
         ) from exc
+    validate_variable_references(
+        context,
+        compiled.free_variable_names - {_CURRENT_VARIABLE},
+        source=source,
+        location=location,
+    )
+    return compiled
 
 
 # ---------------------------------------------------------------------------

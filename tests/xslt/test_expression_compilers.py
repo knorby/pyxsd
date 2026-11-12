@@ -17,7 +17,7 @@ from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath.engine import CompiledExpression, XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment
-from pyxsd.xslt.compiler.context import StaticContext
+from pyxsd.xslt.compiler.context import StaticContext, StaticVariable
 from pyxsd.xslt.compiler.expressions import (
     CompiledSequenceType,
     CompiledValueTemplate,
@@ -107,7 +107,10 @@ def test_context_and_template_compilers(tmp_path: Path) -> None:
     assert avt.parts[0].kind == "expression"
     assert avt.parts[1].kind == "text"
     assert avt.parts[1].text == "-{literal}"
-    assert compile_tvt("Value: {$price}", context.with_expand_text(True)).parts
+    assert compile_tvt(
+        "Value: {$price}",
+        context.with_variable_name("price").with_expand_text(True),
+    ).parts
     assert (
         str(compile_sequence_type("map(xs:string, array(item()*))", context))
         == "map(xs:string, array(item()*))"
@@ -196,7 +199,7 @@ def test_avt_errors_are_exact_static_errors(tmp_path: Path) -> None:
 
 
 def test_tvt_expand_text_semantics(tmp_path: Path) -> None:
-    context = _context(tmp_path)
+    context = _context(tmp_path).with_variable_name("price")
     expanded = compile_tvt("Value: {$price}", context.with_expand_text(True))
     assert [part.kind for part in expanded.parts] == ["text", "expression"]
     assert expanded.parts[0].text == "Value: "
@@ -218,6 +221,72 @@ def test_tvt_expand_text_semantics(tmp_path: Path) -> None:
     with pytest.raises(XsltStaticError) as caught:
         compile_tvt("{$price", context.with_expand_text(True))
     assert _code(caught.value) == "XTSE0350"
+
+
+def test_avt_and_tvt_require_statically_visible_variables(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    with pytest.raises(XsltStaticError) as caught:
+        compile_avt("{1 + $missing}", context)
+    assert _code(caught.value) == "XPST0008"
+
+    with pytest.raises(XsltStaticError) as caught:
+        compile_tvt("value {1 + $missing}", context, expand_text=True)
+    assert _code(caught.value) == "XPST0008"
+
+    declared = context.with_variable_name("price")
+    assert compile_avt("{$price + 1}", declared).parts[0].kind == "expression"
+    assert compile_tvt("{$price + 1}", declared, expand_text=True).parts[0].kind == "expression"
+
+
+def test_compile_xpath_tracks_only_free_variable_references(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    for source in (
+        "for $x in 1 return $x",
+        "let $x := 1 return $x",
+        "some $x in 1 satisfies $x = 1",
+        "every $x in 1 satisfies $x = 1",
+        "for $x in 1, $y in $x return $y",
+        "function($p) { $p }(1)",
+        "$Q{urn:free}x",
+    ):
+        if source.startswith("$Q"):
+            with pytest.raises(XsltStaticError) as caught:
+                compile_xpath(source, context)
+            assert _code(caught.value) == "XPST0008"
+        else:
+            compile_xpath(source, context)
+
+    context = context.with_variable_name("x").with_variable_name("p")
+    assert compile_xpath("for $x in 1 return $x + $p", context).free_variable_names == (
+        frozenset({"p"})
+    )
+
+
+def test_static_context_variable_names_follow_declarations() -> None:
+    variable = StaticVariable(name="v")
+    context = StaticContext()
+    assert context.variable_names == frozenset()
+
+    declared = context.with_variable(variable)
+    assert declared.variable_names == frozenset({"v"})
+    assert declared.variable("v") is variable
+
+    local = declared.with_variable_name("local")
+    assert local.variable_names == frozenset({"v", "local"})
+    assert local.variable("local") is None
+
+    replaced = local.with_variables({})
+    assert replaced.variables == {}
+    assert replaced.variable_names == frozenset({"local"})
+    assert replaced.variable("v") is None
+
+    merged = StaticContext(variables={"v": variable})
+    assert merged.variable_names == frozenset({"v"})
+
+    with pytest.raises(TypeError, match="variable names"):
+        StaticContext(variable_names=frozenset({""}))
+    with pytest.raises(ValueError, match="non-empty"):
+        context.with_variable_name("")
 
 
 def test_xsl_text_content_follows_effective_expand_text(tmp_path: Path) -> None:

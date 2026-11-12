@@ -278,6 +278,7 @@ class StaticContext:
     version: str = "3.0"
     schema: SchemaPool | None = None
     variables: Mapping[str, StaticVariable] = field(default_factory=dict)
+    variable_names: frozenset[str] = frozenset()
     functions: Mapping[FunctionKey, StaticFunction] = field(default_factory=dict)
     default_collation: str | None = None
     document_types: Mapping[str, str] = field(default_factory=dict)
@@ -319,6 +320,14 @@ class StaticContext:
                     f"variable mapping key {name!r} does not match its name {variable.name!r}"
                 )
         object.__setattr__(self, "variables", variables)
+
+        variable_names = frozenset(self.variable_names)
+        if any(not isinstance(name, str) or not name for name in variable_names):
+            raise TypeError("variable names must be non-empty strings")
+        # Every declared variable is visible unless the caller already named it;
+        # this keeps direct construction from silently hiding its own symbols.
+        variable_names |= frozenset(variables)
+        object.__setattr__(self, "variable_names", variable_names)
 
         functions = _freeze(self.functions, "functions")
         for key, function in functions.items():
@@ -499,10 +508,25 @@ class StaticContext:
         return replace(self, schema=value)
 
     def with_variables(self, variables: Mapping[str, StaticVariable]) -> StaticContext:
-        return replace(self, variables=variables)
+        local_names = self.variable_names - frozenset(self.variables)
+        return replace(
+            self,
+            variables=variables,
+            variable_names=local_names | frozenset(variables),
+        )
 
     def with_variable(self, variable: StaticVariable) -> StaticContext:
-        return replace(self, variables={**self.variables, variable.name: variable})
+        return replace(
+            self,
+            variables={**self.variables, variable.name: variable},
+            variable_names=self.variable_names | {variable.name},
+        )
+
+    def with_variable_name(self, name: str) -> StaticContext:
+        """Extend the visible set for a lexical declaration without a symbol."""
+        if not isinstance(name, str) or not name:
+            raise ValueError("a variable name must be a non-empty string")
+        return replace(self, variable_names=self.variable_names | {name})
 
     def with_functions(self, functions: Mapping[FunctionKey, StaticFunction]) -> StaticContext:
         return replace(self, functions=functions)
@@ -635,6 +659,7 @@ class StaticContext:
             version=defaults.version,
             schema=effective_schema,
             variables=fallback.variables if fallback is not None else {},
+            variable_names=(fallback.variable_names if fallback is not None else frozenset()),
             functions=fallback.functions if fallback is not None else {},
             default_collation=defaults.default_collation,
             document_types=fallback.document_types if fallback is not None else {},

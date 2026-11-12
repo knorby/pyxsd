@@ -2314,7 +2314,10 @@ def _compile_sequence(
             else:
                 plans.append(_TextPlan(child.value))
             continue
-        plans.append(_compile_instruction(child, context, module))
+        plan = _compile_instruction(child, context, module)
+        plans.append(plan)
+        if isinstance(plan, (_VariablePlan, _ParamPlan)):
+            context = context.with_variable_name(plan.name)
     return _conditional_sequence(plans)
 
 
@@ -2644,9 +2647,11 @@ def _compile_iterate(
             location=instruction.location,
         )
     context = _instruction_context(context, instruction)
+    select = compile_xpath(select_source, context, location=instruction.location)
     parameters: list[_ParamPlan] = []
     body_children: list[Any] = []
     on_completion: Completion | None = None
+    on_completion_instruction: Instruction | None = None
     body_started = False
     for child in instruction.children:
         if isinstance(child, TextNode):
@@ -2654,7 +2659,7 @@ def _compile_iterate(
             body_children.append(child)
             continue
         if child.is_xslt and child.local_name == "param":
-            if body_started or on_completion is not None:
+            if body_started or on_completion_instruction is not None:
                 raise XsltStaticError(
                     "xsl:param children of xsl:iterate must precede all other content",
                     code="XTSE0010",
@@ -2671,14 +2676,14 @@ def _compile_iterate(
                     uri=context.uri,
                     location=child.location,
                 )
-            if on_completion is not None:
+            if on_completion_instruction is not None:
                 raise XsltStaticError(
                     "xsl:iterate permits at most one xsl:on-completion",
                     code="XTSE0010",
                     uri=context.uri,
                     location=child.location,
                 )
-            on_completion = _compile_completion(child, context, module)
+            on_completion_instruction = child
             continue
         body_started = True
         body_children.append(child)
@@ -2692,11 +2697,14 @@ def _compile_iterate(
                 location=parameter.instruction.location,
             )
         parameter_names.append(parameter.name)
+        context = context.with_variable_name(parameter.name)
+    if on_completion_instruction is not None:
+        on_completion = _compile_completion(on_completion_instruction, context, module)
     body = _mark_tail(_compile_sequence(body_children, context, module))
     _validate_iteration_controls(body, tuple(parameter_names))
     return _IteratePlan(
         instruction=instruction,
-        expression=compile_xpath(select_source, context, location=instruction.location),
+        expression=select,
         parameters=tuple(parameters),
         parameter_names=tuple(parameter_names),
         on_completion=on_completion,

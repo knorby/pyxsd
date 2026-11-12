@@ -1367,17 +1367,15 @@ def test_builtin_template_rule_handles_atomic_match_selection() -> None:
 
 
 def test_unknown_global_variable_reference_is_reported() -> None:
-    from pyxsd.xpath.continuation import XPathEvaluationError
-
-    compiled = compile_bytes(
-        xsl(
-            '<xsl:variable name="v" select="$unknown"/>'
-            '<xsl:template name="main"><xsl:value-of select="$v"/></xsl:template>'
+    with pytest.raises(XsltStaticError) as error:
+        compile_bytes(
+            xsl(
+                '<xsl:variable name="v" select="$unknown"/>'
+                '<xsl:template name="main"><xsl:value-of select="$v"/></xsl:template>'
+            )
         )
-    )
 
-    with pytest.raises(XPathEvaluationError):
-        compiled.transform(initial_template="main")
+    assert error.value.code == "XPST0008"
 
 
 def test_initial_entry_points_must_be_public_or_final(tmp_path: Path) -> None:
