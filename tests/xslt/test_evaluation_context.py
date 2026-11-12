@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
@@ -12,6 +13,8 @@ import pytest
 from pyxsd.xdm import XdmAtomic
 from pyxsd.xpath.environment import Focus
 from pyxsd.xslt import XsltProcessor
+from pyxsd.xslt.compiler.packages import PackageResolver
+from pyxsd.xslt.errors import XsltError
 from pyxsd.xslt.runtime.context import EvaluationContext
 from pyxsd.xslt.runtime.frames import Frame
 
@@ -172,3 +175,116 @@ def test_frame_owns_its_evaluation_context() -> None:
     )
     assert replaced.context.locals == {"y": ()}
     assert frame.context.locals == {"x": ()}
+
+
+def package_source(name: str, body: str) -> str:
+    return (
+        f'<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" xmlns:my="{MY_NS}" '
+        f'name="{name}" package-version="1.0" version="3.0">{body}</xsl:package>'
+    )
+
+
+def compile_override(
+    tmp_path: Path,
+    library_body: str,
+    override_body: str,
+    invocation: str,
+) -> Any:
+    library = tmp_path / "library.xsl"
+    library.write_text(package_source("urn:library", library_body), encoding="utf-8")
+    principal = tmp_path / "principal.xsl"
+    principal.write_text(
+        package_source(
+            "urn:principal",
+            f"""
+            <xsl:mode/>
+            <xsl:use-package name="urn:library" package-version="1.0">
+              <xsl:override>{override_body}</xsl:override>
+            </xsl:use-package>
+            <xsl:template name="xsl:initial-template" visibility="public">
+              {invocation}
+            </xsl:template>
+            """,
+        ),
+        encoding="utf-8",
+    )
+    return XsltProcessor(resolver=PackageResolver.from_sources(library)).compile(principal)
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["scheduler-path", "backstop-path"])
+def test_with_param_error_precedes_missing_current_rule(nested: bool) -> None:
+    open_tag, close_tag = ("<out>", "</out>") if nested else ("", "")
+    body = f"""
+    <xsl:template name="main">{open_tag}
+      <xsl:next-match>
+        <xsl:with-param name="p" select="error(QName('urn:test', 'boom'))"/>
+      </xsl:next-match>{close_tag}
+    </xsl:template>
+    """
+
+    with pytest.raises(XsltError) as caught:
+        transform(body, b"<doc/>")
+
+    assert caught.value.code == "Q{urn:test}boom"
+
+
+@pytest.mark.parametrize(
+    ("library_body", "override_body", "invocation"),
+    [
+        pytest.param(
+            """
+            <xsl:function name="my:f" as="element()" visibility="public">
+              <base marker="BASE"/>
+            </xsl:function>
+            """,
+            """
+            <xsl:function name="my:f" as="element()" visibility="public">
+              <out attr="{xsl:original()/@marker}"/>
+            </xsl:function>
+            """,
+            '<root><xsl:value-of select="my:f()/@attr"/></root>',
+            id="avt",
+        ),
+        pytest.param(
+            """
+            <xsl:function name="my:f" as="xs:string" visibility="public">
+              <xsl:sequence select="'BASE'"/>
+            </xsl:function>
+            """,
+            """
+            <xsl:function name="my:f" as="xs:string" visibility="public">
+              <xsl:iterate select="1">
+                <xsl:param name="p" select="xsl:original()"/>
+                <xsl:on-completion select="$p"/>
+              </xsl:iterate>
+            </xsl:function>
+            """,
+            '<root><xsl:value-of select="my:f()"/></root>',
+            id="iterate-parameter-default",
+        ),
+        pytest.param(
+            """
+            <xsl:function name="my:f" as="xs:string" visibility="public">
+              <xsl:sequence select="'BASE'"/>
+            </xsl:function>
+            """,
+            """
+            <xsl:function name="my:f" as="xs:string" visibility="public">
+              <xsl:apply-templates select="xsl:original()"/>
+            </xsl:function>
+            """,
+            '<root><xsl:value-of select="my:f()"/></root>',
+            id="apply-templates-select",
+        ),
+    ],
+)
+def test_original_functions_stay_out_of_lexical_expressions(
+    tmp_path: Path,
+    library_body: str,
+    override_body: str,
+    invocation: str,
+) -> None:
+    compiled = compile_override(tmp_path, library_body, override_body, invocation)
+
+    with pytest.raises(RuntimeError, match="no environment implementation"):
+        compiled.transform(delivery="document")

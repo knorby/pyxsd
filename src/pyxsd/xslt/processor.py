@@ -404,8 +404,6 @@ class _KeyDefinition:
 @dataclass(frozen=True, slots=True)
 class _TemplateContext:
     component: Component
-    rule_context: _RuleContext | None
-    original_functions: Mapping[int, Component] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -5655,11 +5653,7 @@ class _Invocation(Transformation):
         frame = Frame(
             kind="component",
             component=(
-                _TemplateContext(
-                    component,
-                    effective_rule_context,
-                    plan.original_functions,
-                )
+                _TemplateContext(component)
                 if plan.original_functions
                 or (component.kind == "template" and effective_rule_context is not None)
                 else component
@@ -6838,11 +6832,7 @@ class _Invocation(Transformation):
         context: EvaluationContext,
     ) -> XdmSequence:
         component = (
-            _TemplateContext(
-                cast(Component, None),
-                context.rule_context,
-                dict(context.original_functions),
-            )
+            _TemplateContext(cast(Component, None))
             if context.rule_context is not None or context.original_functions
             else None
         )
@@ -7104,7 +7094,10 @@ class _Invocation(Transformation):
         cursor: int,
     ) -> FrameResult:
         context = frame.context
-        items = self._evaluate(plan.expression, context)
+        items = self._evaluate(
+            plan.expression,
+            replace(context, original_functions={}),
+        )
         items = self._sorted_items(items, plan.sorts, context)
         resolved_mode = self._resolve_mode(plan.mode, context.mode, context.package_name)
         mode_package = self._mode_package(plan.mode, frame)
@@ -7811,15 +7804,17 @@ class _Invocation(Transformation):
         parameter: _ParamPlan,
         context: EvaluationContext,
     ) -> XdmSequence:
+        # Parameter defaults never inherit the caller's xsl:original functions
+        # or current template rule; preserve that lexical boundary.
+        default_context = replace(
+            context,
+            final_output=False,
+            rule_context=None,
+            original_functions={},
+        )
         if parameter.expression is not None:
-            return self._evaluate(parameter.expression, context)
+            return self._evaluate(parameter.expression, default_context)
         if parameter.children:
-            default_context = replace(
-                context,
-                final_output=False,
-                rule_context=None,
-                original_functions={},
-            )
             if parameter.has_as:
                 return self._execute_plans(parameter.children, context=default_context)
             sequence = self._execute_plans(parameter.children, context=default_context)
@@ -8875,6 +8870,10 @@ class _Invocation(Transformation):
         context: EvaluationContext,
     ) -> XdmSequence:
         rule_context = context.rule_context
+        template_parameters, tunnel_parameters = self._plan_parameters(
+            plan.parameters,
+            context,
+        )
         if rule_context is None:
             raise XsltDynamicError(
                 "xsl:next-match and xsl:apply-imports require a current template rule",
@@ -8883,10 +8882,6 @@ class _Invocation(Transformation):
         item = rule_context.focus.item
         if item is None:  # pragma: no cover - a current rule always has a focus item
             raise XsltDynamicError("the current template rule has no context item")
-        template_parameters, tunnel_parameters = self._plan_parameters(
-            plan.parameters,
-            context,
-        )
         effective_tunnel = {
             **rule_context.tunnel_parameters,
             **tunnel_parameters,
@@ -9444,7 +9439,10 @@ class _Invocation(Transformation):
                 parts.append(part.text)
                 continue
             assert part.expression is not None
-            values = self._evaluate(part.expression, context)
+            values = self._evaluate(
+                part.expression,
+                replace(context, original_functions={}),
+            )
             if not template.text_value_template:
                 profile = self.profile_for(part.expression.static_context.xslt_version)
                 if profile.compatibility_mode:
