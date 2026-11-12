@@ -62,15 +62,17 @@ def test_cached_documents_are_counted_once_and_reset_per_invocation() -> None:
 
 
 def test_text_resources_do_not_consume_the_document_budget() -> None:
-    policy = _DocumentPolicy({"urn:text": b"plain text"})
+    policy = _DocumentPolicy({"urn:text": b"plain text", "urn:doc": b"<doc/>"})
     source = stylesheet(
         '<xsl:template name="xsl:initial-template">'
-        "<out><xsl:value-of select=\"unparsed-text('urn:text')\"/></out>"
+        "<out><xsl:value-of select=\"concat(unparsed-text('urn:text'), "
+        "name(doc('urn:doc')/*))\"/></out>"
         "</xsl:template>"
     )
     compiled = XsltProcessor(resource_policy=policy).compile(io.BytesIO(source))
     result = compiled.transform(limits=ExecutionLimits(max_documents=1))
-    assert result.principal_tree.string_value == "plain text"
+    assert result.principal_tree.string_value == "plain textdoc"
+    assert [read[0] for read in policy.reads] == ["urn:text", "urn:doc"]
 
 
 def test_output_budget_counts_principal_result_nodes() -> None:
