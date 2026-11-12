@@ -304,6 +304,23 @@ def test_unparsed_text_lines_preserves_interior_empty_lines() -> None:
     assert compiled.transform().principal_tree.string_value == "2"
 
 
+def test_unparsed_text_lines_keeps_an_unterminated_final_line() -> None:
+    class Policy:
+        def read(self, source, *, base, purpose):
+            stream = _stylesheet_stream(source)
+            if stream is not None:
+                return stream
+            return ResourceData(source, b"a\nb")
+
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<xsl:value-of select=\"string-join(unparsed-text-lines('urn:test:lines'), '|')\"/>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor(resource_policy=Policy()).compile(io.BytesIO(source))
+    assert compiled.transform().principal_tree.string_value == "a|b"
+
+
 def test_unparsed_text_functions_accept_an_empty_uri() -> None:
     class Policy:
         def read(self, source, *, base, purpose):

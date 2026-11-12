@@ -53,6 +53,7 @@ __all__ = [
     "SchedulerViolation",
     "_IterationControlSignal",
     "_TemplateContext",
+    "resource_error",
 ]
 
 #: Stable implementation error code for transformation resource limits.
@@ -98,6 +99,21 @@ class _IterationControlSignal(Exception):
 _INHERIT = object()
 
 
+def resource_error(message: str) -> XsltDynamicError:
+    """Build one execution-resource diagnostic with the stable local code."""
+    return XsltDynamicError(message, code=PYXSD_FRAME_EXHAUSTED, allow_catch=False)
+
+
+def _validate_optional_limit(name: str, value: int | None) -> None:
+    """Validate one optional positive integer execution limit."""
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer or None")
+    if value < 1:
+        raise ValueError(f"{name} must be at least 1")
+
+
 @dataclass(frozen=True, slots=True)
 class _TemplateContext:
     """Opaque component identity retained by a recomposition frame."""
@@ -114,22 +130,25 @@ class ExecutionLimits:
 
     ``max_frames`` bounds the live explicit frame stack.  ``max_steps`` bounds
     scheduler dispatch steps when set; ``None`` leaves the step count
-    unbounded while still recording it.
+    unbounded while still recording it.  ``max_documents`` bounds distinct
+    documents loaded through a resource policy in one invocation, and
+    ``max_output_nodes`` bounds the nodes in the delivered principal and
+    secondary result trees.
     """
 
     max_frames: int = 100_000
     max_steps: int | None = None
+    max_documents: int | None = None
+    max_output_nodes: int | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.max_frames, bool) or not isinstance(self.max_frames, int):
             raise TypeError("max_frames must be an integer")
         if self.max_frames < 1:
             raise ValueError("max_frames must be at least 1")
-        if self.max_steps is not None:
-            if isinstance(self.max_steps, bool) or not isinstance(self.max_steps, int):
-                raise TypeError("max_steps must be an integer or None")
-            if self.max_steps < 1:
-                raise ValueError("max_steps must be at least 1")
+        _validate_optional_limit("max_steps", self.max_steps)
+        _validate_optional_limit("max_documents", self.max_documents)
+        _validate_optional_limit("max_output_nodes", self.max_output_nodes)
 
 
 class ExecutionBudget:
@@ -140,7 +159,7 @@ class ExecutionBudget:
     cannot reset a caller's configured limits.
     """
 
-    __slots__ = ("frames", "limits", "max_frame_depth", "steps")
+    __slots__ = ("documents", "frames", "limits", "max_frame_depth", "output_nodes", "steps")
 
     def __init__(self, limits: ExecutionLimits | None = None) -> None:
         if limits is None:
@@ -150,6 +169,8 @@ class ExecutionBudget:
         self.limits = limits
         self.steps = 0
         self.frames = 0
+        self.documents = 0
+        self.output_nodes = 0
         self.max_frame_depth = 0
 
     def take_step(self) -> bool:
@@ -171,6 +192,21 @@ class ExecutionBudget:
         """Release one live frame slot after a frame leaves every stack."""
         if self.frames > 0:
             self.frames -= 1
+
+    def take_document(self) -> bool:
+        """Consume one document slot, returning whether it was within budget."""
+        if self.limits.max_documents is not None and self.documents >= self.limits.max_documents:
+            return False
+        self.documents += 1
+        return True
+
+    def take_output_nodes(self, count: int) -> bool:
+        """Record delivered result nodes, returning whether they fit the budget."""
+        total = self.output_nodes + count
+        if self.limits.max_output_nodes is not None and total > self.limits.max_output_nodes:
+            return False
+        self.output_nodes = total
+        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -618,8 +654,4 @@ class Scheduler:
         stack = tuple(frame.diagnostic() for frame in self._frames)
         if stack:
             self.diagnostics = stack
-        return XsltDynamicError(
-            message,
-            code=PYXSD_FRAME_EXHAUSTED,
-            allow_catch=False,
-        )
+        return resource_error(message)

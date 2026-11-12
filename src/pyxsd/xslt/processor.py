@@ -169,6 +169,7 @@ from pyxsd.xslt.results import (
     TransformationResult,
     _build_result_tree,
     _NodeFactory,
+    _result_node_count,
 )
 from pyxsd.xslt.runtime.accumulators import (
     AccumulatorDefinition,
@@ -199,6 +200,7 @@ from pyxsd.xslt.runtime.frames import (
     Return,
     _IterationControlSignal,
     _TemplateContext,
+    resource_error,
 )
 from pyxsd.xslt.runtime.functions import ABSENT, XsltContextBridge
 from pyxsd.xslt.runtime.instructions import (
@@ -5250,6 +5252,7 @@ class _Invocation(Transformation):
             policy=getattr(stylesheet.processor, "resource_policy", None),
             remote_policy=stylesheet.processor.remote_resource_policy,
             collection_resolver=stylesheet.processor.collection_resolver,
+            budget=self.budget,
             schema_pool=stylesheet.schema_pool,
             validation=options.validation,
             validation_type=validation_type,
@@ -5305,6 +5308,7 @@ class _Invocation(Transformation):
         if policy is not None and self.options.output_uri is not None:
             policy.authorize(self.options.output_uri, principal=True)
         sequence = self._execute_entry()
+        self._check_output_budget(sequence)
         tree = None
         if self.options.delivery == "document" or (
             self.options.delivery == "stylesheet"
@@ -5330,6 +5334,14 @@ class _Invocation(Transformation):
             secondary=self.secondary,
             messages=tuple(self.messages),
         )
+
+    def _check_output_budget(self, sequence: XdmSequence) -> None:
+        """Charge every delivered principal and secondary result-tree node."""
+        total = _result_node_count(sequence)
+        for entry in self.secondary.values():
+            total += _result_node_count(entry.raw)
+        if not self.budget.take_output_nodes(total):
+            raise resource_error("the transformation exceeded its output budget")
 
     def _execute_entry(self) -> XdmSequence:
         options = self.options
@@ -6492,9 +6504,9 @@ class _Invocation(Transformation):
         base = self.options.output_uri
         target = base or "" if not href else urljoin(base, href) if base is not None else href
         if not target or not urlsplit(target).scheme:
-            raise XsltError(
+            raise XsltDynamicError(
                 f"cannot determine an absolute URI for xsl:result-document href {href!r}",
-                code=None,
+                code="XTDE1480",
             )
         return target
 

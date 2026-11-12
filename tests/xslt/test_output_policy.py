@@ -7,6 +7,7 @@ from tests.xslt.support import stylesheet
 
 from pyxsd.resource_policy import ResourcePolicyError
 from pyxsd.xslt import OutputPolicy
+from pyxsd.xslt.errors import XsltDynamicError, XsltError
 from pyxsd.xslt.processor import XsltProcessor
 
 
@@ -73,3 +74,47 @@ def test_invalid_output_policy_is_rejected() -> None:
 
 def test_output_policy_is_public() -> None:
     assert OutputPolicy.__name__ == "OutputPolicy"
+
+
+# ---------------------------------------------------------------------------
+# Final-destination collisions and missing bases
+
+
+def test_missing_base_output_uri_is_a_dynamic_error() -> None:
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        '<xsl:result-document href="relative.xml"><out/></xsl:result-document>'
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(source))
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform()
+    assert caught.value.code == "XTDE1480"
+
+
+def test_duplicate_secondary_uris_are_rejected() -> None:
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        '<xsl:result-document href="https://example.test/dup.xml"><one/>'
+        "</xsl:result-document>"
+        '<xsl:result-document href="https://example.test/dup.xml"><two/>'
+        "</xsl:result-document>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(source))
+    with pytest.raises(XsltError) as caught:
+        compiled.transform()
+    assert caught.value.code == "XTDE1490"
+
+
+def test_secondary_uri_colliding_with_the_principal_uri_is_rejected() -> None:
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        '<xsl:result-document href="https://example.test/out.xml"><one/>'
+        "</xsl:result-document>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(source))
+    with pytest.raises(XsltError) as caught:
+        compiled.transform(output_uri="https://example.test/out.xml")
+    assert caught.value.code == "XTDE1490"

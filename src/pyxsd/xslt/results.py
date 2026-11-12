@@ -19,7 +19,7 @@ from types import MappingProxyType
 from urllib.parse import urlsplit
 
 from pyxsd.exceptions import PyXSDError
-from pyxsd.xdm.nodes import XdmDocument
+from pyxsd.xdm.nodes import XdmDocument, XdmNode
 from pyxsd.xdm.values import XdmItem, XdmSequence
 from pyxsd.xslt.runtime.builder import (
     _append_complex_content as _append_complex_content,
@@ -182,3 +182,26 @@ class TransformationResult:
             "the principal result is not a document tree; request delivery='document', "
             "honor a tree-building output method, or inspect the raw sequence"
         )
+
+
+def _result_node_count(sequence: XdmSequence) -> int:
+    """Count the distinct nodes one delivered result sequence contains.
+
+    Every top-level node, its descendant nodes, and the attributes owned by
+    those nodes contribute one unit.  Namespace nodes are properties of an
+    element rather than independently delivered nodes and are not counted.
+    The identity set prevents a sequence that contains both an ancestor and a
+    descendant from charging the same node twice.
+    """
+    seen: set[int] = set()
+    total = 0
+    for item in sequence:
+        if not isinstance(item, XdmNode):
+            continue
+        for node in (item, *item.descendants):
+            identity = id(node)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            total += 1 + len(node.attributes)
+    return total

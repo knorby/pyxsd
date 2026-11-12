@@ -21,6 +21,7 @@ from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.xdm.document import DocumentValidationError, parse_typed_document
 from pyxsd.xdm.nodes import XdmDocument, XdmNode
 from pyxsd.xslt.errors import XsltDynamicError
+from pyxsd.xslt.runtime.frames import ExecutionBudget, resource_error
 from pyxsd.xslt.runtime.whitespace import apply_source_space_rules
 
 if TYPE_CHECKING:
@@ -90,6 +91,7 @@ class DocumentResources:
         policy: object = None,
         remote_policy: object = None,
         collection_resolver: Callable[[str | None], Sequence[XdmNode]] | None = None,
+        budget: ExecutionBudget | None = None,
         schema_pool: object = None,
         validation: str = "strip",
         validation_type: str | None = None,
@@ -104,6 +106,8 @@ class DocumentResources:
             raise TypeError("a remote resource policy must provide read()")
         if collection_resolver is not None and not callable(collection_resolver):
             raise TypeError("a collection resolver must be callable")
+        if budget is not None and not isinstance(budget, ExecutionBudget):
+            raise TypeError("a resource budget must be an ExecutionBudget value")
         if validation not in _VALIDATION_MODES:
             raise ValueError(f"invalid validation mode {validation!r}")
         if validation_type is not None and not isinstance(validation_type, str):
@@ -116,6 +120,7 @@ class DocumentResources:
         self.policy = cast(_DocumentPolicy | None, policy)
         self.remote_policy = cast(_DocumentPolicy | None, remote_policy)
         self.collection_resolver = collection_resolver
+        self.budget = budget
         self.schema_pool = schema_pool
         self.validation = validation
         self.validation_type = validation_type
@@ -220,6 +225,8 @@ class DocumentResources:
                         code="FODC0002",
                         cause=exc,
                     ) from exc
+                if self.budget is not None and not self.budget.take_document():
+                    raise resource_error("the transformation exceeded its document budget")
                 if existing is None:
                     self.documents[target] = document
             self._sources[source_key] = document
@@ -291,7 +298,7 @@ class DocumentResources:
         """Return the lines of one text resource after newline normalization."""
         text = self.read_text(uri, base=base, encoding=encoding)
         lines = text.split("\n")
-        if lines and lines[-1] == "":
+        if lines[-1] == "":
             lines.pop()
         return tuple(lines)
 
