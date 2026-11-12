@@ -64,6 +64,7 @@ _ANY_TYPE = clark(XSD_NS, "anyType")
 _VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
 _OPERATIONS = frozenset({"element", "attribute", "copy", "copy-of"})
 _ID_CODES = frozenset({"idref-unresolved", "id-duplicate"})
+_SIMPLE_XSI_ATTRIBUTES = frozenset({"type", "nil", "schemaLocation", "noNamespaceSchemaLocation"})
 _DOCUMENT_CONSTRAINT_CODES = frozenset(
     {
         "idref-unresolved",
@@ -440,7 +441,7 @@ def _validate_simple_element(
                 reason="type",
             )
     for attribute in node.attributes:
-        if attribute.namespace_uri != XSI_NS or attribute.local_name not in ("type", "nil"):
+        if attribute.namespace_uri != XSI_NS or attribute.local_name not in _SIMPLE_XSI_ATTRIBUTES:
             raise ConstructedValidationError(
                 f"the simple-typed element {node.name!r} cannot carry the attribute "
                 f"{attribute.name!r}",

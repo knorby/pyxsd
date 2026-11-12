@@ -1997,6 +1997,36 @@ def test_initial_mode_checks_only_nodes_actually_processed() -> None:
     )
 
 
+def test_simple_types_accept_schema_location_attributes() -> None:
+    for local in ("schemaLocation", "noNamespaceSchemaLocation"):
+        body = (
+            '<xsl:template name="main">'
+            '<xsl:variable name="o">'
+            '<xsl:element name="v:amount" type="v:Amount">'
+            f'<xsl:attribute name="xsi:{local}" namespace="{XSI_NS}">urn:example schema.xsd</xsl:attribute>'
+            "12.5"
+            "</xsl:element>"
+            "</xsl:variable>"
+            '<xsl:sequence select="$o/* instance of element(*, v:Amount)"/>'
+            '<xsl:sequence select="data($o/*)"/>'
+            "</xsl:template>"
+        )
+        assert _values(_transform(body)) == ("true", "12.5")
+
+    untyped = (
+        '<xsl:template name="main">'
+        '<xsl:variable name="o">'
+        '<xsl:element name="v:x" type="xs:untypedAtomic">'
+        f'<xsl:attribute name="xsi:schemaLocation" namespace="{XSI_NS}">urn:x x.xsd</xsl:attribute>'
+        "text"
+        "</xsl:element>"
+        "</xsl:variable>"
+        '<xsl:sequence select="string($o/*)"/>'
+        "</xsl:template>"
+    )
+    assert _values(_transform(untyped)) == ("text",)
+
+
 def test_simple_types_reject_unknown_xsi_and_untyped_atomic_attributes() -> None:
     unknown_xsi = (
         '<xsl:template name="main">'
