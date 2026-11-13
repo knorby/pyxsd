@@ -206,6 +206,11 @@ class HostFunctionToken(XPathFunction):
     created when an environment variable or function is converted into an
     elementpath value for one evaluation, so elementpath's token mutation bug
     (documented by ``pyxsd.xpath.capabilities``) cannot leak between calls.
+
+    An optional ``context_binder`` re-resolves the target from the calling
+    elementpath context on every invocation, so a focus-sensitive function item
+    saved in a variable observes each call's context item instead of the focus
+    bound when the environment was built.
     """
 
     symbol = "host-function"
@@ -221,12 +226,14 @@ class HostFunctionToken(XPathFunction):
         item_converter: Callable[[XdmItem], Any],
         name: str | None = None,
         arity: int | tuple[int, int | None] | None = None,
+        context_binder: Callable[[Any], Any] | None = None,
     ) -> None:
         super().__init__(parser)
         if not callable(target) and not isinstance(target, XdmFunction):
             raise TypeError("a host function token requires a callable or XdmFunction")
         self._target = target
         self._item_converter = item_converter
+        self._context_binder = context_binder
         self._host_name = name
         self.name = name or ""
         self.nargs = function_arity(target) if arity is None else arity
@@ -255,17 +262,26 @@ class HostFunctionToken(XPathFunction):
                 f"arguments, received {count}",
             )
 
+    def _invocation_target(self, context: Any) -> Any:
+        """Resolve the target for one call, re-bound to the live focus."""
+        binder = self._context_binder
+        if binder is None:
+            return self._target
+        return binder(context)
+
     def __call__(self, *args: Any, context: Any = None) -> Any:
+        target = self._invocation_target(context)
         self._check(len(args))
         arguments = tuple(as_xdm(_evaluate_token(value, context)) for value in args)
-        result = call_host_function(self._target, arguments)
+        result = call_host_function(target, arguments)
         return sequence_to_elementpath(result, item_converter=self._item_converter)
 
     def evaluate(self, context: Any = None) -> Any:
+        target = self._invocation_target(context)
         arguments = tuple(
             as_xdm(self.get_argument(context, index=index)) for index in range(len(self))
         )
-        result = call_host_function(self._target, arguments)
+        result = call_host_function(target, arguments)
         return sequence_to_elementpath(result, item_converter=self._item_converter)
 
     def __repr__(self) -> str:

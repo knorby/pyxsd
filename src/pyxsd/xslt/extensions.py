@@ -478,7 +478,13 @@ class ExtensionTarget(XdmFunctionTarget):
             raise TypeError("an extension fallback must be callable or None")
 
     def with_context(self, context_item: XdmItem | None) -> ExtensionTarget:
-        """Return this target with one live context item for a direct call."""
+        """Return this target with one live context item for a direct call.
+
+        The evaluation bridge also binds a saved function item's target to the
+        calling elementpath context's item through this method, so every
+        invocation observes the call-site focus instead of the focus captured
+        when the expression environment was built.
+        """
         return replace(self, context_item=context_item)
 
     def invoke_xdm(

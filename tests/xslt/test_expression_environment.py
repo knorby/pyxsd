@@ -909,6 +909,70 @@ def test_value_bridge_function_item_variants() -> None:
     assert converted.invoke(()) == (XdmAtomic.integer(9),)
 
 
+def test_extension_backed_host_tokens_resolve_the_call_site_focus() -> None:
+    from types import SimpleNamespace
+
+    from pyxsd.xpath.engine import _build_parser, _ValueBridge
+    from pyxsd.xslt import ExtensionSignature, XsltExtensions
+
+    seen: list[Any] = []
+
+    def current_item(context_item: Any) -> Any:
+        seen.append(context_item)
+        return "hit" if context_item is not None else "absent"
+
+    target = (
+        XsltExtensions()
+        .register_function(
+            "{urn:app}cur",
+            0,
+            current_item,
+            signature=ExtensionSignature((), "xs:string"),
+            contextual=True,
+        )
+        .runtime_targets()["{urn:app}cur"]
+    )
+    static = XPathStaticContext()
+    bridge = _ValueBridge(
+        _build_parser("3.1", static, functions=None, key=False),
+        static,
+        ExpressionEnvironment(variables={"cur": target, "plain": lambda: "plain"}),
+    )
+
+    # Only extension targets are focus-sensitive; plain callables stay unchanged.
+    tokens = bridge.variable_values()
+    assert tokens["plain"]._context_binder is None
+
+    binder_token = tokens["cur"]
+    assert binder_token._context_binder is not None
+    # A token returns elementpath host values, not XDM items; the extension
+    # callback receives the bound context item as one XDM item.
+    assert binder_token.evaluate(SimpleNamespace(item=42)) == "hit"
+    assert seen == [XdmAtomic.integer(42)]
+    # A context item that converts to an empty sequence binds None, never an IndexError.
+    assert binder_token.evaluate(SimpleNamespace(item=())) == "absent"
+    # A call with no context at all binds None as well.
+    assert binder_token.evaluate() == "absent"
+    assert seen == [XdmAtomic.integer(42), None, None]
+
+    engine = XPathEngine("3.1")
+    compiled = engine.compile("(1, 2, 3)[$cur() = 'hit']", static)
+    result = engine.evaluate(compiled, ExpressionEnvironment(variables={"cur": target}))
+    assert result == (
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(2),
+        XdmAtomic.integer(3),
+    )
+    assert seen == [
+        XdmAtomic.integer(42),
+        None,
+        None,
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(2),
+        XdmAtomic.integer(3),
+    ]
+
+
 def test_schema_pool_proxy_helpers(tmp_path: Path) -> None:
     from pyxsd.xpath.engine import _PoolSchemaProxy
 

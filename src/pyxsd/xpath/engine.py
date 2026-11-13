@@ -21,7 +21,7 @@ capability boundary.
 from __future__ import annotations
 
 import copy
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from types import MethodType
@@ -493,6 +493,7 @@ class _ValueBridge:
                     value,
                     item_converter=self.adapt_item,
                     name=name,
+                    context_binder=_context_target_binder(value, self),
                 )
             else:
                 values[name] = self.sequence_to_elementpath(as_xdm(value))
@@ -991,6 +992,23 @@ def _register_declared_function(
 
     token_class.evaluate = evaluate
 
+    inherited_call = token_class.__call__
+
+    def call(self: Any, *args: Any, context: Any = None) -> Any:
+        # elementpath saves the focus present when a function reference was
+        # evaluated onto the function item and prefers it over the caller's
+        # context in ``XPathFunction.__call__``.  A declared function saved in
+        # a variable must observe each call's live focus instead, so the saved
+        # focus is cleared for the call and restored afterwards.
+        saved_context = self.context
+        self.context = None
+        try:
+            return inherited_call(self, *args, context=context)
+        finally:
+            self.context = saved_context
+
+    token_class.__call__ = call
+
 
 def _live_context_item(holder: _BridgeHolder, bridge: _ValueBridge) -> Any:
     """The context item of the call being evaluated, if it has one."""
@@ -998,6 +1016,30 @@ def _live_context_item(holder: _BridgeHolder, bridge: _ValueBridge) -> Any:
     if raw is None:
         return None
     return bridge.to_xdm_sequence(raw)[0]
+
+
+def _context_target_binder(target: Any, bridge: _ValueBridge) -> Callable[[Any], Any] | None:
+    """Bind one variable-held function target to the focus of each call.
+
+    Extension targets expose their focus-sensitive callback through
+    ``with_context``, so every invocation re-resolves the target from the
+    calling elementpath context's item.  Targets without ``with_context`` are
+    focus-independent and keep the environment-bound value.
+    """
+    bind_context = getattr(target, "with_context", None)
+    if not callable(bind_context):
+        return None
+
+    def bind(context: Any) -> Any:
+        raw = getattr(context, "item", None) if context is not None else None
+        item: XdmItem | None = None
+        if raw is not None:
+            sequence = bridge.to_xdm_sequence(raw)
+            if sequence:
+                item = sequence[0]
+        return bind_context(item)
+
+    return bind
 
 
 def _function_target(

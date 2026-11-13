@@ -430,6 +430,94 @@ def test_contextual_extension_observes_the_live_predicate_focus() -> None:
     ]
 
 
+def compile_current_item_stylesheet(select: str, seen: list[Any] | None = None) -> Any:
+    """Compile a stylesheet whose contextual ``app:current-item`` echoes the focus."""
+
+    def current_item(context_item: Any) -> Any:
+        if seen is not None:
+            seen.append(context_item)
+        return context_item
+
+    extensions = XsltExtensions().register_function(
+        app("current-item"),
+        0,
+        current_item,
+        signature=ExtensionSignature((), "item()"),
+        contextual=True,
+    )
+    return compile_body(initial(select), extensions=extensions)
+
+
+def test_contextual_function_item_observes_each_predicate_item() -> None:
+    result = compile_current_item_stylesheet(
+        "let $f := app:current-item#0 return (1, 2, 3)[$f() = 2]"
+    ).transform()
+    assert result.principal == (XdmAtomic.integer(2),)
+
+
+def test_contextual_function_item_records_each_predicate_item() -> None:
+    seen: list[Any] = []
+    result = compile_current_item_stylesheet(
+        "let $f := app:current-item#0 return (1, 2, 3)[$f() = 2]", seen
+    ).transform()
+    assert result.principal == (XdmAtomic.integer(2),)
+    assert seen == [
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(2),
+        XdmAtomic.integer(3),
+    ]
+
+
+def test_saved_function_item_observes_each_path_step_item() -> None:
+    seen: list[Any] = []
+
+    def current_item(context_item: Any) -> Any:
+        seen.append(context_item)
+        return context_item
+
+    extensions = XsltExtensions().register_function(
+        app("current-item"),
+        0,
+        current_item,
+        signature=ExtensionSignature((), "item()"),
+        contextual=True,
+    )
+    body = (
+        '<xsl:template match="root">'
+        '<xsl:sequence select="let $f := app:current-item#0 return */$f()"/>'
+        "</xsl:template>"
+    )
+    compiled = compile_body(body, extensions=extensions)
+    source = XdmDocument.parse(b"<root><a>1</a><b>2</b></root>")
+
+    result = compiled.transform(source=source, delivery="raw").principal
+    assert [item.local_name for item in result] == ["a", "b"]
+    assert [item.local_name for item in seen] == ["a", "b"]
+
+
+def test_contextual_function_item_with_absent_context_item_sees_none() -> None:
+    seen: list[Any] = []
+
+    def focus_state(context_item: Any) -> str:
+        seen.append(context_item)
+        return "absent" if context_item is None else "present"
+
+    extensions = XsltExtensions().register_function(
+        app("focus-state"),
+        0,
+        focus_state,
+        signature=ExtensionSignature((), "xs:string"),
+        contextual=True,
+    )
+    compiled = compile_body(
+        initial("let $f := app:focus-state#0 return $f()"),
+        extensions=extensions,
+    )
+
+    assert compiled.transform(delivery="raw").principal == (XdmAtomic.string("absent"),)
+    assert seen == [None]
+
+
 def test_extension_and_stylesheet_function_share_a_name_across_arities() -> None:
     extensions = XsltExtensions().function(app("f"), 1, xs_integer_to_integer)(double)
     body = (
