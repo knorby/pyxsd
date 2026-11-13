@@ -91,6 +91,39 @@ def test_character_maps_skip_cdata_sections() -> None:
     )
 
 
+def test_cdata_content_is_normalized_but_not_character_mapped() -> None:
+    document = XdmDocument.parse(b"<r>x e&#x301;</r>")
+
+    assert (
+        _serialize(
+            (document,),
+            omit_xml_declaration=True,
+            cdata_section_elements=("r",),
+            normalization_form="NFC",
+            character_maps=(("x", "X"),),
+        )
+        == "<r><![CDATA[x \u00e9]]></r>"
+    )
+
+
+def test_html_raw_text_is_mapped_and_normalized_without_escaping() -> None:
+    script = XdmDocument.parse(b"<script>x e&#x301; &amp;</script>")
+    style = XdmDocument.parse(b"<style>e&#x301;</style>")
+
+    assert (
+        _serialize(
+            (script,),
+            method="html",
+            character_maps=(("x", "<"),),
+            normalization_form="NFC",
+        )
+        == "<script>< \u00e9 &</script>"
+    )
+    assert _serialize((style,), method="html", normalization_form="NFC") == (
+        "<style>\u00e9</style>"
+    )
+
+
 def test_uri_attributes_percent_escape_before_output_escaping() -> None:
     document = XdmDocument.parse('<a href="a b%20&amp;\u00e9"/>'.encode())
 
@@ -217,16 +250,7 @@ def test_nested_character_maps_compose() -> None:
     assert compiled.package.character_map_pairs(None) == ()
 
 
-def test_conflicting_character_mappings_raise_xtse1585() -> None:
-    direct = (
-        '<xsl:character-map name="m">'
-        '<xsl:output-character character="x" string="1"/>'
-        '<xsl:output-character character="x" string="2"/>'
-        "</xsl:character-map>"
-        '<xsl:template name="main"><r/></xsl:template>'
-    )
-    assert _code(lambda: _compile(direct)) == "XTSE1585"
-
+def test_later_character_mappings_override_earlier_ones() -> None:
     nested = (
         '<xsl:character-map name="a"><xsl:output-character character="x" string="1"/>'
         "</xsl:character-map>"
@@ -235,17 +259,44 @@ def test_conflicting_character_mappings_raise_xtse1585() -> None:
         "</xsl:character-map>"
         '<xsl:template name="main"><r/></xsl:template>'
     )
-    assert _code(lambda: _compile(nested)) == "XTSE1585"
+    assert dict(_compile(nested).package.character_map_pairs("b")) == {"x": "2"}
+
+    referenced = (
+        '<xsl:character-map name="a"><xsl:output-character character="x" string="1"/>'
+        "</xsl:character-map>"
+        '<xsl:character-map name="b"><xsl:output-character character="x" string="2"/>'
+        "</xsl:character-map>"
+        '<xsl:character-map name="c" use-character-maps="a b">'
+        '<xsl:output-character character="x" string="3"/>'
+        "</xsl:character-map>"
+        '<xsl:template name="main"><r/></xsl:template>'
+    )
+    assert dict(_compile(referenced).package.character_map_pairs("c")) == {"x": "3"}
+    assert dict(_compile(referenced).package.character_map_pairs("a b")) == {"x": "2"}
 
     repeated = (
         '<xsl:character-map name="a"><xsl:output-character character="x" string="1"/>'
         "</xsl:character-map>"
-        '<xsl:character-map name="b" use-character-maps="a">'
+        '<xsl:character-map name="b" use-character-maps="a a">'
         '<xsl:output-character character="x" string="1"/>'
         "</xsl:character-map>"
         '<xsl:template name="main"><r/></xsl:template>'
     )
     assert dict(_compile(repeated).package.character_map_pairs("b")) == {"x": "1"}
+
+
+def test_undeclared_character_map_names_raise_xtse1590() -> None:
+    output = (
+        '<xsl:output use-character-maps="missing"/><xsl:template name="main"><r/></xsl:template>'
+    )
+    assert _code(lambda: _compile(output)) == "XTSE1590"
+
+    declared_map = (
+        '<xsl:character-map name="m" use-character-maps="missing"/>'
+        '<xsl:output use-character-maps="m"/>'
+        '<xsl:template name="main"><r/></xsl:template>'
+    )
+    assert _code(lambda: _compile(declared_map)) == "XTSE1590"
 
 
 def test_character_map_self_reference_raises_xtse1600() -> None:
@@ -273,7 +324,40 @@ def test_invalid_output_character_raises_xtse0010() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Delivery
+# Default-namespace resolution and delivery
+
+
+def test_use_character_maps_ignores_the_default_namespace_on_output() -> None:
+    compiled = _compile(
+        '<xsl:output method="xml" omit-xml-declaration="yes" use-character-maps="m"/>'
+        '<xsl:character-map name="m"><xsl:output-character character="x" string="y"/>'
+        "</xsl:character-map>"
+        '<xsl:template name="main"><xsl:value-of select="\'x\'"/></xsl:template>',
+        attributes=' xmlns="urn:def"',
+    )
+
+    assert compiled.package.output(None).attribute("use-character-maps") == "m"
+    result = compiled.transform(delivery="stylesheet", initial_template="main")
+    assert result.principal_entry.serialized == "y"
+    assert dict(result.principal_entry.character_maps) == {"x": "y"}
+
+
+def test_use_character_maps_ignores_the_default_namespace_on_result_document() -> None:
+    source = stylesheet(
+        '<xsl:character-map name="m"><xsl:output-character character="x" string="y"/>'
+        "</xsl:character-map>"
+        '<xsl:template name="main">'
+        f'<xsl:result-document href="{SECONDARY_URI}" method="xml" '
+        'omit-xml-declaration="yes" use-character-maps="m">x</xsl:result-document>'
+        "</xsl:template>",
+        attributes=' xmlns="urn:def"',
+    )
+
+    result = transform(source, delivery="stylesheet", initial_template="main")
+
+    secondary = result.secondary[SECONDARY_URI]
+    assert secondary.serialized == "y"
+    assert dict(secondary.character_maps) == {"x": "y"}
 
 
 def test_stylesheet_delivery_applies_character_maps_to_principal_and_secondary() -> None:

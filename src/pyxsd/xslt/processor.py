@@ -6477,7 +6477,11 @@ class _Invocation(Transformation):
         evaluated = {name: self._value_source(value, context) for name, value in plan.attributes}
         for name in _QNAME_LIST_OUTPUT_ATTRIBUTES:
             if name in evaluated:
-                evaluated[name] = expand_qname_list(evaluated[name], plan.instruction.namespaces)
+                evaluated[name] = expand_qname_list(
+                    evaluated[name],
+                    plan.instruction.namespaces,
+                    use_default_namespace=name != "use-character-maps",
+                )
         effective_method = method or base_attributes.get("method", "xml")
         build_tree = (
             self._value_source(plan.build_tree, context)

@@ -463,19 +463,25 @@ class CompiledPackage:
                 return definition
         return None
 
-    def character_map_pairs(self, names: str | None = None) -> tuple[tuple[str, str], ...]:
+    def character_map_pairs(
+        self,
+        names: str | None = None,
+        *,
+        origin: PackageConstruct | None = None,
+    ) -> tuple[tuple[str, str], ...]:
         """Expand character-map names into ``(character, replacement)`` pairs.
 
         *names* is the whitespace-separated content of one ``use-character-maps``
-        attribute, already expanded to ``Q{uri}local`` at the site that wrote
-        it.  Referenced maps are expanded depth-first and an own
-        ``xsl:output-character`` child overrides a referenced mapping.  A
-        character mapped to two different strings is ``XTSE1585``; a map that
-        references itself directly or indirectly is ``XTSE1600``.
+        attribute, already expanded at the site that wrote it.  Referenced maps
+        are expanded depth-first in list order; an own ``xsl:output-character``
+        child then overrides a referenced mapping, so the last mapping for one
+        character wins (XSLT 3.0 section 26.1).  A name that does not match a
+        map in this package is ``XTSE1590`` and a self-reference is
+        ``XTSE1600``.
         """
         pairs: dict[str, str] = {}
         for token in () if names is None else names.split():
-            self._collect_character_map(token, pairs, ())
+            self._collect_character_map(token, pairs, (), origin)
         return tuple(pairs.items())
 
     def _collect_character_map(
@@ -483,10 +489,16 @@ class CompiledPackage:
         name: str,
         pairs: dict[str, str],
         path: tuple[str, ...],
+        origin: PackageConstruct | None,
     ) -> None:
         definition = self.character_map(name)
         if definition is None:
-            return
+            raise XsltStaticError(
+                f"the character map {name!r} is not declared in this package",
+                code="XTSE1590",
+                uri=None if origin is None else origin.module,
+                location=None if origin is None else origin.location,
+            )
         if definition.name is not None and definition.name in path:
             raise XsltStaticError(
                 f"the character map {name!r} references itself",
@@ -496,7 +508,7 @@ class CompiledPackage:
             )
         expanded_path = (*path, definition.name or name)
         for token in (definition.attribute("use-character-maps") or "").split():
-            self._collect_character_map(token, pairs, expanded_path)
+            self._collect_character_map(token, pairs, expanded_path, origin)
         for declaration in definition.declarations:
             for child in declaration.elements:
                 if child.local_name != "output-character":
@@ -510,22 +522,14 @@ class CompiledPackage:
                         uri=definition.module,
                         location=child.location or definition.location,
                     )
-                existing = pairs.get(character)
-                if existing is not None and existing != replacement:
-                    raise XsltStaticError(
-                        f"the character {character!r} maps to conflicting strings",
-                        code="XTSE1585",
-                        uri=definition.module,
-                        location=child.location or definition.location,
-                    )
                 pairs[character] = replacement
 
     def _validate_character_maps(self) -> None:
         """Resolve every declared map and output reference at compile time."""
         for definition in self.character_maps:
-            self.character_map_pairs(definition.name)
+            self.character_map_pairs(definition.name, origin=definition)
         for definition in self.outputs:
-            self.character_map_pairs(definition.attribute("use-character-maps"))
+            self.character_map_pairs(definition.attribute("use-character-maps"), origin=definition)
 
     @property
     def keys(self) -> Mapping[str, Component]:
@@ -1716,7 +1720,11 @@ def _build_constructs(
                 if kind in ("output", "character-map") and local == "use-character-maps":
                     existing = attributes.get(local, "").split()
                     tokens = [
-                        expand_qname(token, declaration.element.in_scope_namespaces)
+                        expand_qname(
+                            token,
+                            declaration.element.in_scope_namespaces,
+                            use_default_namespace=False,
+                        )
                         for token in attribute.value.split()
                     ]
                     attributes[local] = " ".join((*existing, *tokens))

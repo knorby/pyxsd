@@ -131,11 +131,20 @@ def _name_list(value: Any, label: str) -> tuple[str, ...]:
     raise _invalid(f"{label} must be a whitespace-separated string or sequence")
 
 
-def expand_qname(token: str, namespaces: Mapping[str, str]) -> str:
+def expand_qname(
+    token: str,
+    namespaces: Mapping[str, str],
+    *,
+    use_default_namespace: bool = True,
+) -> str:
     """Expand one lexical QName to ``Q{uri}local`` when its prefix is bound.
 
-    An unprefixed token uses the default namespace; an unbound prefix is left
-    lexical so it can never match an element with a namespace.
+    An unprefixed token uses the default namespace unless
+    *use_default_namespace* is false.  XSLT 3.0 section 5.1.1 uses the default
+    namespace only for a fixed list of attributes (``cdata-section-elements``
+    and ``suppress-indentation`` among output attributes); other unprefixed
+    names, including ``use-character-maps``, are in no namespace.  An unbound
+    prefix is left lexical so it can never match an expanded name.
     """
     if token.startswith(("Q{", "{")):
         return token
@@ -143,13 +152,23 @@ def expand_qname(token: str, namespaces: Mapping[str, str]) -> str:
         prefix, local = token.split(":", 1)
         uri = namespaces.get(prefix)
         return token if uri is None else f"Q{{{uri}}}{local}"
+    if not use_default_namespace:
+        return token
     uri = namespaces.get("")
     return token if not uri else f"Q{{{uri}}}{token}"
 
 
-def expand_qname_list(value: str, namespaces: Mapping[str, str]) -> str:
+def expand_qname_list(
+    value: str,
+    namespaces: Mapping[str, str],
+    *,
+    use_default_namespace: bool = True,
+) -> str:
     """Expand a whitespace-separated QName list, preserving its string shape."""
-    return " ".join(expand_qname(token, namespaces) for token in value.split())
+    return " ".join(
+        expand_qname(token, namespaces, use_default_namespace=use_default_namespace)
+        for token in value.split()
+    )
 
 
 def _expand_name_list(value: Any, namespaces: Mapping[str, str]) -> Any:

@@ -473,9 +473,14 @@ def _text_node(
         and element is not None
         and _matches_any(parameters.cdata_section_elements, element)
     ):
-        return _cdata_section(value, codec=codec)
+        return _cdata_section(normalize_text(value, parameters.normalization_form), codec=codec)
     if html and element is not None and (element.local_name or "").lower() in ("script", "style"):
-        return value
+        form = parameters.normalization_form
+        return apply_mapped(
+            value,
+            characters,
+            lambda run: normalize_text(run, form),
+        )
     return text_value(value, parameters, html=html, codec=codec, characters=characters)
 
 

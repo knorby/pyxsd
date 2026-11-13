@@ -2672,6 +2672,8 @@ def test_import_precedence_combines_sets_keys_and_formats(tmp_path: Path) -> Non
         '<xsl:key name="app:k" match="doc:b" use="@second"/>'
         '<xsl:decimal-format name="app:df" grouping-separator=" "/>'
         '<xsl:mode name="app:m" visibility="public" on-multiple-match="fail"/>'
+        '<xsl:character-map name="app:one"/>'
+        '<xsl:character-map name="app:two"/>'
         '<xsl:output cdata-section-elements="doc:two" use-character-maps="app:two"/>',
     )
     path = _write(tmp_path, "principal-combine.xsl", principal)
@@ -3125,6 +3127,8 @@ def test_xsl_original_attribute_set_outside_override_is_rejected() -> None:
 def test_output_duplicate_merge_tokens() -> None:
     package = _package(
         BASE,
+        '<xsl:character-map name="app:one"/>'
+        '<xsl:character-map name="app:two"/>'
         '<xsl:output cdata-section-elements="doc:a doc:a" use-character-maps="app:one app:one"/>'
         '<xsl:output cdata-section-elements="doc:a doc:b" use-character-maps="app:two"/>',
     )
