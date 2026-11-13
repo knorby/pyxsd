@@ -131,10 +131,16 @@ def _matches_any(tokens: tuple[str, ...], element: XdmNode) -> bool:
 
 
 def _is_html_element(element: XdmNode, *, method: str) -> bool:
-    """Whether *element* is serialized as an HTML element by *method*."""
-    if element.namespace_uri is None:
-        return True
-    return method == "xhtml" and element.namespace_uri == XHTML_NS
+    """Whether *element* is serialized as an HTML element by *method*.
+
+    The XHTML method treats a null-namespace element as an HTML element only
+    when the requested HTML version is 5.0 (Serialization 3.1 section 6).
+    ``html-version`` is not modeled yet, so this task recognizes only the
+    XHTML namespace there rather than misclassifying XML islands.
+    """
+    if method == "html":
+        return element.namespace_uri is None
+    return element.namespace_uri == XHTML_NS
 
 
 def _is_head(element: XdmNode, *, method: str) -> bool:

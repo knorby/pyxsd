@@ -659,14 +659,33 @@ def test_xhtml_content_type_meta_uses_the_head_namespace_and_declared_media() ->
     )
 
     plain = _document(b"<html><head/></html>")
-    assert _serialize(
-        (plain,),
-        method="xhtml",
-        omit_xml_declaration=True,
-    ) == (
-        "<html><head>"
-        '<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />'
-        "</head></html>"
+    assert (
+        _serialize(
+            (plain,),
+            method="xhtml",
+            omit_xml_declaration=True,
+        )
+        == "<html><head /></html>"
+    )
+
+
+def test_xhtml_null_namespace_head_is_an_xml_island_without_html5() -> None:
+    document = _document(
+        b'<html><head><meta http-equiv="Content-Type" content="old"/><title>t</title></head></html>'
+    )
+    expected = (
+        '<html><head><meta http-equiv="Content-Type" content="old" /><title>t</title></head></html>'
+    )
+
+    assert _serialize((document,), method="xhtml", omit_xml_declaration=True) == expected
+    assert (
+        _serialize(
+            (document,),
+            method="xhtml",
+            omit_xml_declaration=True,
+            **{"html-version": "5.0"},
+        )
+        == expected
     )
 
 
@@ -719,16 +738,18 @@ def test_include_content_type_is_disabled_and_does_not_apply_to_xml() -> None:
 
 def test_include_content_type_ignores_foreign_elements_and_html_namespaces() -> None:
     foreign_meta = _document(
-        b'<html><head xmlns:x="urn:x">'
-        b'<x:meta http-equiv="Content-Type" content="old"/>'
-        b"<title>t</title></head></html>"
+        (
+            f'<html xmlns="{XHTML_NS}"><head xmlns:x="urn:x">'
+            '<x:meta http-equiv="Content-Type" content="old"/>'
+            "<title>t</title></head></html>"
+        ).encode()
     )
     assert _serialize(
         (foreign_meta,),
         method="xhtml",
         omit_xml_declaration=True,
     ) == (
-        '<html><head xmlns:x="urn:x">'
+        f'<html xmlns="{XHTML_NS}"><head xmlns:x="urn:x">'
         '<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />'
         '<x:meta http-equiv="Content-Type" content="old" />'
         "<title>t</title></head></html>"
