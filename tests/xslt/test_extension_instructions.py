@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from tests.xslt.support import stylesheet
 
 import pyxsd.xslt.processor as processor_module
 from pyxsd.xdm import XdmAtomic
@@ -44,13 +45,7 @@ PY = "urn:pyxsd:python-rules"
 
 TARGET = '<xsl:template name="app:target" visibility="public"><original/></xsl:template>'
 
-
-def stylesheet(body: str) -> bytes:
-    return (
-        f'<xsl:stylesheet version="3.0" xmlns:xsl="{XSLT_NS}" '
-        f'xmlns:app="{APP}" xmlns:doc="urn:example:doc" xmlns:py="{PY}">'
-        f"{body}</xsl:stylesheet>"
-    ).encode()
+NAMESPACES = {"app": APP, "doc": "urn:example:doc", "py": PY}
 
 
 def compile_rules(source: bytes, rules: PythonRules) -> Any:
@@ -96,10 +91,15 @@ def test_python_invoke_is_rejected_in_a_user_stylesheet() -> None:
     )
     for body in bodies:
         with pytest.raises(XsltStaticError) as caught:
-            compile_rules(stylesheet(TARGET + body), target_rules())
+            compile_rules(
+                stylesheet(TARGET + body, namespaces=NAMESPACES, declare_xs=False), target_rules()
+            )
         assert code(caught.value) == "XTSE0010"
         with pytest.raises(XsltStaticError) as caught:
-            compile_rules(stylesheet(TARGET + body), PythonRules.empty())
+            compile_rules(
+                stylesheet(TARGET + body, namespaces=NAMESPACES, declare_xs=False),
+                PythonRules.empty(),
+            )
         assert code(caught.value) == "XTSE0010"
 
 
@@ -117,7 +117,7 @@ def test_generated_layer_rule_ids_are_validated(
     monkeypatch: pytest.MonkeyPatch,
     mutate: Any,
 ) -> None:
-    source = stylesheet(TARGET)
+    source = stylesheet(TARGET, namespaces=NAMESPACES, declare_xs=False)
     with pytest.raises(XsltStaticError) as caught:
         compile_generated_layer(source, target_rules(), monkeypatch, mutate)
     assert code(caught.value) == "XTSE0010"
@@ -128,7 +128,7 @@ def test_generated_layer_executes_the_bound_callback() -> None:
         assert context.parameters == {}
         return "invoked"
 
-    source = stylesheet(TARGET)
+    source = stylesheet(TARGET, namespaces=NAMESPACES, declare_xs=False)
     compiled = compile_rules(source, target_rules(callback))
     assert (
         compiled.transform(initial_template="Q{urn:example:app}target")
@@ -138,7 +138,9 @@ def test_generated_layer_executes_the_bound_callback() -> None:
 
 
 def test_compiled_artifact_registers_the_python_family_per_artifact() -> None:
-    compiled = compile_rules(stylesheet(TARGET), target_rules())
+    compiled = compile_rules(
+        stylesheet(TARGET, namespaces=NAMESPACES, declare_xs=False), target_rules()
+    )
     assert compiled.plan_executors[_PythonInvokePlan] is execute_python_plan
     contexts = [
         component.context
@@ -197,11 +199,7 @@ EXPECTED_MARK_RESULT = (XdmAtomic.string("marked"),)
 def mark_stylesheet(body: str, *, prefixes: str | None = "app") -> bytes:
     """A stylesheet whose ``app:*`` elements are extension-instruction candidates."""
     declaration = "" if prefixes is None else f' extension-element-prefixes="{prefixes}"'
-    return (
-        f'<xsl:stylesheet version="3.0" xmlns:xsl="{XSLT_NS}" '
-        f'xmlns:app="{MARK_NS}"{declaration}>'
-        f"{body}</xsl:stylesheet>"
-    ).encode()
+    return stylesheet(body, attributes=declaration, namespaces={"app": MARK_NS}, declare_xs=False)
 
 
 MARK_DOCUMENT = (

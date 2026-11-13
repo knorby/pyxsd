@@ -15,6 +15,7 @@ import io
 from typing import Any
 
 import pytest
+from tests.xslt.support import stylesheet
 
 import pyxsd.xslt.processor as processor_module
 import pyxsd.xslt.runtime.instructions as runtime_instructions
@@ -38,15 +39,9 @@ APP_INVOKE = "{urn:example:app-foreign}invoke"
 
 TARGET = '<xsl:template name="app:target" visibility="public"><original/></xsl:template>'
 
+NAMESPACES = {"app": APP, "doc": "urn:example:doc", "py": PY}
+
 EXPECTED_OVERRIDE_RESULT = '<?xml version="1.0" encoding="UTF-8"?>overridden'
-
-
-def stylesheet(body: str) -> bytes:
-    return (
-        f'<xsl:stylesheet version="3.0" xmlns:xsl="{XSLT_NS}" '
-        f'xmlns:app="{APP}" xmlns:doc="urn:example:doc" xmlns:py="{PY}">'
-        f"{body}</xsl:stylesheet>"
-    ).encode()
 
 
 def compile_rules(source: bytes, rules: PythonRules) -> Any:
@@ -63,7 +58,7 @@ def target_rules() -> PythonRules:
 def python_override_result() -> str:
     rules = PythonRules.empty().override_template("app:target", lambda context: "overridden")
     return (
-        compile_rules(stylesheet(TARGET), rules)
+        compile_rules(stylesheet(TARGET, namespaces=NAMESPACES, declare_xs=False), rules)
         .transform(initial_template="Q{urn:example:app}target")
         .serialize()
     )
@@ -71,7 +66,9 @@ def python_override_result() -> str:
 
 def compile_user_py_invoke() -> None:
     body = '<xsl:template name="app:start"><py:invoke rule="0"/></xsl:template>'
-    compile_rules(stylesheet(TARGET + body), target_rules())
+    compile_rules(
+        stylesheet(TARGET + body, namespaces=NAMESPACES, declare_xs=False), target_rules()
+    )
 
 
 def test_python_instruction_has_dedicated_compiler_and_executor():

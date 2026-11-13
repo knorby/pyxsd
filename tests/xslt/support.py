@@ -28,11 +28,21 @@ def stylesheet(
     version: str = "3.0",
     attributes: str = "",
     namespaces: Mapping[str, str] = _NO_NAMESPACES,
+    declare_xs: bool = True,
 ) -> bytes:
-    """Wrap *body* in one XSLT stylesheet with the given declarations."""
+    """Wrap *body* in one XSLT stylesheet with the given declarations.
+
+    The ``xs`` prefix is declared unless ``declare_xs=False``: literal result
+    elements copy in-scope namespaces into their serialization, so a family
+    whose output contract excludes the declaration must not have it silently
+    added.
+    """
+    fixed = f' xmlns:xsl="{XSLT_NS}"'
+    if declare_xs:
+        fixed += f' xmlns:xs="{XSD_NS}"'
     declarations = "".join(f' xmlns:{prefix}="{uri}"' for prefix, uri in namespaces.items())
     return (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}"'
+        f"<xsl:stylesheet{fixed}"
         f'{declarations} version="{version}"{attributes}>'
         f"{body}</xsl:stylesheet>"
     ).encode()

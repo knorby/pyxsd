@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+from tests.xslt.support import stylesheet
 
 from pyxsd.xdm import XdmAtomic
 from pyxsd.xdm.nodes import XdmDocument
@@ -35,6 +36,8 @@ DOC = "urn:example:doc"
 BASE = "urn:example:base"
 PRINCIPAL = "urn:example:principal"
 
+NAMESPACES = {"app": APP, "doc": DOC}
+
 
 def app(local: str) -> str:
     return f"{{{APP}}}{local}"
@@ -52,13 +55,6 @@ def package(body: str, *, name: str = BASE, version: str = "1.0.0") -> bytes:
         f'<xsl:package name="{name}" package-version="{version}" version="3.0" '
         f'xmlns:xsl="{XSLT_NS}" xmlns:app="{APP}" xmlns:doc="{DOC}" '
         f'xmlns:xs="{XSD_NS}">{body}</xsl:package>'
-    ).encode()
-
-
-def stylesheet(body: str, *, version: str = "3.0") -> bytes:
-    return (
-        f'<xsl:stylesheet version="{version}" xmlns:xsl="{XSLT_NS}" '
-        f'xmlns:app="{APP}" xmlns:doc="{DOC}" xmlns:xs="{XSD_NS}">{body}</xsl:stylesheet>'
     ).encode()
 
 
@@ -298,6 +294,7 @@ def test_native_1_0_and_2_0_stylesheets_use_an_import_layer() -> None:
         source = stylesheet(
             '<xsl:template name="app:target"><original/></xsl:template>',
             version=version,
+            namespaces=NAMESPACES,
         )
 
         # invoke_original delegates to the pre-customization target component;
@@ -461,7 +458,7 @@ def test_package_aliases_resolve_a_nameless_descriptor() -> None:
     from pyxsd.xslt.compiler.packages import PackageResolver
 
     descriptor = PackageResolver.from_sources(
-        stylesheet('<xsl:template name="app:t"/>')
+        stylesheet('<xsl:template name="app:t"/>', namespaces=NAMESPACES)
     ).descriptors[0]
     resolver = PackageResolver()
     resolver.register(descriptor)
@@ -554,7 +551,9 @@ def test_synthetic_layer_requires_bound_rules() -> None:
     from pyxsd.xslt.python_rules import build_python_layer
 
     effective = StaticPreprocessor().apply(
-        ModuleLoader().load(io.BytesIO(stylesheet('<xsl:template name="app:t"/>')))
+        ModuleLoader().load(
+            io.BytesIO(stylesheet('<xsl:template name="app:t"/>', namespaces=NAMESPACES))
+        )
     )
     rules = PythonRules.empty().override_template("app:t", lambda context: ())
     with pytest.raises(ValueError):
@@ -624,7 +623,8 @@ def test_saved_components_resolve_references_inside_original_templates() -> None
         """
         <xsl:template name="app:inner"><inner/></xsl:template>
         <xsl:template name="app:outer"><xsl:call-template name="app:inner"/></xsl:template>
-        """
+        """,
+        namespaces=NAMESPACES,
     )
     rules = (
         PythonRules.empty()
@@ -642,7 +642,8 @@ def test_function_original_recursion_uses_the_saved_plan() -> None:
           <xsl:param name="value" as="xs:integer"/>
           <xsl:sequence select="if ($value = 0) then 1 else $value * app:fact($value - 1)"/>
         </xsl:function>
-        """
+        """,
+        namespaces=NAMESPACES,
     )
     rules = PythonRules.empty().override_function(
         "app:fact",
@@ -689,7 +690,8 @@ def test_ordinary_stylesheet_can_accept_and_customize_a_package_component() -> N
         <xsl:template name="app:start" visibility="public">
           <xsl:call-template name="app:target"/>
         </xsl:template>
-        """
+        """,
+        namespaces=NAMESPACES,
     )
     rules = PythonRules.empty().override_template("app:target", lambda context: "python")
     compiled = compile_rules(
@@ -935,7 +937,8 @@ def test_public_mode_rule_on_an_ordinary_stylesheet() -> None:
         """
         <xsl:mode name="app:process" visibility="public"/>
         <xsl:template match="doc:item" mode="app:process"><base-rule/></xsl:template>
-        """
+        """,
+        namespaces=NAMESPACES,
     )
     observed: list[bool] = []
 

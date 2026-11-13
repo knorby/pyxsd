@@ -12,6 +12,7 @@ from __future__ import annotations
 import concurrent.futures
 import io
 import threading
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -599,6 +600,20 @@ def test_extension_backed_stylesheet_uses_the_full_evaluator() -> None:
     assert calls == [4, 4]
 
 
+def run_guarded(barrier: threading.Barrier, action: Callable[[], Any]) -> Any:
+    """Run *action*, aborting *barrier* when it raises.
+
+    A worker that raises must release its peers with ``BrokenBarrierError``
+    instead of leaving them blocked at the barrier until an outer timeout --
+    the suite fails rather than hangs.
+    """
+    try:
+        return action()
+    except BaseException:
+        barrier.abort()
+        raise
+
+
 def test_concurrent_invocations_use_separate_compiled_snapshots() -> None:
     def double(value: int) -> int:
         return value * 2
@@ -618,8 +633,12 @@ def test_concurrent_invocations_use_separate_compiled_snapshots() -> None:
 
     def run(index: int) -> tuple[Any, ...]:
         compiled = first_compiled if index % 2 == 0 else second_compiled
-        barrier.wait()
-        return compiled.transform(delivery="raw").principal
+
+        def step() -> tuple[Any, ...]:
+            barrier.wait()
+            return compiled.transform(delivery="raw").principal
+
+        return run_guarded(barrier, step)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=count) as pool:
         futures = [pool.submit(run, index) for index in range(count)]
@@ -629,6 +648,25 @@ def test_concurrent_invocations_use_separate_compiled_snapshots() -> None:
         (XdmAtomic.integer(10),) if index % 2 == 0 else (XdmAtomic.integer(15),)
         for index in range(count)
     ]
+
+
+def test_a_failing_worker_aborts_the_barrier_instead_of_hanging_it() -> None:
+    barrier = threading.Barrier(2)
+
+    def run(index: int) -> None:
+        def step() -> None:
+            if index == 0:
+                raise AssertionError("worker failed")
+            barrier.wait()
+
+        return run_guarded(barrier, step)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(run, index) for index in range(2)]
+        worker_failure, peer_failure = (future.exception() for future in futures)
+
+    assert isinstance(worker_failure, AssertionError)
+    assert isinstance(peer_failure, threading.BrokenBarrierError)
 
 
 def test_standalone_engine_evaluates_extension_targets() -> None:
