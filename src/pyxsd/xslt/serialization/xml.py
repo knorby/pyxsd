@@ -16,6 +16,8 @@ from pyxsd.xslt.errors import XsltSerializationError
 from pyxsd.xslt.serialization.parameters import SerializationParameters
 
 XML_NS = "http://www.w3.org/XML/1998/namespace"
+XHTML_NS = "http://www.w3.org/1999/xhtml"
+_DEFAULT_MEDIA_TYPES = {"html": "text/html", "xhtml": "text/html"}
 
 _HTML_VOID_ELEMENTS = frozenset(
     {
@@ -128,6 +130,64 @@ def _matches_any(tokens: tuple[str, ...], element: XdmNode) -> bool:
     return any(_matches_element(token, element) for token in tokens)
 
 
+def _is_html_element(element: XdmNode, *, method: str) -> bool:
+    """Whether *element* is serialized as an HTML element by *method*."""
+    if element.namespace_uri is None:
+        return True
+    return method == "xhtml" and element.namespace_uri == XHTML_NS
+
+
+def _is_head(element: XdmNode, *, method: str) -> bool:
+    return _is_html_element(element, method=method) and (element.local_name or "").lower() == "head"
+
+
+def _is_content_type_meta(node: XdmNode, *, method: str) -> bool:
+    if node.kind is not NodeKind.ELEMENT or not _is_html_element(node, method=method):
+        return False
+    if (node.local_name or "").lower() != "meta":
+        return False
+    return any(
+        (attribute.local_name or "").lower() == "http-equiv"
+        and attribute.string_value.strip().lower() == "content-type"
+        for attribute in node.attributes
+    )
+
+
+def _content_type_meta(
+    head: XdmNode,
+    scope: dict[str, str],
+    parameters: SerializationParameters,
+    *,
+    method: str,
+    codec: str,
+) -> str:
+    """The content-type ``meta`` element inserted into *head*."""
+    media_type = (
+        parameters.media_type if parameters.media_type is not None else _DEFAULT_MEDIA_TYPES[method]
+    )
+    content = f"{media_type}; charset={parameters.encoding}"
+    if method == "html":
+        escaped = _escape_html_attribute(content, codec=codec)
+        return f'<meta http-equiv="Content-Type" content="{escaped}">'
+    escaped = _escape_attribute(content, codec=codec)
+    declarations = (
+        f' xmlns="{XHTML_NS}"'
+        if head.namespace_uri == XHTML_NS and scope.get("") != XHTML_NS
+        else ""
+    )
+    return f'<meta{declarations} http-equiv="Content-Type" content="{escaped}" />'
+
+
+def _undeclares_prefixes(parameters: SerializationParameters, *, html: bool) -> bool:
+    if html or not parameters.undeclare_prefixes:
+        return False
+    if float(parameters.version) > 1.0:
+        return True
+    raise _serialization_error(
+        "undeclare-prefixes requires an XML version later than 1.0", "SEPM0010"
+    )
+
+
 def _escape_text(value: str, *, html: bool, codec: str) -> str:
     escaped = value.replace("&", "&amp;").replace("<", "&lt;")
     if html:
@@ -171,7 +231,7 @@ def _new_prefix(scope: dict[str, str]) -> str:
 
 
 def _declaration_changes(
-    scope: dict[str, str], parent_scope: dict[str, str]
+    scope: dict[str, str], parent_scope: dict[str, str], *, undeclare: bool
 ) -> list[tuple[str, str]]:
     changes: list[tuple[str, str]] = []
     for prefix in sorted(scope, key=_namespace_sort_key):
@@ -183,6 +243,11 @@ def _declaration_changes(
         changes.append((prefix, uri))
     if "" in parent_scope and "" not in scope:
         changes.append(("", ""))
+    if undeclare:
+        for prefix in sorted(parent_scope, key=_namespace_sort_key):
+            if not prefix or prefix == "xml" or prefix in scope or not parent_scope[prefix]:
+                continue
+            changes.append((prefix, ""))
     changes.sort(key=lambda declaration: _namespace_sort_key(declaration[0]))
     return changes
 
@@ -238,6 +303,7 @@ def _start_tag(
     *,
     html: bool,
     codec: str,
+    undeclare: bool,
 ) -> str:
     name = _element_name(element, scope, html=html)
     _require_encodable(name, codec, "an element name")
@@ -261,7 +327,7 @@ def _start_tag(
         if html
         else "".join(
             f' xmlns{":" + prefix if prefix else ""}="{_escape_attribute(uri, codec=codec)}"'
-            for prefix, uri in _declaration_changes(scope, parent_scope)
+            for prefix, uri in _declaration_changes(scope, parent_scope, undeclare=undeclare)
         )
     )
     return f"<{name}{declarations}{''.join(attributes)}"
@@ -294,6 +360,8 @@ def _render_node(
     *,
     method: str,
     codec: str,
+    undeclare: bool,
+    suppressed: bool,
 ) -> str:
     html = method == "html"
     if node.kind is NodeKind.COMMENT:
@@ -309,7 +377,16 @@ def _render_node(
         return _text_node(node.string_value, node.parent, parameters, html=html, codec=codec)
     if node.kind is not NodeKind.ELEMENT:
         raise _not_well_formed(f"cannot serialize a {node.kind.value} node in content")
-    return _render_element(node, depth, parent_scope, parameters, method=method, codec=codec)
+    return _render_element(
+        node,
+        depth,
+        parent_scope,
+        parameters,
+        method=method,
+        codec=codec,
+        undeclare=undeclare,
+        suppressed=suppressed,
+    )
 
 
 def _render_element(
@@ -320,18 +397,30 @@ def _render_element(
     *,
     method: str,
     codec: str,
+    undeclare: bool,
+    suppressed: bool,
 ) -> str:
     html = method == "html"
+    suppress = suppressed or _matches_any(parameters.suppress_indentation, element)
     scope = dict(element.in_scope_namespaces)
-    start = _start_tag(element, scope, parent_scope, html=html, codec=codec)
+    start = _start_tag(element, scope, parent_scope, html=html, codec=codec, undeclare=undeclare)
     children = list(element.children)
-    if parameters.indent:
+    content_type = (
+        _content_type_meta(element, scope, parameters, method=method, codec=codec)
+        if parameters.include_content_type
+        and method in ("html", "xhtml")
+        and _is_head(element, method=method)
+        else None
+    )
+    if content_type is not None:
+        children = [child for child in children if not _is_content_type_meta(child, method=method)]
+    if parameters.indent and not suppress:
         children = [
             child
             for child in children
             if not (child.kind is NodeKind.TEXT and not child.string_value.strip())
         ]
-    if not children:
+    if not children and content_type is None:
         if html:
             name = _element_name(element, scope, html=True)
             if (element.local_name or "").lower() in _HTML_VOID_ELEMENTS:
@@ -343,12 +432,32 @@ def _render_element(
     name = _element_name(element, scope, html=html)
 
     def render_child(child: XdmNode) -> str:
-        return _render_node(child, depth + 1, scope, parameters, method=method, codec=codec)
+        return _render_node(
+            child,
+            depth + 1,
+            scope,
+            parameters,
+            method=method,
+            codec=codec,
+            undeclare=undeclare,
+            suppressed=suppress,
+        )
 
-    if parameters.indent and all(child.kind is not NodeKind.TEXT for child in children):
-        inner = "".join(f"\n{'  ' * (depth + 1)}{render_child(child)}" for child in children)
+    rendered = [render_child(child) for child in children]
+    if content_type is not None:
+        insertion = next(
+            (index for index, child in enumerate(children) if child.kind is NodeKind.ELEMENT),
+            len(children),
+        )
+        rendered.insert(insertion, content_type)
+    if (
+        parameters.indent
+        and not suppress
+        and all(child.kind is not NodeKind.TEXT for child in children)
+    ):
+        inner = "".join(f"\n{'  ' * (depth + 1)}{piece}" for piece in rendered)
         return f"{start}>{inner}\n{'  ' * depth}</{name}>"
-    return f"{start}>{''.join(render_child(child) for child in children)}</{name}>"
+    return f"{start}>{''.join(rendered)}</{name}>"
 
 
 def _doctype_literal(value: str, *, codec: str) -> str:
@@ -394,6 +503,7 @@ def serialize_markup(
 ) -> str:
     """Serialize normalized *items* with the XML, XHTML, or HTML method."""
     html = method == "html"
+    undeclare = _undeclares_prefixes(parameters, html=html)
     if not items:
         return ""
     codec = codecs.lookup(parameters.encoding).name
@@ -430,5 +540,16 @@ def serialize_markup(
             if parameters.indent:
                 output.append("\n")
             doctype = None
-        output.append(_render_node(item, 0, root_scope, parameters, method=method, codec=codec))
+        output.append(
+            _render_node(
+                item,
+                0,
+                root_scope,
+                parameters,
+                method=method,
+                codec=codec,
+                undeclare=undeclare,
+                suppressed=False,
+            )
+        )
     return "".join(output)

@@ -477,6 +477,429 @@ def test_html_boolean_value_and_top_level_text() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Suppression, content type, and namespace undeclaration
+
+
+def _element_tree(
+    *,
+    root_scope: dict[str, str],
+    child_scope: dict[str, str],
+    root_name: str = "root",
+    root_prefix: str = "",
+    root_namespace: str | None = None,
+) -> XdmNode:
+    document = _document(b"<source/>")
+    root = XdmNode(
+        NodeKind.ELEMENT,
+        document=document,
+        node_id=100,
+        source_name=document.source_name,
+        source_index=document.source_index,
+        name=root_name,
+        prefix=root_prefix,
+        namespace_uri=root_namespace,
+        in_scope_namespaces=root_scope,
+    )
+    child = XdmNode(
+        NodeKind.ELEMENT,
+        document=document,
+        node_id=101,
+        source_name=document.source_name,
+        source_index=document.source_index,
+        parent=root,
+        name="child",
+        in_scope_namespaces=child_scope,
+    )
+    root._append_child(child)
+    return root
+
+
+def test_suppress_indentation_matches_expanded_names_at_any_depth() -> None:
+    document = _document(
+        b'<root xmlns:ex="urn:example">'
+        b"<ex:block><wrap><child/></wrap></ex:block>"
+        b"<plain><child/></plain>"
+        b"</root>"
+    )
+
+    assert _serialize(
+        (document,),
+        omit_xml_declaration=True,
+        indent=True,
+        suppress_indentation=("Q{urn:example}block",),
+    ) == (
+        '<root xmlns:ex="urn:example">\n'
+        "  <ex:block><wrap><child/></wrap></ex:block>\n"
+        "  <plain>\n"
+        "    <child/>\n"
+        "  </plain>\n"
+        "</root>"
+    )
+    assert _serialize(
+        (document,),
+        omit_xml_declaration=True,
+        indent=True,
+        suppress_indentation=("block",),
+    ) == (
+        '<root xmlns:ex="urn:example">\n'
+        "  <ex:block>\n"
+        "    <wrap>\n"
+        "      <child/>\n"
+        "    </wrap>\n"
+        "  </ex:block>\n"
+        "  <plain>\n"
+        "    <child/>\n"
+        "  </plain>\n"
+        "</root>"
+    )
+
+    spaced = _document(b'<root xmlns:ex="urn:example"><ex:block> <wrap/> </ex:block></root>')
+    assert (
+        _serialize(
+            (spaced,),
+            omit_xml_declaration=True,
+            indent=True,
+            suppress_indentation=("Q{urn:example}block",),
+        )
+        == '<root xmlns:ex="urn:example">\n  <ex:block> <wrap/> </ex:block>\n</root>'
+    )
+
+
+def test_suppress_indentation_applies_to_xhtml_and_html_names() -> None:
+    xhtml = _document(
+        f'<html xmlns="{XHTML_NS}"><body>'
+        "<div><p><span><b>x</b></span></p></div>"
+        "<div><span><b>y</b></span></div>"
+        "</body></html>".encode()
+    )
+    assert _serialize(
+        (xhtml,),
+        method="xhtml",
+        omit_xml_declaration=True,
+        indent=True,
+        suppress_indentation=(f"Q{{{XHTML_NS}}}p",),
+    ) == (
+        f'<html xmlns="{XHTML_NS}">\n'
+        "  <body>\n"
+        "    <div>\n"
+        "      <p><span><b>x</b></span></p>\n"
+        "    </div>\n"
+        "    <div>\n"
+        "      <span>\n"
+        "        <b>y</b>\n"
+        "      </span>\n"
+        "    </div>\n"
+        "  </body>\n"
+        "</html>"
+    )
+
+    html = _document(
+        b"<html><body>"
+        b"<div><table><tr><td>x</td></tr></table></div>"
+        b"<div><child/></div>"
+        b"</body></html>"
+    )
+    assert _serialize(
+        (html,),
+        method="html",
+        indent=True,
+        suppress_indentation=("table",),
+    ) == (
+        "<html>\n"
+        "  <body>\n"
+        "    <div>\n"
+        "      <table><tr><td>x</td></tr></table>\n"
+        "    </div>\n"
+        "    <div>\n"
+        "      <child></child>\n"
+        "    </div>\n"
+        "  </body>\n"
+        "</html>"
+    )
+
+
+def test_html_content_type_meta_is_the_first_element_child() -> None:
+    document = _document(b"<html><head><title>t</title></head><body/></html>")
+
+    assert _serialize(
+        (document,),
+        method="html",
+        media_type="text/html",
+        encoding="UTF-8",
+    ) == (
+        "<html><head>"
+        '<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">'
+        "<title>t</title>"
+        "</head><body></body></html>"
+    )
+
+    text_head = _document(b"<html><head>the head</head></html>")
+    assert _serialize((text_head,), method="html") == (
+        "<html><head>the head"
+        '<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">'
+        "</head></html>"
+    )
+
+
+def test_xhtml_content_type_meta_uses_the_head_namespace_and_declared_media() -> None:
+    namespaced = _document(
+        f'<html xmlns="{XHTML_NS}"><head><title>t</title></head><body/></html>'.encode()
+    )
+    assert _serialize(
+        (namespaced,),
+        method="xhtml",
+        include_content_type=True,
+        media_type="application/xhtml+xml",
+        encoding="utf-8",
+        omit_xml_declaration=True,
+    ) == (
+        f'<html xmlns="{XHTML_NS}"><head>'
+        '<meta http-equiv="Content-Type" content="application/xhtml+xml; charset=utf-8" />'
+        "<title>t</title></head><body /></html>"
+    )
+
+    plain = _document(b"<html><head/></html>")
+    assert _serialize(
+        (plain,),
+        method="xhtml",
+        omit_xml_declaration=True,
+    ) == (
+        "<html><head>"
+        '<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />'
+        "</head></html>"
+    )
+
+
+def test_include_content_type_replaces_an_existing_meta_case_insensitively() -> None:
+    document = _document(
+        b"<html><head><!--keep-->"
+        b'<meta http-equiv=" Content-Type " content="old"/>'
+        b'<meta charset="utf-8"/>'
+        b'<meta http-equiv="refresh" content="0"/>'
+        b"<title>t</title></head></html>"
+    )
+    assert _serialize((document,), method="html", media_type="text/html") == (
+        "<html><head><!--keep-->"
+        '<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">'
+        '<meta charset="utf-8">'
+        '<meta http-equiv="refresh" content="0">'
+        "<title>t</title></head></html>"
+    )
+
+    uppercase = _document(
+        b'<HTML><HEAD><META HTTP-EQUIV=" Content-Type " CONTENT="old"/>'
+        b"<TITLE>t</TITLE></HEAD><BODY/></HTML>"
+    )
+    assert _serialize((uppercase,), method="html") == (
+        "<HTML><HEAD>"
+        '<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">'
+        "<TITLE>t</TITLE></HEAD><BODY></BODY></HTML>"
+    )
+
+
+def test_include_content_type_is_disabled_and_does_not_apply_to_xml() -> None:
+    document = _document(
+        b'<html><head><meta http-equiv="Content-Type" content="old"/></head></html>'
+    )
+
+    assert _serialize((document,), method="html", include_content_type=False) == (
+        '<html><head><meta http-equiv="Content-Type" content="old"></head></html>'
+    )
+    assert (
+        _serialize(
+            (_document(b"<html><head/></html>"),),
+            method="xml",
+            omit_xml_declaration=True,
+            include_content_type=True,
+            media_type="text/html",
+        )
+        == "<html><head/></html>"
+    )
+
+
+def test_include_content_type_ignores_foreign_elements_and_html_namespaces() -> None:
+    foreign_meta = _document(
+        b'<html><head xmlns:x="urn:x">'
+        b'<x:meta http-equiv="Content-Type" content="old"/>'
+        b"<title>t</title></head></html>"
+    )
+    assert _serialize(
+        (foreign_meta,),
+        method="xhtml",
+        omit_xml_declaration=True,
+    ) == (
+        '<html><head xmlns:x="urn:x">'
+        '<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />'
+        '<x:meta http-equiv="Content-Type" content="old" />'
+        "<title>t</title></head></html>"
+    )
+
+    foreign_head = _document(b'<html><x:head xmlns:x="urn:x"/></html>')
+    assert (
+        _serialize(
+            (foreign_head,),
+            method="xhtml",
+            omit_xml_declaration=True,
+        )
+        == '<html><x:head xmlns:x="urn:x" /></html>'
+    )
+
+    html_namespaced = _document(f'<html xmlns="{XHTML_NS}"><head/></html>'.encode())
+    assert _serialize((html_namespaced,), method="html") == "<html><head></head></html>"
+
+
+def test_include_content_type_indents_the_inserted_meta_with_the_head() -> None:
+    document = _document(
+        f'<html xmlns="{XHTML_NS}"><head><title>t</title></head><body/></html>'.encode()
+    )
+
+    assert _serialize(
+        (document,),
+        method="xhtml",
+        omit_xml_declaration=True,
+        indent=True,
+    ) == (
+        f'<html xmlns="{XHTML_NS}">\n'
+        "  <head>\n"
+        '    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />\n'
+        "    <title>t</title>\n"
+        "  </head>\n"
+        "  <body />\n"
+        "</html>"
+    )
+
+
+def test_xhtml_content_type_meta_declares_the_namespace_for_a_prefixed_head() -> None:
+    document = _document(
+        f'<h:html xmlns:h="{XHTML_NS}"><h:head><h:title>t</h:title></h:head></h:html>'.encode()
+    )
+
+    assert _serialize(
+        (document,),
+        method="xhtml",
+        omit_xml_declaration=True,
+    ) == (
+        f'<h:html xmlns:h="{XHTML_NS}"><h:head>'
+        f'<meta xmlns="{XHTML_NS}" http-equiv="Content-Type" '
+        'content="text/html; charset=UTF-8" />'
+        "<h:title>t</h:title></h:head></h:html>"
+    )
+
+
+def test_undeclare_prefixes_with_xml_11_emits_namespace_undeclarations() -> None:
+    tree = _element_tree(
+        root_scope={"p": "urn:p"},
+        child_scope={},
+        root_name="{urn:p}root",
+        root_prefix="p",
+        root_namespace="urn:p",
+    )
+
+    assert (
+        _serialize(
+            (tree,),
+            omit_xml_declaration=True,
+            version="1.1",
+            undeclare_prefixes=True,
+        )
+        == '<p:root xmlns:p="urn:p"><child xmlns:p=""/></p:root>'
+    )
+    assert (
+        _serialize(
+            (tree,),
+            omit_xml_declaration=True,
+            version="1.1",
+            undeclare_prefixes=False,
+        )
+        == '<p:root xmlns:p="urn:p"><child/></p:root>'
+    )
+    assert (
+        _serialize(
+            (tree,),
+            method="xhtml",
+            omit_xml_declaration=True,
+            version="1.1",
+            undeclare_prefixes=True,
+        )
+        == '<p:root xmlns:p="urn:p"><child xmlns:p="" /></p:root>'
+    )
+
+    retained = _element_tree(
+        root_scope={"p": "urn:p"},
+        child_scope={"p": "urn:p"},
+        root_name="{urn:p}root",
+        root_prefix="p",
+        root_namespace="urn:p",
+    )
+    assert (
+        _serialize(
+            (retained,),
+            omit_xml_declaration=True,
+            version="1.1",
+            undeclare_prefixes=True,
+        )
+        == '<p:root xmlns:p="urn:p"><child/></p:root>'
+    )
+
+    defaulted = _element_tree(root_scope={"": "urn:d"}, child_scope={})
+    assert (
+        _serialize(
+            (defaulted,),
+            omit_xml_declaration=True,
+            version="1.1",
+            undeclare_prefixes=True,
+        )
+        == '<root xmlns="urn:d"><child xmlns=""/></root>'
+    )
+
+    empty_binding = _element_tree(root_scope={"p": ""}, child_scope={})
+    assert (
+        _serialize(
+            (empty_binding,),
+            omit_xml_declaration=True,
+            version="1.1",
+            undeclare_prefixes=True,
+        )
+        == "<root><child/></root>"
+    )
+
+
+def test_undeclare_prefixes_with_version_1_is_sepm0010() -> None:
+    tree = _element_tree(
+        root_scope={"p": "urn:p"},
+        child_scope={},
+        root_name="{urn:p}root",
+        root_prefix="p",
+        root_namespace="urn:p",
+    )
+
+    cases = (
+        lambda: _serialize(
+            (tree,), omit_xml_declaration=True, version="1.0", undeclare_prefixes=True
+        ),
+        lambda: _serialize(
+            (tree,),
+            method="xhtml",
+            omit_xml_declaration=True,
+            version="1.0",
+            undeclare_prefixes=True,
+        ),
+    )
+    assert [_error_code(case) for case in cases] == ["SEPM0010", "SEPM0010"]
+
+    assert (
+        _serialize(
+            (tree,),
+            method="html",
+            version="1.0",
+            undeclare_prefixes=True,
+        )
+        == "<root><child></child></root>"
+    )
+    assert _serialize((tree,), method="text", version="1.0", undeclare_prefixes=True) == ""
+
+
+# ---------------------------------------------------------------------------
 # Parameters and errors
 
 
