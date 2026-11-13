@@ -1,12 +1,15 @@
 """Serialization parameter resolution and the XML-family output methods.
 
 These tests operate directly on XDM values and nodes, so serialization is
-exercised independently of stylesheet execution.
+exercised independently of stylesheet execution.  A separate section covers
+the small integration seam that populates ``ResultEntry.serialized`` for
+stylesheet delivery.
 """
 
 from __future__ import annotations
 
 import pytest
+from tests.xslt.support import stylesheet, transform
 
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmMap
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
@@ -555,3 +558,91 @@ def test_serialize_accepts_a_mapping_of_parameters() -> None:
         Serializer.serialize((document,), object())  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="destination"):
         Serializer.write((document,), None, object())
+
+
+# ---------------------------------------------------------------------------
+# Stylesheet delivery integration
+
+
+def test_stylesheet_delivery_serializes_principal_and_secondary() -> None:
+    source = stylesheet(
+        '<xsl:output method="xml" omit-xml-declaration="yes"/>'
+        '<xsl:template name="xsl:initial-template">'
+        "<principal><xsl:value-of select=\"'x'\"/></principal>"
+        '<xsl:result-document href="secondary.txt" method="text">secondary</xsl:result-document>'
+        "</xsl:template>"
+    )
+
+    result = transform(
+        source,
+        delivery="stylesheet",
+        output_uri="http://example.com/principal.xml",
+    )
+
+    assert result.principal_entry.serialized == (
+        '<principal xmlns:xs="http://www.w3.org/2001/XMLSchema">x</principal>'
+    )
+    secondary = result.secondary["http://example.com/secondary.txt"]
+    assert secondary.serialized == "secondary"
+
+
+def test_document_delivery_leaves_serialized_empty() -> None:
+    source = stylesheet(
+        '<xsl:output method="xml" omit-xml-declaration="yes"/>'
+        '<xsl:template name="xsl:initial-template">'
+        "<principal/>"
+        '<xsl:result-document href="secondary.xml"><secondary/></xsl:result-document>'
+        "</xsl:template>"
+    )
+
+    result = transform(
+        source,
+        delivery="document",
+        output_uri="http://example.com/principal.xml",
+    )
+
+    assert result.principal_entry.serialized is None
+    secondary = result.secondary["http://example.com/secondary.xml"]
+    assert secondary.serialized is None
+
+
+def test_stylesheet_delivery_defers_unsupported_methods_to_task_32() -> None:
+    source = stylesheet(
+        '<xsl:output method="json" build-tree="no"/>'
+        '<xsl:template name="xsl:initial-template">'
+        "<xsl:sequence select=\"map{'k': 1}\"/>"
+        "</xsl:template>"
+    )
+
+    result = transform(source, delivery="stylesheet")
+
+    assert result.principal_entry.serialized is None
+
+
+def test_stylesheet_delivery_leaves_a_text_only_xml_result_unserialized() -> None:
+    source = stylesheet('<xsl:template name="xsl:initial-template">just text</xsl:template>')
+
+    result = transform(source, delivery="stylesheet")
+
+    assert result.principal_entry.serialized is None
+
+
+def test_secondary_serialization_errors_are_marked_secondary() -> None:
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<principal/>"
+        '<xsl:result-document href="secondary.xml" doctype-public="pub">'
+        "<secondary/>"
+        "</xsl:result-document>"
+        "</xsl:template>"
+    )
+
+    with pytest.raises(XsltSerializationError) as error:
+        transform(
+            source,
+            delivery="stylesheet",
+            output_uri="http://example.com/principal.xml",
+        )
+
+    assert error.value.code == "SEPM0016"
+    assert error.value.secondary is True

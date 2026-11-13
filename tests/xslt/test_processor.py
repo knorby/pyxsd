@@ -502,7 +502,7 @@ def test_result_entry_views_and_output_uri() -> None:
 
     assert result.principal_entry.output_uri == "http://example.com/out.txt"
     assert result.principal_entry.serialization["method"] == "text"
-    assert result.principal_entry.serialized is None
+    assert result.principal_entry.serialized == "1"
     assert result.principal_tree.document_uri == "http://example.com/out.txt"
     assert result.principal_tree.base_uri == "http://example.com/out.txt"
 

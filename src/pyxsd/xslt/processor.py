@@ -156,6 +156,7 @@ from pyxsd.xslt.errors import (
     ERROR_NAMESPACE,
     XsltDynamicError,
     XsltError,
+    XsltSerializationError,
     XsltStaticError,
     error_code_from_exception,
     is_static_error_code,
@@ -267,6 +268,7 @@ from pyxsd.xslt.runtime.templates import (
 )
 from pyxsd.xslt.runtime.transformation import ComponentCall, Transformation
 from pyxsd.xslt.runtime.whitespace import _shared_name_test, apply_source_space_rules
+from pyxsd.xslt.serialization import SerializationParameters, Serializer, method_local_name
 
 __all__ = [
     "CompiledStylesheet",
@@ -590,6 +592,32 @@ class XsltProcessor:
 
 # ---------------------------------------------------------------------------
 # Compiled stylesheet
+
+
+_SERIALIZABLE_METHODS = frozenset({"xml", "xhtml", "html", "text"})
+
+
+def _serialize_result_entry(entry: ResultEntry, *, secondary: bool) -> ResultEntry:
+    """Return *entry* with ``serialized`` populated for supported methods.
+
+    JSON and adaptive output are a later task; deferring them keeps their raw
+    sequences and their existing delivery behavior intact.  A sequence that the
+    selected XML method cannot turn into a well-formed document (for example a
+    text-only principal result) also keeps ``serialized = None`` instead of
+    failing a default-delivery transformation that previously succeeded.
+    """
+    method = method_local_name(str(entry.serialization.get("method", "xml")))
+    if method not in _SERIALIZABLE_METHODS:
+        return entry
+    try:
+        parameters = SerializationParameters.from_attributes(entry.serialization)
+        serialized = Serializer.serialize(entry.raw, parameters)
+    except XsltSerializationError as error:
+        if error.code == "SENR0001":
+            return entry
+        error.secondary = secondary
+        raise
+    return replace(entry, serialized=serialized)
 
 
 @dataclass(frozen=True, slots=True)
@@ -5329,9 +5357,16 @@ class _Invocation(Transformation):
             tree=tree,
             serialization=self.output_attributes,
         )
+        secondary = self.secondary
+        if self.options.delivery == "stylesheet":
+            entry = _serialize_result_entry(entry, secondary=False)
+            secondary = {
+                uri: _serialize_result_entry(value, secondary=True)
+                for uri, value in secondary.items()
+            }
         return TransformationResult(
             entry,
-            secondary=self.secondary,
+            secondary=secondary,
             messages=tuple(self.messages),
         )
 
