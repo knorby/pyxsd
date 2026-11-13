@@ -169,11 +169,13 @@ def test_xml_generates_an_attribute_prefix_when_none_is_bound() -> None:
     )
 
 
-def test_namespace_nodes_are_dropped_and_a_document_is_replaced_by_children() -> None:
+def test_namespace_nodes_raise_senr0001_and_documents_are_replaced_by_children() -> None:
     document = _document(b'<r xmlns="urn:default">text<!--note--><?pi data?></r>')
 
     namespace = document.root_element.namespace_nodes[0]
-    assert _serialize((namespace,), omit_xml_declaration=True) == ""
+    with pytest.raises(XsltSerializationError) as error:
+        _serialize((namespace,), omit_xml_declaration=True)
+    assert error.value.code == "SENR0001"
     assert _serialize((document,), omit_xml_declaration=True) == (
         '<r xmlns="urn:default">text<!--note--><?pi data?></r>'
     )

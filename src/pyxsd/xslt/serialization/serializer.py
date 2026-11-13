@@ -61,7 +61,7 @@ def _normalize_sequence(sequence: Iterable[XdmItem]) -> tuple[NormalizedItem, ..
                     pending.append(item.string_value)
                     previous_atomic = False
             elif item.kind is NodeKind.NAMESPACE:
-                return
+                raise _not_well_formed("a namespace node cannot appear in a serialized sequence")
             elif item.kind is NodeKind.ATTRIBUTE:
                 raise _not_well_formed("an attribute node cannot appear in a serialized sequence")
             else:
