@@ -79,6 +79,15 @@ def test_serialize_map_form_defaults_omit_the_declaration() -> None:
         XdmAtomic.string("<r>x</r>"),
     )
 
+    declared = (
+        '<xsl:output method="xml" omit-xml-declaration="no"/>'
+        + _NODE
+        + '<xsl:template name="main"><xsl:sequence select="serialize($n)"/></xsl:template>'
+    )
+    assert _transform(declared, attributes=' exclude-result-prefixes="xs"').principal == (
+        XdmAtomic.string('<?xml version="1.0" encoding="UTF-8"?><r>x</r>'),
+    )
+
     assert _serialize_node("()").principal == (XdmAtomic.string("<r>x</r>"),)
     assert _serialize_node("map{}").principal == (XdmAtomic.string("<r>x</r>"),)
     assert _serialize_node("map{'omit-xml-declaration': false()}").principal == (
@@ -344,25 +353,66 @@ def test_serialize_override_is_usable_through_a_three_one_engine() -> None:
     )
 
 
-def test_serialize_accepts_a_qname_method_value() -> None:
-    assert _expression("serialize('x', map{'method': QName('urn:example', 'json')})").principal == (
+def test_serialize_accepts_null_namespace_qname_methods() -> None:
+    assert _expression("serialize('x', map{'method': QName('', 'json')})").principal == (
         XdmAtomic.string('"x"'),
+    )
+
+    body = (
+        '<xsl:variable name="n"><r>x</r></xsl:variable>'
+        '<xsl:template name="main"><xsl:sequence select="serialize($n, '
+        "map{'method': 'json', 'json-node-output-method': QName('', 'xml')})"
+        '"/></xsl:template>'
+    )
+    assert _transform(body, attributes=' exclude-result-prefixes="xs"').principal == (
+        XdmAtomic.string('"<r>x<\\/r>"'),
     )
 
     bridge = XsltContextBridge(Transformation())
     serialize = bridge.function_overrides()[f"{{{FN_NS}}}serialize"]
     value = (XdmAtomic.string("x"),)
 
-    with xsd.qname_context({"p": "urn:example"}):
-        typed = xsd.QName("p:json")
+    with xsd.qname_context({}):
+        typed = xsd.QName("json")
     method = XdmAtomic.typed(typed, xsd.QName)
     params = (XdmMap([(XdmAtomic.string("method"), method)]),)
     assert serialize.invoke(None, (value, params)) == (XdmAtomic.string('"x"'),)
 
+
+def test_serialize_rejects_namespaced_qname_methods() -> None:
     assert (
-        _error_code(lambda: _expression("serialize('x', map{'method': QName('', 'json')})"))
+        _error_code(
+            lambda: _expression("serialize('x', map{'method': QName('urn:other', 'json')})")
+        )
         == "SEPM0016"
     )
+    assert (
+        _error_code(
+            lambda: _expression(
+                "serialize('x', map{'method': 'json', "
+                "'json-node-output-method': QName('urn:other', 'xml')})"
+            )
+        )
+        == "SEPM0016"
+    )
+
+    bridge = XsltContextBridge(Transformation())
+    serialize = bridge.function_overrides()[f"{{{FN_NS}}}serialize"]
+    value = (XdmAtomic.string("x"),)
+
+    with xsd.qname_context({"p": "urn:other"}):
+        typed = xsd.QName("p:json")
+    method = XdmAtomic.typed(typed, xsd.QName)
+    params = (XdmMap([(XdmAtomic.string("method"), method)]),)
+    with pytest.raises(XsltSerializationError) as caught:
+        serialize.invoke(None, (value, params))
+    assert caught.value.code == "SEPM0016"
+
+    unresolved = XdmAtomic("p:json", f"{{{XSD_NS}}}QName", None)
+    params = (XdmMap([(XdmAtomic.string("method"), unresolved)]),)
+    with pytest.raises(XsltSerializationError) as caught:
+        serialize.invoke(None, (value, params))
+    assert caught.value.code == "SEPM0016"
 
 
 def test_serialize_converts_qname_list_parameters() -> None:

@@ -1606,12 +1606,18 @@ def _serialization_parameter(name: str, sequence: XdmSequence) -> str | tuple[st
         local = _serialization_local(item)
         if local in ("QName", "NOTATION"):
             parts = _serialization_qname_parts(item)
-            if parts is None or not parts[0]:
+            if parts is None:
                 raise XsltSerializationError(
-                    "a QName serialization method requires a namespace URI",
+                    f"cannot resolve the QName serialization method {item.lexical!r}",
                     code="SEPM0016",
                 )
-            return f"Q{{{parts[0]}}}{parts[1]}"
+            uri, method = parts
+            if uri:
+                raise XsltSerializationError(
+                    "implementation-defined serialization methods are not supported",
+                    code="SEPM0016",
+                )
+            return method
         if local not in _SERIALIZATION_STRING_LOCALS:
             raise _serialization_type_error(name)
         return item.lexical
