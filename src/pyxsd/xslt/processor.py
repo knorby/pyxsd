@@ -13,6 +13,7 @@ dynamic error instead of being approximated.
 
 from __future__ import annotations
 
+import io
 import os
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -132,6 +133,7 @@ from pyxsd.xslt.compiler.plans import (
     _ParamPlan,
     _PerformSortPlan,
     _Plan,
+    _PythonInvokePlan,
     _RestoreVariablesPlan,
     _ResultDocumentPlan,
     _SequencePlan,
@@ -164,6 +166,14 @@ from pyxsd.xslt.errors import (
 from pyxsd.xslt.extensions import XsltExtensions
 from pyxsd.xslt.policy import OutputPolicy
 from pyxsd.xslt.profiles import RecoveryPolicy
+from pyxsd.xslt.python_rules import (
+    PYTHON_APPLICATION_NAME,
+    PYTHON_INVOKE,
+    PYTHON_ORIGINAL_NAME,
+    PythonRules,
+    bind_python_rules,
+    build_python_layer,
+)
 from pyxsd.xslt.results import (
     Message,
     ResultEntry,
@@ -225,6 +235,7 @@ from pyxsd.xslt.runtime.instructions import (
     execute_map_entry,
     execute_message,
     execute_number,
+    execute_python_invoke,
     execute_source_document,
     execute_try,
     execute_value_of,
@@ -567,12 +578,37 @@ class XsltProcessor:
             for descriptor in self.resolver:
                 if descriptor.key != principal_key:
                     resolver.register(descriptor)
+        base_extensions = XsltExtensions() if extensions is None else extensions
+        resolved_extensions = base_extensions.resolve(
+            effective.root.in_scope_namespaces,
+            identity=effective.identity,
+        )
+        if resolved_extensions.python_rules:
+            return self._compile_python_layer(
+                effective,
+                resolver,
+                parameters,
+                pool,
+                base_extensions,
+                resolved_extensions,
+            )
         package = compile_package_set(
             effective,
             resolver=resolver,
             xsd_version=self.xsd_version,
             resource_policy=self.resource_policy,
         )
+        self._check_static_profile(package, effective)
+        return _compile_stylesheet(
+            self,
+            package,
+            effective,
+            pool,
+            parameters,
+            resolved_extensions,
+        )
+
+    def _check_static_profile(self, package: CompiledPackage, effective: EffectiveModule) -> None:
         if not self.schema_aware:
             if self.validation == "strict":
                 raise XsltStaticError(
@@ -582,13 +618,81 @@ class XsltProcessor:
                     location=effective.root.source_location(),
                 )
             _reject_non_schema_aware_features(package)
-        return _compile_stylesheet(
+
+    def _compile_python_layer(
+        self,
+        effective: EffectiveModule,
+        resolver: PackageResolver,
+        static_parameters: Mapping[str, Any],
+        pool: SchemaPool | None,
+        base_extensions: XsltExtensions,
+        resolved_extensions: XsltExtensions,
+    ) -> CompiledStylesheet:
+        """Compile, validate, and compose Python rules over *effective*."""
+        from pyxsd.xslt.compiler.packages import _descriptor
+
+        rules = resolved_extensions.python_rules.resolve(
+            effective.root.in_scope_namespaces,
+            identity=effective.identity,
+        )
+        explicit_package = effective.root.local_name == "package"
+        baseline_package = compile_package_set(
+            effective,
+            resolver=_copy_resolver(resolver),
+            xsd_version=self.xsd_version,
+            resource_policy=self.resource_policy,
+            top_level=False,
+        )
+        package_semantics = explicit_package or bool(baseline_package.used_packages)
+        self._check_static_profile(baseline_package, effective)
+        baseline = _compile_stylesheet(
             self,
-            package,
+            baseline_package,
             effective,
             pool,
-            parameters,
-            XsltExtensions() if extensions is None else extensions,
+            static_parameters,
+            resolved_extensions,
+        )
+        bound = bind_python_rules(
+            rules,
+            baseline_package,
+            baseline._components,
+            identity=effective.identity,
+        )
+        bound_extensions = base_extensions.with_python_rules(bound)
+
+        synthetic_resolver = _copy_resolver(resolver)
+        dependency_name: str | None = None
+        package_name: str | None = None
+        if package_semantics:
+            descriptor = _descriptor(effective)
+            dependency_name = descriptor.name or PYTHON_ORIGINAL_NAME
+            synthetic_resolver.register(descriptor)
+            if descriptor.name is None:
+                synthetic_resolver.register_alias(PYTHON_ORIGINAL_NAME, descriptor)
+            package_name = PYTHON_APPLICATION_NAME
+        layer_source = _python_layer_source(
+            self,
+            bound,
+            effective,
+            dependency_name=dependency_name,
+            package_name=package_name,
+        )
+        layer_effective = StaticPreprocessor().apply(layer_source, static_parameters)
+        layer_package = compile_package_set(
+            layer_effective,
+            resolver=synthetic_resolver,
+            xsd_version=self.xsd_version,
+            resource_policy=self.resource_policy,
+        )
+        self._check_static_profile(layer_package, layer_effective)
+        return _compile_stylesheet(
+            self,
+            layer_package,
+            layer_effective,
+            pool,
+            static_parameters,
+            bound_extensions,
         )
 
     def _schema_pool(self, schema: Any) -> SchemaPool | None:
@@ -871,6 +975,46 @@ def _merge_schema_pools(
 
 # ---------------------------------------------------------------------------
 # Static compilation
+
+
+def _copy_resolver(source: PackageResolver) -> PackageResolver:
+    """Return an independent resolver holding the same registered packages."""
+    copied = PackageResolver()
+    for descriptor in source:
+        copied.register(descriptor)
+    return copied
+
+
+def _python_layer_source(
+    processor: XsltProcessor,
+    rules: PythonRules,
+    effective: EffectiveModule,
+    *,
+    dependency_name: str | None,
+    package_name: str | None,
+) -> SourceModule:
+    """Load the generated customization layer and bind its original import."""
+    text = build_python_layer(
+        rules,
+        effective,
+        dependency_name=dependency_name,
+        package_name=package_name,
+    )
+    loader = ModuleLoader(
+        processor.resource_policy,
+        xml_policy=processor.xml_policy,
+        xml_limits=processor.xml_limits,
+    )
+    module = loader.load(io.BytesIO(text.encode("utf-8")))
+    if dependency_name is not None:
+        return module
+    placeholder = next(
+        child for child in module.root.children if child.name == f"{{{XSLT_NS}}}import"
+    )
+    return replace(
+        module,
+        resolved_references={placeholder.node_id: effective.source},
+    )
 
 
 def _compile_stylesheet(
@@ -1892,7 +2036,11 @@ def _context_for(
             module=None,
         )
     context = base.with_variables(variables).with_functions(functions)
-    context = replace(context, package=package)
+    context = replace(
+        context,
+        package=package,
+        python_rule_count=extensions.python_rules.rule_count,
+    )
     if context.default_collation is None and default_collation is not None:
         context = context.with_default_collation(default_collation)
     return _instruction_context(context, declaration)
@@ -3496,11 +3644,44 @@ def _compile_instruction(
     """
     context = _instruction_context(context, instruction)
     context = _original_context(context, instruction)
+    if instruction.name == PYTHON_INVOKE:
+        return _compile_python_invoke(instruction, context)
     if instruction.literal:
         return _compile_literal_result(instruction, context, module)
     if not supports_instruction(instruction.name):
         return _compile_unhandled_instruction(instruction, context, module)
     return compile_instruction(instruction, context, module)
+
+
+def _compile_python_invoke(instruction: Instruction, context: StaticContext) -> _Plan:
+    """Validate the private ``py:invoke`` rule id against the bound registry."""
+    source = instruction.attribute("rule")
+    if source is None or not source.strip():
+        raise XsltStaticError(
+            "the Python rule instruction requires a rule attribute",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    try:
+        rule = int(source)
+    except ValueError as exc:
+        raise XsltStaticError(
+            f"the Python rule id {source!r} is not an integer",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+            cause=exc,
+        ) from exc
+    count = context.python_rule_count
+    if rule < 0 or count is None or rule >= count:
+        raise XsltStaticError(
+            f"the Python rule id {rule} is not registered",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    return _PythonInvokePlan(rule)
 
 
 def _compile_literal_result(
@@ -5485,6 +5666,7 @@ class _Invocation(Transformation):
         context: EvaluationContext,
         group: object = _INHERIT,
         grouping_key: object = _INHERIT,
+        plan: _ComponentPlan | None = None,
     ) -> XdmSequence:
         frame = self._component_frame(
             component,
@@ -5493,6 +5675,7 @@ class _Invocation(Transformation):
             context=context,
             group=group,
             grouping_key=grouping_key,
+            plan=plan,
         )
         regex_scope = (
             self._regex_scope(None)
@@ -5517,8 +5700,12 @@ class _Invocation(Transformation):
         context: EvaluationContext,
         group: object = _INHERIT,
         grouping_key: object = _INHERIT,
+        plan: _ComponentPlan | None = None,
     ) -> Frame:
-        plan = self._component_plan(component)
+        if plan is None:
+            plan = context.original_plans.get((component.kind, component.name, component.arity))
+        if plan is None:
+            plan = self._component_plan(component)
         package_name = component.owner
         context_signature: ContextItemSignature | None = None
         if component.kind == "function":
@@ -5855,6 +6042,15 @@ class _Invocation(Transformation):
                 arity=arity,
                 suspend=True,
             )
+        for component in context.original_components.values():
+            if component.kind != "function" or component.name is None or component.arity is None:
+                continue
+            functions[(component.name, component.arity)] = HostFunction(
+                ComponentCall(component),
+                name=component.name,
+                arity=component.arity,
+                suspend=True,
+            )
         machine: ContinuationMachine | None = None
         if not self.stylesheet.extensions.functions and not self._expression_references_global(
             expression, context.package_name
@@ -6049,7 +6245,12 @@ class _Invocation(Transformation):
         child = self._component_frame(
             cast(Component, target.component),
             arguments=arguments,
-            context=EvaluationContext(final_output=False),
+            context=EvaluationContext(
+                final_output=False,
+                original_components=frame.context.original_components,
+                original_plans=frame.context.original_plans,
+                original_functions=frame.context.original_functions,
+            ),
         )
         return Call(child, resume=frame, tail=False)
 
@@ -6405,6 +6606,8 @@ class _Invocation(Transformation):
             return execute_apply_templates(plan, self, context)
         if isinstance(plan, _OverridingPlan):
             return execute_overriding(plan, self, context)
+        if isinstance(plan, _PythonInvokePlan):
+            return execute_python_invoke(plan, self, context)
         if isinstance(plan, _ResultDocumentPlan):
             self._result_document(plan, context)
             return ()
@@ -6695,6 +6898,13 @@ class _Invocation(Transformation):
         for key, value in locals_.items():
             self._bind(variables, key, value)
         functions = dict(self.fallback_functions(package_name))
+        if context.original_components:
+            grouped_originals: dict[str, list[Component]] = {}
+            for component in context.original_components.values():
+                if component.kind == "function" and component.name is not None:
+                    grouped_originals.setdefault(component.name, []).append(component)
+            for name, components in grouped_originals.items():
+                functions[name] = self._component_dispatcher(name, components)
         if self.stylesheet.extensions.functions:
             functions.update(
                 self.stylesheet.extensions.runtime_targets(

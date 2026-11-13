@@ -651,6 +651,7 @@ class PackageResolver:
     def __init__(self) -> None:
         self._packages: dict[str, list[PackageDescriptor]] = {}
         self._descriptors: list[PackageDescriptor] = []
+        self._aliases: dict[str, PackageDescriptor] = {}
 
     @classmethod
     def from_sources(
@@ -679,6 +680,23 @@ class PackageResolver:
     @property
     def descriptors(self) -> tuple[PackageDescriptor, ...]:
         return tuple(self._descriptors)
+
+    def register_alias(self, name: str, descriptor: PackageDescriptor) -> None:
+        """Register *descriptor* under an additional, non-source package name.
+
+        An alias is a composition identity only: it never changes the
+        descriptor's own name, so a synthetic application package can use a
+        stylesheet whose package identity is absent without inventing a new
+        source module or rewriting its component owners.
+        """
+        if not isinstance(name, str) or not urlsplit(name).scheme:
+            raise ValueError("a package alias must be an absolute URI")
+        if not isinstance(descriptor, PackageDescriptor):
+            raise TypeError("a package alias requires a PackageDescriptor")
+        existing = self._aliases.get(name)
+        if existing is not None and existing is not descriptor:
+            raise ValueError(f"the package alias {name!r} is already registered")
+        self._aliases[name] = descriptor
 
     def __len__(self) -> int:
         return len(self._descriptors)
@@ -715,6 +733,9 @@ class PackageResolver:
             for descriptor in self._packages.get(name, ())
             if wanted.matches(descriptor.parsed_version)
         ]
+        alias = self._aliases.get(name)
+        if alias is not None and wanted.matches(alias.parsed_version):
+            candidates.append(alias)
         if not candidates:
             raise _error(
                 f"no package matching {name!r} and version range {version_range!r} is registered",
@@ -780,6 +801,7 @@ def compile_package_set(
     principal: PackageInput | None = None,
     xsd_version: str = "1.1",
     resource_policy: Any = None,
+    top_level: bool = True,
 ) -> CompiledPackage:
     """Compile the last supplied source as the principal package.
 
@@ -792,6 +814,11 @@ def compile_package_set(
     compiled through pyxsd under *xsd_version* and the explicit
     *resource_policy* before this function returns, so dependent XPath
     constructors see the complete in-scope schema definitions.
+
+    ``top_level=False`` compiles the same closure as a library, leaving the
+    final check that a top-level package contains no abstract component to the
+    caller.  Python customization uses that view only to validate and bind
+    rules before completing abstract components in its synthetic layer.
     """
     loader = ModuleLoader()
     preprocessor = StaticPreprocessor()
@@ -822,7 +849,10 @@ def compile_package_set(
         principal_module = loaded[-1][1]
     if principal_module is None:
         raise ValueError("compile_package_set requires at least one package source")
-    compiled = _PackageCompiler(resolver).compile(_descriptor(principal_module), top_level=True)
+    compiled = _PackageCompiler(resolver).compile(
+        _descriptor(principal_module),
+        top_level=top_level,
+    )
     compiled = _attach_schema_pools(
         compiled,
         xsd_version=xsd_version,

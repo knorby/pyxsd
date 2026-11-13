@@ -72,8 +72,8 @@ __all__ = [
     "builtin_variant",
     "call_template_step",
     "copy_item",
+    "execute_continuation",
     "execute_overriding",
-    "overriding_rule",
     "overriding_step",
     "resolve_mode",
     "resolve_mode_package",
@@ -1026,7 +1026,7 @@ def call_template_step(
 ) -> FrameResult:
     context = frame.context
     template, tunnel = invocation._plan_parameters(plan.parameters, context)
-    component = resolve_template(invocation, plan.reference)
+    component = resolve_template(invocation, plan.reference, context.original_components)
     child = invocation._component_frame(
         component,
         template_parameters=template,
@@ -1086,18 +1086,12 @@ def overriding_step(
     cursor: int,
 ) -> FrameResult:
     context = frame.context
-    rule_context = context.rule_context
-    template, tunnel = invocation._plan_parameters(plan.parameters, context)
-    if rule_context is None:
-        raise XsltDynamicError(
-            "xsl:next-match and xsl:apply-imports require a current template rule",
-            code="XTDE0560",
-        )
-    item = rule_context.focus.item
-    if item is None:  # pragma: no cover - a current rule always has a focus item
-        raise XsltDynamicError("the current template rule has no context item")
-    effective_tunnel = {**rule_context.tunnel_parameters, **tunnel}
-    match = overriding_rule(invocation, plan, rule_context, item)
+    rule_context, item, template, effective_tunnel, match = continuation_state(
+        invocation,
+        plan.kind,
+        context,
+        plan.parameters,
+    )
     if match is None:
         value = builtin_value(
             invocation,
@@ -1134,30 +1128,28 @@ def execute_overriding(
     invocation: _Invocation,
     context: EvaluationContext,
 ) -> XdmSequence:
-    rule_context = context.rule_context
-    template_parameters, tunnel_parameters = invocation._plan_parameters(
-        plan.parameters,
+    return execute_continuation(invocation, plan.kind, context, plan.parameters)
+
+
+def execute_continuation(
+    invocation: _Invocation,
+    kind: str,
+    context: EvaluationContext,
+    parameters: tuple[Any, ...] = (),
+) -> XdmSequence:
+    """Run one ``next-match`` or ``apply-imports`` continuation synchronously."""
+    rule_context, item, template, effective_tunnel, match = continuation_state(
+        invocation,
+        kind,
         context,
+        parameters,
     )
-    if rule_context is None:
-        raise XsltDynamicError(
-            "xsl:next-match and xsl:apply-imports require a current template rule",
-            code="XTDE0560",
-        )
-    item = rule_context.focus.item
-    if item is None:  # pragma: no cover - a current rule always has a focus item
-        raise XsltDynamicError("the current template rule has no context item")
-    effective_tunnel = {
-        **rule_context.tunnel_parameters,
-        **tunnel_parameters,
-    }
-    match = overriding_rule(invocation, plan, rule_context, item)
     if match is None:
         return builtin_value(
             invocation,
             item,
             rule_context.mode,
-            template_parameters,
+            template,
             effective_tunnel,
             rule_context.package_name,
             rule_context.mode_package,
@@ -1170,21 +1162,50 @@ def execute_overriding(
             focus=rule_context.focus,
             tunnel_parameters=effective_tunnel,
         ),
-        template_parameters,
+        template,
         mode_package=rule_context.mode_package,
     )
     return cast(XdmSequence, invocation.execute_frame(frame))
 
 
-def overriding_rule(
+def continuation_state(
     invocation: _Invocation,
-    plan: _OverridingPlan,
+    kind: str,
+    context: EvaluationContext,
+    parameters: tuple[Any, ...] = (),
+) -> tuple[
+    _RuleContext, XdmItem, Mapping[str, XdmSequence], Mapping[str, XdmSequence], RuleMatch | None
+]:
+    """Resolve the shared state of one rule continuation."""
+    rule_context = context.rule_context
+    template_parameters, tunnel_parameters = invocation._plan_parameters(parameters, context)
+    if rule_context is None:
+        raise XsltDynamicError(
+            "xsl:next-match and xsl:apply-imports require a current template rule",
+            code="XTDE0560",
+        )
+    item = rule_context.focus.item
+    if item is None:  # pragma: no cover - a current rule always has a focus item
+        raise XsltDynamicError("the current template rule has no context item")
+    effective_tunnel = {
+        **rule_context.tunnel_parameters,
+        **tunnel_parameters,
+    }
+    match = continuation_match(invocation, rule_context, kind)
+    return rule_context, item, template_parameters, effective_tunnel, match
+
+
+def continuation_match(
+    invocation: _Invocation,
     rule_context: _RuleContext,
-    item: XdmItem,
+    kind: str,
 ) -> RuleMatch | None:
+    """Select the continuation rule for one role-specific operation."""
     dispatcher = invocation._dispatcher(rule_context.mode, rule_context.mode_package)
     environment = invocation._environment(EvaluationContext(package_name=rule_context.package_name))
-    if plan.kind == "next-match":
+    item = rule_context.focus.item
+    assert item is not None
+    if kind == "next-match":
         return dispatcher.next_match(
             item,
             rule_context.match,
@@ -1192,6 +1213,7 @@ def overriding_rule(
             environment,
             invocation._pattern_environment,
         )
+    assert kind == "apply-imports"
     return dispatcher.apply_imports(
         item,
         rule_context.match,
@@ -1225,7 +1247,17 @@ def apply_templates(
         return cast(XdmSequence, invocation.execute_frame(frame))
 
 
-def resolve_template(invocation: _Invocation, reference: Any) -> Component:
+def resolve_template(
+    invocation: _Invocation,
+    reference: Any,
+    originals: Mapping[tuple[str, str | None, int | None], Component] | None = None,
+) -> Component:
+    if originals is not None and not getattr(reference, "original", False):
+        target = originals.get(
+            (getattr(reference, "kind", "template"), reference.name, reference.arity)
+        )
+        if target is not None:
+            return target
     stylesheet = getattr(invocation, "stylesheet", None)
     packages = getattr(stylesheet, "_packages", {})
     package = packages.get(
@@ -1288,7 +1320,7 @@ def execute_call_template(
 ) -> XdmSequence:
     """Run one ``xsl:call-template`` in a synchronous nested constructor."""
     template, tunnel = invocation._plan_parameters(plan.parameters, context)
-    component = resolve_template(invocation, plan.reference)
+    component = resolve_template(invocation, plan.reference, context.original_components)
     return invocation._execute_component(
         component,
         template_parameters=template,
