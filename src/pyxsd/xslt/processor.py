@@ -163,7 +163,7 @@ from pyxsd.xslt.errors import (
     error_code_from_exception,
     is_static_error_code,
 )
-from pyxsd.xslt.extensions import XsltExtensions
+from pyxsd.xslt.extensions import ExtensionInstruction, XsltExtensions
 from pyxsd.xslt.policy import OutputPolicy
 from pyxsd.xslt.profiles import RecoveryPolicy
 from pyxsd.xslt.python_rules import (
@@ -1038,6 +1038,11 @@ def _compile_stylesheet(
         principal.root.in_scope_namespaces,
         identity=principal.identity,
     )
+    plan_executors: dict[type[_Plan], PlanExecutor] = dict(PYTHON_PLAN_EXECUTORS)
+    instruction_compilers = _instruction_compiler_snapshot(
+        resolved_extensions,
+        plan_executors,
+    )
     modules = _module_map(package)
     packages = _package_map(package)
     space_rules = {
@@ -1069,6 +1074,7 @@ def _compile_stylesheet(
                 profile,
                 collation,
                 resolved_extensions,
+                instruction_compilers,
             )
             attributes = component.declaration
             context = _original_context(context, attributes)
@@ -1150,6 +1156,7 @@ def _compile_stylesheet(
             profile,
             collation,
             resolved_extensions,
+            instruction_compilers,
         )
         for package_name, current_package in packages.items()
     }
@@ -1213,7 +1220,7 @@ def _compile_stylesheet(
         _mode_accumulators=mode_accumulators,
         _space_rules=space_rules,
         extensions=resolved_extensions,
-        plan_executors=PYTHON_PLAN_EXECUTORS,
+        plan_executors=plan_executors,
     )
 
 
@@ -1722,6 +1729,7 @@ def _compile_package_modes(
     profile: ProfileOptions,
     collation: str | None,
     extensions: XsltExtensions,
+    instruction_compilers: Mapping[str, InstructionCompiler],
 ) -> dict[ModeKey, tuple[_ModeLayerPlan, ...]]:
     modes: dict[ModeKey, tuple[_ModeLayerPlan, ...]] = {}
     for mode_name, mode in package.modes.items():
@@ -1746,6 +1754,7 @@ def _compile_package_modes(
                     profile,
                     collation,
                     extensions,
+                    instruction_compilers,
                 )
                 pattern = compile_pattern(
                     rule.pattern,
@@ -1989,6 +1998,38 @@ def _rule_module(
     return principal
 
 
+def _instruction_compiler_snapshot(
+    extensions: XsltExtensions,
+    plan_executors: dict[type[_Plan], PlanExecutor],
+) -> Mapping[str, InstructionCompiler]:
+    """Merge the engine and application instruction families for one compilation.
+
+    The engine's Python customization family is installed verbatim.  Every
+    application family's compiler is wrapped in a recording adapter so the
+    plan type it returns binds its registered executor on *plan_executors* —
+    the per-artifact snapshot this compilation will freeze — before the plan
+    is returned.  Both the returned mapping and the executor dict belong to
+    this compilation alone; nothing here is process-global state.
+    """
+    compilers: dict[str, InstructionCompiler] = dict(PYTHON_INSTRUCTION_COMPILERS)
+    for name, registered in extensions.instructions.items():
+
+        def compiler(
+            instruction: Instruction,
+            context: StaticContext,
+            module: EffectiveModule,
+            *,
+            _registered: ExtensionInstruction = registered,
+            _executors: dict[type[_Plan], PlanExecutor] = plan_executors,
+        ) -> _Plan:
+            plan = _registered.compiler(instruction, context, module)
+            _executors[type(plan)] = _registered.executor
+            return plan
+
+        compilers[name] = compiler
+    return MappingProxyType(compilers)
+
+
 def _context_for(
     module: EffectiveModule,
     declaration: Instruction,
@@ -1997,6 +2038,7 @@ def _context_for(
     profile: ProfileOptions,
     default_collation: str | None,
     extensions: XsltExtensions,
+    instruction_compilers: Mapping[str, InstructionCompiler],
 ) -> StaticContext:
     base = StaticContext.for_module(module, schema=schema, profile=profile)
     variables = dict(base.variables)
@@ -2050,7 +2092,7 @@ def _context_for(
         context,
         package=package,
         python_rule_count=extensions.python_rules.rule_count,
-        instruction_compilers=PYTHON_INSTRUCTION_COMPILERS,
+        instruction_compilers=instruction_compilers,
     )
     if context.default_collation is None and default_collation is not None:
         context = context.with_default_collation(default_collation)
@@ -3650,17 +3692,91 @@ def _compile_instruction(
 
     Literal result elements stay explicit.  A family compiler registered on
     this compilation's static context — an engine or application extension
-    family — is consulted before literal-result handling, then every built-in
-    family; an instruction with no registered compiler keeps the explicit
-    forwards-compatible or unsupported handling.
+    family — is consulted before literal-result handling; an element in a
+    namespace declared under ``extension-element-prefixes`` but without a
+    registered family is an unrecognized extension instruction that runs its
+    ``xsl:fallback`` children or reports the static error; every other
+    literal element keeps literal construction; and an instruction with no
+    registered compiler keeps the explicit forwards-compatible or unsupported
+    handling.
     """
     context = _instruction_context(context, instruction)
     context = _original_context(context, instruction)
     if supports_instruction(instruction.name, context):
         return compile_instruction(instruction, context, module)
     if instruction.literal:
+        if _is_unregistered_extension_instruction(instruction, module):
+            return _compile_unregistered_extension_instruction(instruction, context, module)
         return _compile_literal_result(instruction, context, module)
     return _compile_unhandled_instruction(instruction, context, module)
+
+
+_EXTENSION_ELEMENT_PREFIXES = "extension-element-prefixes"
+
+
+def _extension_instruction_namespaces(module: EffectiveModule) -> frozenset[str]:
+    """Resolve the module root's ``extension-element-prefixes`` declaration.
+
+    Each declared token names a prefix whose namespace carries extension
+    instruction candidates for this compilation; ``#default`` names the
+    default namespace.  The declaration is read at the stylesheet root, the
+    position stylesheets use for processor-wide extension families.
+    """
+    declared = module.root.attribute(_EXTENSION_ELEMENT_PREFIXES)
+    if declared is None:
+        return frozenset()
+    namespaces = module.root.in_scope_namespaces
+    resolved: set[str] = set()
+    for token in declared.split():
+        if token == "#default":
+            uri = namespaces.get("")
+            if uri:
+                resolved.add(uri)
+            continue
+        uri = namespaces.get(token)
+        if not uri:
+            raise XsltStaticError(
+                f"the {_EXTENSION_ELEMENT_PREFIXES} prefix {token!r} is not bound",
+                code="XTSE0280",
+                uri=module.identity,
+            )
+        resolved.add(uri)
+    return frozenset(resolved)
+
+
+def _is_unregistered_extension_instruction(
+    instruction: Instruction, module: EffectiveModule
+) -> bool:
+    namespace = instruction.namespace_uri
+    return namespace is not None and namespace in _extension_instruction_namespaces(module)
+
+
+def _compile_unregistered_extension_instruction(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    """Compile an unrecognized extension instruction (XSLT 3.0 section 18.3).
+
+    ``xsl:fallback`` children stand in for the unavailable family exactly as
+    they do for a forwards-compatible instruction; without a fallback the
+    stylesheet asked for a family this compilation does not carry, which is a
+    static error.
+    """
+    fallbacks = tuple(
+        child for child in instruction.elements if child.is_xslt and child.local_name == "fallback"
+    )
+    if fallbacks:
+        return _ConcatPlan(
+            instruction,
+            tuple(_compile_sequence(fallback.children, context, module) for fallback in fallbacks),
+        )
+    raise XsltStaticError(
+        f"the extension instruction {instruction.name!r} is not registered for this compilation",
+        code="XTSE0010",
+        uri=context.uri,
+        location=instruction.location,
+    )
 
 
 def _compile_literal_result(

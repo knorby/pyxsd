@@ -1,4 +1,4 @@
-"""Immutable registry of Python extension functions and custom collations.
+"""Immutable registry of Python extension functions, instructions, collations.
 
 An :class:`XsltExtensions` value is the only seam through which host Python
 code enters an XSLT transformation.  Registration returns a new registry; a
@@ -7,6 +7,14 @@ registration never changes compiled expressions, ``function-available``
 answers, or a running transformation.  Stylesheet strings never identify a
 Python module: there is no import-path loading and no process-global callback
 slot.
+
+Instruction registrations name the application's own extension elements.  A
+stylesheet element in a namespace declared under ``extension-element-prefixes``
+is an instruction candidate: it compiles through the registered family
+compiler when the compilation carries one, runs its ``xsl:fallback`` children
+when the name is not registered, and is a static error without a fallback.
+An element outside any declared prefix keeps the ordinary literal-result
+handling.
 
 Callbacks are non-contextual by default.  A contextual callback receives the
 current context item as its first argument, followed by the declared
@@ -46,14 +54,17 @@ from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xdm.values import _is_xsd_subtype, _local_type_name
 from pyxsd.xpath.functions import XdmFunctionTarget, call_host_function
+from pyxsd.xslt.compiler.dispatch import InstructionCompiler
 from pyxsd.xslt.errors import XsltDynamicError, XsltStaticError
-from pyxsd.xslt.python_rules import PythonRules
+from pyxsd.xslt.python_rules import PYTHON_RULES_NS, PythonRules
+from pyxsd.xslt.runtime.dispatch import PlanExecutor
 
 __all__ = [
     "EXTENSION_ERROR_CODE",
     "NO_ARGS",
     "XS_INTEGER_TO_INTEGER",
     "ExtensionFunction",
+    "ExtensionInstruction",
     "ExtensionSignature",
     "ExtensionTarget",
     "XsltExtensions",
@@ -488,14 +499,47 @@ class ExtensionTarget(XdmFunctionTarget):
 
 
 @dataclass(frozen=True, slots=True)
+class ExtensionInstruction:
+    """One registered application instruction and its executor.
+
+    *name* is the instruction's expanded QName (``{uri}local``); *compiler*
+    compiles the element into the application's own plan on this compilation's
+    static context, and *executor* executes that plan through the compiled
+    artifact's per-artifact snapshot.  Both are application-supplied
+    callables; the engine never inspects the plan type at registration time,
+    so the executor binding is discovered when the first instruction of the
+    family is compiled.
+    """
+
+    name: str
+    compiler: InstructionCompiler
+    executor: PlanExecutor
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _normalise_expanded_name(self.name))
+        if not callable(self.compiler):
+            raise TypeError("an extension instruction requires a callable compiler")
+        if not callable(self.executor):
+            raise TypeError("an extension instruction requires a callable executor")
+
+
+@dataclass(frozen=True, slots=True)
 class XsltExtensions:
-    """An immutable registry of extension functions and custom collations."""
+    """An immutable registry of extension functions, instructions, collations.
+
+    Instruction registrations (:meth:`register_instruction`) declare trusted
+    application extension elements the compiler recognizes before
+    literal-result handling; each carries the application's own compiler and
+    plan executor and is captured on the compiled artifact it was compiled
+    with.
+    """
 
     _functions: Mapping[tuple[str, int], ExtensionFunction] = field(
         default_factory=dict, repr=False
     )
     _collations: Mapping[str, Any] = field(default_factory=dict, repr=False)
     _python_rules: PythonRules = field(default_factory=PythonRules.empty, repr=False)
+    _instructions: Mapping[str, ExtensionInstruction] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         functions: dict[tuple[str, int], ExtensionFunction] = {}
@@ -515,6 +559,13 @@ class XsltExtensions:
         object.__setattr__(self, "_collations", MappingProxyType(collations))
         if not isinstance(self._python_rules, PythonRules):
             raise TypeError("python_rules must be a PythonRules registry")
+        instructions = dict(self._instructions)
+        for instruction_name, registered in instructions.items():
+            if not isinstance(registered, ExtensionInstruction):
+                raise TypeError("instruction registries map names to ExtensionInstruction values")
+            if instruction_name != registered.name:
+                raise ValueError("an instruction registry key must match its definition")
+        object.__setattr__(self, "_instructions", MappingProxyType(instructions))
 
     @property
     def functions(self) -> Mapping[tuple[str, int], ExtensionFunction]:
@@ -530,6 +581,11 @@ class XsltExtensions:
     def python_rules(self) -> PythonRules:
         """The immutable Python customization rules captured at compile time."""
         return self._python_rules
+
+    @property
+    def instructions(self) -> Mapping[str, ExtensionInstruction]:
+        """Registered instructions keyed by expanded QName."""
+        return self._instructions
 
     def with_python_rules(self, rules: PythonRules) -> XsltExtensions:
         """Return a new registry carrying *rules*."""
@@ -613,6 +669,32 @@ class XsltExtensions:
         )
         return replace(self, _collations={**self._collations, uri: collation})
 
+    def register_instruction(
+        self,
+        name: str,
+        *,
+        compiler: InstructionCompiler,
+        executor: PlanExecutor,
+    ) -> XsltExtensions:
+        """Return a new registry with one application instruction registered.
+
+        *name* must be an expanded QName in the application's own namespace;
+        the private ``urn:pyxsd:python-rules`` namespace belongs to the
+        generated customization layer and can never be registered.  The
+        compiled artifact keeps this registration as an immutable
+        per-compilation and per-artifact snapshot, so a later registration
+        never changes an artifact that was compiled without it.
+        """
+        registered = ExtensionInstruction(name=name, compiler=compiler, executor=executor)
+        if registered.name.startswith(f"{{{PYTHON_RULES_NS}}}"):
+            raise ValueError(
+                f"the private Python instruction namespace {PYTHON_RULES_NS!r} is "
+                "reserved for the generated customization layer"
+            )
+        if registered.name in self._instructions:
+            raise ValueError(f"the extension instruction {registered.name!r} is already registered")
+        return replace(self, _instructions={**self._instructions, registered.name: registered})
+
     def function_available(self, name: str, arity: int | None = None) -> bool:
         """Whether the registry declares *name* (an expanded or lexical QName)."""
         try:
@@ -649,7 +731,7 @@ class XsltExtensions:
                     uri=identity,
                 )
             resolved[key] = replace(definition, name=expanded)
-        return XsltExtensions(resolved, self._collations, self._python_rules)
+        return XsltExtensions(resolved, self._collations, self._python_rules, self._instructions)
 
     def runtime_targets(
         self,

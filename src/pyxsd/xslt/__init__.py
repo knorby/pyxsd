@@ -8,6 +8,7 @@ the stylesheet.
 
 from pyxsd.xslt.errors import XsltDynamicError, XsltInspectionError
 from pyxsd.xslt.extensions import (
+    ExtensionInstruction,
     ExtensionSignature,
     XsltExtensions,
     no_args,
@@ -36,6 +37,7 @@ from pyxsd.xslt.runtime.frames import ExecutionLimits
 __all__ = [
     "CompiledStylesheet",
     "ExecutionLimits",
+    "ExtensionInstruction",
     "ExtensionSignature",
     "InspectionDiagnostic",
     "Message",
