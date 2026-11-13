@@ -1013,7 +1013,7 @@ def test_parameter_list_values_accept_strings_and_sequences() -> None:
 
 def test_invalid_parameters_raise_sepm0016() -> None:
     cases = (
-        lambda: SerializationParameters(method="json"),
+        lambda: SerializationParameters(method="yaml"),
         lambda: SerializationParameters(method="XML"),
         lambda: SerializationParameters(method=1),  # type: ignore[arg-type]
         lambda: SerializationParameters(method="Q{broken"),
@@ -1195,7 +1195,7 @@ def test_document_delivery_leaves_serialized_empty() -> None:
     assert secondary.serialized is None
 
 
-def test_stylesheet_delivery_defers_unsupported_methods_to_task_32() -> None:
+def test_stylesheet_delivery_serializes_json_and_adaptive_methods() -> None:
     source = stylesheet(
         '<xsl:output method="json" build-tree="no"/>'
         '<xsl:template name="xsl:initial-template">'
@@ -1205,7 +1205,8 @@ def test_stylesheet_delivery_defers_unsupported_methods_to_task_32() -> None:
 
     result = transform(source, delivery="stylesheet")
 
-    assert result.principal_entry.serialized is None
+    assert result.principal_entry.serialized == '{"k":1}'
+    assert result.principal_entry.serialization["method"] == "json"
 
 
 def test_stylesheet_delivery_serializes_a_text_only_xml_result() -> None:
@@ -1421,5 +1422,6 @@ def test_serialization_method_support_is_owned_by_the_serializer() -> None:
     assert Serializer.supports_method("text")
     assert Serializer.supports_method("Q{urn:xslt}text")
     assert Serializer.supports_method("xsl:html")
-    assert not Serializer.supports_method("json")
-    assert not Serializer.supports_method("adaptive")
+    assert Serializer.supports_method("json")
+    assert Serializer.supports_method("adaptive")
+    assert not Serializer.supports_method("yaml")

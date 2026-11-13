@@ -9,10 +9,17 @@ library marker or consults the filesystem.
 from __future__ import annotations
 
 import codecs
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
+from pyxsd.xdm import XdmAtomic, XdmItem
 from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xslt.errors import XsltSerializationError
+from pyxsd.xslt.serialization.characters import (
+    CharacterMap,
+    apply_mapped,
+    character_map_index,
+    normalize_text,
+)
 from pyxsd.xslt.serialization.parameters import SerializationParameters
 
 XML_NS = "http://www.w3.org/XML/1998/namespace"
@@ -71,6 +78,50 @@ _HTML_BOOLEAN_ATTRIBUTES = frozenset(
 )
 
 NormalizedItem = str | XdmNode
+
+#: Serialization 3.1 Appendix D: URI-valued HTML/XHTML attributes and the
+#: elements that declare them as ``%URI``.  ``name`` and ``value`` are URI
+#: attributes only on the elements listed here, so a name-only test would
+#: escape ordinary attributes.
+_URI_ATTRIBUTES: Mapping[str, frozenset[str]] = {
+    "action": frozenset({"form"}),
+    "archive": frozenset({"object"}),
+    "background": frozenset({"body"}),
+    "cite": frozenset({"blockquote", "del", "ins", "q"}),
+    "classid": frozenset({"object"}),
+    "codebase": frozenset({"applet", "object"}),
+    "data": frozenset({"object"}),
+    "datasrc": frozenset(
+        {"button", "div", "input", "object", "select", "span", "table", "textarea"}
+    ),
+    "for": frozenset({"script"}),
+    "formaction": frozenset({"button", "input"}),
+    "href": frozenset({"a", "area", "base", "link"}),
+    "icon": frozenset({"command"}),
+    "longdesc": frozenset({"frame", "iframe", "img"}),
+    "manifest": frozenset({"html"}),
+    "name": frozenset({"a"}),
+    "poster": frozenset({"video"}),
+    "profile": frozenset({"head"}),
+    "src": frozenset(
+        {
+            "audio",
+            "embed",
+            "frame",
+            "iframe",
+            "img",
+            "input",
+            "script",
+            "source",
+            "track",
+            "video",
+        }
+    ),
+    "usemap": frozenset({"img", "input", "object"}),
+    "value": frozenset({"input"}),
+}
+
+_URI_SAFE = frozenset(chr(code) for code in range(0x20, 0x7F))
 
 
 def _not_well_formed(message: str) -> XsltSerializationError:
@@ -220,6 +271,69 @@ def _escape_html_attribute(value: str, *, codec: str) -> str:
     return _character_references(escaped, codec)
 
 
+def escape_html_uri(value: str) -> str:
+    """``fn:escape-html-uri``: percent-encode every character outside 32-126."""
+    if all(character in _URI_SAFE for character in value):
+        return value
+    return "".join(
+        character
+        if character in _URI_SAFE
+        else "".join(f"%{byte:02X}" for byte in character.encode("utf-8"))
+        for character in value
+    )
+
+
+def _is_uri_attribute(element: XdmNode, attribute: XdmNode, *, method: str) -> bool:
+    if not _is_html_element(element, method=method):
+        return False
+    attribute_name = (attribute.local_name or "").lower()
+    element_name = (element.local_name or "").lower()
+    return element_name in _URI_ATTRIBUTES.get(attribute_name, frozenset())
+
+
+def text_value(
+    value: str,
+    parameters: SerializationParameters,
+    *,
+    html: bool,
+    codec: str,
+    characters: CharacterMap,
+) -> str:
+    """Character-map, normalize, then escape one text node value."""
+    form = parameters.normalization_form
+    return apply_mapped(
+        value,
+        characters,
+        lambda run: _escape_text(normalize_text(run, form), html=html, codec=codec),
+    )
+
+
+def attribute_value(
+    value: str,
+    parameters: SerializationParameters,
+    *,
+    html: bool = False,
+    codec: str,
+    characters: CharacterMap,
+    uri_attribute: bool = False,
+) -> str:
+    """Character-map, normalize, then escape one attribute value.
+
+    A URI attribute under HTML/XHTML escaping is normalized to NFC and
+    percent-escaped by ``fn:escape-html-uri`` before normal output escaping;
+    character maps are not applied to it.
+    """
+    escape = _escape_html_attribute if html else _escape_attribute
+    if uri_attribute and parameters.escape_uri_attributes:
+        return escape(escape_html_uri(normalize_text(value, "NFC")), codec=codec)
+    form = parameters.normalization_form
+    return apply_mapped(
+        value,
+        characters,
+        lambda run: escape(normalize_text(run, form), codec=codec),
+    )
+
+
 def _cdata_section(value: str, *, codec: str) -> str:
     _require_encodable(value, codec, "a CDATA section")
     return "<![CDATA[" + value.replace("]]>", "]]]]><![CDATA[>") + "]]>"
@@ -306,21 +420,27 @@ def _start_tag(
     element: XdmNode,
     scope: dict[str, str],
     parent_scope: dict[str, str],
+    parameters: SerializationParameters,
     *,
-    html: bool,
+    method: str,
     codec: str,
+    characters: CharacterMap,
     undeclare: bool,
 ) -> str:
+    html = method == "html"
     name = _element_name(element, scope, html=html)
     _require_encodable(name, codec, "an element name")
     attributes: list[str] = []
     for attribute in element.attributes:
         attribute_name = _attribute_name(attribute, scope, html=html)
         _require_encodable(attribute_name, codec, "an attribute name")
-        value = (
-            _escape_html_attribute(attribute.string_value, codec=codec)
-            if html
-            else _escape_attribute(attribute.string_value, codec=codec)
+        value = attribute_value(
+            attribute.string_value,
+            parameters,
+            html=html,
+            codec=codec,
+            characters=characters,
+            uri_attribute=_is_uri_attribute(element, attribute, method=method),
         )
         if html and attribute_name.lower() in _HTML_BOOLEAN_ATTRIBUTES:
             lowered = value.lower()
@@ -346,6 +466,7 @@ def _text_node(
     *,
     html: bool,
     codec: str,
+    characters: CharacterMap,
 ) -> str:
     if (
         not html
@@ -355,7 +476,7 @@ def _text_node(
         return _cdata_section(value, codec=codec)
     if html and element is not None and (element.local_name or "").lower() in ("script", "style"):
         return value
-    return _escape_text(value, html=html, codec=codec)
+    return text_value(value, parameters, html=html, codec=codec, characters=characters)
 
 
 def _render_node(
@@ -366,6 +487,7 @@ def _render_node(
     *,
     method: str,
     codec: str,
+    characters: CharacterMap,
     undeclare: bool,
     suppressed: bool,
 ) -> str:
@@ -380,7 +502,14 @@ def _render_node(
         _require_encodable(data, codec, "processing-instruction data")
         return f"<?{target} {data}?>" if data else f"<?{target}?>"
     if node.kind is NodeKind.TEXT:
-        return _text_node(node.string_value, node.parent, parameters, html=html, codec=codec)
+        return _text_node(
+            node.string_value,
+            node.parent,
+            parameters,
+            html=html,
+            codec=codec,
+            characters=characters,
+        )
     if node.kind is not NodeKind.ELEMENT:
         raise _not_well_formed(f"cannot serialize a {node.kind.value} node in content")
     return _render_element(
@@ -390,6 +519,7 @@ def _render_node(
         parameters,
         method=method,
         codec=codec,
+        characters=characters,
         undeclare=undeclare,
         suppressed=suppressed,
     )
@@ -403,13 +533,23 @@ def _render_element(
     *,
     method: str,
     codec: str,
+    characters: CharacterMap,
     undeclare: bool,
     suppressed: bool,
 ) -> str:
     html = method == "html"
     suppress = suppressed or _matches_any(parameters.suppress_indentation, element)
     scope = dict(element.in_scope_namespaces)
-    start = _start_tag(element, scope, parent_scope, html=html, codec=codec, undeclare=undeclare)
+    start = _start_tag(
+        element,
+        scope,
+        parent_scope,
+        parameters,
+        method=method,
+        codec=codec,
+        characters=characters,
+        undeclare=undeclare,
+    )
     children = list(element.children)
     content_type = (
         _content_type_meta(element, scope, parameters, method=method, codec=codec)
@@ -445,6 +585,7 @@ def _render_element(
             parameters,
             method=method,
             codec=codec,
+            characters=characters,
             undeclare=undeclare,
             suppressed=suppress,
         )
@@ -497,6 +638,54 @@ def _validate_xml_shape(items: Sequence[NormalizedItem]) -> None:
         )
 
 
+def normalize_sequence(sequence: Iterable[XdmItem]) -> tuple[NormalizedItem, ...]:
+    """Apply XSLT 3.0 section 5.7.1 sequence normalization."""
+    output: list[NormalizedItem] = []
+    pending: list[str] = []
+    previous_atomic = False
+
+    def flush() -> None:
+        nonlocal previous_atomic
+        if pending:
+            text = "".join(pending)
+            pending.clear()
+            if text:
+                output.append(text)
+        previous_atomic = False
+
+    def visit(item: XdmItem) -> None:
+        nonlocal previous_atomic
+        if isinstance(item, XdmNode):
+            if item.kind is NodeKind.DOCUMENT:
+                for child in item.children:
+                    visit(child)
+            elif item.kind is NodeKind.TEXT:
+                if item.string_value:
+                    pending.append(item.string_value)
+                    previous_atomic = False
+            elif item.kind is NodeKind.NAMESPACE:
+                raise _not_well_formed("a namespace node cannot appear in a serialized sequence")
+            elif item.kind is NodeKind.ATTRIBUTE:
+                raise _not_well_formed("an attribute node cannot appear in a serialized sequence")
+            else:
+                flush()
+                output.append(item)
+        elif isinstance(item, XdmAtomic):
+            if previous_atomic:
+                pending.append(" ")
+            pending.append(item.lexical)
+            previous_atomic = True
+        else:
+            raise _not_well_formed(
+                f"cannot serialize a {type(item).__name__} item in an XML sequence"
+            )
+
+    for item in sequence:
+        visit(item)
+    flush()
+    return tuple(output)
+
+
 def _xml_declaration(parameters: SerializationParameters) -> str:
     standalone = ""
     if parameters.standalone is not None:
@@ -535,11 +724,21 @@ def serialize_markup(
     )
     root_scope: dict[str, str] = {"xml": XML_NS}
     separator = parameters.item_separator
+    characters = character_map_index(parameters.character_maps)
     for index, item in enumerate(items):
         if index:
             output.append("\n" if parameters.indent and separator is None else (separator or ""))
         if isinstance(item, str):
-            output.append(_text_node(item, None, parameters, html=html, codec=codec))
+            output.append(
+                _text_node(
+                    item,
+                    None,
+                    parameters,
+                    html=html,
+                    codec=codec,
+                    characters=characters,
+                )
+            )
             continue
         if item.kind is NodeKind.ELEMENT and doctype is not None:
             output.append(doctype)
@@ -554,6 +753,7 @@ def serialize_markup(
                 parameters,
                 method=method,
                 codec=codec,
+                characters=characters,
                 undeclare=undeclare,
                 suppressed=False,
             )

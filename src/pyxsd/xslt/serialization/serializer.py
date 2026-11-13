@@ -3,6 +3,10 @@
 Producing the string never touches the filesystem or network.  Encoding and
 the byte-order mark are applied only by :meth:`Serializer.write`, which writes
 to a binary stream or an explicitly supplied path.
+
+The output method is chosen here and nowhere else: ``_METHODS`` is the one
+method-support source, so parameter validation and delivery agree on exactly
+which methods exist.
 """
 
 from __future__ import annotations
@@ -12,12 +16,12 @@ from collections.abc import Iterable, Mapping
 from os import PathLike
 from typing import Any
 
-from pyxsd.xdm import XdmAtomic, XdmItem
-from pyxsd.xdm.nodes import NodeKind, XdmNode
+from pyxsd.xdm import XdmItem
 from pyxsd.xslt.errors import XsltSerializationError
+from pyxsd.xslt.serialization.json import serialize_adaptive, serialize_json
 from pyxsd.xslt.serialization.parameters import SerializationParameters, method_local_name
 from pyxsd.xslt.serialization.text import serialize_text
-from pyxsd.xslt.serialization.xml import NormalizedItem, serialize_markup
+from pyxsd.xslt.serialization.xml import normalize_sequence, serialize_markup
 
 __all__ = ["Serializer"]
 
@@ -31,62 +35,10 @@ _ENDIAN_CODECS: dict[str, tuple[str, bytes]] = {
 }
 
 
-def _not_well_formed(message: str) -> XsltSerializationError:
-    return XsltSerializationError(message, code="SENR0001")
-
-
-def _normalize_sequence(sequence: Iterable[XdmItem]) -> tuple[NormalizedItem, ...]:
-    """Apply XSLT 3.0 section 5.7.1 sequence normalization."""
-    output: list[NormalizedItem] = []
-    pending: list[str] = []
-    previous_atomic = False
-
-    def flush() -> None:
-        nonlocal previous_atomic
-        if pending:
-            text = "".join(pending)
-            pending.clear()
-            if text:
-                output.append(text)
-        previous_atomic = False
-
-    def visit(item: XdmItem) -> None:
-        nonlocal previous_atomic
-        if isinstance(item, XdmNode):
-            if item.kind is NodeKind.DOCUMENT:
-                for child in item.children:
-                    visit(child)
-            elif item.kind is NodeKind.TEXT:
-                if item.string_value:
-                    pending.append(item.string_value)
-                    previous_atomic = False
-            elif item.kind is NodeKind.NAMESPACE:
-                raise _not_well_formed("a namespace node cannot appear in a serialized sequence")
-            elif item.kind is NodeKind.ATTRIBUTE:
-                raise _not_well_formed("an attribute node cannot appear in a serialized sequence")
-            else:
-                flush()
-                output.append(item)
-        elif isinstance(item, XdmAtomic):
-            if previous_atomic:
-                pending.append(" ")
-            pending.append(item.lexical)
-            previous_atomic = True
-        else:
-            raise _not_well_formed(
-                f"cannot serialize a {type(item).__name__} item in an XML sequence"
-            )
-
-    for item in sequence:
-        visit(item)
-    flush()
-    return tuple(output)
-
-
 class Serializer:
     """Produce serialized strings and write their encoded bytes."""
 
-    _METHODS = frozenset({"xml", "xhtml", "html", "text"})
+    _METHODS = frozenset({"xml", "xhtml", "html", "text", "json", "adaptive"})
 
     @classmethod
     def supports_method(cls, method: str) -> bool:
@@ -114,9 +66,13 @@ class Serializer:
         """Serialize *sequence* and return the unencoded string."""
         resolved = cls._parameters(parameters)
         items = tuple(sequence)
+        if resolved.method == "json":
+            return serialize_json(items, resolved)
+        if resolved.method == "adaptive":
+            return serialize_adaptive(items, resolved)
         if resolved.method == "text":
             return serialize_text(items, resolved)
-        return serialize_markup(_normalize_sequence(items), resolved, method=resolved.method)
+        return serialize_markup(normalize_sequence(items), resolved, method=resolved.method)
 
     @classmethod
     def write(

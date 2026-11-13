@@ -15,6 +15,7 @@ from math import isfinite
 from typing import Any
 
 from pyxsd.xslt.errors import XsltSerializationError
+from pyxsd.xslt.serialization.characters import character_map_pairs
 
 __all__ = ["SerializationParameters", "expand_qname", "expand_qname_list", "method_local_name"]
 
@@ -27,16 +28,15 @@ _FALSE_VALUES = frozenset({"no", "false", "0"})
 #: passes a complete effective output mapping.
 _XSLT_OUTPUT_METADATA = frozenset(
     {
-        "allow-duplicate-names",
         "build-tree",
         "html-version",
-        "json-node-output-method",
         "parameter-document",
         "use-character-maps",
     }
 )
 
 _ATTRIBUTE_FIELDS: dict[str, str] = {
+    "allow-duplicate-names": "allow_duplicate_names",
     "byte-order-mark": "byte_order_mark",
     "cdata-section-elements": "cdata_section_elements",
     "doctype-public": "doctype_public",
@@ -46,6 +46,7 @@ _ATTRIBUTE_FIELDS: dict[str, str] = {
     "include-content-type": "include_content_type",
     "indent": "indent",
     "item-separator": "item_separator",
+    "json-node-output-method": "json_node_output_method",
     "media-type": "media_type",
     "method": "method",
     "normalization-form": "normalization_form",
@@ -184,8 +185,13 @@ def _normalization_form(value: Any) -> str | None:
     normalized = value.strip()
     if not normalized:
         return None
-    if normalized.lower() == "none":
+    lowered = normalized.lower()
+    if lowered == "none":
         return "none"
+    if lowered == "fully-normalized":
+        # A fully normalized result is a superset of NFC; the serializer has no
+        # data model to prove the stricter claim, so it performs NFC.
+        return "NFC"
     upper = normalized.upper()
     if upper not in _NORMALIZATION_FORMS:
         raise _invalid(f"unsupported normalization-form {value!r}")
@@ -223,6 +229,9 @@ class SerializationParameters:
     escape_uri_attributes: bool = True
     include_content_type: bool = True
     undeclare_prefixes: bool = False
+    allow_duplicate_names: bool = False
+    json_node_output_method: str = "xml"
+    character_maps: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.method, str):
@@ -288,6 +297,32 @@ class SerializationParameters:
         object.__setattr__(
             self, "undeclare_prefixes", _boolean(self.undeclare_prefixes, "undeclare-prefixes")
         )
+        object.__setattr__(
+            self,
+            "allow_duplicate_names",
+            _boolean(self.allow_duplicate_names, "allow-duplicate-names"),
+        )
+        object.__setattr__(
+            self,
+            "json_node_output_method",
+            self._json_node_output_method(self.json_node_output_method),
+        )
+        object.__setattr__(
+            self,
+            "character_maps",
+            character_map_pairs(self.character_maps),
+        )
+
+    @staticmethod
+    def _json_node_output_method(value: Any) -> str:
+        if not isinstance(value, str):
+            raise _invalid(f"json-node-output-method must be a string, got {value!r}")
+        from pyxsd.xslt.serialization.serializer import Serializer
+
+        method = method_local_name(value)
+        if method in ("json", "adaptive") or not Serializer.supports_method(method):
+            raise _invalid(f"unsupported json-node-output-method {value!r}")
+        return method
 
     @classmethod
     def _resolve_field(cls, name: str) -> str | None:
