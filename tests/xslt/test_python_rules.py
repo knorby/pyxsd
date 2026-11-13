@@ -768,6 +768,135 @@ def test_optional_parameter_defaults_survive_override() -> None:
     )
 
 
+def compile_override_with_constructor_default() -> Any:
+    source = package(
+        """
+        <xsl:template name="xsl:initial-template" visibility="public" as="xs:string">
+          <xsl:context-item use="absent"/>
+          <xsl:param name="label" as="xs:string">
+            <xsl:sequence select="'constructor-default'"/>
+          </xsl:param>
+          <xsl:sequence select="$label"/>
+        </xsl:template>
+        """
+    )
+    rules = PythonRules.empty().override_template(
+        "xsl:initial-template",
+        lambda context: context.invoke_original(),
+    )
+    return compile_rules(source, rules)
+
+
+def test_constructor_parameter_default_survives_override() -> None:
+    result = compile_override_with_constructor_default().transform()
+    assert result.principal_tree.string_value == "constructor-default"
+
+
+def test_untyped_constructor_parameter_default_survives_override() -> None:
+    source = package(
+        """
+        <xsl:template name="xsl:initial-template" visibility="public">
+          <xsl:context-item use="absent"/>
+          <xsl:param name="label">untyped-default</xsl:param>
+          <xsl:sequence select="$label"/>
+        </xsl:template>
+        """
+    )
+    rules = PythonRules.empty().override_template(
+        "xsl:initial-template",
+        lambda context: context.invoke_original(),
+    )
+    result = compile_rules(source, rules).transform()
+    assert result.principal_tree.string_value == "untyped-default"
+
+
+def test_constructor_default_sees_a_package_scope_binding() -> None:
+    source = package(
+        """
+        <xsl:variable name="greeting" visibility="public" as="xs:string">hello</xsl:variable>
+        <xsl:template name="xsl:initial-template" visibility="public" as="xs:string">
+          <xsl:context-item use="absent"/>
+          <xsl:param name="label" as="xs:string">
+            <xsl:sequence select="$greeting"/>
+          </xsl:param>
+          <xsl:sequence select="$label"/>
+        </xsl:template>
+        """
+    )
+    rules = PythonRules.empty().override_template(
+        "xsl:initial-template",
+        lambda context: context.invoke_original(),
+    )
+    result = compile_rules(source, rules).transform()
+    assert result.principal_tree.string_value == "hello"
+
+
+def test_constructor_default_keeps_the_declaring_namespace_context() -> None:
+    my_ns = "urn:example:my"
+    source = (
+        f'<xsl:package name="{BASE}" package-version="1.0.0" version="3.0" '
+        f'xmlns:xsl="{XSLT_NS}" xmlns:app="{APP}" xmlns:xs="{XSD_NS}">'
+        f'<xsl:template name="xsl:initial-template" visibility="public" xmlns:my="{my_ns}">'
+        '<xsl:context-item use="absent"/>'
+        '<xsl:param name="label">'
+        '<my:out my:part="first"><my:inner>deep</my:inner></my:out>'
+        "</xsl:param>"
+        '<xsl:sequence select="$label"/>'
+        "</xsl:template></xsl:package>"
+    ).encode()
+    rules = PythonRules.empty().override_template(
+        "xsl:initial-template",
+        lambda context: context.invoke_original(),
+    )
+    result = compile_rules(source, rules).transform()
+    tree = result.principal_tree
+    assert tree.root_element.name == f"{{{my_ns}}}out"
+    assert tree.root_element.attribute(f"{{{my_ns}}}part").string_value == "first"
+    assert tree.string_value == "deep"
+
+
+def test_constructor_default_keeps_a_local_no_namespace() -> None:
+    source = (
+        f'<xsl:package name="{BASE}" package-version="1.0.0" version="3.0" '
+        f'xmlns:xsl="{XSLT_NS}" xmlns:app="{APP}" xmlns:xs="{XSD_NS}" '
+        'xmlns="urn:example:default">'
+        '<xsl:template name="xsl:initial-template" visibility="public" xmlns="">'
+        '<xsl:context-item use="absent"/>'
+        '<xsl:param name="label"><out k="plain"/></xsl:param>'
+        '<xsl:sequence select="$label"/>'
+        "</xsl:template></xsl:package>"
+    ).encode()
+    rules = PythonRules.empty().override_template(
+        "xsl:initial-template",
+        lambda context: context.invoke_original(),
+    )
+    result = compile_rules(source, rules).transform()
+    tree = result.principal_tree
+    assert tree.root_element.name == "out"
+    assert tree.root_element.attribute("k").string_value == "plain"
+
+
+def test_constructor_default_keeps_a_declared_default_namespace() -> None:
+    source = (
+        f'<xsl:package name="{BASE}" package-version="1.0.0" version="3.0" '
+        f'xmlns:xsl="{XSLT_NS}" xmlns:app="{APP}" xmlns:xs="{XSD_NS}" '
+        'xmlns="urn:example:default">'
+        '<xsl:template name="xsl:initial-template" visibility="public">'
+        '<xsl:context-item use="absent"/>'
+        '<xsl:param name="label"><out k="plain"/></xsl:param>'
+        '<xsl:sequence select="$label"/>'
+        "</xsl:template></xsl:package>"
+    ).encode()
+    rules = PythonRules.empty().override_template(
+        "xsl:initial-template",
+        lambda context: context.invoke_original(),
+    )
+    result = compile_rules(source, rules).transform()
+    tree = result.principal_tree
+    assert tree.root_element.name == "{urn:example:default}out"
+    assert tree.root_element.attribute("k").string_value == "plain"
+
+
 def test_nested_original_body_cannot_execute_an_abstract_component() -> None:
     library = package(
         """

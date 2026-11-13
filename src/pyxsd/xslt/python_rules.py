@@ -32,6 +32,7 @@ from pyxsd.xslt.compiler.components import (
     ComponentKey,
     _expand_name,
 )
+from pyxsd.xslt.compiler.instructions import Instruction, InstructionNode, TextNode
 from pyxsd.xslt.compiler.static import EffectiveModule
 from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltStaticError
 
@@ -486,11 +487,85 @@ def _parameter_declarations(component: Component, *, function: bool) -> str:
                 attributes.append('required="yes"')
             if parameter.tunnel:
                 attributes.append('tunnel="yes"')
-        select = declarations[index].attribute("select")
-        if select is not None:
-            attributes.append(f"select={quoteattr(select)}")
-        parameters.append(f"<xsl:param {' '.join(attributes)}/>")
+        parameters.append(
+            f"<xsl:param {' '.join(attributes)}{_default_declaration(declarations[index])}"
+        )
     return "".join(parameters)
+
+
+def _default_declaration(declaration: Instruction) -> str:
+    """Return the synthetic ``xsl:param`` markup after its copied attributes.
+
+    A ``select`` default is returned as that attribute together with the
+    element's self-close; constructor content is serialized source-faithfully
+    with its declaring namespace context inside the element's end tag; a
+    required or default-less parameter simply self-closes.  The source grammar
+    (XTSE0690) makes a ``select`` attribute and constructor content mutually
+    exclusive and the original compilation enforces it, so both never reach
+    this layer.  Defaults are never evaluated here: the synthetic layer
+    compiles and evaluates them like any handwritten parameter.
+    """
+    select = declaration.attribute("select")
+    if select is not None:
+        return f" select={quoteattr(select)}/>"
+    content = _constructor_content(declaration)
+    if not content:
+        return "/>"
+    return f">{content}</xsl:param>"
+
+
+def _constructor_content(declaration: Instruction) -> str:
+    """Serialize the source parameter's sequence constructor for the copy."""
+    return "".join(_copied_node(child) for child in declaration.children)
+
+
+def _copied_node(node: InstructionNode) -> str:
+    """Copy one source node into the synthetic layer, namespaces included."""
+    if isinstance(node, TextNode):
+        return escape(node.value)
+    namespaces = node.namespaces
+    name = _lexical_markup_name(node.name, namespaces)
+    attributes = "".join(
+        f" {_lexical_markup_name(attribute.name, namespaces)}={quoteattr(attribute.value)}"
+        for attribute in node.attributes
+    )
+    children = "".join(_copied_node(child) for child in node.children)
+    return f"<{name}{_namespace_context(namespaces)}{attributes}>{children}</{name}>"
+
+
+def _lexical_markup_name(name: str, namespaces: Mapping[str, str]) -> str:
+    """Return the XML lexical form of one expanded element or attribute name.
+
+    A prefixed binding in the copied node's namespace context wins; a name
+    bound only through the default namespace serializes without a prefix and
+    leans on the copied ``xmlns`` declaration for its namespace.
+    """
+    if not name.startswith("{"):
+        return name
+    uri, _, local = name[1:].partition("}")
+    for prefix, bound in namespaces.items():
+        if bound == uri and prefix:
+            return f"{prefix}:{local}"
+    return local
+
+
+def _namespace_context(namespaces: Mapping[str, str]) -> str:
+    """Declare the copied element's namespace context exactly as in scope.
+
+    The synthetic layer root carries the principal module's namespaces, so a
+    copied constructor must re-declare the declaring element's own context:
+    prefixes it added, a default namespace it declared, and an explicit
+    ``xmlns=""`` when it undeclared one, so unprefixed literal result
+    elements stay in no namespace.
+    """
+    default = namespaces.get("", "")
+    declarations = [f'xmlns="{escape(default)}"' if default else 'xmlns=""']
+    declarations.extend(
+        f'xmlns:{prefix}="{escape(uri)}"'
+        for prefix, uri in sorted(namespaces.items())
+        if prefix and prefix != "xml"
+    )
+    return "".join(f" {declaration}" for declaration in declarations)
 
 
 def _context_item_declaration(component: Component) -> str:
