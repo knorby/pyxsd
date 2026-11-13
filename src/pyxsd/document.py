@@ -237,7 +237,15 @@ class Document:
         )
 
     def transform(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Document | Any:
-        """Applies *fn* to the bound tree.
+        """Applies *fn* to the document.
+
+        A :class:`~pyxsd.document_transform.DocumentTransform` is
+        dispatched first: ``fn.transform_document(self)`` runs the whole
+        document through it and the returned document is passed through
+        unchanged.  Document transforms carry their own configuration,
+        so extra call arguments are rejected.
+
+        Any other callable keeps the legacy root-callable behavior:
 
         - ``fn(root, *args, **kwargs)`` may return a new tree root (a
           bound ``SchemaBase`` instance), which becomes the root of a
@@ -251,6 +259,17 @@ class Document:
         reflects the tree as it was parsed, not the transformed shape;
         :meth:`revalidate` is the refresh path.
         """
+        # Imported here (not at module level): dispatch must not drag a
+        # transform engine into a cold import of this module.
+        from pyxsd.document_transform import DocumentTransform
+
+        if isinstance(fn, DocumentTransform):
+            if args or kwargs:
+                raise TypeError(
+                    "a DocumentTransform receives the document alone; "
+                    "configure it through its own constructor instead"
+                )
+            return fn.transform_document(self)
         result = fn(self.root, *args, **kwargs)
         # Imported here (not at module level): a module-level import of
         # schema_base would drag the element_representatives stack in

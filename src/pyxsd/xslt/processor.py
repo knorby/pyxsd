@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import urljoin, urlsplit
 
 from elementpath.exceptions import ElementPathError
@@ -287,6 +287,9 @@ from pyxsd.xslt.runtime.transformation import ComponentCall, Transformation
 from pyxsd.xslt.runtime.whitespace import _shared_name_test, apply_source_space_rules
 from pyxsd.xslt.serialization import Serializer
 from pyxsd.xslt.serialization.parameters import expand_qname_list
+
+if TYPE_CHECKING:
+    from pyxsd.xslt.adapter import XsltDocumentTransform
 
 __all__ = [
     "CompiledStylesheet",
@@ -890,6 +893,39 @@ class CompiledStylesheet:
             validation_type=validation_type,
         )
         return _Invocation(self, options, limits=limits).run()
+
+    def as_transform(
+        self,
+        *,
+        target_schema: Schema,
+        on_result: Callable[[TransformationResult], None] | None = None,
+    ) -> XsltDocumentTransform:
+        """Expose this compiled stylesheet as a pyxsd document transform.
+
+        Returns the :class:`~pyxsd.xslt.adapter.XsltDocumentTransform`
+        adapter wired to this compiled artifact and its extension
+        snapshot.  ``Document.transform`` dispatches the adapter before
+        the legacy root callables, so
+        ``document.transform(sheet.as_transform(target_schema=schema))``
+        runs the stylesheet with explicit document delivery over the
+        document's coherent captured XDM and returns a fresh document
+        bound -- and required to validate -- against *target_schema*
+        directly from the principal result, with no serialization or
+        reparse.  Secondary results and messages are ancillary output:
+        the transform is rejected unless *on_result* receives the
+        complete transformation result; the callback only observes.
+
+        This method constructs the adapter only: conversion, validation,
+        and result handling live in :mod:`pyxsd.xslt.adapter`.
+        """
+        from pyxsd.xslt.adapter import XsltDocumentTransform
+
+        return XsltDocumentTransform(
+            self,
+            extensions=self.extensions,
+            target_schema=target_schema,
+            on_result=on_result,
+        )
 
 
 def _reject_non_schema_aware_features(package: CompiledPackage) -> None:
