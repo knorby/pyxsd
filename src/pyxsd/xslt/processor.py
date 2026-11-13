@@ -2009,7 +2009,9 @@ def _instruction_compiler_snapshot(
     plan type it returns binds its registered executor on *plan_executors* —
     the per-artifact snapshot this compilation will freeze — before the plan
     is returned.  Both the returned mapping and the executor dict belong to
-    this compilation alone; nothing here is process-global state.
+    this compilation alone; nothing here is process-global state.  When two
+    registered families return the same plan type, the last compiled family's
+    executor wins (plain dict assignment), so plan types must be family-unique.
     """
     compilers: dict[str, InstructionCompiler] = dict(PYTHON_INSTRUCTION_COMPILERS)
     for name, registered in extensions.instructions.items():

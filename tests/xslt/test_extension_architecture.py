@@ -95,6 +95,7 @@ def test_processor_has_no_python_instruction_branch() -> None:
     assert "PYTHON_INVOKE" not in source
     assert "_PythonInvokePlan" not in source
     assert "execute_python_invoke" not in source
+    assert "urn:pyxsd" not in source
     tree = ast.parse(source)
     functions = [
         node.name

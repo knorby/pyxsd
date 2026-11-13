@@ -281,6 +281,13 @@ def test_undeclared_foreign_element_stays_a_literal_result():
     source = mark_stylesheet(MARK_START, prefixes=None)
     literal = start(compile_mark_stylesheet(source=source))
     assert literal.serialize().endswith('<app:mark xmlns:app="urn:app"/>')
+
+
+def test_registered_instruction_dispatches_even_when_undeclared():
+    # Adjudicated deviation: the registry is the trust seam (XSLT 3.0 §18.3-lite;
+    # the registrar is the compiling application), so a registered foreign
+    # instruction is compiled before literal-result handling, declared or not.
+    source = mark_stylesheet(MARK_START, prefixes=None)
     extensions = XsltExtensions().register_instruction(
         MARK_NAME, compiler=compile_mark, executor=execute_mark
     )
