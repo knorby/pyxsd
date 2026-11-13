@@ -131,6 +131,28 @@ def _name_list(value: Any, label: str) -> tuple[str, ...]:
     raise _invalid(f"{label} must be a whitespace-separated string or sequence")
 
 
+def _expand_name(token: str, namespaces: Mapping[str, str]) -> str:
+    """Expand one lexical QName to ``Q{uri}local`` when its prefix is bound."""
+    if token.startswith(("Q{", "{")):
+        return token
+    if ":" in token:
+        prefix, local = token.split(":", 1)
+        uri = namespaces.get(prefix)
+        return token if uri is None else f"Q{{{uri}}}{local}"
+    uri = namespaces.get("")
+    return token if not uri else f"Q{{{uri}}}{token}"
+
+
+def _expand_name_list(value: Any, namespaces: Mapping[str, str]) -> Any:
+    if isinstance(value, str):
+        return tuple(_expand_name(token, namespaces) for token in value.split())
+    if isinstance(value, (tuple, list)):
+        if any(not isinstance(token, str) for token in value):
+            return value
+        return tuple(_expand_name(token, namespaces) for token in value if token)
+    return value
+
+
 def _version(value: Any) -> str:
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         raise _invalid(f"version must be a non-negative number, got {value!r}")
@@ -273,15 +295,27 @@ class SerializationParameters:
         attributes: Mapping[str, Any],
         *,
         base: SerializationParameters | None = None,
+        namespaces: Mapping[str, str] | None = None,
     ) -> SerializationParameters:
-        """Build parameters from effective ``xsl:output``-style attributes."""
+        """Build parameters from effective ``xsl:output``-style attributes.
+
+        When *namespaces* is supplied, lexical QName list values such as
+        ``cdata-section-elements`` are expanded to ``Q{uri}local`` using the
+        stylesheet's in-scope bindings.
+        """
         values: dict[str, Any] = {}
         if base is not None:
             values.update({field.name: getattr(base, field.name) for field in fields(cls)})
         for name, value in attributes.items():
             field = cls._resolve_field(name)
-            if field is not None:
-                values[field] = value
+            if field is None:
+                continue
+            if namespaces is not None and field in (
+                "cdata_section_elements",
+                "suppress_indentation",
+            ):
+                value = _expand_name_list(value, namespaces)
+            values[field] = value
         return cls(**values)
 
     @classmethod

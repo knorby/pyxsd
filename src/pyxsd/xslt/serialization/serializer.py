@@ -64,15 +64,9 @@ def _normalize_sequence(sequence: Iterable[XdmItem]) -> tuple[NormalizedItem, ..
                 return
             elif item.kind is NodeKind.ATTRIBUTE:
                 raise _not_well_formed("an attribute node cannot appear in a serialized sequence")
-            elif item.kind in (
-                NodeKind.ELEMENT,
-                NodeKind.COMMENT,
-                NodeKind.PROCESSING_INSTRUCTION,
-            ):
+            else:
                 flush()
                 output.append(item)
-            else:  # pragma: no cover - every NodeKind is handled above
-                raise _not_well_formed(f"cannot serialize a {item.kind.value} node")
         elif isinstance(item, XdmAtomic):
             if previous_atomic:
                 pending.append(" ")
@@ -146,7 +140,14 @@ class Serializer:
             codec, byte_order_mark = _ENDIAN_CODECS[canonical]
         elif canonical == "utf-8":
             byte_order_mark = b"\xef\xbb\xbf"
-        data = value.encode(codec)
+        try:
+            data = value.encode(codec)
+        except UnicodeEncodeError as error:
+            raise XsltSerializationError(
+                f"the result contains a character not representable in {codec}",
+                code="SERE0008",
+                cause=error,
+            ) from error
         if parameters.byte_order_mark and byte_order_mark:
             return byte_order_mark + data
         return data

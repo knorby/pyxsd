@@ -137,6 +137,17 @@ def test_write_supports_utf16_utf32_and_plain_utf8() -> None:
     assert unsupported_bom.getvalue() == b"<r/>"
 
 
+def test_write_rejects_text_not_representable_in_the_encoding() -> None:
+    with pytest.raises(XsltSerializationError) as error:
+        Serializer.write(
+            (XdmAtomic.string("café"),),
+            SerializationParameters(method="text", encoding="ascii"),
+            io.BytesIO(),
+        )
+
+    assert error.value.code == "SERE0008"
+
+
 def test_write_accepts_a_filesystem_path(tmp_path: Path) -> None:
     document = _document(b"<r/>")
     target = tmp_path / "serialized.xml"

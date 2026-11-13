@@ -2688,7 +2688,9 @@ def test_import_precedence_combines_sets_keys_and_formats(tmp_path: Path) -> Non
     assert mode.properties["on-multiple-match"] == "fail"
     assert mode.visibility == "public"
     output = compiled.output(None)
-    assert output.attribute("cdata-section-elements") == "doc:one doc:two"
+    assert output.attribute("cdata-section-elements") == (
+        "Q{urn:example:doc}one Q{urn:example:doc}two"
+    )
     assert output.attribute("use-character-maps") == "app:one app:two"
 
 
@@ -3127,7 +3129,7 @@ def test_output_duplicate_merge_tokens() -> None:
         '<xsl:output cdata-section-elements="doc:a doc:b" use-character-maps="app:two"/>',
     )
     output = compile_package_set(package).output(None)
-    assert output.attribute("cdata-section-elements") == "doc:a doc:b"
+    assert output.attribute("cdata-section-elements") == ("Q{urn:example:doc}a Q{urn:example:doc}b")
     assert output.attribute("use-character-maps") == "app:one app:one app:two"
 
 

@@ -8,6 +8,8 @@ stylesheet delivery.
 
 from __future__ import annotations
 
+import io
+
 import pytest
 from tests.xslt.support import stylesheet, transform
 
@@ -285,6 +287,54 @@ def test_xml_cdata_sections_and_embedded_terminator() -> None:
         )
         == '<script xmlns="urn:x"><![CDATA[a]]></script>'
     )
+    assert (
+        _serialize(
+            (namespaced,),
+            omit_xml_declaration=True,
+            cdata_section_elements=("script",),
+        )
+        == '<script xmlns="urn:x">a</script>'
+    )
+    assert (
+        _serialize(
+            (_document(b"<script>a</script>"),), method="html", cdata_section_elements=("script",)
+        )
+        == "<script>a</script>"
+    )
+
+
+def test_cdata_names_expand_using_stylesheet_namespaces() -> None:
+    expanded = SerializationParameters.from_attributes(
+        {"cdata-section-elements": "p:script other", "suppress-indentation": "p:block"},
+        namespaces={"p": "urn:p", "": "urn:default"},
+    )
+
+    assert expanded.cdata_section_elements == ("Q{urn:p}script", "Q{urn:default}other")
+    assert expanded.suppress_indentation == ("Q{urn:p}block",)
+
+    unchanged = SerializationParameters.from_attributes(
+        {"cdata-section-elements": "Q{urn:p}script {urn:c}local missing:x"}
+    )
+    assert unchanged.cdata_section_elements == (
+        "Q{urn:p}script",
+        "{urn:c}local",
+        "missing:x",
+    )
+
+    already_expanded = SerializationParameters.from_attributes(
+        {"cdata-section-elements": ["Q{urn:p}script", "missing:x"]},
+        namespaces={"p": "urn:p"},
+    )
+    assert already_expanded.cdata_section_elements == ("Q{urn:p}script", "missing:x")
+
+    assert (
+        _serialize(
+            (_document(b'<p:script xmlns:p="urn:p">a</p:script>'),),
+            omit_xml_declaration=True,
+            cdata_section_elements=("p:script",),
+        )
+        == '<p:script xmlns:p="urn:p">a</p:script>'
+    )
 
 
 def test_xml_top_level_item_separator_and_comment_only_document() -> None:
@@ -314,6 +364,31 @@ def test_xml_adjacent_atomics_and_zero_length_text() -> None:
     )
     assert _serialize((empty_text, XdmAtomic.string("a")), method="html") == "a"
     assert _serialize((XdmAtomic.string(""),), method="html") == ""
+
+
+def test_xml_method_serializes_text_only_and_mixed_content() -> None:
+    assert _serialize((XdmAtomic.string("a < b"),), omit_xml_declaration=True) == "a &lt; b"
+    assert (
+        _serialize((XdmAtomic.string("a"), XdmAtomic.integer(2)), omit_xml_declaration=True)
+        == "a 2"
+    )
+
+    document = _document(b"<r><!--note--><?pi data?></r>")
+    comment, instruction = document.root_element.children
+    assert (
+        _serialize((comment, XdmAtomic.string("text"), instruction), omit_xml_declaration=True)
+        == "<!--note-->text<?pi data?>"
+    )
+
+
+def test_multiple_top_level_elements_raise_sere0003() -> None:
+    first = _document(b"<one/>")
+    second = _document(b"<two/>")
+
+    with pytest.raises(XsltSerializationError) as error:
+        _serialize((first.root_element, second.root_element), omit_xml_declaration=True)
+
+    assert error.value.code == "SERE0003"
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +588,12 @@ def test_invalid_parameters_raise_sepm0016() -> None:
         lambda: SerializationParameters(version=True),
         lambda: SerializationParameters.merge({"bogus-attribute": "x"}),
         lambda: SerializationParameters.merge({"xml:lang": "en"}),
+        lambda: SerializationParameters.from_attributes(
+            {"cdata-section-elements": ("p:a", 1)}, namespaces={"p": "urn:p"}
+        ),
+        lambda: SerializationParameters.from_attributes(
+            {"cdata-section-elements": 5}, namespaces={"p": "urn:p"}
+        ),
     )
 
     codes = [_error_code(case) for case in cases]
@@ -520,9 +601,52 @@ def test_invalid_parameters_raise_sepm0016() -> None:
     assert codes == ["SEPM0016"] * len(cases)
 
 
+def test_non_ascii_result_uses_character_references_in_text_and_attributes() -> None:
+    document = _document('<r a="café">café</r>'.encode())
+
+    assert _serialize((document,), omit_xml_declaration=True, encoding="ascii") == (
+        '<r a="caf&#xE9;">caf&#xE9;</r>'
+    )
+    assert _serialize((document,), omit_xml_declaration=True, encoding="utf-8") == (
+        '<r a="café">café</r>'
+    )
+
+    destination = io.BytesIO()
+    Serializer.write(
+        (document,),
+        SerializationParameters(omit_xml_declaration=True, encoding="ascii"),
+        destination,
+    )
+    assert destination.getvalue() == b'<r a="caf&#xE9;">caf&#xE9;</r>'
+
+
+def test_unrepresentable_non_text_contexts_raise_sere0008() -> None:
+    comment_document = _document("<r><!--café--></r>".encode())
+    comment = comment_document.root_element.children[0]
+    element_document = _document("<café/>".encode())
+    cdata_document = _document("<r><x>café</x></r>".encode())
+    pi_document = _document("<r><?pi café?></r>".encode())
+    instruction = pi_document.root_element.children[0]
+
+    cases = (
+        lambda: _serialize((comment,), omit_xml_declaration=True, encoding="ascii"),
+        lambda: _serialize((element_document,), omit_xml_declaration=True, encoding="ascii"),
+        lambda: _serialize(
+            (cdata_document,),
+            omit_xml_declaration=True,
+            encoding="ascii",
+            cdata_section_elements=("x",),
+        ),
+        lambda: _serialize((instruction,), omit_xml_declaration=True, encoding="ascii"),
+    )
+
+    codes = [_error_code(case) for case in cases]
+
+    assert codes == ["SERE0008"] * len(cases)
+
+
 def test_invalid_sequences_raise_senr0001() -> None:
     first = _document(b"<one/>")
-    second = _document(b"<two/>")
 
     def function_item() -> str:
         function = XdmFunction(lambda arguments, environment, closure: (), arity=0)
@@ -545,14 +669,6 @@ def test_invalid_sequences_raise_senr0001() -> None:
         return _serialize((element,), omit_xml_declaration=True)
 
     cases = (
-        lambda: _serialize((first.root_element, second.root_element), omit_xml_declaration=True),
-        lambda: _serialize((XdmAtomic.string("top-level text"),), omit_xml_declaration=True),
-        lambda: _serialize(
-            (XdmAtomic.string("a"), XdmAtomic.integer(2)), omit_xml_declaration=True
-        ),
-        lambda: _serialize(
-            (first.root_element, XdmAtomic.string("text")), omit_xml_declaration=True
-        ),
         function_item,
         map_item,
         namespace_child,
@@ -641,12 +757,32 @@ def test_stylesheet_delivery_defers_unsupported_methods_to_task_32() -> None:
     assert result.principal_entry.serialized is None
 
 
-def test_stylesheet_delivery_leaves_a_text_only_xml_result_unserialized() -> None:
-    source = stylesheet('<xsl:template name="xsl:initial-template">just text</xsl:template>')
+def test_stylesheet_delivery_serializes_a_text_only_xml_result() -> None:
+    source = stylesheet(
+        '<xsl:output method="xml" omit-xml-declaration="yes"/>'
+        '<xsl:template name="xsl:initial-template">just text</xsl:template>'
+    )
 
     result = transform(source, delivery="stylesheet")
 
-    assert result.principal_entry.serialized is None
+    assert result.principal_entry.serialized == "just text"
+
+
+def test_stylesheet_cdata_prefixed_qname_matches_a_namespaced_result() -> None:
+    source = stylesheet(
+        '<xsl:output xmlns:p="urn:p" method="xml" omit-xml-declaration="yes" '
+        'cdata-section-elements="Q{urn:q}x {urn:r}y p:script script missing:z"/>'
+        '<xsl:template name="xsl:initial-template">'
+        '<p:script xmlns:p="urn:p">a</p:script>'
+        "</xsl:template>"
+    )
+
+    result = transform(source, delivery="stylesheet")
+
+    assert result.principal_entry.serialized == (
+        '<p:script xmlns:p="urn:p" '
+        'xmlns:xs="http://www.w3.org/2001/XMLSchema"><![CDATA[a]]></p:script>'
+    )
 
 
 def test_secondary_serialization_errors_are_marked_secondary() -> None:

@@ -1598,6 +1598,18 @@ def _group_constructs(
     return tuple(groups)
 
 
+def _expanded_output_name(token: str, namespaces: Mapping[str, str]) -> str:
+    """Expand one output-name token with the declaration's namespace bindings."""
+    if token.startswith(("Q{", "{")):
+        return token
+    if ":" in token:
+        prefix, local = token.split(":", 1)
+        uri = namespaces.get(prefix)
+        return token if uri is None else f"Q{{{uri}}}{local}"
+    uri = namespaces.get("")
+    return token if not uri else f"Q{{{uri}}}{token}"
+
+
 def _build_constructs(
     groups: tuple[_GroupedDeclaration, ...],
     kind: ConstructKind,
@@ -1627,8 +1639,11 @@ def _build_constructs(
                     existing = attributes.get(local, "").split()
                     merged = list(existing)
                     for token in attribute.value.split():
-                        if token not in merged:
-                            merged.append(token)
+                        expanded = _expanded_output_name(
+                            token, declaration.element.in_scope_namespaces
+                        )
+                        if expanded not in merged:
+                            merged.append(expanded)
                     attributes[local] = " ".join(merged)
                     continue
                 if kind == "output" and local == "use-character-maps":

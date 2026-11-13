@@ -597,24 +597,23 @@ class XsltProcessor:
 _SERIALIZABLE_METHODS = frozenset({"xml", "xhtml", "html", "text"})
 
 
-def _serialize_result_entry(entry: ResultEntry, *, secondary: bool) -> ResultEntry:
+def _serialize_result_entry(
+    entry: ResultEntry, *, secondary: bool, namespaces: Mapping[str, str]
+) -> ResultEntry:
     """Return *entry* with ``serialized`` populated for supported methods.
 
     JSON and adaptive output are a later task; deferring them keeps their raw
-    sequences and their existing delivery behavior intact.  A sequence that the
-    selected XML method cannot turn into a well-formed document (for example a
-    text-only principal result) also keeps ``serialized = None`` instead of
-    failing a default-delivery transformation that previously succeeded.
+    sequences and their existing delivery behavior intact.
     """
     method = method_local_name(str(entry.serialization.get("method", "xml")))
     if method not in _SERIALIZABLE_METHODS:
         return entry
     try:
-        parameters = SerializationParameters.from_attributes(entry.serialization)
+        parameters = SerializationParameters.from_attributes(
+            entry.serialization, namespaces=namespaces
+        )
         serialized = Serializer.serialize(entry.raw, parameters)
     except XsltSerializationError as error:
-        if error.code == "SENR0001":
-            return entry
         error.secondary = secondary
         raise
     return replace(entry, serialized=serialized)
@@ -5359,9 +5358,10 @@ class _Invocation(Transformation):
         )
         secondary = self.secondary
         if self.options.delivery == "stylesheet":
-            entry = _serialize_result_entry(entry, secondary=False)
+            namespaces = dict(self.package.namespaces)
+            entry = _serialize_result_entry(entry, secondary=False, namespaces=namespaces)
             secondary = {
-                uri: _serialize_result_entry(value, secondary=True)
+                uri: _serialize_result_entry(value, secondary=True, namespaces=namespaces)
                 for uri, value in secondary.items()
             }
         return TransformationResult(

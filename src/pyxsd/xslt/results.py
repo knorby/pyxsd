@@ -95,8 +95,8 @@ class ResultEntry:
     """One principal or secondary result in every available view.
 
     ``raw`` is the exact XDM sequence.  ``tree`` is the delivered document when
-    tree construction was requested and possible.  ``serialized`` is reserved
-    for an explicitly requested serialization (Task 16 never serializes), while
+    tree construction was requested and possible.  ``serialized`` is the
+    serialized string when ``delivery="stylesheet"`` produced one, while
     ``serialization`` records the effective output parameters.  ``output_uri``
     identifies the principal result or the absolute URI of a secondary result.
     """

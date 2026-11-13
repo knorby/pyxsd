@@ -8,6 +8,7 @@ library marker or consults the filesystem.
 
 from __future__ import annotations
 
+import codecs
 from collections.abc import Sequence
 
 from pyxsd.xdm.nodes import NodeKind, XdmNode
@@ -74,6 +75,40 @@ def _not_well_formed(message: str) -> XsltSerializationError:
     return XsltSerializationError(message, code="SENR0001")
 
 
+def _serialization_error(
+    message: str, code: str, *, cause: BaseException | None = None
+) -> XsltSerializationError:
+    return XsltSerializationError(message, code=code, cause=cause)
+
+
+def _encodable(value: str, codec: str) -> bool:
+    try:
+        value.encode(codec)
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _character_references(value: str, codec: str) -> str:
+    if _encodable(value, codec):
+        return value
+    return "".join(
+        character if _encodable(character, codec) else f"&#x{ord(character):X};"
+        for character in value
+    )
+
+
+def _require_encodable(value: str, codec: str, label: str) -> None:
+    try:
+        value.encode(codec)
+    except UnicodeEncodeError as error:
+        raise _serialization_error(
+            f"{label} contains a character not representable in {codec}",
+            "SERE0008",
+            cause=error,
+        ) from error
+
+
 def _expanded_element_name(token: str) -> str:
     if token.startswith("Q{"):
         return "{" + token[2:]
@@ -82,24 +117,28 @@ def _expanded_element_name(token: str) -> str:
 
 def _matches_element(token: str, element: XdmNode) -> bool:
     expanded = _expanded_element_name(token)
-    return expanded == element.name or token == element.local_name
+    if expanded.startswith("{"):
+        return expanded == element.name
+    if ":" in token:
+        return False
+    return element.namespace_uri is None and token == element.local_name
 
 
 def _matches_any(tokens: tuple[str, ...], element: XdmNode) -> bool:
     return any(_matches_element(token, element) for token in tokens)
 
 
-def _escape_text(value: str, *, html: bool = False) -> str:
+def _escape_text(value: str, *, html: bool, codec: str) -> str:
     escaped = value.replace("&", "&amp;").replace("<", "&lt;")
     if html:
         escaped = escaped.replace("]]>", "]]&gt;")
     else:
         escaped = escaped.replace("\r", "&#xD;").replace("]]>", "]]&gt;")
-    return escaped
+    return _character_references(escaped, codec)
 
 
-def _escape_attribute(value: str) -> str:
-    return (
+def _escape_attribute(value: str, *, codec: str) -> str:
+    escaped = (
         value.replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace('"', "&quot;")
@@ -107,13 +146,16 @@ def _escape_attribute(value: str) -> str:
         .replace("\n", "&#xA;")
         .replace("\r", "&#xD;")
     )
+    return _character_references(escaped, codec)
 
 
-def _escape_html_attribute(value: str) -> str:
-    return value.replace("&", "&amp;").replace('"', "&quot;")
+def _escape_html_attribute(value: str, *, codec: str) -> str:
+    escaped = value.replace("&", "&amp;").replace('"', "&quot;")
+    return _character_references(escaped, codec)
 
 
-def _cdata_section(value: str) -> str:
+def _cdata_section(value: str, *, codec: str) -> str:
+    _require_encodable(value, codec, "a CDATA section")
     return "<![CDATA[" + value.replace("]]>", "]]]]><![CDATA[>") + "]]>"
 
 
@@ -193,18 +235,20 @@ def _start_tag(
     element: XdmNode,
     scope: dict[str, str],
     parent_scope: dict[str, str],
-    parameters: SerializationParameters,
     *,
     html: bool,
+    codec: str,
 ) -> str:
     name = _element_name(element, scope, html=html)
+    _require_encodable(name, codec, "an element name")
     attributes: list[str] = []
     for attribute in element.attributes:
         attribute_name = _attribute_name(attribute, scope, html=html)
+        _require_encodable(attribute_name, codec, "an attribute name")
         value = (
-            _escape_html_attribute(attribute.string_value)
+            _escape_html_attribute(attribute.string_value, codec=codec)
             if html
-            else _escape_attribute(attribute.string_value)
+            else _escape_attribute(attribute.string_value, codec=codec)
         )
         if html and attribute_name.lower() in _HTML_BOOLEAN_ATTRIBUTES:
             lowered = value.lower()
@@ -216,7 +260,7 @@ def _start_tag(
         ""
         if html
         else "".join(
-            f' xmlns{":" + prefix if prefix else ""}="{uri}"'
+            f' xmlns{":" + prefix if prefix else ""}="{_escape_attribute(uri, codec=codec)}"'
             for prefix, uri in _declaration_changes(scope, parent_scope)
         )
     )
@@ -224,13 +268,22 @@ def _start_tag(
 
 
 def _text_node(
-    value: str, element: XdmNode | None, parameters: SerializationParameters, *, html: bool
+    value: str,
+    element: XdmNode | None,
+    parameters: SerializationParameters,
+    *,
+    html: bool,
+    codec: str,
 ) -> str:
-    if element is not None and _matches_any(parameters.cdata_section_elements, element):
-        return _cdata_section(value)
+    if (
+        not html
+        and element is not None
+        and _matches_any(parameters.cdata_section_elements, element)
+    ):
+        return _cdata_section(value, codec=codec)
     if html and element is not None and (element.local_name or "").lower() in ("script", "style"):
         return value
-    return _escape_text(value, html=html)
+    return _escape_text(value, html=html, codec=codec)
 
 
 def _render_node(
@@ -240,19 +293,23 @@ def _render_node(
     parameters: SerializationParameters,
     *,
     method: str,
+    codec: str,
 ) -> str:
     html = method == "html"
     if node.kind is NodeKind.COMMENT:
+        _require_encodable(node.string_value, codec, "comment text")
         return f"<!--{node.string_value}-->"
     if node.kind is NodeKind.PROCESSING_INSTRUCTION:
         target = node.target or ""
         data = node.string_value
+        _require_encodable(target, codec, "a processing-instruction target")
+        _require_encodable(data, codec, "processing-instruction data")
         return f"<?{target} {data}?>" if data else f"<?{target}?>"
     if node.kind is NodeKind.TEXT:
-        return _text_node(node.string_value, node.parent, parameters, html=html)
+        return _text_node(node.string_value, node.parent, parameters, html=html, codec=codec)
     if node.kind is not NodeKind.ELEMENT:
         raise _not_well_formed(f"cannot serialize a {node.kind.value} node in content")
-    return _render_element(node, depth, parent_scope, parameters, method=method)
+    return _render_element(node, depth, parent_scope, parameters, method=method, codec=codec)
 
 
 def _render_element(
@@ -262,10 +319,11 @@ def _render_element(
     parameters: SerializationParameters,
     *,
     method: str,
+    codec: str,
 ) -> str:
     html = method == "html"
     scope = dict(element.in_scope_namespaces)
-    start = _start_tag(element, scope, parent_scope, parameters, html=html)
+    start = _start_tag(element, scope, parent_scope, html=html, codec=codec)
     children = list(element.children)
     if parameters.indent:
         children = [
@@ -285,7 +343,7 @@ def _render_element(
     name = _element_name(element, scope, html=html)
 
     def render_child(child: XdmNode) -> str:
-        return _render_node(child, depth + 1, scope, parameters, method=method)
+        return _render_node(child, depth + 1, scope, parameters, method=method, codec=codec)
 
     if parameters.indent and all(child.kind is not NodeKind.TEXT for child in children):
         inner = "".join(f"\n{'  ' * (depth + 1)}{render_child(child)}" for child in children)
@@ -293,7 +351,8 @@ def _render_element(
     return f"{start}>{''.join(render_child(child) for child in children)}</{name}>"
 
 
-def _doctype_literal(value: str) -> str:
+def _doctype_literal(value: str, *, codec: str) -> str:
+    _require_encodable(value, codec, "a doctype identifier")
     if '"' not in value:
         return f'"{value}"'
     if "'" not in value:
@@ -301,13 +360,14 @@ def _doctype_literal(value: str) -> str:
     return '"' + value.replace('"', "&quot;") + '"'
 
 
-def _doctype(root: XdmNode, parameters: SerializationParameters, *, html: bool) -> str:
+def _doctype(root: XdmNode, parameters: SerializationParameters, *, html: bool, codec: str) -> str:
     assert parameters.doctype_system is not None
     scope = dict(root.in_scope_namespaces)
     name = _element_name(root, scope, html=html)
-    system = _doctype_literal(parameters.doctype_system)
+    _require_encodable(name, codec, "a doctype name")
+    system = _doctype_literal(parameters.doctype_system, codec=codec)
     if parameters.doctype_public is not None:
-        public = _doctype_literal(parameters.doctype_public)
+        public = _doctype_literal(parameters.doctype_public, codec=codec)
         return f"<!DOCTYPE {name} PUBLIC {public} {system}>"
     return f"<!DOCTYPE {name} SYSTEM {system}>"
 
@@ -316,10 +376,10 @@ def _validate_xml_shape(items: Sequence[NormalizedItem]) -> None:
     elements = [
         item for item in items if isinstance(item, XdmNode) and item.kind is NodeKind.ELEMENT
     ]
-    if any(isinstance(item, str) and item.strip() for item in items):
-        raise _not_well_formed("the XML serialization has top-level text")
     if len(elements) > 1:
-        raise _not_well_formed("the XML serialization has more than one top-level element")
+        raise _serialization_error(
+            "the XML serialization has more than one top-level element", "SERE0003"
+        )
 
 
 def _xml_declaration(parameters: SerializationParameters) -> str:
@@ -336,6 +396,7 @@ def serialize_markup(
     html = method == "html"
     if not items:
         return ""
+    codec = codecs.lookup(parameters.encoding).name
     if not html:
         _validate_xml_shape(items)
     if parameters.indent:
@@ -352,7 +413,7 @@ def serialize_markup(
         None,
     )
     doctype = (
-        _doctype(root, parameters, html=html)
+        _doctype(root, parameters, html=html, codec=codec)
         if root is not None and parameters.doctype_system is not None
         else None
     )
@@ -362,12 +423,12 @@ def serialize_markup(
         if index:
             output.append("\n" if parameters.indent and separator is None else (separator or ""))
         if isinstance(item, str):
-            output.append(_text_node(item, None, parameters, html=html))
+            output.append(_text_node(item, None, parameters, html=html, codec=codec))
             continue
         if item.kind is NodeKind.ELEMENT and doctype is not None:
             output.append(doctype)
             if parameters.indent:
                 output.append("\n")
             doctype = None
-        output.append(_render_node(item, 0, root_scope, parameters, method=method))
+        output.append(_render_node(item, 0, root_scope, parameters, method=method, codec=codec))
     return "".join(output)
