@@ -103,6 +103,22 @@ def _arity_tuple(arity: int | tuple[int, int | None]) -> tuple[int, int | None]:
     return arity
 
 
+def _token_function_name(token: Any) -> str | None:
+    """The expanded name of one function reference, when the token knows it.
+
+    elementpath keeps the name of a built-in or declared function on the
+    token's ``qname``; ``token.name`` is populated only for constructor
+    functions.  An anonymous inline function has no ``qname`` and stays
+    unnamed.
+    """
+    qname = getattr(token, "qname", None)
+    local = getattr(qname, "local_name", None) if qname is not None else None
+    if not isinstance(local, str) or not local:
+        return None
+    uri = getattr(qname, "uri", None)
+    return f"{{{uri}}}{local}" if isinstance(uri, str) and uri else local
+
+
 # ---------------------------------------------------------------------------
 # Grounded XDM node adapters
 
@@ -553,7 +569,7 @@ class _ValueBridge:
         arity = (0, None) if nargs is None else _arity_tuple(nargs)
         name = getattr(token, "name", None)
         if not isinstance(name, str) or not name:
-            name = None
+            name = _token_function_name(token)
 
         def implementation(arguments: Any, environment: Any, closure: Any) -> XdmSequence:
             del environment, closure

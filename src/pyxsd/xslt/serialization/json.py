@@ -12,6 +12,7 @@ from __future__ import annotations
 import codecs
 import math
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmItem, XdmMap
@@ -275,9 +276,9 @@ def _adaptive_atomic(
         return "true()" if bool(item.value) else "false()"
     if local in _STRING_LOCALS:
         return _adaptive_quoted(item.lexical, parameters, characters)
-    if family == "numeric":
-        if local in ("double", "float"):
-            return _adaptive_double(item)
+    if local == "double":
+        return _adaptive_double(item)
+    if family == "numeric" and local != "float":
         return item.lexical
     if local in _QNAME_LOCALS:
         return _uri_qualified_name(item.value)
@@ -362,13 +363,9 @@ def _adaptive_standalone(node: XdmNode, parameters: SerializationParameters, cod
 def _adaptive_node(node: XdmNode, parameters: SerializationParameters, codec: str) -> str:
     if node.kind in (NodeKind.ATTRIBUTE, NodeKind.NAMESPACE):
         return _adaptive_standalone(node, parameters, codec)
-    delegated = SerializationParameters(
-        method="xml",
-        encoding=parameters.encoding,
-        omit_xml_declaration=True,
-        normalization_form=parameters.normalization_form,
-        character_maps=parameters.character_maps,
-    )
+    # Every serialization parameter except byte-order-mark reaches the XML
+    # method, including omit-xml-declaration and indent.
+    delegated = replace(parameters, method="xml", byte_order_mark=False)
     return serialize_markup(normalize_sequence((node,)), delegated, method="xml")
 
 

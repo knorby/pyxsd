@@ -42,7 +42,7 @@ from pyxsd.namespaces import local_name as _local_name
 from pyxsd.namespaces import namespace_of as _namespace_of
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
 from pyxsd.xdm.annotations import builtin_type_classes
-from pyxsd.xdm.nodes import XdmDocument, XdmNode
+from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xpath.environment import Focus, FunctionArity
 from pyxsd.xpath.functions import ContextFunction
 from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltSerializationError
@@ -680,16 +680,14 @@ class XsltContextBridge:
         """
         del context_item
         if len(arguments) == 2:
-            parameters = SerializationParameters.from_attributes(
-                _serialization_attributes(arguments[1])
-            )
+            attributes = _serialization_parameter_map(arguments[1])
         else:
             transformation = self.transformation
-            output_attributes: dict[str, Any] = {
-                "character_maps": getattr(transformation, "character_maps", ()),
-            }
-            output_attributes.update(getattr(transformation, "output_attributes", None) or {})
-            parameters = SerializationParameters.from_attributes(output_attributes)
+            attributes = dict(getattr(transformation, "output_attributes", None) or {})
+            attributes["character_maps"] = getattr(transformation, "character_maps", ())
+        parameters = SerializationParameters.from_attributes(
+            {**_SERIALIZATION_DEFAULTS, **attributes}
+        )
         return (XdmAtomic.string(Serializer.serialize(arguments[0], parameters)),)
 
     def _error_function(
@@ -1496,69 +1494,258 @@ def _optional_string(arguments: tuple[XdmSequence, ...], index: int) -> str | No
     return _single_string(arguments, index)
 
 
-def _serialization_qname_local(value: Any) -> str:
-    """The local part of an atomic QName value, for a parameter key."""
+_SERIALIZATION_NS = "http://www.w3.org/2010/xslt-xquery-serialization"
+_SERIALIZATION_PARAMETERS_NAME = f"{{{_SERIALIZATION_NS}}}serialization-parameters"
+
+#: F&O 3.1 section 14.7.3 fixes the map-form defaults.  Every parameter other
+#: than ``omit-xml-declaration`` agrees with ``SerializationParameters``; this
+#: table supplies the one difference for all forms, including the absent and
+#: element forms where the defaults are implementation-defined.
+_SERIALIZATION_DEFAULTS: dict[str, str] = {"omit-xml-declaration": "yes"}
+_SERIALIZATION_STRING_LOCALS = frozenset({"string", "untypedAtomic", "anyURI"})
+_SERIALIZATION_BOOLEAN_PARAMETERS = frozenset(
+    {
+        "allow-duplicate-names",
+        "byte-order-mark",
+        "escape-uri-attributes",
+        "include-content-type",
+        "indent",
+        "omit-xml-declaration",
+        "standalone",
+        "undeclare-prefixes",
+    }
+)
+_SERIALIZATION_STRING_PARAMETERS = frozenset(
+    {
+        "doctype-public",
+        "doctype-system",
+        "encoding",
+        "item-separator",
+        "media-type",
+        "normalization-form",
+        "version",
+    }
+)
+_SERIALIZATION_METHOD_PARAMETERS = frozenset({"method", "json-node-output-method"})
+_SERIALIZATION_QNAME_LIST_PARAMETERS = frozenset({"cdata-section-elements", "suppress-indentation"})
+_SERIALIZATION_DECIMAL_PARAMETERS = frozenset({"html-version"})
+_SERIALIZATION_PARAMETER_NAMES = frozenset(
+    {
+        *_SERIALIZATION_BOOLEAN_PARAMETERS,
+        *_SERIALIZATION_STRING_PARAMETERS,
+        *_SERIALIZATION_METHOD_PARAMETERS,
+        *_SERIALIZATION_QNAME_LIST_PARAMETERS,
+        *_SERIALIZATION_DECIMAL_PARAMETERS,
+        "use-character-maps",
+    }
+)
+
+
+def _serialization_local(item: XdmAtomic) -> str:
+    return item.type_name.rpartition("}")[2]
+
+
+def _serialization_type_error(name: str) -> XsltDynamicError:
+    return XsltDynamicError(
+        f"the serialize parameter {name!r} has the wrong type",
+        code="XPTY0004",
+    )
+
+
+def _serialization_single_atomic(name: str, sequence: XdmSequence) -> XdmAtomic:
+    if len(sequence) != 1 or not isinstance(sequence[0], XdmAtomic):
+        raise _serialization_type_error(name)
+    return sequence[0]
+
+
+def _serialization_qname_parts(item: XdmAtomic) -> tuple[str, str] | None:
+    """The (namespace URI, local name) of one QName value, or None if unresolved."""
+    value = item.value
     local = getattr(value, "_local_", None)
-    if isinstance(local, str):
-        return local
+    if isinstance(local, str) and getattr(value, "_resolved_", False):
+        return (getattr(value, "_uri_", None) or ""), local
     local_name = getattr(value, "local_name", None)
     if isinstance(local_name, str):
-        return local_name
-    return str(value).rpartition(":")[2]
+        return (getattr(value, "namespace", None) or ""), local_name
+    _, separator, local = str(value).rpartition(":")
+    if not separator:
+        return "", local
+    return None
 
 
-def _serialization_parameter_value(name: str, sequence: XdmSequence) -> str:
-    """Convert one serialize parameter value to its attribute vocabulary."""
-    if len(sequence) != 1 or not isinstance(sequence[0], XdmAtomic):
+def _serialization_qname_token(item: XdmAtomic) -> str:
+    parts = _serialization_qname_parts(item)
+    if parts is None:
         raise XsltSerializationError(
-            f"the serialize parameter {name!r} requires one atomic value",
+            f"cannot resolve the QName value {item.lexical!r}",
             code="SEPM0016",
         )
-    item = sequence[0]
-    if item.type_name.rpartition("}")[2] == "boolean":
+    uri, local = parts
+    return f"Q{{{uri}}}{local}" if uri else local
+
+
+def _serialization_parameter(name: str, sequence: XdmSequence) -> str | tuple[str, ...] | None:
+    """Convert one map value to the ``xsl:output`` attribute vocabulary.
+
+    An empty sequence selects the declared default and is not an error.
+    """
+    if not sequence:
+        return None
+    if name in _SERIALIZATION_BOOLEAN_PARAMETERS:
+        item = _serialization_single_atomic(name, sequence)
+        if _serialization_local(item) != "boolean":
+            raise _serialization_type_error(name)
         return "yes" if bool(item.value) else "no"
+    if name in _SERIALIZATION_STRING_PARAMETERS:
+        item = _serialization_single_atomic(name, sequence)
+        if _serialization_local(item) not in _SERIALIZATION_STRING_LOCALS:
+            raise _serialization_type_error(name)
+        return item.lexical
+    if name in _SERIALIZATION_METHOD_PARAMETERS:
+        item = _serialization_single_atomic(name, sequence)
+        local = _serialization_local(item)
+        if local in ("QName", "NOTATION"):
+            parts = _serialization_qname_parts(item)
+            if parts is None or not parts[0]:
+                raise XsltSerializationError(
+                    "a QName serialization method requires a namespace URI",
+                    code="SEPM0016",
+                )
+            return f"Q{{{parts[0]}}}{parts[1]}"
+        if local not in _SERIALIZATION_STRING_LOCALS:
+            raise _serialization_type_error(name)
+        return item.lexical
+    if name in _SERIALIZATION_QNAME_LIST_PARAMETERS:
+        tokens: list[str] = []
+        for member in sequence:
+            if not isinstance(member, XdmAtomic) or _serialization_local(member) not in (
+                "QName",
+                "NOTATION",
+            ):
+                raise _serialization_type_error(name)
+            tokens.append(_serialization_qname_token(member))
+        return tuple(tokens)
+    item = _serialization_single_atomic(name, sequence)
+    value = item.value
+    if isinstance(value, bool) or not isinstance(value, (int, Decimal)):
+        raise _serialization_type_error(name)
     return item.lexical
 
 
-def _serialization_character_maps(sequence: XdmSequence) -> tuple[tuple[str, str], ...]:
+def _serialization_character_maps(sequence: XdmSequence) -> tuple[tuple[str, str], ...] | None:
     """Convert a ``use-character-maps`` map value into serializer pairs."""
     if not sequence:
-        return ()
+        return None
     if len(sequence) != 1 or not isinstance(sequence[0], XdmMap):
-        raise XsltSerializationError(
-            "the use-character-maps serialize parameter requires a map",
-            code="SEPM0016",
-        )
+        raise _serialization_type_error("use-character-maps")
     pairs: list[tuple[str, str]] = []
     for key, value in sequence[0].entries:
+        if _serialization_local(key) not in _SERIALIZATION_STRING_LOCALS:
+            raise _serialization_type_error("use-character-maps")
         if len(value) != 1 or not isinstance(value[0], XdmAtomic):
-            raise XsltSerializationError(
-                "each use-character-maps value must be one atomic replacement",
-                code="SEPM0016",
-            )
+            raise _serialization_type_error("use-character-maps")
+        if _serialization_local(value[0]) not in _SERIALIZATION_STRING_LOCALS:
+            raise _serialization_type_error("use-character-maps")
         pairs.append((key.lexical, value[0].lexical))
     return tuple(pairs)
 
 
-def _serialization_attributes(params: XdmSequence) -> dict[str, Any]:
-    """Convert one serialize parameter map to ``xsl:output`` attribute values."""
+def _serialization_map_attributes(mapping: XdmMap) -> dict[str, Any]:
+    """Convert one serialize parameter map to attribute values."""
+    attributes: dict[str, Any] = {}
+    for key, value in mapping.entries:
+        if _serialization_local(key) in ("QName", "NOTATION"):
+            raise XsltSerializationError(
+                "standard serialization parameters use xs:string keys",
+                code="SEPM0016",
+            )
+        name = key.lexical
+        if name == "use-character-maps":
+            pairs = _serialization_character_maps(value)
+            if pairs is not None:
+                attributes["character_maps"] = pairs
+            continue
+        if name not in _SERIALIZATION_PARAMETER_NAMES:
+            raise XsltSerializationError(
+                f"unknown serialization parameter {name!r}",
+                code="SEPM0016",
+            )
+        converted = _serialization_parameter(name, value)
+        if converted is not None:
+            attributes[name] = converted
+    return attributes
+
+
+def _serialization_attribute_value(element: XdmNode, local: str) -> str | None:
+    for attribute in element.attributes:
+        if attribute.local_name == local and not attribute.namespace_uri:
+            return attribute.string_value
+    return None
+
+
+def _serialization_character_map_elements(element: XdmNode) -> tuple[tuple[str, str], ...]:
+    pairs: list[tuple[str, str]] = []
+    for child in element.children:
+        if (
+            child.kind is not NodeKind.ELEMENT
+            or child.namespace_uri != _SERIALIZATION_NS
+            or child.local_name != "character-map"
+        ):
+            continue
+        character = _serialization_attribute_value(child, "character")
+        replacement = _serialization_attribute_value(child, "map-string")
+        if character is None or replacement is None:
+            raise XsltSerializationError(
+                "an output:character-map requires character and map-string",
+                code="SEPM0016",
+            )
+        pairs.append((character, replacement))
+    return tuple(pairs)
+
+
+def _serialization_element_attributes(element: XdmNode) -> dict[str, Any]:
+    attributes: dict[str, Any] = {}
+    for child in element.children:
+        if child.kind is not NodeKind.ELEMENT or child.namespace_uri != _SERIALIZATION_NS:
+            continue
+        name = child.local_name or ""
+        if name == "use-character-maps":
+            attributes["character_maps"] = _serialization_character_map_elements(child)
+            continue
+        value = _serialization_attribute_value(child, "value")
+        if value is None:
+            raise XsltSerializationError(
+                f"the serialization parameter {name!r} requires a value attribute",
+                code="SEPM0016",
+            )
+        if name not in _SERIALIZATION_PARAMETER_NAMES:
+            raise XsltSerializationError(
+                f"unknown serialization parameter {name!r}",
+                code="SEPM0016",
+            )
+        attributes[name] = value
+    return attributes
+
+
+def _serialization_parameter_map(params: XdmSequence) -> dict[str, Any]:
+    """Read the second serialize argument as a map or parameter element."""
     if not params:
         return {}
-    if len(params) != 1 or not isinstance(params[0], XdmMap):
-        raise XsltDynamicError(
-            "the second argument to serialize() must be a map",
-            code="XPTY0004",
-        )
-    attributes: dict[str, Any] = {}
-    for key, value in params[0].entries:
-        name = key.lexical
-        if key.type_name.rpartition("}")[2] in ("QName", "NOTATION"):
-            name = _serialization_qname_local(key.value)
-        if name == "use-character-maps":
-            attributes["character_maps"] = _serialization_character_maps(value)
-        else:
-            attributes[name] = _serialization_parameter_value(name, value)
-    return attributes
+    if len(params) == 1 and isinstance(params[0], XdmMap):
+        return _serialization_map_attributes(params[0])
+    if len(params) == 1 and isinstance(params[0], XdmNode):
+        node = params[0]
+        if node.kind is NodeKind.DOCUMENT:
+            elements = [child for child in node.children if child.kind is NodeKind.ELEMENT]
+            if len(elements) == 1:
+                node = elements[0]
+        if node.kind is NodeKind.ELEMENT and node.name == _SERIALIZATION_PARAMETERS_NAME:
+            return _serialization_element_attributes(node)
+    raise XsltDynamicError(
+        "the second argument to serialize() must be a map or an "
+        "output:serialization-parameters element",
+        code="XPTY0004",
+    )
 
 
 def _json_doc_options(arguments: tuple[XdmSequence, ...]) -> None:

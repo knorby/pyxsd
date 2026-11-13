@@ -7,13 +7,17 @@ rather than a normalized text result.
 
 from __future__ import annotations
 
+import io
+
 import pytest
 from elementpath.datatypes import QName
+from tests.xslt.support import stylesheet
 
 from pyxsd import xsd_data_types as xsd
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmItem, XdmMap
 from pyxsd.xdm.nodes import NodeKind, XdmDocument
 from pyxsd.xslt.errors import XsltSerializationError
+from pyxsd.xslt.processor import XsltProcessor
 from pyxsd.xslt.serialization import SerializationParameters, Serializer
 
 FN_NS = "http://www.w3.org/2005/xpath-functions"
@@ -235,10 +239,14 @@ def test_adaptive_serializes_doubles_with_the_number_picture() -> None:
     assert _serialize((XdmAtomic.double(100),), method="adaptive") == "1.0e2"
     assert _serialize((XdmAtomic.double(1e20),), method="adaptive") == "1.0e20"
     assert _serialize((XdmAtomic.double(0.0001),), method="adaptive") == "1.0e-4"
-    assert _serialize((XdmAtomic.float(1.5),), method="adaptive") == "1.5e0"
     assert _serialize((XdmAtomic.double(float("inf")),), method="adaptive") == "INF"
     assert _serialize((XdmAtomic.double(float("-inf")),), method="adaptive") == "-INF"
     assert _serialize((XdmAtomic.double(float("nan")),), method="adaptive") == "NaN"
+
+
+def test_adaptive_serializes_float_by_the_constructor_rule() -> None:
+    assert _serialize((XdmAtomic.float(1.5),), method="adaptive") == 'xs:float("1.5")'
+    assert _serialize((XdmAtomic.float(float("inf")),), method="adaptive") == ('xs:float("INF")')
 
 
 def test_adaptive_serializes_qnames_as_uri_qualified_names() -> None:
@@ -290,7 +298,10 @@ def test_adaptive_serializes_function_items_with_conventional_prefixes() -> None
 def test_adaptive_serializes_nodes_and_standalone_attributes() -> None:
     document = XdmDocument.parse(b'<a xmlns:p="urn:x" id="1"><b/></a>')
     root = document.root_element
-    assert _serialize((document,), method="adaptive") == '<a xmlns:p="urn:x" id="1"><b/></a>'
+    assert (
+        _serialize((document,), method="adaptive", omit_xml_declaration=True)
+        == '<a xmlns:p="urn:x" id="1"><b/></a>'
+    )
 
     attribute = root.attributes[0]
     assert attribute.kind is NodeKind.ATTRIBUTE
@@ -335,4 +346,53 @@ def test_adaptive_character_maps_apply_to_quoted_strings_and_nodes() -> None:
 
     assert _serialize((XdmAtomic.string("x"),), **parameters) == '"<"'
     document = XdmDocument.parse(b"<r>x</r>")
-    assert _serialize((document,), **parameters) == "<r><</r>"
+    assert _serialize((document,), omit_xml_declaration=True, **parameters) == "<r><</r>"
+
+
+def test_adaptive_delegates_all_parameters_to_xml_nodes() -> None:
+    document = XdmDocument.parse(b"<a><b>t</b></a>")
+
+    assert _serialize((document,), method="adaptive") == (
+        '<?xml version="1.0" encoding="UTF-8"?><a><b>t</b></a>'
+    )
+    assert _serialize((document,), method="adaptive", omit_xml_declaration=True) == (
+        "<a><b>t</b></a>"
+    )
+    assert _serialize((document,), method="adaptive", omit_xml_declaration=True, indent=True) == (
+        "<a>\n  <b>t</b>\n</a>"
+    )
+    assert (
+        _serialize(
+            (document,),
+            method="adaptive",
+            omit_xml_declaration=True,
+            character_maps=(("t", "u"),),
+        )
+        == "<a><b>u</b></a>"
+    )
+
+
+def _function_item(expression: str) -> XdmFunction:
+    source = stylesheet(
+        '<xsl:function name="my:f"><xsl:param name="a"/><xsl:sequence select="$a"/>'
+        "</xsl:function>"
+        f'<xsl:template name="main"><xsl:sequence select="{expression}"/></xsl:template>',
+        namespaces={"my": "urn:my"},
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(source))
+    return compiled.transform(delivery="raw", initial_template="main").principal[0]
+
+
+def test_native_function_reference_names_are_propagated() -> None:
+    cases = {
+        "exists#1": "fn:exists#1",
+        "math:pi#0": "math:pi#0",
+        "map:get#2": "map:get#2",
+        "array:size#1": "array:size#1",
+        "local-name#0": "fn:local-name#0",
+        "my:f#1": "Q{urn:my}f#1",
+        "function($a){$a}": "(anonymous-function)#1",
+    }
+    for expression, expected in cases.items():
+        item = _function_item(expression)
+        assert _serialize((item,), method="adaptive") == expected, expression

@@ -879,7 +879,7 @@ def test_value_bridge_function_item_variants() -> None:
     item = bridge.to_xdm_sequence(named)[0]
     assert isinstance(item, XdmFunction)
     assert item.invoke((("a",), ("b",))) == (XdmAtomic.string("ab"),)
-    assert item.name in (None, "", "concat", "fn:concat")
+    assert item.name == "{http://www.w3.org/2005/xpath-functions}concat"
 
     token = HostFunctionToken(
         parser,
@@ -1232,7 +1232,7 @@ def test_bridge_handles_anonymous_xsd_datatypes() -> None:
     assert result[0].lexical == "x"
 
 
-def test_function_item_name_with_non_string_token_name() -> None:
+def test_function_item_name_falls_back_to_the_token_qname() -> None:
     from pyxsd.xpath.engine import _build_parser, _ValueBridge
 
     parser = _build_parser("3.1", XPathStaticContext(), functions=None, key=False)
@@ -1241,6 +1241,11 @@ def test_function_item_name_with_non_string_token_name() -> None:
     token = parser.parse("fn:concat#2").evaluate()
     token.name = 1
     item = bridge.to_xdm_sequence(token)[0]
+    assert isinstance(item, XdmFunction)
+    assert item.name == "{http://www.w3.org/2005/xpath-functions}concat"
+
+    anonymous = parser.parse("function($a){$a}").evaluate(XPathContext(item=""))
+    item = bridge.to_xdm_sequence(anonymous)[0]
     assert isinstance(item, XdmFunction)
     assert item.name is None
 
