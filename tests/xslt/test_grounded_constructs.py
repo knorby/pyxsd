@@ -1,11 +1,12 @@
 """Grounded ``xsl:fork`` and ``xsl:source-document`` execution.
 
 ``xsl:fork`` concatenates independent branch results in stylesheet order.
-``xsl:source-document`` reads one already-authorized XML resource and evaluates
-its content with the grounded document node as the context item.  There is no
-streaming cursor, no bounded-memory claim, and no implicit filesystem or
-network retrieval: a resource is available only when the invocation already
-holds it or an explicit policy admits it.
+``xsl:source-document`` reads one XML resource and evaluates its content with
+the grounded document node as the context item.  There is no streaming cursor,
+no bounded-memory claim, and no implicit network retrieval: a canonical local
+``file`` resource has a local-only default, and every other resource is
+available only when the invocation already holds it or an explicit policy
+admits it.
 """
 
 from __future__ import annotations
@@ -519,14 +520,34 @@ def test_source_document_resource_denial_is_explicit() -> None:
         sheet.transform(delivery="document", initial_template="main")
 
 
-def test_source_document_does_not_read_the_filesystem_or_network_implicitly(
-    tmp_path: Path,
-) -> None:
+def test_source_document_uses_the_local_default(tmp_path: Path) -> None:
     document_path = tmp_path / "doc.xml"
-    document_path.write_text("<doc><n>secret</n></doc>", encoding="utf-8")
+    document_path.write_text("<doc><n>local</n></doc>", encoding="utf-8")
     body = f"""
         <xsl:template name="main">
-          <xsl:source-document href="{document_path.as_uri()}"/>
+          <out>
+            <first><xsl:source-document href="{document_path.as_uri()}">
+              <xsl:value-of select="generate-id(/)"/>
+            </xsl:source-document></first>
+            <second><xsl:source-document href="{document_path.as_uri()}">
+              <xsl:value-of select="generate-id(/)"/>
+            </xsl:source-document></second>
+            <value><xsl:source-document href="{document_path.as_uri()}">
+              <xsl:value-of select="/doc/n"/>
+            </xsl:source-document></value>
+          </out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    first, second, value = element_children(result.principal_tree.root_element)
+    assert first.string_value == second.string_value
+    assert value.string_value == "local"
+
+
+def test_source_document_does_not_read_the_network_implicitly() -> None:
+    body = """
+        <xsl:template name="main">
+          <xsl:source-document href="https://example.test/doc.xml"/>
         </xsl:template>
     """
     assert error_code(lambda: transform(stylesheet(body), initial_template="main")) == "FODC0002"

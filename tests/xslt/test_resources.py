@@ -1,4 +1,4 @@
-"""Resource access from stylesheets requires an explicit policy."""
+"""Stylesheet resource access: a local-only default plus explicit policies."""
 
 import io
 
@@ -10,20 +10,129 @@ from pyxsd.xdm import XdmAtomic
 from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltDynamicError
+from pyxsd.xslt.runtime.frames import ExecutionLimits
 from pyxsd.xslt.runtime.resources import DocumentResources
 
 
-def test_unparsed_text_does_not_implicitly_read_local_files(tmp_path) -> None:
-    secret = tmp_path / "input.txt"
-    secret.write_text("private", encoding="utf-8")
+def test_unparsed_text_uses_the_local_default(tmp_path) -> None:
+    text = tmp_path / "input.txt"
+    text.write_text("local text", encoding="utf-8")
     source = stylesheet(
         '<xsl:template name="xsl:initial-template">'
-        f"<xsl:value-of select=\"unparsed-text('{secret.as_uri()}')\"/>"
+        f"<xsl:value-of select=\"unparsed-text('{text.as_uri()}')\"/>"
+        "</xsl:template>"
+    )
+    assert transform(source).principal_tree.string_value == "local text"
+
+
+def test_file_resources_use_the_local_default(tmp_path) -> None:
+    path = tmp_path / "input.xml"
+    path.write_text("<root/>", encoding="utf-8")
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        f"<xsl:sequence select=\"doc('{path.as_uri()}')\"/>"
+        "</xsl:template>"
+    )
+    result = transform(source)
+    assert result.principal_tree.root_element.local_name == "root"
+
+
+def test_remote_reads_still_require_remote_authorization() -> None:
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<xsl:sequence select=\"doc('https://example.test/input.xml')\"/>"
+        "</xsl:template>"
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        transform(source)
+    assert caught.value.code == "FODC0002"
+
+
+def test_remote_text_reads_still_require_remote_authorization() -> None:
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        "<xsl:value-of select=\"unparsed-text('https://example.test/input.txt')\"/>"
         "</xsl:template>"
     )
     with pytest.raises(XsltDynamicError) as caught:
         transform(source)
     assert caught.value.code == "FOUT1170"
+
+
+def test_local_default_documents_are_cached_by_canonical_uri(tmp_path) -> None:
+    path = tmp_path / "input.xml"
+    path.write_text("<root/>", encoding="utf-8")
+    uri = path.as_uri()
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        f"<out><xsl:value-of select=\"generate-id(doc('{uri}')) = generate-id(doc('{uri}'))\"/>"
+        "</out>"
+        "</xsl:template>"
+    )
+    assert transform(source).principal_tree.string_value == "true"
+
+
+def test_local_default_documents_consume_the_document_budget(tmp_path) -> None:
+    first = tmp_path / "first.xml"
+    first.write_text("<first/>", encoding="utf-8")
+    second = tmp_path / "second.xml"
+    second.write_text("<second/>", encoding="utf-8")
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        f"<out><xsl:sequence select=\"doc('{first.as_uri()}'), doc('{second.as_uri()}')\"/></out>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(source))
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(limits=ExecutionLimits(max_documents=1))
+    assert caught.value.code == "PYXSD-XSLT-001"
+
+
+def test_local_default_text_decodes_with_the_requested_encoding(tmp_path) -> None:
+    text = tmp_path / "latin1.txt"
+    text.write_bytes(b"caf\xe9")
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        f"<xsl:value-of select=\"unparsed-text('{text.as_uri()}', 'iso-8859-1')\"/>"
+        "</xsl:template>"
+    )
+    assert transform(source).principal_tree.string_value == "café"
+
+
+def test_local_default_read_failures_keep_their_error_codes(tmp_path) -> None:
+    document = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        f"<xsl:sequence select=\"doc('{(tmp_path / 'missing.xml').as_uri()}')\"/>"
+        "</xsl:template>"
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        transform(document)
+    assert caught.value.code == "FODC0002"
+    assert isinstance(caught.value.cause, FileNotFoundError)
+
+    text = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        f"<xsl:value-of select=\"unparsed-text('{(tmp_path / 'missing.txt').as_uri()}')\"/>"
+        "</xsl:template>"
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        transform(text)
+    assert caught.value.code == "FOUT1170"
+    assert isinstance(caught.value.cause, FileNotFoundError)
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["file:relative.xml", "file://example.test/input.xml", "file:///input.xml?query=1"],
+)
+def test_the_local_default_only_reads_canonical_file_uris(target: str) -> None:
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        f"<xsl:sequence select=\"doc('{target}')\"/>"
+        "</xsl:template>"
+    )
+    with pytest.raises(ResourcePolicyError, match="canonical file URI"):
+        transform(source)
 
 
 @pytest.mark.parametrize("uri", ["https://example.test/data.xml", "ftp://example.test/data.xml"])

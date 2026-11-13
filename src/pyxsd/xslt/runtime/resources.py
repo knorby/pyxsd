@@ -1,20 +1,23 @@
-"""Grounded XSLT document resources with explicit authorization.
+"""Grounded XSLT document resources with a local-only default and explicit authorization.
 
 A document is available to an instruction only when the invocation already
-holds it or an application-supplied resource policy admits a read.  There is no
-implicit filesystem or network retrieval, no streaming cursor, and no
-bounded-memory claim. Remote URI schemes require a separate application policy;
-that trusted policy is responsible for origins, redirects, timeouts and budgets.
-File URIs and application-resolved URNs use the ordinary resource policy.
-One invocation owns one resolver, so cached documents
+holds it or a resource policy admits a read.  There is no implicit network
+retrieval, no streaming cursor, and no bounded-memory claim.  When no
+application resource policy is configured, a canonical local ``file`` URI is
+read by a local-only default; ``urn:`` identifiers still need an application
+policy, and remote URI schemes always require a separate application policy
+whose trusted implementation is responsible for origins, redirects, timeouts
+and budgets.  One invocation owns one resolver, so cached documents
 and canonical URI identities never leak between transformations.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urljoin, urlsplit
+from urllib.request import url2pathname
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
@@ -44,6 +47,40 @@ class _DocumentPolicy(Protocol):
     def read(self, source: str, *, base: str | None, purpose: str) -> ResourceData:
         """Authorize and read one document resource."""
         ...
+
+
+def _canonical_file_path(target: str) -> Path | None:
+    """Return the filesystem path of one canonical absolute ``file`` URI.
+
+    Only the canonical spelling names a local file: the ``file`` scheme, no
+    authority, no query, and an absolute path.  Anything else returns ``None``
+    so the caller refuses it instead of guessing a path from an authored URI.
+    """
+    parts = urlsplit(target)
+    if parts.scheme != "file" or parts.netloc or parts.query or not parts.path.startswith("/"):
+        return None
+    return Path(url2pathname(parts.path))
+
+
+class _LocalFilePolicy:
+    """Read one canonical local ``file`` URI when no application policy exists.
+
+    The bytes keep the ordinary policy shape, so document parsing, text
+    decoding, cache keys, error mapping, and the document budget all run
+    exactly as they do for an application-supplied read.
+    """
+
+    def read(self, source: str, *, base: str | None, purpose: str) -> ResourceData:
+        """Read the local file named by a canonical absolute ``file`` URI."""
+        path = _canonical_file_path(source)
+        if path is None:
+            raise ResourcePolicyError(
+                f"the local {purpose} resource {source!r} is not a canonical file URI"
+            )
+        return ResourceData(source, path.read_bytes())
+
+
+_LOCAL_FILE_POLICY = _LocalFilePolicy()
 
 
 def resolve_document_uri(uri: str, base: str | None) -> str:
@@ -147,15 +184,16 @@ class DocumentResources:
     ) -> XdmDocument:
         """Return the grounded document identified by *uri*.
 
-        A missing document without an authorizing policy is ``FODC0002``.  A
-        policy denial propagates as :class:`ResourcePolicyError`; an ordinary
-        read failure or malformed XML becomes ``FODC0002`` with the original
-        exception preserved as the cause.  Schema-aware validation uses the
-        requested pool and validation mode; a cached document is reused only
-        for the same validation, type, pool, annotation mode, and package.
-        The package's space declarations are applied to the captured document;
-        a caller-owned registry entry is returned unchanged when no rule
-        removes anything.
+        A missing document without an authorizing policy is ``FODC0002``; a
+        canonical local ``file`` URI is instead read by the local-only default
+        when no application policy is configured.  A policy denial propagates
+        as :class:`ResourcePolicyError`; an ordinary read failure or malformed
+        XML becomes ``FODC0002`` with the original exception preserved as the
+        cause.  Schema-aware validation uses the requested pool and validation
+        mode; a cached document is reused only for the same validation, type,
+        pool, annotation mode, and package.  The package's space declarations
+        are applied to the captured document; a caller-owned registry entry is
+        returned unchanged when no rule removes anything.
         """
         target = resolve_document_uri(uri, base)
         mode = self.validation if validation is None else validation
@@ -244,7 +282,8 @@ class DocumentResources:
         """Return one authorized text resource with normalized newlines.
 
         The URI identifies the resource; the effective policy is the same one
-        :meth:`resolve` uses for source documents.  A missing authorization is
+        :meth:`resolve` uses for source documents, including the local-only
+        default for a canonical ``file`` URI.  A missing authorization is
         ``FOUT1170``, an unsupported encoding is ``FOUT1190``, and a policy
         denial keeps its own :class:`ResourcePolicyError` identity.  The cache
         belongs to this invocation and is keyed by target and encoding.
@@ -347,9 +386,18 @@ class DocumentResources:
         return tuple(uris)
 
     def _policy_for(self, target: str, *, label: str) -> _DocumentPolicy | None:
-        """Select the policy that owns one absolute target and scheme."""
-        remote = urlsplit(target).scheme not in ("file", "urn")
+        """Select the policy that owns one absolute target and scheme.
+
+        A canonical local ``file`` URI falls back to the local-only default when
+        no application policy is configured.  ``urn:`` identifiers and remote
+        schemes keep their explicit-policy behavior, and a local denial from
+        that default stays a :class:`ResourcePolicyError`.
+        """
+        scheme = urlsplit(target).scheme
+        remote = scheme not in ("file", "urn")
         policy = self.remote_policy if remote else self.policy
         if remote and policy is None and self.policy is not None:
             raise ResourcePolicyError(f"remote stylesheet {label} access denied for {target!r}")
+        if policy is None and scheme == "file":
+            return _LOCAL_FILE_POLICY
         return policy
