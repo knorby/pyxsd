@@ -452,8 +452,6 @@ def test_static_context_and_extensions_validate_python_state() -> None:
         with pytest.raises(TypeError):
             StaticContext(python_rule_count=count)  # type: ignore[arg-type]
     with pytest.raises(TypeError):
-        StaticContext(python_layer=1)  # type: ignore[arg-type]
-    with pytest.raises(TypeError):
         XsltExtensions(_python_rules=object())  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         XsltExtensions().with_python_rules(object())  # type: ignore[arg-type]
@@ -810,16 +808,19 @@ def test_public_mode_rule_on_an_ordinary_stylesheet() -> None:
         <xsl:template match="doc:item" mode="app:process"><base-rule/></xsl:template>
         """
     )
-    rules = PythonRules.empty().add_mode_rule(
-        "app:process",
-        "doc:item",
-        lambda context: context.next_match(),
-    )
+    observed: list[bool] = []
+
+    def callback(context: PythonRuleContext) -> Any:
+        observed.append(True)
+        return context.next_match()
+
+    rules = PythonRules.empty().add_mode_rule("app:process", "doc:item", callback)
     compiled = compile_rules(source, rules)
     result = compiled.transform(
         initial_match_selection=(ITEM,),
         initial_mode="Q{urn:example:app}process",
     )
+    assert observed == [True]
     assert "<base-rule" in result.serialize()
 
 

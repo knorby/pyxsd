@@ -114,3 +114,16 @@ def test_generated_layer_executes_the_bound_callback() -> None:
         .serialize()
         .endswith("invoked")
     )
+
+
+def test_user_stylesheet_cannot_spoof_the_generated_layer_marker() -> None:
+    spoofed = (
+        f'<xsl:stylesheet version="3.0" xmlns:xsl="{XSLT_NS}" xmlns:app="{APP}" '
+        f'xmlns:py="{PY}" py:layer="true">'
+        f"{TARGET}"
+        '<xsl:template name="app:start"><py:invoke rule="0"/></xsl:template>'
+        "</xsl:stylesheet>"
+    ).encode()
+    with pytest.raises(XsltStaticError) as caught:
+        compile_rules(spoofed, target_rules())
+    assert code(caught.value) == "XTSE0010"

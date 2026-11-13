@@ -284,7 +284,6 @@ class StaticContext:
     module: str | None = None
     package: Any = None
     python_rule_count: int | None = None
-    python_layer: bool = False
 
     def __post_init__(self) -> None:
         namespaces = dict(BUILT_IN_NAMESPACES)
@@ -348,8 +347,6 @@ class StaticContext:
             or self.python_rule_count < 0
         ):
             raise TypeError("python_rule_count must be a non-negative integer or None")
-        if not isinstance(self.python_layer, bool):
-            raise TypeError("python_layer must be a boolean")
 
         for label, mapping in (
             ("document types", self.document_types),
@@ -685,7 +682,6 @@ class StaticContext:
             ),
             package=fallback.package if fallback is not None else None,
             python_rule_count=(fallback.python_rule_count if fallback is not None else None),
-            python_layer=fallback.python_layer if fallback is not None else False,
         )
 
 

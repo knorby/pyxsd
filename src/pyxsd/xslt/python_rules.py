@@ -46,8 +46,9 @@ XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 #: The private instruction namespace used by generated customization layers.
 PYTHON_RULES_NS = "urn:pyxsd:python-rules"
 PYTHON_INVOKE = f"{{{PYTHON_RULES_NS}}}invoke"
-#: Root marker distinguishing the generated layer from user stylesheets.
-PYTHON_LAYER_ATTRIBUTE = f"{{{PYTHON_RULES_NS}}}layer"
+
+#: Processor-owned module identity of the generated customization layer.
+PYTHON_LAYER_IDENTITY = "pyxsd:python-layer"
 
 #: Fixed identities of generated layers; neither is a retrievable resource.
 PYTHON_ORIGINAL_NAME = "urn:pyxsd:python-rules:original"
@@ -55,7 +56,7 @@ PYTHON_APPLICATION_NAME = "urn:pyxsd:python-rules:application"
 
 __all__ = [
     "PYTHON_INVOKE",
-    "PYTHON_LAYER_ATTRIBUTE",
+    "PYTHON_LAYER_IDENTITY",
     "PYTHON_RULES_NS",
     "PythonRuleContext",
     "PythonRules",
@@ -460,11 +461,7 @@ def _namespace_declarations(effective: EffectiveModule) -> str:
 
 
 def _root_attributes(effective: EffectiveModule) -> str:
-    attributes: list[str] = [
-        'version="3.0"',
-        _namespace_declarations(effective),
-        'py:layer="true"',
-    ]
+    attributes: list[str] = ['version="3.0"', _namespace_declarations(effective)]
     for name in ("xpath-default-namespace", "default-validation", "input-type-annotations"):
         value = effective.root.attribute(name)
         if value is not None:

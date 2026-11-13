@@ -169,7 +169,7 @@ from pyxsd.xslt.profiles import RecoveryPolicy
 from pyxsd.xslt.python_rules import (
     PYTHON_APPLICATION_NAME,
     PYTHON_INVOKE,
-    PYTHON_LAYER_ATTRIBUTE,
+    PYTHON_LAYER_IDENTITY,
     PYTHON_ORIGINAL_NAME,
     PythonRules,
     bind_python_rules,
@@ -1006,7 +1006,10 @@ def _python_layer_source(
         xml_policy=processor.xml_policy,
         xml_limits=processor.xml_limits,
     )
-    module = loader.load(io.BytesIO(text.encode("utf-8")))
+    module = replace(
+        loader.load(io.BytesIO(text.encode("utf-8"))),
+        identity=PYTHON_LAYER_IDENTITY,
+    )
     if dependency_name is not None:
         return module
     placeholder = next(
@@ -2041,7 +2044,6 @@ def _context_for(
         context,
         package=package,
         python_rule_count=extensions.python_rules.rule_count,
-        python_layer=module.root.attribute(PYTHON_LAYER_ATTRIBUTE) == "true",
     )
     if context.default_collation is None and default_collation is not None:
         context = context.with_default_collation(default_collation)
@@ -3657,7 +3659,7 @@ def _compile_instruction(
 
 def _compile_python_invoke(instruction: Instruction, context: StaticContext) -> _Plan:
     """Validate the private ``py:invoke`` rule id against the bound registry."""
-    if not context.python_layer:
+    if instruction.module != PYTHON_LAYER_IDENTITY:
         raise XsltStaticError(
             "the Python rule instruction is only permitted in a generated layer",
             code="XTSE0010",
