@@ -1,0 +1,445 @@
+"""Immutable Python extension functions at the XSLT boundary.
+
+The registry is a value: registering a function returns a new registry, a
+compiled stylesheet keeps the snapshot it was compiled with, and a later
+registration never changes compiled expressions, availability answers, or an
+already running transformation.  Callbacks receive typed host values, never a
+stylesheet-identified Python module.
+"""
+
+from __future__ import annotations
+
+import concurrent.futures
+import io
+import threading
+from typing import Any
+
+import pytest
+from tests.xslt.support import stylesheet
+
+from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmMap
+from pyxsd.xdm.nodes import XdmDocument
+from pyxsd.xpath.engine import XPathEngine
+from pyxsd.xpath.environment import ExpressionEnvironment, XPathStaticContext
+from pyxsd.xslt import (
+    ExtensionSignature,
+    XsltDynamicError,
+    XsltExtensions,
+    XsltProcessor,
+    no_args,
+    xs_integer_to_integer,
+)
+from pyxsd.xslt.errors import XsltStaticError
+
+APP = "urn:app"
+
+
+def app(local: str) -> str:
+    return f"{{{APP}}}{local}"
+
+
+def double(value: int) -> int:
+    return value * 2
+
+
+def late() -> str:
+    return "late"
+
+
+def compile_body(
+    body: str,
+    *,
+    extensions: XsltExtensions | None = None,
+    namespaces: dict[str, str] | None = None,
+) -> Any:
+    source = stylesheet(
+        body,
+        namespaces={"app": APP} if namespaces is None else namespaces,
+    )
+    return XsltProcessor().compile(io.BytesIO(source), extensions=extensions)
+
+
+def initial(select: str) -> str:
+    return (
+        '<xsl:template name="xsl:initial-template">'
+        f'<xsl:sequence select="{select}"/>'
+        "</xsl:template>"
+    )
+
+
+def test_extension_snapshot_and_typed_conversion() -> None:
+    extensions = XsltExtensions().function(app("double"), 1, xs_integer_to_integer)(double)
+    compiled = compile_body(initial("app:double(4)"), extensions=extensions)
+    extensions2 = extensions.function(app("late"), 0, no_args)(late)
+
+    assert compiled.transform(delivery="raw").principal == (XdmAtomic.integer(8),)
+    assert not compiled.function_available(app("late"), 0)
+    assert compiled.function_available(app("double"), 1)
+    assert extensions2.function_available(app("late"), 0)
+    assert not extensions.function_available(app("late"), 0)
+
+    late_compiled = compile_body(initial("app:late()"), extensions=extensions2)
+    assert late_compiled.transform(delivery="raw").principal == (XdmAtomic.string("late"),)
+
+
+def test_compile_rejects_a_non_registry_extension_value() -> None:
+    source = stylesheet(initial("1"), namespaces={"app": APP})
+    with pytest.raises(TypeError, match="XsltExtensions"):
+        XsltProcessor().compile(io.BytesIO(source), extensions=object())  # type: ignore[arg-type]
+
+
+def test_compiled_snapshot_rejects_a_non_registry_value() -> None:
+    from dataclasses import replace
+
+    compiled = compile_body(initial("1"), extensions=XsltExtensions())
+    with pytest.raises(TypeError, match="XsltExtensions"):
+        replace(compiled, extensions=object())
+
+
+def test_registry_is_immutable_and_freezes_its_mappings() -> None:
+    empty = XsltExtensions()
+    extensions = empty.function(app("double"), 1, xs_integer_to_integer)(double)
+
+    assert empty.functions == {}
+    assert tuple(extensions.functions) == ((app("double"), 1),)
+    with pytest.raises(TypeError):
+        extensions.functions[(app("other"), 0)] = None  # type: ignore[index]
+    with pytest.raises(TypeError):
+        extensions.collations["urn:app:other"] = None  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="already registered"):
+        extensions.register_function(app("double"), 1, double, signature=xs_integer_to_integer)
+
+
+def test_registration_rejects_bad_names_arities_and_signatures() -> None:
+    with pytest.raises(ValueError, match="expanded name"):
+        XsltExtensions().register_function("double", 1, double)
+    with pytest.raises(ValueError, match="expanded name"):
+        XsltExtensions().register_function("{urn:app", 1, double)
+    with pytest.raises(ValueError, match="expanded name"):
+        XsltExtensions().register_function("Q{urn:app", 1, double)
+    with pytest.raises(ValueError, match="arity"):
+        XsltExtensions().register_function(app("f"), -1, double)
+    with pytest.raises(TypeError, match="callable"):
+        XsltExtensions().register_function(app("f"), 0, object())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="parameters"):
+        XsltExtensions().register_function(app("f"), 1, double)
+    with pytest.raises(ValueError, match="unsupported"):
+        XsltExtensions().register_function(
+            app("f"),
+            1,
+            double,
+            signature=ExtensionSignature(("bogus()",), "xs:integer"),
+        )
+    with pytest.raises(ValueError, match="unsupported"):
+        XsltExtensions().register_function(
+            app("f"),
+            0,
+            late,
+            signature=ExtensionSignature((), "bogus()"),
+        )
+
+
+def test_prefixed_registration_resolves_against_stylesheet_namespaces() -> None:
+    extensions = XsltExtensions().register_function(
+        "app:double", 1, double, signature=xs_integer_to_integer
+    )
+    compiled = compile_body(initial("app:double(5)"), extensions=extensions)
+
+    assert compiled.transform(delivery="raw").principal == (XdmAtomic.integer(10),)
+    assert compiled.function_available(app("double"), 1)
+    assert extensions.function_available("app:double", 1)
+
+
+def test_unbound_registration_prefix_is_a_static_error() -> None:
+    extensions = XsltExtensions().register_function(
+        "other:double", 1, double, signature=xs_integer_to_integer
+    )
+
+    with pytest.raises(XsltStaticError, match="prefix"):
+        compile_body(initial("1"), extensions=extensions)
+
+
+def test_extension_conflicting_with_a_stylesheet_function_is_static() -> None:
+    extensions = XsltExtensions().function(app("double"), 1, xs_integer_to_integer)(double)
+    body = (
+        '<xsl:function name="app:double" as="xs:integer">'
+        '<xsl:param name="value" as="xs:integer"/>'
+        '<xsl:sequence select="$value * 100"/>'
+        "</xsl:function>" + initial("app:double(4)")
+    )
+
+    with pytest.raises(XsltStaticError, match="conflicts"):
+        compile_body(body, extensions=extensions)
+
+
+def test_function_available_uses_the_compiled_snapshot() -> None:
+    extensions = XsltExtensions().function(app("double"), 1, xs_integer_to_integer)(double)
+    compiled = compile_body(
+        initial(
+            "string-join(("
+            "function-available('app:double', 1), "
+            "function-available('app:late', 0), "
+            "function-available('app:double')"
+            "), ':')"
+        ),
+        extensions=extensions,
+    )
+    assert compiled.transform(delivery="raw").principal == (XdmAtomic.string("true:false:true"),)
+
+
+def test_arity_and_runtime_type_errors_are_xty0004() -> None:
+    extensions = XsltExtensions().function(app("double"), 1, xs_integer_to_integer)(double)
+    compiled = compile_body(initial("app:double('four')"), extensions=extensions)
+
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(delivery="raw")
+    assert caught.value.code == "XPTY0004"
+
+
+def test_none_result_is_never_the_empty_sequence() -> None:
+    def none_result(value: int) -> None:
+        return None
+
+    extensions = XsltExtensions().function(app("none"), 1, xs_integer_to_integer)(none_result)
+    compiled = compile_body(initial("app:none(1)"), extensions=extensions)
+
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(delivery="raw")
+    assert caught.value.code == "XPTY0004"
+    assert "None" in str(caught.value)
+
+    def empty_result(value: int) -> tuple[()]:
+        del value
+        return ()
+
+    empty = XsltExtensions().register_function(
+        app("empty"),
+        1,
+        empty_result,
+        signature=ExtensionSignature(("xs:integer",), "xs:integer?"),
+    )
+    assert (
+        compile_body(initial("app:empty(1)"), extensions=empty).transform(delivery="raw").principal
+        == ()
+    )
+
+
+def test_callback_exceptions_preserve_cause_and_disable_catching() -> None:
+    def boom(value: int) -> int:
+        raise RuntimeError(f"callback exploded on {value}")
+
+    extensions = XsltExtensions().function(app("boom"), 1, xs_integer_to_integer)(boom)
+    compiled = compile_body(initial("app:boom(3)"), extensions=extensions)
+
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(delivery="raw")
+    error = caught.value
+    assert error.code is None
+    assert error.allow_catch is False
+    assert isinstance(error.cause, RuntimeError)
+    assert error.__cause__ is error.cause
+    assert "callback exploded on 3" in str(error)
+
+
+def test_contextual_and_non_contextual_callbacks_are_distinct() -> None:
+    seen: list[Any] = []
+
+    def contextual(context_item: Any, value: str) -> str:
+        seen.append(context_item)
+        return f"{context_item.local_name}:{value}"
+
+    def plain(value: str) -> str:
+        seen.append(("plain", value))
+        return value.upper()
+
+    contextual_extensions = XsltExtensions().register_function(
+        app("describe"),
+        1,
+        contextual,
+        signature=ExtensionSignature(("xs:string",), "xs:string"),
+        contextual=True,
+    )
+    plain_extensions = XsltExtensions().register_function(
+        app("describe"),
+        1,
+        plain,
+        signature=ExtensionSignature(("xs:string",), "xs:string"),
+    )
+
+    contextual_compiled = compile_body(
+        '<xsl:template match="root"><xsl:sequence select="app:describe(\'x\')"/></xsl:template>',
+        extensions=contextual_extensions,
+    )
+    plain_compiled = compile_body(
+        '<xsl:template match="root"><xsl:sequence select="app:describe(\'x\')"/></xsl:template>',
+        extensions=plain_extensions,
+    )
+    source = XdmDocument.parse(b"<root/>")
+
+    assert contextual_compiled.transform(source=source, delivery="raw").principal == (
+        XdmAtomic.string("root:x"),
+    )
+    assert plain_compiled.transform(source=source, delivery="raw").principal == (
+        XdmAtomic.string("X"),
+    )
+    assert [item.local_name for item in seen if not isinstance(item, tuple)] == ["root"]
+
+
+def test_contextual_extension_sees_an_absent_context_item() -> None:
+    seen: list[Any] = []
+
+    def contextual(context_item: Any) -> str:
+        seen.append(context_item)
+        return "gone" if context_item is None else "present"
+
+    extensions = XsltExtensions().register_function(
+        app("context"),
+        0,
+        contextual,
+        signature=ExtensionSignature((), "xs:string"),
+        contextual=True,
+    )
+    compiled = compile_body(
+        '<xsl:template name="xsl:initial-template">'
+        '<xsl:sequence select="app:context()"/>'
+        "</xsl:template>",
+        extensions=extensions,
+    )
+
+    assert compiled.transform(delivery="raw").principal == (XdmAtomic.string("gone"),)
+    assert seen == [None]
+
+
+def test_registry_function_available_accepts_expanded_and_lexical_names() -> None:
+    extensions = XsltExtensions().function(app("double"), 1, xs_integer_to_integer)(double)
+    prefixed = extensions.register_function("app:late", 0, late, no_args)
+
+    assert extensions.function_available(app("double")) is True
+    assert extensions.function_available(app("double"), 0) is False
+    assert extensions.function_available(app("absent")) is False
+    assert prefixed.function_available("app:late") is True
+    assert prefixed.function_available("app:late", 0) is True
+    assert prefixed.function_available("") is False
+    assert prefixed.function_available("{broken") is False
+    assert prefixed.function_available("app:") is False
+
+
+def test_duplicate_resolution_is_a_static_error() -> None:
+    extensions = (
+        XsltExtensions()
+        .register_function("app:double", 1, double, xs_integer_to_integer)
+        .register_function(app("double"), 1, double, xs_integer_to_integer)
+    )
+
+    with pytest.raises(XsltStaticError, match="registered twice"):
+        compile_body(initial("1"), extensions=extensions)
+
+
+def test_extension_backed_stylesheet_uses_the_full_evaluator() -> None:
+    calls: list[int] = []
+
+    def double_count(value: int) -> int:
+        calls.append(value)
+        return value * 2
+
+    extensions = XsltExtensions().function(app("double"), 1, xs_integer_to_integer)(double_count)
+    compiled = compile_body(initial("app:double(4)"), extensions=extensions)
+
+    first = compiled.transform(delivery="raw")
+    second = compiled.transform(delivery="raw")
+
+    assert first.principal == second.principal == (XdmAtomic.integer(8),)
+    assert calls == [4, 4]
+
+
+def test_concurrent_invocations_use_separate_compiled_snapshots() -> None:
+    def double(value: int) -> int:
+        return value * 2
+
+    def triple(value: int) -> int:
+        return value * 3
+
+    first = XsltExtensions().function(app("scale"), 1, xs_integer_to_integer)(double)
+    second = XsltExtensions().function(app("scale"), 1, xs_integer_to_integer)(triple)
+    first_compiled = compile_body(initial("app:scale(5)"), extensions=first)
+    second_compiled = compile_body(initial("app:scale(5)"), extensions=second)
+    assert first_compiled.function_available(app("scale"), 1)
+    assert second_compiled.function_available(app("scale"), 1)
+
+    count = 8
+    barrier = threading.Barrier(count)
+
+    def run(index: int) -> tuple[Any, ...]:
+        compiled = first_compiled if index % 2 == 0 else second_compiled
+        barrier.wait()
+        return compiled.transform(delivery="raw").principal
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=count) as pool:
+        futures = [pool.submit(run, index) for index in range(count)]
+        results = [future.result() for future in futures]
+
+    assert results == [
+        (XdmAtomic.integer(10),) if index % 2 == 0 else (XdmAtomic.integer(15),)
+        for index in range(count)
+    ]
+
+
+def test_standalone_engine_evaluates_extension_targets() -> None:
+    extensions = XsltExtensions().function(app("double"), 1, xs_integer_to_integer)(double)
+    static = XPathStaticContext(namespaces={"app": APP}, functions={app("double"): 1})
+    engine = XPathEngine("3.1")
+    compiled = engine.compile("app:double(6)", static)
+
+    result = engine.evaluate(
+        compiled,
+        ExpressionEnvironment(
+            functions={app("double"): extensions.runtime_targets()[app("double")]}
+        ),
+    )
+
+    assert result == (XdmAtomic.integer(12),)
+
+
+def test_host_target_base_and_bridge_validation() -> None:
+    from pyxsd.xpath.functions import XdmFunctionTarget
+    from pyxsd.xslt.runtime.functions import XsltContextBridge
+
+    base = XdmFunctionTarget()
+    with pytest.raises(NotImplementedError):
+        base.invoke_xdm(())
+    with pytest.raises(NotImplementedError):
+        base(1)
+
+    with pytest.raises(TypeError, match="non-empty"):
+        XsltContextBridge(object(), extension_functions=frozenset({("", 0)}))
+    with pytest.raises(TypeError, match="non-negative"):
+        XsltContextBridge(object(), extension_functions=frozenset({(app("f"), -1)}))
+
+
+def test_extension_values_cross_the_boundary_unchanged() -> None:
+    node = XdmDocument.parse(b"<root><child/></root>")
+    mapping = XdmMap.from_mapping({"a": 1})
+    array = XdmArray((1, 2))
+    function = XdmFunction(
+        lambda arguments, environment, closure: XdmAtomic.string("called"),
+        arity=0,
+    )
+
+    def collect(*values: Any) -> tuple[Any, ...]:
+        return values
+
+    extensions = XsltExtensions().register_function(
+        app("collect"),
+        4,
+        collect,
+        signature=ExtensionSignature(("node()", "map(*)", "array(*)", "function(*)"), "item()*"),
+    )
+    target = extensions.runtime_targets()[app("collect")]
+
+    assert target.invoke_xdm(((node,), (mapping,), (array,), (function,))) == (
+        node,
+        mapping,
+        array,
+        function,
+    )

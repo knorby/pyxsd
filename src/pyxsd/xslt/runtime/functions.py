@@ -473,6 +473,7 @@ class XsltContextBridge:
     xpath_version: str = "3.1"
     xslt_version: str | None = None
     key_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence] | None = None
+    extension_functions: frozenset[tuple[str, int]] = frozenset()
 
     def __post_init__(self) -> None:
         if not isinstance(self.focus, Focus):
@@ -539,6 +540,13 @@ class XsltContextBridge:
             raise TypeError("package_name must be a string or None")
         if self.key_lookup is not None and not callable(self.key_lookup):
             raise TypeError("key_lookup must be callable or None")
+        declared = frozenset(self.extension_functions)
+        for name, arity in declared:
+            if not isinstance(name, str) or not name:
+                raise TypeError("extension function names must be non-empty strings")
+            if isinstance(arity, bool) or not isinstance(arity, int) or arity < 0:
+                raise TypeError("extension function arities must be non-negative integers")
+        object.__setattr__(self, "extension_functions", declared)
         object.__setattr__(self, "xpath_version", self._effective_xpath_version())
         if self.xslt_version is None:
             object.__setattr__(
@@ -852,6 +860,11 @@ class XsltContextBridge:
             native_version = "3.1" if _version_at_least(self.version, "3.0") else "2.0"
             declared = _native_function_arities(native_version).get(expanded)
         if _arity_matches(declared, arity):
+            return True
+        if arity is None:
+            if any(function_name == expanded for function_name, _ in self.extension_functions):
+                return True
+        elif (expanded, arity) in self.extension_functions:
             return True
         package = self._package()
         if package is not None:

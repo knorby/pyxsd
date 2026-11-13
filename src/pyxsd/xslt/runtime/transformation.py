@@ -539,6 +539,9 @@ class Transformation:
             name: self._component_dispatcher(name, overloads)
             for name, overloads in components.items()
         }
+        stylesheet = self.stylesheet
+        if stylesheet is not None and stylesheet.extensions.functions:
+            table.update(stylesheet.extensions.runtime_targets())
         self._fallback_function_tables[package_name] = table
         return table
 

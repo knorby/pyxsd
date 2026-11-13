@@ -28,6 +28,7 @@ __all__ = [
     "ContextFunction",
     "ContextFunctionToken",
     "HostFunctionToken",
+    "XdmFunctionTarget",
     "atomic_to_elementpath",
     "call_host_function",
     "clone_function_token",
@@ -125,6 +126,27 @@ def _host_argument(value: Any) -> Any:
     return tuple(item.value if isinstance(item, XdmAtomic) else item for item in sequence)
 
 
+class XdmFunctionTarget:
+    """A host callable that consumes and returns XDM sequences directly.
+
+    ``call_host_function`` invokes :meth:`invoke_xdm` with the evaluated
+    argument sequences, so a typed extension adapter can validate cardinality
+    and item types before an application callback sees a host value.  The
+    object stays callable because expression environments accept host
+    callables; that path is not the XSLT extension seam.
+    """
+
+    def invoke_xdm(
+        self,
+        arguments: tuple[XdmSequence, ...],
+        environment: Any = None,
+    ) -> XdmSequence:
+        raise NotImplementedError("an XDM function target must implement invoke_xdm()")
+
+    def __call__(self, *arguments: Any) -> XdmSequence:
+        return self.invoke_xdm(tuple(as_xdm(argument) for argument in arguments))
+
+
 def call_host_function(
     target: Any,
     arguments: Iterable[Any],
@@ -132,6 +154,8 @@ def call_host_function(
 ) -> XdmSequence:
     """Invoke a host callable or XDM function item with XDM argument sequences."""
     values = tuple(as_xdm(argument) for argument in arguments)
+    if isinstance(target, XdmFunctionTarget):
+        return target.invoke_xdm(values, environment)
     if isinstance(target, XdmFunction):
         return target.invoke(values, environment)
     if callable(target):

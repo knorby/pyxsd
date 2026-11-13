@@ -161,6 +161,7 @@ from pyxsd.xslt.errors import (
     error_code_from_exception,
     is_static_error_code,
 )
+from pyxsd.xslt.extensions import XsltExtensions
 from pyxsd.xslt.policy import OutputPolicy
 from pyxsd.xslt.profiles import RecoveryPolicy
 from pyxsd.xslt.results import (
@@ -532,16 +533,20 @@ class XsltProcessor:
         *,
         static_parameters: Mapping[str, Any] | None = None,
         schema: Any = None,
+        extensions: XsltExtensions | None = None,
     ) -> CompiledStylesheet:
         """Compile one ordinary, simplified, or package stylesheet.
 
         Compilation completes the module/package closure and every expression,
         pattern, and value template this vertical slice can execute.  A static
         failure raises :class:`~pyxsd.xslt.errors.XsltStaticError`; no partial
-        executable artifact is returned.
+        executable artifact is returned.  *extensions* is an immutable Python
+        extension registry; the compiled artifact keeps that snapshot.
         """
         if not isinstance(static_parameters, (Mapping, type(None))):
             raise TypeError("static_parameters must be a mapping or None")
+        if extensions is not None and not isinstance(extensions, XsltExtensions):
+            raise TypeError("extensions must be an XsltExtensions registry or None")
         parameters = {} if static_parameters is None else dict(static_parameters)
         pool = self._schema_pool(schema)
         if isinstance(source, EffectiveModule):
@@ -583,6 +588,7 @@ class XsltProcessor:
             effective,
             pool,
             parameters,
+            XsltExtensions() if extensions is None else extensions,
         )
 
     def _schema_pool(self, schema: Any) -> SchemaPool | None:
@@ -655,8 +661,11 @@ class CompiledStylesheet:
         default_factory=dict
     )
     _space_rules: Mapping[str | None, tuple[SpaceRule, ...]] = field(default_factory=dict)
+    extensions: XsltExtensions = field(default_factory=XsltExtensions)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.extensions, XsltExtensions):
+            raise TypeError("compiled extensions must be an XsltExtensions registry")
         object.__setattr__(self, "_components", MappingProxyType(dict(self._components)))
         object.__setattr__(self, "_modes", MappingProxyType(dict(self._modes)))
         object.__setattr__(
@@ -725,7 +734,9 @@ class CompiledStylesheet:
         return sum(len(layer.rules) for layer in self._modes.get(name, ()))
 
     def function_available(self, name: str, arity: int) -> bool:
-        return self.package.function(name, arity) is not None
+        if self.package.function(name, arity) is not None:
+            return True
+        return self.extensions.function_available(name, arity)
 
     def transform(
         self,
@@ -864,7 +875,12 @@ def _compile_stylesheet(
     principal: EffectiveModule,
     schema: SchemaPool | None,
     static_parameters: Mapping[str, Any],
+    extensions: XsltExtensions,
 ) -> CompiledStylesheet:
+    resolved_extensions = extensions.resolve(
+        principal.root.in_scope_namespaces,
+        identity=principal.identity,
+    )
     modules = _module_map(package)
     packages = _package_map(package)
     space_rules = {
@@ -895,6 +911,7 @@ def _compile_stylesheet(
                 package_schemas.get(component.owner, schema),
                 profile,
                 collation,
+                resolved_extensions,
             )
             attributes = component.declaration
             context = _original_context(context, attributes)
@@ -975,6 +992,7 @@ def _compile_stylesheet(
             package_schemas,
             profile,
             collation,
+            resolved_extensions,
         )
         for package_name, current_package in packages.items()
     }
@@ -1037,6 +1055,7 @@ def _compile_stylesheet(
         _accumulators=accumulators,
         _mode_accumulators=mode_accumulators,
         _space_rules=space_rules,
+        extensions=resolved_extensions,
     )
 
 
@@ -1544,6 +1563,7 @@ def _compile_package_modes(
     package_schemas: Mapping[str | None, SchemaPool | None],
     profile: ProfileOptions,
     collation: str | None,
+    extensions: XsltExtensions,
 ) -> dict[ModeKey, tuple[_ModeLayerPlan, ...]]:
     modes: dict[ModeKey, tuple[_ModeLayerPlan, ...]] = {}
     for mode_name, mode in package.modes.items():
@@ -1567,6 +1587,7 @@ def _compile_package_modes(
                     package_schemas.get(rule.owner),
                     profile,
                     collation,
+                    extensions,
                 )
                 pattern = compile_pattern(
                     rule.pattern,
@@ -1817,6 +1838,7 @@ def _context_for(
     schema: SchemaPool | None,
     profile: ProfileOptions,
     default_collation: str | None,
+    extensions: XsltExtensions,
 ) -> StaticContext:
     base = StaticContext.for_module(module, schema=schema, profile=profile)
     variables = dict(base.variables)
@@ -1850,6 +1872,21 @@ def _context_for(
                     visibility=component.visibility,
                     module=component.module,
                 )
+    for (name, arity), _definition in extensions.functions.items():
+        key = (name, arity)
+        if key in functions:
+            raise XsltStaticError(
+                f"the Python extension function {name!r} with arity {arity} "
+                "conflicts with a stylesheet function",
+                code="XTSE0010",
+                uri=module.identity,
+            )
+        functions[key] = StaticFunction(
+            name=name,
+            arity=arity,
+            visibility="public",
+            module=None,
+        )
     context = base.with_variables(variables).with_functions(functions)
     context = replace(context, package=package)
     if context.default_collation is None and default_collation is not None:
@@ -5815,7 +5852,9 @@ class _Invocation(Transformation):
                 suspend=True,
             )
         machine: ContinuationMachine | None = None
-        if not self._expression_references_global(expression, context.package_name):
+        if not self.stylesheet.extensions.functions and not self._expression_references_global(
+            expression, context.package_name
+        ):
             environment = self._environment(context)
             machine = self.xpath_machine(
                 expression,
@@ -6652,6 +6691,8 @@ class _Invocation(Transformation):
         for key, value in locals_.items():
             self._bind(variables, key, value)
         functions = dict(self.fallback_functions(package_name))
+        if self.stylesheet.extensions.functions:
+            functions.update(self.stylesheet.extensions.runtime_targets(context.focus.item))
         if context.original_functions:
             for _arity, component in context.original_functions.items():
                 functions[f"{{{XSLT_NS}}}original"] = self._component_dispatcher(
@@ -6753,6 +6794,7 @@ class _Invocation(Transformation):
                 else getattr(static, "xslt_version", None) or getattr(static, "version", None)
             ),
             key_lookup=self._key_override_for(package_name),
+            extension_functions=self.stylesheet.extensions.availability(),
         )
 
     def _key_override_for(self, package_name: str | None) -> Callable[..., XdmSequence]:

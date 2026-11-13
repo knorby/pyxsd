@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cmp_to_key
 from itertools import pairwise
@@ -208,10 +208,13 @@ def _number_value(item: XdmAtomic) -> float:
 class Collation:
     """One recognized collation with deterministic string ordering.
 
-    ``kind`` is ``codepoint``, ``html-ascii``, ``caseblind``, or ``uca``.  The
-    UCA variant is a deterministic approximation that implements the normative
-    parameters that affect ordering (strength, caseFirst, and numeric) without
-    depending on the process locale.
+    ``kind`` is ``codepoint``, ``html-ascii``, ``caseblind``, ``uca``, or
+    ``custom``.  The UCA variant is a deterministic approximation that
+    implements the normative parameters that affect ordering (strength,
+    caseFirst, and numeric) without depending on the process locale.  A custom
+    collation carries a host ``custom_compare`` callable, a ``sort_key``
+    callable, or both; equality ignores those callables so a resolved
+    collation compares by its observable identity.
     """
 
     uri: str
@@ -220,6 +223,21 @@ class Collation:
     case_first: str = "upper"
     numeric: bool = False
     language: str = ""
+    custom_compare: Callable[[str, str], int] | None = field(
+        default=None, compare=False, repr=False
+    )
+    sort_key: Callable[[str], Any] | None = field(default=None, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.kind not in ("codepoint", "html-ascii", "caseblind", "uca", "custom"):
+            raise ValueError(f"unknown collation kind {self.kind!r}")
+        if self.kind == "custom":
+            if self.custom_compare is not None and not callable(self.custom_compare):
+                raise TypeError("a custom collation compare must be callable")
+            if self.sort_key is not None and not callable(self.sort_key):
+                raise TypeError("a custom collation sort key must be callable")
+            if self.custom_compare is None and self.sort_key is None:
+                raise ValueError("a custom collation requires a compare or sort key")
 
     def _ascii_casefold(self, value: str) -> str:
         return value.translate(
@@ -276,6 +294,15 @@ class Collation:
         return tuple(parts)
 
     def compare(self, left: str, right: str) -> int:
+        if self.kind == "custom":
+            if self.custom_compare is not None:
+                return self.custom_compare(left, right)
+            assert self.sort_key is not None
+            left_key = self.sort_key(left)
+            right_key = self.sort_key(right)
+            if left_key == right_key:
+                return 0
+            return -1 if left_key < right_key else 1
         if self.kind == "codepoint":
             return 0 if left == right else (-1 if left < right else 1)
         if self.kind == "html-ascii":
@@ -316,6 +343,7 @@ def resolve_collation(
     base_uri: str | None = None,
     language: str = "",
     case_order: str | None = None,
+    registry: Mapping[str, Collation] | None = None,
 ) -> Collation:
     """Resolve and validate one collation URI.
 
@@ -323,7 +351,9 @@ def resolve_collation(
     (``XTDE1035`` for sorting, ``XTDE1110`` for grouping).  A missing URI uses
     *default*; when that is also missing the Unicode codepoint collation is
     selected.  A ``lang``/``case-order`` pair without an explicit collation
-    selects a deterministic UCA-style ordering.
+    selects a deterministic UCA-style ordering.  *registry* supplies custom
+    collations registered by the compiled stylesheet; it never widens the
+    collation set for general XPath string functions.
     """
     if uri is None:
         if default is None:
@@ -340,6 +370,10 @@ def resolve_collation(
     if not isinstance(uri, str):
         raise TypeError("a collation URI must be a string")
     uri = _resolve_relative(uri, base_uri)
+    if registry is not None:
+        custom = registry.get(uri)
+        if custom is not None:
+            return custom
     if uri == CODEPOINT_COLLATION:
         return Collation(uri)
     if uri == HTML_ASCII_CASE_INSENSITIVE_COLLATION:
@@ -1655,6 +1689,7 @@ def resolve_key_spec(
         base_uri=sort.base_uri,
         language=language if collation_uri is None else "",
         case_order=case_order if collation_uri is None else None,
+        registry=_extension_collations(invocation),
     )
     signature = (
         order_value,
@@ -1771,7 +1806,13 @@ def group_collation(
         code="XTDE1110",
         default=plan.default_collation,
         base_uri=plan.base_uri,
+        registry=_extension_collations(invocation),
     )
+
+
+def _extension_collations(invocation: _Invocation) -> Mapping[str, Collation] | None:
+    """Custom collations captured by the compiled stylesheet, if any."""
+    return invocation.stylesheet.extensions.collations or None
 
 
 def grouped_items(

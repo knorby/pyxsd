@@ -7,6 +7,12 @@ the stylesheet.
 """
 
 from pyxsd.xslt.errors import XsltDynamicError, XsltInspectionError
+from pyxsd.xslt.extensions import (
+    ExtensionSignature,
+    XsltExtensions,
+    no_args,
+    xs_integer_to_integer,
+)
 from pyxsd.xslt.inspection import (
     InspectionDiagnostic,
     StylesheetInspection,
@@ -29,6 +35,7 @@ from pyxsd.xslt.runtime.frames import ExecutionLimits
 __all__ = [
     "CompiledStylesheet",
     "ExecutionLimits",
+    "ExtensionSignature",
     "InspectionDiagnostic",
     "Message",
     "OutputPolicy",
@@ -37,8 +44,11 @@ __all__ = [
     "StylesheetInspection",
     "TransformationResult",
     "XsltDynamicError",
+    "XsltExtensions",
     "XsltInspectionError",
     "XsltInvocationError",
     "XsltProcessor",
     "inspect_stylesheet",
+    "no_args",
+    "xs_integer_to_integer",
 ]
