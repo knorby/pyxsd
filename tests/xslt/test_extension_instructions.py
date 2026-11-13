@@ -1,9 +1,9 @@
 """The private Python-rule invocation instruction and its static checks.
 
-``urn:pyxsd:python-rules:invoke`` is an engine-owned instruction, never a
-user-authored literal result element.  It is recognized before literal-result
-handling, validates its rule id against the bound registry, and executes one
-callback through :mod:`pyxsd.xslt.python_rules`.
+``urn:pyxsd:python-rules:invoke`` is an engine-owned instruction.  It is only
+legal inside the generated synthetic customization layer, is recognized before
+literal-result handling, validates its rule id against the bound registry, and
+executes one callback through :mod:`pyxsd.xslt.python_rules`.
 """
 
 from __future__ import annotations
@@ -13,12 +13,15 @@ from typing import Any
 
 import pytest
 
+import pyxsd.xslt.processor as processor_module
 from pyxsd.xslt import PythonRules, XsltExtensions, XsltProcessor
 from pyxsd.xslt.errors import XsltStaticError
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 APP = "urn:example:app"
 PY = "urn:pyxsd:python-rules"
+
+TARGET = '<xsl:template name="app:target" visibility="public"><original/></xsl:template>'
 
 
 def stylesheet(body: str) -> bytes:
@@ -36,65 +39,78 @@ def compile_rules(source: bytes, rules: PythonRules) -> Any:
     )
 
 
+def compile_generated_layer(
+    source: bytes,
+    rules: PythonRules,
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: Any,
+) -> Any:
+    """Compile a real synthetic layer whose generated text is altered by *mutate*."""
+    original = processor_module.build_python_layer
+
+    def build(*args: Any, **kwargs: Any) -> str:
+        return mutate(original(*args, **kwargs))
+
+    monkeypatch.setattr(processor_module, "build_python_layer", build)
+    return compile_rules(source, rules)
+
+
 def code(exc: BaseException) -> str | None:
     return getattr(exc, "code", None)
 
 
-@pytest.mark.parametrize(
-    "invoke",
-    [
-        '<py:invoke rule="0"/>',
-        '<py:invoke rule="x"/>',
-        '<py:invoke rule="-1"/>',
-        '<py:invoke rule="1.5"/>',
-        "<py:invoke/>",
-    ],
-)
-def test_python_invoke_requires_a_bound_rule_id(invoke: str) -> None:
-    source = stylesheet(f'<xsl:template name="app:start">{invoke}</xsl:template>')
-    with pytest.raises(XsltStaticError) as caught:
-        compile_rules(source, PythonRules.empty())
-    assert code(caught.value) == "XTSE0010"
-
-
-def test_python_invoke_checks_the_registry_bound() -> None:
-    rules = PythonRules.empty().add_mode_rule("app:process", "doc:item", lambda context: ())
-    mode = '<xsl:mode name="app:process" visibility="public"/>'
-    valid = stylesheet(mode + '<xsl:template name="app:start"><py:invoke rule="0"/></xsl:template>')
-    assert compile_rules(valid, rules) is not None
-
-    out_of_range = stylesheet(
-        mode + '<xsl:template name="app:start"><py:invoke rule="1"/></xsl:template>'
+def target_rules(callback: Any | None = None) -> PythonRules:
+    return PythonRules.empty().override_template(
+        "app:target",
+        lambda context: "invoked" if callback is None else callback(context),
     )
-    with pytest.raises(XsltStaticError) as caught:
-        compile_rules(out_of_range, rules)
-    assert code(caught.value) == "XTSE0010"
 
 
-def test_python_invoke_is_not_literal_result_content_or_fallback() -> None:
-    for body in (
+def test_python_invoke_is_rejected_in_a_user_stylesheet() -> None:
+    bodies = (
+        '<xsl:template name="app:start"><py:invoke rule="0"/></xsl:template>',
         '<xsl:template name="app:start"><out><py:invoke rule="0"/></out></xsl:template>',
         '<xsl:template name="app:start"><xsl:fallback><py:invoke rule="0"/></xsl:fallback>'
         "</xsl:template>",
-    ):
+    )
+    for body in bodies:
         with pytest.raises(XsltStaticError) as caught:
-            compile_rules(stylesheet(body), PythonRules.empty())
+            compile_rules(stylesheet(TARGET + body), target_rules())
+        assert code(caught.value) == "XTSE0010"
+        with pytest.raises(XsltStaticError) as caught:
+            compile_rules(stylesheet(TARGET + body), PythonRules.empty())
         assert code(caught.value) == "XTSE0010"
 
 
-def test_python_invoke_executes_the_bound_callback() -> None:
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda text: text.replace('rule="0"', 'rule="1"'),
+        lambda text: text.replace('rule="0"', 'rule="x"'),
+        lambda text: text.replace('rule="0"', 'rule="-1"'),
+        lambda text: text.replace('rule="0"', 'rule="1.5"'),
+        lambda text: text.replace('<py:invoke rule="0"/>', "<py:invoke/>"),
+    ],
+)
+def test_generated_layer_rule_ids_are_validated(
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: Any,
+) -> None:
+    source = stylesheet(TARGET)
+    with pytest.raises(XsltStaticError) as caught:
+        compile_generated_layer(source, target_rules(), monkeypatch, mutate)
+    assert code(caught.value) == "XTSE0010"
+
+
+def test_generated_layer_executes_the_bound_callback() -> None:
     def callback(context: Any) -> str:
         assert context.parameters == {}
         return "invoked"
 
-    rules = PythonRules.empty().override_template("app:target", callback)
-    source = stylesheet(
-        '<xsl:template name="app:target"><unused/></xsl:template>'
-        '<xsl:template name="app:start"><py:invoke rule="0"/></xsl:template>'
-    )
-    compiled = compile_rules(source, rules)
+    source = stylesheet(TARGET)
+    compiled = compile_rules(source, target_rules(callback))
     assert (
-        compiled.transform(initial_template="Q{urn:example:app}start")
+        compiled.transform(initial_template="Q{urn:example:app}target")
         .serialize()
         .endswith("invoked")
     )

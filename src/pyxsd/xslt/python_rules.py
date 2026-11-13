@@ -46,6 +46,8 @@ XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 #: The private instruction namespace used by generated customization layers.
 PYTHON_RULES_NS = "urn:pyxsd:python-rules"
 PYTHON_INVOKE = f"{{{PYTHON_RULES_NS}}}invoke"
+#: Root marker distinguishing the generated layer from user stylesheets.
+PYTHON_LAYER_ATTRIBUTE = f"{{{PYTHON_RULES_NS}}}layer"
 
 #: Fixed identities of generated layers; neither is a retrievable resource.
 PYTHON_ORIGINAL_NAME = "urn:pyxsd:python-rules:original"
@@ -53,6 +55,7 @@ PYTHON_APPLICATION_NAME = "urn:pyxsd:python-rules:application"
 
 __all__ = [
     "PYTHON_INVOKE",
+    "PYTHON_LAYER_ATTRIBUTE",
     "PYTHON_RULES_NS",
     "PythonRuleContext",
     "PythonRules",
@@ -457,7 +460,11 @@ def _namespace_declarations(effective: EffectiveModule) -> str:
 
 
 def _root_attributes(effective: EffectiveModule) -> str:
-    attributes: list[str] = ['version="3.0"', _namespace_declarations(effective)]
+    attributes: list[str] = [
+        'version="3.0"',
+        _namespace_declarations(effective),
+        'py:layer="true"',
+    ]
     for name in ("xpath-default-namespace", "default-validation", "input-type-annotations"):
         value = effective.root.attribute(name)
         if value is not None:
@@ -468,8 +475,12 @@ def _root_attributes(effective: EffectiveModule) -> str:
 def _parameter_declarations(component: Component, *, function: bool) -> str:
     signature = component.signature
     assert signature is not None
+    declarations = tuple(
+        child for child in component.declaration.elements if child.name == f"{{{XSLT_NS}}}param"
+    )
+    assert len(declarations) == len(signature.parameters)
     parameters: list[str] = []
-    for parameter in signature.parameters:
+    for index, parameter in enumerate(signature.parameters):
         attributes = [f"name={quoteattr(_eqname(parameter.name))}"]
         attributes.append(f"as={quoteattr(_sequence_type_text(parameter.sequence_type))}")
         if not function:
@@ -477,6 +488,9 @@ def _parameter_declarations(component: Component, *, function: bool) -> str:
                 attributes.append('required="yes"')
             if parameter.tunnel:
                 attributes.append('tunnel="yes"')
+        select = declarations[index].attribute("select")
+        if select is not None:
+            attributes.append(f"select={quoteattr(select)}")
         parameters.append(f"<xsl:param {' '.join(attributes)}/>")
     return "".join(parameters)
 

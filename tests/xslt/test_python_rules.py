@@ -11,6 +11,7 @@ while a mode rule may continue with ``next-match`` or ``apply-imports``.
 from __future__ import annotations
 
 import io
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -25,7 +26,7 @@ from pyxsd.xslt import (
     XsltProcessor,
 )
 from pyxsd.xslt.compiler.packages import PackageResolver
-from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.errors import XsltError, XsltStaticError
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
@@ -299,6 +300,8 @@ def test_native_1_0_and_2_0_stylesheets_use_an_import_layer() -> None:
             version=version,
         )
 
+        # invoke_original delegates to the pre-customization target component;
+        # it is not xsl:original's import-stack continuation.
         def original(context: PythonRuleContext) -> Any:
             return context.invoke_original()
 
@@ -449,6 +452,8 @@ def test_static_context_and_extensions_validate_python_state() -> None:
         with pytest.raises(TypeError):
             StaticContext(python_rule_count=count)  # type: ignore[arg-type]
     with pytest.raises(TypeError):
+        StaticContext(python_layer=1)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
         XsltExtensions(_python_rules=object())  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         XsltExtensions().with_python_rules(object())  # type: ignore[arg-type]
@@ -529,6 +534,20 @@ def test_function_flags_and_mode_priority_are_mirrored() -> None:
         .value
         == "f"
     )
+    component = compiled.package.function(app("f"), 1)
+    assert component is not None
+    assert component.declaration.attribute("new-each-time") == "maybe"
+    assert component.declaration.attribute("identity-sensitive") == "no"
+    mode = compiled.package.mode(app("process"))
+    assert mode is not None
+    override = next(
+        rule
+        for layer in mode.rule_layers
+        for rule in layer.rules
+        if rule.owner == compiled.package.name
+    )
+    assert override.priority == Decimal(2)
+    assert override.pattern == "doc:item"
 
 
 def test_synthetic_layer_requires_bound_rules() -> None:
@@ -704,6 +723,11 @@ def test_root_declaration_attributes_are_copied_to_the_layer() -> None:
         .serialize()
         .endswith("copied")
     )
+    layer_root = compiled.package.modules[0].root
+    assert layer_root.attribute("xpath-default-namespace") == "urn:example:doc"
+    assert layer_root.attribute("default-validation") == "strip"
+    assert compiled.package.default_validation == "strip"
+    assert compiled.package.input_type_annotations == "strip"
 
 
 def test_evaluation_context_validates_original_component_maps() -> None:
@@ -713,3 +737,145 @@ def test_evaluation_context_validates_original_component_maps() -> None:
         EvaluationContext(original_components=[])  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         EvaluationContext(original_plans=[])  # type: ignore[arg-type]
+
+
+def test_optional_parameter_defaults_survive_override() -> None:
+    source = package(
+        """
+        <xsl:template name="app:typed" visibility="public">
+          <xsl:param name="label" as="xs:string" select="'default-label'"/>
+          <xsl:sequence select="$label"/>
+        </xsl:template>
+        <xsl:template name="app:untyped" visibility="public">
+          <xsl:param name="label" select="'default-untyped'"/>
+          <xsl:sequence select="$label"/>
+        </xsl:template>
+        """
+    )
+    rules = (
+        PythonRules.empty()
+        .override_template("app:typed", lambda context: context.parameters["label"])
+        .override_template("app:untyped", lambda context: context.parameters["label"])
+    )
+    compiled = compile_rules(source, rules)
+    assert (
+        compiled.transform(initial_template="Q{urn:example:app}typed")
+        .serialize()
+        .endswith("default-label")
+    )
+    assert (
+        compiled.transform(initial_template="Q{urn:example:app}untyped")
+        .serialize()
+        .endswith("default-untyped")
+    )
+
+
+def test_nested_original_body_cannot_execute_an_abstract_component() -> None:
+    library = package(
+        """
+        <xsl:template name="app:a" visibility="abstract"/>
+        <xsl:template name="app:b" visibility="public">
+          <xsl:call-template name="app:a"/>
+        </xsl:template>
+        """
+    )
+    principal = package(
+        """
+        <xsl:use-package name="urn:example:base">
+          <xsl:accept component="template" names="app:a" visibility="abstract"/>
+          <xsl:accept component="template" names="app:b" visibility="public"/>
+        </xsl:use-package>
+        """,
+        name=PRINCIPAL,
+    )
+    rules = (
+        PythonRules.empty()
+        .override_template("app:a", lambda context: "completed")
+        .override_template("app:b", lambda context: context.invoke_original())
+    )
+    compiled = compile_rules(
+        principal,
+        rules,
+        resolver=PackageResolver.from_sources(library),
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(initial_template="Q{urn:example:app}b")
+    assert code(caught.value) == "XTDE0040"
+
+
+def test_public_mode_rule_on_an_ordinary_stylesheet() -> None:
+    source = stylesheet(
+        """
+        <xsl:mode name="app:process" visibility="public"/>
+        <xsl:template match="doc:item" mode="app:process"><base-rule/></xsl:template>
+        """
+    )
+    rules = PythonRules.empty().add_mode_rule(
+        "app:process",
+        "doc:item",
+        lambda context: context.next_match(),
+    )
+    compiled = compile_rules(source, rules)
+    result = compiled.transform(
+        initial_match_selection=(ITEM,),
+        initial_mode="Q{urn:example:app}process",
+    )
+    assert "<base-rule" in result.serialize()
+
+
+def test_wrapper_return_type_is_validated() -> None:
+    source = package(
+        """
+        <xsl:function name="app:f" visibility="public" as="xs:integer">
+          <xsl:param name="value" as="xs:integer"/>
+          <xsl:sequence select="$value"/>
+        </xsl:function>
+        """
+    )
+    rules = PythonRules.empty().override_function("app:f", 1, lambda context: "not-an-integer")
+    compiled = compile_rules(source, rules)
+    with pytest.raises(XsltError) as caught:
+        compiled.transform(
+            initial_function="Q{urn:example:app}f",
+            initial_function_arguments=(1,),
+        )
+    assert code(caught.value) == "XTTE0780"
+
+
+def test_nested_original_function_cannot_execute_an_abstract_component() -> None:
+    library = package(
+        """
+        <xsl:function name="app:a" visibility="abstract" as="xs:string">
+          <xsl:param name="value" as="xs:string"/>
+        </xsl:function>
+        <xsl:function name="app:b" visibility="public" as="xs:string">
+          <xsl:param name="value" as="xs:string"/>
+          <xsl:sequence select="app:a($value)"/>
+        </xsl:function>
+        """
+    )
+    principal = package(
+        """
+        <xsl:use-package name="urn:example:base">
+          <xsl:accept component="function" names="app:a#1" visibility="abstract"/>
+          <xsl:accept component="function" names="app:b#1" visibility="public"/>
+        </xsl:use-package>
+        """,
+        name=PRINCIPAL,
+    )
+    rules = (
+        PythonRules.empty()
+        .override_function("app:a", 1, lambda context: "completed")
+        .override_function("app:b", 1, lambda context: context.invoke_original())
+    )
+    compiled = compile_rules(
+        principal,
+        rules,
+        resolver=PackageResolver.from_sources(library),
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(
+            initial_function="Q{urn:example:app}b",
+            initial_function_arguments=("x",),
+        )
+    assert code(caught.value) == "XTDE0040"

@@ -1257,6 +1257,11 @@ def resolve_template(
             (getattr(reference, "kind", "template"), reference.name, reference.arity)
         )
         if target is not None:
+            if target.abstract:
+                raise XsltDynamicError(
+                    "the abstract component has no executable original implementation",
+                    code="XTDE0040",
+                )
             return target
     stylesheet = getattr(invocation, "stylesheet", None)
     packages = getattr(stylesheet, "_packages", {})

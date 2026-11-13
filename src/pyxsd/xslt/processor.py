@@ -169,6 +169,7 @@ from pyxsd.xslt.profiles import RecoveryPolicy
 from pyxsd.xslt.python_rules import (
     PYTHON_APPLICATION_NAME,
     PYTHON_INVOKE,
+    PYTHON_LAYER_ATTRIBUTE,
     PYTHON_ORIGINAL_NAME,
     PythonRules,
     bind_python_rules,
@@ -2040,6 +2041,7 @@ def _context_for(
         context,
         package=package,
         python_rule_count=extensions.python_rules.rule_count,
+        python_layer=module.root.attribute(PYTHON_LAYER_ATTRIBUTE) == "true",
     )
     if context.default_collation is None and default_collation is not None:
         context = context.with_default_collation(default_collation)
@@ -3655,6 +3657,13 @@ def _compile_instruction(
 
 def _compile_python_invoke(instruction: Instruction, context: StaticContext) -> _Plan:
     """Validate the private ``py:invoke`` rule id against the bound registry."""
+    if not context.python_layer:
+        raise XsltStaticError(
+            "the Python rule instruction is only permitted in a generated layer",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
+        )
     source = instruction.attribute("rule")
     if source is None or not source.strip():
         raise XsltStaticError(
@@ -5702,6 +5711,11 @@ class _Invocation(Transformation):
         grouping_key: object = _INHERIT,
         plan: _ComponentPlan | None = None,
     ) -> Frame:
+        if component.abstract:
+            raise XsltDynamicError(
+                "the abstract component has no executable original implementation",
+                code="XTDE0040",
+            )
         if plan is None:
             plan = context.original_plans.get((component.kind, component.name, component.arity))
         if plan is None:
