@@ -385,13 +385,18 @@ def _result_item(
         return item
     if type_name == "function(*)" and isinstance(item, XdmFunction):
         return item
-    if (
-        type_name.startswith("xs:")
-        and isinstance(item, XdmAtomic)
-        and expected.local is not None
-        and _atomic_matches(item, expected.local)
-    ):
-        return item
+    if type_name.startswith("xs:") and isinstance(item, XdmAtomic) and expected.local is not None:
+        if _is_xsd_subtype(_local_type_name(item.type_name), expected.local):
+            return item
+        try:
+            return item.cast(type_name)
+        except (TypeError, ValueError) as exc:
+            raise XsltDynamicError(
+                f"the Python extension function {name!r} result must be {type_name}, "
+                f"got {type(item).__name__}",
+                code=EXTENSION_ERROR_CODE,
+                cause=exc,
+            ) from exc
     raise XsltDynamicError(
         f"the Python extension function {name!r} result must be {type_name}, "
         f"got {type(item).__name__}",

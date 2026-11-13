@@ -199,6 +199,93 @@ def test_arity_and_runtime_type_errors_are_xty0004() -> None:
     assert caught.value.code == "XPTY0004"
 
 
+def compile_uri_stylesheet(extensions: XsltExtensions) -> Any:
+    return compile_body(initial("app:uri()"), extensions=extensions)
+
+
+def test_declared_result_is_converted_to_any_uri() -> None:
+    extensions = XsltExtensions().register_function(
+        "{urn:app}uri",
+        0,
+        lambda: "urn:example",
+        signature=ExtensionSignature((), "xs:anyURI"),
+    )
+    result = compile_uri_stylesheet(extensions=extensions).transform()
+    assert result.principal[0].type_name == "{http://www.w3.org/2001/XMLSchema}anyURI"
+    assert result.principal[0].lexical == "urn:example"
+
+
+def test_declared_float_result_is_converted_through_a_stylesheet() -> None:
+    extensions = XsltExtensions().register_function(
+        app("signal"),
+        0,
+        lambda: 1.5,
+        signature=ExtensionSignature((), "xs:float"),
+    )
+    compiled = compile_body(initial("app:signal()"), extensions=extensions)
+
+    principal = compiled.transform(delivery="raw").principal
+    assert principal[0].type_name == "{http://www.w3.org/2001/XMLSchema}float"
+    assert principal[0] == XdmAtomic.float(1.5)
+
+
+def test_uncastable_declared_result_is_xpty0004_through_a_stylesheet() -> None:
+    extensions = XsltExtensions().register_function(
+        app("stamp"),
+        0,
+        lambda: "not-a-date",
+        signature=ExtensionSignature((), "xs:date"),
+    )
+    compiled = compile_body(initial("app:stamp()"), extensions=extensions)
+
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(delivery="raw")
+    assert caught.value.code == "XPTY0004"
+
+
+def test_wrong_declared_result_cardinality_is_xpty0004_through_a_stylesheet() -> None:
+    def pair() -> tuple[int, int]:
+        return (1, 2)
+
+    extensions = XsltExtensions().register_function(
+        app("pair"),
+        0,
+        pair,
+        signature=ExtensionSignature((), "xs:integer"),
+    )
+    compiled = compile_body(initial("app:pair()"), extensions=extensions)
+
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(delivery="raw")
+    assert caught.value.code == "XPTY0004"
+
+
+def test_declared_node_and_map_results_keep_their_identity() -> None:
+    document = XdmDocument.parse(b"<root/>")
+    mapping = XdmMap.from_mapping({"a": 1})
+
+    node_extensions = XsltExtensions().register_function(
+        app("root"),
+        0,
+        lambda: document.root_element,
+        signature=ExtensionSignature((), "node()"),
+    )
+    node_compiled = compile_body(initial("app:root()"), extensions=node_extensions)
+    assert node_compiled.transform(delivery="raw").principal == (document.root_element,)
+
+    map_extensions = XsltExtensions().register_function(
+        app("table"),
+        0,
+        lambda: mapping,
+        signature=ExtensionSignature((), "map(*)"),
+    )
+    map_compiled = compile_body(initial("app:table()"), extensions=map_extensions)
+    delivered = map_compiled.transform(delivery="raw").principal
+    assert isinstance(delivered[0], XdmMap)
+    assert delivered[0].size == 1
+    assert delivered[0].get(XdmAtomic.string("a")) == (XdmAtomic.integer(1),)
+
+
 def test_none_result_is_never_the_empty_sequence() -> None:
     def none_result(value: int) -> None:
         return None

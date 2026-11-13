@@ -279,6 +279,61 @@ def test_result_type_and_cardinality_are_validated() -> None:
     )
 
 
+def test_exact_declared_atomic_results_are_returned_unchanged() -> None:
+    atomic = XdmAtomic.string("text")
+    (converted,) = target(lambda: atomic, (), "xs:string").invoke_xdm(())
+    assert converted is atomic
+
+    token = XdmAtomic.typed(xsd.Token("name"), xsd.Token)
+    (subtype,) = target(lambda: token, (), "xs:string").invoke_xdm(())
+    assert subtype is token
+
+
+def test_declared_results_are_converted_to_the_declared_atomic_type() -> None:
+    (uri,) = target(lambda: "urn:example", (), "xs:anyURI").invoke_xdm(())
+    assert uri.type_name == "{http://www.w3.org/2001/XMLSchema}anyURI"
+    assert uri.lexical == "urn:example"
+
+    (single,) = target(lambda: 1.5, (), "xs:float").invoke_xdm(())
+    assert single.type_name == "{http://www.w3.org/2001/XMLSchema}float"
+    assert single == XdmAtomic.float(1.5)
+
+    (promoted,) = target(lambda: 5, (), "xs:double").invoke_xdm(())
+    assert promoted.type_name == "{http://www.w3.org/2001/XMLSchema}double"
+    assert promoted == XdmAtomic.double(5)
+
+    (raw,) = target(lambda: XdmAtomic.untyped_atomic("text"), (), "xs:string").invoke_xdm(())
+    assert raw.type_name == "{http://www.w3.org/2001/XMLSchema}string"
+    assert raw == XdmAtomic.string("text")
+
+
+def test_uncastable_declared_results_are_xpty0004() -> None:
+    error = invocation_error(lambda: target(lambda: "not-a-date", (), "xs:date").invoke_xdm(()))
+    assert isinstance(error.cause, TypeError)
+    assert error.__cause__ is error.cause
+    invocation_error(lambda: target(lambda: "text", (), "xs:integer").invoke_xdm(()))
+
+
+def test_qname_and_notation_results_keep_their_xdm_identity() -> None:
+    qname = XdmAtomic.typed(xsd.QName("p:local"), xsd.QName)
+    (converted,) = target(lambda: qname, (), "xs:QName").invoke_xdm(())
+    assert converted is qname
+
+    notation = XdmAtomic.typed(xsd.NOTATION("p:local"), xsd.NOTATION)
+    (kept,) = target(lambda: notation, (), "xs:NOTATION").invoke_xdm(())
+    assert kept is notation
+
+    invocation_error(lambda: target(lambda: "p:local", (), "xs:QName").invoke_xdm(()))
+    invocation_error(lambda: target(lambda: "p:local", (), "xs:NOTATION").invoke_xdm(()))
+
+
+def test_wrong_declared_result_cardinality_is_xpty0004() -> None:
+    def two_floats() -> tuple[float, float]:
+        return (1.5, 2.5)
+
+    invocation_error(lambda: target(two_floats, (), "xs:float").invoke_xdm(()))
+
+
 def test_result_host_values_and_xdm_values_both_convert() -> None:
     def mixed() -> tuple[Any, ...]:
         return (1, XdmAtomic.string("two"), Decimal("3.5"))
