@@ -267,7 +267,8 @@ from pyxsd.xslt.runtime.templates import (
 )
 from pyxsd.xslt.runtime.transformation import ComponentCall, Transformation
 from pyxsd.xslt.runtime.whitespace import _shared_name_test, apply_source_space_rules
-from pyxsd.xslt.serialization import SerializationParameters, Serializer, method_local_name
+from pyxsd.xslt.serialization import SerializationParameters, Serializer
+from pyxsd.xslt.serialization.parameters import expand_qname_list
 
 __all__ = [
     "CompiledStylesheet",
@@ -286,6 +287,9 @@ _ABSENT = object()
 _AbsentType = object
 _DELIVERIES = frozenset({"stylesheet", "raw", "document"})
 _VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
+#: Serialization attributes whose values are QName lists.  Each is expanded
+#: where it is written, so delivery must keep the stored tokens unchanged.
+_QNAME_LIST_OUTPUT_ATTRIBUTES = frozenset({"cdata-section-elements", "suppress-indentation"})
 UNTYPED_TYPE = "{http://www.w3.org/2001/XMLSchema}untyped"
 ANY_TYPE = "{http://www.w3.org/2001/XMLSchema}anyType"
 
@@ -593,24 +597,20 @@ class XsltProcessor:
 # Compiled stylesheet
 
 
-_SERIALIZABLE_METHODS = frozenset({"xml", "xhtml", "html", "text"})
-
-
-def _serialize_result_entry(
-    entry: ResultEntry, *, secondary: bool, namespaces: Mapping[str, str]
-) -> ResultEntry:
+def _serialize_result_entry(entry: ResultEntry, *, secondary: bool) -> ResultEntry:
     """Return *entry* with ``serialized`` populated for supported methods.
 
-    JSON and adaptive output are a later task; deferring them keeps their raw
-    sequences and their existing delivery behavior intact.
+    ``entry.serialization`` already carries expanded QName-list values: global
+    output declarations expand at their declaration sites and result-document
+    attributes expand at their instruction.  Re-expanding them here with the
+    principal package's bindings would rename values declared in another
+    module.  JSON and adaptive output are a later task; deferring them keeps
+    their raw sequences and their existing delivery behavior intact.
     """
-    method = method_local_name(str(entry.serialization.get("method", "xml")))
-    if method not in _SERIALIZABLE_METHODS:
+    if not Serializer.supports_method(str(entry.serialization.get("method", "xml"))):
         return entry
     try:
-        parameters = SerializationParameters.from_attributes(
-            entry.serialization, namespaces=namespaces
-        )
+        parameters = SerializationParameters.from_attributes(entry.serialization)
         serialized = Serializer.serialize(entry.raw, parameters)
     except XsltSerializationError as error:
         error.secondary = secondary
@@ -5357,10 +5357,9 @@ class _Invocation(Transformation):
         )
         secondary = self.secondary
         if self.options.delivery == "stylesheet":
-            namespaces = dict(self.package.namespaces)
-            entry = _serialize_result_entry(entry, secondary=False, namespaces=namespaces)
+            entry = _serialize_result_entry(entry, secondary=False)
             secondary = {
-                uri: _serialize_result_entry(value, secondary=True, namespaces=namespaces)
+                uri: _serialize_result_entry(value, secondary=True)
                 for uri, value in secondary.items()
             }
         return TransformationResult(
@@ -6458,6 +6457,9 @@ class _Invocation(Transformation):
             if declaration is not None:
                 base_attributes.update(declaration.attributes)
         evaluated = {name: self._value_source(value, context) for name, value in plan.attributes}
+        for name in _QNAME_LIST_OUTPUT_ATTRIBUTES:
+            if name in evaluated:
+                evaluated[name] = expand_qname_list(evaluated[name], plan.instruction.namespaces)
         effective_method = method or base_attributes.get("method", "xml")
         build_tree = (
             self._value_source(plan.build_tree, context)

@@ -9,6 +9,8 @@ stylesheet delivery.
 from __future__ import annotations
 
 import io
+from pathlib import Path
+from typing import Any
 
 import pytest
 from tests.xslt.support import stylesheet, transform
@@ -16,9 +18,12 @@ from tests.xslt.support import stylesheet, transform
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmMap
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xslt.errors import XsltSerializationError
+from pyxsd.xslt.processor import XsltProcessor
 from pyxsd.xslt.serialization import SerializationParameters, Serializer
 
 XHTML_NS = "http://www.w3.org/1999/xhtml"
+XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
+SECONDARY_URI = "http://example.com/secondary.xml"
 
 
 def _document(xml: bytes) -> XdmDocument:
@@ -806,3 +811,80 @@ def test_secondary_serialization_errors_are_marked_secondary() -> None:
 
     assert error.value.code == "SEPM0016"
     assert error.value.secondary is True
+
+
+# ---------------------------------------------------------------------------
+# Module-local output QNames and serializer capability
+
+
+def _write_module(tmp_path: Path, name: str, text: str) -> Path:
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def compile_imported_output_without_default_namespace(tmp_path: Path) -> Any:
+    """Compile a principal whose imported module declares a bare output name.
+
+    The importing module binds a default namespace, while the imported module
+    declares ``cdata-section-elements="script"`` with no default namespace.
+    """
+    imported = _write_module(
+        tmp_path,
+        "imported-output.xsl",
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:output method="xml" omit-xml-declaration="yes" '
+        'cdata-section-elements="script"/>'
+        '<xsl:template name="xsl:initial-template"><script>text</script></xsl:template>'
+        "</xsl:stylesheet>",
+    )
+    principal = _write_module(
+        tmp_path,
+        "principal-output.xsl",
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns="urn:principal" version="3.0">'
+        f'<xsl:import href="{imported.name}"/>'
+        "</xsl:stylesheet>",
+    )
+    return XsltProcessor().compile(principal)
+
+
+def compile_result_document_with_instruction_local_cdata_prefix() -> Any:
+    """Compile a result-document whose output QNames use an element-local prefix."""
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:output method="xml" omit-xml-declaration="yes"/>'
+        '<xsl:template name="xsl:initial-template">'
+        f'<xsl:result-document href="{SECONDARY_URI}" xmlns:p="urn:p" '
+        'cdata-section-elements="p:script missing:z" suppress-indentation="p:block">'
+        "<p:script>text</p:script>"
+        "</xsl:result-document>"
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    return XsltProcessor().compile(io.BytesIO(source.encode()))
+
+
+def test_imported_cdata_name_is_not_reexpanded_with_principal_namespaces(
+    tmp_path: Path,
+) -> None:
+    result = compile_imported_output_without_default_namespace(tmp_path).transform()
+    assert result.principal_entry.serialized == "<script><![CDATA[text]]></script>"
+
+
+def test_result_document_cdata_uses_instruction_namespaces() -> None:
+    result = compile_result_document_with_instruction_local_cdata_prefix().transform()
+    entry = result.secondary[SECONDARY_URI]
+    assert entry.serialized == '<p:script xmlns:p="urn:p"><![CDATA[text]]></p:script>'
+    assert entry.serialization["cdata-section-elements"] == "Q{urn:p}script missing:z"
+    assert entry.serialization["suppress-indentation"] == "Q{urn:p}block"
+
+
+def test_serialization_method_support_is_owned_by_the_serializer() -> None:
+    assert Serializer.supports_method("xml")
+    assert Serializer.supports_method("xhtml")
+    assert Serializer.supports_method("html")
+    assert Serializer.supports_method("text")
+    assert Serializer.supports_method("Q{urn:xslt}text")
+    assert Serializer.supports_method("xsl:html")
+    assert not Serializer.supports_method("json")
+    assert not Serializer.supports_method("adaptive")

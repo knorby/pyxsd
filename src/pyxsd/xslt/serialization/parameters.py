@@ -16,9 +16,8 @@ from typing import Any
 
 from pyxsd.xslt.errors import XsltSerializationError
 
-__all__ = ["SerializationParameters", "method_local_name"]
+__all__ = ["SerializationParameters", "expand_qname", "expand_qname_list", "method_local_name"]
 
-_METHODS = frozenset({"xml", "xhtml", "html", "text"})
 _NORMALIZATION_FORMS = frozenset({"NFC", "NFD", "NFKC", "NFKD"})
 _TRUE_VALUES = frozenset({"yes", "true", "1"})
 _FALSE_VALUES = frozenset({"no", "false", "0"})
@@ -131,8 +130,12 @@ def _name_list(value: Any, label: str) -> tuple[str, ...]:
     raise _invalid(f"{label} must be a whitespace-separated string or sequence")
 
 
-def _expand_name(token: str, namespaces: Mapping[str, str]) -> str:
-    """Expand one lexical QName to ``Q{uri}local`` when its prefix is bound."""
+def expand_qname(token: str, namespaces: Mapping[str, str]) -> str:
+    """Expand one lexical QName to ``Q{uri}local`` when its prefix is bound.
+
+    An unprefixed token uses the default namespace; an unbound prefix is left
+    lexical so it can never match an element with a namespace.
+    """
     if token.startswith(("Q{", "{")):
         return token
     if ":" in token:
@@ -143,13 +146,18 @@ def _expand_name(token: str, namespaces: Mapping[str, str]) -> str:
     return token if not uri else f"Q{{{uri}}}{token}"
 
 
+def expand_qname_list(value: str, namespaces: Mapping[str, str]) -> str:
+    """Expand a whitespace-separated QName list, preserving its string shape."""
+    return " ".join(expand_qname(token, namespaces) for token in value.split())
+
+
 def _expand_name_list(value: Any, namespaces: Mapping[str, str]) -> Any:
     if isinstance(value, str):
-        return tuple(_expand_name(token, namespaces) for token in value.split())
+        return tuple(expand_qname(token, namespaces) for token in value.split())
     if isinstance(value, (tuple, list)):
         if any(not isinstance(token, str) for token in value):
             return value
-        return tuple(_expand_name(token, namespaces) for token in value if token)
+        return tuple(expand_qname(token, namespaces) for token in value if token)
     return value
 
 
@@ -220,7 +228,11 @@ class SerializationParameters:
         if not isinstance(self.method, str):
             raise _invalid(f"method must be a string, got {self.method!r}")
         method = method_local_name(self.method)
-        if method not in _METHODS:
+        # The serializer owns which methods are implemented.  The import is
+        # local because the serializer module depends on these parameters.
+        from pyxsd.xslt.serialization.serializer import Serializer
+
+        if not Serializer.supports_method(method):
             raise _invalid(f"unsupported serialization method {self.method!r}")
         object.__setattr__(self, "method", method)
 

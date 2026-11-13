@@ -15,7 +15,7 @@ from typing import Any
 from pyxsd.xdm import XdmAtomic, XdmItem
 from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xslt.errors import XsltSerializationError
-from pyxsd.xslt.serialization.parameters import SerializationParameters
+from pyxsd.xslt.serialization.parameters import SerializationParameters, method_local_name
 from pyxsd.xslt.serialization.text import serialize_text
 from pyxsd.xslt.serialization.xml import NormalizedItem, serialize_markup
 
@@ -85,6 +85,13 @@ def _normalize_sequence(sequence: Iterable[XdmItem]) -> tuple[NormalizedItem, ..
 
 class Serializer:
     """Produce serialized strings and write their encoded bytes."""
+
+    _METHODS = frozenset({"xml", "xhtml", "html", "text"})
+
+    @classmethod
+    def supports_method(cls, method: str) -> bool:
+        """Whether this serializer implements *method*, lexical or EQName."""
+        return method_local_name(method) in cls._METHODS
 
     @staticmethod
     def _parameters(
