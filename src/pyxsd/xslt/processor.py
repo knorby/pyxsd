@@ -6519,6 +6519,13 @@ class _Invocation(Transformation):
                 )
             serialization = dict(base_attributes)
             serialization.update(evaluated)
+            if "use-character-maps" in evaluated:
+                # XSLT 3.0 section 25.1: instruction maps supplement the
+                # selected output definition and take precedence over it.
+                inherited = base_attributes.get("use-character-maps", "").split()
+                serialization["use-character-maps"] = " ".join(
+                    (*inherited, *evaluated["use-character-maps"].split())
+                )
             serialization["method"] = effective_method
             if build_tree is not None:
                 serialization["build-tree"] = build_tree

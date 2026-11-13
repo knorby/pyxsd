@@ -410,6 +410,27 @@ def test_result_document_inherits_the_named_format_character_map() -> None:
     assert dict(secondary.character_maps) == {"x": "y"}
 
 
+def test_result_document_character_maps_supplement_the_named_format() -> None:
+    source = stylesheet(
+        '<xsl:output name="f" method="xml" omit-xml-declaration="yes" use-character-maps="a"/>'
+        '<xsl:character-map name="a"><xsl:output-character character="x" string="1"/>'
+        "</xsl:character-map>"
+        '<xsl:character-map name="b"><xsl:output-character character="y" string="2"/>'
+        "</xsl:character-map>"
+        '<xsl:template name="main">'
+        f'<xsl:result-document href="{SECONDARY_URI}" format="f" '
+        'use-character-maps="b">xy</xsl:result-document>'
+        "</xsl:template>",
+        attributes=' exclude-result-prefixes="xs"',
+    )
+
+    result = transform(source, delivery="stylesheet", initial_template="main")
+
+    secondary = result.secondary[SECONDARY_URI]
+    assert secondary.serialized == "12"
+    assert dict(secondary.character_maps) == {"x": "1", "y": "2"}
+
+
 def test_explicit_serialization_parameters_override_entry_character_maps() -> None:
     source = stylesheet(
         '<xsl:output method="xml" omit-xml-declaration="yes" use-character-maps="m"/>'
