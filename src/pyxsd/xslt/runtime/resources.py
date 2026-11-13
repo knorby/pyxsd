@@ -3,12 +3,13 @@
 A document is available to an instruction only when the invocation already
 holds it or a resource policy admits a read.  There is no implicit network
 retrieval, no streaming cursor, and no bounded-memory claim.  When no
-application resource policy is configured, a canonical local ``file`` URI is
-read by a local-only default; ``urn:`` identifiers still need an application
-policy, and remote URI schemes always require a separate application policy
-whose trusted implementation is responsible for origins, redirects, timeouts
-and budgets.  One invocation owns one resolver, so cached documents
-and canonical URI identities never leak between transformations.
+application resource policy is configured, a canonical local ``file`` URI that
+the invocation does not already hold is read by a local-only default; ``urn:``
+identifiers still need an application policy, and remote URI schemes always
+require a separate application policy whose trusted implementation is
+responsible for origins, redirects, timeouts and budgets.  One invocation owns
+one resolver, so cached documents and canonical URI identities never leak
+between transformations.
 """
 
 from __future__ import annotations
@@ -219,7 +220,7 @@ class DocumentResources:
             existing = self.documents.get(target)
             if existing is not None and not isinstance(existing, XdmDocument):  # pragma: no cover
                 raise TypeError("a document registry entry must be an XdmDocument")
-            policy = self._policy_for(target, label="document")
+            policy = self._policy_for(target, label="document", held=existing is not None)
             if policy is None:
                 if existing is None:
                     raise XsltDynamicError(
@@ -385,19 +386,21 @@ class DocumentResources:
             uris.append(document_uri)
         return tuple(uris)
 
-    def _policy_for(self, target: str, *, label: str) -> _DocumentPolicy | None:
+    def _policy_for(self, target: str, *, label: str, held: bool = False) -> _DocumentPolicy | None:
         """Select the policy that owns one absolute target and scheme.
 
         A canonical local ``file`` URI falls back to the local-only default when
-        no application policy is configured.  ``urn:`` identifiers and remote
-        schemes keep their explicit-policy behavior, and a local denial from
-        that default stays a :class:`ResourcePolicyError`.
+        no application policy is configured and the invocation does not already
+        hold that document; *held* keeps an invocation-owned document from being
+        reread or charged to the document budget.  ``urn:`` identifiers and
+        remote schemes keep their explicit-policy behavior, and a local denial
+        from that default stays a :class:`ResourcePolicyError`.
         """
         scheme = urlsplit(target).scheme
         remote = scheme not in ("file", "urn")
         policy = self.remote_policy if remote else self.policy
         if remote and policy is None and self.policy is not None:
             raise ResourcePolicyError(f"remote stylesheet {label} access denied for {target!r}")
-        if policy is None and scheme == "file":
+        if policy is None and scheme == "file" and not held:
             return _LOCAL_FILE_POLICY
         return policy

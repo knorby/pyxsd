@@ -10,7 +10,7 @@ from pyxsd.xdm import XdmAtomic
 from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltDynamicError
-from pyxsd.xslt.runtime.frames import ExecutionLimits
+from pyxsd.xslt.runtime.frames import ExecutionBudget, ExecutionLimits
 from pyxsd.xslt.runtime.resources import DocumentResources
 
 
@@ -86,6 +86,20 @@ def test_local_default_documents_consume_the_document_budget(tmp_path) -> None:
     with pytest.raises(XsltDynamicError) as caught:
         compiled.transform(limits=ExecutionLimits(max_documents=1))
     assert caught.value.code == "PYXSD-XSLT-001"
+
+
+def test_a_held_canonical_file_document_is_never_reread(tmp_path) -> None:
+    path = tmp_path / "held.xml"
+    path.write_text("<held/>", encoding="utf-8")
+    target = path.as_uri()
+    held = XdmDocument.parse(b"<held/>", document_uri=target)
+    path.unlink()
+    budget = ExecutionBudget(ExecutionLimits(max_documents=1))
+    resources = DocumentResources({target: held}, budget=budget)
+    resolved = resources.resolve(target, base=None)
+    assert resolved is held
+    assert resources.documents[target] is held
+    assert budget.documents == 0
 
 
 def test_local_default_text_decodes_with_the_requested_encoding(tmp_path) -> None:
