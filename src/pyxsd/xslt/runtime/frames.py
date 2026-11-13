@@ -133,13 +133,15 @@ class ExecutionLimits:
     unbounded while still recording it.  ``max_documents`` bounds distinct
     documents loaded through a resource policy in one invocation, and
     ``max_output_nodes`` bounds the nodes in the delivered principal and
-    secondary result trees.
+    secondary result trees, and ``max_output_bytes`` bounds their encoded
+    serialized bytes when stylesheet delivery produces them.
     """
 
     max_frames: int = 100_000
     max_steps: int | None = None
     max_documents: int | None = None
     max_output_nodes: int | None = None
+    max_output_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.max_frames, bool) or not isinstance(self.max_frames, int):
@@ -149,17 +151,26 @@ class ExecutionLimits:
         _validate_optional_limit("max_steps", self.max_steps)
         _validate_optional_limit("max_documents", self.max_documents)
         _validate_optional_limit("max_output_nodes", self.max_output_nodes)
+        _validate_optional_limit("max_output_bytes", self.max_output_bytes)
 
 
 class ExecutionBudget:
-    """Live frame and step counters shared by nested schedulers.
+    """Live frame, step, document, and output counters shared by nested schedulers.
 
     One budget belongs to a transformation.  Top-level and nested schedulers
     acquire and release frames from the same counters, so a nested execution
     cannot reset a caller's configured limits.
     """
 
-    __slots__ = ("documents", "frames", "limits", "max_frame_depth", "output_nodes", "steps")
+    __slots__ = (
+        "documents",
+        "frames",
+        "limits",
+        "max_frame_depth",
+        "output_bytes",
+        "output_nodes",
+        "steps",
+    )
 
     def __init__(self, limits: ExecutionLimits | None = None) -> None:
         if limits is None:
@@ -171,6 +182,7 @@ class ExecutionBudget:
         self.frames = 0
         self.documents = 0
         self.output_nodes = 0
+        self.output_bytes = 0
         self.max_frame_depth = 0
 
     def take_step(self) -> bool:
@@ -206,6 +218,14 @@ class ExecutionBudget:
         if self.limits.max_output_nodes is not None and total > self.limits.max_output_nodes:
             return False
         self.output_nodes = total
+        return True
+
+    def take_output_bytes(self, count: int) -> bool:
+        """Record encoded serialized output bytes, returning whether they fit."""
+        total = self.output_bytes + count
+        if self.limits.max_output_bytes is not None and total > self.limits.max_output_bytes:
+            return False
+        self.output_bytes = total
         return True
 
 

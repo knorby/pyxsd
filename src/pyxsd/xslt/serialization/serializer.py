@@ -127,7 +127,7 @@ class Serializer:
     ) -> None:
         """Encode and write one serialized sequence to a binary destination."""
         resolved = cls._parameters(parameters)
-        data = cls._encode(cls.serialize(sequence, resolved), resolved)
+        data = cls.encode(cls.serialize(sequence, resolved), resolved)
         write = getattr(destination, "write", None)
         if callable(write):
             write(data)
@@ -137,6 +137,15 @@ class Serializer:
                 stream.write(data)
             return
         raise TypeError("destination must provide write() or be a filesystem path")
+
+    @classmethod
+    def encode(
+        cls,
+        value: str,
+        parameters: SerializationParameters | Mapping[str, Any] | None = None,
+    ) -> bytes:
+        """Encode one serialized string with its effective output parameters."""
+        return cls._encode(value, cls._parameters(parameters))
 
     @staticmethod
     def _encode(value: str, parameters: SerializationParameters) -> bytes:

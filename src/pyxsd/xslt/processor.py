@@ -196,6 +196,7 @@ from pyxsd.xslt.runtime.frames import (
     NO_INPUT,
     Call,
     Continue,
+    ExecutionBudget,
     Frame,
     FrameResult,
     Return,
@@ -597,21 +598,35 @@ class XsltProcessor:
 # Compiled stylesheet
 
 
-def _serialize_result_entry(entry: ResultEntry, *, secondary: bool) -> ResultEntry:
+def _serialize_result_entry(
+    entry: ResultEntry,
+    *,
+    secondary: bool,
+    budget: ExecutionBudget,
+) -> ResultEntry:
     """Return *entry* with ``serialized`` populated for supported methods.
 
-    ``entry.serialization`` already carries expanded QName-list values: global
-    output declarations expand at their declaration sites and result-document
-    attributes expand at their instruction.  Re-expanding them here with the
-    principal package's bindings would rename values declared in another
-    module.  JSON and adaptive output are a later task; deferring them keeps
-    their raw sequences and their existing delivery behavior intact.
+    Encoding and its byte charge happen together against the entry's effective
+    serialization parameters.  When no byte budget is configured the encoded
+    length is never measured, so encoding remains solely a writing concern.  An
+    entry whose method this serializer does not implement keeps its raw
+    sequence and is not charged.  ``entry.serialization`` already carries
+    expanded QName-list values: global output declarations expand at their
+    declaration sites and result-document attributes expand at their
+    instruction.  Re-expanding them here with the principal package's bindings
+    would rename values declared in another module.  JSON and adaptive output
+    are a later task; deferring them keeps their raw sequences and their
+    existing delivery behavior intact.
     """
     if not Serializer.supports_method(str(entry.serialization.get("method", "xml"))):
         return entry
     try:
         parameters = SerializationParameters.from_attributes(entry.serialization)
         serialized = Serializer.serialize(entry.raw, parameters)
+        if budget.limits.max_output_bytes is not None:
+            encoded = Serializer.encode(serialized, parameters)
+            if not budget.take_output_bytes(len(encoded)):
+                raise resource_error("the transformation exceeded its output byte budget")
     except XsltSerializationError as error:
         error.secondary = secondary
         raise
@@ -5357,9 +5372,9 @@ class _Invocation(Transformation):
         )
         secondary = self.secondary
         if self.options.delivery == "stylesheet":
-            entry = _serialize_result_entry(entry, secondary=False)
+            entry = _serialize_result_entry(entry, secondary=False, budget=self.budget)
             secondary = {
-                uri: _serialize_result_entry(value, secondary=True)
+                uri: _serialize_result_entry(value, secondary=True, budget=self.budget)
                 for uri, value in secondary.items()
             }
         return TransformationResult(
@@ -5370,7 +5385,9 @@ class _Invocation(Transformation):
         )
 
     def _check_output_budget(self, sequence: XdmSequence) -> None:
-        """Charge every delivered principal and secondary result-tree node."""
+        """Charge every delivered node when a node budget is configured."""
+        if self.limits.max_output_nodes is None:
+            return
         total = _result_node_count(sequence)
         for entry in self.secondary.values():
             total += _result_node_count(entry.raw)
