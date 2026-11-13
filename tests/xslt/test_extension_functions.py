@@ -156,8 +156,9 @@ def test_unbound_registration_prefix_is_a_static_error() -> None:
         "other:double", 1, double, signature=xs_integer_to_integer
     )
 
-    with pytest.raises(XsltStaticError, match="prefix"):
+    with pytest.raises(XsltStaticError) as caught:
         compile_body(initial("1"), extensions=extensions)
+    assert caught.value.code == "XTSE0280"
 
 
 def test_extension_conflicting_with_a_stylesheet_function_is_static() -> None:
@@ -169,8 +170,9 @@ def test_extension_conflicting_with_a_stylesheet_function_is_static() -> None:
         "</xsl:function>" + initial("app:double(4)")
     )
 
-    with pytest.raises(XsltStaticError, match="conflicts"):
+    with pytest.raises(XsltStaticError) as caught:
         compile_body(body, extensions=extensions)
+    assert caught.value.code == "XTSE0010"
 
 
 def test_function_available_uses_the_compiled_snapshot() -> None:
@@ -311,6 +313,74 @@ def test_contextual_extension_sees_an_absent_context_item() -> None:
     assert seen == [None]
 
 
+def test_contextual_extension_observes_the_live_predicate_focus() -> None:
+    seen: list[Any] = []
+
+    def current(context_item: Any, value: Any) -> Any:
+        del value
+        seen.append(context_item)
+        return context_item
+
+    extensions = XsltExtensions().register_function(
+        app("cur"),
+        1,
+        current,
+        signature=ExtensionSignature(("item()",), "item()"),
+        contextual=True,
+    )
+    compiled = compile_body(
+        '<xsl:template name="xsl:initial-template">'
+        '<xsl:sequence select="(1, 2, 3)[app:cur(.) = 2]"/>'
+        "</xsl:template>",
+        extensions=extensions,
+    )
+
+    assert compiled.transform(delivery="raw").principal == (XdmAtomic.integer(2),)
+    assert seen == [
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(2),
+        XdmAtomic.integer(3),
+    ]
+
+
+def test_extension_and_stylesheet_function_share_a_name_across_arities() -> None:
+    extensions = XsltExtensions().function(app("f"), 1, xs_integer_to_integer)(double)
+    body = (
+        '<xsl:function name="app:f" as="xs:integer">'
+        '<xsl:param name="left" as="xs:integer"/>'
+        '<xsl:param name="right" as="xs:integer"/>'
+        '<xsl:sequence select="$left + $right"/>'
+        "</xsl:function>" + initial("string-join((string(app:f(2)), string(app:f(2, 3))), ':')")
+    )
+    compiled = compile_body(body, extensions=extensions)
+
+    assert compiled.function_available(app("f"), 1) is True
+    assert compiled.function_available(app("f"), 2) is True
+    assert compiled.transform(delivery="raw").principal == (XdmAtomic.string("4:5"),)
+
+
+def test_function_available_agrees_for_lexical_and_expanded_names() -> None:
+    extensions = XsltExtensions().function(app("double"), 1, xs_integer_to_integer)(double)
+    compiled = compile_body(
+        '<xsl:function name="app:sum" as="xs:integer">'
+        '<xsl:param name="left" as="xs:integer"/>'
+        '<xsl:param name="right" as="xs:integer"/>'
+        '<xsl:sequence select="$left + $right"/>'
+        "</xsl:function>" + initial("app:double(2)"),
+        extensions=extensions,
+    )
+
+    assert compiled.function_available("app:double", 1) is True
+    assert compiled.function_available(app("double"), 1) is True
+    assert compiled.function_available("app:sum", 2) is True
+    assert compiled.function_available(app("sum"), 2) is True
+    assert compiled.function_available("app:double", 2) is False
+    assert compiled.function_available(app("double"), 2) is False
+    assert compiled.function_available("app:absent", 1) is False
+    assert compiled.function_available(app("absent"), 1) is False
+    assert compiled.function_available("missing:prefix", 1) is False
+
+
 def test_registry_function_available_accepts_expanded_and_lexical_names() -> None:
     extensions = XsltExtensions().function(app("double"), 1, xs_integer_to_integer)(double)
     prefixed = extensions.register_function("app:late", 0, late, no_args)
@@ -332,8 +402,9 @@ def test_duplicate_resolution_is_a_static_error() -> None:
         .register_function(app("double"), 1, double, xs_integer_to_integer)
     )
 
-    with pytest.raises(XsltStaticError, match="registered twice"):
+    with pytest.raises(XsltStaticError) as caught:
         compile_body(initial("1"), extensions=extensions)
+    assert caught.value.code == "XTSE0010"
 
 
 def test_extension_backed_stylesheet_uses_the_full_evaluator() -> None:

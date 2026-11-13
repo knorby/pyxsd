@@ -441,6 +441,8 @@ def test_extension_target_and_registry_validation() -> None:
         ExtensionTarget((object(),))  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="context item"):
         ExtensionTarget((definition,), context_item="text")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="fallback"):
+        ExtensionTarget((definition,), fallback=object())
 
     with pytest.raises(TypeError, match="ExtensionFunction"):
         XsltExtensions({(app("f"), 0): object()})  # type: ignore[dict-item]

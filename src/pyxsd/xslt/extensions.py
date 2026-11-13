@@ -45,7 +45,7 @@ from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmItem, XdmMap, XdmSequ
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xdm.values import _is_xsd_subtype, _local_type_name
-from pyxsd.xpath.functions import XdmFunctionTarget
+from pyxsd.xpath.functions import XdmFunctionTarget, call_host_function
 from pyxsd.xslt.errors import XsltDynamicError, XsltStaticError
 
 __all__ = [
@@ -448,6 +448,7 @@ class ExtensionTarget(XdmFunctionTarget):
 
     definitions: tuple[ExtensionFunction, ...]
     context_item: XdmItem | None = None
+    fallback: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.definitions:
@@ -456,6 +457,12 @@ class ExtensionTarget(XdmFunctionTarget):
             raise TypeError("extension targets require ExtensionFunction definitions")
         if self.context_item is not None and not isinstance(self.context_item, XdmItem):
             raise TypeError("an extension context item must be an XDM item or None")
+        if self.fallback is not None and not callable(self.fallback):
+            raise TypeError("an extension fallback must be callable or None")
+
+    def with_context(self, context_item: XdmItem | None) -> ExtensionTarget:
+        """Return this target with one live context item for a direct call."""
+        return replace(self, context_item=context_item)
 
     def invoke_xdm(
         self,
@@ -468,6 +475,9 @@ class ExtensionTarget(XdmFunctionTarget):
             None,
         )
         if definition is None:
+            fallback = self.fallback
+            if fallback is not None:
+                return call_host_function(fallback, arguments)
             name = self.definitions[0].name
             raise XsltDynamicError(
                 f"the Python extension function {name!r} has no arity {len(arguments)} overload",
@@ -629,14 +639,24 @@ class XsltExtensions:
     def runtime_targets(
         self,
         context_item: XdmItem | None = None,
+        *,
+        existing: Mapping[str, Any] | None = None,
     ) -> Mapping[str, ExtensionTarget]:
-        """Runtime targets keyed by expanded function name."""
+        """Runtime targets keyed by expanded function name.
+
+        *existing* supplies the stylesheet-function dispatchers already in the
+        environment.  A name registered both as an extension and as a
+        stylesheet function keeps both arities: extension arities route to the
+        Python callback and every other arity routes to the existing
+        dispatcher.
+        """
         grouped: dict[str, list[ExtensionFunction]] = {}
         for definition in self._functions.values():
             grouped.setdefault(definition.name, []).append(definition)
-        return MappingProxyType(
-            {
-                name: ExtensionTarget(tuple(definitions), context_item)
-                for name, definitions in grouped.items()
-            }
-        )
+        targets: dict[str, ExtensionTarget] = {}
+        for name, definitions in grouped.items():
+            fallback = None if existing is None else existing.get(name)
+            if isinstance(fallback, ExtensionTarget):
+                fallback = fallback.fallback
+            targets[name] = ExtensionTarget(tuple(definitions), context_item, fallback)
+        return MappingProxyType(targets)

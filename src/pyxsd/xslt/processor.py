@@ -734,9 +734,13 @@ class CompiledStylesheet:
         return sum(len(layer.rules) for layer in self._modes.get(name, ()))
 
     def function_available(self, name: str, arity: int) -> bool:
-        if self.package.function(name, arity) is not None:
+        try:
+            expanded = self.package._expand(name)
+        except XsltStaticError:
+            return False
+        if self.package.function(expanded, arity) is not None:
             return True
-        return self.extensions.function_available(name, arity)
+        return self.extensions.function_available(expanded, arity)
 
     def transform(
         self,
@@ -6692,7 +6696,12 @@ class _Invocation(Transformation):
             self._bind(variables, key, value)
         functions = dict(self.fallback_functions(package_name))
         if self.stylesheet.extensions.functions:
-            functions.update(self.stylesheet.extensions.runtime_targets(context.focus.item))
+            functions.update(
+                self.stylesheet.extensions.runtime_targets(
+                    context.focus.item,
+                    existing=functions,
+                )
+            )
         if context.original_functions:
             for _arity, component in context.original_functions.items():
                 functions[f"{{{XSLT_NS}}}original"] = self._component_dispatcher(

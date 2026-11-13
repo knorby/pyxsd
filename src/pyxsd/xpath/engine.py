@@ -957,11 +957,15 @@ def _register_declared_function(
         bridge = holder.bridge
         if bridge is None:
             raise RuntimeError(f"host function {name!r} has no evaluation context")
-        if target is None:
+        active_target = target
+        bind_context = getattr(target, "with_context", None)
+        if callable(bind_context):
+            active_target = bind_context(_live_context_item(holder, bridge))
+        if active_target is None:
             raise RuntimeError(f"host function {name!r} has no environment implementation")
         return bridge.sequence_to_elementpath(
             call_host_function(
-                target,
+                active_target,
                 (bridge.to_xdm_sequence(argument) for argument in arguments),
                 bridge.environment,
             )
@@ -975,6 +979,25 @@ def _register_declared_function(
     )
     token_class.label = "function"
     token_class.nargs = arity
+    inherited_evaluate = token_class.evaluate
+
+    def evaluate(self: Any, context: Any = None) -> Any:
+        previous = holder.xpath_context
+        holder.xpath_context = context
+        try:
+            return inherited_evaluate(self, context)
+        finally:
+            holder.xpath_context = previous
+
+    token_class.evaluate = evaluate
+
+
+def _live_context_item(holder: _BridgeHolder, bridge: _ValueBridge) -> Any:
+    """The context item of the call being evaluated, if it has one."""
+    raw = getattr(holder.xpath_context, "item", None)
+    if raw is None:
+        return None
+    return bridge.to_xdm_sequence(raw)[0]
 
 
 def _function_target(
@@ -1153,6 +1176,11 @@ class _BridgeHolder:
 
     def __init__(self) -> None:
         self.bridge: _ValueBridge | None = None
+        #: The elementpath context of the call currently being evaluated.  A
+        #: declared external function reads it to expose the live focus item to
+        #: a contextual Python extension instead of the focus captured when the
+        #: expression environment was built.
+        self.xpath_context: Any = None
 
 
 def _build_context(

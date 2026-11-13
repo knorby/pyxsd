@@ -541,7 +541,7 @@ class Transformation:
         }
         stylesheet = self.stylesheet
         if stylesheet is not None and stylesheet.extensions.functions:
-            table.update(stylesheet.extensions.runtime_targets())
+            table.update(stylesheet.extensions.runtime_targets(existing=table))
         self._fallback_function_tables[package_name] = table
         return table
 
