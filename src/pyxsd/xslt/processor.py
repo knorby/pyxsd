@@ -6463,7 +6463,7 @@ class _Invocation(Transformation):
         format_name = self._value_source(plan.format, context) if plan.format is not None else None
         base_attributes: dict[str, str] = {}
         if format_name is not None:
-            declaration = self.package.output(format_name)
+            declaration = self.package.output(format_name, namespaces=plan.instruction.namespaces)
             if declaration is None:
                 raise XsltError(
                     f"the named output format {format_name!r} is not declared",

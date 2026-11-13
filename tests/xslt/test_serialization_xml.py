@@ -17,7 +17,7 @@ from tests.xslt.support import stylesheet, transform
 
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmMap
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
-from pyxsd.xslt.errors import XsltSerializationError
+from pyxsd.xslt.errors import XsltError, XsltSerializationError, XsltStaticError
 from pyxsd.xslt.processor import XsltProcessor
 from pyxsd.xslt.serialization import SerializationParameters, Serializer
 
@@ -1321,6 +1321,97 @@ def test_result_document_cdata_uses_instruction_namespaces() -> None:
     assert entry.serialized == '<p:script xmlns:p="urn:p"><![CDATA[text]]></p:script>'
     assert entry.serialization["cdata-section-elements"] == "Q{urn:p}script missing:z"
     assert entry.serialization["suppress-indentation"] == "Q{urn:p}block"
+
+
+def compile_imported_format_prefix_output(tmp_path: Path) -> Any:
+    """Compile a principal importing a module whose format prefix is module-local."""
+    imported = _write_module(
+        tmp_path,
+        "imported-format.xsl",
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:f="urn:imported-format" version="3.0">'
+        '<xsl:output name="f:foo" method="text"/>'
+        '<xsl:template name="xsl:initial-template">'
+        f'<xsl:result-document href="{SECONDARY_URI}" format="f:foo">text</xsl:result-document>'
+        "</xsl:template>"
+        "</xsl:stylesheet>",
+    )
+    principal = _write_module(
+        tmp_path,
+        "principal-format.xsl",
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns="urn:principal" version="3.0">'
+        f'<xsl:import href="{imported.name}"/>'
+        "</xsl:stylesheet>",
+    )
+    return XsltProcessor().compile(principal)
+
+
+def compile_instruction_local_format_prefix_output() -> Any:
+    """Compile a result-document whose format prefix is bound only there.
+
+    The output declaration binds its own prefix on the declaration, so neither
+    prefix appears in the package root's namespace map.
+    """
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:output xmlns:q="urn:local-format" name="q:foo" method="text"/>'
+        '<xsl:template name="xsl:initial-template">'
+        f'<xsl:result-document href="{SECONDARY_URI}" xmlns:p="urn:local-format" '
+        'format="p:foo">text</xsl:result-document>'
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    return XsltProcessor().compile(io.BytesIO(source.encode()))
+
+
+def test_imported_format_prefix_resolves_with_declaring_module_namespaces(
+    tmp_path: Path,
+) -> None:
+    result = compile_imported_format_prefix_output(tmp_path).transform()
+    entry = result.secondary[SECONDARY_URI]
+    assert entry.serialization["method"] == "text"
+    assert entry.serialized == "text"
+
+
+def test_result_document_format_uses_instruction_namespaces() -> None:
+    result = compile_instruction_local_format_prefix_output().transform()
+    entry = result.secondary[SECONDARY_URI]
+    assert entry.serialization["method"] == "text"
+    assert entry.serialized == "text"
+
+
+def test_result_document_format_unbound_prefix_raises_xtse0280() -> None:
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:template name="xsl:initial-template">'
+        f'<xsl:result-document href="{SECONDARY_URI}" format="missing:foo">'
+        "text</xsl:result-document>"
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(source.encode()))
+
+    with pytest.raises(XsltStaticError) as error:
+        compiled.transform()
+
+    assert error.value.code == "XTSE0280"
+
+
+def test_result_document_format_unknown_expanded_name_raises_xtde1460() -> None:
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:output name="Q{urn:known}foo" method="text"/>'
+        '<xsl:template name="xsl:initial-template">'
+        f'<xsl:result-document href="{SECONDARY_URI}" xmlns:p="urn:known" '
+        'format="p:bar">text</xsl:result-document>'
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(source.encode()))
+
+    with pytest.raises(XsltError) as error:
+        compiled.transform()
+
+    assert error.value.code == "XTDE1460"
 
 
 def test_serialization_method_support_is_owned_by_the_serializer() -> None:

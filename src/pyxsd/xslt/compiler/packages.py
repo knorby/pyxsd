@@ -426,8 +426,23 @@ class CompiledPackage:
     ) -> Component | None:
         return self.originals.get(_component_key(kind, self._expand(name), arity))
 
-    def output(self, name: str | None = None) -> PackageConstruct | None:
-        wanted = None if name is None else self._expand(name)
+    def output(
+        self,
+        name: str | None = None,
+        *,
+        namespaces: Mapping[str, str] | None = None,
+    ) -> PackageConstruct | None:
+        """Return one output declaration, resolving *name* in *namespaces*.
+
+        The default is this package's own namespace map.  A caller passing a
+        lexical name from another scope supplies that scope's in-scope
+        bindings, so the QName is expanded exactly once where it was written.
+        """
+        wanted = (
+            None
+            if name is None
+            else _expand_name(name, self.namespaces if namespaces is None else namespaces)
+        )
         for definition in self.outputs:
             if definition.name == wanted:
                 return definition
