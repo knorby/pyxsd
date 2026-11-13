@@ -316,7 +316,7 @@ def _validate_xml_shape(items: Sequence[NormalizedItem]) -> None:
     elements = [
         item for item in items if isinstance(item, XdmNode) and item.kind is NodeKind.ELEMENT
     ]
-    if any(isinstance(item, str) for item in items):
+    if any(isinstance(item, str) and item.strip() for item in items):
         raise _not_well_formed("the XML serialization has top-level text")
     if len(elements) > 1:
         raise _not_well_formed("the XML serialization has more than one top-level element")
@@ -338,6 +338,8 @@ def serialize_markup(
         return ""
     if not html:
         _validate_xml_shape(items)
+    if parameters.indent:
+        items = [item for item in items if not (isinstance(item, str) and not item.strip())]
 
     output: list[str] = []
     if not html and not parameters.omit_xml_declaration:

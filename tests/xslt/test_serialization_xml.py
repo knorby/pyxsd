@@ -244,6 +244,28 @@ def test_xml_indent_and_byte_exact_unindented_output() -> None:
         '<?xml version="1.0" encoding="UTF-8"?>\n<r>\n  <a> x </a>\n  <b>\n    <c/>\n  </b>\n</r>'
     )
 
+    padded = _document(b"<r/>")
+    leading = XdmNode(
+        NodeKind.TEXT,
+        document=padded,
+        node_id=100,
+        source_name=padded.source_name,
+        source_index=padded.source_index,
+        value="\n",
+    )
+    trailing = XdmNode(
+        NodeKind.TEXT,
+        document=padded,
+        node_id=101,
+        source_name=padded.source_name,
+        source_index=padded.source_index,
+        value="\n",
+    )
+    sequence = (leading, padded.root_element, trailing)
+    assert _serialize(sequence, omit_xml_declaration=True) == "\n<r/>\n"
+    assert _serialize(sequence, omit_xml_declaration=True, indent=True) == "<r/>"
+    assert _serialize(sequence, indent=True) == ('<?xml version="1.0" encoding="UTF-8"?>\n<r/>')
+
 
 def test_xml_cdata_sections_and_embedded_terminator() -> None:
     document = _document(b"<r><script>a]]&gt;b</script><p>plain</p></r>")
