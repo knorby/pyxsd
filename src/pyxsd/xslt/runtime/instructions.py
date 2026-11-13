@@ -62,6 +62,7 @@ from pyxsd.xslt.compiler.plans import (
     _OnNonEmptyPlan,
     _ParamPlan,
     _Plan,
+    _PythonInvokePlan,
     _RestoreVariablesPlan,
     _SequencePlan,
     _SourceDocumentPlan,
@@ -1480,6 +1481,17 @@ def attribute_value(
         operation="attribute",
     )
     return attributes
+
+
+def execute_python_invoke(
+    plan: _PythonInvokePlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> XdmSequence:
+    """Execute one bound Python customization rule."""
+    from pyxsd.xslt.python_rules import execute_python_rule
+
+    return execute_python_rule(plan.rule, invocation, context)
 
 
 def execute_fork(

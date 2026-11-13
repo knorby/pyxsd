@@ -47,6 +47,7 @@ from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xdm.values import _is_xsd_subtype, _local_type_name
 from pyxsd.xpath.functions import XdmFunctionTarget, call_host_function
 from pyxsd.xslt.errors import XsltDynamicError, XsltStaticError
+from pyxsd.xslt.python_rules import PythonRules
 
 __all__ = [
     "EXTENSION_ERROR_CODE",
@@ -494,6 +495,7 @@ class XsltExtensions:
         default_factory=dict, repr=False
     )
     _collations: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    _python_rules: PythonRules = field(default_factory=PythonRules.empty, repr=False)
 
     def __post_init__(self) -> None:
         functions: dict[tuple[str, int], ExtensionFunction] = {}
@@ -511,6 +513,8 @@ class XsltExtensions:
             if not isinstance(uri, str) or not isinstance(collation, Collation):
                 raise TypeError("a collation registry maps URIs to Collation values")
         object.__setattr__(self, "_collations", MappingProxyType(collations))
+        if not isinstance(self._python_rules, PythonRules):
+            raise TypeError("python_rules must be a PythonRules registry")
 
     @property
     def functions(self) -> Mapping[tuple[str, int], ExtensionFunction]:
@@ -521,6 +525,17 @@ class XsltExtensions:
     def collations(self) -> Mapping[str, Any]:
         """Registered collations keyed by absolute URI."""
         return self._collations
+
+    @property
+    def python_rules(self) -> PythonRules:
+        """The immutable Python customization rules captured at compile time."""
+        return self._python_rules
+
+    def with_python_rules(self, rules: PythonRules) -> XsltExtensions:
+        """Return a new registry carrying *rules*."""
+        if not isinstance(rules, PythonRules):
+            raise TypeError("python_rules must be a PythonRules registry")
+        return replace(self, _python_rules=rules)
 
     def function(
         self,
@@ -634,7 +649,7 @@ class XsltExtensions:
                     uri=identity,
                 )
             resolved[key] = replace(definition, name=expanded)
-        return XsltExtensions(resolved, self._collations)
+        return XsltExtensions(resolved, self._collations, self._python_rules)
 
     def runtime_targets(
         self,

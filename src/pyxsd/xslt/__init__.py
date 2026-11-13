@@ -24,6 +24,7 @@ from pyxsd.xslt.processor import (
     XsltInvocationError,
     XsltProcessor,
 )
+from pyxsd.xslt.python_rules import PythonRuleContext, PythonRules
 from pyxsd.xslt.results import (
     Message,
     ResultEntry,
@@ -39,6 +40,8 @@ __all__ = [
     "InspectionDiagnostic",
     "Message",
     "OutputPolicy",
+    "PythonRuleContext",
+    "PythonRules",
     "ResultEntry",
     "ResultShapeError",
     "StylesheetInspection",

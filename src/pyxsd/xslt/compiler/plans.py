@@ -69,6 +69,7 @@ __all__ = [
     "_ParamPlan",
     "_PerformSortPlan",
     "_Plan",
+    "_PythonInvokePlan",
     "_RestoreVariablesPlan",
     "_ResultDocumentPlan",
     "_RuleContext",
@@ -206,6 +207,13 @@ class _OverridingPlan:
     kind: Literal["next-match", "apply-imports"]
     parameters: tuple[_WithParamPlan, ...]
     tail: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _PythonInvokePlan:
+    """One engine-owned ``py:invoke`` instruction selecting a bound rule."""
+
+    rule: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -525,6 +533,7 @@ _Plan: TypeAlias = (
     | _SourceDocumentPlan
     | _PerformSortPlan
     | _OverridingPlan
+    | _PythonInvokePlan
     | _RestoreVariablesPlan
     | _ChoosePlan
     | _TryPlan

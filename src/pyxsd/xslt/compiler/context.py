@@ -283,6 +283,7 @@ class StaticContext:
     location: IssueLocation | None = None
     module: str | None = None
     package: Any = None
+    python_rule_count: int | None = None
 
     def __post_init__(self) -> None:
         namespaces = dict(BUILT_IN_NAMESPACES)
@@ -340,6 +341,12 @@ class StaticContext:
                 raise TypeError(f"{label} must be a string or None")
         if self.location is not None and not isinstance(self.location, IssueLocation):
             raise TypeError("location must be an IssueLocation or None")
+        if self.python_rule_count is not None and (
+            isinstance(self.python_rule_count, bool)
+            or not isinstance(self.python_rule_count, int)
+            or self.python_rule_count < 0
+        ):
+            raise TypeError("python_rule_count must be a non-negative integer or None")
 
         for label, mapping in (
             ("document types", self.document_types),
@@ -674,6 +681,7 @@ class StaticContext:
                 else None
             ),
             package=fallback.package if fallback is not None else None,
+            python_rule_count=(fallback.python_rule_count if fallback is not None else None),
         )
 
 

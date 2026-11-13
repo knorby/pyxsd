@@ -8,7 +8,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from pyxsd.xpath.environment import Focus
-from pyxsd.xslt.compiler.plans import _RuleContext
+from pyxsd.xslt.compiler.plans import _ComponentPlan, _RuleContext
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
     from pyxsd.xdm import XdmSequence
@@ -35,6 +35,12 @@ class EvaluationContext:
     tunnel_parameters: Mapping[str, XdmSequence] = field(default_factory=dict)
     rule_context: _RuleContext | None = None
     original_functions: Mapping[int, Component] = field(default_factory=dict)
+    original_components: Mapping[tuple[str, str | None, int | None], Component] = field(
+        default_factory=dict
+    )
+    original_plans: Mapping[tuple[str, str | None, int | None], _ComponentPlan] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.focus, Focus):
@@ -64,3 +70,14 @@ class EvaluationContext:
             "original_functions",
             MappingProxyType(dict(self.original_functions)),
         )
+        for label, value in (
+            ("original components", self.original_components),
+            ("original plans", self.original_plans),
+        ):
+            if not isinstance(value, Mapping):
+                raise TypeError(f"context {label} must be a mapping")
+            object.__setattr__(
+                self,
+                "original_components" if label == "original components" else "original_plans",
+                MappingProxyType(dict(value)),
+            )
