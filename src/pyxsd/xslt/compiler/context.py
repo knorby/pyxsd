@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
-from typing import Any, Literal, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
 from pyxsd.locations import IssueLocation
 from pyxsd.xdm.nodes import NodeKind, XdmNode
@@ -31,6 +31,9 @@ from pyxsd.xslt.errors import XsltStaticError
 from pyxsd.xslt.precedence import compare_precedence
 from pyxsd.xslt.profiles import LanguageProfile
 from pyxsd.xslt.runtime.functions import xslt_function_declarations
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
+    from pyxsd.xslt.compiler.dispatch import InstructionCompiler
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
@@ -284,6 +287,7 @@ class StaticContext:
     module: str | None = None
     package: Any = None
     python_rule_count: int | None = None
+    instruction_compilers: Mapping[str, InstructionCompiler] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         namespaces = dict(BUILT_IN_NAMESPACES)
@@ -347,6 +351,14 @@ class StaticContext:
             or self.python_rule_count < 0
         ):
             raise TypeError("python_rule_count must be a non-negative integer or None")
+
+        instruction_compilers = _freeze(self.instruction_compilers, "instruction compilers")
+        for name, compiler in instruction_compilers.items():
+            if not isinstance(name, str) or not name:
+                raise TypeError("instruction compiler names must be non-empty strings")
+            if not callable(compiler):
+                raise TypeError("instruction compilers must be callable")
+        object.__setattr__(self, "instruction_compilers", instruction_compilers)
 
         for label, mapping in (
             ("document types", self.document_types),
@@ -682,6 +694,7 @@ class StaticContext:
             ),
             package=fallback.package if fallback is not None else None,
             python_rule_count=(fallback.python_rule_count if fallback is not None else None),
+            instruction_compilers=(fallback.instruction_compilers if fallback is not None else {}),
         )
 
 

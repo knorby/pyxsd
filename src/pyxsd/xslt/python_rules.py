@@ -37,7 +37,7 @@ from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltStaticError
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
     from pyxsd.xslt.compiler.packages import CompiledPackage
-    from pyxsd.xslt.compiler.plans import _ComponentPlan
+    from pyxsd.xslt.compiler.plans import _ComponentPlan, _PythonInvokePlan
 
 _PlanKey = tuple[str | None, str, str | None, int | None]
 
@@ -62,6 +62,7 @@ __all__ = [
     "PythonRules",
     "bind_python_rules",
     "build_python_layer",
+    "execute_python_plan",
     "execute_python_rule",
 ]
 
@@ -601,6 +602,19 @@ def build_python_layer(
 
 # ---------------------------------------------------------------------------
 # Runtime execution
+
+
+def execute_python_plan(
+    plan: _PythonInvokePlan,
+    invocation: Any,
+    context: Any,
+) -> XdmSequence:
+    """Execute one compiled ``py:invoke`` plan through its bound rule.
+
+    This is the plan-shaped entry registered on the compiled artifact; the
+    rule-level executor below is the family's actual execution body.
+    """
+    return execute_python_rule(plan.rule, invocation, context)
 
 
 def execute_python_rule(

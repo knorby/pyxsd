@@ -7,9 +7,12 @@ instructions stay outside the registry: literal construction is a distinct plan
 shape, and forwards-compatible or unsupported instructions keep their explicit
 handling in the instruction compiler.
 
-Registration is declarative.  The compilation module installs every family
-compiler in one mapping when it is imported; dispatch itself only performs the
-expanded-name lookup and call.
+Registration is declarative.  The compilation module installs every built-in
+family compiler in one process-global mapping when it is imported.  A
+compilation can carry additional family compilers on its static context — an
+immutable per-compilation snapshot, never a process-global entry — and the
+lookup consults that snapshot first, then the built-in registry.  Dispatch
+itself only performs the expanded-name lookup and call.
 """
 
 from __future__ import annotations
@@ -42,8 +45,15 @@ def register_instruction_compilers(compilers: Mapping[str, InstructionCompiler])
     _COMPILERS.update(compilers)
 
 
-def supports_instruction(name: str) -> bool:
-    """Whether a dedicated family compiler is registered for *name*."""
+def supports_instruction(name: str, context: StaticContext) -> bool:
+    """Whether a family compiler is registered for *name* for this compilation.
+
+    The compilation's own snapshot is consulted first — a per-compilation
+    registration overrides a built-in family — and the process-global built-in
+    registry answers for every name it installed.
+    """
+    if name in context.instruction_compilers:
+        return True
     return name in _COMPILERS
 
 
@@ -53,4 +63,7 @@ def compile_instruction(
     module: EffectiveModule,
 ) -> _Plan:
     """Compile one non-literal instruction with its registered family compiler."""
-    return _COMPILERS[instruction.name](instruction, context, module)
+    compiler = context.instruction_compilers.get(instruction.name)
+    if compiler is None:
+        compiler = _COMPILERS[instruction.name]
+    return compiler(instruction, context, module)

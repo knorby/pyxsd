@@ -15,7 +15,14 @@ import pytest
 
 import pyxsd.xslt.processor as processor_module
 from pyxsd.xslt import PythonRules, XsltExtensions, XsltProcessor
+from pyxsd.xslt.compiler.plans import _PythonInvokePlan
+from pyxsd.xslt.compiler.python_instructions import compile_python_invoke
 from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.python_rules import (
+    PYTHON_INVOKE,
+    PYTHON_LAYER_IDENTITY,
+    execute_python_plan,
+)
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 APP = "urn:example:app"
@@ -114,6 +121,19 @@ def test_generated_layer_executes_the_bound_callback() -> None:
         .serialize()
         .endswith("invoked")
     )
+
+
+def test_compiled_artifact_registers_the_python_family_per_artifact() -> None:
+    compiled = compile_rules(stylesheet(TARGET), target_rules())
+    assert compiled.plan_executors[_PythonInvokePlan] is execute_python_plan
+    contexts = [
+        component.context
+        for component in compiled._components.values()
+        if component.component.module == PYTHON_LAYER_IDENTITY
+    ]
+    assert contexts
+    for context in contexts:
+        assert context.instruction_compilers[PYTHON_INVOKE] is compile_python_invoke
 
 
 def test_user_stylesheet_cannot_spoof_the_generated_layer_marker() -> None:

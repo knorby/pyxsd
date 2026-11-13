@@ -133,7 +133,6 @@ from pyxsd.xslt.compiler.plans import (
     _ParamPlan,
     _PerformSortPlan,
     _Plan,
-    _PythonInvokePlan,
     _RestoreVariablesPlan,
     _ResultDocumentPlan,
     _SequencePlan,
@@ -147,6 +146,7 @@ from pyxsd.xslt.compiler.plans import (
     _WherePopulatedPlan,
     _WithParamPlan,
 )
+from pyxsd.xslt.compiler.python_instructions import PYTHON_INSTRUCTION_COMPILERS
 from pyxsd.xslt.compiler.static import (
     EffectiveAttribute,
     EffectiveElement,
@@ -168,7 +168,6 @@ from pyxsd.xslt.policy import OutputPolicy
 from pyxsd.xslt.profiles import RecoveryPolicy
 from pyxsd.xslt.python_rules import (
     PYTHON_APPLICATION_NAME,
-    PYTHON_INVOKE,
     PYTHON_LAYER_IDENTITY,
     PYTHON_ORIGINAL_NAME,
     PythonRules,
@@ -199,6 +198,11 @@ from pyxsd.xslt.runtime.accumulators import (
 )
 from pyxsd.xslt.runtime.builder import validate_delivered
 from pyxsd.xslt.runtime.context import EvaluationContext
+from pyxsd.xslt.runtime.dispatch import (
+    PYTHON_PLAN_EXECUTORS,
+    PlanExecutor,
+    execute_registered_plan,
+)
 from pyxsd.xslt.runtime.evaluate import (
     DynamicExpressionCache,
     execute_dynamic_evaluate,
@@ -236,7 +240,6 @@ from pyxsd.xslt.runtime.instructions import (
     execute_map_entry,
     execute_message,
     execute_number,
-    execute_python_invoke,
     execute_source_document,
     execute_try,
     execute_value_of,
@@ -767,6 +770,7 @@ class CompiledStylesheet:
     )
     _space_rules: Mapping[str | None, tuple[SpaceRule, ...]] = field(default_factory=dict)
     extensions: XsltExtensions = field(default_factory=XsltExtensions)
+    plan_executors: Mapping[type[_Plan], PlanExecutor] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.extensions, XsltExtensions):
@@ -812,6 +816,7 @@ class CompiledStylesheet:
             MappingProxyType(dict(self._mode_accumulators)),
         )
         object.__setattr__(self, "_space_rules", MappingProxyType(dict(self._space_rules)))
+        object.__setattr__(self, "plan_executors", MappingProxyType(dict(self.plan_executors)))
 
     @property
     def language(self) -> str:
@@ -1208,6 +1213,7 @@ def _compile_stylesheet(
         _mode_accumulators=mode_accumulators,
         _space_rules=space_rules,
         extensions=resolved_extensions,
+        plan_executors=PYTHON_PLAN_EXECUTORS,
     )
 
 
@@ -2044,6 +2050,7 @@ def _context_for(
         context,
         package=package,
         python_rule_count=extensions.python_rules.rule_count,
+        instruction_compilers=PYTHON_INSTRUCTION_COMPILERS,
     )
     if context.default_collation is None and default_collation is not None:
         context = context.with_default_collation(default_collation)
@@ -3641,58 +3648,19 @@ def _compile_instruction(
 ) -> _Plan:
     """Compile one normalized instruction into its immutable plan.
 
-    Literal result elements stay explicit.  Every XSLT instruction family is
-    compiled by the dedicated compiler registered under its expanded name, and
-    an unregistered instruction keeps the explicit forwards-compatible or
-    unsupported handling.
+    Literal result elements stay explicit.  A family compiler registered on
+    this compilation's static context — an engine or application extension
+    family — is consulted before literal-result handling, then every built-in
+    family; an instruction with no registered compiler keeps the explicit
+    forwards-compatible or unsupported handling.
     """
     context = _instruction_context(context, instruction)
     context = _original_context(context, instruction)
-    if instruction.name == PYTHON_INVOKE:
-        return _compile_python_invoke(instruction, context)
+    if supports_instruction(instruction.name, context):
+        return compile_instruction(instruction, context, module)
     if instruction.literal:
         return _compile_literal_result(instruction, context, module)
-    if not supports_instruction(instruction.name):
-        return _compile_unhandled_instruction(instruction, context, module)
-    return compile_instruction(instruction, context, module)
-
-
-def _compile_python_invoke(instruction: Instruction, context: StaticContext) -> _Plan:
-    """Validate the private ``py:invoke`` rule id against the bound registry."""
-    if instruction.module != PYTHON_LAYER_IDENTITY:
-        raise XsltStaticError(
-            "the Python rule instruction is only permitted in a generated layer",
-            code="XTSE0010",
-            uri=context.uri,
-            location=instruction.location,
-        )
-    source = instruction.attribute("rule")
-    if source is None or not source.strip():
-        raise XsltStaticError(
-            "the Python rule instruction requires a rule attribute",
-            code="XTSE0010",
-            uri=context.uri,
-            location=instruction.location,
-        )
-    try:
-        rule = int(source)
-    except ValueError as exc:
-        raise XsltStaticError(
-            f"the Python rule id {source!r} is not an integer",
-            code="XTSE0010",
-            uri=context.uri,
-            location=instruction.location,
-            cause=exc,
-        ) from exc
-    count = context.python_rule_count
-    if rule < 0 or count is None or rule >= count:
-        raise XsltStaticError(
-            f"the Python rule id {rule} is not registered",
-            code="XTSE0010",
-            uri=context.uri,
-            location=instruction.location,
-        )
-    return _PythonInvokePlan(rule)
+    return _compile_unhandled_instruction(instruction, context, module)
 
 
 def _compile_literal_result(
@@ -6622,8 +6590,6 @@ class _Invocation(Transformation):
             return execute_apply_templates(plan, self, context)
         if isinstance(plan, _OverridingPlan):
             return execute_overriding(plan, self, context)
-        if isinstance(plan, _PythonInvokePlan):
-            return execute_python_invoke(plan, self, context)
         if isinstance(plan, _ResultDocumentPlan):
             self._result_document(plan, context)
             return ()
@@ -6637,9 +6603,7 @@ class _Invocation(Transformation):
                 "Task 16 execution slice",
                 code=None,
             )
-        raise TypeError(  # pragma: no cover - every _Plan arm is handled above
-            f"unknown compiled plan {type(plan).__name__}"
-        )
+        return execute_registered_plan(plan, self, context, self.stylesheet.plan_executors)
 
     def _resolve_attribute_set(
         self,
