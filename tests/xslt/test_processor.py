@@ -27,7 +27,7 @@ from pyxsd.xslt import (
     XsltProcessor,
 )
 from pyxsd.xslt.compiler.packages import PackageResolver
-from pyxsd.xslt.errors import XsltError, XsltStaticError
+from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltStaticError
 from pyxsd.xslt.processor import XsltInvocationError
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -563,7 +563,7 @@ def test_secondary_uri_errors_and_principal_collision() -> None:
             "</xsl:template>"
         )
     )
-    with pytest.raises(XsltError) as error:
+    with pytest.raises(XsltDynamicError) as error:
         duplicate.transform(initial_template="main")
     assert error.value.code == "XTDE1490"
 
@@ -584,7 +584,7 @@ def test_secondary_uri_errors_and_principal_collision() -> None:
             "</xsl:template>"
         )
     )
-    with pytest.raises(XsltError) as error:
+    with pytest.raises(XsltDynamicError) as error:
         collision.transform(
             initial_template="main",
             output_uri="http://example.com/out.xml",
@@ -1286,7 +1286,7 @@ def test_result_document_error_arms() -> None:
             "</xsl:template>"
         )
     )
-    with pytest.raises(XsltError) as error:
+    with pytest.raises(XsltDynamicError) as error:
         empty_href.transform(initial_template="main", output_uri="http://example.com/out")
     assert error.value.code == "XTDE1490"
 

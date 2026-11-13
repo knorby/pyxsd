@@ -5366,6 +5366,7 @@ class _Invocation(Transformation):
             entry,
             secondary=secondary,
             messages=tuple(self.messages),
+            _output_policy=policy,
         )
 
     def _check_output_budget(self, sequence: XdmSequence) -> None:
@@ -6470,7 +6471,7 @@ class _Invocation(Transformation):
         if self.stylesheet.processor.output_policy is not None:
             self.stylesheet.processor.output_policy.authorize(uri, principal=False)
         if uri in self.final_uris:
-            raise XsltError(
+            raise XsltDynamicError(
                 f"the transformation produced two final result trees with URI {uri!r}",
                 code="XTDE1490",
             )

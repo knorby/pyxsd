@@ -16,11 +16,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
+from typing import Any
 from urllib.parse import urlsplit
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.xdm.nodes import XdmDocument, XdmNode
 from pyxsd.xdm.values import XdmItem, XdmSequence
+from pyxsd.xslt.errors import XsltDynamicError
+from pyxsd.xslt.policy import OutputPolicy
 from pyxsd.xslt.runtime.builder import (
     _append_complex_content as _append_complex_content,
 )
@@ -31,6 +34,7 @@ from pyxsd.xslt.runtime.builder import (
     _prefix_for as _prefix_for,
 )
 from pyxsd.xslt.runtime.builder import build_result_tree
+from pyxsd.xslt.serialization import SerializationParameters, Serializer
 
 _build_result_tree = build_result_tree
 
@@ -131,13 +135,36 @@ class ResultEntry:
         return self.tree
 
 
+def _serialization_parameters(
+    entry: ResultEntry,
+    parameters: Mapping[str, Any] | None,
+) -> SerializationParameters:
+    """Resolve one entry's effective output attributes, with explicit overrides.
+
+    The entry already stores effective values: QName-list attributes are
+    expanded at their declaration sites.  Override keys use the same
+    ``xsl:output`` attribute vocabulary and are layered on top without touching
+    the entry or its retained views.
+    """
+    attributes: dict[str, Any] = dict(entry.serialization)
+    if parameters is not None:
+        attributes.update(parameters)
+    return SerializationParameters.from_attributes(attributes)
+
+
 @dataclass(frozen=True, slots=True)
 class TransformationResult:
-    """The principal and secondary results of one transformation."""
+    """The principal and secondary results of one transformation.
+
+    The result retains its invocation's output policy only so an explicit
+    :meth:`write` can authorize the same destination again.  Producing the
+    result, :meth:`serialize`, and :meth:`principal_tree` never write.
+    """
 
     principal_entry: ResultEntry
     secondary: Mapping[str, ResultEntry] = field(default_factory=dict)
     messages: tuple[Message, ...] = ()
+    _output_policy: OutputPolicy | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.principal_entry, ResultEntry):
@@ -182,6 +209,62 @@ class TransformationResult:
             "the principal result is not a document tree; request delivery='document', "
             "honor a tree-building output method, or inspect the raw sequence"
         )
+
+    def _entry(self, uri: str | None) -> ResultEntry:
+        """Select the principal entry, or exactly one secondary entry by URI."""
+        if uri is None:
+            return self.principal_entry
+        return self.secondary[uri]
+
+    def serialize(
+        self,
+        uri: str | None = None,
+        *,
+        parameters: Mapping[str, Any] | None = None,
+    ) -> str:
+        """Return one result as a string, without authorization or I/O.
+
+        *uri* selects the principal result when ``None`` and exactly that
+        secondary key otherwise.  *parameters* override the entry's retained
+        effective output attributes for this call only.
+        """
+        entry = self._entry(uri)
+        resolved = _serialization_parameters(entry, parameters)
+        return Serializer.serialize(entry.raw, resolved)
+
+    def write(
+        self,
+        destination: Any,
+        uri: str | None = None,
+        *,
+        parameters: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Write one result after re-authorizing its absolute output URI.
+
+        *uri* selects the principal result when ``None`` and exactly that
+        secondary key otherwise.  Writing is always an explicit host operation:
+        the entry must already carry an absolute output URI, and a configured
+        output policy authorizes this destination again with
+        ``principal=(uri is None)``.  A destination ``OSError`` becomes a
+        ``code=None`` dynamic error retaining the original exception.
+        """
+        entry = self._entry(uri)
+        if entry.output_uri is None:
+            raise XsltDynamicError(
+                "writing a result requires an absolute output URI",
+                code="XTDE1480",
+            )
+        policy = self._output_policy
+        if policy is not None:
+            policy.authorize(entry.output_uri, principal=uri is None)
+        resolved = _serialization_parameters(entry, parameters)
+        try:
+            Serializer.write(entry.raw, resolved, destination)
+        except OSError as error:
+            raise XsltDynamicError(
+                f"cannot write the result {entry.output_uri!r}: {error}",
+                cause=error,
+            ) from error
 
 
 def _result_node_count(sequence: XdmSequence) -> int:
