@@ -56,6 +56,7 @@ from pyxsd.xslt.compiler.plans import (
     _LiteralPlan,
     _MapEntryPlan,
     _MapPlan,
+    _MessagePlan,
     _NumberPlan,
     _OnEmptyPlan,
     _OnNonEmptyPlan,
@@ -76,7 +77,12 @@ from pyxsd.xslt.errors import (
     error_code_from_exception,
     is_static_error_code,
 )
-from pyxsd.xslt.results import _append_complex_content, _build_result_tree, _NodeFactory
+from pyxsd.xslt.results import (
+    Message,
+    _append_complex_content,
+    _build_result_tree,
+    _NodeFactory,
+)
 from pyxsd.xslt.runtime.accumulators import accumulator_copy_names
 from pyxsd.xslt.runtime.builder import (
     ResultBuilder,
@@ -134,6 +140,7 @@ __all__ = [
     "execute_fork",
     "execute_map",
     "execute_map_entry",
+    "execute_message",
     "execute_number",
     "execute_source_document",
     "execute_try",
@@ -1701,6 +1708,39 @@ def execute_assert(
         cause=failure or message_failure,
         value=value,
     )
+
+
+def execute_message(
+    plan: _MessagePlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> None:
+    try:
+        values = () if plan.select is None else invocation._evaluate(plan.select, context)
+        values += invocation._execute_plans(
+            plan.children, context=replace(context, final_output=False)
+        )
+        text = _build_result_tree(values).string_value
+    except (XsltError, ElementPathError, XPathEvaluationError) as error:
+        if catchable_error(invocation, error, invocation.diagnostics) is None:
+            raise
+        text = ""
+    terminate = invocation._value_source(plan.terminate, context).strip()
+    if terminate not in ("yes", "true", "1", "no", "false", "0"):
+        raise XsltDynamicError("invalid xsl:message terminate value", code="XTDE0030")
+    terminating = terminate in ("yes", "true", "1")
+    code = (
+        "XTMM9000"
+        if plan.error_code is None
+        else _diagnostic_error_code(
+            invocation._value_source(plan.error_code, context),
+            plan.instruction.namespaces,
+            default="XTMM9000",
+        )
+    )
+    invocation.messages.append(Message(text, code=code, terminate=terminating))
+    if terminating:
+        raise XsltDynamicError(text, code=code, location=plan.instruction.location)
 
 
 def execute_conditional_sequence(

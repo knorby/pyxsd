@@ -205,10 +205,8 @@ from pyxsd.xslt.runtime.frames import (
 )
 from pyxsd.xslt.runtime.functions import ABSENT, XsltContextBridge
 from pyxsd.xslt.runtime.instructions import (
-    _diagnostic_error_code,
     _item_string,
     attribute_value,
-    catchable_error,
     choose_branch,
     copy_of_value,
     copy_value,
@@ -222,6 +220,7 @@ from pyxsd.xslt.runtime.instructions import (
     execute_fork,
     execute_map,
     execute_map_entry,
+    execute_message,
     execute_number,
     execute_source_document,
     execute_try,
@@ -6330,32 +6329,7 @@ class _Invocation(Transformation):
             execute_assert(plan, self, context)
             return ()
         if isinstance(plan, _MessagePlan):
-            try:
-                values = () if plan.select is None else self._evaluate(plan.select, context)
-                values += self._execute_plans(
-                    plan.children, context=replace(context, final_output=False)
-                )
-                text = _build_result_tree(values).string_value
-            except (XsltError, ElementPathError, XPathEvaluationError) as error:
-                if catchable_error(self, error, self.diagnostics) is None:
-                    raise
-                text = ""
-            terminate = self._value_source(plan.terminate, context).strip()
-            if terminate not in ("yes", "true", "1", "no", "false", "0"):
-                raise XsltDynamicError("invalid xsl:message terminate value", code="XTDE0030")
-            terminating = terminate in ("yes", "true", "1")
-            code = (
-                "XTMM9000"
-                if plan.error_code is None
-                else _diagnostic_error_code(
-                    self._value_source(plan.error_code, context),
-                    plan.instruction.namespaces,
-                    default="XTMM9000",
-                )
-            )
-            self.messages.append(Message(text, code=code, terminate=terminating))
-            if terminating:
-                raise XsltDynamicError(text, code=code, location=plan.instruction.location)
+            execute_message(plan, self, context)
             return ()
         if isinstance(plan, _WherePopulatedPlan):
             return execute_where_populated(plan, self, context)
