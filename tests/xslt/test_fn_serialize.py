@@ -72,6 +72,13 @@ def test_serialize_with_a_parameter_map() -> None:
 
 
 def test_serialize_map_form_defaults_omit_the_declaration() -> None:
+    single = _NODE + (
+        '<xsl:template name="main"><xsl:sequence select="serialize($n)"/></xsl:template>'
+    )
+    assert _transform(single, attributes=' exclude-result-prefixes="xs"').principal == (
+        XdmAtomic.string("<r>x</r>"),
+    )
+
     assert _serialize_node("()").principal == (XdmAtomic.string("<r>x</r>"),)
     assert _serialize_node("map{}").principal == (XdmAtomic.string("<r>x</r>"),)
     assert _serialize_node("map{'omit-xml-declaration': false()}").principal == (
