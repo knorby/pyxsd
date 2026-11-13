@@ -13,6 +13,7 @@ from pyxsd.xslt.errors import XsltDynamicError
 from pyxsd.xslt.results import _result_node_count
 from pyxsd.xslt.runtime.frames import ExecutionBudget, ExecutionLimits
 from pyxsd.xslt.runtime.resources import DocumentResources
+from pyxsd.xslt.serialization import Serializer
 
 BUDGET_CODE = "PYXSD-XSLT-001"
 
@@ -211,7 +212,7 @@ def compile_text_only_stylesheet():
 
 def _serialized_bytes(entry) -> int:
     assert entry.serialized is not None
-    return len(entry.serialized.encode(entry.serialization.get("encoding", "utf-8")))
+    return len(Serializer.encode(entry.serialized, entry.serialization))
 
 
 def _delivered_sizes() -> tuple[int, int]:
@@ -281,6 +282,60 @@ def test_byte_charge_uses_the_entry_encoding() -> None:
 
     result = compiled.transform(limits=ExecutionLimits(max_output_bytes=6))
     assert result.principal_entry.serialized == "abc"
+
+
+def test_byte_order_mark_bytes_are_charged() -> None:
+    source = stylesheet(
+        '<xsl:output method="xml" omit-xml-declaration="yes" byte-order-mark="yes"/>'
+        '<xsl:template name="xsl:initial-template"><principal/></xsl:template>'
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(source))
+    delivered = compiled.transform()
+    entry = delivered.principal_entry
+    assert entry.serialized is not None
+    encoded = Serializer.encode(entry.serialized, entry.serialization)
+    assert encoded.startswith(b"\xef\xbb\xbf")
+    assert _serialized_bytes(entry) == len(encoded)
+    assert len(encoded) == len(entry.serialized.encode("utf-8")) + 3
+
+    assert (
+        compiled.transform(
+            limits=ExecutionLimits(max_output_bytes=len(encoded))
+        ).principal_entry.serialized
+        is not None
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(limits=ExecutionLimits(max_output_bytes=len(encoded) - 1))
+    assert "output byte budget" in str(caught.value)
+
+
+def test_secondary_result_encoding_is_charged() -> None:
+    uri = "urn:test:encoded-secondary"
+    source = stylesheet(
+        '<xsl:output method="xml" omit-xml-declaration="yes"/>'
+        '<xsl:template name="xsl:initial-template">'
+        "<principal/>"
+        f'<xsl:result-document href="{uri}" method="text" encoding="UTF-16">abc'
+        "</xsl:result-document>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(source))
+    delivered = compiled.transform()
+    entry = delivered.secondary[uri]
+    assert entry.serialized == "abc"
+    secondary_bytes = _serialized_bytes(entry)
+    assert secondary_bytes == 6
+    combined = _serialized_bytes(delivered.principal_entry) + secondary_bytes
+
+    assert (
+        compiled.transform(
+            limits=ExecutionLimits(max_output_bytes=combined)
+        ).principal_entry.serialized
+        is not None
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(limits=ExecutionLimits(max_output_bytes=combined - 1))
+    assert "output byte budget" in str(caught.value)
 
 
 def test_node_and_byte_budgets_report_distinct_diagnostics() -> None:
