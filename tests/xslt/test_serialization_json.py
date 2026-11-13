@@ -8,6 +8,7 @@ rather than a normalized text result.
 from __future__ import annotations
 
 import pytest
+from elementpath.datatypes import QName
 
 from pyxsd import xsd_data_types as xsd
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmItem, XdmMap
@@ -80,6 +81,20 @@ def test_modern_parameters_validate_through_sepm0016() -> None:
     assert _error_code(lambda: SerializationParameters(character_maps=(("ab", "x"),))) == "SEPM0016"
     assert (
         _error_code(lambda: SerializationParameters(character_maps=(("a", 1),)))  # type: ignore[arg-type]
+        == "SEPM0016"
+    )
+    assert SerializationParameters(character_maps=None).character_maps == ()  # type: ignore[arg-type]
+    assert SerializationParameters(character_maps={"a": "b"}).character_maps == (("a", "b"),)
+    assert (
+        _error_code(lambda: SerializationParameters(character_maps="ab"))  # type: ignore[arg-type]
+        == "SEPM0016"
+    )
+    assert (
+        _error_code(lambda: SerializationParameters(character_maps=("ab",)))  # type: ignore[arg-type]
+        == "SEPM0016"
+    )
+    assert (
+        _error_code(lambda: SerializationParameters(json_node_output_method=1))  # type: ignore[arg-type]
         == "SEPM0016"
     )
 
@@ -231,6 +246,18 @@ def test_adaptive_serializes_qnames_as_uri_qualified_names() -> None:
         value = XdmAtomic.typed(xsd.QName("p:local"), xsd.QName)
 
     assert _serialize((value,), method="adaptive") == "Q{urn:example}local"
+
+
+def test_adaptive_serializes_elementpath_and_unresolved_qnames() -> None:
+    elementpath_qname = QName("urn:example", "p:local")
+    item = XdmAtomic(elementpath_qname, f"{{{XSD_NS}}}QName", QName)
+    assert _serialize((item,), method="adaptive") == "Q{urn:example}local"
+
+    unresolved = XdmAtomic.typed(xsd.QName("p:local"), xsd.QName)
+    assert _serialize((unresolved,), method="adaptive") == "p:local"
+
+    bare = XdmAtomic("local", f"{{{XSD_NS}}}QName", None)
+    assert _serialize((bare,), method="adaptive") == "Q{}local"
 
 
 def test_adaptive_serializes_arrays_and_maps() -> None:

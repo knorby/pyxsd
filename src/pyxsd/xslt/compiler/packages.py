@@ -367,6 +367,7 @@ class CompiledPackage:
         object.__setattr__(self, "hidden_modes", MappingProxyType(dict(self.hidden_modes)))
         object.__setattr__(self, "originals", MappingProxyType(dict(self.originals)))
         object.__setattr__(self, "namespaces", MappingProxyType(dict(self.namespaces)))
+        self._validate_character_maps()
 
     def _expand(self, name: str) -> str:
         return _expand_name(name, self.namespaces)
@@ -461,6 +462,70 @@ class CompiledPackage:
             if definition.name == wanted:
                 return definition
         return None
+
+    def character_map_pairs(self, names: str | None = None) -> tuple[tuple[str, str], ...]:
+        """Expand character-map names into ``(character, replacement)`` pairs.
+
+        *names* is the whitespace-separated content of one ``use-character-maps``
+        attribute, already expanded to ``Q{uri}local`` at the site that wrote
+        it.  Referenced maps are expanded depth-first and an own
+        ``xsl:output-character`` child overrides a referenced mapping.  A
+        character mapped to two different strings is ``XTSE1585``; a map that
+        references itself directly or indirectly is ``XTSE1600``.
+        """
+        pairs: dict[str, str] = {}
+        for token in () if names is None else names.split():
+            self._collect_character_map(token, pairs, ())
+        return tuple(pairs.items())
+
+    def _collect_character_map(
+        self,
+        name: str,
+        pairs: dict[str, str],
+        path: tuple[str, ...],
+    ) -> None:
+        definition = self.character_map(name)
+        if definition is None:
+            return
+        if definition.name is not None and definition.name in path:
+            raise XsltStaticError(
+                f"the character map {name!r} references itself",
+                code="XTSE1600",
+                uri=definition.module,
+                location=definition.location,
+            )
+        expanded_path = (*path, definition.name or name)
+        for token in (definition.attribute("use-character-maps") or "").split():
+            self._collect_character_map(token, pairs, expanded_path)
+        for declaration in definition.declarations:
+            for child in declaration.elements:
+                if child.local_name != "output-character":
+                    continue
+                character = child.attribute("character")
+                replacement = child.attribute("string")
+                if character is None or len(character) != 1 or replacement is None:
+                    raise XsltStaticError(
+                        "an xsl:output-character requires one character and a string",
+                        code="XTSE0010",
+                        uri=definition.module,
+                        location=child.location or definition.location,
+                    )
+                existing = pairs.get(character)
+                if existing is not None and existing != replacement:
+                    raise XsltStaticError(
+                        f"the character {character!r} maps to conflicting strings",
+                        code="XTSE1585",
+                        uri=definition.module,
+                        location=child.location or definition.location,
+                    )
+                pairs[character] = replacement
+
+    def _validate_character_maps(self) -> None:
+        """Resolve every declared map and output reference at compile time."""
+        for definition in self.character_maps:
+            self.character_map_pairs(definition.name)
+        for definition in self.outputs:
+            self.character_map_pairs(definition.attribute("use-character-maps"))
 
     @property
     def keys(self) -> Mapping[str, Component]:
@@ -1648,9 +1713,13 @@ def _build_constructs(
                             merged.append(expanded)
                     attributes[local] = " ".join(merged)
                     continue
-                if kind == "output" and local == "use-character-maps":
+                if kind in ("output", "character-map") and local == "use-character-maps":
                     existing = attributes.get(local, "").split()
-                    attributes[local] = " ".join((*existing, *attribute.value.split()))
+                    tokens = [
+                        expand_qname(token, declaration.element.in_scope_namespaces)
+                        for token in attribute.value.split()
+                    ]
+                    attributes[local] = " ".join((*existing, *tokens))
                     continue
                 attribute_entries.setdefault(local, []).append(
                     (declaration.precedence, attribute.value, declaration)

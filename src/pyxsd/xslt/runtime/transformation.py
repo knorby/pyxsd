@@ -128,6 +128,7 @@ class Transformation:
         self.current_datetime = base.current_datetime
         self.implicit_timezone = base.implicit_timezone
         self.output_attributes = self._read_output_attributes()
+        self.character_maps = self._read_character_maps()
         self.current_group: XdmSequence | None = None
         self.current_grouping_key: XdmSequence | None = None
         self.limits = limits if limits is not None else ExecutionLimits()
@@ -160,6 +161,15 @@ class Transformation:
         if output is None:
             return {}
         return dict(output.attributes)
+
+    def _read_character_maps(self) -> tuple[tuple[str, str], ...]:
+        """Resolve the unnamed output's ``use-character-maps`` to pairs."""
+        if self.package is None:
+            return ()
+        output = self.package.output(None)
+        if output is None:
+            return ()
+        return self.package.character_map_pairs(output.attribute("use-character-maps"))
 
     @property
     def diagnostics(self) -> tuple[FrameDiagnostic, ...]:

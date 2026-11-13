@@ -171,6 +171,7 @@ from pyxsd.xslt.results import (
     _build_result_tree,
     _NodeFactory,
     _result_node_count,
+    serialization_parameters,
 )
 from pyxsd.xslt.runtime.accumulators import (
     AccumulatorDefinition,
@@ -268,7 +269,7 @@ from pyxsd.xslt.runtime.templates import (
 )
 from pyxsd.xslt.runtime.transformation import ComponentCall, Transformation
 from pyxsd.xslt.runtime.whitespace import _shared_name_test, apply_source_space_rules
-from pyxsd.xslt.serialization import SerializationParameters, Serializer
+from pyxsd.xslt.serialization import Serializer
 from pyxsd.xslt.serialization.parameters import expand_qname_list
 
 __all__ = [
@@ -290,7 +291,9 @@ _DELIVERIES = frozenset({"stylesheet", "raw", "document"})
 _VALIDATION_MODES = frozenset({"strict", "lax", "preserve", "strip"})
 #: Serialization attributes whose values are QName lists.  Each is expanded
 #: where it is written, so delivery must keep the stored tokens unchanged.
-_QNAME_LIST_OUTPUT_ATTRIBUTES = frozenset({"cdata-section-elements", "suppress-indentation"})
+_QNAME_LIST_OUTPUT_ATTRIBUTES = frozenset(
+    {"cdata-section-elements", "suppress-indentation", "use-character-maps"}
+)
 UNTYPED_TYPE = "{http://www.w3.org/2001/XMLSchema}untyped"
 ANY_TYPE = "{http://www.w3.org/2001/XMLSchema}anyType"
 
@@ -604,24 +607,20 @@ def _serialize_result_entry(
     secondary: bool,
     budget: ExecutionBudget,
 ) -> ResultEntry:
-    """Return *entry* with ``serialized`` populated for supported methods.
+    """Return *entry* with ``serialized`` populated for its output method.
 
     Encoding and its byte charge happen together against the entry's effective
     serialization parameters.  When no byte budget is configured the encoded
-    length is never measured, so encoding remains solely a writing concern.  An
-    entry whose method this serializer does not implement keeps its raw
-    sequence and is not charged.  ``entry.serialization`` already carries
-    expanded QName-list values: global output declarations expand at their
-    declaration sites and result-document attributes expand at their
-    instruction.  Re-expanding them here with the principal package's bindings
-    would rename values declared in another module.  JSON and adaptive output
-    are a later task; deferring them keeps their raw sequences and their
-    existing delivery behavior intact.
+    length is never measured, so encoding remains solely a writing concern.
+    ``entry.serialization`` already carries expanded QName-list values: global
+    output declarations expand at their declaration sites and result-document
+    attributes expand at their instruction.  Re-expanding them here with the
+    principal package's bindings would rename values declared in another
+    module.  Character maps arrive as resolved pairs on the entry, so the
+    serializer never resolves a map name a second time.
     """
-    if not Serializer.supports_method(str(entry.serialization.get("method", "xml"))):
-        return entry
     try:
-        parameters = SerializationParameters.from_attributes(entry.serialization)
+        parameters = serialization_parameters(entry, None)
         serialized = Serializer.serialize(entry.raw, parameters)
         if budget.limits.max_output_bytes is not None:
             encoded = Serializer.encode(serialized, parameters)
@@ -5369,6 +5368,7 @@ class _Invocation(Transformation):
             output_uri=self.options.output_uri,
             tree=tree,
             serialization=self.output_attributes,
+            character_maps=self.character_maps,
         )
         secondary = self.secondary
         if self.options.delivery == "stylesheet":
@@ -6523,6 +6523,9 @@ class _Invocation(Transformation):
                 output_uri=uri,
                 tree=tree,
                 serialization=serialization,
+                character_maps=self.package.character_map_pairs(
+                    serialization.get("use-character-maps")
+                ),
             )
         except BaseException:
             self.final_uris.discard(uri)

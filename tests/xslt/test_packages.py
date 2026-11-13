@@ -2691,7 +2691,7 @@ def test_import_precedence_combines_sets_keys_and_formats(tmp_path: Path) -> Non
     assert output.attribute("cdata-section-elements") == (
         "Q{urn:example:doc}one Q{urn:example:doc}two"
     )
-    assert output.attribute("use-character-maps") == "app:one app:two"
+    assert output.attribute("use-character-maps") == ("Q{urn:example:app}one Q{urn:example:app}two")
 
 
 def test_function_signature_parameter_names_and_new_each_time() -> None:
@@ -3130,7 +3130,9 @@ def test_output_duplicate_merge_tokens() -> None:
     )
     output = compile_package_set(package).output(None)
     assert output.attribute("cdata-section-elements") == ("Q{urn:example:doc}a Q{urn:example:doc}b")
-    assert output.attribute("use-character-maps") == "app:one app:one app:two"
+    assert output.attribute("use-character-maps") == (
+        "Q{urn:example:app}one Q{urn:example:app}one Q{urn:example:app}two"
+    )
 
 
 def test_mode_wildcard_incompatible_falls_back_and_default_named_mode() -> None:

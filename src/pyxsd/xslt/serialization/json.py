@@ -12,7 +12,6 @@ from __future__ import annotations
 import codecs
 import math
 from collections.abc import Sequence
-from decimal import Decimal
 from typing import Any
 
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmItem, XdmMap
@@ -127,11 +126,10 @@ def _json_string(
 
 
 def _json_number(item: XdmAtomic) -> str:
+    # xs:float and xs:double are the numeric types whose value space includes
+    # non-finite values; xs:decimal cannot reach this branch with one.
     value = item.value
-    if isinstance(value, float):
-        if math.isnan(value) or math.isinf(value):
-            raise _error("the JSON output method cannot represent a non-finite number", "SERE0020")
-    elif isinstance(value, Decimal) and not value.is_finite():
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
         raise _error("the JSON output method cannot represent a non-finite number", "SERE0020")
     return item.lexical
 

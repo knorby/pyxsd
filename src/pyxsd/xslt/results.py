@@ -35,6 +35,7 @@ from pyxsd.xslt.runtime.builder import (
 )
 from pyxsd.xslt.runtime.builder import build_result_tree
 from pyxsd.xslt.serialization import SerializationParameters, Serializer
+from pyxsd.xslt.serialization.characters import character_map_pairs
 
 _build_result_tree = build_result_tree
 
@@ -43,6 +44,7 @@ __all__ = [
     "ResultEntry",
     "ResultShapeError",
     "TransformationResult",
+    "serialization_parameters",
 ]
 
 
@@ -103,6 +105,9 @@ class ResultEntry:
     serialized string when ``delivery="stylesheet"`` produced one, while
     ``serialization`` records the effective output parameters.  ``output_uri``
     identifies the principal result or the absolute URI of a secondary result.
+    ``character_maps`` holds the resolved ``(character, replacement)`` pairs for
+    the effective output, so an explicit ``serialize()`` or ``write()``
+    reproduces the transformation's own serialization.
     """
 
     raw: XdmSequence
@@ -110,6 +115,7 @@ class ResultEntry:
     tree: XdmDocument | None = None
     serialized: str | None = None
     serialization: Mapping[str, str] = field(default_factory=dict)
+    character_maps: tuple[tuple[str, str], ...] = ()
     messages: tuple[Message, ...] = ()
 
     def __post_init__(self) -> None:
@@ -124,6 +130,7 @@ class ResultEntry:
         if self.serialized is not None and not isinstance(self.serialized, str):
             raise TypeError("a serialized result must be a string or None")
         object.__setattr__(self, "serialization", _freeze_parameters(self.serialization))
+        object.__setattr__(self, "character_maps", character_map_pairs(self.character_maps))
         messages = tuple(self.messages)
         if not all(isinstance(message, Message) for message in messages):
             raise TypeError("result messages must be Message values")
@@ -135,18 +142,20 @@ class ResultEntry:
         return self.tree
 
 
-def _serialization_parameters(
+def serialization_parameters(
     entry: ResultEntry,
     parameters: Mapping[str, Any] | None,
 ) -> SerializationParameters:
     """Resolve one entry's effective output attributes, with explicit overrides.
 
     The entry already stores effective values: QName-list attributes are
-    expanded at their declaration sites.  Override keys use the same
-    ``xsl:output`` attribute vocabulary and are layered on top without touching
-    the entry or its retained views.
+    expanded at their declaration sites and character-map names are resolved to
+    pairs by the processor.  Override keys use the same ``xsl:output`` attribute
+    vocabulary, plus the ``character_maps`` field, and are layered on top
+    without touching the entry or its retained views.
     """
-    attributes: dict[str, Any] = dict(entry.serialization)
+    attributes: dict[str, Any] = {"character_maps": entry.character_maps}
+    attributes.update(entry.serialization)
     if parameters is not None:
         attributes.update(parameters)
     return SerializationParameters.from_attributes(attributes)
@@ -229,7 +238,7 @@ class TransformationResult:
         effective output attributes for this call only.
         """
         entry = self._entry(uri)
-        resolved = _serialization_parameters(entry, parameters)
+        resolved = serialization_parameters(entry, parameters)
         return Serializer.serialize(entry.raw, resolved)
 
     def write(
@@ -257,7 +266,7 @@ class TransformationResult:
         policy = self._output_policy
         if policy is not None:
             policy.authorize(entry.output_uri, principal=uri is None)
-        resolved = _serialization_parameters(entry, parameters)
+        resolved = serialization_parameters(entry, parameters)
         try:
             Serializer.write(entry.raw, resolved, destination)
         except OSError as error:
