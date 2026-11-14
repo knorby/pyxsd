@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from tests.xslt.outcomes import CaseResult
+from tests.xslt.outcomes import CaseResult, Outcome
 
 #: Report document schema version.
 REPORT_SCHEMA = 1
@@ -55,6 +55,27 @@ class Report:
             "summary": dict(sorted(summary.items())),
             "cases": cases,
         }
+
+
+def outcomes_report(
+    outcomes: Mapping[str, str],
+    *,
+    corpus: str,
+    profile: str,
+) -> Report:
+    """Build one report from recorded outcomes alone.
+
+    A checked-in baseline records only the per-case outcome, not the coverage
+    or messages of the run that produced it.  This view keeps that limitation
+    explicit instead of fabricating result details a baseline never stored.
+    """
+    known = {member.value for member in Outcome}
+    cases: dict[str, dict[str, Any]] = {}
+    for name, outcome in outcomes.items():
+        if outcome not in known:
+            raise ValueError(f"unknown XSLT outcome {outcome!r} for {name!r}")
+        cases[str(name)] = {"outcome": outcome, "coverage": [], "message": ""}
+    return Report(corpus=corpus, profile=profile, cases=cases)
 
 
 def build_report(results: Iterable[CaseResult], *, corpus: str, profile: str) -> Report:

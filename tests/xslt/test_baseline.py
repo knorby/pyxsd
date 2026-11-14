@@ -6,11 +6,13 @@ import json
 import tomllib
 from pathlib import Path
 
+import pytest
 from tests.xslt.baseline import (
     Baseline,
     BaselineChange,
     build_baseline,
     diff_baseline,
+    gate_changes,
     load_baseline,
     write_baseline,
 )
@@ -39,6 +41,37 @@ def test_other_baseline_transitions_are_named() -> None:
     assert changes[0].current == "adapter-gap"
     assert changes[1].previous is None
     assert changes[2].current is None
+
+
+def test_gate_treats_harness_budget_timeouts_as_drift() -> None:
+    changes, drift = gate_changes(
+        {
+            "kept": "pass",
+            "worse": "pass",
+            "better": "fail",
+            "passes-out": "pass",
+            "back": "timeout",
+            "fails-out": "fail",
+        },
+        {
+            "kept": "pass",
+            "worse": "fail",
+            "better": "pass",
+            "passes-out": "timeout",
+            "back": "pass",
+            "fails-out": "timeout",
+        },
+    )
+
+    assert [(change.kind, change.key) for change in changes] == [
+        ("improvement", "better"),
+        ("regression", "passes-out"),
+        ("regression", "worse"),
+    ]
+    assert [(change.kind, change.key) for change in drift] == [
+        ("improvement", "back"),
+        ("changed", "fails-out"),
+    ]
 
 
 def test_identical_baselines_produce_no_changes() -> None:
@@ -72,6 +105,27 @@ def test_baseline_round_trips_through_deterministic_toml(tmp_path: Path) -> None
     }
     assert list(loaded.cases) == ["a/case", "m/case", "z/case"]
     assert tomllib.loads(first)["meta"]["corpus"] == "abc123"
+
+
+def test_baseline_metadata_records_a_finite_timeout(tmp_path: Path) -> None:
+    path = tmp_path / "xslt30.toml"
+    write_baseline(
+        path,
+        Baseline(
+            meta={"corpus": "rev", "profile": "xslt30", "timeout_seconds": 6.5},
+            cases={"a": "pass"},
+        ),
+    )
+
+    assert load_baseline(path).meta["timeout_seconds"] == 6.5
+    with pytest.raises(TypeError, match="TOML float"):
+        write_baseline(
+            path,
+            Baseline(
+                meta={"corpus": "rev", "profile": "xslt30", "timeout_seconds": float("inf")},
+                cases={},
+            ),
+        )
 
 
 def test_load_baseline_accepts_a_profile_name(tmp_path: Path) -> None:

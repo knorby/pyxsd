@@ -8,6 +8,7 @@ separately; it never treats every difference as interchangeable.
 from __future__ import annotations
 
 import json
+import math
 import tomllib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -36,6 +37,10 @@ def _toml_value(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False)
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise TypeError(f"unsupported TOML float: {value!r}")
+        return repr(value)
     if isinstance(value, int):
         return str(value)
     raise TypeError(f"unsupported TOML value: {value!r}")
@@ -105,6 +110,30 @@ def diff_baseline(
         else:
             changes.append(BaselineChange("changed", key, old, new))
     return tuple(changes)
+
+
+def gate_changes(
+    previous: Baseline | Mapping[str, str],
+    current: Baseline | Mapping[str, str],
+) -> tuple[tuple[BaselineChange, ...], tuple[BaselineChange, ...]]:
+    """Split changes into semantic verdicts and harness-budget drift.
+
+    ``timeout`` means the per-case harness budget expired; it is not a
+    semantic verdict.  A slower machine may turn a failure into a timeout or
+    a timeout into a failure with no change in the processor's answer.  Those
+    transitions are returned as drift and reported without failing the gate.
+    A passing case becoming a timeout is still a regression: the processor no
+    longer reaches the result it used to reach.  Every transition between two
+    semantic verdicts is strict, in both directions.
+    """
+    hard: list[BaselineChange] = []
+    drift: list[BaselineChange] = []
+    for change in diff_baseline(previous, current):
+        if change.kind != "regression" and "timeout" in (change.previous, change.current):
+            drift.append(change)
+        else:
+            hard.append(change)
+    return tuple(hard), tuple(drift)
 
 
 def build_baseline(results: Iterable[CaseResult], *, corpus: str, profile: str) -> Baseline:
