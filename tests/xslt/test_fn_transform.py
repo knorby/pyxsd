@@ -145,6 +145,31 @@ def test_fn_transform_delivery_budgets_and_errors() -> None:
         run_transform({"stylesheet-text": nested, "xslt-version": 3.1})
 
 
+def test_base_output_uri_keys_the_principal_by_its_absolute_uri() -> None:
+    nested = (
+        '<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" '
+        'version="3.0">'
+        '<xsl:template name="xsl:initial-template">'
+        '<xsl:result-document href="secondary.xml">'
+        "<side/></xsl:result-document><principal/></xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    result = run_transform(
+        {
+            "stylesheet-text": nested,
+            "base-output-uri": "https://example.test/results/main.xml",
+            "delivery-format": "raw",
+        }
+    )
+    principal = map_get(result, "https://example.test/results/main.xml")
+    assert len(principal) == 1 and isinstance(principal[0], XdmNode)
+    assert principal[0].local_name == "principal"
+    secondary = map_get(result, "https://example.test/results/secondary.xml")
+    assert len(secondary) == 1 and isinstance(secondary[0], XdmNode)
+    assert secondary[0].local_name == "side"
+    assert not result.contains(XdmAtomic.string("output"))
+
+
 # ---------------------------------------------------------------------------
 # Stylesheet and package sources
 
