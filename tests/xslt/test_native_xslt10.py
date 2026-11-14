@@ -41,7 +41,11 @@ from pyxsd.xdm.legacy import (
     number_to_string,
 )
 from pyxsd.xdm.nodes import NodeKind, XdmDocument
-from pyxsd.xpath.engine import _legacy_number_value, _legacy_string_value
+from pyxsd.xpath.engine import (
+    _legacy_boolean_value,
+    _legacy_number_value,
+    _legacy_string_value,
+)
 from pyxsd.xslt import XsltExtensions, XsltProcessor
 from pyxsd.xslt.compiler.context import ProfileOptions, StaticContext
 from pyxsd.xslt.compiler.expressions import compile_sequence_type
@@ -460,7 +464,6 @@ def test_native_ignores_foreign_namespace_attributes() -> None:
         "Q{urn:x}name",
         "1 intersect 2",
         "1 except 2",
-        "1 = 1 = 1",
     ],
 )
 def test_native_rejects_later_xpath_grammar(expression: str) -> None:
@@ -468,6 +471,20 @@ def test_native_rejects_later_xpath_grammar(expression: str) -> None:
         f'<xsl:template name="main"><xsl:value-of select="{expression}"/></xsl:template>'
     )
     assert error.code in ("XPST0003", "XPST0017", "XPST0081")
+
+
+def test_native_accepts_chained_comparisons_and_filter_paths() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:value-of select="1 = 1 = 1"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="1 &lt; 2 &lt; 3"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="1 &lt; 2 = true()"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="count((//a)/b)"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="count((//a)[1]/b)"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="count((//a | //b)/b)"/>'
+        "</xsl:template>"
+    )
+    assert text_of(body, source=b"<doc><a><b>1</b></a><b>2</b></doc>") == "true|true|true|1|1|1"
 
 
 def test_native_accepts_the_xpath_1_0_grammar() -> None:
@@ -637,6 +654,89 @@ def test_native_general_comparison_conversions() -> None:
     assert text_of(body) == "true|false|true|true|false|false|true"
 
 
+def test_native_empty_node_set_compares_as_a_boolean() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:value-of select="//missing = false()"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="false() = //missing"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//missing = true()"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="true() = //missing"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//missing != false()"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="false() != //missing"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//missing != true()"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//missing != //also-missing"/>'
+        "</xsl:template>"
+    )
+    assert text_of(body) == "true|true|false|false|false|false|true|false"
+
+
+def test_native_fragment_compares_as_a_boolean() -> None:
+    body = (
+        '<xsl:variable name="fragment"><b>x</b></xsl:variable>'
+        '<xsl:template name="main">'
+        '<xsl:value-of select="$fragment = true()"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="true() = $fragment"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="$fragment = false()"/>'
+        "</xsl:template>"
+    )
+    assert text_of(body) == "true|true|false"
+
+
+def test_native_scalar_boolean_values() -> None:
+    assert _legacy_boolean_value(UntypedAtomic("")) is False
+    assert _legacy_boolean_value(UntypedAtomic("x")) is True
+    assert _legacy_boolean_value("") is False
+    assert _legacy_boolean_value("x") is True
+
+
+def test_native_node_set_compares_as_a_boolean() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:value-of select="//a = true()"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="true() = //a"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//a = false()"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//a != true()"/>'
+        "</xsl:template>"
+    )
+    assert text_of(body) == "true|true|false|false"
+
+
+def test_native_node_set_general_comparisons() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:value-of select="//a = //a"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//a = //b"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//a != //b"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="1 = //a"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//a = 1"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//z = 1"/>'
+        "<xsl:text>|</xsl:text><xsl:value-of select=\"'1' = //a\"/>"
+        "<xsl:text>|</xsl:text><xsl:value-of select=\"//a = '1'\"/>"
+        "<xsl:text>|</xsl:text><xsl:value-of select=\"//z = '1'\"/>"
+        '<xsl:text>|</xsl:text><xsl:value-of select="//a &lt; //b"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//a &lt; 2"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="2 &gt; //a"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//z &lt; 1"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="1 = //z"/>'
+        "<xsl:text>|</xsl:text><xsl:value-of select=\"'1' = //z\"/>"
+        '<xsl:text>|</xsl:text><xsl:value-of select="//z = //z"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//z != //a"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//z &lt;= false()"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="false() &lt; //a"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//a &lt; true()"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//b = 1"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="1 = //b"/>'
+        "<xsl:text>|</xsl:text><xsl:value-of select=\"//b = '1'\"/>"
+        "<xsl:text>|</xsl:text><xsl:value-of select=\"'1' = //b\"/>"
+        "</xsl:template>"
+    )
+    assert (
+        text_of(body, source=b"<doc><a>1</a><b>2</b></doc>")
+        == "true|false|true|true|true|false|true|true|false|true|true|true|false|false|false"
+        "|false|false|true|true|false|false|false|false|false"
+    )
+
+
 def test_native_boolean_conversions() -> None:
     body = (
         '<xsl:template name="main">'
@@ -693,9 +793,13 @@ def test_native_substring_rounding_and_edges() -> None:
         "substring('12345', 2)": "2345",
         "substring('12345', 0 div 0)": "",
         "substring('12345', 1 div 0)": "",
+        "substring('12345', -1 div 0)": "12345",
         "substring('12345', 1, 0 div 0)": "",
         "substring('12345', 1, 0)": "",
         "substring('12345', 1, 1 div 0)": "12345",
+        "substring('12345', -1 div 0, 3)": "",
+        "substring('12345', 1 div 0, 3)": "",
+        "substring('12345', 2, 1 div 0)": "2345",
         "substring('12345', 0, 3)": "12",
         "substring('12345', -1, 2)": "",
     }
@@ -821,16 +925,19 @@ def test_native_result_tree_fragment_conversions() -> None:
     assert text_of(body) == "onetwo|onetwo|true|false|true|NaN"
 
 
-def test_native_empty_result_tree_fragment_is_true() -> None:
+def test_native_empty_content_variable_is_an_empty_string() -> None:
     body = (
         '<xsl:template name="main">'
-        '<xsl:variable name="fragment"></xsl:variable>'
-        '<xsl:value-of select="boolean($fragment)"/>'
-        '<xsl:text>|</xsl:text><xsl:value-of select="string($fragment)"/>'
-        "<xsl:text>|</xsl:text><xsl:value-of select=\"$fragment = ''\"/>"
+        '<xsl:variable name="value"/>'
+        '<xsl:value-of select="boolean($value)"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="string($value)"/>'
+        "<xsl:text>|</xsl:text><xsl:value-of select=\"$value = ''\"/>"
+        "<xsl:text>|</xsl:text><xsl:value-of select=\"boolean($value = '')\"/>"
         "</xsl:template>"
     )
-    assert text_of(body) == "true||true"
+    # XSLT 1.0 §11.2: <xsl:variable name="value"/> is equivalent to
+    # select="''", so its boolean value is false.
+    assert text_of(body) == "false||true|true"
 
 
 def test_native_value_of_and_attribute_value_templates_stringify_a_fragment() -> None:
@@ -902,6 +1009,58 @@ def test_native_with_parameter_copies_a_fragment() -> None:
         "</xsl:template>"
     )
     assert text_of(body) == "passed"
+
+
+def test_native_content_with_param_is_a_result_tree_fragment() -> None:
+    body = (
+        '<xsl:template name="callee">'
+        '<xsl:param name="p"/>'
+        '<xsl:value-of select="string($p)"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="boolean($p)"/>'
+        "<xsl:text>|</xsl:text><xsl:value-of select=\"$p = 'text'\"/>"
+        "</xsl:template>"
+        '<xsl:template name="main">'
+        '<xsl:call-template name="callee">'
+        '<xsl:with-param name="p"><w>text</w></xsl:with-param>'
+        "</xsl:call-template>"
+        "</xsl:template>"
+    )
+    assert text_of(body) == "text|true|true"
+
+
+def test_native_content_with_param_cannot_be_used_as_a_node_set() -> None:
+    body = (
+        '<xsl:template name="callee">'
+        '<xsl:param name="p"/>'
+        '<xsl:value-of select="count($p)"/>'
+        "</xsl:template>"
+        '<xsl:template name="main">'
+        '<xsl:call-template name="callee">'
+        '<xsl:with-param name="p"><w>text</w></xsl:with-param>'
+        "</xsl:call-template>"
+        "</xsl:template>"
+    )
+    with pytest.raises(XsltDynamicError, match="result tree fragment"):
+        native_transform(body)
+
+    path = body.replace("count($p)", "$p/w")
+    with pytest.raises(Exception, match="Intermediate step contains an atomic value"):
+        native_transform(path)
+
+
+def test_native_select_with_param_remains_a_node_set() -> None:
+    body = (
+        '<xsl:template name="callee">'
+        '<xsl:param name="p"/>'
+        '<xsl:value-of select="count($p)"/>'
+        "</xsl:template>"
+        '<xsl:template name="main">'
+        '<xsl:call-template name="callee">'
+        '<xsl:with-param name="p" select="//a"/>'
+        "</xsl:call-template>"
+        "</xsl:template>"
+    )
+    assert text_of(body) == "1"
 
 
 def test_native_fragment_boolean_in_conditionals_and_sort() -> None:

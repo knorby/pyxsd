@@ -78,6 +78,7 @@ from pyxsd.xslt.errors import (
     error_code_from_exception,
     is_static_error_code,
 )
+from pyxsd.xslt.profiles import LanguageProfile
 from pyxsd.xslt.results import (
     Message,
     _append_complex_content,
@@ -150,6 +151,7 @@ __all__ = [
     "is_deemed_empty",
     "is_vacuous",
     "literal_element",
+    "parameter_value",
     "try_step",
     "variable_value",
 ]
@@ -1421,6 +1423,18 @@ def check_copy_type(
         )
 
 
+def parameter_value(sequence: XdmSequence, profile: LanguageProfile) -> XdmSequence:
+    """Wrap one content-initialized with-parameter in the profile's value model.
+
+    XSLT 1.0 §11.6 initializes ``xsl:with-param`` content exactly like
+    ``xsl:variable`` content, so the profile's legacy model binds a result tree
+    fragment.  A later processor delivers the constructed sequence directly.
+    """
+    if profile.legacy:
+        return (ResultTreeFragment(_build_result_tree(sequence)),)
+    return sequence
+
+
 def variable_value(
     plan: _VariablePlan,
     invocation: _Invocation,
@@ -1436,11 +1450,9 @@ def variable_value(
         value = sequence if plan.has_as else (_build_result_tree(sequence),)
     elif plan.has_as:
         value = ()
-    elif invocation.profile_for().legacy:
-        # An XSLT 1.0 variable with empty content is an empty result tree
-        # fragment, not a zero-length string.
-        value = (ResultTreeFragment(_build_result_tree(())),)
     else:
+        # XSLT 1.0 §11.2 and XSLT 2.0/3.0 agree: an empty-content
+        # variable-binding element without @select binds an empty string.
         value = (XdmAtomic.string(""),)
     if plan.sequence_type is not None:
         value = invocation._coerce(

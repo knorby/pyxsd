@@ -245,6 +245,7 @@ from pyxsd.xslt.runtime.instructions import (
     execute_value_of,
     execute_where_populated,
     literal_element,
+    parameter_value,
     try_step,
     variable_value,
 )
@@ -6254,9 +6255,12 @@ class _Invocation(Transformation):
             if parameter.expression is not None:
                 value = self._evaluate(parameter.expression, context)
             elif parameter.children:
-                value = self._execute_plans(
-                    parameter.children,
-                    context=replace(context, final_output=False),
+                value = parameter_value(
+                    self._execute_plans(
+                        parameter.children,
+                        context=replace(context, final_output=False),
+                    ),
+                    self.profile_for(),
                 )
             else:
                 value = ()

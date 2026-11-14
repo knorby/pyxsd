@@ -1292,18 +1292,86 @@ def _install_legacy_1_0_overrides(parser: Any) -> None:
     def is_fragment(value: Any) -> bool:
         return isinstance(value, _LegacyRtfValue)
 
-    def legacy_equality(self: Any, context: Any = None) -> bool:
-        op = operator.eq if self.symbol == "=" else operator.ne
-        for left, right in self.iter_comparison_data(active_context(self, context)):
-            if isinstance(left, bool) or isinstance(right, bool):
-                left, right = bool(left), bool(right)
-            elif is_legacy_number(left) or is_legacy_number(right):
-                left, right = _legacy_number_value(left), _legacy_number_value(right)
-            else:
-                left, right = _legacy_string_value(left), _legacy_string_value(right)
-            if op(left, right):
-                return True
-        return False
+    _COMPARISONS = {
+        "=": operator.eq,
+        "!=": operator.ne,
+        "<": operator.lt,
+        ">": operator.gt,
+        "<=": operator.le,
+        ">=": operator.ge,
+    }
+
+    def legacy_comparison(self: Any, context: Any = None, relational: bool | None = None) -> bool:
+        """XPath 1.0 §3.4 general comparison.
+
+        The shared comparison token atomizes both operands first, so an empty
+        node-set yields no pairs and loses the 1.0 rule that a node-set compared
+        with a boolean converts to a boolean; it also applies the boolean rule
+        to relational operators, which 1.0 defines numerically.  The native
+        profile evaluates the value kinds directly.
+        """
+        op = _COMPARISONS[self.symbol]
+        if relational is None:
+            relational = self.symbol in ("<", ">", "<=", ">=")
+        active = active_context(self, context)
+        left_items = list(self._items[0].select(active))
+        right_items = list(self._items[1].select(active))
+        left_nodes = _is_node_set(left_items)
+        right_nodes = _is_node_set(right_items)
+
+        if left_nodes and right_nodes:
+            for left in left_items:
+                left_value: Any = _legacy_string_value(left)
+                if relational:
+                    left_value = legacy_number_from_string(left_value)
+                for right in right_items:
+                    right_value: Any = _legacy_string_value(right)
+                    if relational:
+                        right_value = legacy_number_from_string(right_value)
+                    if op(left_value, right_value):
+                        return True
+            return False
+        if left_nodes or right_nodes:
+            nodes, other = (left_items, right_items) if left_nodes else (right_items, left_items)
+            nodes_first = left_nodes
+            if len(other) == 1 and isinstance(other[0], bool):
+                node_boolean = bool(nodes)
+                if relational:
+                    other_number = _legacy_number_value(other[0])
+                    return (
+                        op(float(node_boolean), other_number)
+                        if nodes_first
+                        else op(other_number, float(node_boolean))
+                    )
+                return op(node_boolean, other[0]) if nodes_first else op(other[0], node_boolean)
+            if relational or (len(other) == 1 and is_legacy_number(other[0])):
+                target = _legacy_number_value(other[0]) if other else math.nan
+                for node in nodes:
+                    value = _legacy_number_value(node)
+                    if op(value, target) if nodes_first else op(target, value):
+                        return True
+                return False
+            other_text = _legacy_string_value(other[0]) if other else ""
+            for node in nodes:
+                text = _legacy_string_value(node)
+                if op(text, other_text) if nodes_first else op(other_text, text):
+                    return True
+            return False
+
+        left = left_items[0] if left_items else None
+        right = right_items[0] if right_items else None
+        if relational:
+            return op(_legacy_number_value(left), _legacy_number_value(right))
+        if isinstance(left, bool) or isinstance(right, bool):
+            left, right = _legacy_boolean_value(left), _legacy_boolean_value(right)
+        elif is_legacy_number(left) or is_legacy_number(right):
+            left, right = _legacy_number_value(left), _legacy_number_value(right)
+        else:
+            left, right = _legacy_string_value(left), _legacy_string_value(right)
+        return op(left, right)
+
+    def legacy_relational(self: Any, context: Any = None) -> bool:
+        return legacy_comparison(self, context, True)
 
     def legacy_boolean(self: Any, context: Any = None) -> bool:
         active = active_context(self, context)
@@ -1408,11 +1476,20 @@ def _install_legacy_1_0_overrides(parser: Any) -> None:
         active = active_context(self, context)
         source = string_argument(self, active, 0)
         start = number_argument(self, active, 1)
-        if math.isnan(start) or math.isinf(start):
+        if math.isnan(start):
+            return ""
+        if len(self) == 2:
+            # §4.2: substring(s, -Infinity) is the whole string, while
+            # substring(s, +Infinity) is empty.
+            if math.isinf(start):
+                return source if start < 0 else ""
+            begin = int(legacy_round(start)) - 1
+            return source[max(begin, 0) :]
+        if math.isinf(start):
+            # A three-argument call needs positions below start + length;
+            # with an infinite start no such position exists.
             return ""
         begin = int(legacy_round(start)) - 1
-        if len(self) == 2:
-            return source[max(begin, 0) :]
         length = number_argument(self, active, 2)
         if math.isnan(length) or length <= 0:
             return ""
@@ -1451,16 +1528,23 @@ def _install_legacy_1_0_overrides(parser: Any) -> None:
             total += _legacy_number_value(item)
         return total
 
+    def legacy_comparison_led(self: Any, left: Any) -> Any:
+        """XPath 1.0 comparisons are left-recursive and may chain."""
+        self[:] = left, self.parser.expression(30)
+        return self
+
     def registered(symbol: str, base: Any, class_name: str, evaluate: Any) -> Any:
         options: dict[str, Any] = {"bases": (base,), "evaluate": evaluate}
         for attribute in ("label", "nargs", "sequence_types"):
             if hasattr(base, attribute):
                 options[attribute] = getattr(base, attribute)
+        if symbol in ("=", "!=", "<", ">", "<=", ">="):
+            options["led"] = legacy_comparison_led
         return parser._register(symbol, class_name, **options)
 
     for symbol, class_name, evaluate in (
-        ("=", "_PyxsdLegacyEqual", legacy_equality),
-        ("!=", "_PyxsdLegacyNotEqual", legacy_equality),
+        ("=", "_PyxsdLegacyEqual", legacy_comparison),
+        ("!=", "_PyxsdLegacyNotEqual", legacy_comparison),
         ("boolean", "_PyxsdLegacyBoolean", legacy_boolean),
         ("not", "_PyxsdLegacyNot", legacy_not),
         ("count", "_PyxsdLegacyCount", legacy_count),
@@ -1477,6 +1561,9 @@ def _install_legacy_1_0_overrides(parser: Any) -> None:
         ("translate", "_PyxsdLegacyTranslate", legacy_translate),
     ):
         registered(symbol, parser.symbol_table[symbol], class_name, evaluate)
+    for symbol in ("<", ">", "<=", ">="):
+        base = parser.symbol_table[symbol]
+        registered(symbol, base, f"_PyxsdLegacyComparison{symbol}", legacy_relational)
     sum_base = parser.symbol_table["sum"]
     parser._register(
         "sum",
@@ -1514,7 +1601,14 @@ def _install_legacy_path_operators(parser: Any) -> None:
         base = parser.symbol_table[symbol]
 
         def led(self: Any, left: Any, _base: Any = base) -> Any:
-            if isinstance(left, XPathFunction):
+            if isinstance(left, XPathFunction) or left.symbol in (
+                "$",
+                "(",
+                "(string)",
+                "(integer)",
+                "(decimal)",
+                "(float)",
+            ):
                 self[:] = left, self.parser.expression(75)
                 return self
             return _base.led(self, left)
@@ -1527,6 +1621,32 @@ def _install_legacy_path_operators(parser: Any) -> None:
             lbp=base.lbp,
             led=led,
         )
+
+
+def _is_node_set(items: list[Any]) -> bool:
+    """Whether one XPath 1.0 operand value is a node-set.
+
+    XPath 1.0 has no empty sequence: an empty value can only be an empty
+    node-set.  Every non-empty node-set contains only nodes.
+    """
+    return not items or all(isinstance(item, XPathNode) for item in items)
+
+
+def _legacy_boolean_value(value: Any) -> bool:
+    """The XPath 1.0 boolean conversion of one scalar evaluator value.
+
+    A node-set is converted by its own non-emptiness before this helper runs;
+    the values here are booleans, numbers, strings, and the legacy marker.
+    """
+    if isinstance(value, _LegacyRtfValue):
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, UntypedAtomic):
+        return value.value != ""
+    if is_legacy_number(value):
+        return not (isinstance(value, float) and math.isnan(value)) and value != 0
+    return _legacy_string_value(value) != ""
 
 
 def _legacy_string_value(value: Any) -> str:
