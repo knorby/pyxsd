@@ -34,6 +34,7 @@ from elementpath.helpers import is_ncname
 
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
 from pyxsd.xdm.annotations import builtin_type_classes
+from pyxsd.xdm.legacy import ResultTreeFragment
 from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmDocument, XdmNode
 from pyxsd.xdm.validation import namespace_sensitive
 from pyxsd.xpath.continuation import XPathEvaluationError
@@ -1100,6 +1101,10 @@ def _effective_boolean(sequence: XdmSequence) -> bool:
     if not sequence:
         return False
     first = sequence[0]
+    if isinstance(first, ResultTreeFragment):
+        # XSLT 1.0 §11.1: a result tree fragment is a node-set with one root
+        # node, so its boolean conversion is always true.
+        return True
     if isinstance(first, XdmNode):
         return True
     if not isinstance(first, XdmAtomic):
@@ -1358,6 +1363,10 @@ def copy_of_value(
     pool = invocation._package_schema_pool(context.package_name)
     result: list[XdmItem] = []
     for item in items:
+        if isinstance(item, ResultTreeFragment):
+            # XSLT 1.0 §11.1: copying a result tree fragment copies its
+            # children, never the fragment's root node.
+            item = item.document
         if not isinstance(item, XdmNode):
             result.append(item)
             continue
@@ -1427,6 +1436,10 @@ def variable_value(
         value = sequence if plan.has_as else (_build_result_tree(sequence),)
     elif plan.has_as:
         value = ()
+    elif invocation.profile_for().legacy:
+        # An XSLT 1.0 variable with empty content is an empty result tree
+        # fragment, not a zero-length string.
+        value = (ResultTreeFragment(_build_result_tree(())),)
     else:
         value = (XdmAtomic.string(""),)
     if plan.sequence_type is not None:

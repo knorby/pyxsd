@@ -709,11 +709,17 @@ def execute_python_rule(
         )
     assert rules is not None
     rule = bound.rule
+    profile = invocation.profile_for()
     if isinstance(rule, _PythonModeRule):
+        next_match = (
+            _unsupported_legacy_delegation("next_match")
+            if profile.legacy
+            else lambda: _continue(invocation, context, "next-match")
+        )
         rule_context = PythonRuleContext(
             context_item=context.focus.item,
             parameters=context.locals,
-            _next_match=lambda: _continue(invocation, context, "next-match"),
+            _next_match=next_match,
             _apply_imports=lambda: _continue(invocation, context, "apply-imports"),
         )
     else:
@@ -768,6 +774,19 @@ def _continue(invocation: Any, context: Any, kind: str) -> XdmSequence:
     from pyxsd.xslt.runtime.templates import execute_continuation
 
     return execute_continuation(invocation, kind, context)
+
+
+def _unsupported_legacy_delegation(name: str) -> Callable[[], XdmSequence]:
+    """Return a callback that rejects a delegation XSLT 1.0 does not define."""
+
+    def unavailable() -> XdmSequence:
+        raise XsltDynamicError(
+            f"{name} is not supported by a native XSLT 1.0 processor; XSLT 1.0 "
+            "defines no corresponding delegation",
+            code="XTDE0560",
+        )
+
+    return unavailable
 
 
 def _original_context(rules: PythonRules, context: Any) -> Any:

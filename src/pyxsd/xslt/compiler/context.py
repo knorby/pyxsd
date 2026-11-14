@@ -63,7 +63,7 @@ _INPUT_TYPE_ANNOTATIONS = frozenset({"strip", "preserve", "unspecified"})
 _PROFILES = frozenset({"xslt-1.0", "xslt-2.0", "xslt-3.0", "xslt-3.1"})
 #: The XPath versions the versioned engine implements; an XPath version
 #: override on a static context is validated against this set.
-_XPATH_VERSIONS = frozenset({"2.0", "3.0", "3.1"})
+_XPATH_VERSIONS = frozenset({"1.0", "2.0", "3.0", "3.1"})
 _VARIABLE = f"{{{XSLT_NS}}}variable"
 _PARAM = f"{{{XSLT_NS}}}param"
 _FUNCTION = f"{{{XSLT_NS}}}function"

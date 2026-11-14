@@ -23,6 +23,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmItem, XdmMap, XdmSequence
+from pyxsd.xdm.legacy import ResultTreeFragment, legacy_string_sequence
 from pyxsd.xdm.nodes import XdmNode
 from pyxsd.xslt.errors import XsltDynamicError, normalized_error_code
 
@@ -234,6 +235,17 @@ class LanguageProfile:
         return _decimal_version(self.processor_version, "processor_version") < Decimal("3.0")
 
     @property
+    def legacy(self) -> bool:
+        """Whether this is the native XSLT 1.0 processor.
+
+        A native 1.0 processor owns the legacy data model: result tree
+        fragments, XPath 1.0 node-sets, and the 1.0 string/boolean/number
+        conversions.  A 3.0 processor running a ``version="1.0"`` stylesheet
+        applies only the compatibility conversions and is not legacy.
+        """
+        return self.processor_version == "1.0"
+
+    @property
     def compatibility_mode(self) -> bool:
         """Whether XPath 1.0 compatibility behavior applies to this element.
 
@@ -312,6 +324,11 @@ class LanguageProfile:
         if local == "xpath-version":
             return self.xpath_version
         if local == "is-schema-aware":
+            # XSLT 1.0 has no schema-aware processing and defines no such
+            # property.  A native 1.0 processor advertises that absence rather
+            # than falling through to the 3.0 vendor table's ``yes``.
+            if self.legacy:
+                return "no"
             return "yes" if self.schema_aware else "no"
         if local in ("supports-backwards-compatibility", "supports-namespace-axis"):
             # Both properties exist in XSLT 2.0.  A native 1.0 processor does
@@ -352,6 +369,25 @@ class LanguageProfile:
                     code="XPTY0004",
                 )
 
+    def check_legacy_node_set(self, value: Iterable[XdmItem], label: str) -> None:
+        """Reject a result tree fragment where a node-set is required.
+
+        XSLT 1.0 §11.1 permits string and boolean conversion of a result tree
+        fragment but no node-set operation.  A ``select`` expression that
+        delivers a fragment to ``xsl:apply-templates`` or ``xsl:for-each``
+        therefore fails instead of exposing the fragment's root node.
+        """
+        if not self.legacy:
+            return
+        for item in value:
+            if isinstance(item, ResultTreeFragment):
+                raise XsltDynamicError(
+                    f"{label} requires a node-set, but a result tree fragment is "
+                    "present; a native XSLT 1.0 processor does not convert a "
+                    "result tree fragment where a node-set is required",
+                    code="XPTY0004",
+                )
+
     def _atomize(self, item: XdmItem) -> tuple[XdmAtomic, ...]:
         if isinstance(item, XdmAtomic):
             return (item,)
@@ -368,9 +404,14 @@ class LanguageProfile:
 
         In compatibility mode the sequence is atomized and only its first item is
         converted, as XSLT 1.0 behavior requires for attribute value templates
-        and separator-free ``xsl:value-of``.  Otherwise a multi-item sequence is
-        a type error and an empty sequence produces a zero-length string.
+        and separator-free ``xsl:value-of``.  A native XSLT 1.0 processor uses
+        the legacy conversions, where a node-set converts through its first
+        node in document order and a result tree fragment through its root.
+        Otherwise a multi-item sequence is a type error and an empty sequence
+        produces a zero-length string.
         """
+        if self.legacy:
+            return legacy_string_sequence(sequence)
         atomized: list[XdmAtomic] = []
         for item in sequence:
             atomized.extend(self._atomize(item))

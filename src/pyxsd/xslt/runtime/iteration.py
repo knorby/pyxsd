@@ -34,6 +34,7 @@ from urllib.parse import urljoin, urlsplit
 from elementpath.exceptions import MissingContextError
 
 from pyxsd.xdm import XdmAtomic, XdmItem, XdmSequence
+from pyxsd.xdm.legacy import ResultTreeFragment
 from pyxsd.xdm.nodes import XdmNode
 from pyxsd.xdm.values import _as_float, _as_float32, _is_nan
 from pyxsd.xpath.environment import Focus
@@ -1115,6 +1116,9 @@ def atomize_key_sequence(sequence: XdmSequence) -> tuple[XdmAtomic, ...]:
     """
     values: list[XdmAtomic] = []
     for item in sequence:
+        if isinstance(item, ResultTreeFragment):
+            values.append(XdmAtomic.string(item.string_value))
+            continue
         if isinstance(item, XdmAtomic):
             atomic = item
         elif isinstance(item, XdmNode):
@@ -1185,6 +1189,9 @@ def start_iteration_plan(
     variables = context.locals
     if isinstance(plan, _ForEachPlan):
         items = invocation._evaluate(plan.expression, context)
+        invocation.profile_for(plan.expression.static_context.xslt_version).check_legacy_node_set(
+            items, "the select attribute of xsl:for-each"
+        )
         items = sorted_items(invocation, items, plan.sorts, context)
         state = IterationState(
             kind="for-each",

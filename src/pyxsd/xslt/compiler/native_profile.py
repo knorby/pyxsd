@@ -357,6 +357,11 @@ def assert_native_profile_language(module: Any, profile: ProfileOptions) -> None
     ``identity`` describe one stylesheet module of the package closure.
     """
     resolved = LanguageProfile.from_options(profile)
+    if resolved.processor_version == "1.0":
+        from pyxsd.xslt.profile10 import assert_xslt10_language
+
+        assert_xslt10_language(module, resolved)
+        return
     if Decimal(resolved.processor_version) >= Decimal("3.0"):
         return
     uri = getattr(module, "identity", None)

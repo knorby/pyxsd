@@ -1055,6 +1055,9 @@ def apply_templates_step(
         plan.expression,
         replace(context, original_functions={}),
     )
+    invocation.profile_for(plan.expression.static_context.xslt_version).check_legacy_node_set(
+        items, "the select attribute of xsl:apply-templates"
+    )
     items = sorted_items(invocation, items, plan.sorts, context)
     resolved_mode = resolve_mode(invocation, plan.mode, context.mode, context.package_name)
     mode_package = resolve_mode_package(invocation, plan.mode, frame)

@@ -368,8 +368,10 @@ def test_compile_xpath_version_keyword_selects_the_static_context() -> None:
     with pytest.raises(XsltStaticError) as caught:
         compile_xpath("'a' || 'b'", context, version="2.0")
     assert caught.value.code == "XPST0003"
-    with pytest.raises(ValueError):
-        compile_xpath("1", context, version="1.0")
+    assert compile_xpath("1 + 1", context, version="1.0") is not None
+    with pytest.raises(XsltStaticError) as caught:
+        compile_xpath("1 to 3", context, version="1.0")
+    assert caught.value.code == "XPST0003"
     with pytest.raises(ValueError):
         compile_xpath("1", context, version="4.0")
     with pytest.raises(TypeError):

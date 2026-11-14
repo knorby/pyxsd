@@ -423,9 +423,11 @@ _XSLT30_ELEMENTS = frozenset(
 _PROCESSOR_VERSION = Decimal("3.0")
 
 #: The public processor identities this constructor builds and the XPath
-#: version each language profile normatively pairs with.  The native 1.0
-#: profile is a later task; the 3.0 processor keeps XPath 3.1.
-_PROCESSOR_LANGUAGES: Mapping[str, str] = MappingProxyType({"2.0": "2.0", "3.0": "3.1"})
+#: version each language profile normatively pairs with.  The 3.0 processor
+#: keeps XPath 3.1; the native 2.0 and 1.0 processors keep their own grammars.
+_PROCESSOR_LANGUAGES: Mapping[str, str] = MappingProxyType(
+    {"1.0": "1.0", "2.0": "2.0", "3.0": "3.1"}
+)
 
 
 class XsltInvocationError(ValueError):

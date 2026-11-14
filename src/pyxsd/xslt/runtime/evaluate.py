@@ -52,7 +52,7 @@ __all__ = [
 #: Maximum number of dynamically compiled expressions retained per invocation.
 DEFAULT_DYNAMIC_CACHE_SIZE = 64
 
-_XPATH_VERSIONS = frozenset({"2.0", "3.0", "3.1"})
+_XPATH_VERSIONS = frozenset({"1.0", "2.0", "3.0", "3.1"})
 _XSLT_VERSIONS = frozenset({"1.0", "2.0", "3.0", "3.1"})
 
 

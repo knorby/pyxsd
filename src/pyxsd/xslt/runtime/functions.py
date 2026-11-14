@@ -34,6 +34,7 @@ from urllib.parse import urljoin, urlsplit
 
 from elementpath.datatypes import QName
 from elementpath.helpers import is_ncname
+from elementpath.xpath1 import XPath1Parser
 from elementpath.xpath2 import XPath2Parser
 from elementpath.xpath3 import XPath31Parser
 
@@ -301,6 +302,8 @@ def _version_at_least(version: str, minimum: str) -> bool:
 def _declaration_arity(local: str, version: str) -> FunctionArity:
     if local == "document":
         return 1 if version == "1.0" else (1, 2)
+    if local == "format-number":
+        return 2 if version == "1.0" else (2, 3)
     if local == "function-available":
         return 1 if version == "1.0" else (1, 2)
     if local == "unparsed-entity-uri":
@@ -385,10 +388,16 @@ def _arity_matches(spec: FunctionArity | None, arity: int | None) -> bool:
     return minimum <= arity and (maximum is None or arity <= maximum)
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=4)
 def _native_function_arities(version: str) -> Mapping[str, FunctionArity]:
     """One parser surface's statically known function signatures."""
-    parser = (XPath2Parser if version == "2.0" else XPath31Parser)()
+    parser = (
+        XPath1Parser()
+        if version == "1.0"
+        else XPath2Parser()
+        if version == "2.0"
+        else XPath31Parser()
+    )
     table: dict[str, FunctionArity] = {}
     for symbol, token in parser.symbol_table.items():
         nargs = getattr(token, "nargs", None)
@@ -557,7 +566,7 @@ class XsltContextBridge:
             object.__setattr__(
                 self,
                 "xslt_version",
-                "2.0" if self.xpath_version == "2.0" else "3.0",
+                {"1.0": "1.0", "2.0": "2.0"}.get(self.xpath_version, "3.0"),
             )
         else:
             object.__setattr__(self, "xslt_version", _profile_version(self.xslt_version))
@@ -565,7 +574,7 @@ class XsltContextBridge:
     def _effective_xpath_version(self) -> str:
         # 3.0 and 3.1 profiles share XPath 3.1's function surface here; the
         # native parser table still carries the exact version's signatures.
-        if self.xpath_version not in ("2.0", "3.0", "3.1"):
+        if self.xpath_version not in ("1.0", "2.0", "3.0", "3.1"):
             raise ValueError(f"unsupported XPath version {self.xpath_version!r}")
         return self.xpath_version
 
@@ -860,15 +869,23 @@ class XsltContextBridge:
         # answers fall through to this processor's vendor table.  A bridge
         # host without a language profile keeps the vendor table answers.
         profile_for = getattr(self.transformation, "profile_for", None)
+        local = _local_name(expanded)
         if callable(profile_for):
             # The expanded name is already resolved, so the answer cannot
             # depend on which prefix the stylesheet bound to the XSLT
             # namespace.  A lexical name here would let a non-``xsl`` prefix
-            # bypass the profile's version-shaped answers.
-            profile_answer = profile_for().system_property(expanded)
+            # bypass the profile's version-shaped answers.  A native XSLT 1.0
+            # profile also owns the absence of properties it does not define,
+            # so it never falls through to the 3.0 vendor table except for the
+            # vendor identity properties XSLT 1.0 itself requires.
+            profile = profile_for()
+            profile_answer = profile.system_property(expanded)
             if profile_answer:
                 return profile_answer
-        local = _local_name(expanded)
+            if profile.legacy:
+                if local in ("vendor", "vendor-url", "product-name", "product-version"):
+                    return SYSTEM_PROPERTIES.get(f"xsl:{local}", "")
+                return ""
         if local == "supports-dynamic-evaluation":
             return "yes" if self._dynamic_evaluation_enabled() else "no"
         return SYSTEM_PROPERTIES.get(f"xsl:{local}", "")
@@ -905,7 +922,13 @@ class XsltContextBridge:
             # 3.0 processor still evaluates these expressions with XPath 3.1,
             # but the compatibility profile keeps its historical availability
             # answer (for example, no random-number-generator under 2.0).
-            native_version = "3.1" if _version_at_least(self.version, "3.0") else "2.0"
+            native_version = (
+                "3.1"
+                if _version_at_least(self.version, "3.0")
+                else "1.0"
+                if self.version == "1.0"
+                else "2.0"
+            )
             declared = _native_function_arities(native_version).get(expanded)
         if _arity_matches(declared, arity):
             return True

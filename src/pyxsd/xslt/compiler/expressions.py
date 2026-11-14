@@ -764,7 +764,9 @@ class _SequenceTypeCompiler:
 
     def _require_xpath(self, minimum: str, feature: str) -> None:
         version = self.context.xpath_version
-        if (minimum == "3.1" and version != "3.1") or (minimum == "3.0" and version == "2.0"):
+        if (minimum == "3.1" and version != "3.1") or (
+            minimum == "3.0" and version in ("1.0", "2.0")
+        ):
             self._fail(
                 "XPST0003",
                 f"{feature} require XPath {minimum}, but this static context uses XPath {version}",

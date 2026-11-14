@@ -135,8 +135,12 @@ def test_versions_select_a_versioned_parser() -> None:
     assert engine.version == "2.0"
     assert engine.parser_class.__name__ == "XPath2Parser"
 
+    engine = XPathEngine("1")
+    assert engine.version == "1.0"
+    assert engine.parser_class.__name__ == "_LegacyXPath1Parser"
+
     with pytest.raises(ValueError, match="version"):
-        XPathEngine("1.0")
+        XPathEngine("4.0")
 
 
 def test_continuation_subset_uses_the_task5_machine(

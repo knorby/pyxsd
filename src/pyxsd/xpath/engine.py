@@ -21,6 +21,9 @@ capability boundary.
 from __future__ import annotations
 
 import copy
+import math
+import operator
+from abc import ABCMeta
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -28,8 +31,10 @@ from types import MethodType
 from typing import Any, cast
 
 from elementpath import XPathContext
-from elementpath.datatypes import AnyAtomicType
+from elementpath.datatypes import AnyAtomicType, UntypedAtomic
+from elementpath.helpers import upper_camel_case
 from elementpath.tdop import Parser
+from elementpath.xpath1 import XPath1Parser
 from elementpath.xpath2 import XPath2Parser
 from elementpath.xpath3 import XPath30Parser, XPath31Parser
 from elementpath.xpath_nodes import (
@@ -40,15 +45,24 @@ from elementpath.xpath_nodes import (
     NamespaceNode,
     ProcessingInstructionNode,
     TextNode,
+    XPathNode,
     XPathNodeTree,
 )
 from elementpath.xpath_tokens import XPathArray, XPathMap
-from elementpath.xpath_tokens.functions import XPathFunction
+from elementpath.xpath_tokens.functions import ExternalFunction, XPathFunction
 from elementpath.xpath_tokens.tokens import ContextItemToken, VariableToken
 
 from pyxsd import xsd_data_types as _xsd
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmItem, XdmMap, XdmSequence, as_xdm
 from pyxsd.xdm.annotations import schema_type_name
+from pyxsd.xdm.legacy import (
+    LegacyNodeSetError,
+    ResultTreeFragment,
+    is_legacy_number,
+    legacy_number_from_string,
+    legacy_round,
+    number_to_string,
+)
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath import continuation
@@ -84,10 +98,102 @@ _PARSERS: dict[str, type[Any]] = {
     "3.0": XPath30Parser,
     "3.1": XPath31Parser,
 }
-_VERSION_ALIASES = {"2": "2.0", "3": "3.0", "3.0": "3.0", "3.1": "3.1", "2.0": "2.0"}
+_VERSION_ALIASES = {
+    "1": "1.0",
+    "1.0": "1.0",
+    "2": "2.0",
+    "3": "3.0",
+    "3.0": "3.0",
+    "3.1": "3.1",
+    "2.0": "2.0",
+}
 _XSD_NS = "http://www.w3.org/2001/XMLSchema"
+_FN_NS = "http://www.w3.org/2005/xpath-functions"
 _UNTYPED = f"{{{_XSD_NS}}}untyped"
 _UNTYPED_ATOMIC = f"{{{_XSD_NS}}}untypedAtomic"
+
+
+class _LegacyXPath1Parser(XPath1Parser):
+    """The XPath 1.0 grammar with evaluation-local function registration.
+
+    elementpath's XPath 1.0 parser registers dynamic tokens on a class-level
+    symbol table, which would leak one stylesheet evaluation's callbacks into
+    another.  This subclass copies the table per instance and provides the
+    ``_register`` seam the shared XSLT integration hooks use, mirroring the
+    XPath 2.0+ parser family.
+    """
+
+    def __init__(self, namespaces: Mapping[str, str] | None = None) -> None:
+        super().__init__(dict(namespaces or {}))
+        self.symbol_table = copy.copy(self.symbol_table)
+
+    def _register(self, symbol: str, class_name: str, **kwargs: Any) -> type[Any]:
+        kwargs["symbol"] = symbol
+        lookup_name = kwargs.setdefault("lookup_name", symbol)
+        kwargs.setdefault("label", "symbol")
+        bases = kwargs.get("bases", (self.token_base_class,))
+        kwargs.update(
+            {
+                "__module__": self.__module__,
+                "__qualname__": class_name,
+                "__return__": None,
+            }
+        )
+        token_class = ABCMeta(class_name, bases, kwargs)
+        self.symbol_table[lookup_name] = cast(Any, token_class)
+        self.tokenizer = None
+        return cast(type[Any], token_class)
+
+    def external_function(
+        self,
+        callback: Callable[..., Any],
+        name: str | None = None,
+        prefix: str | None = None,
+        sequence_types: tuple[str, ...] = (),
+        bp: int = 90,
+    ) -> type[Any]:
+        """Register one XSLT-defined function on this XPath 1.0 parser.
+
+        elementpath's XPath 1.0 parser refuses external functions because the
+        standalone grammar has no such concept.  XSLT embeds XPath 1.0 and
+        defines functions in the standard function namespace; the callback is
+        registered on this evaluation's symbol table.  Sequence-type matching
+        belongs to the XSLT call boundary, which has already converted the
+        arguments before the callback runs.
+        """
+        del sequence_types
+        symbol: str = name or str(getattr(callback, "__name__", ""))
+        namespace = _FN_NS if prefix is None else self.namespaces[prefix]
+        return self._register(
+            symbol,
+            f"{upper_camel_case(symbol)}ExternalFunction",
+            bases=(ExternalFunction,),
+            namespace=namespace,
+            label="external function",
+            nargs=None,
+            lbp=bp,
+            rbp=bp,
+            sequence_types=(),
+            callback=staticmethod(callback),
+        )
+
+
+_PARSERS["1.0"] = _LegacyXPath1Parser
+
+
+class _LegacyRtfValue(UntypedAtomic):
+    """One result tree fragment exposed to the XPath 1.0 evaluator.
+
+    The marker is an ``xs:untypedAtomic`` so string conversion works through
+    the ordinary function set, while the fragment stays a distinct value that
+    the node-set functions and the XSLT node-set contexts reject.
+    """
+
+    __slots__ = ("fragment",)
+
+    def __init__(self, fragment: ResultTreeFragment) -> None:
+        super().__init__(fragment.string_value)
+        self.fragment = fragment
 
 
 def _normalise_version(version: str | None) -> str:
@@ -376,6 +482,18 @@ class _PoolSchemaProxy:
 # Value bridge
 
 
+def _is_result_tree(node: XdmNode) -> bool:
+    """Whether *node* is a document the result builder constructed.
+
+    XSLT 1.0 variables and parameters initialized by content carry a result
+    tree fragment.  The builder marks its document with the ``<result>``
+    source name, while a parsed source or resource document keeps its own
+    name, so the legacy model can tell the two apart without a hidden flag on
+    XDM 3.1 values.
+    """
+    return isinstance(node, XdmDocument) and node.source_name == "<result>"
+
+
 class _ValueBridge:
     """Convert XDM values to elementpath values and back for one evaluation."""
 
@@ -384,10 +502,13 @@ class _ValueBridge:
         parser: Any,
         static_context: XPathStaticContext,
         environment: ExpressionEnvironment,
+        *,
+        version: str | None = None,
     ) -> None:
         self.parser = parser
         self.static_context = static_context
         self.environment = environment
+        self._legacy = version == "1.0" and static_context.xslt_version == "1.0"
         self._adapters: dict[int, Any] = {}
         self._context: XPathContext | None = None
 
@@ -443,7 +564,13 @@ class _ValueBridge:
         raise ValueError(f"a detached {node.kind.value} node has no parent")
 
     def adapt_item(self, item: XdmItem) -> Any:
+        if isinstance(item, ResultTreeFragment):
+            return _LegacyRtfValue(item)
         if isinstance(item, XdmNode):
+            if self._legacy and item.kind is NodeKind.DOCUMENT and _is_result_tree(item):
+                # An XSLT 1.0 content-initialized variable, parameter, or
+                # with-parameter is a result tree fragment, not a node-set.
+                return _LegacyRtfValue(ResultTreeFragment(cast(XdmDocument, item)))
             if item.kind is NodeKind.DOCUMENT:
                 return self.adapt_document(cast(XdmDocument, item))
             if item.parent is None:
@@ -511,6 +638,8 @@ class _ValueBridge:
             return tuple(items)
         if isinstance(value, _NodeAdapterMixin):
             return (value.xdm,)
+        if isinstance(value, _LegacyRtfValue):
+            return (value.fragment,)
         if isinstance(value, XdmItem):
             return (value,)
         if isinstance(value, XPathMap):
@@ -783,7 +912,7 @@ class XPathEngine:
             base_uri=environment.base_uri,
             decimal_formats=environment.decimal_formats,
         )
-        bridge = _ValueBridge(parser, compiled.static_context, environment)
+        bridge = _ValueBridge(parser, compiled.static_context, environment, version=self._version)
         context = _build_context(compiled.static_context, environment, resolved, bridge)
         bridge._context = context
         holder = parser._pyxsd_bridge_holder
@@ -797,8 +926,13 @@ class XPathEngine:
                 result = ContinuationMachine(compiled.continuation_plan, variables).run()
                 return bridge.to_xdm_sequence(result)
 
-        result = parser.parse(compiled.source).evaluate(context)
-        return bridge.to_xdm_sequence(result)
+        try:
+            result = parser.parse(compiled.source).evaluate(context)
+            return bridge.to_xdm_sequence(result)
+        except LegacyNodeSetError as exc:
+            from pyxsd.xslt.errors import XsltDynamicError
+
+            raise XsltDynamicError(str(exc), code=exc.code) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -816,25 +950,37 @@ def _build_parser(
 ) -> Any:
     parser_class = _PARSERS[version]
     holder = _BridgeHolder()
-    options: dict[str, Any] = {
-        "namespaces": dict(static_context.namespaces),
-        "default_namespace": static_context.default_namespace,
-        "variable_types": dict(static_context.variable_types),
-        "base_uri": base_uri if base_uri is not None else static_context.base_uri,
-        "default_collation": static_context.default_collation,
-        "xsd_version": static_context.xsd_version,
-    }
-    if decimal_formats and version != "2.0":
-        options["decimal_formats"] = {
-            name: dict(attributes) for name, attributes in decimal_formats.items()
+    if version == "1.0":
+        namespaces = dict(static_context.namespaces)
+        namespaces.setdefault("fn", _FN_NS)
+        namespaces.setdefault("xs", _XSD_NS)
+        parser = parser_class(namespaces=namespaces)
+        parser.base_uri = base_uri if base_uri is not None else static_context.base_uri
+        parser.default_collation = static_context.default_collation
+        parser.variable_types = dict(static_context.variable_types)
+    else:
+        options: dict[str, Any] = {
+            "namespaces": dict(static_context.namespaces),
+            "default_namespace": static_context.default_namespace,
+            "variable_types": dict(static_context.variable_types),
+            "base_uri": base_uri if base_uri is not None else static_context.base_uri,
+            "default_collation": static_context.default_collation,
+            "xsd_version": static_context.xsd_version,
         }
-    parser = parser_class(**options)
+        if decimal_formats and version != "2.0":
+            options["decimal_formats"] = {
+                name: dict(attributes) for name, attributes in decimal_formats.items()
+            }
+        parser = parser_class(**options)
     parser._pyxsd_bridge_holder = holder
     _install_syntax_only_parse(parser)
     _install_focus_token(parser)
     _install_focus_functions(parser)
     _install_function_scope(parser)
-    _register_schema_constructors(parser, static_context)
+    if version == "1.0":
+        _install_legacy_1_0_overrides(parser)
+    else:
+        _register_schema_constructors(parser, static_context)
 
     for name in static_context.functions:
         _register_declared_function(
@@ -1125,6 +1271,305 @@ def _register_key_function(parser: Any, holder: _BridgeHolder) -> None:
     )
     token_class.label = "function"
     token_class.nargs = (2, 3)
+
+
+def _install_legacy_1_0_overrides(parser: Any) -> None:
+    """Install the XPath 1.0 conversions the shared token library leaves out.
+
+    elementpath's XPath 1.0 grammar is complete, but a few evaluation details
+    follow XPath 2.0 rules: general-comparison equality does not coerce a
+    string to a number, ``string()`` spells infinities ``INF``, ``number()``
+    accepts exponent notation, and boolean conversion of the legacy marker does
+    not know that a result tree fragment is an always-true node-set.  The
+    native profile owns those conversions here rather than inheriting 2.0
+    behavior.
+    """
+
+    def active_context(token: Any, context: Any) -> Any:
+        stored = getattr(token, "context", None)
+        return context if stored is None else stored
+
+    def is_fragment(value: Any) -> bool:
+        return isinstance(value, _LegacyRtfValue)
+
+    def legacy_equality(self: Any, context: Any = None) -> bool:
+        op = operator.eq if self.symbol == "=" else operator.ne
+        for left, right in self.iter_comparison_data(active_context(self, context)):
+            if isinstance(left, bool) or isinstance(right, bool):
+                left, right = bool(left), bool(right)
+            elif is_legacy_number(left) or is_legacy_number(right):
+                left, right = _legacy_number_value(left), _legacy_number_value(right)
+            else:
+                left, right = _legacy_string_value(left), _legacy_string_value(right)
+            if op(left, right):
+                return True
+        return False
+
+    def legacy_boolean(self: Any, context: Any = None) -> bool:
+        active = active_context(self, context)
+        items = list(self._items[0].select(active))
+        if any(is_fragment(item) for item in items):
+            return True
+        return self.boolean_value(items)
+
+    def legacy_not(self: Any, context: Any = None) -> bool:
+        return not legacy_boolean(self, context)
+
+    def legacy_count(self: Any, context: Any = None) -> int:
+        active = active_context(self, context)
+        items = list(self._items[0].select(active))
+        if any(is_fragment(item) for item in items):
+            raise LegacyNodeSetError(
+                "fn:count() requires a node-set, but a result tree fragment "
+                "was supplied; a native XSLT 1.0 processor does not convert "
+                "a result tree fragment where a node-set is required"
+            )
+        return len(items)
+
+    def legacy_id(base: Any) -> Any:
+        def select(self: Any, context: Any = None) -> Any:
+            active = active_context(self, context)
+            if is_fragment(self.get_argument(active)):
+                raise LegacyNodeSetError(
+                    "fn:id() requires a node-set, but a result tree fragment "
+                    "was supplied; a native XSLT 1.0 processor does not convert "
+                    "a result tree fragment where a node-set is required"
+                )
+            return base.select(self, context)
+
+        return select
+
+    def legacy_string(self: Any, context: Any = None) -> str:
+        active = active_context(self, context)
+        if not self:
+            item = getattr(active, "item", None) if active is not None else None
+            return _legacy_string_value(item)
+        items = ordered_items(self, active, 0)
+        return _legacy_string_value(items[0]) if items else ""
+
+    def legacy_number(self: Any, context: Any = None) -> float:
+        active = active_context(self, context)
+        if not self:
+            item = getattr(active, "item", None) if active is not None else None
+            return _legacy_number_value(item)
+        items = ordered_items(self, active, 0)
+        return _legacy_number_value(items[0]) if items else math.nan
+
+    def ordered_items(token: Any, active: Any, index: int) -> list[Any]:
+        items = list(token._items[index].select(active))
+        if items and all(isinstance(item, XPathNode) for item in items):
+            # XPath 1.0 node-sets are unordered; every conversion uses the
+            # first node in document order, not the axis order.
+            unique: dict[int, Any] = {id(item): item for item in items}
+            return sorted(unique.values(), key=lambda node: node.position)
+        return items
+
+    def string_argument(token: Any, active: Any, index: int) -> str:
+        items = ordered_items(token, active, index)
+        return _legacy_string_value(items[0]) if items else ""
+
+    def context_string_argument(token: Any, active: Any, index: int) -> str:
+        if index < len(token._items):
+            return string_argument(token, active, index)
+        item = getattr(active, "item", None) if active is not None else None
+        return _legacy_string_value(item)
+
+    def number_argument(token: Any, active: Any, index: int) -> float:
+        items = ordered_items(token, active, index)
+        return _legacy_number_value(items[0]) if items else math.nan
+
+    def legacy_concat(self: Any, context: Any = None) -> str:
+        active = active_context(self, context)
+        return "".join(string_argument(self, active, index) for index in range(len(self)))
+
+    def legacy_contains(self: Any, context: Any = None) -> bool:
+        active = active_context(self, context)
+        return string_argument(self, active, 1) in string_argument(self, active, 0)
+
+    def legacy_starts_with(self: Any, context: Any = None) -> bool:
+        active = active_context(self, context)
+        return string_argument(self, active, 0).startswith(string_argument(self, active, 1))
+
+    def legacy_substring_before(self: Any, context: Any = None) -> str:
+        active = active_context(self, context)
+        source = string_argument(self, active, 0)
+        search = string_argument(self, active, 1)
+        index = source.find(search)
+        return "" if index < 0 else source[:index]
+
+    def legacy_substring_after(self: Any, context: Any = None) -> str:
+        active = active_context(self, context)
+        source = string_argument(self, active, 0)
+        search = string_argument(self, active, 1)
+        index = source.find(search)
+        return "" if index < 0 else source[index + len(search) :]
+
+    def legacy_substring(self: Any, context: Any = None) -> str:
+        active = active_context(self, context)
+        source = string_argument(self, active, 0)
+        start = number_argument(self, active, 1)
+        if math.isnan(start) or math.isinf(start):
+            return ""
+        begin = int(legacy_round(start)) - 1
+        if len(self) == 2:
+            return source[max(begin, 0) :]
+        length = number_argument(self, active, 2)
+        if math.isnan(length) or length <= 0:
+            return ""
+        if math.isinf(length):
+            return source[max(begin, 0) :]
+        stop = begin + int(legacy_round(length))
+        return source[slice(max(begin, 0), max(stop, 0))]
+
+    def legacy_string_length(self: Any, context: Any = None) -> int:
+        active = active_context(self, context)
+        return len(context_string_argument(self, active, 0))
+
+    def legacy_normalize_space(self: Any, context: Any = None) -> str:
+        active = active_context(self, context)
+        return " ".join(context_string_argument(self, active, 0).split())
+
+    def legacy_translate(self: Any, context: Any = None) -> str:
+        active = active_context(self, context)
+        source = string_argument(self, active, 0)
+        mapping = string_argument(self, active, 1)
+        replacement = string_argument(self, active, 2)
+        if len(mapping) == len(replacement):
+            return source.translate(str.maketrans(mapping, replacement))
+        if len(mapping) > len(replacement):
+            kept = len(replacement)
+            return source.translate(str.maketrans(mapping[:kept], replacement, mapping[kept:]))
+        return source.translate(str.maketrans(mapping, replacement[: len(mapping)]))
+
+    def legacy_sum(self: Any, context: Any = None) -> float:
+        active = active_context(self, context)
+        items = ordered_items(self, active, 0)
+        if not items:
+            return 0.0
+        total = 0.0
+        for item in items:
+            total += _legacy_number_value(item)
+        return total
+
+    def registered(symbol: str, base: Any, class_name: str, evaluate: Any) -> Any:
+        options: dict[str, Any] = {"bases": (base,), "evaluate": evaluate}
+        for attribute in ("label", "nargs", "sequence_types"):
+            if hasattr(base, attribute):
+                options[attribute] = getattr(base, attribute)
+        return parser._register(symbol, class_name, **options)
+
+    for symbol, class_name, evaluate in (
+        ("=", "_PyxsdLegacyEqual", legacy_equality),
+        ("!=", "_PyxsdLegacyNotEqual", legacy_equality),
+        ("boolean", "_PyxsdLegacyBoolean", legacy_boolean),
+        ("not", "_PyxsdLegacyNot", legacy_not),
+        ("count", "_PyxsdLegacyCount", legacy_count),
+        ("string", "_PyxsdLegacyString", legacy_string),
+        ("number", "_PyxsdLegacyNumber", legacy_number),
+        ("concat", "_PyxsdLegacyConcat", legacy_concat),
+        ("contains", "_PyxsdLegacyContains", legacy_contains),
+        ("starts-with", "_PyxsdLegacyStartsWith", legacy_starts_with),
+        ("substring-before", "_PyxsdLegacySubstringBefore", legacy_substring_before),
+        ("substring-after", "_PyxsdLegacySubstringAfter", legacy_substring_after),
+        ("substring", "_PyxsdLegacySubstring", legacy_substring),
+        ("string-length", "_PyxsdLegacyStringLength", legacy_string_length),
+        ("normalize-space", "_PyxsdLegacyNormalizeSpace", legacy_normalize_space),
+        ("translate", "_PyxsdLegacyTranslate", legacy_translate),
+    ):
+        registered(symbol, parser.symbol_table[symbol], class_name, evaluate)
+    sum_base = parser.symbol_table["sum"]
+    parser._register(
+        "sum",
+        "_PyxsdLegacySum",
+        bases=(sum_base,),
+        label=sum_base.label,
+        nargs=1,
+        sequence_types=sum_base.sequence_types,
+        evaluate=legacy_sum,
+    )
+    id_base = parser.symbol_table["id"]
+    id_options: dict[str, Any] = {
+        "bases": (id_base,),
+        "label": id_base.label,
+        "nargs": id_base.nargs,
+        "sequence_types": id_base.sequence_types,
+        "select": legacy_id(id_base),
+    }
+    parser._register("id", "_PyxsdLegacyId", **id_options)
+    _install_legacy_path_operators(parser)
+
+
+def _install_legacy_path_operators(parser: Any) -> None:
+    """Allow a function call as the left operand of ``/`` and ``//``.
+
+    XPath 1.0's ``FilterExpr '/' RelativeLocationPath`` production admits any
+    primary expression, including a function call.  elementpath's XPath 1.0
+    grammar only admits the path-step and ``$`` forms, so ``document('x')/y``
+    would be rejected as a syntax error.  The XSLT function set makes that
+    production meaningful (``document()``, ``key()``, and ``id()`` all return
+    node-sets), so the native profile restores it.
+    """
+
+    for symbol in ("/", "//"):
+        base = parser.symbol_table[symbol]
+
+        def led(self: Any, left: Any, _base: Any = base) -> Any:
+            if isinstance(left, XPathFunction):
+                self[:] = left, self.parser.expression(75)
+                return self
+            return _base.led(self, left)
+
+        parser._register(
+            symbol,
+            f"_PyxsdLegacyPath{symbol.replace('/', 'Slash')}",
+            bases=(base,),
+            label=base.label,
+            lbp=base.lbp,
+            led=led,
+        )
+
+
+def _legacy_string_value(value: Any) -> str:
+    """The XPath 1.0 string conversion of one evaluator value."""
+    if isinstance(value, _LegacyRtfValue):
+        return value.value
+    if isinstance(value, XPathNode):
+        return value.string_value
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return number_to_string(value)
+    if isinstance(value, Decimal):
+        logical = format(value, "f")
+        return logical.rstrip("0").rstrip(".") if "." in logical else logical
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, UntypedAtomic):
+        return value.value
+    return str(value)
+
+
+def _legacy_number_value(value: Any) -> float:
+    """The XPath 1.0 number conversion of one evaluator value."""
+    if isinstance(value, _LegacyRtfValue):
+        return legacy_number_from_string(value.value)
+    if isinstance(value, XPathNode):
+        return legacy_number_from_string(value.string_value)
+    if value is None:
+        return math.nan
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, float):
+        return value
+    if isinstance(value, (int, Decimal)):
+        return float(value)
+    if isinstance(value, UntypedAtomic):
+        return legacy_number_from_string(value.value)
+    if isinstance(value, str):
+        return legacy_number_from_string(value)
+    return math.nan
 
 
 def _install_function_overrides(
