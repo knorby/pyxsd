@@ -30,6 +30,7 @@ from pyxsd.xpath.engine import CompiledExpression
 from pyxsd.xpath.environment import ExpressionEnvironment
 from pyxsd.xpath.functions import atomic_to_elementpath
 from pyxsd.xslt.errors import XsltDynamicError, XsltError, error_code_from_exception
+from pyxsd.xslt.policy import NestedTransformationPolicy
 from pyxsd.xslt.profiles import LanguageProfile, RecoveryPolicy, RecoveryRule
 from pyxsd.xslt.runtime.frames import (
     ExecutionBudget,
@@ -103,6 +104,7 @@ class Transformation:
         *,
         limits: ExecutionLimits | None = None,
         recovery_policy: RecoveryPolicy | None = None,
+        shared: NestedTransformationPolicy | None = None,
     ) -> None:
         if recovery_policy is None:
             processor = getattr(stylesheet, "processor", None)
@@ -112,6 +114,8 @@ class Transformation:
             )
         if not isinstance(recovery_policy, RecoveryPolicy):
             raise TypeError("recovery_policy must be a RecoveryPolicy or None")
+        if shared is not None and not isinstance(shared, NestedTransformationPolicy):
+            raise TypeError("shared must be a NestedTransformationPolicy or None")
         self.recovery_policy = recovery_policy
         self.stylesheet: Any = stylesheet
         self.package: Any = None if stylesheet is None else stylesheet.package
@@ -124,16 +128,25 @@ class Transformation:
         output_uri = None if options is None else getattr(options, "output_uri", None)
         if output_uri is not None:
             self.final_uris.add(output_uri)
-        base = ExpressionEnvironment()
-        self.current_datetime = base.current_datetime
-        self.implicit_timezone = base.implicit_timezone
+        if shared is not None:
+            # A nested fn:transform invocation continues the caller's ledger
+            # and keeps the caller's stable context values.  Everything else
+            # (stacks, caches, globals, results) is built fresh below.
+            self.limits = shared.limits
+            self.budget = shared.budget
+            self.current_datetime = shared.current_datetime
+            self.implicit_timezone = shared.implicit_timezone
+        else:
+            base = ExpressionEnvironment()
+            self.current_datetime = base.current_datetime
+            self.implicit_timezone = base.implicit_timezone
+            self.limits = limits if limits is not None else ExecutionLimits()
+            self.budget = ExecutionBudget(self.limits)
+        self.scheduler = Scheduler(self.limits, budget=self.budget)
         self.output_attributes = self._read_output_attributes()
         self.character_maps = self._read_character_maps()
         self.current_group: XdmSequence | None = None
         self.current_grouping_key: XdmSequence | None = None
-        self.limits = limits if limits is not None else ExecutionLimits()
-        self.budget = ExecutionBudget(self.limits)
-        self.scheduler = Scheduler(self.limits, budget=self.budget)
         self._xpath_plans: dict[int, ContinuationPlan | None] = {}
         self._function_tables: dict[str | None, dict[tuple[str, int], HostFunction]] = {}
         self._fallback_function_tables: dict[str | None, dict[str, Any]] = {}

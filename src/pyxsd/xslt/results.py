@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 from pyxsd.exceptions import PyXSDError
@@ -44,6 +44,7 @@ __all__ = [
     "ResultEntry",
     "ResultShapeError",
     "TransformationResult",
+    "delivered_entries",
     "serialization_parameters",
 ]
 
@@ -140,6 +141,60 @@ class ResultEntry:
     def document(self) -> XdmDocument | None:
         """The separately delivered document, when sequence normalization built one."""
         return self.tree
+
+
+#: The ``fn:transform`` delivery formats and the invocation delivery each one
+#: runs under.  ``serialized`` uses the invocation-level stylesheet delivery,
+#: which serializes the principal and every secondary result together.
+DELIVERY_FORMATS: Mapping[str, str] = MappingProxyType(
+    {"raw": "raw", "document": "document", "serialized": "stylesheet"}
+)
+
+
+def delivered_entries(
+    result: TransformationResult,
+    *,
+    delivery: str,
+    principal_parameters: Mapping[str, Any] | None = None,
+) -> list[tuple[str, XdmSequence]]:
+    """Return the ``fn:transform`` view of one transformation result.
+
+    The principal entry is keyed by its absolute output URI, or ``"output"``
+    when no base output URI was supplied; secondary entries are keyed by their
+    absolute URIs.  ``delivery`` selects each entry's value: the raw sequence,
+    the delivered document node, or the serialized string.  A serialized
+    principal honors *principal_parameters* on top of its retained effective
+    output attributes; secondary results always serialize with their own.
+    """
+    if delivery not in DELIVERY_FORMATS:
+        raise ValueError(f"delivery must be one of {sorted(DELIVERY_FORMATS)}, got {delivery!r}")
+    entries: list[tuple[str, XdmSequence]] = []
+    principal = result.principal_entry
+    key = principal.output_uri or "output"
+    if delivery == "raw":
+        entries.append((key, principal.raw))
+    elif delivery == "document":
+        # Document delivery always builds the principal tree; serialized
+        # delivery always populates the serialized string.
+        entries.append((key, cast(XdmSequence, (principal.tree,))))
+    else:
+        entries.append(
+            (key, cast(XdmSequence, (result.serialize(None, parameters=principal_parameters),)))
+        )
+        for uri, entry in result.secondary.items():
+            entries.append((uri, cast(XdmSequence, (entry.serialized,))))
+        return entries
+    for uri, entry in result.secondary.items():
+        if delivery == "raw":
+            entries.append((uri, entry.raw))
+        else:
+            tree = entry.tree
+            if tree is None:
+                # A secondary result built with build-tree="no" carries no
+                # delivered tree yet; document delivery builds one now.
+                tree = build_result_tree(entry.raw, output_uri=uri)
+            entries.append((uri, (tree,)))
+    return entries
 
 
 def serialization_parameters(

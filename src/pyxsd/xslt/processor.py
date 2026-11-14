@@ -5628,8 +5628,9 @@ class _Invocation(Transformation):
         options: _InvocationOptions,
         *,
         limits: Any = None,
+        shared: Any = None,
     ) -> None:
-        super().__init__(stylesheet, options, limits=limits)
+        super().__init__(stylesheet, options, limits=limits, shared=shared)
         self._mode_dispatchers: dict[tuple[str | None, str | None], RuleDispatcher] = {}
         self._pattern_environments: dict[int, ExpressionEnvironment] = {}
         self.dynamic_expressions = DynamicExpressionCache()

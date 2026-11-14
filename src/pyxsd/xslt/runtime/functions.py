@@ -636,6 +636,9 @@ class XsltContextBridge:
             f"{{{FN_NS}}}serialize": ContextFunction(
                 self._serialize_function, self._serialize_function
             ),
+            f"{{{FN_NS}}}transform": ContextFunction(
+                self._transform_function, self._transform_function
+            ),
         }
         if "type-available" in legal:
             table[f"{{{FN_NS}}}type-available"] = ContextFunction(self._type_available_function)
@@ -697,6 +700,34 @@ class XsltContextBridge:
             {**_SERIALIZATION_DEFAULTS, **attributes}
         )
         return (XdmAtomic.string(Serializer.serialize(arguments[0], parameters)),)
+
+    def _transform_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """Run one nested transformation under this one's policy snapshot.
+
+        The option map and the whole nested pipeline live in
+        :mod:`pyxsd.xslt.nested`; this bridge method only supplies the outer
+        transformation and the calling expression's static base URI.  The
+        import is deferred because the nested module reaches the processor
+        layer that imports this bridge.
+        """
+        del context_item
+        from pyxsd.xslt.nested import invoke_nested_transform
+
+        options = arguments[0]
+        if len(options) != 1 or not isinstance(options[0], XdmMap):
+            raise XsltDynamicError(
+                "transform() requires a single options map",
+                code="FOXT0002",
+            )
+        return invoke_nested_transform(
+            self.transformation,
+            options[0],
+            base_uri=self.base_uri,
+        )
 
     def _error_function(
         self,
