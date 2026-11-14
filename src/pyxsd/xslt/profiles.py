@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
-from pyxsd.xdm import XdmAtomic, XdmItem, XdmSequence
+from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmItem, XdmMap, XdmSequence
 from pyxsd.xdm.nodes import XdmNode
 from pyxsd.xslt.errors import XsltDynamicError, normalized_error_code
 
@@ -88,6 +88,14 @@ XSLT30_RECOVERY_RULES = frozenset(
         DOCUMENT_FRAGMENT_IDENTIFIER,
     }
 )
+
+#: The regular-expression flags defined by XPath 2.0 Functions and Operators
+#: §7.4.  The ``q`` (literal) flag arrived with the 3.0 function library, so a
+#: native 2.0 profile does not define it.
+XSLT20_REGEX_FLAGS = frozenset({"i", "m", "s", "x"})
+
+#: The regular-expression flags of the XPath 3.0 function library.
+XSLT30_REGEX_FLAGS = frozenset({"i", "m", "s", "x", "q"})
 
 #: The XSLT 2.0 recoverable dynamic errors, used only by a native 2.0 profile.
 XSLT20_RECOVERY_RULES = frozenset(
@@ -227,10 +235,18 @@ class LanguageProfile:
 
     @property
     def compatibility_mode(self) -> bool:
-        """Whether XPath 1.0 compatibility behavior applies to this element."""
+        """Whether XPath 1.0 compatibility behavior applies to this element.
+
+        A native pre-3.0 processor applies the compatibility rule of its own
+        language: XSLT 2.0 §3.8 enables backwards-compatible processing for
+        every element whose effective version is less than 2.0.  The default
+        3.0 processor keeps the XSLT 3.0 rule (§3.9.1), where only an
+        effective version of exactly 1.0 is XSLT 1.0 behavior.
+        """
+        effective = _decimal_version(self.effective_version, "effective_version")
         if self.native:
-            return _decimal_version(self.processor_version, "processor_version") < Decimal("2.0")
-        return _decimal_version(self.effective_version, "effective_version") == Decimal("1.0")
+            return effective < Decimal("2.0")
+        return effective == Decimal("1.0")
 
     @property
     def xpath_version(self) -> str:
@@ -240,6 +256,19 @@ class LanguageProfile:
         if self.processor_version == "2.0":
             return "2.0"
         return "3.1"
+
+    @property
+    def regex_flags(self) -> frozenset[str]:
+        """The regular-expression flags this processor profile defines.
+
+        The XSLT 2.0 instruction layer owns this set for
+        ``xsl:analyze-string``: an effective flag string is checked against
+        the profile, so a 3.0-only flag is an ``XTDE1145`` under a native 2.0
+        processor even when the flag value is computed at run time.
+        """
+        if self.xpath_version in ("1.0", "2.0"):
+            return XSLT20_REGEX_FLAGS
+        return XSLT30_REGEX_FLAGS
 
     @property
     def recovery_rules(self) -> frozenset[RecoveryRule]:
@@ -268,7 +297,13 @@ class LanguageProfile:
         return None
 
     def system_property(self, name: str) -> str:
-        """Return the profile's value for one ``xl:*`` system property."""
+        """Return the profile's value for one ``xl:*`` system property.
+
+        An empty string means the property is not owned by the language
+        profile: the caller falls back to its own vendor table.  Native
+        pre-3.0 profiles own more properties than 3.0 does, because the
+        capabilities those properties advertise arrived with XSLT 3.0.
+        """
         uri, local = _property_name(name)
         if uri != XSLT_NS:
             return ""
@@ -278,9 +313,44 @@ class LanguageProfile:
             return self.xpath_version
         if local == "is-schema-aware":
             return "yes" if self.schema_aware else "no"
-        if local == "supports-backwards-compatibility":
-            return "no" if self.native else "yes"
+        if local in ("supports-backwards-compatibility", "supports-namespace-axis"):
+            # Both properties exist in XSLT 2.0.  A native 1.0 processor does
+            # not define them, so its answer falls through to the caller.
+            if self.processor_version == "1.0":
+                return ""
+            # This engine implements backwards-compatible processing and the
+            # namespace axis, a native 2.0 processor no less than 3.0.
+            return "yes"
+        if self.native:
+            # These capability properties arrived with XSLT 3.0.  A native
+            # pre-3.0 profile advertises the absence of the capability rather
+            # than falling through to the 3.0 vendor table.
+            if local == "supports-dynamic-evaluation":
+                return "no"
+            if local == "supports-higher-order-functions":
+                return "no"
         return ""
+
+    def check_xdm_2_0_value(self, value: Iterable[XdmItem], label: str) -> None:
+        """Reject maps, arrays, and function items in one XDM 2.0 value.
+
+        The XDM 2.0 data model has no maps, arrays, or function items; a
+        native 2.0 profile cannot bind, store, or deliver one.  Such values
+        can only enter evaluation through the host boundary (supplied
+        parameters, bound variables, or Python customization callbacks), so
+        the profile owns this check and the seams that accept host values
+        call it.  The error is a type error: XSLT 2.0 has no code for an item
+        kind its data model does not define.
+        """
+        if not self.native:
+            return
+        for item in value:
+            if isinstance(item, (XdmMap, XdmArray, XdmFunction)):
+                raise XsltDynamicError(
+                    f"{label} contains an item kind (map, array, or function item) "
+                    "the XDM 2.0 data model of a native XSLT 2.0 processor does not define",
+                    code="XPTY0004",
+                )
 
     def _atomize(self, item: XdmItem) -> tuple[XdmAtomic, ...]:
         if isinstance(item, XdmAtomic):
@@ -344,7 +414,9 @@ __all__ = [
     "DOCUMENT_FRAGMENT_IDENTIFIER",
     "DOCUMENT_RETRIEVAL",
     "XSLT20_RECOVERY_RULES",
+    "XSLT20_REGEX_FLAGS",
     "XSLT30_RECOVERY_RULES",
+    "XSLT30_REGEX_FLAGS",
     "LanguageProfile",
     "RecoveryPolicy",
     "RecoveryRule",

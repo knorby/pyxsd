@@ -422,6 +422,11 @@ _XSLT30_ELEMENTS = frozenset(
 
 _PROCESSOR_VERSION = Decimal("3.0")
 
+#: The public processor identities this constructor builds and the XPath
+#: version each language profile normatively pairs with.  The native 1.0
+#: profile is a later task; the 3.0 processor keeps XPath 3.1.
+_PROCESSOR_LANGUAGES: Mapping[str, str] = MappingProxyType({"2.0": "2.0", "3.0": "3.1"})
+
 
 class XsltInvocationError(ValueError):
     """An invalid host invocation option combination.
@@ -464,9 +469,12 @@ class XsltProcessor:
     """Immutable processor identity and resource configuration.
 
     The default is an XSLT 3.0 processor with XPath 3.1 and schema awareness.
-    Native XSLT 2.0/1.0 profiles and extension registries belong to later
-    tasks; this processor rejects a profile it cannot execute instead of
-    silently running different semantics.
+    ``language="2.0"`` (with the matching ``xpath="2.0"``) builds the native,
+    schema-aware XSLT 2.0 processor: a distinct identity with its own static
+    feature gate, XPath surface, recovery table, and serialization method
+    selection, all owned by the profile layer.  Extension registries ride on
+    either identity; this processor rejects a profile it cannot execute
+    instead of silently running different semantics.
 
     ``remote_resource_policy`` separately authorizes stylesheet-driven remote
     document reads. Its trusted implementation must constrain origins, redirects,
@@ -492,10 +500,11 @@ class XsltProcessor:
     output_policy: OutputPolicy | None = None
 
     def __post_init__(self) -> None:
-        if self.language != "3.0":
+        if self.language not in _PROCESSOR_LANGUAGES:
             raise ValueError(f"unsupported XSLT language profile {self.language!r}")
-        if self.xpath != "3.1":
-            raise ValueError("XSLT 3.0 requires XPath 3.1")
+        required_xpath = _PROCESSOR_LANGUAGES[self.language]
+        if self.xpath != required_xpath:
+            raise ValueError(f"XSLT {self.language} requires XPath {required_xpath}")
         if not isinstance(self.schema_aware, bool):
             raise TypeError("schema_aware must be a boolean")
         if self.xsd_version not in ("1.0", "1.1"):
@@ -540,7 +549,7 @@ class XsltProcessor:
 
     def _profile(self) -> ProfileOptions:
         return ProfileOptions(
-            processor_profile="xslt-3.0",
+            processor_profile=f"xslt-{self.language}",
             schema_aware=self.schema_aware,
             static_options=self.static_options,
         )
@@ -604,6 +613,7 @@ class XsltProcessor:
             resolver=resolver,
             xsd_version=self.xsd_version,
             resource_policy=self.resource_policy,
+            profile=self._profile(),
         )
         self._check_static_profile(package, effective)
         return _compile_stylesheet(
@@ -649,6 +659,7 @@ class XsltProcessor:
             xsd_version=self.xsd_version,
             resource_policy=self.resource_policy,
             top_level=False,
+            profile=self._profile(),
         )
         package_semantics = explicit_package or bool(baseline_package.used_packages)
         self._check_static_profile(baseline_package, effective)
@@ -691,6 +702,7 @@ class XsltProcessor:
             resolver=synthetic_resolver,
             xsd_version=self.xsd_version,
             resource_policy=self.resource_policy,
+            profile=self._profile(),
         )
         self._check_static_profile(layer_package, layer_effective)
         return _compile_stylesheet(
@@ -7045,6 +7057,7 @@ class _Invocation(Transformation):
                 self.stylesheet.extensions.runtime_targets(
                     context.focus.item,
                     existing=functions,
+                    profile=self.profile_for(),
                 )
             )
         if context.original_functions:

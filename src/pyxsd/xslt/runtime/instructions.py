@@ -1436,6 +1436,7 @@ def variable_value(
             code="XTTE0570",
             label=f"variable {plan.name!r}",
         )
+    invocation.profile_for().check_xdm_2_0_value(value, f"the value of the variable {plan.name!r}")
     return value
 
 
@@ -1530,7 +1531,11 @@ def execute_analyze_string(
     regex_source = invocation._value_source(plan.regex, context)
     flags = invocation._value_source(plan.flags, context) if plan.flags is not None else ""
     try:
-        regex = compile_xpath_regex(regex_source, flags)
+        regex = compile_xpath_regex(
+            regex_source,
+            flags,
+            allowed_flags=invocation.profile_for().regex_flags,
+        )
     except XPathRegexError as exc:
         code = "XTDE1145" if exc.code == "FORX0001" else "XTDE1140"
         raise XsltDynamicError(str(exc), code=code) from exc

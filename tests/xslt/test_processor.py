@@ -107,6 +107,8 @@ def test_processor_defaults_and_immutable_configuration() -> None:
         processor.language = "2.0"  # type: ignore[misc]
 
     with pytest.raises(ValueError, match="unsupported XSLT language"):
+        XsltProcessor(language="4.0", xpath="3.1")
+    with pytest.raises(ValueError, match=r"XSLT 2\.0 requires XPath 2\.0"):
         XsltProcessor(language="2.0")
     with pytest.raises(ValueError, match=r"requires XPath 3\.1"):
         XsltProcessor(xpath="3.0")

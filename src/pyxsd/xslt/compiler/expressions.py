@@ -878,14 +878,23 @@ def compile_xpath(
     context: StaticContext,
     *,
     location: IssueLocation | None = None,
+    version: str | None = None,
 ) -> CompiledExpression:
-    """Compile one XPath expression through the Task 11 versioned engine."""
+    """Compile one XPath expression through the Task 11 versioned engine.
+
+    ``version`` overrides the static context's XPath version for this one
+    expression — the override the native-profile seams use to prove a
+    grammar is out of scope for the requested surface.  An unsupported
+    version is a caller error, not a stylesheet error.
+    """
     from pyxsd.xslt.compiler.context import StaticContext
 
     if not isinstance(context, StaticContext):
         raise TypeError("context must be a StaticContext")
     if not isinstance(source, str):
         raise TypeError("an XPath expression source must be a string")
+    if version is not None:
+        context = context.with_xpath_version(version)
     if not source.strip():
         raise _static_error(
             context,

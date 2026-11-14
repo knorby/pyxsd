@@ -61,6 +61,9 @@ _VISIBILITIES = frozenset({"public", "private", "final", "abstract", "hidden"})
 _VALIDATION_MODES = frozenset({"preserve", "strip"})
 _INPUT_TYPE_ANNOTATIONS = frozenset({"strip", "preserve", "unspecified"})
 _PROFILES = frozenset({"xslt-1.0", "xslt-2.0", "xslt-3.0", "xslt-3.1"})
+#: The XPath versions the versioned engine implements; an XPath version
+#: override on a static context is validated against this set.
+_XPATH_VERSIONS = frozenset({"2.0", "3.0", "3.1"})
 _VARIABLE = f"{{{XSLT_NS}}}variable"
 _PARAM = f"{{{XSLT_NS}}}param"
 _FUNCTION = f"{{{XSLT_NS}}}function"
@@ -73,6 +76,17 @@ _VERSION = f"{{{XSLT_NS}}}version"
 
 VariableKind: TypeAlias = Literal["variable", "param"]
 FunctionKey: TypeAlias = tuple[str, FunctionArity]
+
+#: XSLT functions whose 3.0-grown arities narrow back to the XSLT 2.0 forms
+#: when a static context compiles under a native 2.0 profile.  ``key`` gains
+#: its collation argument and ``function-available`` its arity argument only
+#: in XSLT 3.0.
+_XPATH20_FUNCTION_ARITIES: Mapping[str, FunctionArity] = MappingProxyType(
+    {
+        "fn:key": 2,
+        "fn:function-available": 1,
+    }
+)
 
 
 def _freeze(mapping: Mapping[Any, Any], label: str) -> Mapping[Any, Any]:
@@ -467,10 +481,19 @@ class StaticContext:
             # are represented by the smallest covering range.
             functions[name] = _arity_range(arities)
         for name, arity in xslt_function_declarations(effective_xslt_version).items():
-            if self.xpath_version == "3.1" and name in ("fn:key", "fn:generate-id"):
+            if self.xpath_version == "3.1" and name in (
+                "fn:key",
+                "fn:format-number",
+                "fn:generate-id",
+            ):
                 # The XPath 3.1 parser already provides these; declaring them
                 # again would fail registration.  The bridge overrides their
                 # behavior at evaluation time.
+                continue
+            if self.xpath_version == "2.0" and name in _XPATH20_FUNCTION_ARITIES:
+                # A native 2.0 profile offers the XSLT 2.0 forms: the wider
+                # arities arrived with XSLT 3.0 and are not 2.0 functions.
+                functions[name] = _XPATH20_FUNCTION_ARITIES[name]
                 continue
             functions.setdefault(name, arity)
         variable_types = {
@@ -499,6 +522,23 @@ class StaticContext:
 
     def with_version(self, value: str) -> StaticContext:
         return replace(self, version=_validate_version(value, uri=self.uri))
+
+    def with_xpath_version(self, value: str) -> StaticContext:
+        """Return a context whose expressions compile under *value* XPath.
+
+        The XPath version is a processor-profile property, so the override
+        swaps the profile's processor identity; schema awareness and the
+        static options stay with the compilation.  Only the XPath versions
+        the engine implements are accepted.
+        """
+        if not isinstance(value, str):
+            raise TypeError("an XPath version must be a string")
+        if value not in _XPATH_VERSIONS:
+            raise ValueError(f"unsupported XPath version {value!r}")
+        return replace(
+            self,
+            profile=replace(self.profile, processor_profile=f"xslt-{value}"),
+        )
 
     def with_namespaces(self, namespaces: Mapping[str, str]) -> StaticContext:
         return replace(self, namespaces=namespaces)

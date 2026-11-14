@@ -745,13 +745,15 @@ def execute_python_rule(
             code="XPTY0004",
         )
     try:
-        return tuple(as_xdm(result))
+        sequence = tuple(as_xdm(result))
     except (TypeError, ValueError) as exc:
         raise XsltDynamicError(
             f"the Python rule callback returned an unusable result: {exc}",
             code="XPTY0004",
             cause=exc,
         ) from exc
+    invocation.profile_for().check_xdm_2_0_value(sequence, "the Python rule callback result")
+    return sequence
 
 
 def _bound_at(rules: PythonRules, index: int) -> _BoundPythonRule | None:

@@ -85,6 +85,7 @@ from pyxsd.xslt.compiler.components import (
 from pyxsd.xslt.compiler.components import (
     XSLT_NS as XSLT_NS,
 )
+from pyxsd.xslt.compiler.context import ProfileOptions
 from pyxsd.xslt.compiler.instructions import (
     ComponentReference as ComponentReference,
 )
@@ -802,6 +803,7 @@ def compile_package_set(
     xsd_version: str = "1.1",
     resource_policy: Any = None,
     top_level: bool = True,
+    profile: ProfileOptions | None = None,
 ) -> CompiledPackage:
     """Compile the last supplied source as the principal package.
 
@@ -819,6 +821,10 @@ def compile_package_set(
     final check that a top-level package contains no abstract component to the
     caller.  Python customization uses that view only to validate and bind
     rules before completing abstract components in its synthetic layer.
+
+    ``profile`` carries the compiling processor's language identity; a native
+    pre-3.0 profile gates every module of the closure against its language
+    vocabulary before the package is returned.
     """
     loader = ModuleLoader()
     preprocessor = StaticPreprocessor()
@@ -853,6 +859,8 @@ def compile_package_set(
         _descriptor(principal_module),
         top_level=top_level,
     )
+    if profile is not None:
+        _assert_native_profile_language(compiled, profile)
     compiled = _attach_schema_pools(
         compiled,
         xsd_version=xsd_version,
@@ -860,6 +868,19 @@ def compile_package_set(
     )
     _check_schema_consistency(compiled)
     return compiled
+
+
+def _assert_native_profile_language(
+    package: CompiledPackage,
+    profile: ProfileOptions,
+) -> None:
+    """Gate every module of the package closure against *profile*."""
+    from pyxsd.xslt.compiler.native_profile import assert_native_profile_language
+    from pyxsd.xslt.compiler.schema_imports import _package_closure
+
+    for current in _package_closure(package):
+        for module in current.modules:
+            assert_native_profile_language(module, profile)
 
 
 # ---------------------------------------------------------------------------

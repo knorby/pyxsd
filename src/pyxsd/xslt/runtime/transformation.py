@@ -166,6 +166,26 @@ class Transformation:
         # base transformation keeps the absent state so bridge unit tests and
         # non-XSLT schedulers do not fabricate accumulator values.
         self.accumulators: Any = None
+        self._check_supplied_parameters()
+
+    def _check_supplied_parameters(self) -> None:
+        """Apply the active profile's XDM restrictions to supplied globals.
+
+        Supplied stylesheet parameters cross the host boundary, so a native
+        XSLT 2.0 profile rejects maps, arrays, and function items here
+        before any evaluation starts, with the profile's own type error.
+        The invocation layer converts every parameter to an XDM sequence
+        before this transformation exists.
+        """
+        parameters = getattr(self.options, "parameters", None)
+        if not isinstance(parameters, Mapping):
+            return
+        profile = self.profile_for()
+        for key, value in parameters.items():
+            shown = key[-1] if isinstance(key, tuple) else key
+            profile.check_xdm_2_0_value(
+                value, f"the supplied value of the stylesheet parameter {shown!r}"
+            )
 
     def _read_output_attributes(self) -> Mapping[str, str]:
         if self.package is None:
@@ -554,7 +574,12 @@ class Transformation:
         }
         stylesheet = self.stylesheet
         if stylesheet is not None and stylesheet.extensions.functions:
-            table.update(stylesheet.extensions.runtime_targets(existing=table))
+            table.update(
+                stylesheet.extensions.runtime_targets(
+                    existing=table,
+                    profile=self.profile_for(),
+                )
+            )
         self._fallback_function_tables[package_name] = table
         return table
 

@@ -56,6 +56,7 @@ from pyxsd.xdm.values import _is_xsd_subtype, _local_type_name
 from pyxsd.xpath.functions import XdmFunctionTarget, call_host_function
 from pyxsd.xslt.compiler.dispatch import InstructionCompiler
 from pyxsd.xslt.errors import XsltDynamicError, XsltStaticError
+from pyxsd.xslt.profiles import LanguageProfile
 from pyxsd.xslt.python_rules import PYTHON_RULES_NS, PythonRules
 from pyxsd.xslt.runtime.dispatch import PlanExecutor
 
@@ -466,6 +467,7 @@ class ExtensionTarget(XdmFunctionTarget):
     definitions: tuple[ExtensionFunction, ...]
     context_item: XdmItem | None = None
     fallback: Any = field(default=None, repr=False, compare=False)
+    profile: LanguageProfile | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.definitions:
@@ -476,6 +478,8 @@ class ExtensionTarget(XdmFunctionTarget):
             raise TypeError("an extension context item must be an XDM item or None")
         if self.fallback is not None and not callable(self.fallback):
             raise TypeError("an extension fallback must be callable or None")
+        if self.profile is not None and not isinstance(self.profile, LanguageProfile):
+            raise TypeError("an extension profile must be a LanguageProfile or None")
 
     def with_context(self, context_item: XdmItem | None) -> ExtensionTarget:
         """Return this target with one live context item for a direct call.
@@ -506,7 +510,13 @@ class ExtensionTarget(XdmFunctionTarget):
                 f"the Python extension function {name!r} has no arity {len(arguments)} overload",
                 code=EXTENSION_ERROR_CODE,
             )
-        return _invoke(definition, self.context_item, arguments)
+        sequence = _invoke(definition, self.context_item, arguments)
+        if self.profile is not None:
+            self.profile.check_xdm_2_0_value(
+                sequence,
+                f"the Python extension function {definition.name!r} result",
+            )
+        return sequence
 
 
 @dataclass(frozen=True, slots=True)
@@ -749,6 +759,7 @@ class XsltExtensions:
         context_item: XdmItem | None = None,
         *,
         existing: Mapping[str, Any] | None = None,
+        profile: LanguageProfile | None = None,
     ) -> Mapping[str, ExtensionTarget]:
         """Runtime targets keyed by expanded function name.
 
@@ -756,7 +767,8 @@ class XsltExtensions:
         environment.  A name registered both as an extension and as a
         stylesheet function keeps both arities: extension arities route to the
         Python callback and every other arity routes to the existing
-        dispatcher.
+        dispatcher.  *profile* restricts callback results to the active
+        processor's data model.
         """
         grouped: dict[str, list[ExtensionFunction]] = {}
         for definition in self._functions.values():
@@ -766,5 +778,5 @@ class XsltExtensions:
             fallback = None if existing is None else existing.get(name)
             if isinstance(fallback, ExtensionTarget):
                 fallback = fallback.fallback
-            targets[name] = ExtensionTarget(tuple(definitions), context_item, fallback)
+            targets[name] = ExtensionTarget(tuple(definitions), context_item, fallback, profile)
         return MappingProxyType(targets)

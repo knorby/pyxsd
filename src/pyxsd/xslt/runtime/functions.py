@@ -250,6 +250,7 @@ XSLT_FUNCTION_ARITIES: Mapping[str, FunctionArity] = MappingProxyType(
         "current-merge-key": 0,
         "document": (1, 2),
         "element-available": 1,
+        "format-number": (2, 3),
         "function-available": (1, 2),
         "key": (2, 3),
         "regex-group": 1,
@@ -271,6 +272,7 @@ _FUNCTION_MINIMUM_VERSION: Mapping[str, str] = MappingProxyType(
         "current-merge-key": "3.0",
         "document": "1.0",
         "element-available": "1.0",
+        "format-number": "1.0",
         "function-available": "1.0",
         "regex-group": "2.0",
         "system-property": "1.0",
@@ -311,9 +313,12 @@ def xslt_function_declarations(version: str) -> Mapping[str, FunctionArity]:
 
     Keys are lexical QNames in the standard function namespace because every
     static context binds ``fn``.  Functions native to the XPath 3.1 parser
-    (``key``, ``generate-id``, ``format-*``) are deliberately absent in the
-    3.0 profile; in 1.0/2.0 profiles the XPath 2.0 parser has no native symbol,
-    so the bridge declares them explicitly.
+    (``key``, ``generate-id``, ``format-number``) are deliberately absent in
+    the 3.0 profile; in 1.0/2.0 profiles the XPath 2.0 parser has no native
+    symbol, so the bridge declares them explicitly.  The remaining 2.0 date
+    and time formatting functions (``format-date`` and friends) have no
+    implementation in this engine behind the 3.1 parser, so they stay
+    undeclared and ``function-available`` reports them false.
     """
     effective = _profile_version(version)
     declarations: dict[str, FunctionArity] = {}
@@ -851,6 +856,14 @@ class XsltContextBridge:
         )
         if _namespace_of(expanded) != XSLT_NS:
             return ""
+        # The language profile owns the version-shaped properties; its empty
+        # answers fall through to this processor's vendor table.  A bridge
+        # host without a language profile keeps the vendor table answers.
+        profile_for = getattr(self.transformation, "profile_for", None)
+        if callable(profile_for):
+            profile_answer = profile_for().system_property(name)
+            if profile_answer:
+                return profile_answer
         local = _local_name(expanded)
         if local == "supports-dynamic-evaluation":
             return "yes" if self._dynamic_evaluation_enabled() else "no"

@@ -115,10 +115,19 @@ def test_profile_effective_versions_and_native_flags() -> None:
     assert native_two.xpath_version == "2.0"
     assert native_two.system_property("xsl:version") == "2.0"
 
+    # XSLT 2.0 §3.8, not the 3.0 §3.9.1 rule: every effective version below
+    # 2.0 enables backwards-compatible processing on a native 2.0 processor.
+    assert LanguageProfile.for_processor("2.0", "1.5").compatibility_mode is True
+    assert LanguageProfile.for_processor("2.0", "1.0").compatibility_mode is True
+
     native_one = LanguageProfile.for_processor("1.0", "1.0")
     assert native_one.native is True
     assert native_one.compatibility_mode is True
     assert native_one.xpath_version == "1.0"
+    # XSLT 1.0 defines neither optional property; the caller's own table
+    # answers, as it would for any unknown 1.0 system property.
+    assert native_one.system_property("xsl:supports-backwards-compatibility") == ""
+    assert native_one.system_property("xsl:supports-namespace-axis") == ""
 
 
 def test_profile_system_properties() -> None:

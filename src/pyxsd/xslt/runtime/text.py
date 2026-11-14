@@ -17,6 +17,7 @@ substring may be empty while a non-matching substring may not.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Final, NoReturn
 
@@ -31,6 +32,8 @@ from elementpath.regex.character_classes import (
     w_shortcut,
 )
 
+from pyxsd.xslt.profiles import XSLT30_REGEX_FLAGS
+
 __all__ = [
     "AnalyzedSubstring",
     "CompiledXPathRegex",
@@ -39,8 +42,8 @@ __all__ = [
     "compile_xpath_regex",
 ]
 
-#: The only flags defined for XPath regular expressions.
-VALID_FLAGS: Final[frozenset[str]] = frozenset("imsxq")
+#: The flags defined for XPath 3.0 regular expressions, the default surface.
+VALID_FLAGS: Final[frozenset[str]] = XSLT30_REGEX_FLAGS
 
 _XPATH_WHITESPACE: Final[frozenset[str]] = frozenset(" \t\r\n")
 _SINGLE_ESCAPES: Final[dict[str, str]] = {
@@ -118,8 +121,18 @@ class CompiledXPathRegex:
         return (match.group(0), *(group or "" for group in match.groups()))
 
 
-def compile_xpath_regex(source: str, flags: str = "") -> CompiledXPathRegex:
+def compile_xpath_regex(
+    source: str,
+    flags: str = "",
+    *,
+    allowed_flags: Iterable[str] | None = None,
+) -> CompiledXPathRegex:
     """Parse *source* against the XPath regex grammar and compile it.
+
+    *allowed_flags* is the flag vocabulary of the active processor profile;
+    the default is the XPath 3.0 set.  A native XSLT 2.0 profile passes the
+    smaller XPath 2.0 set, so a computed ``q`` flag is rejected exactly as a
+    literal one is.
 
     Raises :class:`XPathRegexError` with ``FORX0001`` for an undefined flag and
     ``FORX0002`` for a malformed pattern.
@@ -128,8 +141,9 @@ def compile_xpath_regex(source: str, flags: str = "") -> CompiledXPathRegex:
         raise TypeError("a regular expression source must be a string")
     if not isinstance(flags, str):
         raise TypeError("regular expression flags must be a string")
+    permitted = VALID_FLAGS if allowed_flags is None else frozenset(allowed_flags)
     for flag in flags:
-        if flag not in VALID_FLAGS:
+        if flag not in permitted:
             raise XPathRegexError(
                 f"the regular expression flag {flag!r} is not defined",
                 code="FORX0001",
