@@ -6261,9 +6261,10 @@ class _Invocation(Transformation):
                         context=replace(context, final_output=False),
                     ),
                     self.profile_for(),
+                    content=True,
                 )
             else:
-                value = ()
+                value = parameter_value((), self.profile_for(), content=False)
             if parameter.sequence_type is not None:
                 value = _coerce_sequence(
                     value,

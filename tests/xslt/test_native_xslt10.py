@@ -1048,6 +1048,24 @@ def test_native_content_with_param_cannot_be_used_as_a_node_set() -> None:
         native_transform(path)
 
 
+def test_native_empty_content_with_param_is_an_empty_string() -> None:
+    body = (
+        '<xsl:template name="callee">'
+        '<xsl:param name="p"/>'
+        '<xsl:value-of select="boolean($p)"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="string($p)"/>'
+        "<xsl:text>|</xsl:text><xsl:value-of select=\"$p = ''\"/>"
+        "</xsl:template>"
+        '<xsl:template name="main">'
+        '<xsl:call-template name="callee"><xsl:with-param name="p"/></xsl:call-template>'
+        "</xsl:template>"
+    )
+    # XSLT 1.0 §11.6 + §11.2: absent content and no @select bind ''.
+    assert text_of(body) == "false||true"
+    with pytest.raises(XsltDynamicError, match="node-set"):
+        native_transform(body.replace("boolean($p)", "count($p)"))
+
+
 def test_native_select_with_param_remains_a_node_set() -> None:
     body = (
         '<xsl:template name="callee">'

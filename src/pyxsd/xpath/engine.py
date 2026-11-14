@@ -1386,12 +1386,19 @@ def _install_legacy_1_0_overrides(parser: Any) -> None:
     def legacy_count(self: Any, context: Any = None) -> int:
         active = active_context(self, context)
         items = list(self._items[0].select(active))
-        if any(is_fragment(item) for item in items):
-            raise LegacyNodeSetError(
-                "fn:count() requires a node-set, but a result tree fragment "
-                "was supplied; a native XSLT 1.0 processor does not convert "
-                "a result tree fragment where a node-set is required"
-            )
+        for item in items:
+            if is_fragment(item):
+                raise LegacyNodeSetError(
+                    "fn:count() requires a node-set, but a result tree fragment "
+                    "was supplied; a native XSLT 1.0 processor does not convert "
+                    "a result tree fragment where a node-set is required"
+                )
+            if not isinstance(item, XPathNode):
+                raise LegacyNodeSetError(
+                    "fn:count() requires a node-set, but an atomic value was "
+                    "supplied; a native XSLT 1.0 processor does not convert an "
+                    "atomic value to a node-set"
+                )
         return len(items)
 
     def legacy_id(base: Any) -> Any:

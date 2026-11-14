@@ -1423,13 +1423,21 @@ def check_copy_type(
         )
 
 
-def parameter_value(sequence: XdmSequence, profile: LanguageProfile) -> XdmSequence:
-    """Wrap one content-initialized with-parameter in the profile's value model.
+def parameter_value(
+    sequence: XdmSequence,
+    profile: LanguageProfile,
+    *,
+    content: bool,
+) -> XdmSequence:
+    """Bind one ``xsl:with-param`` value in the profile's value model.
 
-    XSLT 1.0 §11.6 initializes ``xsl:with-param`` content exactly like
-    ``xsl:variable`` content, so the profile's legacy model binds a result tree
-    fragment.  A later processor delivers the constructed sequence directly.
+    XSLT 1.0 §11.6 specifies a with-parameter exactly like a variable: content
+    initialization is a result tree fragment when content is present and the
+    empty string when content is absent (§11.2).  A later processor delivers
+    the constructed sequence, or the empty sequence for absent content.
     """
+    if not content:
+        return (XdmAtomic.string(""),) if profile.legacy else ()
     if profile.legacy:
         return (ResultTreeFragment(_build_result_tree(sequence)),)
     return sequence
