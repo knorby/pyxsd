@@ -861,7 +861,11 @@ class XsltContextBridge:
         # host without a language profile keeps the vendor table answers.
         profile_for = getattr(self.transformation, "profile_for", None)
         if callable(profile_for):
-            profile_answer = profile_for().system_property(name)
+            # The expanded name is already resolved, so the answer cannot
+            # depend on which prefix the stylesheet bound to the XSLT
+            # namespace.  A lexical name here would let a non-``xsl`` prefix
+            # bypass the profile's version-shaped answers.
+            profile_answer = profile_for().system_property(expanded)
             if profile_answer:
                 return profile_answer
         local = _local_name(expanded)

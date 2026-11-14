@@ -697,12 +697,14 @@ class XsltProcessor:
             package_name=package_name,
         )
         layer_effective = StaticPreprocessor().apply(layer_source, static_parameters)
+        # The synthetic layer is engine-generated and carries internal
+        # ``_``-prefixed attributes and helpers that are not stylesheet
+        # syntax; profile gating applies to the user's baseline package.
         layer_package = compile_package_set(
             layer_effective,
             resolver=synthetic_resolver,
             xsd_version=self.xsd_version,
             resource_policy=self.resource_policy,
-            profile=self._profile(),
         )
         self._check_static_profile(layer_package, layer_effective)
         return _compile_stylesheet(

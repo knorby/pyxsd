@@ -276,7 +276,6 @@ def test_native_xpath_grammar_is_2_0(expression: str) -> None:
         "head((1, 2))",
         "for-each((1,2), function($x) { $x })",
         "parse-json('{}')",
-        "format-integer(3, '001')",
     ],
 )
 def test_native_xpath_rejects_3_0_functions(expression: str) -> None:
@@ -292,7 +291,6 @@ def test_native_function_library_is_2_0() -> None:
         <xsl:template name="main">
           <xsl:sequence select="function-available('fn:key')"/>
           <xsl:sequence select="function-available('fn:format-number')"/>
-          <xsl:sequence select="function-available('fn:format-date')"/>
           <xsl:sequence select="element-available('xsl:try')"/>
           <xsl:sequence select="element-available('xsl:analyze-string')"/>
           <xsl:sequence select="format-number(1.5, '0.00')"/>
@@ -304,13 +302,41 @@ def test_native_function_library_is_2_0() -> None:
         XdmAtomic.boolean(True),
         XdmAtomic.boolean(True),
         XdmAtomic.boolean(False),
-        XdmAtomic.boolean(False),
         XdmAtomic.boolean(True),
         XdmAtomic.string("1.50"),
         XdmAtomic.integer(1),
         XdmAtomic.integer(2),
         XdmAtomic.integer(3),
     )
+
+
+def test_2_0_formatting_functions_are_a_known_engine_gap() -> None:
+    """``format-integer`` and the date/time formatters are XSLT 2.0 §16.5.
+
+    They are not implemented behind this engine's XPath 2.0 parser, so the
+    native profile cannot call them.  That is a pre-existing engine-wide gap,
+    not an XSLT 3.0 addition: the default 3.0 processor evaluates the same
+    calls through its XPath 3.1 parser.  This test records the gap rather than
+    asserting the absence as a 2.0 rule; ``function-available`` reports the
+    implementation gap under both processors.
+    """
+    assert native_transform(
+        '<xsl:template name="main">'
+        "<xsl:sequence select=\"function-available('fn:format-integer')\"/>"
+        "<xsl:sequence select=\"function-available('fn:format-date')\"/>"
+        "</xsl:template>"
+    ).principal == (XdmAtomic.boolean(False), XdmAtomic.boolean(False))
+
+    body = (
+        '<xsl:template name="main">'
+        "<xsl:sequence select=\"format-integer(3, '001')\"/>"
+        "</xsl:template>"
+    )
+    with pytest.raises(XsltStaticError) as caught:
+        native_compile(body)
+    assert caught.value.code == "XPST0017"
+    modern = XsltProcessor().compile(io.BytesIO(stylesheet(body, version="2.0")))
+    assert modern.transform(initial_template="main").principal == (XdmAtomic.string("003"),)
 
 
 @pytest.mark.parametrize(
@@ -413,6 +439,32 @@ def test_native_recovery_table_differs_from_3_0() -> None:
     with pytest.raises(XsltDynamicError) as caught:
         recovering.compile(io.BytesIO(stylesheet(body))).transform(initial_template="main")
     assert caught.value.code == "FODC0002"
+
+
+def test_native_system_properties_resolve_any_prefix() -> None:
+    body = """
+        <xsl:template name="main">
+          <xsl:sequence select="system-property('x:version')"/>
+          <xsl:sequence select="system-property('x:xpath-version')"/>
+          <xsl:sequence select="system-property('x:supports-backwards-compatibility')"/>
+          <xsl:sequence select="system-property('x:is-schema-aware')"/>
+        </xsl:template>
+    """
+    source = stylesheet(body, version="2.0", namespaces={"x": XSLT_NS})
+    native = XsltProcessor(**NATIVE).compile(io.BytesIO(source))
+    assert native.transform(initial_template="main").principal == (
+        XdmAtomic.string("2.0"),
+        XdmAtomic.string("2.0"),
+        XdmAtomic.string("yes"),
+        XdmAtomic.string("yes"),
+    )
+    compatibility = XsltProcessor().compile(io.BytesIO(source))
+    assert compatibility.transform(initial_template="main").principal == (
+        XdmAtomic.string("3.0"),
+        XdmAtomic.string("3.1"),
+        XdmAtomic.string("yes"),
+        XdmAtomic.string("yes"),
+    )
 
 
 def test_native_system_properties_differ_from_3_0() -> None:
@@ -902,6 +954,46 @@ def test_native_rejects_3_0_only_element_attributes(declaration: str) -> None:
     with pytest.raises(XsltStaticError) as caught:
         native_compile(body)
     assert caught.value.code == "XTSE0090"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<xsl:template name="main">'
+        '<xsl:message error-code="err:FOER0000">x</xsl:message>'
+        "</xsl:template>",
+        '<xsl:template match="doc" visitor="yes"/>',
+        '<xsl:template name="main">'
+        '<xsl:apply-templates select="/doc" mode="#unnamed"/>'
+        "</xsl:template>",
+        '<xsl:template name="main"><xsl:apply-templates select="/doc" mode="#all"/></xsl:template>',
+        '<xsl:template match="doc" mode="#unnamed"/>',
+    ],
+)
+def test_native_schema_gate_rejects_undeclared_2_0_attributes(body: str) -> None:
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor(**NATIVE).compile(io.BytesIO(stylesheet(body, version="2.0")))
+    assert caught.value.code in ("XTSE0090", "XTSE0550")
+    assert "XSLT 2.0" in str(caught.value)
+
+
+def test_native_schema_gate_keeps_the_2_0_vocabulary() -> None:
+    body = """
+        <xsl:template match="doc" mode="#all"><matched/></xsl:template>
+        <xsl:template name="main">
+          <xsl:apply-templates select="/doc" mode="#current"/>
+          <xsl:apply-templates select="/doc" mode="#default"/>
+          <xsl:message select="1" terminate="no"/>
+          <xsl:value-of select="1" disable-output-escaping="no"/>
+          <xsl:for-each select="1 to 2">
+            <xsl:sort select="." stable="yes"/>
+          </xsl:for-each>
+          <xsl:result-document href="side.txt" format="fmt"><a/></xsl:result-document>
+        </xsl:template>
+        <xsl:output name="fmt" method="text"/>
+        <xsl:attribute-set name="s" use-attribute-sets=""/>
+    """
+    assert native_compile(body) is not None
 
 
 def test_native_rejects_static_variables() -> None:

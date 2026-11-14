@@ -1,26 +1,35 @@
 """Static feature gate for native pre-3.0 processor profiles.
 
-A native XSLT 2.0 processor compiles exactly the XSLT 2.0 element
+A native XSLT 2.0 processor compiles exactly the XSLT 2.0 language
 vocabulary.  Every XSLT-namespace element a stylesheet module carries is
-checked against that vocabulary before the compiled package is returned, so
-a feature that arrived with XSLT 3.0 — packages, ``xsl:evaluate``, the
-higher-order instructions, 3.0-only attributes and serialization parameters
+checked before the compiled package is returned against the bundled XSLT 2.0
+stylesheet schema: the element itself, every unqualified and XSLT-namespace
+attribute it carries, and the mode-token vocabulary of ``@mode``.  A feature
+that arrived with XSLT 3.0 — packages, ``xsl:evaluate``, the higher-order
+instructions, 3.0-only attributes and serialization parameters, ``#unnamed``
 — is a static error with the profile named in the message, never a silently
 ignored version check.
 
-The gate is profile-owned: it runs only when the compiled package's
-profile is a native pre-3.0 processor, and the vocabulary it enforces is
-the language definition, not an implementation preference.  Elements
-outside the XSLT namespace (literal result elements, extension
-instructions) are not gated here.
+The gate is profile-owned: it runs only when the compiled package's profile
+is a native pre-3.0 processor.  It derives the vocabulary from
+``schema-for-xslt20.xsd`` rather than a hand-maintained denylist, so the
+general class of unknown attribute is covered and the schema's own attribute
+declarations, complex-type inheritance, and simple-type enumerations decide
+what XSLT 2.0 permits.  Elements outside the XSLT namespace (literal result
+elements, extension instructions) are not gated here.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from decimal import Decimal
+from functools import lru_cache
+from importlib.resources import as_file
+from importlib.resources import files as resource_files
 from types import MappingProxyType
 from typing import Any
+from xml.etree import ElementTree
 
 from pyxsd.locations import IssueLocation
 from pyxsd.xdm.nodes import NodeKind
@@ -29,114 +38,143 @@ from pyxsd.xslt.errors import XsltStaticError
 from pyxsd.xslt.profiles import XSLT20_REGEX_FLAGS, LanguageProfile
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
+XSD_NS = "http://www.w3.org/2001/XMLSchema"
+
+#: The bundled, packaged XSLT 2.0 stylesheet schema (the same resource the
+#: advisory inspection profile uses).  It is the vocabulary source for this
+#: gate; the Recommendation remains normative where the two might differ.
+XSLT20_SCHEMA_RESOURCE = "schema-for-xslt20.xsd"
 
 __all__ = ["assert_native_profile_language"]
-
-#: Every element the XSLT 2.0 Recommendation defines, declarations and
-#: instructions together (XSLT 2.0 Appendix D).  An XSLT-namespace element
-#: outside this set under a native 2.0 processor is a feature from a later
-#: version of the language.
-XSLT20_ELEMENTS = frozenset(
-    {
-        "analyze-string",
-        "apply-imports",
-        "apply-templates",
-        "attribute",
-        "attribute-set",
-        "call-template",
-        "character-map",
-        "choose",
-        "comment",
-        "copy",
-        "copy-of",
-        "decimal-format",
-        "document",
-        "element",
-        "fallback",
-        "for-each",
-        "for-each-group",
-        "function",
-        "if",
-        "import",
-        "import-schema",
-        "include",
-        "key",
-        "matching-substring",
-        "message",
-        "namespace",
-        "namespace-alias",
-        "next-match",
-        "non-matching-substring",
-        "number",
-        "otherwise",
-        "output",
-        "output-character",
-        "param",
-        "perform-sort",
-        "preserve-space",
-        "processing-instruction",
-        "result-document",
-        "sequence",
-        "sort",
-        "strip-space",
-        "stylesheet",
-        "template",
-        "text",
-        "transform",
-        "value-of",
-        "variable",
-        "when",
-        "with-param",
-    }
-)
 
 #: The Serialization 2.0 output methods (XSLT 2.0 §20).  The core methods
 #: are these unprefixed NCNames; every other name selects an output method
 #: this processor does not implement for the profile.
 XSLT20_OUTPUT_METHODS = frozenset({"xml", "xhtml", "html", "text"})
 
-#: Serialization attributes that arrived after XSLT 2.0.  They are rejected
-#: wherever an XSLT-namespace output element carries them.
-XSLT30_ONLY_OUTPUT_ATTRIBUTES = frozenset(
-    {
-        "allow-duplicate-names",
-        "build-tree",
-        "html-version",
-        "item-separator",
-        "json-node-output-method",
-        "parameter-document",
-        "suppress-indentation",
+
+@dataclass(frozen=True, slots=True)
+class _XSLT20Vocabulary:
+    """The XSLT 2.0 element/attribute/mode vocabulary from the schema."""
+
+    elements: frozenset[str]
+    attributes: Mapping[str, frozenset[str]]
+    mode_tokens: Mapping[str, frozenset[str]]
+
+
+def _xsd_local(tag: str) -> str:
+    return tag.rpartition("}")[2]
+
+
+def _xsd_name(name: str) -> str:
+    return f"{{{XSD_NS}}}{name}"
+
+
+def _local_name(value: str) -> str:
+    return value.rpartition(":")[2]
+
+
+def _element_type(element: Any, declarations: Mapping[str, Any]) -> Any:
+    """Resolve one schema element's type: reference, inline type, or head."""
+    reference = element.get("type")
+    if reference:
+        return reference
+    inline = next(
+        (child for child in element if _xsd_local(child.tag) == "complexType"),
+        None,
+    )
+    if inline is not None:
+        return inline
+    # The bundle assigns every concrete XSLT element an inline type or a
+    # substitution head that carries one (xsl:stylesheet -> xsl:transform).
+    head = element.attrib["substitutionGroup"]
+    return _element_type(declarations[_local_name(head)], declarations)
+
+
+def _attribute_declarations(
+    type_ref: Any,
+    complex_types: Mapping[str, Any],
+) -> dict[str, str | None]:
+    """Collect one type's attribute declarations, following its base.
+
+    The bundled schema expresses inheritance with ``complexContent`` or
+    ``simpleContent`` extension/restriction; each branch is followed so the
+    standard attributes reach every element.  A later declaration of the same
+    name wins, matching XSD restriction behavior.
+    """
+    if isinstance(type_ref, str):
+        return _attribute_declarations(
+            complex_types[_local_name(type_ref)],
+            complex_types,
+        )
+    declarations: dict[str, str | None] = {}
+    for child in type_ref:
+        tag = _xsd_local(child.tag)
+        if tag == "attribute":
+            declarations[child.attrib["name"]] = child.get("type")
+        elif tag in ("complexContent", "simpleContent"):
+            for inner in child:
+                declarations.update(_attribute_declarations(inner.attrib["base"], complex_types))
+                for attribute in inner:
+                    if _xsd_local(attribute.tag) == "attribute":
+                        declarations[attribute.attrib["name"]] = attribute.get("type")
+    return declarations
+
+
+def _simple_type_enumerations(
+    type_ref: Any,
+    simple_types: Mapping[str, Any],
+) -> frozenset[str]:
+    """Collect the ``#token`` vocabulary of one simple type."""
+    if isinstance(type_ref, str):
+        return _simple_type_enumerations(
+            simple_types[_local_name(type_ref)],
+            simple_types,
+        )
+    values: set[str] = set()
+    for node in type_ref.iter():
+        tag = _xsd_local(node.tag)
+        if tag == "enumeration" and node.get("value") is not None:
+            values.add(node.get("value"))
+        elif tag == "union":
+            for member in (node.get("memberTypes") or "").split():
+                values |= _simple_type_enumerations(member, simple_types)
+    return frozenset(values)
+
+
+@lru_cache(maxsize=1)
+def _xslt20_vocabulary() -> _XSLT20Vocabulary:
+    """Load the XSLT 2.0 element, attribute, and mode vocabulary."""
+    resource = resource_files("pyxsd.xslt") / "resources" / XSLT20_SCHEMA_RESOURCE
+    with as_file(resource) as path:
+        root = ElementTree.parse(path).getroot()
+    complex_types: dict[str, Any] = {
+        node.attrib["name"]: node for node in root.findall(_xsd_name("complexType"))
     }
-)
-
-#: Standard XSLT attributes that arrived with XSLT 3.0.
-XSLT30_ONLY_STANDARD_ATTRIBUTES = frozenset(
-    {
-        "default-mode",
-        "expand-text",
-        "static",
-        "streamable",
-        "visibility",
+    simple_types: dict[str, Any] = {
+        node.attrib["name"]: node for node in root.findall(_xsd_name("simpleType"))
     }
-)
-
-#: Element-specific attributes that arrived with XSLT 3.0.  Every name is
-#: absent from the XSLT 2.0 syntax summary of its element, so a native 2.0
-#: processor reports it as an unknown attribute rather than compiling it.
-XSLT30_ONLY_ELEMENT_ATTRIBUTES: Mapping[str, frozenset[str]] = MappingProxyType(
-    {
-        "copy": frozenset({"copy-accumulators"}),
-        "copy-of": frozenset({"copy-accumulators"}),
-        "for-each-group": frozenset({"bind-group", "bind-grouping-key", "composite"}),
-        "key": frozenset({"composite"}),
-        "number": frozenset({"start-at"}),
+    declarations: dict[str, Any] = {
+        node.attrib["name"]: node for node in root.findall(_xsd_name("element"))
     }
-)
-
-
-def _element_local(node: Any) -> str:
-    name = node.name or ""
-    return name.rpartition("}")[2] if name.startswith("{") else name
+    elements: set[str] = set()
+    attributes: dict[str, frozenset[str]] = {}
+    mode_tokens: dict[str, frozenset[str]] = {}
+    for name, element in declarations.items():
+        if element.get("abstract") in ("true", "1"):
+            continue
+        type_ref = _element_type(element, declarations)
+        declared = _attribute_declarations(type_ref, complex_types)
+        elements.add(name)
+        attributes[name] = frozenset(declared)
+        mode_type = declared.get("mode")
+        if mode_type:
+            mode_tokens[name] = _simple_type_enumerations(mode_type, simple_types)
+    return _XSLT20Vocabulary(
+        frozenset(elements),
+        MappingProxyType(attributes),
+        MappingProxyType(mode_tokens),
+    )
 
 
 def _attribute_triples(node: Any) -> list[tuple[str | None, str, str]]:
@@ -178,6 +216,58 @@ def _attribute_value(node: Any, local: str) -> str | None:
     return None if attribute is None else attribute.string_value
 
 
+def _check_attributes(
+    node: Any,
+    local: str,
+    vocabulary: _XSLT20Vocabulary,
+    *,
+    uri: str | None,
+    location: IssueLocation | None,
+) -> None:
+    """Reject an attribute the XSLT 2.0 schema does not declare on *local*."""
+    allowed = vocabulary.attributes[local]
+    for namespace, attribute_local, _value in _attribute_triples(node):
+        if namespace in (None, XSLT_NS) and attribute_local not in allowed:
+            raise XsltStaticError(
+                f"the attribute {attribute_local!r} is not defined for xsl:{local} "
+                "by XSLT 2.0; a native XSLT 2.0 processor cannot compile it",
+                code="XTSE0090",
+                uri=uri,
+                location=location,
+            )
+
+
+def _check_mode_tokens(
+    node: Any,
+    local: str,
+    vocabulary: _XSLT20Vocabulary,
+    *,
+    uri: str | None,
+    location: IssueLocation | None,
+) -> None:
+    """Reject a ``#`` mode token the XSLT 2.0 schema does not define.
+
+    The schema's ``mode`` type enumerates ``#default`` and ``#current`` for
+    ``xsl:apply-templates``; its ``modes`` type enumerates ``#all`` and
+    ``#default`` for ``xsl:template``.  Those tokens are XSLT 2.0 vocabulary,
+    so only tokens absent from the schema (``#unnamed`` and ``#all`` on
+    ``xsl:apply-templates``) are rejected here.
+    """
+    value = _attribute_value(node, "mode")
+    if value is None:
+        return
+    allowed = vocabulary.mode_tokens.get(local, frozenset())
+    for token in value.split():
+        if token.startswith("#") and token not in allowed:
+            raise XsltStaticError(
+                f"the mode token {token!r} is not defined for xsl:{local} by XSLT 2.0; "
+                "a native XSLT 2.0 processor cannot compile it",
+                code="XTSE0550",
+                uri=uri,
+                location=location,
+            )
+
+
 def _check_method_attribute(
     node: Any,
     *,
@@ -207,26 +297,6 @@ def _check_method_attribute(
         )
 
 
-def _check_output_attributes(node: Any, *, uri: str | None, location: IssueLocation | None) -> None:
-    local = _element_local(node)
-    rejected = set(XSLT30_ONLY_OUTPUT_ATTRIBUTES)
-    if local == "output":
-        # ``format`` is not an XSLT 2.0 ``xsl:output`` attribute; a named
-        # output definition is selected with ``xsl:output/@name``.  On
-        # ``xsl:result-document`` it is the XSLT 2.0 way to select one.
-        rejected.add("format")
-    for namespace, attribute_local, _value in _attribute_triples(node):
-        if attribute_local in rejected and namespace in (None, XSLT_NS):
-            raise XsltStaticError(
-                f"the attribute {attribute_local!r} is not defined by XSLT 2.0; a "
-                "native XSLT 2.0 processor cannot compile it",
-                code="XTSE0090",
-                uri=uri,
-                location=location,
-            )
-    _check_method_attribute(node, uri=uri, location=location, allow_avt=local == "result-document")
-
-
 def _check_analyze_string_flags(
     node: Any, *, uri: str | None, location: IssueLocation | None
 ) -> None:
@@ -248,31 +318,14 @@ def _check_analyze_string_flags(
         )
 
 
-def _check_standard_attributes(
-    node: Any, *, uri: str | None, location: IssueLocation | None
-) -> None:
-    local = _element_local(node)
-    rejected = set(XSLT30_ONLY_STANDARD_ATTRIBUTES)
-    rejected |= XSLT30_ONLY_ELEMENT_ATTRIBUTES.get(local, frozenset())
-    for namespace, attribute_local, _value in _attribute_triples(node):
-        if attribute_local in rejected and namespace in (None, XSLT_NS):
-            raise XsltStaticError(
-                f"the attribute {attribute_local!r} is not defined by XSLT 2.0; a "
-                "native XSLT 2.0 processor cannot compile it",
-                code="XTSE0090",
-                uri=uri,
-                location=location,
-            )
-
-
-def _visit(node: Any, *, uri: str | None) -> None:
+def _visit(node: Any, *, uri: str | None, vocabulary: _XSLT20Vocabulary) -> None:
     if node.kind is not NodeKind.ELEMENT:
         return
     name = node.name or ""
     if name.startswith(f"{{{XSLT_NS}}}"):
         local = name[len(XSLT_NS) + 2 :]
         location = node.source_location()
-        if local not in XSLT20_ELEMENTS:
+        if local not in vocabulary.elements:
             raise XsltStaticError(
                 f"the xsl:{local} element is not defined by XSLT 2.0; a native "
                 "XSLT 2.0 processor cannot compile it",
@@ -280,13 +333,19 @@ def _visit(node: Any, *, uri: str | None) -> None:
                 uri=uri,
                 location=location,
             )
+        _check_attributes(node, local, vocabulary, uri=uri, location=location)
+        _check_mode_tokens(node, local, vocabulary, uri=uri, location=location)
         if local in ("output", "result-document"):
-            _check_output_attributes(node, uri=uri, location=location)
+            _check_method_attribute(
+                node,
+                uri=uri,
+                location=location,
+                allow_avt=local == "result-document",
+            )
         if local == "analyze-string":
             _check_analyze_string_flags(node, uri=uri, location=location)
-        _check_standard_attributes(node, uri=uri, location=location)
     for child in node.children:
-        _visit(child, uri=uri)
+        _visit(child, uri=uri, vocabulary=vocabulary)
 
 
 def assert_native_profile_language(module: Any, profile: ProfileOptions) -> None:
@@ -301,4 +360,4 @@ def assert_native_profile_language(module: Any, profile: ProfileOptions) -> None
     if Decimal(resolved.processor_version) >= Decimal("3.0"):
         return
     uri = getattr(module, "identity", None)
-    _visit(module.document.root_element, uri=uri)
+    _visit(module.document.root_element, uri=uri, vocabulary=_xslt20_vocabulary())
