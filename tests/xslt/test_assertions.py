@@ -49,6 +49,8 @@ from tests.xslt.assertions import (
     _deep_equal,
     _is_gap,
     _namespace_map,
+    _unexpected_error,
+    _xml_mismatch,
     _xml_namespace_scopes,
     assert_case,
     evaluate_assertion,
@@ -156,6 +158,183 @@ def test_xml_fragment_wrapper_and_order_are_significant() -> None:
     assert evaluate_assertion(AssertionXML("<a/><b/>"), result=snapshot)
     assert not evaluate_assertion(AssertionXML("<b/><a/>"), result=snapshot)
     assert not evaluate_assertion(AssertionXML("<a/>"), result=snapshot)
+
+
+def test_xml_mismatch_detail_names_the_first_differing_path() -> None:
+    case = make_case(
+        "<result><assert-xml><![CDATA[<out><a>1</a><b/></out>]]></assert-xml></result>"
+    )
+
+    result = assert_case(case, ResultSnapshot(xml="<out><a>2</a><b/></out>"))
+
+    assert result.outcome is Outcome.FAIL
+    assert result.message.splitlines() == [
+        "actual XML differs from the expected XML: text differs at /out/a",
+        "expected: 1",
+        "actual: 2",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("expected", "actual", "first_line", "expected_fragment", "actual_fragment"),
+    [
+        (
+            "<out><a>1</a></out>",
+            "<out><b>1</b></out>",
+            "element names differ at /out/a",
+            "<a>1</a>",
+            "<b>1</b>",
+        ),
+        (
+            '<out x="1"/>',
+            '<out x="2"/>',
+            "attributes differ at /out",
+            '<out x="1"></out>',
+            '<out x="2"></out>',
+        ),
+        (
+            '<out xmlns:p="urn:x" p:x="1"/>',
+            '<out xmlns:p="urn:x" p:x="2"/>',
+            "attributes differ at /out",
+            '<out {urn:x}x="1"></out>',
+            '<out {urn:x}x="2"></out>',
+        ),
+        (
+            '<p:out xmlns:p="urn:x"/>',
+            '<q:out xmlns:q="urn:x"/>',
+            "element prefixes differ at /p:out",
+            "<p:out></p:out>",
+            "<q:out></q:out>",
+        ),
+        (
+            "<out><!--a--></out>",
+            "<out><!--b--></out>",
+            "comment text differs at /out",
+            "<!--a-->",
+            "<!--b-->",
+        ),
+        (
+            "<out><?pi a?></out>",
+            "<out><?pi b?></out>",
+            "processing instruction differs at /out",
+            "<?pi a?>",
+            "<?pi b?>",
+        ),
+        (
+            "<out><a/></out>",
+            "<out>text</out>",
+            "node kinds differ at /out/a",
+            "<a></a>",
+            "text",
+        ),
+        (
+            "<out>text</out>",
+            "<out/>",
+            "an expected node is missing at /out",
+            "text",
+            "(none)",
+        ),
+        (
+            "<out/>",
+            "<out>text</out>",
+            "an unexpected node appeared at /out",
+            "(none)",
+            "text",
+        ),
+        (
+            "<out><a/><a/></out>",
+            "<out><a/><a/><a/></out>",
+            "an unexpected node appeared at /out/a[3]",
+            "(none)",
+            "<a></a>",
+        ),
+        (
+            "<out><a/><a/></out>",
+            "<out><a/></out>",
+            "an expected node is missing at /out/a[2]",
+            "<a></a>",
+            "(none)",
+        ),
+        (
+            "<out><a>x</a><b>1</b></out>",
+            "<out><a>x</a><b>2</b></out>",
+            "text differs at /out/b",
+            "1",
+            "2",
+        ),
+        (
+            "<out><!--x--><b>1</b></out>",
+            "<out><!--x--><b>2</b></out>",
+            "text differs at /out/b",
+            "1",
+            "2",
+        ),
+        (
+            "<out><?pi x?><b>1</b></out>",
+            "<out><?pi x?><b>2</b></out>",
+            "text differs at /out/b",
+            "1",
+            "2",
+        ),
+    ],
+)
+def test_xml_mismatch_names_the_first_structural_difference(
+    expected: str,
+    actual: str,
+    first_line: str,
+    expected_fragment: str,
+    actual_fragment: str,
+) -> None:
+    lines = _xml_mismatch(expected, actual, False).splitlines()
+
+    assert lines == [
+        f"actual XML differs from the expected XML: {first_line}",
+        f"expected: {expected_fragment}",
+        f"actual: {actual_fragment}",
+    ]
+
+
+def test_xml_mismatch_falls_back_to_lengths_and_serialized_prefixes() -> None:
+    empty = _xml_mismatch("", "<out><a>1</a></out>", False).splitlines()
+    unparsed = _xml_mismatch("<out>", "<out/>", False).splitlines()
+
+    assert empty == [
+        "actual XML differs from the expected XML: expected 0 characters, actual 19 characters",
+        "expected: ",
+        "actual: <out><a>1</a></out>",
+    ]
+    assert unparsed == [
+        "actual XML differs from the expected XML: expected 5 characters, actual 6 characters",
+        "expected: <out>",
+        "actual: <out/>",
+    ]
+
+
+def test_xml_mismatch_bounds_fragments_and_never_raises() -> None:
+    bounded = _xml_mismatch(
+        f"<out><a>{'x' * 400}</a></out>", f"<out><a>{'y' * 400}</a></out>", False
+    ).splitlines()
+    identical = _xml_mismatch("<out/>", "<out/>", False)
+
+    assert bounded == [
+        "actual XML differs from the expected XML: text differs at /out/a",
+        f"expected: {'x' * 120}",
+        f"actual: {'y' * 120}",
+    ]
+    assert identical.startswith(
+        "actual XML differs from the expected XML: expected 6 characters, actual 6 characters"
+    )
+
+
+def test_xml_mismatch_for_an_empty_expected_result_is_a_failure() -> None:
+    case = make_case("<result><assert-xml><![CDATA[]]></assert-xml></result>")
+
+    result = assert_case(case, ResultSnapshot(xml="<out/>"))
+
+    assert result.outcome is Outcome.FAIL
+    assert result.message.splitlines()[0] == (
+        "actual XML differs from the expected XML: expected 0 characters, actual 6 characters"
+    )
 
 
 def test_xml_expected_files_resolve_against_the_case_document(tmp_path: Path) -> None:
@@ -368,6 +547,70 @@ def test_not_error_expectation_fails_when_an_error_occurs() -> None:
 
     assert assert_case(case, ResultSnapshot(error_code="XTDE0040")).outcome is Outcome.FAIL
     assert assert_case(case, ResultSnapshot(xml="<other/>")).outcome is Outcome.PASS
+
+
+@pytest.mark.parametrize(
+    "assertion",
+    [
+        AssertionXPath("true()"),
+        AssertionXML("<out/>"),
+        AssertionStringValue("x"),
+        AssertionCount(1),
+        AssertionType("item()"),
+        AssertionEmpty(),
+        AssertionTrue(),
+        AssertionFalse(),
+        AssertionEq("1"),
+        AssertionDeepEq("1"),
+        AssertionPermutation("1"),
+        AssertionSerialization("<out/>"),
+        AssertionSerializationMatches("x"),
+        AssertionWarning(),
+    ],
+)
+def test_every_error_mode_arm_reports_the_raised_error(assertion: Assertion) -> None:
+    snapshot = ResultSnapshot(error_code="XTDE0040", error_message="[XTDE0040] boom")
+
+    verdict = assertion.evaluate_verdict(AssertionContext(snapshot, error_mode=True))
+
+    assert verdict.status == "fail"
+    assert verdict.detail == "unexpected error: XTDE0040: boom"
+
+
+def test_unexpected_error_detail_keeps_the_code_message_and_bounds_its_length() -> None:
+    def detail(result: ResultSnapshot) -> str:
+        return _unexpected_error(AssertionContext(result, error_mode=True)).detail
+
+    assert (
+        detail(ResultSnapshot(error_code="XTDE0040", error_message="bad\nname\r\n\nhere"))
+        == "unexpected error: XTDE0040: bad name here"
+    )
+    assert detail(ResultSnapshot(error_code="XTDE0040")) == "unexpected error: XTDE0040"
+    assert detail(ResultSnapshot(error_message="bare message")) == "unexpected error: bare message"
+    assert detail(ResultSnapshot()) == "unexpected error: unknown error"
+    assert (
+        detail(
+            ResultSnapshot(serialization_error_code="SERE0014", serialization_error_message="no")
+        )
+        == "unexpected error: SERE0014: no"
+    )
+    bounded = detail(ResultSnapshot(error_code="XTDE0040", error_message="x" * 300))
+    assert len(bounded) == len("unexpected error: ") + 200
+    assert bounded.startswith("unexpected error: XTDE0040: x")
+
+
+def test_assert_case_keeps_the_error_detail_in_the_failure_message() -> None:
+    case = make_case("<result><assert-xml><![CDATA[<out/>]]></assert-xml></result>")
+
+    result = assert_case(
+        case,
+        ResultSnapshot(
+            error_code="XTDE0650", error_message="[XTDE0650] circularity at corpus/x.xsl"
+        ),
+    )
+
+    assert result.outcome is Outcome.FAIL
+    assert result.message == "unexpected error: XTDE0650: circularity at corpus/x.xsl"
 
 
 def test_error_code_qname_normalization_is_deliberate() -> None:

@@ -28,6 +28,7 @@ import io
 import re
 import xml.etree.ElementTree as ET
 import xml.parsers.expat as expat
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,6 +97,12 @@ _GAP_CODES = frozenset(
 _CATALOG_NS = "http://www.w3.org/2012/10/xslt-test-catalog"
 _WRAPPER = "pyxsd-assertion-wrapper"
 _MISSING = object()
+
+#: Longest engine error detail a failure keeps, in characters.
+_ERROR_DETAIL_LIMIT = 200
+
+#: Longest expected/actual XML fragment a mismatch detail keeps, in characters.
+_FRAGMENT_LIMIT = 120
 
 
 class AssertionGap(Exception):
@@ -204,6 +211,39 @@ def _failed(detail: str = "") -> Verdict:
 
 def _wrong(expected: str, actual: str) -> Verdict:
     return Verdict("wrong-error", expected=expected, actual=actual)
+
+
+def _one_line(text: str, limit: int) -> str:
+    """One display line: newlines become spaces and *limit* bounds the result."""
+    return re.sub(r"\s*[\r\n]+\s*", " ", text).strip()[:limit]
+
+
+def _unexpected_error(context: AssertionContext) -> Verdict:
+    """A fail verdict that keeps the error the engine actually raised.
+
+    The runner discards a result once an error occurred, so this is the only
+    place the raised code and message survive into a signature.  A
+    serialization error is reported when that is what decided ``error_mode``.
+    An XSLT error's message already leads with its own ``[code]`` label, which
+    is dropped here so the code is not repeated.
+    """
+    result = context.result
+    if result.error_code is not None:
+        code, message = result.error_code, result.error_message
+    elif result.serialization_error_code is not None:
+        code, message = result.serialization_error_code, result.serialization_error_message
+    else:
+        code, message = None, result.error_message or result.serialization_error_message
+    label = f"[{code}] " if code is not None else ""
+    if label and message.startswith(label):
+        message = message[len(label) :]
+    message = _one_line(message, _ERROR_DETAIL_LIMIT)
+    detail = (
+        f"{code}: {message}"
+        if code is not None and message
+        else (code or message or "unknown error")
+    )
+    return _failed(f"unexpected error: {_one_line(detail, _ERROR_DETAIL_LIMIT)}")
 
 
 class Assertion:
@@ -720,6 +760,150 @@ def _xml_equal(expected: str, actual: str, ignore_prefixes: bool) -> bool:
     )
 
 
+def _display_name(node: _CanonicalNode) -> str:
+    return f"{node.prefix}:{node.local}" if node.prefix else node.local
+
+
+def _display_attribute(namespace: str, local: str) -> str:
+    return f"{{{namespace}}}{local}" if namespace else local
+
+
+def _escape_display(value: str) -> str:
+    return (
+        value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    )
+
+
+def _render_canonical(node: _CanonicalNode) -> str:
+    """One canonical node as display text; the caller bounds the length."""
+    if node.kind == "element":
+        name = _display_name(node)
+        attributes = "".join(
+            f' {_display_attribute(namespace, local)}="{_escape_display(value)}"'
+            for namespace, local, value in node.attributes
+        )
+        children = "".join(_render_canonical(child) for child in node.children)
+        return f"<{name}{attributes}>{children}</{name}>"
+    if node.kind == "text":
+        return _escape_display(node.value)
+    if node.kind == "comment":
+        return f"<!--{node.value}-->"
+    return f"<?{node.local} {node.value}?>"
+
+
+def _path_segments(children: Sequence[_CanonicalNode]) -> list[str | None]:
+    """The path segment each child contributes, indexed siblings included."""
+    totals = Counter(_display_name(child) for child in children if child.kind == "element")
+    positions: Counter[str] = Counter()
+    segments: list[str | None] = []
+    for child in children:
+        if child.kind != "element":
+            segments.append(None)
+            continue
+        name = _display_name(child)
+        positions[name] += 1
+        segments.append(name if totals[name] == 1 else f"{name}[{positions[name]}]")
+    return segments
+
+
+def _element_difference(
+    expected: _CanonicalNode,
+    actual: _CanonicalNode,
+    path: str,
+    ignore_prefixes: bool,
+) -> tuple[str, str, _CanonicalNode | None, _CanonicalNode | None] | None:
+    """The first structural difference between two canonical elements.
+
+    The result is ``(reason, path, expected node, actual node)``; a node is
+    ``None`` where one document has no counterpart.  Mirrors
+    :func:`_canonical_equal` so the reason names the same comparison that
+    failed.
+    """
+    if (expected.namespace, expected.local) != (actual.namespace, actual.local):
+        return ("element names differ", path, expected, actual)
+    if not ignore_prefixes and expected.prefix != actual.prefix:
+        return ("element prefixes differ", path, expected, actual)
+    if expected.attributes != actual.attributes:
+        return ("attributes differ", path, expected, actual)
+    left_children = expected.children
+    right_children = actual.children
+    left_segments = _path_segments(left_children)
+    right_segments = _path_segments(right_children)
+    for index in range(max(len(left_children), len(right_children))):
+        left = left_children[index] if index < len(left_children) else None
+        right = right_children[index] if index < len(right_children) else None
+        if left is None or right is None:
+            segment = (right_segments if left is None else left_segments)[index]
+            child_path = f"{path}/{segment}" if segment is not None else path
+            reason = (
+                "an unexpected node appeared" if left is None else "an expected node is missing"
+            )
+            return (reason, child_path, left, right)
+        segment = left_segments[index] or right_segments[index]
+        child_path = f"{path}/{segment}" if segment is not None else path
+        if left.kind != right.kind:
+            return ("node kinds differ", child_path, left, right)
+        if left.kind == "element":
+            deeper = _element_difference(left, right, child_path, ignore_prefixes)
+            if deeper is not None:
+                return deeper
+        elif left.kind == "comment":
+            if left.value != right.value:
+                return ("comment text differs", path, left, right)
+        elif left.kind == "text":
+            if left.value != right.value:
+                return ("text differs", path, left, right)
+        elif (left.local, left.value) != (right.local, right.value):
+            return ("processing instruction differs", path, left, right)
+    return None
+
+
+def _first_difference(
+    expected: str, actual: str, ignore_prefixes: bool
+) -> tuple[str, str, _CanonicalNode | None, _CanonicalNode | None] | None:
+    """The first difference between two serialized XML documents."""
+    left = _CanonicalNode("element", children=_unwrap(_canonicalize(expected)))
+    right = _CanonicalNode("element", children=_unwrap(_canonicalize(actual)))
+    difference = _element_difference(left, right, "", ignore_prefixes)
+    if difference is None:
+        return None
+    reason, path, expected_node, actual_node = difference
+    return reason, path or "/", expected_node, actual_node
+
+
+def _xml_mismatch(expected: str, actual: str, ignore_prefixes: bool) -> str:
+    """A bounded, deterministic description of one XML mismatch.
+
+    The first line names the first differing element path, which is what a
+    census signature groups on; the expected and actual fragments follow on
+    their own lines.  A side that is empty or not parsed falls back to its
+    length and a serialized prefix.  This never raises: a detail builder must
+    not turn a comparison failure into a harness failure.
+    """
+    base = "actual XML differs from the expected XML"
+    difference: tuple[str, str, _CanonicalNode | None, _CanonicalNode | None] | None = None
+    if expected.strip() and actual.strip():
+        try:
+            difference = _first_difference(expected, actual, ignore_prefixes)
+        except Exception:  # a detail builder never decides the verdict
+            difference = None
+    if difference is None:
+        line = f"{base}: expected {len(expected)} characters, actual {len(actual)} characters"
+        fragments = (_one_line(expected, _FRAGMENT_LIMIT), _one_line(actual, _FRAGMENT_LIMIT))
+    else:
+        reason, path, expected_node, actual_node = difference
+        line = f"{base}: {reason} at {path}"
+        fragments = (
+            _one_line(_render_canonical(expected_node), _FRAGMENT_LIMIT)
+            if expected_node is not None
+            else "(none)",
+            _one_line(_render_canonical(actual_node), _FRAGMENT_LIMIT)
+            if actual_node is not None
+            else "(none)",
+        )
+    return f"{line}\nexpected: {fragments[0]}\nactual: {fragments[1]}"
+
+
 # ---------------------------------------------------------------------------
 # Expected-error normalization
 
@@ -799,7 +983,7 @@ class AssertionXPath(Assertion):
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
-            return _failed("the transformation raised an unexpected error")
+            return _unexpected_error(context)
         value = _evaluate(
             f"boolean(({self.expression}))",
             declarations=self.namespaces,
@@ -822,7 +1006,7 @@ class AssertionXML(Assertion):
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
-            return _failed("the transformation raised an unexpected error")
+            return _unexpected_error(context)
         if self.xml_version == "1.1":
             raise AssertionGap("XML 1.1 expected results are not supported")
         actual = context.result.xml
@@ -830,11 +1014,9 @@ class AssertionXML(Assertion):
             raise AssertionGap("assert-xml needs the principal XML result")
         context.record(XML_FAMILY)
         expected = _expected_text(context.case, self.expected, self.file)
-        return (
-            _passed()
-            if _xml_equal(expected, actual, self.ignore_prefixes)
-            else _failed("actual XML differs from the expected XML")
-        )
+        if _xml_equal(expected, actual, self.ignore_prefixes):
+            return _passed()
+        return _failed(_xml_mismatch(expected, actual, self.ignore_prefixes))
 
 
 @dataclass(frozen=True)
@@ -846,7 +1028,7 @@ class AssertionStringValue(Assertion):
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
-            return _failed("the transformation raised an unexpected error")
+            return _unexpected_error(context)
         context.record(STRING_FAMILY)
         actual = _string_value(_raw_items(context.result), self.namespaces)
         expected = self.expected
@@ -866,7 +1048,7 @@ class AssertionCount(Assertion):
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
-            return _failed("the transformation raised an unexpected error")
+            return _unexpected_error(context)
         context.record(COUNT_FAMILY)
         items = _raw_items(context.result)
         if len(items) == self.count:
@@ -882,7 +1064,7 @@ class AssertionType(Assertion):
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
-            return _failed("the transformation raised an unexpected error")
+            return _unexpected_error(context)
         matched = _evaluate_context_free(
             f"$result instance of {self.type_name}",
             declarations=self.namespaces,
@@ -904,7 +1086,7 @@ class AssertionEmpty(Assertion):
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
-            return _failed("the transformation raised an unexpected error")
+            return _unexpected_error(context)
         if self.expression is None:
             context.record(EMPTY_FAMILY)
             return _passed() if not _raw_items(context.result) else _failed("result is not empty")
@@ -924,7 +1106,7 @@ class AssertionTrue(Assertion):
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
-            return _failed("the transformation raised an unexpected error")
+            return _unexpected_error(context)
         context.record(BOOLEAN_FAMILY)
         items = _raw_items(context.result)
         if len(items) == 1 and items[0] is True:
@@ -939,7 +1121,7 @@ class AssertionFalse(Assertion):
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
-            return _failed("the transformation raised an unexpected error")
+            return _unexpected_error(context)
         context.record(BOOLEAN_FAMILY)
         items = _raw_items(context.result)
         if len(items) == 1 and items[0] is False:
@@ -964,7 +1146,7 @@ class AssertionEq(Assertion):
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
-            return _failed("the transformation raised an unexpected error")
+            return _unexpected_error(context)
         expected_items = _evaluate_expression(f"({self.expected})", self.namespaces)
         actual_items = _raw_items(context.result)
         parser = _parser(self.namespaces)
@@ -988,7 +1170,7 @@ class AssertionDeepEq(Assertion):
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
-            return _failed("the transformation raised an unexpected error")
+            return _unexpected_error(context)
         expected_items = _evaluate_expression(f"({self.expected})", self.namespaces)
         actual_items = _raw_items(context.result)
         parser = _parser(self.namespaces)
@@ -1009,7 +1191,7 @@ class AssertionPermutation(Assertion):
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
-            return _failed("the transformation raised an unexpected error")
+            return _unexpected_error(context)
         expected_items = list(_evaluate_expression(f"({self.expected})", self.namespaces))
         actual_items = list(_raw_items(context.result))
         parser = _parser(self.namespaces)
@@ -1094,7 +1276,7 @@ class AssertionSerialization(Assertion):
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
-            return _failed("the transformation raised an unexpected error")
+            return _unexpected_error(context)
         if self.ignore_prefixes:
             raise AssertionGap("prefix-insensitive serialization comparison is not implemented")
         actual = context.result.serialized
@@ -1138,7 +1320,7 @@ class AssertionSerializationMatches(Assertion):
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
-            return _failed("the transformation raised an unexpected error")
+            return _unexpected_error(context)
         actual = context.result.serialized
         if actual is None:
             raise AssertionGap("serialization-matches needs the engine serialization")
@@ -1197,7 +1379,7 @@ class AssertionWarning(Assertion):
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
-            return _failed("the transformation raised an unexpected error")
+            return _unexpected_error(context)
         warnings = context.result.warnings
         if warnings is None:
             raise AssertionGap("the result does not provide warnings")

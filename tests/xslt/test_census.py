@@ -192,6 +192,39 @@ def test_signatures_are_normalized_per_outcome() -> None:
     )
 
 
+def test_error_detail_splits_one_unexpected_error_group_into_families() -> None:
+    results = (
+        CaseResult.failed("a", message="unexpected error: XTDE0650: circularity"),
+        CaseResult.failed("b", message="unexpected error: XTDE0650: circularity"),
+        CaseResult.failed("c", message="unexpected error: XTDE0040: no such template"),
+    )
+
+    document = _census(results).to_dict()
+
+    assert [(group["signature"], group["count"]) for group in document["signatures"]] == [
+        ("unexpected error: XTDE0650: circularity", 2),
+        ("unexpected error: XTDE0040: no such template", 1),
+    ]
+
+
+def test_a_multiline_mismatch_signs_on_its_path_and_keeps_detail_sanitized() -> None:
+    message = (
+        "actual XML differs from the expected XML: text differs at /out/a\n"
+        "expected: /Users/someone/expected.xml\n"
+        "actual: <out><a>2</a></out>"
+    )
+    observed = _census((CaseResult.failed("case", message=message),))
+
+    case = observed.to_dict()["cases"][0]
+    assert case["signature"] == "actual XML differs from the expected XML: text differs at /out/a"
+    assert case["message"] == (
+        "actual XML differs from the expected XML: text differs at /out/a\n"
+        "expected: <path>\n"
+        "actual: <out><a>2</a></out>"
+    )
+    assert "/Users/" not in census.render_json(observed)
+
+
 # ---------------------------------------------------------------------------
 # Aggregation
 
