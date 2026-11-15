@@ -125,6 +125,7 @@ from pyxsd.xslt.compiler.plans import (
     _MergePlan,
     _MergeSourcePlan,
     _MessagePlan,
+    _MissingFallbackPlan,
     _ModeLayerPlan,
     _NextIterationPlan,
     _NumberPlan,
@@ -3762,6 +3763,8 @@ def _compile_instruction(
     """
     context = _instruction_context(context, instruction)
     context = _original_context(context, instruction)
+    if _native_10_forwards_compatible(instruction, context):
+        return _compile_native_10_forwards_compatible(instruction, context, module)
     if supports_instruction(instruction.name, context):
         return compile_instruction(instruction, context, module)
     if instruction.literal:
@@ -3769,6 +3772,50 @@ def _compile_instruction(
             return _compile_unregistered_extension_instruction(instruction, context, module)
         return _compile_literal_result(instruction, context, module)
     return _compile_unhandled_instruction(instruction, context, module)
+
+
+def _native_10_forwards_compatible(instruction: Instruction, context: StaticContext) -> bool:
+    """Whether *instruction* is a later element the native 1.0 rules forward.
+
+    The profile owns the vocabulary decision (see
+    :func:`pyxsd.xslt.profile10.forwards_compatible_instruction`); this hook
+    only keeps the XSLT 2.0/3.0 instruction registry out of the way so the
+    forwards-compatible fallback can run instead of the later semantics.
+    """
+    if not instruction.is_xslt:
+        return False
+    from pyxsd.xslt.profile10 import forwards_compatible_instruction
+
+    return forwards_compatible_instruction(
+        instruction.local_name,
+        context.profile,
+        context.version,
+    )
+
+
+def _compile_native_10_forwards_compatible(
+    instruction: Instruction,
+    context: StaticContext,
+    module: EffectiveModule,
+) -> _Plan:
+    """Compile one forwards-compatible instruction under XSLT 1.0 §2.5/§15.
+
+    An element XSLT 1.0 does not allow in a template must not be an error
+    unless it is instantiated; when it is instantiated, §15 Fallback
+    instantiates every ``xsl:fallback`` child in sequence and signals an error
+    only when none is present.  Compiling the fallback content eagerly is
+    inert for an uninstantiated element because the whole plan lives in the
+    position that already guards it.
+    """
+    fallbacks = tuple(
+        child for child in instruction.elements if child.is_xslt and child.local_name == "fallback"
+    )
+    if fallbacks:
+        return _ConcatPlan(
+            instruction,
+            tuple(_compile_sequence(fallback.children, context, module) for fallback in fallbacks),
+        )
+    return _MissingFallbackPlan(instruction)
 
 
 _EXTENSION_ELEMENT_PREFIXES = "extension-element-prefixes"
@@ -6784,6 +6831,15 @@ class _Invocation(Transformation):
                 f"the instruction xsl:{plan.instruction.local_name} is not supported by the "
                 "Task 16 execution slice",
                 code=None,
+            )
+        if isinstance(plan, _MissingFallbackPlan):
+            raise XsltDynamicError(
+                f"xsl:{plan.instruction.local_name} is not defined by XSLT 1.0 and has no "
+                "xsl:fallback; a native XSLT 1.0 processor performs fallback for it when it "
+                "is instantiated (XSLT 1.0 §2.5 and §15)",
+                code=None,
+                uri=plan.instruction.module,
+                location=plan.instruction.location,
             )
         return execute_registered_plan(plan, self, context, self.stylesheet.plan_executors)
 

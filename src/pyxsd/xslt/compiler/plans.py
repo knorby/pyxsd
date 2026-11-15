@@ -61,6 +61,7 @@ __all__ = [
     "_MapPlan",
     "_MergePlan",
     "_MergeSourcePlan",
+    "_MissingFallbackPlan",
     "_ModeLayerPlan",
     "_NamespacePlan",
     "_NextIterationPlan",
@@ -533,6 +534,19 @@ class _UnsupportedPlan:
     instruction: Instruction
 
 
+@dataclass(frozen=True, slots=True)
+class _MissingFallbackPlan:
+    """An instantiated XSLT instruction XSLT 1.0 does not define.
+
+    XSLT 1.0 §2.5 must not reject such an element while it is uninstantiated;
+    §15 Fallback signals an error only when it is instantiated and carries no
+    ``xsl:fallback`` child.  This plan is that deferred error: it does nothing
+    at compile time and raises where the instruction would have run.
+    """
+
+    instruction: Instruction
+
+
 _Plan: TypeAlias = (
     _TextPlan
     | _TvtPlan
@@ -581,6 +595,7 @@ _Plan: TypeAlias = (
     | _AnalyzeStringPlan
     | _NumberPlan
     | _UnsupportedPlan
+    | _MissingFallbackPlan
 )
 
 

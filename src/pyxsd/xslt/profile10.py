@@ -15,11 +15,35 @@ documents, 2.0-only attributes and serialization parameters — is a static
 error with the native profile named in the message, never a silently ignored
 version check.  Elements outside the XSLT namespace (literal result elements
 and extension instructions) are not gated here.
+
+XSLT 1.0 §2.5 requires a 1.0 processor to process a stylesheet whose
+`xsl:stylesheet` version is not `1.0` in forwards-compatible mode:
+
+    An element enables forwards-compatible mode for itself, its attributes,
+    its descendants and their attributes if either it is an xsl:stylesheet
+    element whose version attribute is not equal to 1.0, or it is a literal
+    result element that has an xsl:version attribute whose value is not equal
+    to 1.0, or it is a literal result element that does not have an
+    xsl:version attribute and that is the document element of a stylesheet
+    using the simplified syntax.  A literal result element that has an
+    xsl:version attribute whose value is equal to 1.0 disables
+    forwards-compatible mode for itself, its attributes, its descendants and
+    their attributes.  (XSLT 1.0 §2.5)
+
+In that mode the vocabulary check no longer rejects later-version attributes
+or elements: §2.5 says an attribute XSLT 1.0 does not allow the element to
+have "must be ignored", a top-level element XSLT 1.0 does not allow "must be
+ignored along with its content", and an element XSLT 1.0 does not allow in a
+template must not be an error unless instantiated, at which point fallback
+applies (see :func:`forwards_compatible_instruction` and the compile path that
+implements §15 Fallback).  A stylesheet with an effective version of exactly
+`1.0` keeps the strict gate.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import Any
 
@@ -35,6 +59,7 @@ __all__ = [
     "XSLT10_OUTPUT_ATTRIBUTES",
     "XSLT10_OUTPUT_METHODS",
     "assert_xslt10_language",
+    "forwards_compatible_instruction",
 ]
 
 #: The XSLT 1.0 output methods (XSLT 1.0 §16).  ``xhtml`` and the 2.0/3.0
@@ -153,6 +178,50 @@ def _attribute_value(node: Any, local: str) -> str | None:
     return None if attribute is None else attribute.string_value
 
 
+def _version_is_forwards_compatible(value: str | None) -> bool:
+    """Whether a ``version`` declaration enables forwards-compatible mode.
+
+    XSLT 1.0 §2.5 compares the declared version numerically against ``1.0``;
+    ``1`` and ``1.00`` therefore keep the strict gate.  A value that is not a
+    Number is reported by the version validator before this gate runs, so it
+    keeps the strict reading here rather than guessing a mode from invalid
+    input.
+    """
+    if value is None:
+        return False
+    try:
+        return Decimal(value) != Decimal("1.0")
+    except (InvalidOperation, ValueError):
+        return False
+
+
+def _declared_mode(node: Any) -> tuple[bool, bool]:
+    """The forwards-compatible state one element declares under §2.5.
+
+    Returns ``(declares, enabled)``: ``declares`` is false when the element
+    carries no declaration this rule recognizes, and ``enabled`` is the mode it
+    starts for itself, its attributes, and its descendants.  Only an
+    ``xsl:stylesheet``/``xsl:transform`` element and a literal result element
+    can change the mode; XSLT 1.0 has no version attribute on any other XSLT
+    element, so a later version's ``version`` attribute there is an unknown
+    attribute of the forward-compatible reading and never a mode switch.
+    """
+    name = node.name or ""
+    if name.startswith(f"{{{XSLT_NS}}}"):
+        local = name[len(XSLT_NS) + 2 :]
+        if local not in ("stylesheet", "transform"):
+            return False, False
+        return True, _version_is_forwards_compatible(_attribute_value(node, "version"))
+    declared = _attribute_value(node, f"{{{XSLT_NS}}}version")
+    if declared is None:
+        # §2.5's third clause enables the mode for a literal result element
+        # without xsl:version at the document element of a simplified
+        # stylesheet; a compiled module always carries that attribute
+        # (XTSE0150 otherwise), so the clause has no reachable state here.
+        return False, False
+    return True, _version_is_forwards_compatible(declared)
+
+
 def _check_attributes(
     node: Any,
     local: str,
@@ -219,36 +288,81 @@ def _check_output_method(
         )
 
 
+def forwards_compatible_instruction(
+    local_name: str,
+    options: Any,
+    version: str,
+) -> bool:
+    """Whether one XSLT instruction is processed in forwards-compatible mode.
+
+    The compile path calls this before an XSLT-namespace instruction is
+    compiled, so an instruction XSLT 1.0 does not define never gains the
+    later language's semantics under the native 1.0 profile.  *options* is the
+    compilation's ``ProfileOptions``-shaped profile and *version* the
+    instruction's effective version: a non-1.0 processor profile, a 1.0
+    vocabulary element, or an effective version of exactly ``1.0`` keeps the
+    ordinary compile path (and therefore the gate's strict reading when the
+    stylesheet is not forwarded).
+    """
+    if getattr(options, "processor_profile", None) != "xslt-1.0":
+        return False
+    if local_name in XSLT10_ELEMENTS:
+        return False
+    return _version_is_forwards_compatible(version)
+
+
 def _visit(
     node: Any,
     *,
     uri: str | None,
     profile: LanguageProfile,
+    forwards_compatible: bool,
 ) -> None:
     if node.kind is not NodeKind.ELEMENT:
         return
+    declares, enabled = _declared_mode(node)
+    current = enabled if declares else forwards_compatible
     name = node.name or ""
     if name.startswith(f"{{{XSLT_NS}}}"):
         local = name[len(XSLT_NS) + 2 :]
         location = node.source_location()
         if local not in XSLT10_ELEMENTS:
-            raise XsltStaticError(
-                f"the xsl:{local} element is not defined by XSLT 1.0; a native "
-                f"XSLT {profile.processor_version} processor cannot compile it",
-                code="XTSE0010",
-                uri=uri,
-                location=location,
-            )
-        _check_attributes(node, local, uri=uri, location=location)
-        if local in ("template", "apply-templates"):
-            _check_mode_tokens(node, uri=uri, location=location)
-        if local == "output":
-            _check_output_method(node, uri=uri, location=location)
+            if not current:
+                raise XsltStaticError(
+                    f"the xsl:{local} element is not defined by XSLT 1.0; a native "
+                    f"XSLT {profile.processor_version} processor cannot compile it",
+                    code="XTSE0010",
+                    uri=uri,
+                    location=location,
+                )
+            # §2.5: a top-level element XSLT 1.0 does not allow is ignored
+            # with its content, and one in a template must not be an error
+            # unless instantiated.  Rejecting it here would break both rules;
+            # the compile path owns the fallback (see _compile_instruction).
+        elif not current:
+            _check_attributes(node, local, uri=uri, location=location)
+            if local in ("template", "apply-templates"):
+                _check_mode_tokens(node, uri=uri, location=location)
+            if local == "output":
+                _check_output_method(node, uri=uri, location=location)
+        # In forwards-compatible mode §2.5 requires an attribute XSLT 1.0 does
+        # not allow (and an optional attribute with a value XSLT 1.0 does not
+        # allow) to be ignored, so none of those checks apply.
     for child in node.children:
-        _visit(child, uri=uri, profile=profile)
+        _visit(
+            child,
+            uri=uri,
+            profile=profile,
+            forwards_compatible=current,
+        )
 
 
 def assert_xslt10_language(module: Any, profile: LanguageProfile) -> None:
     """Gate one stylesheet module against the native XSLT 1.0 vocabulary."""
     uri = getattr(module, "identity", None)
-    _visit(module.document.root_element, uri=uri, profile=profile)
+    _visit(
+        module.document.root_element,
+        uri=uri,
+        profile=profile,
+        forwards_compatible=False,
+    )

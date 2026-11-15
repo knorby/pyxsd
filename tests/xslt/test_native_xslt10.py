@@ -50,6 +50,7 @@ from pyxsd.xslt import XsltExtensions, XsltProcessor
 from pyxsd.xslt.compiler.context import ProfileOptions, StaticContext
 from pyxsd.xslt.compiler.expressions import compile_sequence_type
 from pyxsd.xslt.errors import XsltDynamicError, XsltStaticError
+from pyxsd.xslt.profile10 import forwards_compatible_instruction
 from pyxsd.xslt.profiles import (
     DOCUMENT_RETRIEVAL,
     LanguageProfile,
@@ -437,6 +438,149 @@ def test_native_ignores_foreign_namespace_attributes() -> None:
         '<xsl:template name="main" xmlns:x="urn:x" x:extension="yes"><out>ok</out></xsl:template>'
     )
     assert native_compile(body) is not None
+
+
+# ---------------------------------------------------------------------------
+# Forwards-compatible processing (XSLT 1.0 §2.5)
+
+
+def test_native_forwards_compatible_processes_2_0_attributes() -> None:
+    body = (
+        '<xsl:param name="p" required="yes" as="xs:string"/>'
+        '<xsl:template name="main"><xsl:value-of select="$p" separator=","/></xsl:template>'
+    )
+    result = native_transform(
+        body,
+        version="2.0",
+        parameters={"p": XdmAtomic.string("value")},
+    )
+    assert principal_text(result) == "value"
+
+
+def test_native_forwards_compatible_tolerates_unknown_attributes() -> None:
+    body = (
+        '<xsl:template name="main" exclude-result-prefixes="xs">'
+        '<xsl:copy-of select="/" match="a" copy-namespaces="no"/>'
+        "</xsl:template>"
+    )
+    assert native_compile(body, version="2.0") is not None
+
+
+def test_native_forwards_compatible_ignores_unknown_top_level_elements() -> None:
+    body = '<xsl:newer-declaration name="d"/><xsl:template name="main">ok</xsl:template>'
+    assert principal_text(native_transform(body, version="2.0")) == "ok"
+
+
+def test_native_forwards_compatible_defers_uninstantiated_instruction() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:if test="false()"><xsl:sequence select="1"/></xsl:if>'
+        "ok"
+        "</xsl:template>"
+    )
+    assert principal_text(native_transform(body, version="2.0")) == "ok"
+
+
+def test_native_forwards_compatible_requires_fallback_when_instantiated() -> None:
+    body = '<xsl:template name="main"><xsl:sequence select="1"/></xsl:template>'
+    compiled = native_compile(body, version="2.0")
+    with pytest.raises(XsltDynamicError, match="has no xsl:fallback") as caught:
+        compiled.transform(source=SOURCE, delivery="raw", initial_template="main")
+    # XSLT 1.0 §15 signals the error but assigns it no code.
+    assert caught.value.code is None
+
+
+def test_native_3_0_instruction_is_not_silently_accepted() -> None:
+    map_instruction = '<xsl:map><xsl:map-entry key="\'k\'" select="1"/></xsl:map>'
+    compiled = native_compile(
+        f'<xsl:template name="main"><xsl:if test="false()">{map_instruction}</xsl:if>ok'
+        "</xsl:template>",
+        version="3.0",
+    )
+    assert (
+        principal_text(compiled.transform(source=SOURCE, delivery="raw", initial_template="main"))
+        == "ok"
+    )
+    instantiated = native_compile(
+        f'<xsl:template name="main">{map_instruction}</xsl:template>', version="3.0"
+    )
+    with pytest.raises(XsltDynamicError, match=r"xsl:map is not defined by XSLT 1\.0"):
+        instantiated.transform(source=SOURCE, delivery="raw", initial_template="main")
+
+
+def test_native_forwards_compatible_instantiates_fallback_content() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:for-each-group select="//a" group-by=".">'
+        "<xsl:fallback>fallback</xsl:fallback>"
+        "</xsl:for-each-group>"
+        "</xsl:template>"
+    )
+    assert principal_text(native_transform(body, version="2.0")) == "fallback"
+
+
+def test_native_version_1_0_keeps_the_strict_vocabulary() -> None:
+    body = '<xsl:template name="main"><xsl:value-of select="1" separator=","/></xsl:template>'
+    assert static_error(body).code == "XTSE0090"
+    assert static_error(body, version="1.00").code == "XTSE0090"
+    # A stylesheet without any version declaration is not forwarded either.
+    versionless = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}">'
+        '<xsl:template name="main"><xsl:value-of select="1" separator=","/></xsl:template>'
+        "</xsl:stylesheet>"
+    )
+    with pytest.raises(XsltStaticError) as caught:
+        native_processor().compile(io.BytesIO(versionless.encode()))
+    assert caught.value.code == "XTSE0090"
+
+
+def test_native_literal_result_version_controls_forwards_compatibility() -> None:
+    tolerant = '<xsl:value-of select="1" separator=","/>'
+    enabling = (
+        '<xsl:template name="main"><out xsl:version="2.0">' + tolerant + "</out></xsl:template>"
+    )
+    assert text_of(enabling) == "1"
+    disabling = (
+        '<xsl:template name="main"><out xsl:version="1.0">' + tolerant + "</out></xsl:template>"
+    )
+    assert static_error(disabling, version="2.0").code == "XTSE0090"
+
+
+def test_native_forwards_compatible_instruction_requires_the_1_0_profile() -> None:
+    assert (
+        forwards_compatible_instruction(
+            "sequence", ProfileOptions(processor_profile="xslt-1.0"), "2.0"
+        )
+        is True
+    )
+    # A 2.0/3.0 processor keeps its own language: nothing is diverted.
+    for profile in ("xslt-2.0", "xslt-3.0"):
+        assert (
+            forwards_compatible_instruction(
+                "sequence", ProfileOptions(processor_profile=profile), "2.0"
+            )
+            is False
+        )
+    # A 1.0 vocabulary element keeps its ordinary compiler.
+    assert (
+        forwards_compatible_instruction(
+            "value-of", ProfileOptions(processor_profile="xslt-1.0"), "2.0"
+        )
+        is False
+    )
+    # An effective version of 1.0 (and a non-numeric value) keeps the strict gate.
+    assert (
+        forwards_compatible_instruction(
+            "sequence", ProfileOptions(processor_profile="xslt-1.0"), "1.0"
+        )
+        is False
+    )
+    assert (
+        forwards_compatible_instruction(
+            "sequence", ProfileOptions(processor_profile="xslt-1.0"), "not-a-version"
+        )
+        is False
+    )
 
 
 # ---------------------------------------------------------------------------
