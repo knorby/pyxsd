@@ -49,6 +49,16 @@ _ANSI_SEQUENCE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 #: Remaining control characters; a signature is a single display line.
 _CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
 
+#: Absolute filesystem paths, which name the machine rather than the failure.
+#: A token runs to the next delimiter so surrounding prose and quotes survive;
+#: bare XPath fragments such as ``/out='2'`` do not match these roots.
+_ABSOLUTE_PATH = re.compile(
+    r"file://[^\s'\"(),;]*|/(?:Users|home|opt|tmp|var|private)/[^\s'\"(),;]*"
+)
+
+#: What an absolute filesystem path becomes in a census message.
+PATH_PLACEHOLDER = "<path>"
+
 
 def failure_signature(result: CaseResult) -> str:
     """One deterministic family key for a case result.
@@ -77,17 +87,17 @@ def _budget_seconds(timeout: float) -> int | float:
     return int(timeout) if timeout.is_integer() else timeout
 
 
-def _without_root(text: str, root: Path | None) -> str:
-    """*text* with a repository checkout prefix removed, when one is given.
+def _sanitize_message(text: str, root: Path | None) -> str:
+    """Remove checkout-specific text so a message names the failure, not the machine.
 
-    Engine messages can embed the absolute path the harness handed them.  That
-    path describes the machine, not the failure, so the census keeps the
-    corpus-relative remainder and stays identical across checkouts.
+    A message may embed the absolute path the harness handed the engine.  The
+    repository prefix is removed first so corpus paths stay meaningful and
+    relative; any other absolute filesystem path becomes :data:`PATH_PLACEHOLDER`.
+    Bare XPath fragments are not paths and pass through unchanged.
     """
-    if root is None:
-        return text
-    prefix = f"{str(root).rstrip('/')}/"
-    return text.replace(prefix, "")
+    if root is not None:
+        text = text.replace(f"{str(root).rstrip('/')}/", "")
+    return _ABSOLUTE_PATH.sub(PATH_PLACEHOLDER, text)
 
 
 @dataclass(frozen=True)
@@ -154,7 +164,7 @@ def build_census(
     """Build one census from explicit case results, rejecting nameless doubles.
 
     *root* is the repository checkout whose absolute prefix messages should not
-    retain; ``None`` keeps messages exactly as the run produced them.
+    retain; ``None`` still replaces absolute filesystem paths outside it.
     """
     entries: list[CaseResult] = []
     names: set[str] = set()
@@ -164,7 +174,7 @@ def build_census(
         if result.name in names:
             raise ValueError(f"duplicate case result: {result.name}")
         names.add(result.name)
-        entries.append(replace(result, message=_without_root(result.message, root)))
+        entries.append(replace(result, message=_sanitize_message(result.message, root)))
     return Census(
         profile=profile,
         corpus=corpus,

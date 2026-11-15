@@ -292,8 +292,50 @@ def test_messages_drop_the_checkout_prefix_and_keep_corpus_relative_text(
     expected = "PyXSDError: tests/xslt/corpus/x.xml: undefined entity"
     assert without.to_dict()["cases"][0]["message"] == expected
     assert without.to_dict()["cases"][0]["signature"] == expected
-    assert kept.to_dict()["cases"][0]["message"] == message
+    assert kept.to_dict()["cases"][0]["message"] == "PyXSDError: <path> undefined entity"
     assert str(root) not in census.render_json(without)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/Users/someone/repo/x.xml",
+        "/home/someone/x.xml",
+        "/opt/external/file.xml",
+        "/tmp/x.xml",
+        "/var/lib/x.xml",
+        "/private/var/x.xml",
+        "file:///opt/external/file.xml",
+    ],
+)
+def test_absolute_filesystem_paths_become_a_placeholder(path: str) -> None:
+    message = f"boom at {path}: detail"
+    observed = census.build_census(
+        (CaseResult.failed("case", message=message),),
+        profile="xslt10",
+        corpus="c",
+        timeout_seconds=5.0,
+    )
+
+    case = observed.to_dict()["cases"][0]
+    assert case["message"] == "boom at <path> detail"
+    assert case["signature"] == "boom at <path> detail"
+    rendered = census.render_json(observed)
+    assert path not in rendered
+    assert rendered == census.render_json(observed)
+
+
+def test_xpath_assertions_are_not_treated_as_filesystem_paths() -> None:
+    messages = (
+        "assert expression \"/out='2'\" is false",
+        "assert expression '/out' is false",
+        "assert expression '/out/P/t1 = \"Intro Section.\"' is false",
+    )
+
+    for message in messages:
+        case = _census((CaseResult.failed("case", message=message),)).to_dict()["cases"][0]
+        assert case["message"] == message
+        assert case["signature"] == message
 
 
 def test_whole_second_budgets_render_as_integers_and_fractions_remain() -> None:
