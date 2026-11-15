@@ -610,7 +610,7 @@ def test_result_document_is_rejected_in_temporary_output_state() -> None:
 
 def test_unsupported_instruction_is_explicit() -> None:
     compiled = compile_bytes(
-        xsl('<xsl:template name="main"><xsl:comment>text</xsl:comment></xsl:template>')
+        xsl('<xsl:template name="main"><xsl:when>text</xsl:when></xsl:template>')
     )
 
     with pytest.raises(XsltError, match="not supported by the Task 16 execution slice"):
@@ -953,7 +953,7 @@ def test_text_value_templates_and_nested_sequences() -> None:
 
 def test_unsupported_instruction_with_select_attribute_is_compiled() -> None:
     compiled = compile_bytes(
-        xsl('<xsl:template name="main"><xsl:comment select="1 + 1"/></xsl:template>')
+        xsl('<xsl:template name="main"><xsl:when select="1 + 1"/></xsl:template>')
     )
 
     with pytest.raises(XsltError, match="not supported"):
@@ -991,7 +991,7 @@ def test_instruction_dispatch_preserves_family_results(body: str, expected: str)
         ('<xsl:attribute><xsl:sequence select="+"/></xsl:attribute>', "XTSE0010", "attribute"),
         ('<xsl:map-entry select="+"/>', "XTSE0010", "map-entry"),
         ('<xsl:message select="+"/>', "XPST0003", "message"),
-        ('<xsl:comment test="+"/>', "XPST0003", "comment"),
+        ('<xsl:when test="+"/>', "XPST0003", "when"),
         ("<xsl:catch/>", "XTSE0010", "catch"),
         ('<xsl:with-param name="p"/>', "XTSE0010", "with-param"),
         ("<xsl:sort/>", "XTSE0010", "sort"),
@@ -1014,7 +1014,7 @@ def test_instruction_dispatch_preserves_static_error_precedence(
 
 def test_instruction_dispatch_keeps_unsupported_and_forward_paths_explicit() -> None:
     unsupported = compile_bytes(
-        xsl('<xsl:template name="main"><xsl:comment>text</xsl:comment></xsl:template>')
+        xsl('<xsl:template name="main"><xsl:when>text</xsl:when></xsl:template>')
     )
     with pytest.raises(XsltError, match="not supported"):
         unsupported.transform(initial_template="main", delivery="raw")

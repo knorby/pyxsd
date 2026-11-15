@@ -522,10 +522,10 @@ def test_nested_fallback_processing_in_a_later_version() -> None:
     assert transform(source, initial_template="main").principal == (XdmAtomic.string("inner"),)
 
 
-def test_known_but_unimplemented_instructions_keep_explicit_errors() -> None:
+def test_misplaced_instruction_keeps_an_explicit_error() -> None:
     source = stylesheet(
         """
-        <xsl:template name="main"><xsl:comment select="'hello'"/></xsl:template>
+        <xsl:template name="main"><xsl:when select="'hello'"/></xsl:template>
         """
     )
     with pytest.raises(XsltError, match="not supported"):

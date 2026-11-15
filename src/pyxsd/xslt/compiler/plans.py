@@ -42,6 +42,7 @@ __all__ = [
     "_CallTemplatePlan",
     "_CatchPlan",
     "_ChoosePlan",
+    "_CommentPlan",
     "_ComponentPlan",
     "_ConcatPlan",
     "_ConditionalSequencePlan",
@@ -61,6 +62,7 @@ __all__ = [
     "_MergePlan",
     "_MergeSourcePlan",
     "_ModeLayerPlan",
+    "_NamespacePlan",
     "_NextIterationPlan",
     "_NumberPlan",
     "_OnEmptyPlan",
@@ -69,6 +71,7 @@ __all__ = [
     "_ParamPlan",
     "_PerformSortPlan",
     "_Plan",
+    "_ProcessingInstructionPlan",
     "_PythonInvokePlan",
     "_RestoreVariablesPlan",
     "_ResultDocumentPlan",
@@ -110,6 +113,29 @@ class _ValueOfPlan:
     children: tuple[_Plan, ...]
     separator: str | CompiledValueTemplate
     explicit_separator: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _CommentPlan:
+    instruction: Instruction
+    expression: CompiledExpression | None
+    children: tuple[_Plan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ProcessingInstructionPlan:
+    instruction: Instruction
+    name: CompiledValueTemplate
+    expression: CompiledExpression | None
+    children: tuple[_Plan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _NamespacePlan:
+    instruction: Instruction
+    name: CompiledValueTemplate
+    expression: CompiledExpression | None
+    children: tuple[_Plan, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,6 +538,9 @@ _Plan: TypeAlias = (
     | _TvtPlan
     | _SequencePlan
     | _ValueOfPlan
+    | _CommentPlan
+    | _ProcessingInstructionPlan
+    | _NamespacePlan
     | _LiteralPlan
     | _ElementPlan
     | _DocumentPlan

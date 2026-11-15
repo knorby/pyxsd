@@ -52,6 +52,7 @@ from pyxsd.xpath.continuation import (
 )
 from pyxsd.xpath.engine import CompiledExpression, XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, FocusKind, FunctionArity
+from pyxsd.xslt.compiler.constructors import CONSTRUCTOR_INSTRUCTION_COMPILERS
 from pyxsd.xslt.compiler.context import (
     ProfileOptions,
     StaticContext,
@@ -197,6 +198,7 @@ from pyxsd.xslt.runtime.accumulators import (
     same_context_accumulator_call,
 )
 from pyxsd.xslt.runtime.builder import validate_delivered
+from pyxsd.xslt.runtime.constructors import CONSTRUCTOR_PLAN_EXECUTORS
 from pyxsd.xslt.runtime.context import EvaluationContext
 from pyxsd.xslt.runtime.dispatch import (
     PYTHON_PLAN_EXECUTORS,
@@ -1091,7 +1093,10 @@ def _compile_stylesheet(
         principal.root.in_scope_namespaces,
         identity=principal.identity,
     )
-    plan_executors: dict[type[_Plan], PlanExecutor] = dict(PYTHON_PLAN_EXECUTORS)
+    plan_executors: dict[type[_Plan], PlanExecutor] = {
+        **PYTHON_PLAN_EXECUTORS,
+        **CONSTRUCTOR_PLAN_EXECUTORS,
+    }
     instruction_compilers = _instruction_compiler_snapshot(
         resolved_extensions,
         plan_executors,
@@ -4899,6 +4904,7 @@ def _compile_evaluate(
 #: Every instruction family, keyed by expanded XSLT name.  Literal result
 #: elements and unregistered instructions stay outside this table.
 _INSTRUCTION_COMPILERS: Mapping[str, InstructionCompiler] = {
+    **CONSTRUCTOR_INSTRUCTION_COMPILERS,
     instruction_name("analyze-string"): _compile_analyze_string,
     instruction_name("apply-imports"): _compile_overriding,
     instruction_name("apply-templates"): _compile_apply_templates,
