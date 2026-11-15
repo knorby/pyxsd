@@ -546,10 +546,96 @@ def test_native_literal_result_version_controls_forwards_compatibility() -> None
     assert static_error(disabling, version="2.0").code == "XTSE0090"
 
 
+def test_native_instruction_version_attribute_does_not_disable_forwarding() -> None:
+    """§2.5: only a stylesheet version or an xsl:version moves the mode.
+
+    XSLT 1.0 has no ``version`` attribute on ``xsl:if``, so one there is an
+    attribute §2.5 arm 3 requires the processor to ignore: it must not turn
+    the enclosing forwards-compatible mode back off and let the 3.0
+    instruction execute with 3.0 semantics.
+    """
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:if test="true()" version="1.0"><xsl:sequence select="1"/></xsl:if>'
+        "</xsl:template>"
+    )
+    compiled = native_compile(body, version="2.0")
+    with pytest.raises(XsltDynamicError, match="has no xsl:fallback") as caught:
+        compiled.transform(source=SOURCE, delivery="raw", initial_template="main")
+    # XSLT 1.0 §15 assigns no error code.
+    assert caught.value.code is None
+
+
+def test_native_instruction_version_attribute_keeps_nested_forwarding() -> None:
+    """The mode is inherited; a descendant never re-reads an XSLT version."""
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:if test="true()" version="1.0"><xsl:choose>'
+        '<xsl:when test="true()"><xsl:sequence select="1"/></xsl:when>'
+        "</xsl:choose></xsl:if>"
+        "</xsl:template>"
+    )
+    compiled = native_compile(body, version="2.0")
+    with pytest.raises(XsltDynamicError, match=r"xsl:sequence is not defined"):
+        compiled.transform(source=SOURCE, delivery="raw", initial_template="main")
+
+
+def test_native_instruction_version_attribute_keeps_unknown_elements_deferred() -> None:
+    """An element 1.0 does not define stays deferred, never a static XTSE0010."""
+    deferred = (
+        '<xsl:template name="main">'
+        '<xsl:if test="false()" version="1.0"><xsl:newer-instruction/></xsl:if>'
+        "ok</xsl:template>"
+    )
+    assert principal_text(native_transform(deferred, version="2.0")) == "ok"
+
+    instantiated = native_compile(
+        '<xsl:template name="main"><xsl:if test="true()" version="1.0">'
+        "<xsl:newer-instruction/></xsl:if></xsl:template>",
+        version="2.0",
+    )
+    with pytest.raises(XsltDynamicError, match="xsl:newer-instruction"):
+        instantiated.transform(source=SOURCE, delivery="raw", initial_template="main")
+
+
+def test_native_instruction_version_attribute_does_not_enable_forwarding() -> None:
+    """The inverse: a later version on an XSLT element cannot turn the mode on."""
+    body = (
+        '<xsl:template name="main"><out xsl:version="1.0">'
+        '<xsl:sequence select="1" version="2.0"/>'
+        "</out></xsl:template>"
+    )
+    assert static_error(body, version="2.0").code == "XTSE0010"
+
+
+def test_native_forwards_compatible_compiles_expressions_eagerly() -> None:
+    """Known gap: §2.5's expression clause is not implemented.
+
+    "If an expression occurs in an attribute that is processed in
+    forwards-compatible mode, then an XSLT processor must recover from errors
+    in the expression as follows: ... if the expression calls a function with
+    an unprefixed name that is not part of the XSLT library, then an error
+    must not be signaled unless the function is actually called."  (XSLT 1.0
+    §2.5)
+
+    This engine compiles every XPath expression while compiling the
+    instruction that carries it, so the error arrives although the guard
+    never evaluates the attribute.  Deferring expression compilation would
+    touch the whole compile path; until a task owns that, the eager error is
+    pinned here rather than left untested.
+    """
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:if test="false()"><xsl:value-of select="deep-equal(1, 1)"/></xsl:if>'
+        "ok</xsl:template>"
+    )
+    assert static_error(body, version="2.0").code == "XPST0017"
+
+
 def test_native_forwards_compatible_instruction_requires_the_1_0_profile() -> None:
     assert (
         forwards_compatible_instruction(
-            "sequence", ProfileOptions(processor_profile="xslt-1.0"), "2.0"
+            "sequence", ProfileOptions(processor_profile="xslt-1.0"), True
         )
         is True
     )
@@ -557,27 +643,21 @@ def test_native_forwards_compatible_instruction_requires_the_1_0_profile() -> No
     for profile in ("xslt-2.0", "xslt-3.0"):
         assert (
             forwards_compatible_instruction(
-                "sequence", ProfileOptions(processor_profile=profile), "2.0"
+                "sequence", ProfileOptions(processor_profile=profile), True
             )
             is False
         )
     # A 1.0 vocabulary element keeps its ordinary compiler.
     assert (
         forwards_compatible_instruction(
-            "value-of", ProfileOptions(processor_profile="xslt-1.0"), "2.0"
+            "value-of", ProfileOptions(processor_profile="xslt-1.0"), True
         )
         is False
     )
-    # An effective version of 1.0 (and a non-numeric value) keeps the strict gate.
+    # An element outside the mode keeps the strict gate.
     assert (
         forwards_compatible_instruction(
-            "sequence", ProfileOptions(processor_profile="xslt-1.0"), "1.0"
-        )
-        is False
-    )
-    assert (
-        forwards_compatible_instruction(
-            "sequence", ProfileOptions(processor_profile="xslt-1.0"), "not-a-version"
+            "sequence", ProfileOptions(processor_profile="xslt-1.0"), False
         )
         is False
     )

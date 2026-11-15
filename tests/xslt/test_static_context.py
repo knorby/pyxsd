@@ -162,6 +162,33 @@ def test_context_version_scoping_and_validation(tmp_path: Path) -> None:
     assert caught.value.location is not None
 
 
+def test_context_forwards_compatible_mode_follows_declaration_sites(tmp_path: Path) -> None:
+    module = _module(
+        tmp_path,
+        f'<xsl:stylesheet version="2.0" xmlns:xsl="{XSLT_NS}">'
+        '<xsl:template match="/">'
+        '<xsl:if test="true()" version="1.0">'
+        '<outer xsl:version="1.0"><inner xsl:version="2.0"/></outer>'
+        "</xsl:if>"
+        "</xsl:template></xsl:stylesheet>",
+    )
+    root = StaticContext.for_element(module.root)
+    guard = _element(module.root, "if")
+    outer = _element(module.root, "outer")
+    inner = _element(module.root, "inner")
+
+    assert root.forwards_compatible is True
+    # §2.5 moves the mode only for an xsl:stylesheet/xsl:transform version and
+    # a literal result element's xsl:version; a ``version`` attribute on any
+    # other XSLT element is one of the attributes the processor must ignore.
+    assert StaticContext.for_element(guard, parent=root).forwards_compatible is True
+    outer_context = StaticContext.for_element(outer, parent=root)
+    assert outer_context.forwards_compatible is False
+    assert StaticContext.for_element(inner, parent=outer_context).forwards_compatible is True
+    # An element that declares nothing and inherits nothing is not forwarded.
+    assert StaticContext.for_element(guard).forwards_compatible is False
+
+
 def test_context_expand_text_scoping_and_invalid_values(tmp_path: Path) -> None:
     module = _module(
         tmp_path,

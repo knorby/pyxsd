@@ -59,6 +59,7 @@ __all__ = [
     "XSLT10_OUTPUT_ATTRIBUTES",
     "XSLT10_OUTPUT_METHODS",
     "assert_xslt10_language",
+    "forwards_compatible_declaration",
     "forwards_compatible_instruction",
 ]
 
@@ -175,7 +176,11 @@ def _attribute_triples(node: Any) -> list[tuple[str | None, str, str]]:
 
 def _attribute_value(node: Any, local: str) -> str | None:
     attribute = node.attribute(local)
-    return None if attribute is None else attribute.string_value
+    if attribute is None:
+        return None
+    # A source node hands back the attribute node; an effective element hands
+    # back its value, so the declaration resolver serves both views.
+    return attribute if isinstance(attribute, str) else attribute.string_value
 
 
 def _version_is_forwards_compatible(value: str | None) -> bool:
@@ -191,11 +196,11 @@ def _version_is_forwards_compatible(value: str | None) -> bool:
         return False
     try:
         return Decimal(value) != Decimal("1.0")
-    except (InvalidOperation, ValueError):
+    except (InvalidOperation, ValueError):  # pragma: no cover - validator runs first
         return False
 
 
-def _declared_mode(node: Any) -> tuple[bool, bool]:
+def forwards_compatible_declaration(node: Any) -> tuple[bool, bool]:
     """The forwards-compatible state one element declares under §2.5.
 
     Returns ``(declares, enabled)``: ``declares`` is false when the element
@@ -205,6 +210,11 @@ def _declared_mode(node: Any) -> tuple[bool, bool]:
     can change the mode; XSLT 1.0 has no version attribute on any other XSLT
     element, so a later version's ``version`` attribute there is an unknown
     attribute of the forward-compatible reading and never a mode switch.
+
+    The vocabulary gate walks the source document with this, and the compile
+    path resolves each element's inherited mode with it, so the two never
+    disagree about where §2.5's switch lives.  *node* is a raw node or an
+    effective element: both expose ``name`` and ``attribute``.
     """
     name = node.name or ""
     if name.startswith(f"{{{XSLT_NS}}}"):
@@ -291,24 +301,29 @@ def _check_output_method(
 def forwards_compatible_instruction(
     local_name: str,
     options: Any,
-    version: str,
+    forwards_compatible: bool,
 ) -> bool:
     """Whether one XSLT instruction is processed in forwards-compatible mode.
 
     The compile path calls this before an XSLT-namespace instruction is
     compiled, so an instruction XSLT 1.0 does not define never gains the
     later language's semantics under the native 1.0 profile.  *options* is the
-    compilation's ``ProfileOptions``-shaped profile and *version* the
-    instruction's effective version: a non-1.0 processor profile, a 1.0
-    vocabulary element, or an effective version of exactly ``1.0`` keeps the
-    ordinary compile path (and therefore the gate's strict reading when the
-    stylesheet is not forwarded).
+    compilation's ``ProfileOptions``-shaped profile and *forwards_compatible*
+    the §2.5 mode resolved for the instruction's nearest declaration site (see
+    :func:`forwards_compatible_declaration`): a non-1.0 processor profile, a
+    1.0 vocabulary element, or an element outside the mode keeps the ordinary
+    compile path (and therefore the gate's strict reading when the stylesheet
+    is not forwarded).
     """
+    # `LanguageProfile.from_options(options).legacy` owns this identity.
+    # Comparing the declared profile name here duplicates that rule on purpose:
+    # this predicate runs once per XSLT instruction of every compilation, and
+    # building a profile per instruction costs more than the comparison saves.
     if getattr(options, "processor_profile", None) != "xslt-1.0":
         return False
     if local_name in XSLT10_ELEMENTS:
         return False
-    return _version_is_forwards_compatible(version)
+    return forwards_compatible
 
 
 def _visit(
@@ -320,7 +335,7 @@ def _visit(
 ) -> None:
     if node.kind is not NodeKind.ELEMENT:
         return
-    declares, enabled = _declared_mode(node)
+    declares, enabled = forwards_compatible_declaration(node)
     current = enabled if declares else forwards_compatible
     name = node.name or ""
     if name.startswith(f"{{{XSLT_NS}}}"):

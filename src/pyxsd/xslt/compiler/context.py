@@ -29,6 +29,7 @@ from pyxsd.xslt.compiler.expressions import CompiledSequenceType, compile_sequen
 from pyxsd.xslt.compiler.static import EffectiveElement, EffectiveModule
 from pyxsd.xslt.errors import XsltStaticError
 from pyxsd.xslt.precedence import compare_precedence
+from pyxsd.xslt.profile10 import forwards_compatible_declaration
 from pyxsd.xslt.profiles import LanguageProfile
 from pyxsd.xslt.runtime.functions import xslt_function_declarations
 
@@ -284,6 +285,12 @@ class StaticContext:
     xpath_default_namespace: str | None = None
     base_uri: str | None = None
     version: str = "3.0"
+    # XSLT 1.0 §2.5's forwards-compatible mode for this element, inherited from
+    # the nearest declaration site (an xsl:stylesheet/xsl:transform version or
+    # a literal result element's xsl:version) rather than from the effective
+    # version, which a ``version`` attribute on any XSLT element also moves.
+    # The native 1.0 compile path is its only consumer.
+    forwards_compatible: bool = False
     schema: SchemaPool | None = None
     variables: Mapping[str, StaticVariable] = field(default_factory=dict)
     variable_names: frozenset[str] = frozenset()
@@ -707,6 +714,7 @@ class StaticContext:
             xpath_default_namespace=defaults.xpath_default_namespace,
             base_uri=defaults.base_uri,
             version=defaults.version,
+            forwards_compatible=defaults.forwards_compatible,
             schema=effective_schema,
             variables=fallback.variables if fallback is not None else {},
             variable_names=(fallback.variable_names if fallback is not None else frozenset()),
@@ -748,6 +756,7 @@ class _ElementDefaults:
     xpath_default_namespace: str | None
     base_uri: str | None
     version: str
+    forwards_compatible: bool
     expand_text: bool
     default_collation: str | None
     default_validation: str | None
@@ -843,6 +852,17 @@ def _element_defaults(
         location=_source_location(element),
     )
 
+    # §2.5's mode follows the declaration sites only: an element inherits it,
+    # and only an xsl:stylesheet/xsl:transform version or a literal result
+    # element's xsl:version changes it.  The effective version above is not a
+    # substitute — every XSLT element's own ``version`` attribute moves that
+    # one, and XSLT 1.0 requires such an attribute to be ignored (§2.5, arm 3).
+    declares_mode, mode_enabled = forwards_compatible_declaration(element)
+    if declares_mode:
+        forwards_compatible = mode_enabled
+    else:
+        forwards_compatible = fallback.forwards_compatible if fallback is not None else False
+
     found, default_value = _nearest_attribute(element, ("xpath-default-namespace", _XPATH_DEFAULT))
     if found:
         xpath_default = default_value or None
@@ -907,6 +927,7 @@ def _element_defaults(
         if fallback is not None
         else None,
         version=version,
+        forwards_compatible=forwards_compatible,
         expand_text=expand_text,
         default_collation=default_collation,
         default_validation=default_validation,

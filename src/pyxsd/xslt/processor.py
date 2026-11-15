@@ -3778,8 +3778,10 @@ def _native_10_forwards_compatible(instruction: Instruction, context: StaticCont
     """Whether *instruction* is a later element the native 1.0 rules forward.
 
     The profile owns the vocabulary decision (see
-    :func:`pyxsd.xslt.profile10.forwards_compatible_instruction`); this hook
-    only keeps the XSLT 2.0/3.0 instruction registry out of the way so the
+    :func:`pyxsd.xslt.profile10.forwards_compatible_instruction`), and the
+    static context owns the §2.5 mode, which only a stylesheet root's
+    ``version`` and a literal result element's ``xsl:version`` move.  This hook
+    keeps the XSLT 2.0/3.0 instruction registry out of the way so the
     forwards-compatible fallback can run instead of the later semantics.
     """
     if not instruction.is_xslt:
@@ -3789,7 +3791,7 @@ def _native_10_forwards_compatible(instruction: Instruction, context: StaticCont
     return forwards_compatible_instruction(
         instruction.local_name,
         context.profile,
-        context.version,
+        context.forwards_compatible,
     )
 
 
