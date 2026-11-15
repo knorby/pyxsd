@@ -12,6 +12,7 @@ on:
       - ".gitmodules"
       - ".github/workflows/xslt.yml"
       - "pyproject.toml"
+      - "uv.lock"
       - "src/pyxsd/xdm/**"
       - "src/pyxsd/xpath/**"
       - "src/pyxsd/xslt/**"

@@ -67,6 +67,9 @@ dev = [
     "types-defusedxml>=0.7.0.20260504",
     # Draft 2020-12 validator for the generated JSON Schemas; tests only.
     "jsonschema>=4.25",
+    # The conformance contract parses workflow YAML directly, so it must be
+    # declared here rather than inherited through pre-commit.
+    "pyyaml>=6",
 ]
 docs = [
     "sphinx>=8.2",

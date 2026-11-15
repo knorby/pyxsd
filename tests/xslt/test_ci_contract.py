@@ -40,6 +40,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CORPUS = REPO_ROOT / "tests" / "xslt" / "corpus" / "catalog.xml"
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "xslt.yml"
 CI_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
+COVERAGE_FLOOR = 99
 
 
 def _workflow() -> dict:
@@ -48,6 +50,24 @@ def _workflow() -> dict:
 
 def _steps(job: dict) -> list[dict]:
     return [step for step in job.get("steps", []) if isinstance(step, dict)]
+
+
+def _pyproject() -> dict:
+    return tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))
+
+
+def _coverage_floor(config: dict) -> int:
+    """The configured coverage floor, read as a number: a minimum, not a pin."""
+    floor = config["tool"]["coverage"]["report"]["fail_under"]
+    assert isinstance(floor, int)
+    return floor
+
+
+def _dependency_names(requirements: list[str]) -> set[str]:
+    """Distribution names, normalized, from requirement strings."""
+    return {
+        re.split(r"[<>=!~;\[ ]", requirement, maxsplit=1)[0].lower() for requirement in requirements
+    }
 
 
 CI_XSLT_JOBS = tuple(sorted(_workflow()["jobs"]))
@@ -680,8 +700,8 @@ def test_workflow_runs_each_profile_with_the_pinned_corpus() -> None:
 
 
 def test_standalone_corpus_job_never_weakens_unit_coverage() -> None:
-    config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert config["tool"]["coverage"]["report"]["fail_under"] == 99
+    config = _pyproject()
+    assert _coverage_floor(config) >= COVERAGE_FLOOR
 
     ci = yaml.safe_load(CI_PATH.read_text(encoding="utf-8"))
     unit_runs = [
@@ -694,3 +714,23 @@ def test_standalone_corpus_job_never_weakens_unit_coverage() -> None:
             run = step.get("run", "")
             if "--cov" in run:
                 assert "--cov-fail-under=0" in run
+
+
+def test_the_coverage_pin_may_rise_but_never_fall() -> None:
+    """The floor is a minimum; raising it over time must keep this contract."""
+    for floor, meets in ((98, False), (99, True), (100, True)):
+        document = {"tool": {"coverage": {"report": {"fail_under": floor}}}}
+        assert (_coverage_floor(document) >= COVERAGE_FLOOR) is meets
+
+
+def test_the_contract_declares_the_yaml_parser_it_imports() -> None:
+    """PyYAML is imported here directly, so the dev group must promise it."""
+    declared = _dependency_names(_pyproject()["dependency-groups"]["dev"])
+    assert "pyyaml" in declared
+
+
+def test_conformance_workflow_reacts_to_dependency_lock_changes() -> None:
+    """A dependency-only change still exercises the conformance gate."""
+    workflow = _workflow()
+    triggers = workflow.get("on", workflow.get(True, {}))
+    assert "uv.lock" in triggers["pull_request"]["paths"]
