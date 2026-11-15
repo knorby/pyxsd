@@ -16,6 +16,7 @@ pathological stylesheet cannot stall a profile run.
 
 from __future__ import annotations
 
+import hashlib
 import multiprocessing
 import os
 import signal
@@ -37,7 +38,7 @@ from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmMap
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xpath.engine import XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
-from pyxsd.xslt import TransformationResult, XsltProcessor
+from pyxsd.xslt import CompiledStylesheet, TransformationResult, XsltProcessor
 from pyxsd.xslt.errors import XsltError
 
 #: Capabilities a native XSLT 2.0 processor implements in addition to its
@@ -366,6 +367,44 @@ def _stylesheet(case: TestCase) -> Path:
     return case.document_root / Path(str(stylesheets[0].path))
 
 
+#: How many compiled stylesheets one worker keeps for reuse.  The bulk
+#: conformance sets compile the same stylesheet for hundreds of consecutive
+#: cases, so a handful of entries covers them without holding every artifact
+#: of a whole profile in memory.
+_COMPILED_CACHE_SIZE = 8
+
+#: Compiled stylesheets by ``(profile, stylesheet path, bytes digest)``.  Only
+#: stylesheets compiled with no static parameters are cached: the artifact is
+#: then a pure function of the stylesheet closure and the profile identity.
+#: The corpus is pinned and immutable for a run, so the digest guards against a
+#: principal stylesheet rewritten between cases, not against an edit inside the
+#: closure it imports.
+_COMPILED: dict[tuple[str, str, bytes], CompiledStylesheet] = {}
+
+
+def _compile_stylesheet(
+    profile: SuiteProfile,
+    stylesheet: Path,
+    static_parameters: Mapping[str, Any],
+) -> CompiledStylesheet:
+    """Compile one case's stylesheet, reusing an invariant artifact."""
+    if static_parameters:
+        return profile.processor.compile(stylesheet, static_parameters=static_parameters)
+    try:
+        digest = hashlib.sha256(stylesheet.read_bytes()).digest()
+    except OSError:
+        # Let the compiler report a missing or unreadable stylesheet itself.
+        return profile.processor.compile(stylesheet)
+    key = (profile.name, str(stylesheet), digest)
+    compiled = _COMPILED.get(key)
+    if compiled is None:
+        compiled = profile.processor.compile(stylesheet)
+        if len(_COMPILED) >= _COMPILED_CACHE_SIZE:
+            _COMPILED.pop(next(iter(_COMPILED)))
+        _COMPILED[key] = compiled
+    return compiled
+
+
 def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
     """Compile and run one case, returning its result for independent assertion."""
     if case.environment.resources:
@@ -431,7 +470,7 @@ def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
         source = _source_input(case, profile)
         if source is not None:
             options["source"] = source
-        compiled = profile.processor.compile(stylesheet, static_parameters=static_parameters)
+        compiled = _compile_stylesheet(profile, stylesheet, static_parameters)
         return _snapshot(compiled.transform(**options))
     except XsltError as exc:
         raise CaseExecutionError(exc.code or UNCODED_ERROR, str(exc)) from exc
