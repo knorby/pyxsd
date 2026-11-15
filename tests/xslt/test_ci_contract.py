@@ -170,6 +170,20 @@ def test_profile_runs_use_native_processor_identities() -> None:
     assert SUITE_PROFILES["xslt10"].feature_profile.declines("higher_order_functions")
 
 
+def test_xslt10_profile_is_not_schema_aware() -> None:
+    """The 1.0 identity is constructed without schema awareness."""
+    assert SUITE_PROFILES["xslt10"].processor.schema_aware is False
+
+
+def test_every_profile_constructs_the_schema_awareness_it_declares() -> None:
+    constructed = {name: profile.processor.schema_aware for name, profile in SUITE_PROFILES.items()}
+    declared = {
+        name: profile.feature_profile.supports("schema_aware")
+        for name, profile in SUITE_PROFILES.items()
+    }
+    assert constructed == declared
+
+
 def test_baselines_record_their_own_corpus_and_never_share_verdicts() -> None:
     profiles = ("xslt30", "xslt20", "xslt10")
     loaded = {name: baseline_module.load_baseline(name) for name in profiles}

@@ -3,8 +3,8 @@
 Each profile is a distinct processor identity plus the declared catalog
 capabilities it implements.  The 3.0 profile runs the default processor; the
 native 2.0 and 1.0 profiles construct ``XsltProcessor(language=..., xpath=...)``
-themselves, so their verdicts never describe a ``version`` attribute on a 3.0
-processor.
+themselves — the 2.0 one schema-aware, the 1.0 one not — so their verdicts never
+describe a ``version`` attribute on a 3.0 processor.
 
 The executor covers the invocation shapes the catalog declares in
 ``<environment>`` and ``<test>`` (context items, sources, parameters, entry
@@ -127,6 +127,8 @@ def _profile(
     features: frozenset[str],
     declined: frozenset[str],
     description: str,
+    *,
+    schema_aware: bool,
 ) -> SuiteProfile:
     return SuiteProfile(
         name=name,
@@ -142,6 +144,7 @@ def _profile(
         processor=XsltProcessor(
             language=language,
             xpath=xpath,
+            schema_aware=schema_aware,
             xsd_version=xsd_version,
         ),
     )
@@ -162,6 +165,7 @@ SUITE_PROFILES: Mapping[str, SuiteProfile] = {
         features=_XSLT20_FEATURES,
         declined=_PRE_30_DECLINED,
         description="native schema-aware XSLT 2.0 with XPath 2.0 and XSD 1.0",
+        schema_aware=True,
     ),
     "xslt10": _profile(
         name="xslt10",
@@ -171,6 +175,7 @@ SUITE_PROFILES: Mapping[str, SuiteProfile] = {
         features=_XSLT10_FEATURES,
         declined=_PRE_30_DECLINED | _XSLT20_FEATURES,
         description="native XSLT 1.0 with XPath 1.0 result-tree fragments",
+        schema_aware=False,
     ),
 }
 
