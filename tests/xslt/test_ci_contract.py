@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import re
 import time
 import tomllib
@@ -85,6 +86,12 @@ SHEET = """\
 """
 
 RIGHT_SHEET = SHEET.replace("wrong", "right")
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every fixture's budget hermetic: the test sets it, never the shell."""
+    monkeypatch.delenv("PYXSD_XSLT_TIMEOUT", raising=False)
 
 
 def _fixture_repo(tmp_path: Path, names: tuple[str, ...] = ("case-001",)) -> Path:
@@ -371,6 +378,97 @@ def test_write_baseline_refuses_an_incomplete_slice(tmp_path: Path) -> None:
         == 2
     )
     assert _run(["--profile", "xslt30", "--enforce", "--write-baseline", str(target)], root) == 2
+
+
+def test_write_baseline_is_byte_stable_after_an_independent_read(tmp_path: Path) -> None:
+    """A written baseline is a function of its own bytes, not of the run."""
+    root = _fixture_repo(tmp_path)
+    target = _baseline_path(root)
+
+    assert _run(["--profile", "xslt30", "--write-baseline", str(target)], root) == 0
+    written = target.read_bytes()
+    document = tomllib.loads(written.decode("utf-8"))
+    independent = baseline_module.Baseline(meta=document["meta"], cases=document["cases"])
+
+    assert baseline_module.render_baseline(independent).encode("utf-8") == written
+    assert (
+        baseline_module.render_baseline(baseline_module.load_baseline(target)).encode("utf-8")
+        == written
+    )
+
+
+def test_write_baseline_records_the_environment_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _fixture_repo(tmp_path)
+    target = _baseline_path(root)
+
+    monkeypatch.setenv("PYXSD_XSLT_TIMEOUT", "7.5")
+    assert _run(["--profile", "xslt30", "--write-baseline", str(target)], root) == 0
+    assert baseline_module.load_baseline(target).meta["timeout_seconds"] == 7.5
+
+    monkeypatch.setenv("PYXSD_XSLT_TIMEOUT", "3")
+    assert (
+        _run(
+            ["--profile", "xslt30", "--timeout", "9", "--write-baseline", str(target)],
+            root,
+        )
+        == 0
+    )
+    assert baseline_module.load_baseline(target).meta["timeout_seconds"] == 9
+
+
+def test_check_names_corpus_identity_when_the_baseline_has_none(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _fixture_repo(tmp_path)
+    path = _write_baseline(root, "xslt30", {"gate/case-001": "fail"})
+    recorded = baseline_module.load_baseline(path)
+    baseline_module.write_baseline(
+        path,
+        replace(
+            recorded,
+            meta={key: value for key, value in recorded.meta.items() if key != "corpus"},
+        ),
+    )
+
+    assert _run(["--profile", "xslt30", "--check"], root) == 1
+    assert "corpus identity" in capsys.readouterr().err
+
+
+def test_check_labels_a_baseline_outside_the_repository(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _fixture_repo(tmp_path)
+    catalog = load_catalog(root / "tests" / "xslt" / "corpus" / "catalog.xml")
+    external = tmp_path / "elsewhere" / "xslt30.toml"
+    baseline_module.write_baseline(
+        external,
+        baseline_module.Baseline(
+            meta={
+                "schema": baseline_module.BASELINE_SCHEMA,
+                "corpus": catalog.corpus_revision,
+                "profile": "xslt30",
+                "timeout_seconds": report_xslt.DEFAULT_TIMEOUT,
+            },
+            cases={"gate/case-001": "fail"},
+        ),
+    )
+
+    assert _run(["--profile", "xslt30", "--check", "--baseline", str(external)], root) == 0
+    assert f"reproducible from {external}" in capsys.readouterr().err
+
+
+def test_run_corpus_emits_json_for_a_synthetic_case(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _fixture_repo(tmp_path)
+
+    assert _run(["--profile", "xslt30", "--json"], root) == 0
+    document = json.loads(capsys.readouterr().out)
+    assert set(document["cases"]) == {"gate/case-001"}
+    assert document["cases"]["gate/case-001"]["outcome"] == "fail"
+    assert set(document["cases"]["gate/case-001"]) == {"outcome", "coverage", "message"}
 
 
 # ---------------------------------------------------------------------------
