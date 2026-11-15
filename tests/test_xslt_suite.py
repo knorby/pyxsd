@@ -15,10 +15,12 @@ becoming pass drifts until its entry is moved in the same commit as the
 intentional fix).  Never regenerate a baseline wholesale to make the gate
 green; move only the entries an intentional behavior change actually flips.
 
-``timeout`` records the per-case harness budget, not a semantic verdict.  A
-transition between a timeout and a failure is reported as harness drift rather
-than failing the gate; a passing case becoming a timeout is still a
-regression and does fail it.
+``timeout`` records the per-case harness budget, not a semantic verdict.  Drift
+is exactly the ``fail``↔``timeout`` pair: a slower machine can expire the
+budget before reaching the same failure, so that pair is reported without
+failing the gate.  Every other non-pass transition fails it, including a
+passing case becoming a timeout, and a baseline recorded under a different
+budget is refused before any verdict is compared.
 """
 
 from __future__ import annotations
@@ -100,7 +102,14 @@ def test_full_run_matches_the_baseline(profile_name: str) -> None:
         on_progress=progress,
     )
     current = build_baseline(results, corpus=catalog.corpus_revision, profile=profile_name)
-    changes, drift = gate_changes(load_baseline(profile_name), current)
+    recorded = load_baseline(profile_name)
+    recorded_budget = recorded.meta.get("timeout_seconds")
+    assert recorded_budget == timeout, (
+        f"{profile_name} baseline records timeout budget {recorded_budget!r}, "
+        f"but this run uses {timeout:g}s; verdicts recorded under different budgets "
+        "are not comparable -- regenerate the baseline deliberately with --write-baseline"
+    )
+    changes, drift = gate_changes(recorded, current)
     if drift:
         print(
             f"  {profile_name}: {len(drift)} harness-budget changes (not semantic)",

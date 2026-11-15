@@ -281,6 +281,13 @@ def test_checked_in_baseline_is_reproducible(
     assert report_xslt.run(["--profile", profile, "--check"]) == 0
     second = capsys.readouterr()
     assert first.err == second.err
+    # ``--check`` renders in memory; pin the checked-in bytes too, so a
+    # hand-edited or drifted file fails even when its parsed content re-renders.
+    baseline_path = _baseline_path(REPO_ROOT, profile)
+    assert (
+        baseline_module.render_baseline(baseline_module.load_baseline(profile)).encode()
+        == baseline_path.read_bytes()
+    )
 
 
 def test_check_reads_neither_the_clock_nor_the_run(
@@ -548,6 +555,22 @@ def test_enforce_is_strict_and_current_failures_are_not_counted(tmp_path: Path) 
         SHEET, encoding="utf-8"
     )
     assert _run(["--profile", "xslt30", "--enforce", "--baseline", str(target)], root) == 0
+
+
+def test_enforce_refuses_a_baseline_recorded_under_another_budget(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The executing gate treats the budget as identity, not as verdict drift."""
+    root = _fixture_repo(tmp_path)
+    # Recorded as a timeout at 5 s; the same case fails at 10 s, which
+    # ``gate_changes`` alone would call ``fail``↔``timeout`` harness drift.
+    _write_baseline(root, "xslt30", {"gate/case-001": "timeout"}, timeout_seconds=5)
+
+    assert _run(["--profile", "xslt30", "--enforce", "--timeout", "10"], root) == 2
+    error = capsys.readouterr().err
+    assert "5" in error and "10" in error
+    assert "regenerate the baseline deliberately" in error
+    assert "[harness]" not in error
 
 
 def test_executor_reports_unsupported_environment_shapes_as_adapter_gaps(

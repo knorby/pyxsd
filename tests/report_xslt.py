@@ -17,10 +17,12 @@ budget are not comparable with a run under another.
 ``--enforce`` executes the selected profile and compares every case outcome
 with its baseline.  A semantic change -- a regression, an improvement, an added
 case, or a removed case -- exits 2; move only the entries an intentional
-behavior change actually flips in that change's commit.  ``timeout`` is the
-per-case harness budget, not a verdict: only the ``fail``↔``timeout`` pair is
-reported as harness drift, because machine-speed flakiness alone can expire a
-budget before the same failure (performance work belongs to Stage 9/Task 40).
+behavior change actually flips in that change's commit.  A baseline recorded
+under another per-case budget is refused for the same reason ``--check``
+refuses it, before any verdict is compared.  ``timeout`` is the per-case
+harness budget, not a verdict: only the ``fail``↔``timeout`` pair is reported
+as harness drift, because machine-speed flakiness alone can expire a budget
+before the same failure (performance work belongs to Stage 9/Task 40).
 Every other non-pass move is strict, including a timeout into another verdict,
 and a passing case becoming a timeout is still a regression.
 ``--write-baseline`` rewrites a whole baseline and is refused for a filtered or
@@ -283,6 +285,16 @@ def run_corpus(args: argparse.Namespace, repo_root: Path) -> int:
             recorded = baseline.load_baseline(target)
         except (ValueError, OSError) as exc:
             print(f"error: {exc}", file=sys.stderr)
+            return 2
+        recorded_budget = recorded.meta.get("timeout_seconds")
+        current_budget = current.meta.get("timeout_seconds")
+        if recorded_budget != current_budget:
+            print(
+                f"error: baseline timeout budget {recorded_budget!r} is not this run's "
+                f"{current_budget!r}s; verdicts recorded under one budget are not comparable, "
+                "so regenerate the baseline deliberately with --write-baseline",
+                file=sys.stderr,
+            )
             return 2
         changes, drift = baseline.gate_changes(recorded, current)
         for change in drift:
