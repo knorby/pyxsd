@@ -17,6 +17,7 @@ from elementpath.exceptions import ElementPathError
 
 from pyxsd.exceptions import PyXSDError, XPathError
 from pyxsd.locations import IssueLocation, PathStep
+from pyxsd.xdm import XdmAtomic
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.packages import PackageResolver
 from pyxsd.xslt.errors import (
@@ -269,7 +270,7 @@ def test_used_package_error_reports_the_library_package(tmp_path: Path) -> None:
     assert error.stack[-1].package == "urn:library"
 
 
-def test_xpath_failure_identity_is_preserved_until_a_boundary_wraps_it(
+def test_xpath_failure_is_wrapped_at_the_transformation_boundary(
     tmp_path: Path,
 ) -> None:
     path = write_stylesheet(
@@ -283,11 +284,22 @@ def test_xpath_failure_identity_is_preserved_until_a_boundary_wraps_it(
     )
     compiled = compile_path(path)
 
-    with pytest.raises(ElementPathError) as caught:
+    with pytest.raises(XsltDynamicError) as caught:
         compiled.transform(initial_template="main")
-    original = caught.value
+    wrapped = caught.value
+    original = wrapped.cause
+    assert isinstance(original, ElementPathError)
     assert original.code == "err:FORG0001"
+    assert wrapped.code == "FORG0001"
+    assert wrapped.__cause__ is original
+    assert wrapped.allow_catch is False
+    assert wrapped.stack
+    assert wrapped.module == str(path)
+    assert wrapped.location is not None
+    assert wrapped.location.source == str(path)
 
+    # A conversion site that has not left the constructor yet may still offer
+    # the same wrapped error to xsl:catch.
     transformation = Transformation()
     location = IssueLocation(str(path), (PathStep("template", 1),))
     frame = FrameDiagnostic(
@@ -295,20 +307,16 @@ def test_xpath_failure_identity_is_preserved_until_a_boundary_wraps_it(
         identity="xpath xs:integer(...)",
         location=location,
     )
-    wrapped = transformation.boundary_error(
-        original,
-        stack=(frame,),
-        catchable=True,
-    )
-    assert isinstance(wrapped, XsltDynamicError)
-    assert wrapped.code == "FORG0001"
-    assert wrapped.cause is original
-    assert wrapped.stack == (frame,)
-    assert wrapped.module == str(path)
-    assert wrapped.catchable is True
-    assert wrapped.matches_catch(["err:FORG0001"])
+    catchable = transformation.boundary_error(original, stack=(frame,), catchable=True)
+    assert isinstance(catchable, XsltDynamicError)
+    assert catchable.code == "FORG0001"
+    assert catchable.cause is original
+    assert catchable.stack == (frame,)
+    assert catchable.module == str(path)
+    assert catchable.catchable is True
+    assert catchable.matches_catch(["err:FORG0001"])
     try:
-        raise wrapped from original
+        raise catchable from original
     except XsltDynamicError as raised:
         assert raised.__cause__ is original
 
@@ -380,6 +388,174 @@ def test_diagnostics_are_only_added_when_missing() -> None:
     assert attached.module == "urn:attached"
     assert attached.package == "urn:attached"
     assert attached.uri == "urn:attached"
+
+
+# ---------------------------------------------------------------------------
+# Coded XPath errors at the execution boundary
+
+#: Each function passes a malformed regular expression, so elementpath signals
+#: ``FORX0002`` as a coded foreign exception rather than an XSLT error.
+REGEX_FAILURES = (
+    "matches('a', '?a')",
+    "replace('a', '?a', 'x')",
+    "tokenize('a', '?a')",
+    "analyze-string('a', '?a')",
+)
+
+
+@pytest.mark.parametrize("call", REGEX_FAILURES)
+def test_coded_xpath_failure_becomes_a_dynamic_error_with_its_cause(
+    tmp_path: Path,
+    call: str,
+) -> None:
+    path = write_stylesheet(
+        tmp_path,
+        "regex-failure.xsl",
+        f"""
+        <xsl:template name="main">
+          <xsl:sequence select="{call}"/>
+        </xsl:template>
+        """,
+    )
+    compiled = compile_path(path)
+
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(initial_template="main")
+
+    error = caught.value
+    assert error.code == "FORX0002"
+    assert isinstance(error.cause, ElementPathError)
+    assert error.__cause__ is error.cause
+    assert error.catchable is False
+    assert error.stack
+    assert error.module == str(path)
+
+
+def test_coded_xpath_failure_surfaces_through_an_avt(tmp_path: Path) -> None:
+    path = write_stylesheet(
+        tmp_path,
+        "regex-avt.xsl",
+        """
+        <xsl:template name="main">
+          <out title="{matches('a', '?a')}"/>
+        </xsl:template>
+        """,
+    )
+    compiled = compile_path(path)
+
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(initial_template="main", delivery="document")
+
+    assert caught.value.code == "FORX0002"
+    assert isinstance(caught.value.cause, ElementPathError)
+    assert caught.value.stack
+
+
+def test_coded_xpath_failure_surfaces_through_a_parameter_default(tmp_path: Path) -> None:
+    path = write_stylesheet(
+        tmp_path,
+        "regex-parameter.xsl",
+        """
+        <xsl:template name="main">
+          <xsl:call-template name="inner"/>
+        </xsl:template>
+        <xsl:template name="inner">
+          <xsl:param name="probe" select="matches('a', '?a')"/>
+          <xsl:sequence select="$probe"/>
+        </xsl:template>
+        """,
+    )
+    compiled = compile_path(path)
+
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(initial_template="main")
+
+    assert caught.value.code == "FORX0002"
+    assert isinstance(caught.value.cause, ElementPathError)
+
+
+@pytest.mark.parametrize(
+    "errors",
+    ["err:FORX0002", "err:*", f"Q{{{ERR_NS}}}FORX0002"],
+)
+def test_a_coded_xpath_failure_is_caught_by_its_code(tmp_path: Path, errors: str) -> None:
+    path = write_stylesheet(
+        tmp_path,
+        "regex-catch.xsl",
+        f"""
+        <xsl:template name="main">
+          <xsl:try>
+            <xsl:sequence select="matches('a', '?a')"/>
+            <xsl:catch errors="{errors}" select="'caught'"/>
+          </xsl:try>
+        </xsl:template>
+        """,
+    )
+    compiled = compile_path(path)
+
+    result = compiled.transform(initial_template="main", delivery="raw")
+
+    assert result.principal == (XdmAtomic.string("caught"),)
+
+
+def test_a_coded_xpath_failure_is_caught_across_a_nested_scheduler(tmp_path: Path) -> None:
+    # Temporary tree construction runs on a nested scheduler; the enclosing
+    # xsl:try belongs to the outer one and must still see a catchable error.
+    path = write_stylesheet(
+        tmp_path,
+        "regex-nested-catch.xsl",
+        """
+        <xsl:template name="main">
+          <xsl:try>
+            <xsl:variable name="probe">
+              <xsl:call-template name="inner"/>
+            </xsl:variable>
+            <xsl:sequence select="$probe"/>
+            <xsl:catch errors="err:FORX0002" select="'caught'"/>
+          </xsl:try>
+        </xsl:template>
+        <xsl:template name="inner">
+          <xsl:sequence select="matches('a', '?a')"/>
+        </xsl:template>
+        """,
+    )
+    compiled = compile_path(path)
+
+    result = compiled.transform(initial_template="main", delivery="raw")
+
+    assert result.principal == (XdmAtomic.string("caught"),)
+
+
+def test_a_coded_xpath_failure_is_not_caught_by_a_different_code(tmp_path: Path) -> None:
+    path = write_stylesheet(
+        tmp_path,
+        "regex-unmatched-catch.xsl",
+        """
+        <xsl:template name="main">
+          <xsl:try>
+            <xsl:sequence select="matches('a', '?a')"/>
+            <xsl:catch errors="err:XTDE0001 FORX0002" select="'wrong'"/>
+          </xsl:try>
+        </xsl:template>
+        """,
+    )
+    compiled = compile_path(path)
+
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(initial_template="main", delivery="raw")
+
+    assert caught.value.code == "FORX0002"
+    assert isinstance(caught.value.cause, ElementPathError)
+
+
+def test_coded_boundary_error_leaves_an_uncoded_failure_alone() -> None:
+    transformation = Transformation()
+    original = RuntimeError("plain failure")
+
+    assert transformation.coded_boundary_error(original) is None
+
+    xslt_error = XsltDynamicError("already owned", code="XTDE0001")
+    assert transformation.coded_boundary_error(xslt_error) is xslt_error
 
 
 # ---------------------------------------------------------------------------
@@ -498,18 +674,32 @@ def _instruction_frame() -> Frame:
     )
 
 
-def test_scheduler_preserves_callback_identity_and_diagnostics() -> None:
+def test_scheduler_wraps_a_coded_callback_and_keeps_its_cause() -> None:
     original = _CallbackFailure("callback failed")
     transformation = _RaisingTransformation(
         original,
         recovery_policy=RecoveryPolicy(rules=frozenset({DOCUMENT_RETRIEVAL.name})),
     )
 
-    with pytest.raises(_CallbackFailure) as caught:
+    with pytest.raises(XsltDynamicError) as caught:
+        transformation.execute_frame(_instruction_frame())
+    wrapped = caught.value
+    assert wrapped.cause is original
+    assert wrapped.__cause__ is original
+    assert wrapped.code == "XPTY0004"
+    assert wrapped.catchable is False
+    assert transformation.diagnostics
+    assert transformation.diagnostics[-1].identity == "instruction select"
+
+
+def test_scheduler_keeps_an_uncoded_callback_identity() -> None:
+    original = RuntimeError("callback failed")
+    transformation = _RaisingTransformation(original)
+
+    with pytest.raises(RuntimeError) as caught:
         transformation.execute_frame(_instruction_frame())
     assert caught.value is original
     assert transformation.diagnostics
-    assert transformation.diagnostics[-1].identity == "instruction select"
 
 
 def test_callback_failure_is_wrapped_with_its_cause_at_an_extension_boundary() -> None:

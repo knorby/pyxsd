@@ -242,28 +242,65 @@ class Transformation:
         active heap stack.  Suspension/resumption still uses the same
         transformation state and step function.
 
-        Every scheduler exit is an XSLT error boundary for errors the XSLT layer
-        already owns: frame-derived context is attached to an existing
-        :class:`~pyxsd.xslt.errors.XsltError` without replacing it.  Parser,
-        resource, XPath, and Python exceptions outside the XSLT error hierarchy
-        keep their own identity here; an extension boundary that deliberately
-        converts one calls :meth:`boundary_error` explicitly.
+        Every scheduler exit is an XSLT error boundary: frame-derived context is
+        attached to an existing :class:`~pyxsd.xslt.errors.XsltError` without
+        replacing it, and a foreign exception that names a specification error
+        code becomes an :class:`~pyxsd.xslt.errors.XsltDynamicError` with that
+        code and the original failure as its cause.  An uncoded exception is a
+        Python-level defect or a control signal, so it keeps its own identity.
+
+        Only the enclosing scheduler converts.  A nested scheduler is one step
+        of the outer run, so an error escaping it may still belong to an
+        enclosing ``xsl:try``; the outer boundary converts it when nothing
+        catches it.
         """
         if self.scheduler.active:
             self._nested_diagnostics = self.scheduler.diagnostics
             nested = Scheduler(self.limits, budget=self.budget)
             try:
-                return self._run_scheduler(nested, frame)
+                return self._run_scheduler(nested, frame, outermost=False)
             finally:
                 self._nested_diagnostics = nested.diagnostics
-        return self._run_scheduler(self.scheduler, frame)
+        return self._run_scheduler(self.scheduler, frame, outermost=True)
 
-    def _run_scheduler(self, scheduler: Scheduler, frame: Frame) -> object:
+    def _run_scheduler(
+        self,
+        scheduler: Scheduler,
+        frame: Frame,
+        *,
+        outermost: bool,
+    ) -> object:
         try:
             return scheduler.run(frame, self.step)
         except XsltError as error:
             self.boundary_error(error, stack=scheduler.diagnostics)
             raise
+        except Exception as error:
+            if not outermost:
+                raise
+            wrapped = self.coded_boundary_error(error, stack=scheduler.diagnostics)
+            if wrapped is None:
+                raise
+            raise wrapped from error
+
+    def coded_boundary_error(
+        self,
+        error: Exception,
+        *,
+        stack: tuple[FrameDiagnostic, ...] | None = None,
+    ) -> XsltError | None:
+        """Convert a coded foreign failure at the scheduler boundary.
+
+        An exception that carries a specification error code and escapes every
+        ``xsl:try`` is a dynamic error of this transformation, so the caller
+        sees one XSLT error type carrying that code with the original failure
+        kept as ``cause``.  The wrapper is not catchable because the error has
+        already left the only constructor that could handle it.  Any other
+        failure returns ``None`` so the caller re-raises it unchanged.
+        """
+        if error_code_from_exception(error) is None:
+            return None
+        return self.boundary_error(error, stack=stack, catchable=False)
 
     def boundary_error(
         self,

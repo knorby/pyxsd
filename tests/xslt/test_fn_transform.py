@@ -490,8 +490,10 @@ def test_specific_errors_are_preserved_others_become_foxt0003() -> None:
         "<xsl:sequence select='1 div 0'/>"
         "</xsl:template></xsl:stylesheet>"
     )
-    with pytest.raises(ElementPathZeroDivisionError) as coded_caught:
+    with pytest.raises(XsltDynamicError) as coded_caught:
         run_transform({"stylesheet-text": coded})
+    assert coded_caught.value.code == "FOAR0001"
+    assert isinstance(coded_caught.value.cause, ElementPathZeroDivisionError)
     assert "FOAR0001" in str(coded_caught.value)
 
     with pytest.raises(XsltError) as static_caught:

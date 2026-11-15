@@ -382,8 +382,11 @@ def test_mutual_recursion_and_tunnel_parameters() -> None:
 
 def test_result_order_tunnel_parameters_and_context_reset() -> None:
     assert run_stylesheet("result-order.xsl") == "item-1item-2item-3"
-    with pytest.raises(MissingContextError, match="XPDY0002"):
+    with pytest.raises(XsltDynamicError) as caught:
         run_stylesheet("context-reset.xsl", initial_template=None)
+    assert caught.value.code == "XPDY0002"
+    assert isinstance(caught.value.cause, MissingContextError)
+    assert caught.value.cause.code == "err:XPDY0002"
 
 
 def test_type_conversion_across_scheduled_function_calls() -> None:

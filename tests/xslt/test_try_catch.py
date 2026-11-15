@@ -303,8 +303,8 @@ def test_empty_catch_catches_everything() -> None:
     assert result.principal == (XdmAtomic.string("empty-catch"),)
 
 
-def test_unmatched_catch_keeps_the_original_error_identity() -> None:
-    with pytest.raises(Exception) as caught:
+def test_unmatched_catch_keeps_the_original_error_as_the_cause() -> None:
+    with pytest.raises(XsltDynamicError) as caught:
         transform(
             """
             <xsl:template name="main">
@@ -315,7 +315,8 @@ def test_unmatched_catch_keeps_the_original_error_identity() -> None:
             """
         )
 
-    assert getattr(caught.value, "code", None) == "err:FOAR0001"
+    assert caught.value.code == "FOAR0001"
+    assert getattr(caught.value.cause, "code", None) == "err:FOAR0001"
 
 
 # ---------------------------------------------------------------------------
