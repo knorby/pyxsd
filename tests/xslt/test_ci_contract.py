@@ -1,9 +1,10 @@
 """Contract for the independent XSLT 3.0, 2.0, and 1.0 conformance gates.
 
-The checks are structural: per-profile baselines and their corpus/profile
-identity, deterministic report shape, strict regression/improvement handling,
-the native processor identity behind each profile, and the workflow's corpus
-caching and coverage posture.  They never assert a current failure total.
+The checks are structural: per-profile baselines and their corpus, profile,
+and timeout-budget identity, deterministic report shape, strict
+regression/improvement handling, the native processor identity behind each
+profile, and the workflow's corpus caching and coverage posture.  They never
+assert a current failure total.
 """
 
 from __future__ import annotations
@@ -110,7 +111,7 @@ def _baseline_path(root: Path, profile: str = "xslt30") -> Path:
     return root / "tests" / "xslt" / "baselines" / f"{profile}.toml"
 
 
-def _write_baseline(root: Path, profile: str, cases: dict[str, str], **meta: str) -> Path:
+def _write_baseline(root: Path, profile: str, cases: dict[str, str], **meta: object) -> Path:
     path = _baseline_path(root, profile)
     catalog = load_catalog(root / "tests" / "xslt" / "corpus" / "catalog.xml")
     recorded = baseline_module.Baseline(
@@ -118,6 +119,7 @@ def _write_baseline(root: Path, profile: str, cases: dict[str, str], **meta: str
             "schema": baseline_module.BASELINE_SCHEMA,
             "corpus": catalog.corpus_revision,
             "profile": profile,
+            "timeout_seconds": report_xslt.DEFAULT_TIMEOUT,
             **meta,
         },
         cases=cases,
@@ -290,6 +292,55 @@ def test_check_rejects_profile_corpus_and_case_set_drift(tmp_path: Path) -> None
 
     baseline_module.write_baseline(path, replace(recorded, cases={"gate/case-001": "bogus"}))
     assert _run(["--profile", "xslt30", "--check"], root) == 1
+
+
+def test_check_rejects_a_timeout_budget_change(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _fixture_repo(tmp_path)
+    _write_baseline(root, "xslt30", {"gate/case-001": "fail"}, timeout_seconds=5)
+
+    assert _run(["--profile", "xslt30", "--check", "--timeout", "10"], root) == 1
+    error = capsys.readouterr().err
+    assert "5" in error and "10" in error
+    assert "regenerate" in error
+
+
+def test_check_accepts_a_budget_that_matches_the_baseline(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+    _write_baseline(root, "xslt30", {"gate/case-001": "fail"}, timeout_seconds=10)
+
+    assert _run(["--profile", "xslt30", "--check", "--timeout", "10"], root) == 0
+
+
+def test_check_takes_the_budget_from_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _fixture_repo(tmp_path)
+    _write_baseline(root, "xslt30", {"gate/case-001": "fail"}, timeout_seconds=5)
+    monkeypatch.setenv("PYXSD_XSLT_TIMEOUT", "10")
+
+    assert _run(["--profile", "xslt30", "--check"], root) == 1
+    error = capsys.readouterr().err
+    assert "5" in error and "10" in error
+
+
+def test_check_rejects_a_baseline_that_records_no_budget(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _fixture_repo(tmp_path)
+    path = _write_baseline(root, "xslt30", {"gate/case-001": "fail"})
+    recorded = baseline_module.load_baseline(path)
+    baseline_module.write_baseline(
+        path,
+        replace(
+            recorded,
+            meta={key: value for key, value in recorded.meta.items() if key != "timeout_seconds"},
+        ),
+    )
+
+    assert _run(["--profile", "xslt30", "--check"], root) == 1
+    assert "timeout budget" in capsys.readouterr().err
 
 
 def test_check_reports_a_missing_baseline_and_runs_need_the_catalog(tmp_path: Path) -> None:

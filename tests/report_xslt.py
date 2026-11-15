@@ -9,8 +9,10 @@ Examples::
 
 ``--check`` regenerates the deterministic report from the checked-in baseline
 and the pinned catalog without executing a stylesheet.  It exits nonzero when
-the baseline records another profile or corpus commit, omits an applicable
-case, or adds one the catalog no longer declares.
+the baseline records another profile, corpus commit, or per-case timeout
+budget, omits an applicable case, or adds one the catalog no longer declares.
+The budget is part of a baseline's identity: verdicts recorded under one
+budget are not comparable with a run under another.
 
 ``--enforce`` executes the selected profile and compares every case outcome
 with its baseline.  A semantic change -- a regression, an improvement, an added
@@ -141,10 +143,16 @@ def check(
     profile: str,
     repo_root: Path,
     *,
+    timeout: float,
     path: Path | None = None,
     json_output: bool = False,
 ) -> int:
-    """Validate one checked-in baseline against the pinned catalog."""
+    """Validate one checked-in baseline against the pinned catalog.
+
+    *timeout* is the effective per-case budget for this run.  A baseline
+    recorded under another budget is drift: the same cases time out
+    differently, so its verdicts do not describe this run.
+    """
     path = default_baseline(profile, repo_root) if path is None else path
     try:
         recorded = baseline.load_baseline(path)
@@ -162,6 +170,12 @@ def check(
     if recorded.meta.get("corpus") != expected_corpus:
         problems.append(
             f"baseline corpus {recorded.meta.get('corpus')!r} is not pinned {expected_corpus!r}"
+        )
+    recorded_budget = recorded.meta.get("timeout_seconds")
+    if recorded_budget != timeout:
+        problems.append(
+            f"baseline timeout budget {recorded_budget!r} is not this run's {timeout:g}s; "
+            "regenerate the baseline deliberately with --write-baseline"
         )
 
     declared = {
@@ -300,6 +314,7 @@ def run(argv: Sequence[str] | None = None, *, repo_root: Path = REPO_ROOT) -> in
         return check(
             args.profile,
             repo_root,
+            timeout=case_timeout(args),
             path=baseline_path(args, repo_root),
             json_output=args.json,
         )
