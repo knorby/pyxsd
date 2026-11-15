@@ -392,8 +392,8 @@ def test_gate_names_regressions_and_improvements_separately() -> None:
         {"back": "timeout", "passes-out": "pass", "stays-out": "fail", "worse": "pass"},
         {"back": "pass", "passes-out": "timeout", "stays-out": "timeout", "worse": "fail"},
     )
-    assert [change.key for change in hard] == ["passes-out", "worse"]
-    assert [change.key for change in drift] == ["back", "stays-out"]
+    assert [change.key for change in hard] == ["back", "passes-out", "worse"]
+    assert [change.key for change in drift] == ["stays-out"]
 
 
 def test_enforce_is_strict_and_current_failures_are_not_counted(tmp_path: Path) -> None:

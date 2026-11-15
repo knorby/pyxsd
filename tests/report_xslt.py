@@ -18,10 +18,13 @@ budget are not comparable with a run under another.
 with its baseline.  A semantic change -- a regression, an improvement, an added
 case, or a removed case -- exits 2; move only the entries an intentional
 behavior change actually flips in that change's commit.  ``timeout`` is the
-per-case harness budget, not a verdict: a case moving between timeout and a
-failure is reported as harness drift, while a passing case becoming a timeout
-is still a regression.  ``--write-baseline`` rewrites a whole baseline and is
-refused for a filtered or limited slice.
+per-case harness budget, not a verdict: only the ``fail``↔``timeout`` pair is
+reported as harness drift, because machine-speed flakiness alone can expire a
+budget before the same failure (performance work belongs to Stage 9/Task 40).
+Every other non-pass move is strict, including a timeout into another verdict,
+and a passing case becoming a timeout is still a regression.
+``--write-baseline`` rewrites a whole baseline and is refused for a filtered or
+limited slice.
 
 The report contains no timestamps, absolute paths, or wall-clock values.  It is
 a function of the checked-in baseline, the pinned catalog, and the profile

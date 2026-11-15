@@ -43,7 +43,7 @@ def test_other_baseline_transitions_are_named() -> None:
     assert changes[2].current is None
 
 
-def test_gate_treats_harness_budget_timeouts_as_drift() -> None:
+def test_gate_separates_harness_budget_drift_from_semantic_changes() -> None:
     changes, drift = gate_changes(
         {
             "kept": "pass",
@@ -64,13 +64,51 @@ def test_gate_treats_harness_budget_timeouts_as_drift() -> None:
     )
 
     assert [(change.kind, change.key) for change in changes] == [
+        ("improvement", "back"),
         ("improvement", "better"),
         ("regression", "passes-out"),
         ("regression", "worse"),
     ]
-    assert [(change.kind, change.key) for change in drift] == [
-        ("improvement", "back"),
-        ("changed", "fails-out"),
+    assert [(change.kind, change.key) for change in drift] == [("changed", "fails-out")]
+
+
+@pytest.mark.parametrize(
+    ("previous", "current", "kind", "drifts"),
+    [
+        ("timeout", "fail", "changed", True),
+        ("fail", "timeout", "changed", True),
+        ("timeout", "wrong-error-code", "changed", False),
+        ("timeout", "adapter-gap", "changed", False),
+        ("wrong-error-code", "timeout", "changed", False),
+        ("adapter-gap", "timeout", "changed", False),
+        ("pass", "timeout", "regression", False),
+        ("pass", "fail", "regression", False),
+        ("fail", "pass", "improvement", False),
+        ("timeout", "pass", "improvement", False),
+    ],
+)
+def test_gate_keeps_drift_to_the_timeout_fail_pair(
+    previous: str, current: str, kind: str, drifts: bool
+) -> None:
+    hard, drift = gate_changes({"case": previous}, {"case": current})
+    transition = BaselineChange(kind, "case", previous, current)
+
+    assert (drift if drifts else hard) == (transition,)
+    assert (hard if drifts else drift) == ()
+
+
+def test_gate_never_drifts_added_or_removed_cases() -> None:
+    hard, drift = gate_changes(
+        {"failed": "fail", "gone": "timeout"},
+        {"new": "timeout", "other": "fail"},
+    )
+
+    assert drift == ()
+    assert [(change.kind, change.key) for change in hard] == [
+        ("removed", "failed"),
+        ("removed", "gone"),
+        ("added", "new"),
+        ("added", "other"),
     ]
 
 

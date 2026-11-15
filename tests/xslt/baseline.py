@@ -119,17 +119,20 @@ def gate_changes(
     """Split changes into semantic verdicts and harness-budget drift.
 
     ``timeout`` means the per-case harness budget expired; it is not a
-    semantic verdict.  A slower machine may turn a failure into a timeout or
-    a timeout into a failure with no change in the processor's answer.  Those
-    transitions are returned as drift and reported without failing the gate.
-    A passing case becoming a timeout is still a regression: the processor no
-    longer reaches the result it used to reach.  Every transition between two
-    semantic verdicts is strict, in both directions.
+    semantic verdict.  Drift is exactly the ``fail``↔``timeout`` pair: a
+    slower machine can expire the budget before reaching the same failure, so
+    only machine-speed flakiness is tolerated; performance work belongs to
+    Stage 9/Task 40.  Every other transition is strict, including a timeout
+    into another non-pass verdict, and a passing case becoming a timeout is
+    still a regression.
     """
     hard: list[BaselineChange] = []
     drift: list[BaselineChange] = []
     for change in diff_baseline(previous, current):
-        if change.kind != "regression" and "timeout" in (change.previous, change.current):
+        if change.kind == "changed" and {change.previous, change.current} == {
+            "timeout",
+            "fail",
+        }:
             drift.append(change)
         else:
             hard.append(change)
