@@ -392,8 +392,11 @@ def _compile_stylesheet(
         return profile.processor.compile(stylesheet, static_parameters=static_parameters)
     try:
         digest = hashlib.sha256(stylesheet.read_bytes()).digest()
-    except OSError:
+    except (FileNotFoundError, PermissionError, IsADirectoryError):
         # Let the compiler report a missing or unreadable stylesheet itself.
+        # `TimeoutError` is deliberately absent: it subclasses `OSError`, and a
+        # budget that expires during this read must keep its alarm instead of
+        # being mistaken for an unreadable file.
         return profile.processor.compile(stylesheet)
     key = (profile.name, str(stylesheet), digest)
     compiled = _COMPILED.get(key)

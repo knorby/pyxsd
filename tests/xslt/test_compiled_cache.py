@@ -8,6 +8,7 @@ small per-worker cache instead of rebuilding the same artifact per case.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import cast
@@ -185,3 +186,67 @@ def test_an_unreadable_stylesheet_fails_without_caching(sheet: Path) -> None:
     with pytest.raises(XsltStaticError):
         suite._compile_stylesheet(PROFILE, missing, {})
     assert suite._COMPILED == {}
+
+
+def test_a_denied_digest_read_falls_back_to_the_compiler(
+    monkeypatch: pytest.MonkeyPatch, sheet: Path
+) -> None:
+    """A read failure other than a missing file also reaches the compiler."""
+    original = Path.read_bytes
+    calls: list[Path] = []
+
+    def deny_first(self: Path) -> bytes:
+        calls.append(self)
+        if len(calls) == 1:
+            raise PermissionError("denied")
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", deny_first)
+    compiled = suite._compile_stylesheet(PROFILE, sheet, {})
+    assert calls[0] == sheet
+    assert compiled.transform().principal_tree.string_value == "2"
+    assert suite._COMPILED == {}
+
+
+def test_the_budget_alarm_survives_the_digest_read(
+    monkeypatch: pytest.MonkeyPatch, sheet: Path
+) -> None:
+    """A budget expiry during the read is not an unreadable stylesheet.
+
+    ``TimeoutError`` subclasses ``OSError``, so a catch-all around the digest
+    read would swallow the alarm and compile on with no budget left.
+    """
+    original = Path.read_bytes
+
+    def slow_read(self: Path) -> bytes:
+        time.sleep(1)
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", slow_read)
+    with pytest.raises(TimeoutError, match="budget"), suite.case_budget(0.05):
+        suite._compile_stylesheet(PROFILE, sheet, {})
+    assert suite._COMPILED == {}
+
+
+def test_an_imported_module_edit_is_not_seen(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The digest covers the principal stylesheet only, as documented."""
+    imported = tmp_path / "module.xsl"
+    imported.write_bytes(stylesheet('<xsl:template name="m"><v>1</v></xsl:template>'))
+    principal = tmp_path / "main.xsl"
+    principal.write_bytes(
+        stylesheet(
+            '<xsl:import href="module.xsl"/>'
+            '<xsl:template name="xsl:initial-template"><out>'
+            '<xsl:call-template name="m"/></out></xsl:template>'
+        )
+    )
+    recorder = _Recorder(monkeypatch)
+    first = suite._compile_stylesheet(PROFILE, principal, {})
+    assert first.transform().principal_tree.string_value == "1"
+    imported.write_bytes(stylesheet('<xsl:template name="m"><v>2</v></xsl:template>'))
+    second = suite._compile_stylesheet(PROFILE, principal, {})
+    assert second is first
+    assert len(recorder) == 1
+    assert second.transform().principal_tree.string_value == "1"
