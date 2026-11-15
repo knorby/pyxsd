@@ -1,0 +1,34 @@
+# Residual dispositions for checked-in XSLT conformance cases.
+#
+# Contract (see tests/xslt/dispositions.py and the reporting design):
+# - A disposition explains a non-passing case; it never rewrites an outcome or
+#   a report verdict. The raw checked denominator is untouched.
+# - Case IDs are explicit; no pattern may silently classify a new case. Every
+#   non-passing case not listed here stays visibly unclassified in the census.
+# - Entries whose cases now pass remain valid historical metadata. Generated
+#   views report only active entries, so no edit is needed when a case passes.
+# - `reason` records the reviewed explanation; `links` carries public
+#   specification or upstream URLs only. Internal adjudication paths appear as
+#   comments, never in emitted data.
+# - Categories come from the closed vocabulary: declared-non-goal,
+#   implementation-gap, adapter-limit, platform-limit, queried-corpus,
+#   spec-correct-divergence, performance-budget.
+# - Seeds arrive with each profile's census. xslt20 and xslt30 stay unseeded
+#   until their censuses are adjudicated; do not invent case IDs.
+
+# Adjudication: docs/superpowers/sdd/2026-11-08-xslt-engine/census-xslt10.json
+# (signature "resources", outcome adapter-gap for both cases). execute_case in
+# tests/xslt/suite.py refuses any case whose environment declares external
+# resources, so neither case reaches the engine. bug/bug-0901 declares a DTD
+# resource (xteixlite.dtd); document/document-2002 references the document-20
+# environment, which declares HTTP text resources.
+[[dispositions]]
+id = "xslt10-environment-resources"
+title = "Cases whose environment declares external resources stop in the harness"
+category = "adapter-limit"
+profiles = ["xslt10"]
+cases = [
+  "bug/bug-0901",
+  "document/document-2002",
+]
+reason = "resources"
