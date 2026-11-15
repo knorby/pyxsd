@@ -188,15 +188,16 @@ def _version_is_forwards_compatible(value: str | None) -> bool:
 
     XSLT 1.0 §2.5 compares the declared version numerically against ``1.0``;
     ``1`` and ``1.00`` therefore keep the strict gate.  A value that is not a
-    Number is reported by the version validator before this gate runs, so it
-    keeps the strict reading here rather than guessing a mode from invalid
-    input.
+    Number keeps the strict reading here rather than guessing a mode from
+    invalid input.  The version validator owns that error (XTSE0110) wherever
+    the element gets a static context, but a top-level literal result element
+    never does, so its declared value reaches this comparison unvalidated.
     """
     if value is None:
         return False
     try:
         return Decimal(value) != Decimal("1.0")
-    except (InvalidOperation, ValueError):  # pragma: no cover - validator runs first
+    except (InvalidOperation, ValueError):
         return False
 
 

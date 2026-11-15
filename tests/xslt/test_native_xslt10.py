@@ -632,6 +632,29 @@ def test_native_forwards_compatible_compiles_expressions_eagerly() -> None:
     assert static_error(body, version="2.0").code == "XPST0017"
 
 
+def test_native_non_numeric_literal_result_version_keeps_the_strict_reading() -> None:
+    """A top-level literal result element never gets a static context.
+
+    ``xsl:version`` is validated (``XTSE0110``) when an element's static
+    context is built, so an invalid value on an element inside a template is
+    reported there.  A top-level literal result element is never compiled, so
+    its value reaches §2.5's mode resolver unvalidated: the comparison against
+    ``1.0`` fails, the resolver keeps the strict reading instead of guessing a
+    mode from invalid input, and the transformation still runs normally.
+    """
+    ignored = '<data xsl:version="not-a-number"/>'
+    template = '<xsl:template name="main">ok</xsl:template>'
+    assert principal_text(native_transform(ignored + template, version="2.0")) == "ok"
+
+    # An unparsable declaration never enables forwarding for its subtree.
+    strict = '<data xsl:version="not-a-number"><xsl:sequence select="1"/></data>' + template
+    assert static_error(strict, version="2.0").code == "XTSE0010"
+
+    # Where a static context is built, the version validator owns the value.
+    inside = '<xsl:template name="main"><data xsl:version="not-a-number"/></xsl:template>'
+    assert static_error(inside, version="2.0").code == "XTSE0110"
+
+
 def test_native_forwards_compatible_instruction_requires_the_1_0_profile() -> None:
     assert (
         forwards_compatible_instruction(
