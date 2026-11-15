@@ -6,6 +6,7 @@ Examples::
     python tests/report_xslt.py --profile xslt30 --check
     python tests/report_xslt.py --profile xslt30 --enforce
     python tests/report_xslt.py --profile xslt30 --write-baseline
+    python tests/report_xslt.py --profile xslt30 --census census-xslt30.json
 
 ``--check`` regenerates the deterministic report from the checked-in baseline
 and the pinned catalog without executing a stylesheet.  It exits nonzero when
@@ -28,6 +29,12 @@ and a passing case becoming a timeout is still a regression.
 ``--write-baseline`` rewrites a whole baseline and is refused for a filtered or
 limited slice.
 
+``--census PATH`` executes the selected profile exactly as ``--enforce`` does
+and writes one deterministic JSON document of per-case outcomes, normalized
+failure signatures, and signature groups.  It never compares or writes a
+baseline, and it cannot be combined with ``--check``, ``--enforce``, or
+``--write-baseline``.
+
 The report contains no timestamps, absolute paths, or wall-clock values.  It is
 a function of the checked-in baseline, the pinned catalog, and the profile
 identity.
@@ -46,7 +53,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from tests.xslt import baseline, report  # noqa: E402
+from tests.xslt import baseline, census, report  # noqa: E402
 from tests.xslt.catalog import CatalogError, load_catalog  # noqa: E402
 from tests.xslt.selection import select_cases  # noqa: E402
 from tests.xslt.suite import SUITE_PROFILES, run_parallel  # noqa: E402
@@ -93,6 +100,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help="write the observed outcomes to this baseline file",
+    )
+    parser.add_argument(
+        "--census",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="execute the profile and write a deterministic census to this JSON file",
     )
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument(
@@ -254,6 +268,20 @@ def run_corpus(args: argparse.Namespace, repo_root: Path) -> int:
         jobs=args.jobs,
         on_progress=progress,
     )
+    if args.census is not None:
+        observed = census.build_census(
+            results,
+            profile=args.profile,
+            corpus=pinned_corpus(repo_root) or catalog.corpus_revision,
+            timeout_seconds=timeout,
+            root=repo_root,
+        )
+        census.write_census(args.census, observed)
+        print(
+            f"wrote {len(results)} census records to {args.census}",
+            file=sys.stderr,
+        )
+        return 0
     current = baseline.build_baseline(
         results,
         corpus=catalog.corpus_revision,
@@ -319,6 +347,22 @@ def run_corpus(args: argparse.Namespace, repo_root: Path) -> int:
 def run(argv: Sequence[str] | None = None, *, repo_root: Path = REPO_ROOT) -> int:
     """Run or check one profile; return the process exit code."""
     args = parse_args(argv)
+    if args.census is not None:
+        conflicts = [
+            flag
+            for flag, chosen in (
+                ("--check", args.check),
+                ("--enforce", args.enforce),
+                ("--write-baseline", args.write_baseline is not None),
+            )
+            if chosen
+        ]
+        if conflicts:
+            print(
+                f"error: --census cannot be combined with {', '.join(conflicts)}",
+                file=sys.stderr,
+            )
+            return 2
     if args.check:
         if args.write_baseline is not None or args.enforce:
             print(
