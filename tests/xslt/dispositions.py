@@ -12,9 +12,9 @@ absorbed by a broad match.  An entry whose cases now pass remains valid
 historical metadata but does not describe an active residual, which
 :func:`active_entries` reports.
 
-Baselines are the only source of truth for what a profile recorded; pass
-``Baseline.as_mapping()`` (or a synthetic mapping with the same shape) as
-the outcomes argument.
+Baselines are the only source of truth for what a profile recorded.
+:func:`unclassified` accepts either a :class:`Baseline` or a case -> outcome
+mapping, so a caller never needs to reshape checked-in data.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from tests.xslt.baseline import Baseline
+from tests.xslt.baseline import BASELINE_DIR, Baseline, load_baseline
 from tests.xslt.outcomes import Outcome
 
 #: Closed vocabulary of disposition categories.
@@ -84,14 +84,15 @@ _FIELDS = frozenset(_SCALAR_FIELDS + _LIST_FIELDS)
 def load_dispositions(
     path: Path,
     *,
-    baselines: Mapping[str, Baseline] | None = None,
+    baseline_dir: Path | None = None,
 ) -> tuple[Disposition, ...]:
-    """Read the ``[[dispositions]]`` array of tables from *path*.
+    """Read and validate the ``[[dispositions]]`` array of tables from *path*.
 
     The document shape is always checked (tables, string scalars, arrays of
-    strings, no unknown fields).  Structural validation always runs;
-    membership in a profile's baseline is checked only when *baselines*
-    supplies one, so a caller can validate the contract without corpus data.
+    strings, no unknown fields), then the structural contract runs, and every
+    claimed case must be recorded in its named profile's baseline.  Baselines
+    are read from *baseline_dir* -- the checked-in ``tests/xslt/baselines``
+    directory by default -- and only for the profiles the entries name.
     """
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -124,23 +125,46 @@ def load_dispositions(
             values[field] = tuple(value)
         dispositions.append(Disposition(**values))  # type: ignore[arg-type]
     loaded = tuple(dispositions)
-    validate_dispositions(loaded, baselines)
+    directory = BASELINE_DIR if baseline_dir is None else baseline_dir
+    validate_dispositions(loaded, _named_baselines(loaded, directory))
     return loaded
+
+
+def _named_baselines(
+    dispositions: tuple[Disposition, ...],
+    directory: Path,
+) -> dict[str, Baseline]:
+    """Load the baseline of every known profile the entries name.
+
+    An unknown profile is left to :func:`validate_dispositions`; reading only
+    the named profiles keeps an unseeded profile from failing a load.
+    """
+    profiles = sorted(
+        {profile for entry in dispositions for profile in entry.profiles if profile in PROFILES}
+    )
+    baselines: dict[str, Baseline] = {}
+    for profile in profiles:
+        try:
+            baselines[profile] = load_baseline(profile, directory=directory)
+        except (OSError, ValueError) as exc:
+            raise DispositionError(
+                f"cannot read the {profile} baseline from {directory}: {exc}"
+            ) from exc
+    return baselines
 
 
 def validate_dispositions(
     dispositions: tuple[Disposition, ...],
-    baselines: Mapping[str, Baseline] | None = None,
+    baselines: Mapping[str, Baseline],
 ) -> None:
     """Check every disposition, collecting all problems before raising.
 
     Structural problems -- blank required fields, a category outside the
     closed vocabulary, an unknown profile, a blank or duplicated case ID, or
-    one case claimed twice for a profile -- are always reported.  When
-    *baselines* is supplied, each claimed case must also be recorded in the
-    named profile's baseline.  Any recorded outcome is allowed: a case that
-    no longer fails simply leaves the active residual view, and no outcome is
-    modified.
+    one case claimed twice for a profile -- are always reported.  Each claimed
+    case must also be recorded in the named profile's baseline.  Any recorded
+    outcome is allowed: a case that no longer fails simply leaves the active
+    residual view, and no outcome is modified.
     """
     problems: list[str] = []
     seen_ids: set[str] = set()
@@ -172,12 +196,10 @@ def validate_dispositions(
             if profile not in PROFILES:
                 problems.append(f"{label}: unknown profile {profile!r}")
                 continue
-            baseline = None
-            if baselines is not None:
-                baseline = baselines.get(profile)
-                if baseline is None:
-                    problems.append(f"{label}: no baseline for profile {profile!r}")
-                    continue
+            baseline = baselines.get(profile)
+            if baseline is None:
+                problems.append(f"{label}: no baseline for profile {profile!r}")
+                continue
             for case_id in entry.cases:
                 owner = claimed.setdefault((profile, case_id), entry.id)
                 if owner != entry.id:
@@ -186,23 +208,34 @@ def validate_dispositions(
                         f" already claimed by {owner!r}"
                     )
                     continue
-                if baseline is not None and case_id not in baseline.cases:
+                if case_id not in baseline.cases:
                     problems.append(f"{label}: unknown case {case_id!r} in the {profile} baseline")
     if problems:
         raise DispositionError("\n".join(problems))
 
 
+def _outcome_map(
+    results_or_baseline: Baseline | Mapping[str, OutcomeValue],
+) -> Mapping[str, OutcomeValue]:
+    """A baseline's recorded outcomes, or the mapping as given."""
+    if isinstance(results_or_baseline, Baseline):
+        return results_or_baseline.cases
+    return results_or_baseline
+
+
 def unclassified(
-    outcomes: Mapping[str, OutcomeValue],
+    results_or_baseline: Baseline | Mapping[str, OutcomeValue],
     dispositions: tuple[Disposition, ...],
     profile: str,
 ) -> tuple[str, ...]:
     """Per case, the sorted IDs that are not passing and that no entry claims.
 
-    Only cases present in *outcomes* are considered, so a case the profile no
-    longer selects never becomes an unclassified residual.  A pass is never
-    returned, whatever an entry claims or omits.
+    *results_or_baseline* is a :class:`Baseline` or a case -> outcome mapping.
+    Only cases present in it are considered, so a case the profile no longer
+    selects never becomes an unclassified residual.  A pass is never returned,
+    whatever an entry claims or omits.
     """
+    outcomes = _outcome_map(results_or_baseline)
     claimed = {
         case_id for entry in dispositions if profile in entry.profiles for case_id in entry.cases
     }

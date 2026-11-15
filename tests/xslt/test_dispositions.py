@@ -1,11 +1,10 @@
 """Residual dispositions for checked-in XSLT conformance cases.
 
 Dispositions explain *why* a non-passing case is understood without ever
-changing its outcome.  Validation reads a baseline only when one is supplied,
-so the contract can be exercised without corpus data, and an entry whose cases
-start passing remains valid without describing an active residual.  The census
-keeps every other non-passing case visibly unclassified rather than inventing a
-rationale for it.
+changing its outcome.  The production loader always validates against the
+checked-in baselines, and an entry whose cases start passing remains valid
+without describing an active residual.  The census keeps every other
+non-passing case visibly unclassified rather than inventing a rationale for it.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from tests.xslt.baseline import BASELINE_DIR, Baseline, load_baseline
+from tests.xslt.baseline import BASELINE_DIR, Baseline, load_baseline, write_baseline
 from tests.xslt.dispositions import (
     CATEGORIES,
     PROFILES,
@@ -29,13 +28,16 @@ from tests.xslt.outcomes import Outcome
 
 DISPOSITIONS = Path(__file__).resolve().parent / "dispositions.toml"
 
+#: A case recorded in the checked-in xslt10 baseline.
+REAL_CASE = "bug/bug-0901"
+
 VALID_TOML = """\
 [[dispositions]]
 id = "gap-1"
 title = "One understood residual"
 category = "implementation-gap"
 profiles = ["xslt10"]
-cases = ["bug/bug-0001"]
+cases = ["bug/bug-0901"]
 links = ["https://example.org/spec#section"]
 reason = "Documented gap."
 """
@@ -59,6 +61,15 @@ def make_baseline(cases: dict[str, str]) -> Baseline:
     return Baseline(meta={}, cases=cases)
 
 
+def baselines_for(*entries: Disposition) -> dict[str, Baseline]:
+    """Synthetic baselines recording every case the entries name."""
+    recorded: dict[str, dict[str, str]] = {}
+    for entry in entries:
+        for profile in entry.profiles:
+            recorded.setdefault(profile, {}).update((case_id, "fail") for case_id in entry.cases)
+    return {profile: make_baseline(cases) for profile, cases in recorded.items()}
+
+
 def write_toml(tmp_path: Path, body: str) -> Path:
     path = tmp_path / "dispositions.toml"
     path.write_text(body, encoding="utf-8")
@@ -77,7 +88,7 @@ def test_load_reads_entries_with_normalized_tuples(tmp_path: Path) -> None:
             title="One understood residual",
             category="implementation-gap",
             profiles=("xslt10",),
-            cases=("bug/bug-0001",),
+            cases=(REAL_CASE,),
             reason="Documented gap.",
             links=("https://example.org/spec#section",),
         ),
@@ -137,7 +148,7 @@ def test_load_rejects_non_string_scalar(tmp_path: Path, scalar: str) -> None:
 
 
 def test_load_rejects_non_array_list_field(tmp_path: Path) -> None:
-    body = VALID_TOML.replace('cases = ["bug/bug-0001"]', 'cases = "bug/bug-0001"')
+    body = VALID_TOML.replace('cases = ["bug/bug-0901"]', 'cases = "bug/bug-0901"')
     path = write_toml(tmp_path, body)
 
     with pytest.raises(DispositionError, match="entry 1: cases must be an array of strings"):
@@ -145,7 +156,7 @@ def test_load_rejects_non_array_list_field(tmp_path: Path) -> None:
 
 
 def test_load_rejects_non_string_list_member(tmp_path: Path) -> None:
-    body = VALID_TOML.replace('cases = ["bug/bug-0001"]', "cases = [1]")
+    body = VALID_TOML.replace('cases = ["bug/bug-0901"]', "cases = [1]")
     path = write_toml(tmp_path, body)
 
     with pytest.raises(DispositionError, match="entry 1: cases must be an array of strings"):
@@ -154,8 +165,8 @@ def test_load_rejects_non_string_list_member(tmp_path: Path) -> None:
 
 def test_load_rejects_unknown_field(tmp_path: Path) -> None:
     body = VALID_TOML.replace(
-        'cases = ["bug/bug-0001"]',
-        'cases = ["bug/bug-0001"]\ncase = ["bug/bug-0001"]',
+        'cases = ["bug/bug-0901"]',
+        'cases = ["bug/bug-0901"]\ncase = ["bug/bug-0901"]',
     )
     path = write_toml(tmp_path, body)
 
@@ -163,24 +174,53 @@ def test_load_rejects_unknown_field(tmp_path: Path) -> None:
         load_dispositions(path)
 
 
-def test_load_validates_against_a_supplied_baseline(tmp_path: Path) -> None:
+def test_load_rejects_a_case_absent_from_the_checked_in_baseline(tmp_path: Path) -> None:
+    # The regression that matters: the default loader consults the checked-in
+    # xslt10 baseline, so a typo cannot sit in the file unnoticed.
+    body = VALID_TOML.replace('"bug/bug-0901"', '"bug/bug-0001"')
+    path = write_toml(tmp_path, body)
+
+    with pytest.raises(
+        DispositionError,
+        match="unknown case 'bug/bug-0001' in the xslt10 baseline",
+    ):
+        load_dispositions(path)
+
+
+def test_load_reads_only_the_profiles_the_entries_name(tmp_path: Path) -> None:
+    # A malformed xslt20 baseline must not disturb an xslt10-only entry.
+    write_baseline(tmp_path / "xslt10.toml", make_baseline({REAL_CASE: "fail"}))
+    (tmp_path / "xslt20.toml").write_text("[cases\n", encoding="utf-8")
     path = write_toml(tmp_path, VALID_TOML)
-    baselines = {"xslt10": make_baseline({"bug/bug-0001": "fail"})}
 
-    (entry,) = load_dispositions(path, baselines=baselines)
+    (entry,) = load_dispositions(path, baseline_dir=tmp_path)
 
-    assert entry.cases == ("bug/bug-0001",)
+    assert entry.cases == (REAL_CASE,)
 
 
-def test_load_checks_baseline_membership_only_when_a_baseline_is_supplied(
-    tmp_path: Path,
-) -> None:
+def test_load_rejects_a_named_profile_without_a_baseline_file(tmp_path: Path) -> None:
     path = write_toml(tmp_path, VALID_TOML)
 
-    # No baseline: the structural contract alone lets a case through.
-    assert load_dispositions(path)[0].cases == ("bug/bug-0001",)
-    with pytest.raises(DispositionError, match="unknown case 'bug/bug-0001'"):
-        load_dispositions(path, baselines={"xslt10": make_baseline({})})
+    with pytest.raises(DispositionError, match="cannot read the xslt10 baseline"):
+        load_dispositions(path, baseline_dir=tmp_path)
+
+
+def test_load_rejects_a_malformed_baseline(tmp_path: Path) -> None:
+    (tmp_path / "xslt10.toml").write_text("[cases\na = 'pass'\n", encoding="utf-8")
+    path = write_toml(tmp_path, VALID_TOML)
+
+    with pytest.raises(DispositionError, match="cannot read the xslt10 baseline"):
+        load_dispositions(path, baseline_dir=tmp_path)
+
+
+def test_load_reports_an_unknown_profile_without_reading_a_baseline(tmp_path: Path) -> None:
+    body = VALID_TOML.replace('profiles = ["xslt10"]', 'profiles = ["xslt99"]')
+    path = write_toml(tmp_path, body)
+
+    # The directory holds no baselines at all: the unknown profile must be a
+    # validation problem, not a read failure.
+    with pytest.raises(DispositionError, match="unknown profile 'xslt99'"):
+        load_dispositions(path, baseline_dir=tmp_path)
 
 
 def test_load_always_runs_structural_validation(tmp_path: Path) -> None:
@@ -195,66 +235,54 @@ def test_load_always_runs_structural_validation(tmp_path: Path) -> None:
 
 
 def test_validate_accepts_a_current_failure() -> None:
-    baselines = {"xslt10": make_baseline({"bug/bug-0001": "fail"})}
+    entry = make_entry()
 
-    assert validate_dispositions((make_entry(),), baselines) is None
+    assert validate_dispositions((entry,), baselines_for(entry)) is None
 
 
 def test_validate_does_not_rewrite_baseline_results() -> None:
-    baselines = {"xslt10": make_baseline({"bug/bug-0001": "fail"})}
+    entry = make_entry()
+    baselines = baselines_for(entry)
     before = dict(baselines["xslt10"].cases)
 
-    validate_dispositions((make_entry(),), baselines)
+    validate_dispositions((entry,), baselines)
 
     assert baselines["xslt10"].cases == before
 
 
-def test_validate_without_baselines_skips_membership_but_keeps_structure() -> None:
-    # The case is absent from every real baseline; without one supplied only
-    # the structural contract applies.
-    assert validate_dispositions((make_entry(),)) is None
-
-
 def test_validate_rejects_duplicate_tracking_ids() -> None:
-    baselines = {"xslt10": make_baseline({"bug/bug-0001": "fail", "bug/bug-0002": "fail"})}
     entries = (make_entry(), make_entry(id="gap-1", cases=("bug/bug-0002",)))
 
     with pytest.raises(DispositionError, match="gap-1: duplicate tracking id"):
-        validate_dispositions(entries, baselines)
+        validate_dispositions(entries, baselines_for(*entries))
 
 
 def test_validate_rejects_case_claimed_twice_in_one_profile() -> None:
-    baselines = {"xslt10": make_baseline({"bug/bug-0001": "fail"})}
     entries = (make_entry(), make_entry(id="gap-2"))
 
     with pytest.raises(DispositionError, match="already claimed by 'gap-1'"):
-        validate_dispositions(entries, baselines)
+        validate_dispositions(entries, baselines_for(*entries))
 
 
 def test_validate_allows_one_case_claimed_in_two_profiles() -> None:
-    baselines = {
-        "xslt10": make_baseline({"bug/bug-0001": "fail"}),
-        "xslt20": make_baseline({"bug/bug-0001": "fail"}),
-    }
     entries = (
         make_entry(profiles=("xslt10",)),
         make_entry(id="gap-2", profiles=("xslt20",)),
     )
 
-    assert validate_dispositions(entries, baselines) is None
+    assert validate_dispositions(entries, baselines_for(*entries)) is None
 
 
 def test_validate_rejects_duplicate_case_within_one_entry() -> None:
-    baselines = {"xslt10": make_baseline({"bug/bug-0001": "fail"})}
     entry = make_entry(cases=("bug/bug-0001", "bug/bug-0001"))
 
     with pytest.raises(DispositionError, match=r"gap-1: duplicate case 'bug/bug-0001'"):
-        validate_dispositions((entry,), baselines)
+        validate_dispositions((entry,), baselines_for(entry))
 
 
 def test_validate_rejects_unknown_case_id() -> None:
-    baselines = {"xslt10": make_baseline({"bug/bug-0001": "fail"})}
     entry = make_entry(cases=("bug/bug-0001", "bug/bug-0009"))
+    baselines = {"xslt10": make_baseline({"bug/bug-0001": "fail"})}
 
     with pytest.raises(
         DispositionError,
@@ -267,7 +295,7 @@ def test_validate_rejects_unknown_profile_name() -> None:
     entry = make_entry(profiles=("xslt99",))
 
     with pytest.raises(DispositionError, match="unknown profile 'xslt99'"):
-        validate_dispositions((entry,))
+        validate_dispositions((entry,), {})
 
 
 def test_validate_rejects_profile_without_supplied_baseline() -> None:
@@ -279,49 +307,49 @@ def test_validate_rejects_blank_case_id() -> None:
     entry = make_entry(cases=("  ",))
 
     with pytest.raises(DispositionError, match="gap-1: case id is blank"):
-        validate_dispositions((entry,))
+        validate_dispositions((entry,), baselines_for(entry))
 
 
 def test_validate_rejects_invalid_category() -> None:
     entry = make_entry(category="not-in-vocabulary")
 
     with pytest.raises(DispositionError, match="unknown category 'not-in-vocabulary'"):
-        validate_dispositions((entry,))
+        validate_dispositions((entry,), baselines_for(entry))
 
 
 def test_validate_rejects_blank_reason() -> None:
     entry = make_entry(reason="   ")
 
     with pytest.raises(DispositionError, match="gap-1: reason is blank"):
-        validate_dispositions((entry,))
+        validate_dispositions((entry,), baselines_for(entry))
 
 
 def test_validate_rejects_blank_title() -> None:
     entry = make_entry(title="")
 
     with pytest.raises(DispositionError, match="gap-1: title is blank"):
-        validate_dispositions((entry,))
+        validate_dispositions((entry,), baselines_for(entry))
 
 
 def test_validate_rejects_blank_id() -> None:
     entry = make_entry(id="")
 
     with pytest.raises(DispositionError, match="tracking id is blank"):
-        validate_dispositions((entry,))
+        validate_dispositions((entry,), baselines_for(entry))
 
 
 def test_validate_rejects_empty_profiles() -> None:
     entry = make_entry(profiles=())
 
     with pytest.raises(DispositionError, match="gap-1: no profiles listed"):
-        validate_dispositions((entry,))
+        validate_dispositions((entry,), baselines_for(entry))
 
 
 def test_validate_rejects_empty_cases() -> None:
     entry = make_entry(cases=())
 
     with pytest.raises(DispositionError, match="gap-1: no cases listed"):
-        validate_dispositions((entry,))
+        validate_dispositions((entry,), baselines_for(entry))
 
 
 def test_validate_reports_every_problem_not_just_the_first() -> None:
@@ -331,7 +359,7 @@ def test_validate_reports_every_problem_not_just_the_first() -> None:
     )
 
     with pytest.raises(DispositionError) as excinfo:
-        validate_dispositions(entries)
+        validate_dispositions(entries, baselines_for(*entries))
 
     message = str(excinfo.value)
     assert "gap-1" in message and "unknown category 'nope'" in message
@@ -355,6 +383,14 @@ def test_unclassified_lists_only_unclaimed_non_pass_cases() -> None:
         "document/document-0005",
         "math/math-0003",
     )
+
+
+def test_unclassified_accepts_a_baseline_or_a_mapping() -> None:
+    entry = make_entry()
+    baseline = make_baseline({"bug/bug-0001": "fail", "bug/bug-0002": "pass"})
+
+    assert unclassified(baseline, (entry,), "xslt10") == ()
+    assert unclassified(baseline.as_mapping(), (entry,), "xslt10") == ()
 
 
 def test_unclassified_separates_profiles() -> None:
@@ -400,6 +436,31 @@ def test_active_entries_treats_a_missing_case_as_passed() -> None:
     assert active_entries("xslt10", {"bug/bug-0001": "timeout"}, (entry,)) == (entry,)
 
 
+def test_unclassified_does_not_modify_its_inputs() -> None:
+    entry = make_entry()
+    baseline = make_baseline({"bug/bug-0001": "fail", "bug/bug-0002": "fail"})
+    outcomes = baseline.as_mapping()
+    entries = (entry,)
+
+    unclassified(baseline, entries, "xslt10")
+    unclassified(outcomes, entries, "xslt10")
+
+    assert baseline.cases == {"bug/bug-0001": "fail", "bug/bug-0002": "fail"}
+    assert outcomes == {"bug/bug-0001": "fail", "bug/bug-0002": "fail"}
+    assert entries == (entry,)
+
+
+def test_active_entries_does_not_modify_its_inputs() -> None:
+    entry = make_entry()
+    outcomes = {"bug/bug-0001": "fail"}
+    entries = (entry,)
+
+    active_entries("xslt10", outcomes, entries)
+
+    assert outcomes == {"bug/bug-0001": "fail"}
+    assert entries == (entry,)
+
+
 # --------------------------------------------------------------- real data
 
 
@@ -423,7 +484,7 @@ def test_categories_are_the_documented_closed_vocabulary() -> None:
 
 def test_checked_in_dispositions_match_the_xslt10_census() -> None:
     baseline = load_baseline("xslt10")
-    entries = load_dispositions(DISPOSITIONS, baselines={"xslt10": baseline})
+    entries = load_dispositions(DISPOSITIONS)
 
     assert len(entries) == 1
     (entry,) = entries
@@ -434,9 +495,8 @@ def test_checked_in_dispositions_match_the_xslt10_census() -> None:
     assert entry.reason == "resources"
     for case_id in entry.cases:
         assert baseline.outcome(case_id) == Outcome.ADAPTER_GAP.value
-    outcomes = baseline.as_mapping()
-    assert not set(entry.cases) & set(unclassified(outcomes, entries, "xslt10"))
-    assert active_entries("xslt10", outcomes, entries) == entries
+    assert not set(entry.cases) & set(unclassified(baseline, entries, "xslt10"))
+    assert active_entries("xslt10", baseline.as_mapping(), entries) == entries
 
 
 def test_loading_the_checked_in_file_is_deterministic() -> None:
