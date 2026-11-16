@@ -36,7 +36,7 @@ from pyxsd.relaxng.datatypes import (
     resolve_datatype_selector,
 )
 from pyxsd.relaxng.patterns import Data, Text, Value, choice
-from pyxsd.xsd_data_types import QName, qname_context
+from pyxsd.xsd_data_types import AnyURI, QName, qname_context
 
 BUILTIN = BuiltinDatatypeFactory()
 XSD = XsdDatatypeFactory()
@@ -389,6 +389,7 @@ class TestXsdDecoding:
         datatype = xsd("date")
         decoded = datatype.decode("2000-02-29Z", EMPTY)
         assert decoded == "2000-02-29Z"
+        assert decoded.lexical() == "2000-02-29Z"
         assert datatype.encode(decoded, EMPTY) == "2000-02-29Z"
         with pytest.raises(TypeError):
             datatype.decode("2001-02-29", EMPTY)
@@ -475,6 +476,80 @@ class TestXsdDecoding:
             bounded.encode(9, EMPTY)
 
 
+class TestXsd10AnyUri:
+    def test_xsd_1_0_rejects_values_only_xsd_1_1_accepts(self):
+        datatype = xsd("anyURI")
+        invalid = (
+            "a%zz",
+            "a#b#c",
+            "http://[::1",
+            "1:2",
+            "a[b]",
+            "http://exa%zz",
+            "a?b%zz",
+            "a#b%zz",
+            "http://[v1.x]",
+            "http://[::1]:x",
+            "http://[::1%25eth0]",
+        )
+        for lexical in invalid:
+            assert not datatype.allows(lexical, EMPTY)
+        # The shared class is XSD 1.1: it accepts every XML character sequence.
+        for lexical in invalid[:6]:
+            assert AnyURI(lexical) == lexical
+
+    def test_xsd_1_0_accepts_escaped_and_unescaped_forms(self):
+        datatype = xsd("anyURI")
+        for lexical in (
+            "a b",
+            "a\tb",
+            "a\\b",
+            "a|b",
+            "\u00e9",
+            "http://example.com/\u00e9dition",
+            "http://[::1]/x",
+            "http://[::1]:8080",
+            "http://[::1]:",
+            "http://user@[::1]",
+            "http://[::ffff:192.168.1.1]",
+            "?q",
+            "#frag",
+            "",
+            "a/b:c",
+            "./a:b",
+            "a:b",
+        ):
+            assert datatype.allows(lexical, EMPTY)
+
+    def test_anyuri_rejects_non_xml_characters(self):
+        datatype = xsd("anyURI")
+        assert not datatype.allows("a\x00b", EMPTY)
+        assert not datatype.allows("a\ud800b", EMPTY)
+
+    def test_anyuri_decoding_and_encoding_validate_the_lexical(self):
+        datatype = xsd("anyURI")
+        assert datatype.decode("a b", EMPTY) == "a b"
+        assert datatype.encode("a b", EMPTY) == "a b"
+        with pytest.raises(TypeError):
+            datatype.decode("a%zz", EMPTY)
+        with pytest.raises(TypeError):
+            datatype.encode("a%zz", EMPTY)
+
+    def test_anyuri_equality_is_lexical_identity(self):
+        datatype = xsd("anyURI")
+        assert datatype.equal("a b", EMPTY, "a b", EMPTY)
+        assert not datatype.equal("a b", EMPTY, "a%20b", EMPTY)
+        assert not datatype.equal("a%zz", EMPTY, "a%zz", EMPTY)
+
+    def test_anyuri_facets_see_the_lexical_form(self):
+        sized = xsd("anyURI", ("length", "3"))
+        assert sized.allows("a b", EMPTY)
+        assert not sized.allows("a b c", EMPTY)
+        patterned = xsd("anyURI", ("pattern", "a b"))
+        assert patterned.allows("a b", EMPTY)
+        assert not patterned.allows("a%20b", EMPTY)
+
+
 class TestXsdEquality:
     def test_numeric_and_binary_spellings_compare_by_value(self):
         assert xsd("integer").equal("1", EMPTY, "01", EMPTY)
@@ -503,6 +578,133 @@ class TestXsdEquality:
     def test_invalid_lexical_forms_never_compare_equal(self):
         assert not xsd("date").equal("2001-02-29", EMPTY, "2001-02-29", EMPTY)
         assert not xsd("integer").equal("x", EMPTY, "x", EMPTY)
+
+
+class TestXsd10TemporalNumbering:
+    def test_1_bce_is_a_leap_year(self):
+        datatype = xsd("date")
+        assert datatype.allows("-0001-02-29", EMPTY)
+        assert datatype.allows("-0005-02-29", EMPTY)
+        assert datatype.allows("-0401-02-29", EMPTY)
+        assert not datatype.allows("-0002-02-29", EMPTY)
+        assert not datatype.allows("-0004-02-29", EMPTY)
+        assert not datatype.allows("-0101-02-29", EMPTY)
+
+    def test_bce_leap_day_applies_to_datetime(self):
+        datatype = xsd("dateTime")
+        assert datatype.allows("-0001-02-29T00:00:00", EMPTY)
+        assert datatype.allows("-0005-02-29T00:00:00", EMPTY)
+        assert not datatype.allows("-0004-02-29T00:00:00", EMPTY)
+
+    def test_year_bearing_types_accept_negative_lexical_years(self):
+        assert xsd("gYear").allows("-0001", EMPTY)
+        assert xsd("gYear").allows("-0001Z", EMPTY)
+        assert xsd("gYearMonth").allows("-0001-02", EMPTY)
+        assert not xsd("gYear").allows("0000", EMPTY)
+        assert not xsd("gYearMonth").allows("-0000-02", EMPTY)
+
+    def test_malformed_or_year_zero_temporal_lexicals_are_rejected(self):
+        datatype = xsd("date")
+        for lexical in ("0000-01-01", "-0000-01-01", "00000-01-01", "-00000-01-01"):
+            assert not datatype.allows(lexical, EMPTY)
+        assert not datatype.allows("not-a-date", EMPTY)
+
+    def test_bce_equality_uses_the_xsd_1_0_year_timeline(self):
+        date = xsd("date")
+        assert date.equal("-0001-12-31-14:00", EMPTY, "0001-01-01+10:00", EMPTY)
+        assert not date.equal("-0001-12-30-14:00", EMPTY, "0001-01-01+10:00", EMPTY)
+
+        date_time = xsd("dateTime")
+        assert date_time.equal(
+            "-0001-12-31T00:00:00-14:00",
+            EMPTY,
+            "0001-01-01T04:00:00+14:00",
+            EMPTY,
+        )
+        assert not date_time.equal(
+            "-0001-12-31T00:00:00-14:00",
+            EMPTY,
+            "0001-01-01T05:00:00+14:00",
+            EMPTY,
+        )
+
+    def test_g_year_and_g_year_month_equality(self):
+        year = xsd("gYear")
+        assert year.equal("-0001", EMPTY, "-0001", EMPTY)
+        assert not year.equal("-0001", EMPTY, "0001", EMPTY)
+
+        year_month = xsd("gYearMonth")
+        assert year_month.equal("-0001-02", EMPTY, "-0001-02", EMPTY)
+        assert not year_month.equal("-0001-02", EMPTY, "0001-02", EMPTY)
+
+    def test_bce_values_decode_and_encode_with_the_authored_lexical(self):
+        assert xsd("date").decode("-0001-02-29", EMPTY).lexical() == "-0001-02-29"
+        assert (
+            xsd("dateTime").decode("-0001-02-29T00:00:00", EMPTY).lexical()
+            == "-0001-02-29T00:00:00"
+        )
+        assert xsd("gYear").decode("-0001", EMPTY).lexical() == "-0001"
+        assert xsd("gYearMonth").decode("-0001-02", EMPTY).lexical() == "-0001-02"
+        assert xsd("date").encode("-0001-02-29", EMPTY) == "-0001-02-29"
+        with pytest.raises(TypeError):
+            xsd("date").decode("-0004-02-29", EMPTY)
+
+    def test_temporal_bounds_use_the_xsd_1_0_year_numbering(self):
+        inclusive = xsd("date", ("minInclusive", "-0001-02-28"))
+        assert inclusive.allows("-0001-02-28", EMPTY)
+        assert inclusive.allows("-0001-03-01", EMPTY)
+        assert not inclusive.allows("-0001-02-27", EMPTY)
+
+        exclusive = xsd("date", ("minExclusive", "-0001-02-28"))
+        assert not exclusive.allows("-0001-02-28", EMPTY)
+        assert exclusive.allows("-0001-03-01", EMPTY)
+
+        maximum_inclusive = xsd("date", ("maxInclusive", "-0001-03-01"))
+        assert maximum_inclusive.allows("-0001-03-01", EMPTY)
+        assert not maximum_inclusive.allows("-0001-03-02", EMPTY)
+
+        maximum_exclusive = xsd("date", ("maxExclusive", "-0001-03-01"))
+        assert not maximum_exclusive.allows("-0001-03-01", EMPTY)
+        assert maximum_exclusive.allows("-0001-02-28", EMPTY)
+
+    def test_temporal_bounds_cross_the_no_year_zero_boundary(self):
+        inclusive = xsd("date", ("maxInclusive", "-0001-12-31-14:00"))
+        assert inclusive.allows("0001-01-01+10:00", EMPTY)
+        exclusive = xsd("date", ("maxExclusive", "-0001-12-31-14:00"))
+        assert not exclusive.allows("0001-01-01+10:00", EMPTY)
+
+        bounded = xsd(
+            "dateTime",
+            ("minInclusive", "-0001-02-29T00:00:00"),
+            ("maxInclusive", "0001-01-01T00:00:00"),
+        )
+        assert bounded.allows("-0001-02-29T00:00:00", EMPTY)
+        assert bounded.allows("0001-01-01T00:00:00", EMPTY)
+        assert not bounded.allows("-0002-01-01T00:00:00", EMPTY)
+        assert not bounded.allows("0001-01-02T00:00:00", EMPTY)
+
+    def test_temporal_bound_literals_use_xsd_1_0_numbering(self):
+        assert xsd("date", ("minInclusive", "-0001-02-29")).allows("-0001-02-29", EMPTY)
+        assert xsd("date", ("minInclusive", "-0001-02-29")).allows("0001-01-01", EMPTY)
+        with pytest.raises(DatatypeParameterError):
+            xsd("date", ("minInclusive", "-0004-02-29"))
+        with pytest.raises(DatatypeParameterError):
+            xsd("date", ("minInclusive", "0000-01-01"))
+
+    def test_temporal_bound_conflicts_are_parameter_errors(self):
+        for parameters in (
+            (("minInclusive", "-0001-01-01"), ("minExclusive", "-0001-01-01")),
+            (("maxInclusive", "-0001-01-01"), ("maxExclusive", "-0001-01-01")),
+            (("minInclusive", "0001-01-01"), ("maxInclusive", "-0001-01-01")),
+            (("minInclusive", "-0001-01-01"), ("maxExclusive", "-0001-01-01")),
+        ):
+            with pytest.raises(DatatypeParameterError):
+                xsd("date", *parameters)
+
+    def test_temporal_pattern_facets_see_the_lexical_form(self):
+        datatype = xsd("date", ("pattern", "-0001-.*"))
+        assert datatype.allows("-0001-01-01", EMPTY)
+        assert not datatype.allows("0001-01-01", EMPTY)
 
 
 class TestXsdValuePatterns:

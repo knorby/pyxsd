@@ -20,15 +20,22 @@ profile:
   ``dayTimeDuration``, ``yearMonthDuration`` (and ``precisionDecimal``) are
   rejected explicitly rather than accepted as strings;
 * lexical year ``0000`` is rejected for ``date``, ``dateTime``, ``gYear``
-  and ``gYearMonth``;
+  and ``gYearMonth``; lexical ``-0001`` is 1 BCE, so 1 BCE is a leap year
+  and ``-0001-02-29`` is valid while ``-0004-02-29`` (4 BCE) is not;
+* temporal value equality, bounds, and decoding use the XSD 1.0
+  astronomical mapping for negative years (lexical ``y < 0`` is
+  astronomical ``y + 1``), not the shared classes' XSD 1.1 numbering;
 * duration equality uses the six-dimensional XSD 1.0 value space, so
-  ``P1Y`` and ``P12M`` are distinct values.
+  ``P1Y`` and ``P12M`` are distinct values;
+* ``anyURI`` uses the XSD 1.0 lexical space: the XLink 5.4 escaping
+  procedure is applied, and the result must be an RFC 2396 URI reference
+  as amended by RFC 2732.  XSD 1.1's "any XML character sequence" rule is
+  not used.  Equality remains identity of the lexical URI-reference
+  representation; XSD 1.0 defines no anyURI normalization.
 
-Duration ordering inside facet bounds still uses the shared facet helper, as
-does negative-year calendar validation.  The shared pyxsd datatype classes
-implement the XSD 1.1 numbering for negative years (and the XSD 1.1 reading
-of ``xs:anyURI``); the adapter does not reinterpret existing negative-year
-dates.  Those limitations are documented rather than hidden by a fallback.
+Duration ordering inside facet bounds still uses the shared facet helper.
+Scheme-specific URI syntax is not checked, matching XSD 1.0's conformance
+note; the generic URI-reference grammar is.
 
 The XSD adapter rejects the ``whiteSpace`` and ``enumeration`` parameters as
 the RELAX NG datatype guidelines require.  Repeated ``pattern`` parameters
@@ -55,18 +62,29 @@ from __future__ import annotations
 
 import base64
 import decimal
+import ipaddress
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType, NotImplementedType
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 from pyxsd import xsd_data_types as _xsd_types
 from pyxsd.exceptions import PyXSDError
-from pyxsd.facets import FacetConstraints, build_constraints, compile_pattern, whitespace_transform
+from pyxsd.facets import (
+    FacetConstraints,
+    FacetViolation,
+    build_constraints,
+    compile_pattern,
+    whitespace_transform,
+)
+from pyxsd.locations import ConstraintInfo
 from pyxsd.xsd_data_types import (
     _DURATION_PARTS,
+    _YEAR,
+    AnyURI,
     Base64Binary,
     Boolean,
     Decimal,
@@ -78,6 +96,11 @@ from pyxsd.xsd_data_types import (
     String,
     Token,
     XsdDataType,
+    _date_key,
+    _datetime_key,
+    _gyear_key,
+    _gyearmonth_key,
+    _has_timezone,
     qname_context,
     xsd_value_key,
 )
@@ -191,10 +214,25 @@ del _module_value
 DatatypeSelector = str | tuple[str, str]
 
 _QNAME_TYPES = frozenset({"QName", "NOTATION"})
-_YEAR_ZERO_TYPES = frozenset({"date", "dateTime", "gYear", "gYearMonth"})
+#: Types whose lexical year has XSD 1.0-specific numbering and leap-day rules.
+_XSD10_TEMPORAL_TYPE_NAMES = frozenset({"date", "dateTime", "gYear", "gYearMonth"})
 _XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace"
 _XSD11_YEAR_ZERO = re.compile(r"^-?0{4}(?![0-9])")
+_YEAR_PREFIX = re.compile(r"^(-?[0-9]{4,})")
 _PROCESS_DEPENDENT_FINGERPRINT = re.compile(r"0x[0-9a-fA-F]+")
+
+#: XSD 1.0 §3.2.17 defines the anyURI lexical space through the XLink 5.4
+#: escaping algorithm: after escaping, the result must be an RFC 2396 URI
+#: reference (as amended by RFC 2732).  XSD 1.1 instead accepts every XML
+#: character sequence.  These regexes validate the generic grammar only;
+#: scheme-specific syntax is not part of XSD 1.0 conformance.
+_XLINK_ESCAPED_ASCII = frozenset(
+    [chr(code) for code in range(0x20)]
+    + [" ", "<", ">", '"', "{", "}", "|", "\\", "^", "`", "\x7f"]
+)
+_ANYURI_PATH = re.compile(r"^(?:[A-Za-z0-9\-_.!~*'():@&=+$,;]|/|%[0-9A-Fa-f]{2})*$")
+_ANYURI_URIC = re.compile(r"^(?:[A-Za-z0-9\-_.!~*'();/?:@&=+$,\[\]]|%[0-9A-Fa-f]{2})*$")
+_ANYURI_AUTHORITY = re.compile(r"^(?:[A-Za-z0-9\-_.!~*'()$+,;:@&=]|%[0-9A-Fa-f]{2}|\[|\])*$")
 
 _XSD_PARAMETER_NAMES = frozenset(
     {
@@ -342,6 +380,190 @@ class DatatypeParameter:
             raise ValueError("a datatype parameter value must be a string")
 
 
+class _Xsd10TemporalValue(str):
+    """A validated XSD 1.0 temporal lexical value.
+
+    It is a ``str`` subclass so callers get the authored lexical form back,
+    but it deliberately exposes no XSD 1.1 calendar helper methods.  XSD 1.0
+    has no year zero: lexical ``-0001`` is 1 BCE, and 1 BCE is a leap year.
+    """
+
+    __slots__ = ()
+
+    def lexical(self) -> str:
+        return str(self)
+
+
+def _format_astro_year(year: int) -> str:
+    """Format an astronomical year in the XSD lexical four-digit form."""
+    if year < 0:
+        return f"-{-year:04d}"
+    return f"{year:04d}"
+
+
+def _xsd10_temporal_value(type_name: str, text: str) -> _Xsd10TemporalValue:
+    """Validate and wrap one XSD 1.0 date/dateTime/gYear/gYearMonth lexical.
+
+    The shared pyxsd classes implement XSD 1.1 astronomical numbering.  XSD
+    1.0 maps lexical ``-0001`` to 1 BCE, which is astronomical year 0, so a
+    negative lexical year maps to ``year + 1`` before the shared calendar
+    check.  The original lexical form is retained in the returned value.
+    """
+    text = whitespace_transform("collapse", text)
+    if _XSD11_YEAR_ZERO.match(text):
+        raise TypeError(
+            f"xs:{type_name} lexical {text!r} uses year 0000, which XSD 1.0 does not allow"
+        )
+    match = _YEAR_PREFIX.match(text)
+    if match is None or re.fullmatch(_YEAR, match.group(1)) is None:
+        raise TypeError(f"Not a valid xs:{type_name}: {text!r}")
+    year_text = match.group(1)
+    year = int(year_text)
+    astro_year = year + 1 if year < 0 else year
+    validation_text = _format_astro_year(astro_year) + text[len(year_text) :]
+    try:
+        cast(Any, _XSD_10_TYPES[type_name])(validation_text)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"Not a valid xs:{type_name}: {text!r}") from exc
+    return _Xsd10TemporalValue(text)
+
+
+def _xsd10_astro_lexical(text: str) -> str:
+    """Rewrite a validated XSD 1.0 lexical year to its astronomical year."""
+    match = _YEAR_PREFIX.match(text)
+    assert match is not None
+    year_text = match.group(1)
+    year = int(year_text)
+    astro_year = year + 1 if year < 0 else year
+    return _format_astro_year(astro_year) + text[len(year_text) :]
+
+
+def _xsd10_temporal_comparable_key(type_name: str, text: str) -> int:
+    """The XSD 1.0 value-space ordering key for one year-bearing type."""
+    key_text = _xsd10_astro_lexical(text)
+    if type_name == "date":
+        key = _date_key(key_text)
+    elif type_name == "dateTime":
+        key = _datetime_key(key_text)
+    elif type_name == "gYear":
+        key = _gyear_key(key_text)
+    else:
+        key = _gyearmonth_key(key_text)
+    return cast(int, key)
+
+
+def _xsd10_temporal_bounds(
+    type_name: str, parameters: tuple[DatatypeParameter, ...]
+) -> tuple[tuple[str, int, str], ...]:
+    """Parse and conflict-check the temporal bounds of an XSD 1.0 datatype."""
+    bounds: dict[str, tuple[int, str]] = {}
+    for parameter in parameters:
+        if parameter.name not in _BOUND_PARAMETER_NAMES:
+            continue
+        try:
+            value = _xsd10_temporal_value(type_name, parameter.value)
+        except (TypeError, ValueError) as exc:
+            raise DatatypeParameterError(
+                f"{parameter.name} value {parameter.value!r} is not valid for xs:{type_name}: {exc}"
+            ) from exc
+        bounds[parameter.name] = (
+            _xsd10_temporal_comparable_key(type_name, str(value)),
+            str(value),
+        )
+    if "minInclusive" in bounds and "minExclusive" in bounds:
+        raise DatatypeParameterError("cannot specify both 'minInclusive' and 'minExclusive'")
+    if "maxInclusive" in bounds and "maxExclusive" in bounds:
+        raise DatatypeParameterError("cannot specify both 'maxInclusive' and 'maxExclusive'")
+    lower = bounds.get("minInclusive") or bounds.get("minExclusive")
+    upper = bounds.get("maxInclusive") or bounds.get("maxExclusive")
+    if lower is not None and upper is not None:
+        lower_key = lower[0]
+        upper_key = upper[0]
+        lower_exclusive = "minExclusive" in bounds
+        upper_exclusive = "maxExclusive" in bounds
+        if lower_key > upper_key or (
+            lower_key == upper_key and (lower_exclusive or upper_exclusive)
+        ):
+            raise DatatypeParameterError(
+                "the declared temporal bounds leave no value in the datatype's value space"
+            )
+    return tuple((name, key, text) for name, (key, text) in sorted(bounds.items()))
+
+
+def _is_xml_char(code: int) -> bool:
+    """Whether *code* is an XML 1.0 Char (XSD 1.0 lexical space)."""
+    return (
+        code in (0x9, 0xA, 0xD)
+        or 0x20 <= code <= 0xD7FF
+        or 0xE000 <= code <= 0xFFFD
+        or 0x10000 <= code <= 0x10FFFF
+    )
+
+
+def _xlink_escape(text: str) -> str:
+    """Apply the XLink 5.4 escaping procedure used by XSD 1.0 anyURI."""
+    escaped: list[str] = []
+    for char in text:
+        code = ord(char)
+        if code > 0x7F or char in _XLINK_ESCAPED_ASCII:
+            if not _is_xml_char(code):
+                raise TypeError(f"anyURI contains a non-XML character U+{code:04X}")
+            escaped.extend(f"%{byte:02X}" for byte in char.encode("utf-8"))
+        else:
+            escaped.append(char)
+    return "".join(escaped)
+
+
+def _check_anyuri_authority(netloc: str) -> None:
+    """Validate the RFC 2396 authority, including RFC 2732 IPv6 literals."""
+    if _ANYURI_AUTHORITY.fullmatch(netloc) is None:
+        raise TypeError(f"anyURI authority {netloc!r} is not a legal RFC 2396 authority")
+    if "[" not in netloc:
+        return
+    open_index = netloc.index("[")
+    close_index = netloc.index("]", open_index)
+    literal = netloc[open_index + 1 : close_index]
+    if "%" in literal:
+        raise TypeError("anyURI IPv6 literals may not carry a zone identifier in XSD 1.0")
+    try:
+        ipaddress.IPv6Address(literal)
+    except ValueError as exc:
+        raise TypeError(f"anyURI host {literal!r} is not an IPv6 address") from exc
+    suffix = netloc[close_index + 1 :]
+    if suffix:
+        port = suffix.removeprefix(":")
+        if port and not port.isdigit():
+            raise TypeError(f"anyURI port {port!r} is not numeric")
+
+
+def _require_xsd10_anyuri(text: str) -> str:
+    """Return the XLink-escaped form when *text* is an XSD 1.0 anyURI lexical."""
+    escaped = _xlink_escape(text)
+    if escaped.count("#") > 1:
+        raise TypeError("anyURI contains more than one fragment separator")
+    try:
+        parts = urlsplit(escaped)
+    except ValueError as exc:
+        raise TypeError(f"anyURI {text!r} is not a legal URI reference") from exc
+    if not parts.scheme and ":" in parts.path.split("/", 1)[0]:
+        raise TypeError(f"anyURI {text!r} uses a colon in a relative first path segment")
+    if parts.netloc:
+        _check_anyuri_authority(parts.netloc)
+    if _ANYURI_PATH.fullmatch(parts.path) is None:
+        raise TypeError(f"anyURI path is not legal RFC 2396 syntax: {text!r}")
+    if _ANYURI_URIC.fullmatch(parts.query) is None:
+        raise TypeError(f"anyURI query is not legal RFC 2396 uric: {text!r}")
+    if _ANYURI_URIC.fullmatch(parts.fragment) is None:
+        raise TypeError(f"anyURI fragment is not legal RFC 2396 uric: {text!r}")
+    return escaped
+
+
+def _xsd10_anyuri_value(text: str) -> AnyURI:
+    """Validate an XSD 1.0 anyURI lexical and return its value object."""
+    _require_xsd10_anyuri(text)
+    return AnyURI(text)
+
+
 class Datatype(ABC):
     """The compiled behavior of one RELAX NG datatype.
 
@@ -409,6 +631,10 @@ class ScalarDatatype(Datatype):
     constraints: FacetConstraints = field(compare=False)
     white_space: str
     semantic_context: tuple[tuple[str, str], ...] = field(init=False, repr=False)
+    #: XSD 1.0 temporal bounds use the adapter's year numbering, not the
+    #: shared facet ordering key.  Derived from ``parameters`` like the other
+    #: facets, so it is excluded from datatype identity.
+    temporal_bounds: tuple[tuple[str, int, str], ...] = field(default=(), compare=False, repr=False)
 
     def __post_init__(self) -> None:
         semantic = tuple(self.context.namespaces.items()) if self.type_name in _QNAME_TYPES else ()
@@ -447,9 +673,11 @@ class ScalarDatatype(Datatype):
 
         ``hexBinary`` and ``base64Binary`` return ``bytes``; ``boolean``
         returns a Python ``bool``; QName and NOTATION return a
-        context-resolved :class:`~pyxsd.xsd_data_types.QName`; every other
-        type returns its XSD value object (an ``int``, ``Decimal``, ``float``,
-        or ``str`` subclass).  Facets are enforced, so an out-of-range or
+        context-resolved :class:`~pyxsd.xsd_data_types.QName`; the four
+        year-bearing temporal types return a validated lexical ``str``
+        subclass with a ``lexical()`` method; every other type returns its
+        XSD value object (an ``int``, ``Decimal``, ``float``, or ``str``
+        subclass).  Facets are enforced, so an out-of-range or
         pattern-violating lexical form raises ``TypeError`` or ``ValueError``
         instead of producing a value outside the datatype.
         """
@@ -479,16 +707,34 @@ class ScalarDatatype(Datatype):
     def _prepare(self, lexical: str, context: DatatypeContext) -> tuple[str, Any]:
         """Apply whitespace processing and build the XSD value object."""
         text = whitespace_transform(self.white_space, lexical)
-        if self.type_name in _YEAR_ZERO_TYPES and _XSD11_YEAR_ZERO.match(text):
-            raise TypeError(
-                f"xs:{self.type_name} lexical {text!r} uses year 0000, which XSD 1.0 does not allow"
-            )
         return text, self._build_value(text, context)
 
     def _checked_value(self, lexical: str, context: DatatypeContext) -> tuple[str, Any]:
         text, value = self._prepare(lexical, context)
         self.constraints.check(value, text)
+        self._check_temporal_bounds(text)
         return text, value
+
+    def _check_temporal_bounds(self, text: str) -> None:
+        """Enforce XSD 1.0 temporal bounds with the adapter's year numbering."""
+        if not self.temporal_bounds:
+            return
+        actual = _xsd10_temporal_comparable_key(self.type_name, text)
+        for name, bound, bound_text in self.temporal_bounds:
+            if name == "minInclusive":
+                violated = actual < bound
+            elif name == "minExclusive":
+                violated = actual <= bound
+            elif name == "maxInclusive":
+                violated = actual > bound
+            else:
+                violated = actual >= bound
+            if violated:
+                raise FacetViolation(
+                    f"facet {name!r} violated: {text!r} is outside the XSD 1.0 "
+                    f"temporal bound {bound_text!r}",
+                    ConstraintInfo(name, bound_text, text),
+                )
 
     def _equality_value(self, lexical: str, context: DatatypeContext) -> Any | None:
         """Build a value for equality, ignoring facet parameters.
@@ -505,6 +751,10 @@ class ScalarDatatype(Datatype):
         return value
 
     def _build_value(self, text: str, context: DatatypeContext) -> Any:
+        if self.type_name in _XSD10_TEMPORAL_TYPE_NAMES:
+            return _xsd10_temporal_value(self.type_name, text)
+        if self.type_name == "anyURI":
+            return _xsd10_anyuri_value(text)
         if self.type_name in _QNAME_TYPES:
             return self._build_qname(text, context)
         return self.xsd_type(text)
@@ -519,6 +769,12 @@ class ScalarDatatype(Datatype):
         return value
 
     def _equality_key(self, value: Any) -> tuple[Any, ...]:
+        if self.type_name in _XSD10_TEMPORAL_TYPE_NAMES:
+            text = str(value)
+            return (
+                self.type_name,
+                (_xsd10_temporal_comparable_key(self.type_name, text), _has_timezone(text)),
+            )
         if isinstance(value, QName):
             return ("QName", (value._uri_ or "", value._local_))
         if isinstance(value, Duration):
@@ -556,7 +812,8 @@ class ScalarDatatype(Datatype):
             return self.xsd_type(cast(Any, value)).lexical()
         if not isinstance(value, str):
             raise TypeError(f"expected a string for xs:{self.type_name}")
-        return self.xsd_type(value).lexical()
+        _, built = self._prepare(value, context)
+        return str(built)
 
     def _encode_binary(self, value: Any) -> str:
         if not isinstance(value, (bytes, bytearray, memoryview)):
@@ -718,8 +975,18 @@ class XsdDatatypeFactory(DatatypeFactory):
         if xsd_type is None:
             raise _unsupported_xsd_type(type_name)
         prepared = _prepare_xsd_parameters(type_name, parameters)
+        temporal = type_name in _XSD10_TEMPORAL_TYPE_NAMES
+        # XSD 1.0 temporal bounds need the adapter's year numbering and leap
+        # rule, so they are parsed outside the shared facet builder.
+        source_parameters = (
+            tuple(
+                parameter for parameter in prepared if parameter.name not in _BOUND_PARAMETER_NAMES
+            )
+            if temporal
+            else prepared
+        )
         result = build_constraints(
-            _FacetSource(prepared),
+            _FacetSource(source_parameters),
             xsd_type,
             None,
             base_factory=xsd_type,
@@ -739,6 +1006,7 @@ class XsdDatatypeFactory(DatatypeFactory):
         )
         if patterns:
             constraints = replace(constraints, patterns=tuple((pattern,) for pattern in patterns))
+        temporal_bounds = _xsd10_temporal_bounds(type_name, prepared) if temporal else ()
         return ScalarDatatype(
             library_uri=XSD_LIBRARY,
             type_name=type_name,
@@ -747,6 +1015,7 @@ class XsdDatatypeFactory(DatatypeFactory):
             context=context,
             constraints=constraints,
             white_space=_xsd_white_space(xsd_type),
+            temporal_bounds=temporal_bounds,
         )
 
     @staticmethod
