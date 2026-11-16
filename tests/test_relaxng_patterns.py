@@ -144,6 +144,14 @@ class TestDeterministicChoiceOrder:
     def test_duplicate_leaves_are_removed_across_nesting(self):
         assert choice(choice(Text(), Empty()), Text()) == choice(Empty(), Text())
 
+    def test_a_large_flat_choice_is_flattened_without_recursion(self):
+        raw: Pattern = Text()
+        for index in range(1500):
+            raw = Choice(raw, Empty() if index % 2 else NotAllowed())
+        result = choice(raw, Text())
+        assert result == choice(Empty(), Text())
+        assert nullable(result) is True
+
 
 class TestInterning:
     @pytest.mark.parametrize(

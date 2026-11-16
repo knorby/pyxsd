@@ -191,11 +191,14 @@ class Ref(Pattern):
 
 def _choice_leaves(pattern: Pattern) -> Iterator[Pattern]:
     """Yield the flattened choice leaves of *pattern*, excluding notAllowed."""
-    if isinstance(pattern, Choice):
-        yield from _choice_leaves(pattern.first)
-        yield from _choice_leaves(pattern.second)
-    elif not isinstance(pattern, NotAllowed):
-        yield pattern
+    pending = [pattern]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, Choice):
+            pending.append(node.second)
+            pending.append(node.first)
+        elif not isinstance(node, NotAllowed):
+            yield node
 
 
 def choice(first: Pattern, second: Pattern) -> Pattern:
