@@ -347,6 +347,35 @@ class TestWhitespaceAndDatatypes:
         assert pattern.start == element("root", NotAllowed())
         assert codes(report) == ["relaxng-invalid-parameter"]
 
+    def test_padded_parameter_name_is_trimmed(self):
+        pattern, report, _ = run_simplify(
+            f"""
+            <element xmlns="{RNG_NS}" name="root">
+              <data type="integer" datatypeLibrary="{XSD_LIBRARY}">
+                <param name=" pattern "> 1 </param>
+              </data>
+            </element>
+            """
+        )
+
+        expected = Data(datatype(XSD_LIBRARY, "integer", (DatatypeParameter("pattern", " 1 "),)))
+        assert pattern.start == element("root", expected)
+        assert report.errors == []
+
+    def test_whitespace_only_parameter_name_is_missing(self):
+        pattern, report, _ = run_simplify(
+            f"""
+            <element xmlns="{RNG_NS}" name="root">
+              <data type="integer" datatypeLibrary="{XSD_LIBRARY}">
+                <param name="   ">1</param>
+              </data>
+            </element>
+            """
+        )
+
+        assert pattern.start == element("root", NotAllowed())
+        assert codes(report) == ["relaxng-invalid-parameter"]
+
     def test_parameter_element_children_are_reported(self):
         pattern, report, _ = run_simplify(
             f"""
@@ -1273,6 +1302,103 @@ class TestGrammarBundle:
         )
         assert scope.definitions[0].pattern == element("root")
 
+    def test_padded_ref_and_define_names_are_trimmed(self):
+        bundle, report, _ = run_simplify(
+            f"""
+            <grammar xmlns="{RNG_NS}">
+              <start><ref name=" root "/></start>
+              <define name=" root ">
+                <element name="root"><empty/></element>
+              </define>
+            </grammar>
+            """
+        )
+
+        assert report.errors == []
+        scope = bundle.root_scope
+        assert scope is not None
+        reference = scope.starts[0].pattern
+        assert isinstance(reference, UnresolvedReference)
+        assert reference.name == "root"
+        assert scope.definitions[0].name == "root"
+
+    def test_padded_parent_ref_name_is_trimmed(self):
+        bundle, report, _ = run_simplify(
+            f"""
+            <grammar xmlns="{RNG_NS}">
+              <start><ref name="root"/></start>
+              <define name="root">
+                <element name="root">
+                  <grammar>
+                    <start><parentRef name=" shape "/></start>
+                  </grammar>
+                </element>
+              </define>
+              <define name="shape"><element name="shape"><empty/></element></define>
+            </grammar>
+            """
+        )
+
+        assert report.errors == []
+        inner = bundle.scopes[1]
+        parent_ref = inner.starts[0].pattern
+        assert isinstance(parent_ref, UnresolvedReference)
+        assert parent_ref.name == "shape"
+
+    def test_blank_ref_and_define_names_are_missing(self):
+        bundle, report, _ = run_simplify(
+            f"""
+            <grammar xmlns="{RNG_NS}">
+              <start><ref name="   "/></start>
+              <define name="   ">
+                <element name="root"><empty/></element>
+              </define>
+            </grammar>
+            """
+        )
+
+        scope = bundle.root_scope
+        assert scope is not None
+        reference = scope.starts[0].pattern
+        assert isinstance(reference, UnresolvedReference)
+        assert reference.name is None
+        assert scope.definitions[0].name is None
+        assert codes(report) == ["relaxng-missing-name", "relaxng-missing-name"]
+
+    def test_spec_whitespace_case_keeps_padded_names_consistent(self):
+        bundle, report, _ = run_simplify(
+            f"""
+            <grammar xmlns="{RNG_NS}">
+              <start combine=" \t\r\nchoice ">
+                <ref name=" \t\r\nx \t\r\n"/>
+              </start>
+              <define name="x"><ref name="y"/></define>
+              <define name=" \t\r\ny \t\r\n">
+                <grammar>
+                  <start combine=" \t\r\ninterleave ">
+                    <parentRef name=" \t\r\nz \t\r\n"/>
+                  </start>
+                </grammar>
+              </define>
+              <define name="z"><element name="z"><empty/></element></define>
+            </grammar>
+            """
+        )
+
+        assert report.errors == []
+        outer = bundle.root_scope
+        assert outer is not None
+        assert outer.starts[0].combine == "choice"
+        start_ref = outer.starts[0].pattern
+        assert isinstance(start_ref, UnresolvedReference)
+        assert start_ref.name == "x"
+        assert [define.name for define in outer.definitions] == ["x", "y", "z"]
+        inner = bundle.scopes[1]
+        assert inner.starts[0].combine == "interleave"
+        parent_ref = inner.starts[0].pattern
+        assert isinstance(parent_ref, UnresolvedReference)
+        assert parent_ref.name == "z"
+
     def test_bare_pattern_bundle_keeps_references_outside_a_scope(self):
         bundle, _, _ = run_simplify(
             f'<element xmlns="{RNG_NS}" name="root"><ref name="x"/></element>'
@@ -1505,9 +1631,12 @@ class TestOriginsAndBudgets:
         assert pool.origins(definition.pattern)
 
     def test_pattern_budget_exhaustion_is_not_semantic_invalidity(self):
+        report = ValidationReport()
         pool = PatternPool(BudgetCounter("compile", RelaxNGLimits(max_pattern_nodes=0)))
         with pytest.raises(RelaxNGLimitError):
-            run_simplify(schema("<empty/>"), pool=pool)
+            run_simplify(schema("<empty/>"), report=report, pool=pool)
+
+        assert report.errors == []
 
 
 class TestReportContract:

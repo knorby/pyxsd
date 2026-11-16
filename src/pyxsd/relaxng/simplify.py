@@ -517,10 +517,17 @@ class Simplifier:
             return self._intern(NotAllowed(), node.origins)
         for child in node.children:
             self._unexpected_pattern(child)
+        name = _strip_name(node.name)
+        if node.kind in {"ref", "parentRef"} and node.name is not None and name is None:
+            self._error(
+                "relaxng-missing-name",
+                f"a RELAX NG {node.kind} element needs a non-blank name",
+                node.origins,
+            )
         scope = self._scopes.get(node.scope) if node.scope is not None else None
         reference = UnresolvedReference(
             node.kind,
-            node.name,
+            name,
             node.href,
             node.base,
             node.ns_attribute,
@@ -569,19 +576,15 @@ class Simplifier:
             if isinstance(child, FullParam):
                 for grandchild in child.children:
                     self._unexpected_pattern(grandchild)
-                if child.name is None:
+                name = _strip_name(child.name)
+                if name is None:
                     self._error(
                         "relaxng-invalid-parameter",
                         "a RELAX NG param element needs a name",
                         child.origins,
                     )
                     return self._intern(NotAllowed(), origins)
-                try:
-                    parameter = DatatypeParameter(child.name, child.value)
-                except ValueError as exc:
-                    self._error("relaxng-invalid-parameter", str(exc), child.origins)
-                    return self._intern(NotAllowed(), origins)
-                parameters.append(parameter)
+                parameters.append(DatatypeParameter(name, child.value))
                 origins = origins.union(child.origins)
             elif isinstance(child, FullExcept):
                 excepts.append(child)
@@ -722,6 +725,13 @@ class Simplifier:
         parts = self._pattern_children(node.children)
         div_origins = _grouping_origins(node.children)
         pattern_origins = node.origins.union(div_origins)
+        name = _strip_name(node.name)
+        if node.name is not None and name is None:
+            self._error(
+                "relaxng-missing-name",
+                "a RELAX NG define element needs a non-blank name",
+                node.origins,
+            )
         if not parts:
             self._error(
                 "relaxng-invalid-define-content",
@@ -733,7 +743,7 @@ class Simplifier:
             pattern = self._intern(parts[0], div_origins)
         else:
             pattern = self._fold(group, parts, pattern_origins)
-        return BundleDefine(node.name, _combine(node.combine), pattern, node.origins)
+        return BundleDefine(name, _combine(node.combine), pattern, node.origins)
 
     def _bundle_include(self, node: ReferencePlaceholder) -> BundleInclude:
         components = cast(
@@ -900,8 +910,15 @@ def _combine(value: str | None) -> str | None:
     return value.strip() if value is not None else None
 
 
+def _strip_name(value: str | None) -> str | None:
+    """Strip an authored ``name`` and treat a blank value as missing."""
+    if value is None:
+        return None
+    return value.strip() or None
+
+
 def _node_origins(node: FullNode) -> OriginTable:
-    return cast(OriginTable, getattr(node, "origins", OriginTable()))
+    return node.origins  # type: ignore[attr-defined]
 
 
 def _location(origins: OriginTable) -> IssueLocation | None:
