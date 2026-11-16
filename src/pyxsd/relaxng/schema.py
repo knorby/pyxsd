@@ -30,7 +30,7 @@ from pyxsd.relaxng.datatypes import (
     DatatypeLibraryRegistry,
     DatatypeRegistrationError,
 )
-from pyxsd.relaxng.diagnostics import report_first_mismatch
+from pyxsd.relaxng.diagnostics import report_mismatches
 from pyxsd.relaxng.document import RelaxNGDocument
 from pyxsd.relaxng.limits import BudgetCounter, RelaxNGLimits
 from pyxsd.relaxng.patterns import PatternPool
@@ -38,7 +38,7 @@ from pyxsd.relaxng.resources import ResourceDependency, ResourceLoader, Resource
 from pyxsd.relaxng.simplify import CompiledGrammar, Simplifier, compose_grammars
 from pyxsd.relaxng.syntax import SchemaFinding, read_full_syntax
 from pyxsd.relaxng.tree import RelaxNGElement
-from pyxsd.relaxng.validator import validate_element
+from pyxsd.relaxng.validator import validate_element_recovering
 from pyxsd.resource_policy import (
     ResourcePolicy,
     is_root_read_source,
@@ -87,11 +87,7 @@ class _SchemaReport(ValidationReport):
         self._report = report
         # Tighten, never replace, the policy's issue-retention budget. Existing
         # counts survive even if the factory supplied already-retained issues.
-        if max_issues is not None:
-            report._max_issues = (
-                max_issues if report._max_issues is None else min(max_issues, report._max_issues)
-            )
-            del report._issues[report._max_issues :]
+        report._tighten_issue_retention(max_issues)
         report.phase = "schema"
         self.phase = "schema"
         self._seen: set[tuple[str, str, IssueLocation | None]] = set()
@@ -248,8 +244,9 @@ class RelaxNGSchema:
           :class:`~pyxsd.relaxng.errors.RelaxNGLimitError`.  A configured
           ``max_diagnostics`` only bounds report retention, further tightening
           any policy report bound: beyond it, findings stay counted but are not
-          retained, so ``suppressed_count`` exposes the incomplete report.
-          Truncation never raises a limit error or removes an invalid verdict.
+          retained, so ``suppressed_count`` exposes the incomplete report and
+          ``diagnostics_complete`` is false.  Truncation never raises a limit
+          error or removes an invalid verdict.
 
         Grammatical errors are recorded on :attr:`report` instead of raising.
         Unreadable or malformed input and unsupported capabilities raise
@@ -280,6 +277,7 @@ class RelaxNGSchema:
             ).simplify(full)
             compiled = compose_grammars(bundle, loader)
             check_compiled_grammar(compiled, compiler_report)
+        report._set_diagnostics_complete(report.suppressed_count == 0)
         return cls(
             report=report,
             grammar=compiled,
@@ -338,12 +336,15 @@ class RelaxNGSchema:
         - ``limits`` bounds this instance's derivative work.  ``None`` leaves
           it unlimited and value exhaustion raises
           :class:`~pyxsd.relaxng.errors.RelaxNGLimitError` instead of
-          reporting invalidity.
+          reporting invalidity.  A configured ``max_diagnostics`` only bounds
+          finding retention; suppressed findings stay counted, the report stays
+          invalid, and ``diagnostics_complete`` becomes false.
 
         The schema report's errors are rejected before instance input is
         consumed.  Every successful call returns a fresh document report:
         frozen schema-phase issue objects followed by this parse's instance
-        findings.
+        findings.  Instance findings cover every independent recovery case in
+        source order; recovered states never make the document valid.
         """
         if typed is not False:
             raise PyXSDError(
@@ -415,10 +416,14 @@ class RelaxNGSchema:
             source=IssueLocation(source_id, (PathStep(tree.tag, 1),)),
         )
         instance_report = new_validation_report(self._resource_policy)
-        outcome = validate_element(root, self.grammar.start, limits=limits)
-        report_first_mismatch(outcome, instance_report)
+        outcome = validate_element_recovering(root, self.grammar.start, limits=limits)
+        report_mismatches(outcome, instance_report, limits=limits)
 
         merged = new_validation_report(self._resource_policy)
+        # A RELAX NG report always specifies completeness.  Start from the
+        # completed traversal value so an unspecified policy report is not
+        # upgraded by the merge truth table; contributions can only downgrade.
+        merged._set_diagnostics_complete(True)
         merged.extend(self.report)
         merged.extend(instance_report)
 

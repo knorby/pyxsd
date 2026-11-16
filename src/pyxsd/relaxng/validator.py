@@ -25,7 +25,9 @@ Python's Unicode-aware splitting is never used.
 Budget accounting marks two distinct kinds of parse work: each distinct
 semantic residual and each retained memo entry.  Exhausting either budget
 raises :class:`~pyxsd.relaxng.errors.RelaxNGLimitError`; it is never reported
-as an invalid document.
+as an invalid document.  :func:`validate_element` is the fail-fast contract;
+:func:`validate_element_recovering` adds deterministic diagnostic recovery,
+where every recovered state is nonaccepting evidence.
 """
 
 from __future__ import annotations
@@ -66,6 +68,7 @@ from pyxsd.relaxng.whitespace import XML_WHITESPACE
 
 __all__ = [
     "DerivationContext",
+    "RecoveryOutcome",
     "TokenSpan",
     "ValidationMismatch",
     "ValidationOutcome",
@@ -79,6 +82,7 @@ __all__ = [
     "start_tag_open_derivative",
     "text_derivative",
     "validate_element",
+    "validate_element_recovering",
     "xml_whitespace_tokens",
 ]
 
@@ -558,7 +562,9 @@ class ValidationMismatch:
     ``element`` identifies the occurrence (the parent for character data);
     ``content_index`` identifies text/tails within its normalized content.
     Attribute names and exact lexical values remain available to diagnostics.
-    No branch-specific scalar interpretation is collected.
+    No branch-specific scalar interpretation is collected.  ``recovery`` names
+    the diagnostic continuation used for this finding, or ``None`` for a
+    fail-fast finding.
     """
 
     event: str
@@ -567,6 +573,20 @@ class ValidationMismatch:
     name: str | None = None
     lexical: str | None = None
     content_index: int | None = None
+    recovery: str | None = None
+
+
+def _viable_residuals(pattern: Pattern) -> tuple[Pattern, ...]:
+    """Top-level viable alternatives, including nonnullable ones."""
+    leaves: list[Pattern] = []
+    pending = [pattern]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, Choice):
+            pending.extend((node.second, node.first))
+        elif not isinstance(node, NotAllowed):
+            leaves.append(node)
+    return tuple(leaves)
 
 
 @dataclass(frozen=True)
@@ -580,15 +600,32 @@ class ValidationOutcome:
     @property
     def residuals(self) -> tuple[Pattern, ...]:
         """Top-level viable alternatives, including nonnullable ones."""
-        leaves: list[Pattern] = []
-        pending = [self.residual]
-        while pending:
-            node = pending.pop()
-            if isinstance(node, Choice):
-                pending.extend((node.second, node.first))
-            elif not isinstance(node, NotAllowed):
-                leaves.append(node)
-        return tuple(leaves)
+        return _viable_residuals(self.residual)
+
+
+@dataclass(frozen=True)
+class RecoveryOutcome:
+    """A completed diagnostic traversal with nonaccepting recovery states.
+
+    ``valid`` is true only when the traversal found no mismatch.  A recovery
+    continuation is diagnostic evidence, never accepting evidence, so a
+    recovered traversal stays invalid even when its residual is nullable.
+    ``mismatches`` retains every independent finding in event order, and
+    ``residuals`` preserves all still-viable recovery states.  ``complete`` is
+    false only when a diagnostic budget stopped the traversal early; exhausted
+    derivative or memo work raises instead of producing this value.
+    """
+
+    valid: bool
+    residual: Pattern
+    mismatches: tuple[ValidationMismatch, ...] = ()
+    recovered: bool = False
+    complete: bool = True
+
+    @property
+    def residuals(self) -> tuple[Pattern, ...]:
+        """Top-level viable recovery alternatives, including nonnullable ones."""
+        return _viable_residuals(self.residual)
 
 
 class _Event(NamedTuple):
@@ -713,6 +750,321 @@ def children_derivative(
     """Consume ordered children with Clark's weak and mixed-whitespace rules."""
     result, _ = _run_events(pattern, _instance_events(_content_events(children, None)), context)
     return result
+
+
+@dataclass
+class _ElementRecovery:
+    """Per-occurrence recovery state; rejected content suppresses missing-content."""
+
+    content_rejected: bool = False
+
+
+def _without_attributes(pattern: Pattern, _memo: dict[int, Pattern] | None = None) -> Pattern:
+    """Remove current-position attribute requirements from *pattern*.
+
+    Child element contents and post-end-tag continuations keep their own
+    attribute expectations.  Reference cycles are treated as empty current
+    position requirements, so recovery terminates without selecting a branch.
+    """
+    memo = {} if _memo is None else _memo
+    cached = memo.get(id(pattern))
+    if cached is not None:
+        return cached
+    if isinstance(pattern, Attribute):
+        return Empty()
+    if isinstance(pattern, _After):
+        return _after(_without_attributes(pattern.first, memo), pattern.second)
+    if isinstance(pattern, Choice):
+        return choice(
+            _without_attributes(pattern.first, memo),
+            _without_attributes(pattern.second, memo),
+        )
+    if isinstance(pattern, Group):
+        return group(
+            _without_attributes(pattern.first, memo),
+            _without_attributes(pattern.second, memo),
+        )
+    if isinstance(pattern, Interleave):
+        return interleave(
+            _without_attributes(pattern.first, memo),
+            _without_attributes(pattern.second, memo),
+        )
+    if isinstance(pattern, OneOrMore):
+        return one_or_more(_without_attributes(pattern.pattern, memo))
+    if isinstance(pattern, Ref):
+        memo[id(pattern)] = Empty()
+        result = _without_attributes(pattern.target, memo)
+        memo[id(pattern)] = result
+        return result
+    if isinstance(pattern, Element):
+        return pattern
+    if isinstance(pattern, (Data, DataExcept, Empty, List, NotAllowed, Text, Value)):
+        return pattern
+    raise TypeError(f"unknown RELAX NG pattern {type(pattern).__name__}")
+
+
+def _consume_attribute(
+    pattern: Pattern, uri: str | None, local: str, _memo: dict[int, Pattern] | None = None
+) -> Pattern:
+    """Account for one failed or unexpected attribute occurrence.
+
+    Matching required attributes become empty; other names remain required so a
+    later missing-attribute finding is not suppressed.
+    """
+    memo = {} if _memo is None else _memo
+    cached = memo.get(id(pattern))
+    if cached is not None:
+        return cached
+    if isinstance(pattern, Attribute):
+        return Empty() if pattern.name_class.contains(uri, local) else pattern
+    if isinstance(pattern, _After):
+        return _after(_consume_attribute(pattern.first, uri, local, memo), pattern.second)
+    if isinstance(pattern, Choice):
+        return choice(
+            _consume_attribute(pattern.first, uri, local, memo),
+            _consume_attribute(pattern.second, uri, local, memo),
+        )
+    if isinstance(pattern, Group):
+        return group(
+            _consume_attribute(pattern.first, uri, local, memo),
+            _consume_attribute(pattern.second, uri, local, memo),
+        )
+    if isinstance(pattern, Interleave):
+        return interleave(
+            _consume_attribute(pattern.first, uri, local, memo),
+            _consume_attribute(pattern.second, uri, local, memo),
+        )
+    if isinstance(pattern, OneOrMore):
+        return one_or_more(_consume_attribute(pattern.pattern, uri, local, memo))
+    if isinstance(pattern, Ref):
+        memo[id(pattern)] = Empty()
+        result = _consume_attribute(pattern.target, uri, local, memo)
+        memo[id(pattern)] = result
+        return result
+    if isinstance(pattern, Element):
+        return pattern
+    if isinstance(pattern, (Data, DataExcept, Empty, List, NotAllowed, Text, Value)):
+        return pattern
+    raise TypeError(f"unknown RELAX NG pattern {type(pattern).__name__}")
+
+
+def _relax_scalars(pattern: Pattern, _memo: dict[int, Pattern] | None = None) -> Pattern:
+    """Let a failed scalar occurrence consume one current-position text slot.
+
+    Only current-position scalar content is relaxed; child element contents,
+    attributes, and post-end-tag continuations keep their expectations.
+    """
+    memo = {} if _memo is None else _memo
+    cached = memo.get(id(pattern))
+    if cached is not None:
+        return cached
+    if isinstance(pattern, _After):
+        return _after(_relax_scalars(pattern.first, memo), pattern.second)
+    if isinstance(pattern, Choice):
+        return choice(_relax_scalars(pattern.first, memo), _relax_scalars(pattern.second, memo))
+    if isinstance(pattern, Group):
+        return group(_relax_scalars(pattern.first, memo), _relax_scalars(pattern.second, memo))
+    if isinstance(pattern, Interleave):
+        return interleave(_relax_scalars(pattern.first, memo), _relax_scalars(pattern.second, memo))
+    if isinstance(pattern, OneOrMore):
+        return one_or_more(_relax_scalars(pattern.pattern, memo))
+    if isinstance(pattern, Ref):
+        memo[id(pattern)] = Empty()
+        result = _relax_scalars(pattern.target, memo)
+        memo[id(pattern)] = result
+        return result
+    if isinstance(pattern, (Data, DataExcept, List, Value)):
+        return Text()
+    if isinstance(pattern, (Attribute, Element, Empty, NotAllowed, Text)):
+        return pattern
+    raise TypeError(f"unknown RELAX NG pattern {type(pattern).__name__}")
+
+
+def _pop_continuations(pattern: Pattern, _memo: dict[int, Pattern] | None = None) -> Pattern:
+    """Accept an end tag whose required content was missing.
+
+    Every ``After`` leaf yields its continuation; a leaf with no continuation
+    yields the empty state so the parent's content can still be diagnosed.
+    Recovery states are nonaccepting regardless of this projection.
+    """
+    memo = {} if _memo is None else _memo
+    cached = memo.get(id(pattern))
+    if cached is not None:
+        return cached
+    if isinstance(pattern, _After):
+        return pattern.second
+    if isinstance(pattern, Choice):
+        return choice(
+            _pop_continuations(pattern.first, memo),
+            _pop_continuations(pattern.second, memo),
+        )
+    if isinstance(pattern, Ref):
+        memo[id(pattern)] = Empty()
+        result = _pop_continuations(pattern.target, memo)
+        memo[id(pattern)] = result
+        return result
+    return Empty()
+
+
+def _run_recovery_events(
+    pattern: Pattern, events: Iterable[_Event], context: DerivationContext
+) -> tuple[Pattern, tuple[ValidationMismatch, ...]]:
+    """Continue through independent findings while keeping recovery nonaccepting.
+
+    Unexpected subtrees are skipped whole, failed attributes are accounted for,
+    missing attributes are removed before content continues, and rejected
+    content suppresses only the missing-content cascade it explains.  Every
+    recovery continuation remains a diagnostic state; the caller never treats
+    it as accepting evidence.
+    """
+    original_context = context.datatype_context
+    mismatches: list[ValidationMismatch] = []
+    states: list[_ElementRecovery] = []
+    skipping: RelaxNGElement | None = None
+    try:
+        for event in events:
+            owner = event.element
+            if skipping is not None:
+                if event.kind == "end_tag" and owner is skipping:
+                    skipping = None
+                continue
+            previous = pattern
+            context.datatype_context = (
+                original_context
+                if owner is None
+                else DatatypeContext(owner.base_uri, owner.namespaces or {})
+            )
+            if event.kind == "structure":
+                mismatches.append(ValidationMismatch("structure", owner, previous))
+                return NotAllowed(), tuple(mismatches)
+            if event.kind == "start_tag_open":
+                derived = start_tag_open_derivative(previous, cast(str, event.name), context)
+                if isinstance(derived, NotAllowed):
+                    if states:
+                        states[-1].content_rejected = True
+                    mismatches.append(
+                        ValidationMismatch(
+                            "start_tag_open",
+                            owner,
+                            previous,
+                            event.name,
+                            recovery="ignored-subtree",
+                        )
+                    )
+                    skipping = owner
+                else:
+                    if states:
+                        states[-1].content_rejected = False
+                    pattern = derived
+                    states.append(_ElementRecovery())
+                continue
+            if event.kind == "attribute":
+                derived = attribute_derivative(
+                    previous, cast(str, event.name), cast(str, event.lexical), context
+                )
+                if isinstance(derived, NotAllowed):
+                    uri, local = expanded_name(cast(str, event.name))
+                    mismatches.append(
+                        ValidationMismatch(
+                            "attribute",
+                            owner,
+                            previous,
+                            event.name,
+                            event.lexical,
+                            event.content_index,
+                            recovery="consumed-attribute",
+                        )
+                    )
+                    pattern = context.canonical_residual(_consume_attribute(previous, uri, local))
+                else:
+                    pattern = derived
+                continue
+            if event.kind == "start_tag_close":
+                derived = start_tag_close_derivative(previous, context)
+                if isinstance(derived, NotAllowed):
+                    mismatches.append(
+                        ValidationMismatch(
+                            "start_tag_close",
+                            owner,
+                            previous,
+                            recovery="missing-attribute",
+                        )
+                    )
+                    pattern = context.canonical_residual(_without_attributes(previous))
+                else:
+                    pattern = derived
+                continue
+            if event.kind == "end_tag":
+                derived = end_tag_derivative(previous, context)
+                state = states.pop()
+                if isinstance(derived, NotAllowed):
+                    if not state.content_rejected:
+                        mismatches.append(
+                            ValidationMismatch(
+                                "end_tag",
+                                owner,
+                                previous,
+                                recovery="missing-content",
+                            )
+                        )
+                    pattern = context.canonical_residual(_pop_continuations(previous))
+                else:
+                    pattern = derived
+                continue
+            derived = text_derivative(previous, cast(str, event.lexical), context)
+            if event.kind == "weak_text":
+                derived = context.canonical_residual(choice(previous, derived))
+            if isinstance(derived, NotAllowed):
+                relaxed = text_derivative(
+                    context.canonical_residual(_relax_scalars(previous)),
+                    cast(str, event.lexical),
+                    context,
+                )
+                mismatches.append(
+                    ValidationMismatch(
+                        "text",
+                        owner,
+                        previous,
+                        event.name,
+                        event.lexical,
+                        event.content_index,
+                        recovery="continued-content",
+                    )
+                )
+                if isinstance(relaxed, NotAllowed):
+                    states[-1].content_rejected = True
+                    pattern = previous
+                else:
+                    states[-1].content_rejected = False
+                    pattern = context.canonical_residual(choice(previous, relaxed))
+            else:
+                states[-1].content_rejected = False
+                pattern = derived
+        return pattern, tuple(mismatches)
+    finally:
+        context.datatype_context = original_context
+
+
+def validate_element_recovering(
+    root: RelaxNGElement, start: Pattern, *, limits: RelaxNGLimits | None = None
+) -> RecoveryOutcome:
+    """Validate one lexical element and retain every independent finding.
+
+    Unlike the fail-fast :func:`validate_element`, this traversal continues
+    after unexpected subtrees or attributes, missing attributes or content, and
+    failed scalars.  Recovery states are diagnostic only: any finding makes the
+    outcome invalid even if later content would satisfy a relaxed residual.
+    Exhausted derivative or memo budgets raise
+    :class:`~pyxsd.relaxng.errors.RelaxNGLimitError`; a retention cap is never
+    treated as a work budget here.
+    """
+    context = DerivationContext(_EMPTY_DATATYPE_CONTEXT, PatternPool(), limits)
+    residual, mismatches = _run_recovery_events(start, _instance_events([root]), context)
+    if not mismatches and not _nullable(residual):
+        mismatches = (ValidationMismatch("document_end", root, residual),)
+    valid = not mismatches
+    recovered = any(mismatch.recovery is not None for mismatch in mismatches)
+    return RecoveryOutcome(valid, residual, mismatches, recovered=recovered, complete=True)
 
 
 def validate_element(

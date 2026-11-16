@@ -1,9 +1,12 @@
-"""Deterministic RELAX NG expectations and first-mismatch diagnostics.
+"""Deterministic RELAX NG expectations, recovery findings, and completeness.
 
-A validation outcome stops at the earliest definitive mismatch and retains the
-derivative state from just before that occurrence.  This module projects that
-preceding residual into a concise, sorted :class:`ExpectationSummary` and
-records exactly one instance-phase finding on a :class:`ValidationReport`.
+A fail-fast validation outcome stops at the earliest definitive mismatch and
+retains the derivative state from just before that occurrence.  A recovery
+traversal instead continues through independent unexpected subtrees, failed
+attributes or scalars, and missing attributes or content, retaining every
+finding in source order.  Both project the preceding residual into a concise,
+sorted :class:`ExpectationSummary` and record instance-phase findings on a
+:class:`ValidationReport`.
 
 The projection deliberately describes the residual, not the branch that
 failed last.  Element and attribute names are collected from every viable
@@ -14,10 +17,12 @@ sorted order, so diagnostics never depend on set/dict iteration or source
 insertion order.  Traversals are iterative and guard reference cycles; schema
 recursion is supported without a Python stack frame per pattern node.
 
-This is fail-fast evidence only.  Recovery, multiple findings, and report
-completeness belong to the later recovery pass.  Budget exhaustion is raised
-by :func:`~pyxsd.relaxng.validator.validate_element` and never reaches this
-module as a grammar mismatch.
+Recovery states are diagnostic only.  A report built from a recovery traversal
+stays invalid whenever any finding exists, and a retention cap marks the
+report's ``diagnostics_complete`` value false without changing its verdict.
+Budget exhaustion is raised by
+:func:`~pyxsd.relaxng.validator.validate_element_recovering` and never reaches
+this module as a grammar mismatch.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from typing import Final, Literal
 from pyxsd.locations import IssueLocation, LocationPrecision
 from pyxsd.namespaces import clark
 from pyxsd.relaxng.datatypes import XSD_LIBRARY
+from pyxsd.relaxng.limits import RelaxNGLimits
 from pyxsd.relaxng.names import AnyName, ExceptName, Name, NameChoice, NameClass, NsName
 from pyxsd.relaxng.patterns import (
     Attribute,
@@ -47,6 +53,7 @@ from pyxsd.relaxng.patterns import (
     Value,
 )
 from pyxsd.relaxng.validator import (
+    RecoveryOutcome,
     ValidationMismatch,
     ValidationOutcome,
     _After,
@@ -66,6 +73,7 @@ __all__ = [
     "ExpectationSummary",
     "expectations",
     "report_first_mismatch",
+    "report_mismatches",
 ]
 
 #: Element occurrence is not admitted by the residual at this position.
@@ -160,6 +168,33 @@ def report_first_mismatch(outcome: ValidationOutcome, report: ValidationReport) 
     mismatch = outcome.mismatch
     if mismatch is None:
         raise ValueError("an invalid RELAX NG outcome must carry a first mismatch")
+    _report_mismatch(mismatch, report)
+
+
+def report_mismatches(
+    outcome: RecoveryOutcome,
+    report: ValidationReport,
+    *,
+    limits: RelaxNGLimits | None = None,
+) -> None:
+    """Record every finding from a completed recovery traversal on *report*.
+
+    Findings stay in traversal order, which is source order for independent
+    occurrences.  ``limits.max_diagnostics`` tightens (never widens) the
+    report's retained-issue budget; suppressed details remain counted and mark
+    the report's ``diagnostics_complete`` value false.  A report that already
+    declares itself incomplete is never upgraded.
+    """
+    if not outcome.valid and not outcome.mismatches:
+        raise ValueError("an invalid RELAX NG recovery outcome must carry findings")
+    report._tighten_issue_retention(None if limits is None else limits.max_diagnostics)
+    for mismatch in outcome.mismatches:
+        _report_mismatch(mismatch, report)
+    report._set_diagnostics_complete(outcome.complete and report.suppressed_count == 0)
+
+
+def _report_mismatch(mismatch: ValidationMismatch, report: ValidationReport) -> None:
+    """Record one mismatch using the deterministic expectation projection."""
     summary = expectations(mismatch.preceding)
     attribute_expected = False
     attribute_datatypes: set[str] = set()
@@ -296,6 +331,8 @@ def _mismatch_details(
         details["actual-lexical"] = mismatch.lexical
     if mismatch.content_index is not None:
         details["content-index"] = mismatch.content_index
+    if mismatch.recovery is not None:
+        details["recovery"] = mismatch.recovery
     return details
 
 

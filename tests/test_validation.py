@@ -1,5 +1,7 @@
 """Unit tests for the validation reporting machinery and new enums."""
 
+import json
+
 import pytest
 
 from pyxsd.compositors import Compositor
@@ -356,6 +358,106 @@ def test_validation_error_exported_from_package_root():
 
     assert "ValidationError" in pyxsd.__all__
     assert pyxsd.ValidationError is pyxsd.exceptions.ValidationError
+
+
+class TestDiagnosticCompleteness:
+    """Optional, schema-neutral diagnostic-completeness reporting."""
+
+    def test_defaults_to_unspecified_and_is_read_only(self):
+        report = ValidationReport()
+        assert report.diagnostics_complete is None
+        with pytest.raises(AttributeError):
+            report.diagnostics_complete = True
+
+    @pytest.mark.parametrize("value", [0, 1, "yes", object()])
+    def test_rejects_non_boolean_values(self, value):
+        with pytest.raises(TypeError, match="diagnostics_complete"):
+            ValidationReport(diagnostics_complete=value)
+
+    @pytest.mark.parametrize(
+        ("target", "source", "expected"),
+        [
+            (False, False, False),
+            (False, True, False),
+            (False, None, False),
+            (True, False, False),
+            (None, False, False),
+            (True, True, True),
+            (True, None, None),
+            (None, True, None),
+            (None, None, None),
+        ],
+    )
+    def test_merge_truth_table(self, target, source, expected):
+        report = ValidationReport(diagnostics_complete=target)
+        report.extend(ValidationReport(diagnostics_complete=source))
+        assert report.diagnostics_complete is expected
+
+    @pytest.mark.parametrize(("value", "expected"), [(True, True), (False, False), (None, None)])
+    def test_self_extension_uses_the_same_rule(self, value, expected):
+        report = ValidationReport(diagnostics_complete=value)
+        report.add_error("bad", code="value")
+        report.extend(report)
+        assert report.diagnostics_complete is expected
+        assert report.error_count == 2
+
+    def test_suppressed_count_remains_independent_of_completeness(self):
+        source = ValidationReport(diagnostics_complete=True)
+        source.add_error("bad", code="value")
+        target = ValidationReport(max_issues=0, diagnostics_complete=True)
+        target.extend(source)
+        assert target.diagnostics_complete is True
+        assert target.error_count == 1
+        assert target.suppressed_count == 1
+
+    def test_serialization_omits_unspecified_completeness(self):
+        report = ValidationReport()
+        report.add_error("bad", code="value")
+
+        assert "diagnostics_complete" not in report.to_dict()
+        assert report.to_json() == (
+            '{"issues": [{"severity": "error", "code": "value", "message": "bad", '
+            '"element": null, "phase": "instance", "location": null, '
+            '"constraint": null, "details": null, "location_precision": "unknown"}], '
+            '"counts": {"error": 1, "warning": 0}, "suppressed_count": 0}'
+        )
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_serialization_includes_known_completeness(self, value):
+        report = ValidationReport(diagnostics_complete=value)
+        report.add_error("bad", code="value")
+
+        assert report.to_dict()["diagnostics_complete"] is value
+        assert json.loads(report.to_json())["diagnostics_complete"] is value
+
+    def test_extending_preserves_legacy_and_known_values(self):
+        target = ValidationReport()
+        target.extend(ValidationReport(diagnostics_complete=True))
+        assert target.diagnostics_complete is None
+        assert "diagnostics_complete" not in target.to_dict()
+
+        target = ValidationReport(diagnostics_complete=True)
+        target.extend(ValidationReport(diagnostics_complete=False))
+        assert target.diagnostics_complete is False
+
+    def test_xsd_reports_remain_unspecified(self):
+        import io
+
+        import pyxsd
+
+        schema = pyxsd.Schema.compile(
+            io.StringIO(
+                '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+                '<xs:element name="a"/></xs:schema>'
+            )
+        )
+        assert schema.report.diagnostics_complete is None
+        assert "diagnostics_complete" not in schema.report.to_dict()
+
+        document = schema.parse(io.StringIO("<a/>"))
+        assert document.report.diagnostics_complete is None
+        assert "diagnostics_complete" not in document.report.to_dict()
+        assert "diagnostics_complete" not in document.report.to_json()
 
 
 def test_exception_taxonomy():
