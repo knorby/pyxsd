@@ -516,7 +516,9 @@ def rule_frame(
 ) -> Frame:
     rule = match.rule
     body = cast(_BodyPlan, rule.template)
-    rule_focus = invocation._apply_context_item(body.context_item, context.focus)
+    rule_focus = invocation._apply_context_item(
+        body.context_item, context.focus, package_name=body.owner
+    )
     rule_context = replace(
         context,
         focus=rule_focus,
@@ -538,6 +540,7 @@ def rule_frame(
             body.result_type,
             code="XTTE0505",
             label="template rule result",
+            package_name=body.owner,
         )
     active_rule = _RuleContext(
         match=match,
@@ -589,7 +592,9 @@ def bind_template_parameters(
                 replace(context, locals=locals_),
             )
         )
-        value = invocation._coerce_parameter(parameter, value, code="XTTE0590")
+        value = invocation._coerce_parameter(
+            parameter, value, code="XTTE0590", package_name=context.package_name
+        )
         invocation._bind(locals_, parameter.name, value)
         index += 1
     return locals_, index

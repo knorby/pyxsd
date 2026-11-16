@@ -494,6 +494,7 @@ def coerce_accumulator_value(
         definition.sequence_type,
         code="XPTY0004",
         label=f"accumulator {definition.name!r}",
+        package_name=definition.owner,
     )
 
 

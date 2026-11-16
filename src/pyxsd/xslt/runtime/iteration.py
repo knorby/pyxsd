@@ -1364,7 +1364,9 @@ def initial_iteration_parameters(
             parameter,
             replace(context, locals=environment),
         )
-        value = invocation._coerce_parameter(parameter, value, code="XTTE0590")
+        value = invocation._coerce_parameter(
+            parameter, value, code="XTTE0590", package_name=context.package_name
+        )
         invocation._bind(values, parameter.name, value)
         invocation._bind(environment, parameter.name, value)
     return values
@@ -1394,9 +1396,12 @@ def iteration_parameter_values(
                 parameter.sequence_type,
                 code="XTTE0590",
                 label=f"parameter {parameter.name!r}",
+                package_name=frame.context.package_name,
             )
         declared = state.parameter_plans[parameter.name]
-        value = invocation._coerce_parameter(declared, value, code="XTTE0590")
+        value = invocation._coerce_parameter(
+            declared, value, code="XTTE0590", package_name=frame.context.package_name
+        )
         invocation._bind(values, parameter.name, value)
     return values
 

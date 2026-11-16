@@ -1469,6 +1469,7 @@ def variable_value(
             plan.sequence_type,
             code="XTTE0570",
             label=f"variable {plan.name!r}",
+            package_name=context.package_name,
         )
     invocation.profile_for().check_xdm_2_0_value(value, f"the value of the variable {plan.name!r}")
     return value

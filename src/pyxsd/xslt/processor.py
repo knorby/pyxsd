@@ -5506,6 +5506,11 @@ def _default_mode(package: CompiledPackage) -> Mode | None:
 
 _XSD_NS = "http://www.w3.org/2001/XMLSchema"
 
+#: Atomic types the function conversion rules may cast between when both the
+#: supplied value and the required type are string-like.
+_STRINGISH = frozenset({"string", "normalizedString", "token", "anyURI", "untypedAtomic"})
+_STRINGISH_ROOTS = frozenset({f"{{{_XSD_NS}}}string", f"{{{_XSD_NS}}}anyURI"})
+
 
 def _type_error(code: str, message: str) -> XsltError:
     return XsltError(message, code=code)
@@ -5517,14 +5522,15 @@ def _coerce_sequence(
     *,
     code: str,
     label: str,
+    schema_pool: SchemaPool | None = None,
 ) -> XdmSequence:
     """Apply a narrow but normative function-conversion boundary.
 
     The implementation atomizes for atomic required types, casts
-    untyped/atomic values to the required built-in atomic type, and enforces
-    cardinality.  It does not pretend to be the full F&O function conversion
-    algorithm; unsupported conversions raise the specification's type error
-    rather than passing an untyped value through.
+    untyped/atomic values to the required built-in or supplied atomic type, and
+    enforces cardinality.  It does not pretend to be the full F&O function
+    conversion algorithm; unsupported conversions raise the specification's
+    type error rather than passing an untyped value through.
     """
     if sequence_type.item_type is None:
         if sequence:
@@ -5544,10 +5550,12 @@ def _coerce_sequence(
         converted: list[XdmItem] = []
         for item in items:
             assert isinstance(item, XdmAtomic)
-            converted.append(_coerce_atomic(item, item_type, code=code, label=label))
+            converted.append(
+                _coerce_atomic(item, item_type, code=code, label=label, schema_pool=schema_pool)
+            )
         return tuple(converted)
     for item in items:
-        if not _matches_item_type(item, item_type):
+        if not _matches_item_type(item, item_type, schema_pool):
             raise _type_error(
                 code,
                 f"{label} requires {sequence_type}, got {type(item).__name__}",
@@ -5582,12 +5590,33 @@ def _coerce_atomic(
     *,
     code: str,
     label: str,
+    schema_pool: SchemaPool | None = None,
 ) -> XdmAtomic:
     required = item_type.name
     if required is None or required == f"{{{_XSD_NS}}}anyAtomicType":
         return item
     if item.type_name == required:
         return item
+    adapter = schema_pool.get_type(required) if schema_pool is not None else None
+    if adapter is not None and not adapter.is_builtin and adapter.is_atomic():
+        assert adapter.name is not None
+        # Function conversion rules (XPath 3.1 section 3.1.5.2): accept an item
+        # already in the required value space, cast xs:untypedAtomic, and cast a
+        # string only to a string-derived type.  Anything else is a type error.
+        if _is_instance_of_type(item, adapter):
+            return item
+        local = item.type_name.rpartition("}")[2].rpartition(":")[2]
+        required_root = adapter.root_type.name if adapter.root_type is not None else None
+        string_rule = local in _STRINGISH and required_root in _STRINGISH_ROOTS
+        if local != "untypedAtomic" and not string_rule:
+            raise _type_error(code, f"{label} requires {item_type}, got {item.type_name}")
+        try:
+            value = adapter.cast(item.lexical)
+            return XdmAtomic(value, adapter.name, type(value))
+        except (TypeError, ValueError) as cast_exc:
+            raise _type_error(
+                code, f"{label} requires {item_type}, cannot convert {item.lexical!r}"
+            ) from cast_exc
     try:
         return item.cast(required)
     except (TypeError, ValueError) as exc:
@@ -5595,6 +5624,12 @@ def _coerce_atomic(
             code,
             f"{label} requires {item_type}, cannot convert {item.lexical!r}",
         ) from exc
+
+
+def _is_instance_of_type(item: XdmAtomic, adapter: Any) -> bool:
+    """Whether *item*'s payload already belongs to *adapter*'s value space."""
+    expected = getattr(adapter, "_type_class", None)
+    return isinstance(expected, type) and isinstance(item.value, expected)
 
 
 def _check_cardinality(
@@ -5619,7 +5654,11 @@ def _check_cardinality(
         )
 
 
-def _matches_item_type(item: XdmItem, item_type: ItemType) -> bool:
+def _matches_item_type(
+    item: XdmItem,
+    item_type: ItemType,
+    schema_pool: SchemaPool | None = None,
+) -> bool:
     kind = item_type.kind
     if kind == "item":
         return True
@@ -5638,17 +5677,29 @@ def _matches_item_type(item: XdmItem, item_type: ItemType) -> bool:
             and (item_type.target is None or item.target == item_type.target)
         )
     if kind in ("element", "schema-element"):
-        return (
-            isinstance(item, XdmNode)
-            and item.kind is NodeKind.ELEMENT
-            and (item_type.wildcard or item_type.name is None or item.name == item_type.name)
-        )
+        if not (isinstance(item, XdmNode) and item.kind is NodeKind.ELEMENT):
+            return False
+        if kind == "schema-element":
+            if item_type.name is None or item.name != item_type.name:
+                return False
+            return _node_matches_declaration(item, item_type.name, schema_pool, element=True)
+        if not (item_type.wildcard or item_type.name is None or item.name == item_type.name):
+            return False
+        if item_type.type_name is None:
+            return True
+        return _node_has_type(item, item_type.type_name, schema_pool)
     if kind in ("attribute", "schema-attribute"):
-        return (
-            isinstance(item, XdmNode)
-            and item.kind is NodeKind.ATTRIBUTE
-            and (item_type.wildcard or item_type.name is None or item.name == item_type.name)
-        )
+        if not (isinstance(item, XdmNode) and item.kind is NodeKind.ATTRIBUTE):
+            return False
+        if kind == "schema-attribute":
+            if item_type.name is None or item.name != item_type.name:
+                return False
+            return _node_matches_declaration(item, item_type.name, schema_pool, element=False)
+        if not (item_type.wildcard or item_type.name is None or item.name == item_type.name):
+            return False
+        if item_type.type_name is None:
+            return True
+        return _node_has_type(item, item_type.type_name, schema_pool)
     if kind == "document-node":
         return isinstance(item, XdmNode) and item.kind is NodeKind.DOCUMENT
     if kind == "function":
@@ -5658,6 +5709,37 @@ def _matches_item_type(item: XdmItem, item_type: ItemType) -> bool:
     if kind == "array":
         return isinstance(item, XdmArray)
     return False  # pragma: no cover - every ItemType kind is handled above
+
+
+def _node_has_type(item: XdmNode, required: str, schema_pool: SchemaPool | None) -> bool:
+    """Whether a node's type annotation is *required* or derived from it."""
+    if item.type_name == required:
+        return True
+    actual = getattr(item.annotation, "actual_type", None)
+    adapter = schema_pool.get_type(required) if schema_pool is not None else None
+    expected = getattr(adapter, "_type_class", None)
+    if not isinstance(actual, type) or not isinstance(expected, type):
+        return False
+    return issubclass(actual, expected)
+
+
+def _node_matches_declaration(
+    item: XdmNode,
+    name: str,
+    schema_pool: SchemaPool | None,
+    *,
+    element: bool,
+) -> bool:
+    """Whether a node's annotation matches one global element/attribute declaration."""
+    if schema_pool is None:
+        return True
+    declaration = schema_pool.get_element(name) if element else schema_pool.get_attribute(name)
+    if declaration is None:
+        return False
+    declared_type = getattr(declaration, "type", None)
+    if declared_type is None or declared_type.name is None:
+        return True
+    return _node_has_type(item, declared_type.name, schema_pool)
 
 
 def _require_absolute(uri: str, label: str) -> str:
@@ -5710,7 +5792,7 @@ class _Invocation(Transformation):
         self.accumulators = create_accumulator_manager(self)
         self._mark_initial_selection()
 
-    def _package_schema_pool(self, package_name: str | None) -> object:
+    def _package_schema_pool(self, package_name: str | None) -> SchemaPool | None:
         return self.stylesheet._package_schema_pools.get(package_name, self.stylesheet.schema_pool)
 
     def _package_input_type_annotations(self, package_name: str | None) -> str:
@@ -5903,7 +5985,9 @@ class _Invocation(Transformation):
         else:
             resolved_focus = context.focus
             context_signature = component.signature.context_item if component.signature else None
-            resolved_focus = self._apply_context_item(context_signature, resolved_focus)
+            resolved_focus = self._apply_context_item(
+                context_signature, resolved_focus, package_name=package_name
+            )
         effective_rule_context = context.rule_context
         if context_signature is not None and context_signature.use == "absent":
             effective_rule_context = None
@@ -5996,6 +6080,7 @@ class _Invocation(Transformation):
                 parameter,
                 value,
                 code=("XTTE0790" if component.kind == "function" else "XTTE0590"),
+                package_name=component.owner,
             )
             self._bind(locals_, parameter.name, value)
             index += 1
@@ -6305,6 +6390,7 @@ class _Invocation(Transformation):
                     parameter.sequence_type,
                     code="XTTE0590",
                     label=f"parameter {parameter.name!r}",
+                    schema_pool=self._package_schema_pool(context.package_name),
                 )
             (tunnel if parameter.tunnel else template)[parameter.name] = value
         return MappingProxyType(template), MappingProxyType(tunnel)
@@ -6452,6 +6538,8 @@ class _Invocation(Transformation):
         self,
         signature: ContextItemSignature | None,
         focus: Focus,
+        *,
+        package_name: str | None = None,
     ) -> Focus:
         if signature is None:
             return focus
@@ -6470,6 +6558,7 @@ class _Invocation(Transformation):
             signature.sequence_type,
             code="XTTE0590",
             label="context item",
+            schema_pool=self._package_schema_pool(package_name),
         )
         return Focus.singleton(
             sequence[0],
@@ -6484,11 +6573,18 @@ class _Invocation(Transformation):
         *,
         code: str,
         label: str,
+        package_name: str | None = None,
     ) -> XdmSequence:
         """Apply one compiled sequence type through the invocation's coercion."""
         if sequence_type is None:
             return value
-        return _coerce_sequence(value, sequence_type, code=code, label=label)
+        return _coerce_sequence(
+            value,
+            sequence_type,
+            code=code,
+            label=label,
+            schema_pool=self._package_schema_pool(package_name),
+        )
 
     def _coerce_parameter(
         self,
@@ -6496,6 +6592,7 @@ class _Invocation(Transformation):
         value: XdmSequence,
         *,
         code: str,
+        package_name: str | None = None,
     ) -> XdmSequence:
         if parameter.sequence_type is None:
             return value
@@ -6504,6 +6601,7 @@ class _Invocation(Transformation):
             parameter.sequence_type,
             code=code,
             label=f"parameter {parameter.name!r}",
+            schema_pool=self._package_schema_pool(package_name),
         )
 
     def _coerce_component_result(
@@ -6517,7 +6615,13 @@ class _Invocation(Transformation):
             return value
         code = "XTTE0780" if component.kind == "function" else "XTTE0505"
         label = "function result" if component.kind == "function" else "template result"
-        return _coerce_sequence(value, signature.return_type, code=code, label=label)
+        return _coerce_sequence(
+            value,
+            signature.return_type,
+            code=code,
+            label=label,
+            schema_pool=self._package_schema_pool(component.owner),
+        )
 
     def _parameter_default(
         self,
@@ -6679,6 +6783,7 @@ class _Invocation(Transformation):
             plan.sequence_type,
             code=code,
             label=f"global variable {component.name!r}",
+            schema_pool=self._package_schema_pool(component.owner),
         )
 
     def _global_focus(self, component: Component) -> Focus:

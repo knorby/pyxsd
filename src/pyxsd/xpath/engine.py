@@ -1013,9 +1013,30 @@ def _install_syntax_only_parse(parser: Any) -> None:
         root_token = Parser.parse(self, source)
         if root_token.label in ("sequence type", "function test"):
             raise root_token.error("XPST0003", "not allowed in XPath expression")
+        _bind_kind_test_type_names(root_token, self.default_namespace)
         return root_token
 
     parser.parse = MethodType(parse_syntax_only, parser)
+
+
+def _bind_kind_test_type_names(root: Any, default_namespace: str | None) -> None:
+    """Bind a bare type QName in an element/attribute kind test.
+
+    elementpath leaves ``(name)`` tokens in the type slot of ``element(N, T)``
+    and ``attribute(N, T)`` unexpanded, so ``element(*, docType)`` carries an
+    empty type name.  XPath 3.1 expands that QName with the default
+    element/type namespace of the static context.
+    """
+    stack = [root]
+    while stack:
+        token = stack.pop()
+        items: Any = getattr(token, "_items", ())
+        if getattr(token, "symbol", None) in ("element", "attribute") and len(items) >= 2:
+            type_token = items[1]
+            if type_token.symbol == "(name)" and not type_token.name:
+                value = type_token.value
+                type_token.name = f"{{{default_namespace}}}{value}" if default_namespace else value
+        stack.extend(items)
 
 
 def _install_focus_token(parser: Any) -> None:

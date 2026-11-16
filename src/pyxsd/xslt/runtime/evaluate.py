@@ -407,6 +407,7 @@ def execute_dynamic_evaluate(
             parameter.sequence_type,
             code="XTTE0590",
             label=f"parameter {parameter.name!r}",
+            package_name=context.package_name,
         )
         parameter_values[parameter.name] = value
         variable_types[parameter.name] = (
@@ -500,5 +501,6 @@ def execute_dynamic_evaluate(
             plan.sequence_type,
             code="XPTY0004",
             label="xsl:evaluate result",
+            package_name=context.package_name,
         )
     return result
