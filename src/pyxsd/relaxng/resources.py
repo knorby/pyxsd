@@ -20,12 +20,13 @@ from copy import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, cast
-from urllib.parse import urljoin
+from urllib.parse import unquote, urljoin
 from xml.etree import ElementTree as ET
 
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
 from pyxsd.relaxng.origins import OriginTable, SourceOrigin
+from pyxsd.relaxng.uris import xlink_escape
 from pyxsd.resource_policy import (
     ResourceData,
     ResourcePolicy,
@@ -163,6 +164,23 @@ def _normalize_local(path: str, *, trailing: bool) -> str:
     return resolved
 
 
+def _decode_local(reference: str) -> str:
+    """Decode an XLink-escaped local URI reference to a filesystem path.
+
+    RELAX NG hands the escaped URI reference to the resolver.  A local
+    filesystem resolver maps that reference back to bytes, so a Unicode or
+    space-bearing name reaches the file it names rather than a literal
+    ``%HH`` name.  Malformed UTF-8 escapes are a resource error, never a
+    silently different path.
+    """
+    try:
+        return unquote(reference, encoding="utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ResourcePolicyError(
+            f"the local schema reference {reference!r} is not valid UTF-8"
+        ) from exc
+
+
 def _join_local(base: str, reference: str) -> str:
     """Resolve *reference* against a local base with RFC 3986 merge rules.
 
@@ -171,6 +189,7 @@ def _join_local(base: str, reference: str) -> str:
     ``xml:base="."`` a directory instead of collapsing it to the containing
     file's basename.
     """
+    reference = _decode_local(reference)
     if Path(reference).is_absolute():
         merged = reference
     else:
@@ -188,9 +207,10 @@ def resolve_xml_base(base: str, xml_base: str) -> str:
     directory, not the file basename before the slash.  A remote base uses
     RFC 3986 joining; an absolute local or remote ``xml:base`` replaces the
     current base.  An anonymous memory base cannot resolve a relative value
-    because it has no directory.
+    because it has no directory.  The value is transformed by the XLink 1.0
+    section 5.4 escaping procedure first, as RELAX NG section 4.5 requires.
     """
-    return _resolve_against(base, xml_base)
+    return _resolve_against(base, xlink_escape(xml_base))
 
 
 def _resolve_against(base: str, reference: str) -> str:
@@ -301,8 +321,11 @@ class ResourceLoader:
         A missing resource raises the ordinary ``OSError`` or policy denial;
         a malformed one raises :class:`xml.etree.ElementTree.ParseError`.
         Composition decides whether such a required dependency is a schema
-        finding.  A failed read records no dependency.
+        finding.  A failed read records no dependency.  The reference is
+        transformed by the XLink 1.0 section 5.4 escaping procedure before
+        resolution, and an XML retrieval never opens a fragment-bearing URI.
         """
+        reference = xlink_escape(reference)
         base = containing.canonical_id
         reference_kind = classify_resource(reference).kind
         absolute = reference_kind == "remote" or (
@@ -311,6 +334,11 @@ class ResourceLoader:
         if not absolute and xml_base is not None and xml_base != "":
             base = resolve_xml_base(base, xml_base)
         canonical = _resolve_against(base, reference)
+        if "#" in canonical:
+            raise ResourcePolicyError(
+                "a RELAX NG include or externalRef href must not use a fragment "
+                "identifier for XML retrieval"
+            )
         cached = self._resources.get(canonical)
         resource = cached if cached is not None else self.load(canonical)
         self._record_reference(

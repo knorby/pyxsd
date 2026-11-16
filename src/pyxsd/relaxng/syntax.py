@@ -23,6 +23,8 @@ from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import XML_NS, local_name, namespace_of
 from pyxsd.relaxng.origins import OriginTable, SourceOrigin
 from pyxsd.relaxng.resources import LoadedResource, resolve_xml_base
+from pyxsd.relaxng.uris import is_uri_reference, xlink_escape
+from pyxsd.relaxng.whitespace import is_xml_whitespace, trim_xml_whitespace
 from pyxsd.resource_policy import ResourcePolicyError
 
 __all__ = [
@@ -96,6 +98,9 @@ _PATTERN_TAGS = frozenset(
 )
 
 _NAME_CLASS_TAGS = frozenset({"anyName", "choice", "name", "nsName"})
+
+#: RELAX NG elements whose character children are their string value.
+_STRING_CONTENT_TAGS = frozenset({"name", "param", "value"})
 
 _KNOWN_ATTRIBUTES: dict[str, frozenset[str]] = {
     "attribute": frozenset({"name"}),
@@ -218,11 +223,7 @@ _NCNAME_CHAR = _parse_ranges(
     f"{_BASE_CHAR} {_IDEOGRAPHIC} {_DIGIT} {_COMBINING_CHAR} {_EXTENDER} 002D 002E 005F"
 )
 
-#: RFC 2396's unreserved and reserved characters; ``%`` is handled separately
-#: as a two-digit escape.
-_URI_CHARACTERS = frozenset(";/?:@&=+$,-_.!~*'()")
 _URI_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*:")
-_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 
 
 def _is_ncname(value: str) -> bool:
@@ -249,34 +250,18 @@ def _is_datatype_library_uri(value: str) -> bool:
 
     The RELAX NG XML syntax makes ``datatypeLibrary`` an absolute URI
     reference: a relative reference or a fragment identifier is a schema
-    error.  An empty value names the built-in library and is accepted.
+    error.  An empty value names the built-in library and is accepted.  The
+    caller passes the XLink-escaped value, because RELAX NG section 4.3
+    transforms the attribute before use.
     """
     if not value:
         return True
     if "#" in value:
         return False
     scheme = _URI_SCHEME.match(value)
-    if scheme is None:
+    if scheme is None or scheme.end() == len(value):
         return False
-    remainder = value[scheme.end() :]
-    if not remainder:
-        return False
-    index = 0
-    while index < len(remainder):
-        character = remainder[index]
-        if character == "%":
-            if index + 2 >= len(remainder):
-                return False
-            if remainder[index + 1] not in _HEX_DIGITS or remainder[index + 2] not in _HEX_DIGITS:
-                return False
-            index += 3
-            continue
-        if not character.isascii() or (
-            not character.isalnum() and character not in _URI_CHARACTERS
-        ):
-            return False
-        index += 1
-    return True
+    return is_uri_reference(value)
 
 
 @dataclass(frozen=True)
@@ -681,6 +666,36 @@ def read_full_syntax(resource: LoadedResource) -> FullSchema:
     return _Reader(resource).read()
 
 
+@dataclass(frozen=True)
+class _Visit:
+    """One element awaiting construction by the reader's explicit stack."""
+
+    kind: Literal["node", "grammar", "name_class", "unknown"]
+    element: ET.Element
+    location: IssueLocation
+    scope: GrammarScope | None
+    base: str
+    library: str
+    namespace: str
+    annotations: tuple[Annotation, ...] = ()
+
+
+@dataclass(frozen=True)
+class _Pending:
+    """One element's child visits and the finish step that builds its node."""
+
+    finish: Callable[[list[FullNode]], FullNode]
+    visits: list[_Visit]
+
+
+@dataclass(frozen=True)
+class _Finish:
+    """Marker that a pending element's child results are complete."""
+
+    finish: Callable[[list[FullNode]], FullNode]
+    start: int
+
+
 def _split_tag(tag: str) -> tuple[str | None, str]:
     return namespace_of(tag), local_name(tag)
 
@@ -706,22 +721,56 @@ class _Reader:
                 f"the schema root {root.tag!r} is not a RELAX NG element",
                 location,
             )
-            start: FullPattern = self._unknown(root, location, self._annotations(root, location))
+            start = cast(
+                FullPattern,
+                self._build_one(
+                    _Visit(
+                        "unknown",
+                        root,
+                        location,
+                        None,
+                        self.source_id,
+                        "",
+                        "",
+                        self._annotations(root, location),
+                    )
+                ),
+            )
         elif tag not in _PATTERN_TAGS:
             self._finding(
                 "relaxng-root-not-pattern",
                 f"the RELAX NG {tag!r} element is not a schema pattern",
                 location,
             )
-            start = self._unknown(root, location, self._annotations(root, location))
+            start = cast(
+                FullPattern,
+                self._build_one(
+                    _Visit(
+                        "unknown",
+                        root,
+                        location,
+                        None,
+                        self.source_id,
+                        "",
+                        "",
+                        self._annotations(root, location),
+                    )
+                ),
+            )
         else:
-            start = self._pattern(
-                root,
-                location,
-                scope=None,
-                base=self.source_id,
-                library="",
-                namespace="",
+            start = cast(
+                FullPattern,
+                self._build_one(
+                    _Visit(
+                        "node",
+                        root,
+                        location,
+                        None,
+                        self.source_id,
+                        "",
+                        "",
+                    )
+                ),
             )
         return FullSchema(
             resource=self.resource,
@@ -773,7 +822,7 @@ class _Reader:
         raw_base = element.get(_XML_BASE)
         if raw_base is not None:
             try:
-                base = resolve_xml_base(base, raw_base)
+                base = resolve_xml_base(base, xlink_escape(raw_base))
             except ResourcePolicyError as exc:
                 self._finding(
                     "relaxng-invalid-base",
@@ -783,7 +832,7 @@ class _Reader:
         if "ns" in element.attrib:
             namespace = element.attrib["ns"]
         if "datatypeLibrary" in element.attrib:
-            library = element.attrib["datatypeLibrary"]
+            library = xlink_escape(element.attrib["datatypeLibrary"])
         return base, library, namespace
 
     def _annotations(self, element: ET.Element, location: IssueLocation) -> tuple[Annotation, ...]:
@@ -818,12 +867,14 @@ class _Reader:
     def _check_attributes(self, element: ET.Element, tag: str, location: IssueLocation) -> None:
         allowed = _KNOWN_ATTRIBUTES.get(tag, frozenset())
         library = element.get("datatypeLibrary")
-        if library is not None and not _is_datatype_library_uri(library):
-            self._finding(
-                "relaxng-invalid-datatype-library",
-                f"the datatypeLibrary value {library!r} is not an absolute URI reference",
-                replace(location, attribute="datatypeLibrary"),
-            )
+        if library is not None:
+            normalized = xlink_escape(library)
+            if not _is_datatype_library_uri(normalized):
+                self._finding(
+                    "relaxng-invalid-datatype-library",
+                    f"the datatypeLibrary value {library!r} is not an absolute URI reference",
+                    replace(location, attribute="datatypeLibrary"),
+                )
         for attribute in sorted(element.attrib):
             namespace, name = _split_tag(attribute)
             if namespace is not None and namespace != RELAX_NG_NAMESPACE:
@@ -836,19 +887,47 @@ class _Reader:
                 replace(location, attribute=attribute),
             )
 
-    def _check_reference_name(self, name: str | None, location: IssueLocation, tag: str) -> None:
-        """Validate a ``ref``, ``parentRef``, or ``define`` NCName."""
-        if name is None:
+    def _check_character_data(self, element: ET.Element, location: IssueLocation, tag: str) -> None:
+        """Reject non-whitespace character children outside string content.
+
+        RELAX NG 1.0 section 3 allows only XML whitespace (#x20, #x9, #xD,
+        #xA) as character children of every element other than ``value``,
+        ``param``, and ``name``.  Foreign element subtrees stay opaque; only
+        text and tails that belong to this element are inspected.
+        """
+        if is_xml_whitespace(element.text or "") and all(
+            is_xml_whitespace(child.tail or "") for child in element
+        ):
             return
-        text = name.strip()
+        self._finding(
+            "relaxng-invalid-character-content",
+            f"the RELAX NG {tag!r} element may contain only XML whitespace character data",
+            location,
+        )
+
+    def _check_ncname(
+        self,
+        value: str | None,
+        location: IssueLocation,
+        tag: str,
+        attribute: str,
+    ) -> None:
+        """Validate an NCName-valued attribute after section 4.2 trimming."""
+        if value is None:
+            return
+        text = trim_xml_whitespace(value)
         if not text:
             return
         if not _is_ncname(text):
             self._finding(
                 "relaxng-invalid-name",
-                f"the RELAX NG {tag} name {text!r} is not an NCName",
-                replace(location, attribute="name"),
+                f"the RELAX NG {tag} {attribute} {text!r} is not an NCName",
+                replace(location, attribute=attribute),
             )
+
+    def _check_reference_name(self, name: str | None, location: IssueLocation, tag: str) -> None:
+        """Validate a ``ref``, ``parentRef``, or ``define`` NCName."""
+        self._check_ncname(name, location, tag, "name")
 
     def _child_specs(
         self, element: ET.Element, location: IssueLocation
@@ -859,146 +938,151 @@ class _Reader:
             if _split_tag(child.tag)[0] == RELAX_NG_NAMESPACE
         ]
 
-    def _children(
-        self,
-        element: ET.Element,
-        location: IssueLocation,
-        scope: GrammarScope | None,
-        base: str,
-        library: str,
-        namespace: str,
-    ) -> tuple[FullNode, ...]:
-        return tuple(
-            self._node(child, child_location, scope, base, library, namespace)
-            for child, child_location in self._child_specs(element, location)
-        )
+    def _build(self, visits: list[_Visit]) -> tuple[FullNode, ...]:
+        """Construct visits without recursion, preserving authored order."""
+        results: list[FullNode] = []
+        stack: list[_Visit | _Finish] = list(reversed(visits))
+        while stack:
+            item = stack.pop()
+            if isinstance(item, _Finish):
+                children = results[item.start :]
+                del results[item.start :]
+                results.append(item.finish(children))
+                continue
+            pending = self._plan(item)
+            stack.append(_Finish(pending.finish, len(results)))
+            stack.extend(reversed(pending.visits))
+        return tuple(results)
 
-    def _node(
-        self,
-        element: ET.Element,
-        location: IssueLocation,
-        scope: GrammarScope | None,
-        base: str,
-        library: str,
-        namespace: str,
-    ) -> FullNode:
-        _, tag = _split_tag(element.tag)
+    def _build_one(self, visit: _Visit) -> FullNode:
+        return self._build([visit])[0]
+
+    def _plan(self, visit: _Visit) -> _Pending:
+        """Apply shared element checks, then plan one element's construction."""
+        namespace, tag = _split_tag(visit.element.tag)
+        if namespace == RELAX_NG_NAMESPACE and tag not in _STRING_CONTENT_TAGS:
+            self._check_character_data(visit.element, visit.location, tag)
+        if visit.kind == "node":
+            return self._plan_node(visit)
+        if visit.kind == "grammar":
+            return self._plan_grammar_component(visit)
+        if visit.kind == "name_class":
+            return self._plan_name_class(visit)
+        return self._plan_unknown(visit)
+
+    def _plan_node(self, visit: _Visit) -> _Pending:
+        tag = _split_tag(visit.element.tag)[1]
         if tag == "start":
-            return self._start(element, location, scope, base, library, namespace)
+            return self._plan_start(visit)
         if tag == "define":
-            return self._define(element, location, scope, base, library, namespace)
+            return self._plan_define(visit)
         if tag == "include":
-            return self._include(element, location, scope, base, library, namespace)
+            return self._plan_include(visit)
         if tag in {"name", "anyName", "nsName"}:
-            return self._name_class(element, location, namespace)
+            return self._plan_name_class(visit)
         if tag == "param":
-            return self._param(element, location, base, library, namespace)
+            return self._plan_param(visit)
         if tag == "except":
-            return self._except(element, location, scope, base, library, namespace)
-        return self._pattern(element, location, scope, base, library, namespace)
+            return self._plan_except(visit)
+        return self._plan_pattern(visit)
 
-    def _pattern(
+    def _node_visits(
         self,
-        element: ET.Element,
-        location: IssueLocation,
+        specs: list[tuple[ET.Element, IssueLocation]],
         scope: GrammarScope | None,
         base: str,
         library: str,
         namespace: str,
-    ) -> FullPattern:
+    ) -> list[_Visit]:
+        return [
+            _Visit("node", child, child_location, scope, base, library, namespace)
+            for child, child_location in specs
+        ]
+
+    def _grammar_visits(
+        self,
+        specs: list[tuple[ET.Element, IssueLocation]],
+        scope: GrammarScope | None,
+        base: str,
+        library: str,
+        namespace: str,
+    ) -> list[_Visit]:
+        return [
+            _Visit("grammar", child, child_location, scope, base, library, namespace)
+            for child, child_location in specs
+        ]
+
+    def _plan_pattern(self, visit: _Visit) -> _Pending:
+        element, location = visit.element, visit.location
         _, tag = _split_tag(element.tag)
-        base, library, namespace = self._context(element, location, base, library, namespace)
+        base, library, namespace = self._context(
+            element, location, visit.base, visit.library, visit.namespace
+        )
         annotations = self._annotations(element, location)
         origins = self._origins(element, location)
         self._check_attributes(element, tag, location)
+        specs = self._child_specs(element, location)
 
         if tag == "grammar":
-            return self._grammar(
+            scope = GrammarScope(
+                parent=visit.scope,
+                origins=origins,
+                annotations=annotations,
+            )
+            self.grammars.append(scope)
+
+            def finish_grammar(children: list[FullNode]) -> FullNode:
+                for child in children:
+                    scope._append(child)
+                return FullGrammar(scope, origins, annotations)
+
+            return _Pending(
+                finish_grammar,
+                self._grammar_visits(specs, scope, base, library, namespace),
+            )
+        if tag in {"element", "attribute"}:
+            return self._plan_element_pattern(
                 element,
                 location,
-                scope,
+                specs,
+                visit.scope,
                 base,
                 library,
                 namespace,
                 annotations,
                 origins,
+                attribute=tag == "attribute",
             )
-        if tag == "element":
-            return self._element_pattern(
-                element,
-                location,
-                scope,
-                base,
-                library,
-                namespace,
-                annotations,
-                origins,
-                attribute=False,
-            )
-        if tag == "attribute":
-            return self._element_pattern(
-                element,
-                location,
-                scope,
-                base,
-                library,
-                namespace,
-                annotations,
-                origins,
-                attribute=True,
-            )
-        if tag in {"group", "interleave", "choice", "optional", "zeroOrMore", "oneOrMore"}:
-            children = self._children(element, location, scope, base, library, namespace)
-            constructors: dict[
-                str,
-                Callable[
-                    [tuple[FullNode, ...], OriginTable, tuple[Annotation, ...]],
-                    FullPattern,
-                ],
-            ] = {
-                "group": FullGroup,
-                "interleave": FullInterleave,
-                "choice": FullChoice,
-                "optional": FullOptional,
-                "zeroOrMore": FullZeroOrMore,
-                "oneOrMore": FullOneOrMore,
-            }
-            return constructors[tag](children, origins, annotations)
-        if tag == "list":
-            return FullList(
-                self._children(element, location, scope, base, library, namespace),
-                origins,
-                annotations,
-            )
-        if tag == "mixed":
-            return FullMixed(
-                self._children(element, location, scope, base, library, namespace),
-                origins,
-                annotations,
-            )
-        if tag == "div":
-            return FullDiv(
-                self._children(element, location, scope, base, library, namespace),
-                origins,
-                annotations,
-            )
-        if tag == "empty":
-            return FullEmpty(
-                self._children(element, location, scope, base, library, namespace),
-                origins,
-                annotations,
-            )
-        if tag == "text":
-            return FullText(
-                self._children(element, location, scope, base, library, namespace),
-                origins,
-                annotations,
-            )
-        if tag == "notAllowed":
-            return FullNotAllowed(
-                self._children(element, location, scope, base, library, namespace),
-                origins,
-                annotations,
+
+        constructors: dict[
+            str,
+            Callable[
+                [tuple[FullNode, ...], OriginTable, tuple[Annotation, ...]],
+                FullPattern,
+            ],
+        ] = {
+            "group": FullGroup,
+            "interleave": FullInterleave,
+            "choice": FullChoice,
+            "optional": FullOptional,
+            "zeroOrMore": FullZeroOrMore,
+            "oneOrMore": FullOneOrMore,
+            "list": FullList,
+            "mixed": FullMixed,
+            "div": FullDiv,
+            "empty": FullEmpty,
+            "text": FullText,
+            "notAllowed": FullNotAllowed,
+        }
+        if tag in constructors:
+            constructor = constructors[tag]
+
+            def finish_container(children: list[FullNode]) -> FullNode:
+                return constructor(tuple(children), origins, annotations)
+
+            return _Pending(
+                finish_container,
+                self._node_visits(specs, visit.scope, base, library, namespace),
             )
         if tag == "value":
             if any(_split_tag(child.tag)[0] != RELAX_NG_NAMESPACE for child in element):
@@ -1007,17 +1091,26 @@ class _Reader:
                     "a RELAX NG value element must contain only its lexical value",
                     location,
                 )
+            type_name = element.get("type")
+            self._check_ncname(type_name, location, "value", "type")
             namespaces = tuple(sorted(self.resource.namespaces.bindings_for(element).items()))
-            return FullValue(
-                datatype_library=library,
-                type_name=element.get("type"),
-                lexical=element.text or "",
-                base_uri=base,
-                namespace_uri=_namespace(namespace),
-                namespaces=namespaces,
-                children=self._children(element, location, scope, base, library, namespace),
-                origins=origins,
-                annotations=annotations,
+
+            def finish_value(children: list[FullNode]) -> FullNode:
+                return FullValue(
+                    datatype_library=library,
+                    type_name=type_name,
+                    lexical=element.text or "",
+                    base_uri=base,
+                    namespace_uri=_namespace(namespace),
+                    namespaces=namespaces,
+                    children=tuple(children),
+                    origins=origins,
+                    annotations=annotations,
+                )
+
+            return _Pending(
+                finish_value,
+                self._node_visits(specs, visit.scope, base, library, namespace),
             )
         if tag == "data":
             type_name = element.get("type")
@@ -1027,14 +1120,24 @@ class _Reader:
                     "a RELAX NG data element needs a type attribute",
                     replace(location, attribute="type"),
                 )
-            return FullData(
-                datatype_library=library,
-                type_name=type_name,
-                base_uri=base,
-                namespaces=tuple(sorted(self.resource.namespaces.bindings_for(element).items())),
-                children=self._children(element, location, scope, base, library, namespace),
-                origins=origins,
-                annotations=annotations,
+            else:
+                self._check_ncname(type_name, location, "data", "type")
+            namespaces = tuple(sorted(self.resource.namespaces.bindings_for(element).items()))
+
+            def finish_data(children: list[FullNode]) -> FullNode:
+                return FullData(
+                    datatype_library=library,
+                    type_name=type_name,
+                    base_uri=base,
+                    namespaces=namespaces,
+                    children=tuple(children),
+                    origins=origins,
+                    annotations=annotations,
+                )
+
+            return _Pending(
+                finish_data,
+                self._node_visits(specs, visit.scope, base, library, namespace),
             )
         if tag in {"ref", "parentRef"}:
             name = element.get("name")
@@ -1045,47 +1148,88 @@ class _Reader:
                     replace(location, attribute="name"),
                 )
             self._check_reference_name(name, location, tag)
-            return ReferencePlaceholder(
-                kind=cast(Literal["ref", "parentRef"], tag),
-                name=name,
-                href=None,
-                base=None,
-                ns_attribute=element.get("ns"),
-                scope=scope,
-                children=self._children(element, location, scope, base, library, namespace),
-                origins=origins,
-                annotations=annotations,
+            reference_scope = visit.scope
+
+            def finish_reference(children: list[FullNode]) -> FullNode:
+                return ReferencePlaceholder(
+                    kind=cast(Literal["ref", "parentRef"], tag),
+                    name=name,
+                    href=None,
+                    base=None,
+                    ns_attribute=element.get("ns"),
+                    scope=reference_scope,
+                    children=tuple(children),
+                    origins=origins,
+                    annotations=annotations,
+                )
+
+            return _Pending(
+                finish_reference,
+                self._node_visits(specs, reference_scope, base, library, namespace),
             )
         if tag == "externalRef":
-            href = element.get("href")
-            if href is None:
-                self._finding(
-                    "relaxng-missing-attribute",
-                    "a RELAX NG externalRef element needs an href attribute",
-                    replace(location, attribute="href"),
+            href = self._href(element, location)
+            external_scope = visit.scope
+
+            def finish_external_ref(children: list[FullNode]) -> FullNode:
+                return ReferencePlaceholder(
+                    kind="externalRef",
+                    name=None,
+                    href=href,
+                    base=base,
+                    ns_attribute=element.get("ns"),
+                    scope=external_scope,
+                    children=tuple(children),
+                    origins=origins,
+                    annotations=annotations,
                 )
-            return ReferencePlaceholder(
-                kind="externalRef",
-                name=None,
-                href=href,
-                base=base,
-                ns_attribute=element.get("ns"),
-                scope=scope,
-                children=self._children(element, location, scope, base, library, namespace),
-                origins=origins,
-                annotations=annotations,
+
+            return _Pending(
+                finish_external_ref,
+                self._node_visits(specs, external_scope, base, library, namespace),
             )
         self._finding(
             "relaxng-unknown-element",
             f"unknown RELAX NG element {tag!r}",
             location,
         )
-        return self._unknown(element, location, annotations)
+        return self._plan_unknown(
+            _Visit(
+                "unknown",
+                element,
+                location,
+                visit.scope,
+                base,
+                library,
+                namespace,
+                annotations,
+            )
+        )
 
-    def _element_pattern(
+    def _href(self, element: ET.Element, location: IssueLocation) -> str | None:
+        """Return the XLink-escaped ``href`` value, reporting a missing one."""
+        raw = element.get("href")
+        if raw is None:
+            self._finding(
+                "relaxng-missing-attribute",
+                f"a RELAX NG {_split_tag(element.tag)[1]} element needs an href attribute",
+                replace(location, attribute="href"),
+            )
+            return None
+        href = xlink_escape(raw)
+        if not is_uri_reference(href):
+            self._finding(
+                "relaxng-invalid-href",
+                f"the RELAX NG href value {raw!r} is not a URI reference",
+                replace(location, attribute="href"),
+            )
+        return href
+
+    def _plan_element_pattern(
         self,
         element: ET.Element,
         location: IssueLocation,
+        specs: list[tuple[ET.Element, IssueLocation]],
         scope: GrammarScope | None,
         base: str,
         library: str,
@@ -1094,9 +1238,9 @@ class _Reader:
         origins: OriginTable,
         *,
         attribute: bool,
-    ) -> FullPattern:
-        specs = self._child_specs(element, location)
+    ) -> _Pending:
         name_attribute = element.get("name")
+        has_name_class_child = False
         if name_attribute is not None:
             name_class: FullNameClass | None = self._qname_name(
                 name_attribute,
@@ -1106,13 +1250,37 @@ class _Reader:
                 attribute_mode=attribute,
                 location_attribute="name",
             )
+            visits = self._node_visits(specs, scope, base, library, namespace)
         else:
             name_class = None
-            for index, (child, child_location) in enumerate(specs):
-                if self._starts_name_class(child):
-                    name_class = self._name_class(child, child_location, namespace)
-                    specs = [*specs[:index], *specs[index + 1 :]]
-                    break
+            visits = []
+            # Leading unknown RELAX NG extension elements stay opaque and do
+            # not displace the name class, matching the reader's existing
+            # annotation-compatibility rule.  The name class must precede the
+            # first known pattern, so <empty/><name> is a late name class.
+            first_known = next(
+                (
+                    index
+                    for index, (child, _) in enumerate(specs)
+                    if _split_tag(child.tag)[1] in _KNOWN_ATTRIBUTES
+                ),
+                None,
+            )
+            if first_known is not None and self._starts_name_class(specs[first_known][0]):
+                child, child_location = specs[first_known]
+                visits.append(
+                    _Visit(
+                        "name_class",
+                        child,
+                        child_location,
+                        scope,
+                        base,
+                        library,
+                        namespace,
+                    )
+                )
+                has_name_class_child = True
+                specs = [*specs[:first_known], *specs[first_known + 1 :]]
             else:
                 self._finding(
                     "relaxng-missing-name-class",
@@ -1120,13 +1288,21 @@ class _Reader:
                     "element needs a name or name-class child",
                     location,
                 )
-        children = tuple(
-            self._node(child, child_location, scope, base, library, namespace)
-            for child, child_location in specs
-        )
-        if attribute:
-            return FullAttribute(name_class, children, origins, annotations)
-        return FullElement(name_class, children, origins, annotations)
+            visits.extend(self._node_visits(specs, scope, base, library, namespace))
+
+        def finish_element(children: list[FullNode]) -> FullNode:
+            child_name_class: FullNameClass | None
+            if has_name_class_child:
+                child_name_class = cast(FullNameClass, children[0])
+                patterns = tuple(children[1:])
+            else:
+                child_name_class = name_class
+                patterns = tuple(children)
+            if attribute:
+                return FullAttribute(child_name_class, patterns, origins, annotations)
+            return FullElement(child_name_class, patterns, origins, annotations)
+
+        return _Pending(finish_element, visits)
 
     def _starts_name_class(self, element: ET.Element) -> bool:
         _, tag = _split_tag(element.tag)
@@ -1149,7 +1325,7 @@ class _Reader:
         attribute_mode: bool,
         location_attribute: str | None,
     ) -> FullName:
-        text = lexical.strip()
+        text = trim_xml_whitespace(lexical)
         parts = _split_qname(text)
         if parts is None:
             self._finding(
@@ -1180,20 +1356,15 @@ class _Reader:
         return FullName(
             lexical=lexical,
             uri=uri,
-            local=local.strip(),
+            local=trim_xml_whitespace(local),
             origins=self._origins(element, location),
             annotations=self._annotations(element, location),
         )
 
-    def _name_class(
-        self,
-        element: ET.Element,
-        location: IssueLocation,
-        namespace: str,
-    ) -> FullNameClass:
+    def _plan_name_class(self, visit: _Visit) -> _Pending:
+        element, location = visit.element, visit.location
         _, tag = _split_tag(element.tag)
-        if "ns" in element.attrib:
-            namespace = element.attrib["ns"]
+        namespace = element.attrib.get("ns", visit.namespace)
         annotations = self._annotations(element, location)
         origins = self._origins(element, location)
         self._check_attributes(element, tag, location)
@@ -1205,37 +1376,65 @@ class _Reader:
                     "a RELAX NG name element must contain only a QName",
                     location,
                 )
-            return self._qname_name(
-                element.text or "",
-                element,
-                location,
-                namespace,
-                attribute_mode=False,
-                location_attribute=None,
-            )
-        if tag == "anyName":
-            return FullAnyName(
-                self._name_except(element, location, namespace),
-                origins,
-                annotations,
-            )
-        if tag == "nsName":
-            return FullNsName(
-                _namespace(namespace),
-                self._name_except(element, location, namespace),
-                origins,
-                annotations,
-            )
-        alternatives = self._name_class_alternatives(element, location, namespace)
-        return FullNameChoice(alternatives, origins, annotations)
 
-    def _name_class_alternatives(
+            def finish_name(children: list[FullNode]) -> FullNode:
+                del children
+                return self._qname_name(
+                    element.text or "",
+                    element,
+                    location,
+                    namespace,
+                    attribute_mode=False,
+                    location_attribute=None,
+                )
+
+            return _Pending(finish_name, [])
+        if tag in {"anyName", "nsName"}:
+            excepts = [
+                (child, child_location)
+                for child, child_location in self._child_specs(element, location)
+                if _split_tag(child.tag)[1] == "except"
+            ]
+            for _, duplicate_location in excepts[1:]:
+                self._finding(
+                    "relaxng-duplicate-except",
+                    f"a RELAX NG {tag} element allows at most one except",
+                    duplicate_location,
+                )
+            except_pending: _Pending | None = None
+            visits: list[_Visit] = []
+            if excepts:
+                except_element, except_location = excepts[0]
+                except_pending = self._plan_name_except(except_element, except_location, namespace)
+                visits = except_pending.visits
+
+            def finish_wildcard(children: list[FullNode]) -> FullNode:
+                except_class: FullNameClass | None = None
+                if except_pending is not None:
+                    except_class = cast(FullNameClass, except_pending.finish(children))
+                if tag == "anyName":
+                    return FullAnyName(except_class, origins, annotations)
+                return FullNsName(_namespace(namespace), except_class, origins, annotations)
+
+            return _Pending(finish_wildcard, visits)
+        visits = self._plan_name_class_alternatives(element, location, namespace)
+
+        def finish_choice(children: list[FullNode]) -> FullNode:
+            return FullNameChoice(
+                tuple(cast(FullNameClass, child) for child in children),
+                origins,
+                annotations,
+            )
+
+        return _Pending(finish_choice, visits)
+
+    def _plan_name_class_alternatives(
         self,
         element: ET.Element,
         location: IssueLocation,
         namespace: str,
-    ) -> tuple[FullNameClass, ...]:
-        alternatives: list[FullNameClass] = []
+    ) -> list[_Visit]:
+        visits: list[_Visit] = []
         for child, child_location in self._child_specs(element, location):
             _, tag = _split_tag(child.tag)
             if tag not in _NAME_CLASS_TAGS:
@@ -1247,47 +1446,45 @@ class _Reader:
                     child_location,
                 )
                 continue
-            alternatives.append(self._name_class(child, child_location, namespace))
-        return tuple(alternatives)
-
-    def _name_except(
-        self,
-        element: ET.Element,
-        location: IssueLocation,
-        namespace: str,
-    ) -> FullNameClass | None:
-        excepts = [
-            (child, child_location)
-            for child, child_location in self._child_specs(element, location)
-            if _split_tag(child.tag)[1] == "except"
-        ]
-        for _, duplicate_location in excepts[1:]:
-            self._finding(
-                "relaxng-duplicate-except",
-                f"a RELAX NG {_split_tag(element.tag)[1]} element allows at most one except",
-                duplicate_location,
+            visits.append(
+                _Visit(
+                    "name_class",
+                    child,
+                    child_location,
+                    None,
+                    "",
+                    "",
+                    namespace,
+                )
             )
-        if not excepts:
-            return None
-        child, child_location = excepts[0]
-        self._check_attributes(child, "except", child_location)
-        except_namespace = child.attrib.get("ns", namespace)
-        alternatives = self._name_class_alternatives(child, child_location, except_namespace)
-        return FullNameExcept(
-            alternatives,
-            self._origins(child, child_location),
-            self._annotations(child, child_location),
-        )
+        return visits
 
-    def _param(
+    def _plan_name_except(
         self,
         element: ET.Element,
         location: IssueLocation,
-        base: str,
-        library: str,
         namespace: str,
-    ) -> FullParam:
-        base, library, namespace = self._context(element, location, base, library, namespace)
+    ) -> _Pending:
+        self._check_attributes(element, "except", location)
+        except_namespace = element.attrib.get("ns", namespace)
+        visits = self._plan_name_class_alternatives(element, location, except_namespace)
+        origins = self._origins(element, location)
+        annotations = self._annotations(element, location)
+
+        def finish_except(children: list[FullNode]) -> FullNode:
+            return FullNameExcept(
+                tuple(cast(FullNameClass, child) for child in children),
+                origins,
+                annotations,
+            )
+
+        return _Pending(finish_except, visits)
+
+    def _plan_param(self, visit: _Visit) -> _Pending:
+        element, location = visit.element, visit.location
+        base, library, namespace = self._context(
+            element, location, visit.base, visit.library, visit.namespace
+        )
         annotations = self._annotations(element, location)
         origins = self._origins(element, location)
         self._check_attributes(element, "param", location)
@@ -1298,63 +1495,81 @@ class _Reader:
                 "a RELAX NG param element needs a name attribute",
                 replace(location, attribute="name"),
             )
-        return FullParam(
-            name=name,
-            value=element.text or "",
-            children=self._children(element, location, None, base, library, namespace),
-            origins=origins,
-            annotations=annotations,
+        else:
+            self._check_ncname(name, location, "param", "name")
+
+        def finish_param(children: list[FullNode]) -> FullNode:
+            return FullParam(
+                name=name,
+                value=element.text or "",
+                children=tuple(children),
+                origins=origins,
+                annotations=annotations,
+            )
+
+        return _Pending(
+            finish_param,
+            self._node_visits(
+                self._child_specs(element, location),
+                None,
+                base,
+                library,
+                namespace,
+            ),
         )
 
-    def _except(
-        self,
-        element: ET.Element,
-        location: IssueLocation,
-        scope: GrammarScope | None,
-        base: str,
-        library: str,
-        namespace: str,
-    ) -> FullExcept:
-        base, library, namespace = self._context(element, location, base, library, namespace)
+    def _plan_except(self, visit: _Visit) -> _Pending:
+        element, location = visit.element, visit.location
+        base, library, namespace = self._context(
+            element, location, visit.base, visit.library, visit.namespace
+        )
         annotations = self._annotations(element, location)
         origins = self._origins(element, location)
         self._check_attributes(element, "except", location)
-        return FullExcept(
-            self._children(element, location, scope, base, library, namespace),
-            origins,
-            annotations,
+
+        def finish_except(children: list[FullNode]) -> FullNode:
+            return FullExcept(tuple(children), origins, annotations)
+
+        return _Pending(
+            finish_except,
+            self._node_visits(
+                self._child_specs(element, location),
+                visit.scope,
+                base,
+                library,
+                namespace,
+            ),
         )
 
-    def _start(
-        self,
-        element: ET.Element,
-        location: IssueLocation,
-        scope: GrammarScope | None,
-        base: str,
-        library: str,
-        namespace: str,
-    ) -> FullStart:
-        base, library, namespace = self._context(element, location, base, library, namespace)
+    def _plan_start(self, visit: _Visit) -> _Pending:
+        element, location = visit.element, visit.location
+        base, library, namespace = self._context(
+            element, location, visit.base, visit.library, visit.namespace
+        )
         annotations = self._annotations(element, location)
         origins = self._origins(element, location)
         self._check_attributes(element, "start", location)
-        return FullStart(
-            combine=element.get("combine"),
-            children=self._children(element, location, scope, base, library, namespace),
-            origins=origins,
-            annotations=annotations,
+        combine = element.get("combine")
+
+        def finish_start(children: list[FullNode]) -> FullNode:
+            return FullStart(combine, tuple(children), origins, annotations)
+
+        return _Pending(
+            finish_start,
+            self._node_visits(
+                self._child_specs(element, location),
+                visit.scope,
+                base,
+                library,
+                namespace,
+            ),
         )
 
-    def _define(
-        self,
-        element: ET.Element,
-        location: IssueLocation,
-        scope: GrammarScope | None,
-        base: str,
-        library: str,
-        namespace: str,
-    ) -> FullDefine:
-        base, library, namespace = self._context(element, location, base, library, namespace)
+    def _plan_define(self, visit: _Visit) -> _Pending:
+        element, location = visit.element, visit.location
+        base, library, namespace = self._context(
+            element, location, visit.base, visit.library, visit.namespace
+        )
         annotations = self._annotations(element, location)
         origins = self._origins(element, location)
         self._check_attributes(element, "define", location)
@@ -1366,127 +1581,115 @@ class _Reader:
                 replace(location, attribute="name"),
             )
         self._check_reference_name(name, location, "define")
-        return FullDefine(
-            name=name,
-            combine=element.get("combine"),
-            children=self._children(element, location, scope, base, library, namespace),
-            origins=origins,
-            annotations=annotations,
+        combine = element.get("combine")
+
+        def finish_define(children: list[FullNode]) -> FullNode:
+            return FullDefine(name, combine, tuple(children), origins, annotations)
+
+        return _Pending(
+            finish_define,
+            self._node_visits(
+                self._child_specs(element, location),
+                visit.scope,
+                base,
+                library,
+                namespace,
+            ),
         )
 
-    def _include(
-        self,
-        element: ET.Element,
-        location: IssueLocation,
-        scope: GrammarScope | None,
-        base: str,
-        library: str,
-        namespace: str,
-    ) -> ReferencePlaceholder:
-        base, library, namespace = self._context(element, location, base, library, namespace)
+    def _plan_include(self, visit: _Visit) -> _Pending:
+        element, location = visit.element, visit.location
+        base, library, namespace = self._context(
+            element, location, visit.base, visit.library, visit.namespace
+        )
         annotations = self._annotations(element, location)
         origins = self._origins(element, location)
         self._check_attributes(element, "include", location)
-        href = element.get("href")
-        if href is None:
-            self._finding(
-                "relaxng-missing-attribute",
-                "a RELAX NG include element needs an href attribute",
-                replace(location, attribute="href"),
+        href = self._href(element, location)
+        scope = visit.scope
+
+        def finish_include(children: list[FullNode]) -> FullNode:
+            return ReferencePlaceholder(
+                kind="include",
+                name=None,
+                href=href,
+                base=base,
+                ns_attribute=element.get("ns"),
+                scope=scope,
+                children=tuple(children),
+                origins=origins,
+                annotations=annotations,
             )
-        children = tuple(
-            self._grammar_component(child, child_location, scope, base, library, namespace)
-            for child, child_location in self._child_specs(element, location)
-        )
-        return ReferencePlaceholder(
-            kind="include",
-            name=None,
-            href=href,
-            base=base,
-            ns_attribute=element.get("ns"),
-            scope=scope,
-            children=children,
-            origins=origins,
-            annotations=annotations,
+
+        return _Pending(
+            finish_include,
+            self._grammar_visits(
+                self._child_specs(element, location),
+                scope,
+                base,
+                library,
+                namespace,
+            ),
         )
 
-    def _grammar(
-        self,
-        element: ET.Element,
-        location: IssueLocation,
-        parent_scope: GrammarScope | None,
-        base: str,
-        library: str,
-        namespace: str,
-        annotations: tuple[Annotation, ...],
-        origins: OriginTable,
-    ) -> FullGrammar:
-        scope = GrammarScope(
-            parent=parent_scope,
-            origins=origins,
-            annotations=annotations,
-        )
-        self.grammars.append(scope)
-        for child, child_location in self._child_specs(element, location):
-            scope._append(
-                self._grammar_component(child, child_location, scope, base, library, namespace)
-            )
-        return FullGrammar(scope, origins, annotations)
-
-    def _grammar_component(
-        self,
-        element: ET.Element,
-        location: IssueLocation,
-        scope: GrammarScope | None,
-        base: str,
-        library: str,
-        namespace: str,
-    ) -> FullNode:
-        _, tag = _split_tag(element.tag)
+    def _plan_grammar_component(self, visit: _Visit) -> _Pending:
+        tag = _split_tag(visit.element.tag)[1]
         if tag == "start":
-            return self._start(element, location, scope, base, library, namespace)
+            return self._plan_start(visit)
         if tag == "define":
-            return self._define(element, location, scope, base, library, namespace)
+            return self._plan_define(visit)
         if tag == "include":
-            return self._include(element, location, scope, base, library, namespace)
+            return self._plan_include(visit)
         if tag == "div":
-            return self._grammar_div(element, location, scope, base, library, namespace)
-        return self._node(element, location, scope, base, library, namespace)
+            return self._plan_grammar_div(visit)
+        return self._plan_node(visit)
 
-    def _grammar_div(
-        self,
-        element: ET.Element,
-        location: IssueLocation,
-        scope: GrammarScope | None,
-        base: str,
-        library: str,
-        namespace: str,
-    ) -> FullDiv:
-        base, library, namespace = self._context(element, location, base, library, namespace)
+    def _plan_grammar_div(self, visit: _Visit) -> _Pending:
+        element, location = visit.element, visit.location
+        base, library, namespace = self._context(
+            element, location, visit.base, visit.library, visit.namespace
+        )
         annotations = self._annotations(element, location)
         origins = self._origins(element, location)
         self._check_attributes(element, "div", location)
-        children = tuple(
-            self._grammar_component(child, child_location, scope, base, library, namespace)
-            for child, child_location in self._child_specs(element, location)
-        )
-        return FullDiv(children, origins, annotations)
 
-    def _unknown(
-        self,
-        element: ET.Element,
-        location: IssueLocation,
-        annotations: tuple[Annotation, ...] = (),
-    ) -> FullUnknown:
-        children = tuple(
-            self._unknown(child, child_location)
+        def finish_div(children: list[FullNode]) -> FullNode:
+            return FullDiv(tuple(children), origins, annotations)
+
+        return _Pending(
+            finish_div,
+            self._grammar_visits(
+                self._child_specs(element, location),
+                visit.scope,
+                base,
+                library,
+                namespace,
+            ),
+        )
+
+    def _plan_unknown(self, visit: _Visit) -> _Pending:
+        element, location = visit.element, visit.location
+        visits = [
+            _Visit(
+                "unknown",
+                child,
+                child_location,
+                None,
+                "",
+                "",
+                "",
+            )
             for child, child_location in self._child_locations(element, location)
-        )
-        return FullUnknown(
-            tag=element.tag,
-            attributes=tuple(sorted(element.attrib.items())),
-            text=element.text,
-            children=children,
-            origins=self._origins(element, location),
-            annotations=annotations,
-        )
+        ]
+
+        def finish_unknown(children: list[FullNode]) -> FullNode:
+            return FullUnknown(
+                tag=element.tag,
+                attributes=tuple(sorted(element.attrib.items())),
+                text=element.text,
+                children=tuple(cast(FullUnknown, child) for child in children),
+                origins=self._origins(element, location),
+                annotations=visit.annotations,
+            )
+
+        return _Pending(finish_unknown, visits)

@@ -80,6 +80,7 @@ __all__ = [
     "run_cases",
     "save_baseline_checked",
     "schema_cases",
+    "timeout_from_environment",
     "unresolved_failures",
 ]
 
@@ -133,6 +134,19 @@ def required_schema_cases(cases: Iterable[CorpusCase]) -> tuple[CorpusCase, ...]
 def deferred_instance_cases(cases: Iterable[CorpusCase]) -> tuple[CorpusCase, ...]:
     """Instance assertions owned by the later validation phase."""
     return tuple(case for case in cases if case.kind in INSTANCE_KINDS)
+
+
+def timeout_from_environment() -> float:
+    """Read the corpus timeout, rejecting a budget that disables the alarm.
+
+    ``setitimer(0)`` cancels the per-case alarm instead of enforcing a zero
+    second limit, so a non-positive value must fail rather than silently make
+    the corpus gate unbounded.
+    """
+    timeout = float(os.environ.get("PYXSD_RELAXNG_TIMEOUT", "60"))
+    if timeout <= 0:
+        raise ValueError("PYXSD_RELAXNG_TIMEOUT must be positive")
+    return timeout
 
 
 def run_cases(

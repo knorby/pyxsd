@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 
 from pyxsd.relaxng.datatypes import (
+    Datatype,
     DatatypeContext,
+    DatatypeFactory,
     DatatypeLibraryRegistration,
     DatatypeLibraryRegistry,
     UnsupportedDatatypeError,
@@ -22,6 +24,7 @@ from pyxsd.relaxng.limits import BudgetCounter, RelaxNGLimits
 from pyxsd.relaxng.names import Name
 from pyxsd.relaxng.patterns import (
     Choice,
+    Data,
     Element,
     Empty,
     Interleave,
@@ -803,3 +806,70 @@ def test_overridden_nested_scopes_are_removed_before_reference_checks(tmp_path):
     )
     assert not report.errors
     assert deref(compiled.start).name_class == Name(None, "new")
+
+
+class PermissiveDatatype(Datatype):
+    """A datatype that accepts every lexical value."""
+
+    def allows(self, lexical, context):
+        return True
+
+    def equal(self, left, left_context, right, right_context):
+        return True
+
+    def __repr__(self):
+        return "PermissiveDatatype()"
+
+
+class PermissiveFactory(DatatypeFactory):
+    """A custom library that accepts every type name."""
+
+    def create(self, type_name, parameters, context):
+        return PermissiveDatatype()
+
+
+def permissive_library(uri):
+    libraries = DatatypeLibraryRegistry()
+    libraries.register(uri, DatatypeLibraryRegistration(PermissiveFactory(), "permissive/1"))
+    return libraries
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<data type="bad:type" datatypeLibrary="urn:permissive"/>',
+        '<value type="bad:type" datatypeLibrary="urn:permissive">x</value>',
+        '<data type="token" datatypeLibrary="urn:permissive">'
+        '<param name="bad:name">v</param></data>',
+    ],
+)
+def test_malformed_type_and_param_names_are_schema_errors(body):
+    _, report = run(
+        grammar(f"<start>{body}</start>"),
+        libraries=permissive_library("urn:permissive"),
+    )
+
+    assert "relaxng-invalid-name" in codes(report)
+
+
+def test_non_ascii_datatype_library_identity_uses_the_xlink_escaped_uri():
+    libraries = permissive_library("urn:example:l%C3%A9")
+    compiled, report = run(
+        grammar('<start><data datatypeLibrary="urn:example:l\u00e9" type="anything"/></start>'),
+        libraries=libraries,
+    )
+
+    assert not report.errors
+    assert isinstance(compiled.start, Data)
+
+
+def test_nbsp_padded_combine_is_not_normalized():
+    _, report = run(grammar('<start combine="\u00a0choice\u00a0"><empty/></start>'))
+
+    assert "relaxng-invalid-combine" in codes(report)
+
+
+def test_xml_whitespace_padded_combine_is_normalized():
+    _, report = run(grammar('<start combine=" \t\r\nchoice "><empty/></start>'))
+
+    assert "relaxng-invalid-combine" not in codes(report)

@@ -13,6 +13,8 @@ import io
 from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
+
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import XML_NS
 from pyxsd.relaxng.origins import SourceOrigin
@@ -1105,3 +1107,253 @@ class TestStructurePreservation:
         assert isinstance(choice.children[1], FullInterleave)
         assert find_all(schema, FullText)
         assert find_all(schema, FullDiv) == []
+
+
+class TestCharacterContent:
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '<element name="doc">before<empty/></element>',
+            '<element name="doc"><empty/>after</element>',
+            "<group>before<empty/></group>",
+            "<group><empty/>after</group>",
+            "<grammar>before<start><empty/></start></grammar>",
+            "<grammar><start><empty/></start>after</grammar>",
+            '<data type="string">before</data>',
+            '<data type="string"><param name="p">v</param>after</data>',
+        ],
+    )
+    def test_non_whitespace_character_children_are_reported(self, body):
+        schema = read_schema(f'<element xmlns="{RNG_NS}" name="root">{body}</element>')
+
+        assert "relaxng-invalid-character-content" in codes(schema)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '<element name="doc"> \t\r\n<empty/></element>',
+            '<element name="doc"><empty/> \t\r\n</element>',
+            "<group> \t\r\n<empty/></group>",
+            "<group><empty/> \t\r\n</group>",
+            "<grammar> \t\r\n<start><empty/></start></grammar>",
+            "<grammar><start><empty/></start> \t\r\n</grammar>",
+            '<data type="string"> \t\r\n</data>',
+            '<data type="string"><param name="p">v</param> \t\r\n</data>',
+        ],
+    )
+    def test_xml_whitespace_character_children_are_allowed(self, body):
+        schema = read_schema(f'<element xmlns="{RNG_NS}" name="root">{body}</element>')
+
+        assert "relaxng-invalid-character-content" not in codes(schema)
+
+    def test_foreign_annotation_character_content_is_opaque(self):
+        schema = read_schema(
+            f"""
+            <element xmlns="{RNG_NS}" xmlns:a="urn:example:annotation" name="root">
+              <a:documentation>not whitespace</a:documentation>
+              <empty/>
+            </element>
+            """
+        )
+
+        assert "relaxng-invalid-character-content" not in codes(schema)
+
+    def test_character_data_after_a_foreign_annotation_is_reported(self):
+        schema = read_schema(
+            f"""
+            <element xmlns="{RNG_NS}" xmlns:a="urn:example:annotation" name="root">
+              <a:documentation/>
+              <empty/>tail
+            </element>
+            """
+        )
+
+        assert "relaxng-invalid-character-content" in codes(schema)
+
+
+class TestNameClassPlacement:
+    @pytest.mark.parametrize("tag", ["element", "attribute"])
+    @pytest.mark.parametrize("first_pattern", ["<empty/>", "<text/>"])
+    def test_a_late_name_class_is_not_consumed(self, tag, first_pattern):
+        schema = read_schema(
+            f'<element xmlns="{RNG_NS}" name="root">'
+            f"<group><{tag}>{first_pattern}<name>late</name></{tag}></group>"
+            "</element>"
+        )
+
+        assert "relaxng-missing-name-class" in codes(schema)
+        group = schema.start.children[0]
+        assert isinstance(group, FullGroup)
+        node = group.children[0]
+        assert type(node).__name__ == ("FullAttribute" if tag == "attribute" else "FullElement")
+        assert node.name_class is None
+        assert any(isinstance(child, FullName) for child in node.children)
+
+    @pytest.mark.parametrize("tag", ["element", "attribute"])
+    def test_the_first_name_class_child_is_consumed(self, tag):
+        schema = read_schema(
+            f'<element xmlns="{RNG_NS}" name="root">'
+            f"<group><{tag}><name>first</name><empty/></{tag}></group>"
+            "</element>"
+        )
+
+        assert "relaxng-missing-name-class" not in codes(schema)
+        group = schema.start.children[0]
+        assert isinstance(group, FullGroup)
+        node = group.children[0]
+        assert node.name_class is not None
+        assert node.name_class.local == "first"
+
+
+class TestXmlWhitespaceTrimming:
+    def test_nbsp_in_a_name_attribute_is_not_trimmed(self):
+        schema = read_schema(f'<element xmlns="{RNG_NS}" name="\u00a0doc\u00a0"><empty/></element>')
+
+        assert "relaxng-invalid-name" in codes(schema)
+        assert schema.start.name_class.local == "\u00a0doc\u00a0"
+
+    def test_nbsp_in_a_name_element_is_not_trimmed(self):
+        schema = read_schema(
+            f'<element xmlns="{RNG_NS}"><name>\u00a0doc\u00a0</name><empty/></element>'
+        )
+
+        assert "relaxng-invalid-name" in codes(schema)
+        assert schema.start.name_class.local == "\u00a0doc\u00a0"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '<data type="\u00a0token\u00a0"/>',
+            '<value type="\u00a0token\u00a0">x</value>',
+        ],
+    )
+    def test_nbsp_in_a_type_attribute_is_not_trimmed(self, body):
+        schema = read_schema(f'<element xmlns="{RNG_NS}" name="root">{body}</element>')
+
+        assert "relaxng-invalid-name" in codes(schema)
+        node = schema.start.children[0]
+        assert node.type_name == "\u00a0token\u00a0"
+
+    def test_nbsp_in_a_param_name_is_not_trimmed(self):
+        schema = read_schema(
+            f'<element xmlns="{RNG_NS}" name="root">'
+            '<data type="token"><param name="\u00a0p\u00a0">v</param></data>'
+            "</element>"
+        )
+
+        assert "relaxng-invalid-name" in codes(schema)
+        data = schema.start.children[0]
+        assert data.parameters[0].name == "\u00a0p\u00a0"
+
+    def test_all_four_xml_whitespace_characters_are_trimmed(self):
+        schema = read_schema(f'<element xmlns="{RNG_NS}" name=" \t\r\ndoc \n "><empty/></element>')
+
+        assert "relaxng-invalid-name" not in codes(schema)
+        assert schema.start.name_class.local == "doc"
+
+
+class TestUriAttributeNormalization:
+    @pytest.mark.parametrize(
+        ("authored", "normalized"),
+        [
+            ("urn:example:datatypes", "urn:example:datatypes"),
+            ("urn:example:l\u00e9", "urn:example:l%C3%A9"),
+            ("urn:example:a b", "urn:example:a%20b"),
+            ("urn:example:%41", "urn:example:%41"),
+            ("http://[::1]/datatypes", "http://[::1]/datatypes"),
+        ],
+    )
+    def test_datatype_library_identities_are_xlink_escaped(self, authored, normalized):
+        schema = read_schema(
+            f'<element xmlns="{RNG_NS}" name="root">'
+            f'<data type="token" datatypeLibrary="{authored}"/>'
+            "</element>"
+        )
+
+        data = schema.start.children[0]
+        assert isinstance(data, FullData)
+        assert data.datatype_library == normalized
+        assert "relaxng-invalid-datatype-library" not in codes(schema)
+
+    def test_malformed_datatype_library_uri_is_still_reported(self):
+        schema = read_schema(
+            f'<element xmlns="{RNG_NS}" name="root">'
+            '<data type="token" datatypeLibrary="urn:example:%zz"/>'
+            "</element>"
+        )
+
+        assert "relaxng-invalid-datatype-library" in codes(schema)
+
+    @pytest.mark.parametrize(
+        ("authored", "normalized"),
+        [
+            ("caf\u00e9.rng", "caf%C3%A9.rng"),
+            ("part with space.rng", "part%20with%20space.rng"),
+        ],
+    )
+    def test_href_values_are_xlink_escaped(self, authored, normalized):
+        schema = read_schema(
+            f'<element xmlns="{RNG_NS}" name="root"><externalRef href="{authored}"/></element>'
+        )
+
+        external = find_one(schema, ReferencePlaceholder)
+        assert isinstance(external, ReferencePlaceholder)
+        assert external.href == normalized
+
+    def test_include_href_is_xlink_escaped(self):
+        schema = read_schema(
+            f'<grammar xmlns="{RNG_NS}">'
+            '<include href="part with space.rng"/>'
+            "<start><empty/></start>"
+            "</grammar>"
+        )
+
+        assert isinstance(schema.start, FullGrammar)
+        assert schema.start.scope.includes[0].href == "part%20with%20space.rng"
+
+    def test_a_malformed_href_is_reported(self):
+        schema = read_schema(
+            f'<element xmlns="{RNG_NS}" name="root"><externalRef href="bad%zz.rng"/></element>'
+        )
+
+        assert "relaxng-invalid-href" in codes(schema)
+
+
+class TestDeepNesting:
+    @pytest.mark.parametrize("depth", [300, 1100])
+    @pytest.mark.parametrize("construct", ["group", "element"])
+    def test_deeply_nested_authored_elements_are_read_iteratively(self, depth, construct):
+        if construct == "group":
+            xml = (
+                f'<element xmlns="{RNG_NS}" name="root">'
+                + "<group>" * depth
+                + "<empty/>"
+                + "</group>" * depth
+                + "</element>"
+            )
+        else:
+            xml = (
+                f'<element xmlns="{RNG_NS}" name="root">'
+                + "".join(f'<element name="e{index}">' for index in range(depth))
+                + "<empty/>"
+                + "</element>" * depth
+                + "</element>"
+            )
+        schema = read_schema(xml)
+
+        assert schema.findings == ()
+        node: FullNode = schema.start
+        steps = 0
+        if construct == "group":
+            assert isinstance(node, FullElement)
+            node = node.children[0]
+            while isinstance(node, FullGroup):
+                steps += 1
+                node = node.children[0]
+            assert steps == depth
+        else:
+            while isinstance(node, FullElement):
+                steps += 1
+                node = node.children[0]
+            assert steps == depth + 1
+        assert isinstance(node, FullEmpty)

@@ -10,7 +10,6 @@ a limit, a timeout, or a crash is an adapter gap, never a correct rejection.
 from __future__ import annotations
 
 import json
-import os
 import runpy
 import signal
 import sys
@@ -758,7 +757,10 @@ def test_duplicate_except_clauses_are_schema_errors(tmp_path):
         ("xyzzy/foo:bar", False),
         ("http://www.example.com#xyzzy", False),
         ("http://www.example.com#", False),
-        ("http://www.example.com/a b", False),
+        # RELAX NG section 4.3 applies XLink 5.4 escaping first, so a space
+        # or non-ASCII character is a legal escaped identity.
+        ("http://www.example.com/a b", True),
+        ("http://www.example.com/\u00e9", True),
     ],
 )
 def test_datatype_library_uris_follow_rfc2396(tmp_path, library, valid):
@@ -864,6 +866,19 @@ def test_unregistered_datatype_libraries_remain_capability_gaps(tmp_path, body):
         RelaxNGSchema.compile(path)
 
 
+def test_environment_timeout_must_be_positive(monkeypatch, capsys):
+    monkeypatch.setenv("PYXSD_RELAXNG_TIMEOUT", "0")
+
+    with pytest.raises(ValueError, match="positive"):
+        report_relaxng.timeout_from_environment()
+    with pytest.raises(SystemExit):
+        report_relaxng.main(["--list-only"])
+    assert "--timeout must be positive" in capsys.readouterr().err
+
+    monkeypatch.setenv("PYXSD_RELAXNG_TIMEOUT", "12.5")
+    assert report_relaxng.timeout_from_environment() == 12.5
+
+
 # ---------------------------------------------------------------------------
 # The pinned corpus gate
 # ---------------------------------------------------------------------------
@@ -874,7 +889,7 @@ def test_unregistered_datatype_libraries_remain_capability_gaps(tmp_path, body):
     reason="set PYXSD_RUN_RELAXNG=1 and check out the pinned catalogs",
 )
 def test_pinned_schema_corpus_matches_the_checked_in_baseline():
-    timeout = float(os.environ.get("PYXSD_RELAXNG_TIMEOUT", "60"))
+    timeout = report_relaxng.timeout_from_environment()
     all_cases = report_relaxng.load_cases()
     cases = report_relaxng.schema_cases(all_cases)
     required = report_relaxng.required_schema_cases(cases)

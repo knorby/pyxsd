@@ -64,7 +64,6 @@ from __future__ import annotations
 
 import base64
 import decimal
-import ipaddress
 import math
 import re
 from abc import ABC, abstractmethod
@@ -72,7 +71,6 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType, NotImplementedType
 from typing import Any, cast
-from urllib.parse import urlsplit
 
 from pyxsd import xsd_data_types as _xsd_types
 from pyxsd.exceptions import PyXSDError
@@ -84,6 +82,7 @@ from pyxsd.facets import (
     whitespace_transform,
 )
 from pyxsd.locations import ConstraintInfo
+from pyxsd.relaxng.uris import normalize_uri_reference
 from pyxsd.xsd_data_types import (
     _DURATION_PARTS,
     _TEMPORAL_DATE,
@@ -234,20 +233,6 @@ _XSD11_YEAR_ZERO = re.compile(r"^-?0{4}(?![0-9])")
 _YEAR_PREFIX = re.compile(r"^(-?[0-9]{4,})")
 _TEMPORAL_TIMEZONE_SPAN = decimal.Decimal(14 * 3600)
 _PROCESS_DEPENDENT_FINGERPRINT = re.compile(r"0x[0-9a-fA-F]+")
-
-#: XSD 1.0 §3.2.17 defines the anyURI lexical space through the XLink 5.4
-#: escaping algorithm: after escaping, the result must be an RFC 2396 URI
-#: reference (as amended by RFC 2732).  XSD 1.1 instead accepts every XML
-#: character sequence.  These regexes validate the generic grammar only;
-#: scheme-specific syntax is not part of XSD 1.0 conformance.
-_XLINK_ESCAPED_ASCII = frozenset(
-    [chr(code) for code in range(0x20)]
-    + [" ", "<", ">", '"', "{", "}", "|", "\\", "^", "`", "\x7f"]
-)
-_ANYURI_PATH = re.compile(r"^(?:[A-Za-z0-9\-_.!~*'():@&=+$,;]|/|%[0-9A-Fa-f]{2})*$")
-_ANYURI_URIC = re.compile(r"^(?:[A-Za-z0-9\-_.!~*'();/?:@&=+$,\[\]]|%[0-9A-Fa-f]{2})*$")
-_ANYURI_AUTHORITY = re.compile(r"^(?:[A-Za-z0-9\-_.!~*'()$+,;:@&=]|%[0-9A-Fa-f]{2}|\[|\])+$")
-_ANYURI_SCHEME_PREFIX = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 _XSD_PARAMETER_NAMES = frozenset(
     {
@@ -756,95 +741,9 @@ def _xsd10_duration_bounds(
     return tuple((name, value, text) for name, (value, text) in sorted(bounds.items()))
 
 
-def _is_xml_char(code: int) -> bool:
-    """Whether *code* is an XML 1.0 Char (XSD 1.0 lexical space)."""
-    return (
-        code in (0x9, 0xA, 0xD)
-        or 0x20 <= code <= 0xD7FF
-        or 0xE000 <= code <= 0xFFFD
-        or 0x10000 <= code <= 0x10FFFF
-    )
-
-
-def _xlink_escape(text: str) -> str:
-    """Apply the XLink 5.4 escaping procedure used by XSD 1.0 anyURI."""
-    escaped: list[str] = []
-    for char in text:
-        code = ord(char)
-        if code > 0x7F or char in _XLINK_ESCAPED_ASCII:
-            if not _is_xml_char(code):
-                raise TypeError(f"anyURI contains a non-XML character U+{code:04X}")
-            escaped.extend(f"%{byte:02X}" for byte in char.encode("utf-8"))
-        else:
-            escaped.append(char)
-    return "".join(escaped)
-
-
-def _check_anyuri_authority(netloc: str) -> None:
-    """Validate the RFC 2396 authority, including RFC 2732 IPv6 literals."""
-    if _ANYURI_AUTHORITY.fullmatch(netloc) is None:
-        raise TypeError(f"anyURI authority {netloc!r} is not a legal RFC 2396 authority")
-    if "[" not in netloc:
-        return
-    open_index = netloc.index("[")
-    close_index = netloc.index("]", open_index)
-    literal = netloc[open_index + 1 : close_index]
-    if "%" in literal:
-        raise TypeError("anyURI IPv6 literals may not carry a zone identifier in XSD 1.0")
-    try:
-        ipaddress.IPv6Address(literal)
-    except ValueError as exc:
-        raise TypeError(f"anyURI host {literal!r} is not an IPv6 address") from exc
-    suffix = netloc[close_index + 1 :]
-    if suffix:
-        port = suffix.removeprefix(":")
-        if port and not port.isdigit():
-            raise TypeError(f"anyURI port {port!r} is not numeric")
-
-
-def _has_empty_authority(escaped: str) -> bool:
-    """Whether the escaped reference contains an empty ``//`` authority."""
-    rest = escaped
-    scheme = _ANYURI_SCHEME_PREFIX.match(rest)
-    if scheme is not None:
-        rest = rest[scheme.end() :]
-    if not rest.startswith("//"):
-        return False
-    authority = rest[2:]
-    for separator in "/?#":
-        index = authority.find(separator)
-        if index != -1:
-            authority = authority[:index]
-    return not authority
-
-
-def _require_xsd10_anyuri(text: str) -> str:
-    """Return the XLink-escaped form when *text* is an XSD 1.0 anyURI lexical."""
-    escaped = _xlink_escape(text)
-    if escaped.count("#") > 1:
-        raise TypeError("anyURI contains more than one fragment separator")
-    if _has_empty_authority(escaped):
-        raise TypeError(f"anyURI {text!r} has an empty authority component")
-    try:
-        parts = urlsplit(escaped)
-    except ValueError as exc:
-        raise TypeError(f"anyURI {text!r} is not a legal URI reference") from exc
-    if not parts.scheme and ":" in parts.path.split("/", 1)[0]:
-        raise TypeError(f"anyURI {text!r} uses a colon in a relative first path segment")
-    if parts.netloc:
-        _check_anyuri_authority(parts.netloc)
-    if _ANYURI_PATH.fullmatch(parts.path) is None:
-        raise TypeError(f"anyURI path is not legal RFC 2396 syntax: {text!r}")
-    if _ANYURI_URIC.fullmatch(parts.query) is None:
-        raise TypeError(f"anyURI query is not legal RFC 2396 uric: {text!r}")
-    if _ANYURI_URIC.fullmatch(parts.fragment) is None:
-        raise TypeError(f"anyURI fragment is not legal RFC 2396 uric: {text!r}")
-    return escaped
-
-
 def _xsd10_anyuri_value(text: str) -> AnyURI:
     """Validate an XSD 1.0 anyURI lexical and return its value object."""
-    _require_xsd10_anyuri(text)
+    normalize_uri_reference(text)
     return AnyURI(text)
 
 

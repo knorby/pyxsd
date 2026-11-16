@@ -502,3 +502,84 @@ class TestXmlBase:
     def test_absolute_local_xml_base_from_memory_is_allowed(self, tmp_path):
         target = (tmp_path / "parts").resolve()
         assert resolve_xml_base("<memory>", str(target)) == str(target)
+
+
+def test_unicode_href_is_xlink_escaped_before_policy_lookup():
+    url = "https://example.com/caf%C3%A9.rng"
+    policy = MemoryPolicy(
+        {url: f'<element xmlns="{RNG_NS}" name="child"><empty/></element>'.encode()}
+    )
+    loader = ResourceLoader(policy=policy)
+    main = ResourceLoader().load(FIXTURES / "external" / "main.rng")
+
+    loaded = loader.resolve("caf\u00e9.rng", main, "https://example.com/")
+
+    assert loaded.canonical_id == url
+    assert policy.reads == [(url, None, "schema")]
+
+
+def test_local_space_bearing_href_maps_through_the_policy(tmp_path):
+    child = tmp_path / "child with space.rng"
+    child.write_text(RNG_START, encoding="utf-8")
+    main_path = tmp_path / "main.rng"
+    main_path.write_text(RNG_START, encoding="utf-8")
+    policy = MemoryPolicy(
+        {str(main_path): RNG_START.encode(), str(child): RNG_START.encode()},
+        aliases={str(child): "urn:canonical:child"},
+    )
+    loader = ResourceLoader(policy=policy)
+    containing = loader.load(main_path)
+
+    loaded = loader.resolve("child with space.rng", containing, None)
+
+    assert loaded.canonical_id == "urn:canonical:child"
+    assert policy.reads[-1][0] == str(child)
+
+
+def test_fragment_href_never_opens_a_decoy_file(tmp_path):
+    decoy = tmp_path / "child.rng#fragment"
+    decoy.write_text(RNG_START, encoding="utf-8")
+    main_path = tmp_path / "main.rng"
+    main_path.write_text(RNG_START, encoding="utf-8")
+    policy = RecordingPolicy(tmp_path)
+    loader = ResourceLoader(policy=policy)
+    main = loader.load(main_path)
+    reads = list(policy.reads)
+
+    with pytest.raises(ResourcePolicyError, match="fragment"):
+        loader.resolve("child.rng#fragment", main, None)
+
+    assert policy.reads == reads
+    assert str(decoy) not in {dependency.canonical_id for dependency in loader.dependencies()}
+
+
+def test_fragment_href_is_rejected_without_a_policy(tmp_path):
+    decoy = tmp_path / "child.rng#fragment"
+    decoy.write_text(RNG_START, encoding="utf-8")
+    main_path = tmp_path / "main.rng"
+    main_path.write_text(RNG_START, encoding="utf-8")
+    loader = ResourceLoader()
+    main = loader.load(main_path)
+
+    with pytest.raises(ResourcePolicyError, match="fragment"):
+        loader.resolve("child.rng#fragment", main, None)
+
+
+def test_xml_base_values_are_xlink_escaped():
+    local = str((FIXTURES / "external" / "main.rng").resolve())
+
+    assert (
+        resolve_xml_base("https://example.com/schemas/main.rng", "caf\u00e9/")
+        == "https://example.com/schemas/caf%C3%A9/"
+    )
+    assert (
+        resolve_xml_base(local, "parts with space/")
+        == str((FIXTURES / "external" / "parts with space").resolve()) + "/"
+    )
+
+
+def test_a_malformed_utf8_local_reference_is_rejected():
+    local = str((FIXTURES / "external" / "main.rng").resolve())
+
+    with pytest.raises(ResourcePolicyError, match="UTF-8"):
+        resolve_xml_base(local, "%FF")

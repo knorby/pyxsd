@@ -103,6 +103,7 @@ from pyxsd.relaxng.syntax import (
     SchemaFinding,
     read_full_syntax,
 )
+from pyxsd.relaxng.whitespace import trim_xml_whitespace
 from pyxsd.resource_policy import ResourcePolicyError
 from pyxsd.validation import ValidationReport
 
@@ -583,7 +584,7 @@ class Simplifier:
             type_name = "token"
             library = BUILTIN_LIBRARY
         else:
-            type_name = type_name.strip()
+            type_name = trim_xml_whitespace(type_name)
             if not type_name:
                 self._error(
                     "relaxng-missing-datatype",
@@ -635,7 +636,7 @@ class Simplifier:
                 origins = origins.union(child.origins)
             else:
                 self._unexpected_pattern(child)
-        type_name = node.type_name.strip() if node.type_name is not None else ""
+        type_name = trim_xml_whitespace(node.type_name) if node.type_name is not None else ""
         if not type_name:
             self._error(
                 "relaxng-missing-datatype",
@@ -1518,14 +1519,14 @@ def simplify_schema(
 
 
 def _combine(value: str | None) -> str | None:
-    return value.strip() if value is not None else None
+    return trim_xml_whitespace(value) if value is not None else None
 
 
 def _strip_name(value: str | None) -> str | None:
     """Strip an authored ``name`` and treat a blank value as missing."""
     if value is None:
         return None
-    return value.strip() or None
+    return trim_xml_whitespace(value) or None
 
 
 def _node_origins(node: FullNode) -> OriginTable:
