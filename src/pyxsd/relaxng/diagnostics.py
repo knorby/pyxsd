@@ -161,27 +161,39 @@ def report_first_mismatch(outcome: ValidationOutcome, report: ValidationReport) 
     if mismatch is None:
         raise ValueError("an invalid RELAX NG outcome must carry a first mismatch")
     summary = expectations(mismatch.preceding)
-    kind = _mismatch_kind(mismatch, summary)
+    attribute_expected = False
+    attribute_datatypes: set[str] = set()
+    if mismatch.event == "attribute" and mismatch.name is not None:
+        uri, local = expanded_name(mismatch.name)
+        attribute_expected, attribute_datatypes = _matching_attribute_datatypes(
+            mismatch.preceding, uri, local
+        )
+    kind = _mismatch_kind(mismatch, summary, attribute_expected)
+    scalar_datatypes = (
+        attribute_datatypes if kind == INVALID_SCALAR and mismatch.event == "attribute" else None
+    )
     location, precision = _mismatch_location(mismatch)
     report.add_error(
-        _mismatch_message(mismatch, summary, kind),
+        _mismatch_message(mismatch, summary, kind, scalar_datatypes),
         code=kind,
         element=_element_display(mismatch.element),
         phase="instance",
         location=location,
         location_precision=precision,
-        details=_mismatch_details(mismatch, summary),
+        details=_mismatch_details(mismatch, summary, scalar_datatypes),
     )
 
 
-def _mismatch_kind(mismatch: ValidationMismatch, summary: ExpectationSummary) -> _MismatchKind:
+def _mismatch_kind(
+    mismatch: ValidationMismatch, summary: ExpectationSummary, attribute_expected: bool
+) -> _MismatchKind:
     event = mismatch.event
     if event == "structure":
         return INVALID_STRUCTURE
     if event == "start_tag_open":
         return UNEXPECTED_ELEMENT
     if event == "attribute":
-        return INVALID_SCALAR if _expects_attribute(mismatch) else UNEXPECTED_ATTRIBUTE
+        return INVALID_SCALAR if attribute_expected else UNEXPECTED_ATTRIBUTE
     if event == "start_tag_close":
         return MISSING_ATTRIBUTE
     if event in ("end_tag", "document_end"):
@@ -196,17 +208,17 @@ def _expects_scalar(summary: ExpectationSummary) -> bool:
     return any(label != "empty" for label in summary.content)
 
 
-def _expects_attribute(mismatch: ValidationMismatch) -> bool:
-    """Whether the actual attribute name is expected by any viable alternative."""
-    actual = mismatch.name
-    if actual is None:
-        return False
-    uri, local = expanded_name(actual)
-    return _expects_attribute_name(mismatch.preceding, uri, local)
+def _matching_attribute_datatypes(
+    pattern: Pattern, uri: str | None, local: str
+) -> tuple[bool, set[str]]:
+    """Return whether the name is expected and the datatypes declared for it.
 
-
-def _expects_attribute_name(pattern: Pattern, uri: str | None, local: str) -> bool:
-    """Search current-position attributes without entering child elements."""
+    Every viable branch is visited so repeated declarations of the same
+    attribute contribute all their datatypes.  Child element contents are not
+    entered; attributes after an end tag belong to the parent.
+    """
+    expected = False
+    datatypes: set[str] = set()
     pending = [pattern]
     seen: set[int] = set()
     while pending:
@@ -227,10 +239,16 @@ def _expects_attribute_name(pattern: Pattern, uri: str | None, local: str) -> bo
             continue
         elif isinstance(node, Attribute):
             if node.name_class.contains(uri, local):
-                return True
+                expected = True
+                datatypes.update(_datatype_descriptions(node.pattern))
         elif not isinstance(node, (Data, DataExcept, Empty, List, NotAllowed, Text, Value)):
             raise TypeError(f"unknown RELAX NG pattern {type(node).__name__}")
-    return False
+    return expected, datatypes
+
+
+def _expects_attribute_name(pattern: Pattern, uri: str | None, local: str) -> bool:
+    """Search current-position attributes without entering child elements."""
+    return _matching_attribute_datatypes(pattern, uri, local)[0]
 
 
 def _mismatch_location(
@@ -260,14 +278,17 @@ def _element_display(element: object | None) -> str | None:
 
 
 def _mismatch_details(
-    mismatch: ValidationMismatch, summary: ExpectationSummary
+    mismatch: ValidationMismatch,
+    summary: ExpectationSummary,
+    attribute_datatypes: set[str] | None = None,
 ) -> dict[str, object]:
+    datatypes = summary.datatypes if attribute_datatypes is None else attribute_datatypes
     details: dict[str, object] = {
         "event": mismatch.event,
         "expected-elements": list(summary.elements),
         "expected-attributes": list(summary.attributes),
         "expected-content": list(summary.content),
-        "expected-datatypes": list(summary.datatypes),
+        "expected-datatypes": sorted(datatypes),
     }
     if mismatch.name is not None:
         details["actual-name"] = mismatch.name
@@ -279,7 +300,10 @@ def _mismatch_details(
 
 
 def _mismatch_message(
-    mismatch: ValidationMismatch, summary: ExpectationSummary, kind: _MismatchKind
+    mismatch: ValidationMismatch,
+    summary: ExpectationSummary,
+    kind: _MismatchKind,
+    attribute_datatypes: set[str] | None,
 ) -> str:
     if kind == INVALID_STRUCTURE:
         structural_name = getattr(mismatch.element, "_name_", None)
@@ -302,7 +326,7 @@ def _mismatch_message(
         if mismatch.event == "attribute":
             return (
                 f"attribute {name!r} value {lexical!r} is not a valid scalar value; "
-                f"{_attribute_scalar_expectation(summary)}"
+                f"{_attribute_scalar_expectation(attribute_datatypes or set())}"
             )
         return (
             f"character data {lexical!r} is not a valid scalar value; "
@@ -342,10 +366,10 @@ def _scalar_expectation(summary: ExpectationSummary) -> str:
     return "expected a valid scalar value"
 
 
-def _attribute_scalar_expectation(summary: ExpectationSummary) -> str:
-    """Describe an attribute datatype without borrowing unrelated content."""
-    if summary.datatypes:
-        return "expected datatype " + ", ".join(summary.datatypes)
+def _attribute_scalar_expectation(datatypes: set[str]) -> str:
+    """Describe only the datatypes declared for the failing attribute."""
+    if datatypes:
+        return "expected datatype " + ", ".join(sorted(datatypes))
     return "expected a valid scalar value"
 
 

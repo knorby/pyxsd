@@ -434,6 +434,48 @@ def test_attribute_scalar_message_does_not_borrow_content_expectations():
     assert "expected a valid scalar value" in issue.message
 
 
+def test_attribute_scalar_datatypes_exclude_a_content_alternative():
+    pattern = element("r", Choice(Attribute(Name(None, "a"), Empty()), Data(INTEGER)))
+    _outcome, issue = report_for('<r a="x"/>', pattern)
+    assert issue.code == INVALID_SCALAR
+    assert issue.details["expected-datatypes"] == []
+    assert issue.details["expected-content"] == ["data"]
+    assert "xsd:integer" not in issue.message
+    assert "expected a valid scalar value" in issue.message
+
+
+def test_attribute_scalar_datatypes_exclude_a_sibling_attribute():
+    pattern = element(
+        "r",
+        Group(
+            Attribute(Name(None, "a"), Data(INTEGER)),
+            Attribute(Name(None, "b"), Value(STRING, "ok")),
+        ),
+    )
+    _outcome, issue = report_for('<r a="bad" b="ok"/>', pattern)
+    assert issue.code == INVALID_SCALAR
+    assert issue.details["expected-datatypes"] == ["xsd:integer"]
+    assert "expected datatype xsd:integer" in issue.message
+    assert "string" not in issue.message
+
+    _outcome, issue = report_for('<r a="1" b="bad"/>', pattern)
+    assert issue.code == INVALID_SCALAR
+    assert issue.details["expected-datatypes"] == ["string"]
+    assert "expected datatype string" in issue.message
+    assert "xsd:integer" not in issue.message
+
+
+def test_matching_attribute_datatypes_returns_absence_without_a_match():
+    from pyxsd.relaxng import diagnostics as d
+
+    pattern = Group(
+        Attribute(Name(None, "a"), Data(INTEGER)),
+        Attribute(Name(None, "b"), Data(STRING)),
+    )
+    assert d._matching_attribute_datatypes(pattern, None, "a") == (True, {"xsd:integer"})
+    assert d._matching_attribute_datatypes(pattern, None, "missing") == (False, set())
+
+
 def test_namespaced_expected_attribute_uses_expanded_names():
     root_name = Name("urn:r", "r")
     attr_name = Name("urn:a", "a")
