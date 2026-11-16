@@ -30,6 +30,7 @@ from xml.sax.saxutils import escape
 
 from elementpath.regex import unicode_version
 from tests.xslt.assertions import ResultSnapshot
+from tests.xslt.environment import build_schema_pool, environment_fingerprint
 from tests.xslt.model import Param, Source, TestCase
 from tests.xslt.outcomes import CaseResult
 from tests.xslt.runner import CaseExecutionError, run_cases
@@ -37,6 +38,7 @@ from tests.xslt.selection import XSLT30_NON_STREAMING, FeatureProfile
 
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmMap
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
+from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath.engine import XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
 from pyxsd.xslt import CompiledStylesheet, TransformationResult, XsltProcessor
@@ -382,23 +384,37 @@ def _stylesheet(case: TestCase) -> Path:
 #: of a whole profile in memory.
 _COMPILED_CACHE_SIZE = 8
 
-#: Compiled stylesheets by ``(profile, stylesheet path, bytes digest)``.  Only
-#: stylesheets compiled with no static parameters are cached: the artifact is
-#: then a pure function of the stylesheet closure and the profile identity.
-#: The corpus is pinned and immutable for a run, so the digest guards against a
-#: principal stylesheet rewritten between cases, not against an edit inside the
-#: closure it imports.
-_COMPILED: dict[tuple[str, str, bytes], CompiledStylesheet] = {}
+#: Compiled stylesheets by ``(profile, stylesheet path, bytes digest,
+#: environment fingerprint)``.  Only stylesheets compiled with no static
+#: parameters are cached: the artifact is then a pure function of the
+#: stylesheet closure, the profile identity, and the environment the case
+#: declares.  The corpus is pinned and immutable for a run, so the digest
+#: guards against a principal stylesheet rewritten between cases, not against
+#: an edit inside the closure it imports.  The fingerprint keeps two cases that
+#: share one stylesheet apart when their schema sets differ.
+_COMPILED: dict[tuple[str, str, bytes, str], CompiledStylesheet] = {}
 
 
 def _compile_stylesheet(
     profile: SuiteProfile,
     stylesheet: Path,
     static_parameters: Mapping[str, Any],
+    *,
+    schema: SchemaPool | None = None,
+    environment: str = "",
 ) -> CompiledStylesheet:
-    """Compile one case's stylesheet, reusing an invariant artifact."""
+    """Compile one case's stylesheet, reusing an invariant artifact.
+
+    *schema* is the case's compile-time schema pool and *environment* its
+    fingerprint; both are part of the cache identity, so an artifact is never
+    shared between cases whose declared schemas differ.
+    """
     if static_parameters:
-        return profile.processor.compile(stylesheet, static_parameters=static_parameters)
+        return profile.processor.compile(
+            stylesheet,
+            static_parameters=static_parameters,
+            schema=schema,
+        )
     try:
         digest = hashlib.sha256(stylesheet.read_bytes()).digest()
     except (FileNotFoundError, PermissionError, IsADirectoryError):
@@ -406,15 +422,30 @@ def _compile_stylesheet(
         # `TimeoutError` is deliberately absent: it subclasses `OSError`, and a
         # budget that expires during this read must keep its alarm instead of
         # being mistaken for an unreadable file.
-        return profile.processor.compile(stylesheet)
-    key = (profile.name, str(stylesheet), digest)
+        return profile.processor.compile(stylesheet, schema=schema)
+    key = (profile.name, str(stylesheet), digest, environment)
     compiled = _COMPILED.get(key)
     if compiled is None:
-        compiled = profile.processor.compile(stylesheet)
+        compiled = profile.processor.compile(stylesheet, schema=schema)
         if len(_COMPILED) >= _COMPILED_CACHE_SIZE:
             _COMPILED.pop(next(iter(_COMPILED)))
         _COMPILED[key] = compiled
     return compiled
+
+
+def _case_schema_pool(profile: SuiteProfile, case: TestCase) -> SchemaPool | None:
+    """The compile-time schema pool a case declares, for a schema-aware profile.
+
+    A non-schema-aware processor refuses a schema outright, so a profile that
+    does not declare schema awareness compiles without one.
+    """
+    if not profile.processor.schema_aware or not case.environment.schemas:
+        return None
+    return build_schema_pool(
+        case,
+        xsd_version=profile.processor.xsd_version,
+        resource_policy=profile.processor.resource_policy,
+    )
 
 
 def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
@@ -482,7 +513,13 @@ def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
         source = _source_input(case, profile)
         if source is not None:
             options["source"] = source
-        compiled = _compile_stylesheet(profile, stylesheet, static_parameters)
+        compiled = _compile_stylesheet(
+            profile,
+            stylesheet,
+            static_parameters,
+            schema=_case_schema_pool(profile, case),
+            environment=environment_fingerprint(case),
+        )
         return _snapshot(compiled.transform(**options))
     except XsltError as exc:
         raise CaseExecutionError(exc.code or UNCODED_ERROR, str(exc)) from exc

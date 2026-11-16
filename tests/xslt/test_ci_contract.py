@@ -22,10 +22,23 @@ import pytest
 import yaml
 from tests import report_xslt
 from tests.xslt import baseline as baseline_module
+from tests.xslt import environment as environment_module
 from tests.xslt import report
+from tests.xslt import suite as suite_module
 from tests.xslt.catalog import load_catalog
-from tests.xslt.model import Collection, Output, Package, Resource, Schema
+from tests.xslt.model import (
+    Collection,
+    Environment,
+    Invocation,
+    Output,
+    Package,
+    Resource,
+    Schema,
+    Stylesheet,
+)
+from tests.xslt.model import TestCase as CatalogCase
 from tests.xslt.outcomes import CaseResult, Outcome
+from tests.xslt.runner import CaseExecutionError
 from tests.xslt.selection import select_cases
 from tests.xslt.suite import (
     ENGINE_UNICODE_VERSION,
@@ -39,6 +52,7 @@ from tests.xslt.suite import (
     run_parallel,
     with_unicode_version,
 )
+from tests.xslt.support import stylesheet
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORPUS = REPO_ROOT / "tests" / "xslt" / "corpus" / "catalog.xml"
@@ -656,6 +670,73 @@ def test_run_case_classifies_errors_without_aborting_the_suite(
     result = run_case(case, profile)
     assert result.outcome is Outcome.FAIL
     assert result.message == "ValueError: boom"
+
+
+def _hat_case(root: Path, schema_name: str) -> CatalogCase:
+    return CatalogCase(
+        name=f"cache/{schema_name}",
+        local_name=schema_name,
+        test_set="cache",
+        description="",
+        source=PurePosixPath("cache"),
+        environment=Environment(
+            schemas=(Schema(role="stylesheet-import", path=PurePosixPath(schema_name)),),
+        ),
+        invocation=Invocation(
+            stylesheets=(Stylesheet(role="principal", path=PurePosixPath("sheet.xsl")),),
+        ),
+        document_root=root,
+    )
+
+
+HAT_NS = "urn:hats"
+
+_HAT_SCHEMA = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    targetNamespace="urn:hats" xmlns:t="urn:hats" elementFormDefault="qualified">
+  <xs:simpleType name="hatsize">
+    <xs:restriction base="xs:integer">
+      <xs:minInclusive value="4"/><xs:maxInclusive value="{maximum}"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="head" type="t:hatsize"/>
+</xs:schema>"""
+
+
+def test_a_shared_stylesheet_never_shares_one_compiled_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The compiled artifact is keyed by the case's schema environment too.
+
+    Both cases share one stylesheet path and differ only in the schema they
+    declare: the constructor it calls caps its argument at 10 in one and 20 in
+    the other.  A shared artifact would decide one case with the other's
+    schema, so the cap is the difference between a pass and a dynamic error.
+    """
+    monkeypatch.setattr(environment_module, "_COMPILED_SCHEMAS", {})
+    monkeypatch.setattr(suite_module, "_COMPILED", {})
+    (tmp_path / "narrow.xsd").write_text(_HAT_SCHEMA.format(maximum=10), encoding="utf-8")
+    (tmp_path / "wide.xsd").write_text(_HAT_SCHEMA.format(maximum=20), encoding="utf-8")
+    (tmp_path / "sheet.xsl").write_bytes(
+        stylesheet(
+            '<xsl:param name="p" select="11"/>'
+            '<xsl:template name="xsl:initial-template"><out>'
+            '<xsl:value-of select="hat:hatsize($p)"/></out></xsl:template>',
+            namespaces={"hat": HAT_NS},
+        )
+    )
+
+    wide = _hat_case(tmp_path, "wide.xsd")
+    narrow = _hat_case(tmp_path, "narrow.xsd")
+
+    assert execute_case(wide, SUITE_PROFILES["xslt30"]).xml == "<out>11</out>"
+    with pytest.raises(CaseExecutionError, match="FORG0001"):
+        execute_case(narrow, SUITE_PROFILES["xslt30"])
+
+    assert len(suite_module._COMPILED) == 2
+    assert {key[3] for key in suite_module._COMPILED} == {
+        environment_module.environment_fingerprint(wide),
+        environment_module.environment_fingerprint(narrow),
+    }
 
 
 def test_case_budget_interrupts_a_long_case() -> None:
