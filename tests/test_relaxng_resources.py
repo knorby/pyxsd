@@ -298,6 +298,24 @@ class TestResolve:
 
         assert loaded.canonical_id == str(target)
 
+    def test_remote_containing_resource_relative_xml_base_through_resolve(self):
+        main_url = "https://example.com/schemas/main.rng"
+        child_url = "https://example.com/schemas/parts/child.rng"
+        policy = MemoryPolicy(
+            {
+                main_url: RNG_START.encode(),
+                child_url: f'<element xmlns="{RNG_NS}" name="child"><empty/></element>'.encode(),
+            }
+        )
+        loader = ResourceLoader(policy=policy)
+        containing = loader.load(main_url)
+
+        loaded = loader.resolve("child.rng", containing, "parts/")
+
+        assert loaded.canonical_id == child_url
+        assert loaded.root.get("name") == "child"
+        assert policy.reads[-1] == (child_url, None, "schema")
+
     def test_empty_reference_resolves_to_the_containing_resource(self):
         loader = ResourceLoader()
         main = loader.load(FIXTURES / "external" / "main.rng")
@@ -445,6 +463,19 @@ class TestXmlBase:
 
         assert parts.endswith("parts/")
         assert nested.endswith("parts/sub/")
+
+    def test_dot_segments_keep_directory_semantics(self, tmp_path):
+        main = str(tmp_path / "a" / "b" / "main.rng")
+        a_dir = str(tmp_path / "a")
+        b_dir = str(tmp_path / "a" / "b")
+
+        assert resolve_xml_base(main, ".") == b_dir + "/"
+        assert resolve_xml_base(main, "..") == a_dir + "/"
+        assert resolve_xml_base(main, "parts/.") == b_dir + "/parts/"
+        assert resolve_xml_base(main, "parts/..") == b_dir + "/"
+
+        assert resolve_xml_base(resolve_xml_base(main, "."), "child.rng") == (b_dir + "/child.rng")
+        assert resolve_xml_base(resolve_xml_base(main, ".."), "child.rng") == (a_dir + "/child.rng")
 
     def test_relative_xml_base_resolves_against_the_current_base(self):
         main = (FIXTURES / "external" / "main.rng").resolve()

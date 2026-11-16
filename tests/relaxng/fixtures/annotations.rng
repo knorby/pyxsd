@@ -5,11 +5,11 @@
   <a:documentation>Top</a:documentation>
   <start>
     <element name="doc" a:mark="yes">
-      <annotation>
+      <a:annotation>
         <a:payload>inner</a:payload>
         <define name="not-a-definition"><empty/></define>
         <bogus/>
-      </annotation>
+      </a:annotation>
       <empty/>
       <a:aside>after</a:aside>
     </element>

@@ -132,17 +132,21 @@ def _normalize_local(path: str, *, trailing: bool) -> str:
 
 
 def _join_local(base: str, reference: str) -> str:
-    """Resolve *reference* against a local base with RFC 3986 slash rules."""
+    """Resolve *reference* against a local base with RFC 3986 merge rules.
+
+    The merged path is formed before dot segments are removed, and it is a
+    directory when its final segment is empty, ``.``, or ``..``.  This keeps
+    ``xml:base="."`` a directory instead of collapsing it to the containing
+    file's basename.
+    """
     if Path(reference).is_absolute():
-        target = Path(reference)
-        trailing = reference.endswith("/")
+        merged = reference
     else:
-        directory = Path(base)
-        if not _is_directory_base(base):
-            directory = directory.parent
-        target = directory / reference
-        trailing = reference.endswith("/") or (not reference and _is_directory_base(base))
-    return _normalize_local(str(target), trailing=trailing)
+        directory = base if _is_directory_base(base) else str(Path(base).parent)
+        separator = "" if _is_directory_base(directory) else os.sep
+        merged = f"{directory}{separator}{reference}"
+    final_segment = merged.replace(os.sep, "/").rsplit("/", 1)[-1]
+    return _normalize_local(merged, trailing=final_segment in ("", ".", ".."))
 
 
 def resolve_xml_base(base: str, xml_base: str) -> str:
@@ -154,21 +158,7 @@ def resolve_xml_base(base: str, xml_base: str) -> str:
     current base.  An anonymous memory base cannot resolve a relative value
     because it has no directory.
     """
-    if xml_base == "":
-        return base
-    target = classify_resource(xml_base)
-    base_kind = classify_resource(base).kind
-    if target.kind == "remote":
-        return xml_base
-    if base_kind == "remote":
-        return urljoin(base, xml_base)
-    if base_kind == "memory":
-        if Path(xml_base).is_absolute():
-            return _normalize_local(xml_base, trailing=xml_base.endswith("/"))
-        raise ResourcePolicyError("a relative schema dependency needs a named source base")
-    if Path(xml_base).is_absolute():
-        return _normalize_local(xml_base, trailing=xml_base.endswith("/"))
-    return _join_local(base, xml_base)
+    return _resolve_against(base, xml_base)
 
 
 def _resolve_against(base: str, reference: str) -> str:
@@ -183,7 +173,7 @@ def _resolve_against(base: str, reference: str) -> str:
         return urljoin(base, reference)
     if base_kind == "memory":
         if Path(reference).is_absolute():
-            return _normalize_local(reference, trailing=reference.endswith("/"))
+            return _join_local(base, reference)
         raise ResourcePolicyError("a relative schema dependency needs a named source base")
     return _join_local(base, reference)
 

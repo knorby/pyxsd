@@ -293,6 +293,64 @@ class TestPlaceholders:
         assert external.ns_attribute is None
         assert external.name is None
 
+    def test_xml_base_directly_on_include_and_external_ref(self, tmp_path):
+        main = tmp_path / "main.rng"
+        main.write_text(
+            f"""
+            <grammar xmlns="{RNG_NS}">
+              <include xml:base="inc/" href="included.rng"/>
+              <start>
+                <externalRef xml:base="parts/" href="child.rng"/>
+              </start>
+            </grammar>
+            """,
+            encoding="utf-8",
+        )
+
+        schema = read_full_syntax(ResourceLoader().load(main))
+        scope = schema.start.scope
+
+        assert scope.includes[0].base == str(tmp_path / "inc") + "/"
+        external = scope.starts[0].children[0]
+        assert isinstance(external, ReferencePlaceholder)
+        assert external.base == str(tmp_path / "parts") + "/"
+
+    def test_dot_xml_base_resolves_in_the_containing_directory(self, tmp_path):
+        schema_dir = tmp_path / "a"
+        schema_dir.mkdir()
+        target = schema_dir / "child.rng"
+        target.write_text(
+            f'<element xmlns="{RNG_NS}" name="child"><empty/></element>',
+            encoding="utf-8",
+        )
+        decoy = tmp_path / "child.rng"
+        decoy.write_text(
+            f'<element xmlns="{RNG_NS}" name="decoy"><empty/></element>',
+            encoding="utf-8",
+        )
+        main = schema_dir / "main.rng"
+        main.write_text(
+            f"""
+            <grammar xmlns="{RNG_NS}">
+              <start>
+                <externalRef xml:base="." href="child.rng"/>
+              </start>
+            </grammar>
+            """,
+            encoding="utf-8",
+        )
+
+        loader = ResourceLoader()
+        resource = loader.load(main)
+        schema = read_full_syntax(resource)
+        external = find_one(schema, ReferencePlaceholder)
+        assert isinstance(external, ReferencePlaceholder)
+
+        assert external.base == str(schema_dir) + "/"
+        loaded = loader.resolve(external.href or "", resource, external.base)
+        assert loaded.canonical_id == str(target.resolve())
+        assert loaded.root.get("name") == "child"
+
     def test_placeholder_keeps_its_own_ns_attribute(self):
         schema = read_schema(
             f"""
@@ -653,7 +711,55 @@ class TestAnnotations:
         assert isinstance(schema.start, FullUnknown)
         assert schema.start.tag == "{urn:example:html}html"
 
-    def test_annotation_root_is_not_a_pattern(self):
+    def test_relax_ng_annotation_element_is_unknown_and_preserved(self):
+        schema = read_schema(
+            f"""
+            <element xmlns="{RNG_NS}" xmlns:a="urn:example:annotation">
+              <name>root</name>
+              <annotation a:note="x">
+                <define name="ignored"><empty/></define>
+                <bogus/>
+              </annotation>
+              <empty/>
+            </element>
+            """
+        )
+
+        assert "relaxng-unknown-element" in codes(schema)
+        assert "relaxng-missing-name-class" not in codes(schema)
+        element = schema.start
+        assert isinstance(element, FullElement)
+        assert element.name_class is not None
+        assert element.name_class.local == "root"
+        assert len(element.children) == 2
+        unknown = element.children[0]
+        assert isinstance(unknown, FullUnknown)
+        assert unknown.tag == f"{{{RNG_NS}}}annotation"
+        assert any(
+            annotation.kind == "attribute" and annotation.name == "note"
+            for annotation in unknown.annotations
+        )
+        assert find_all(schema, FullDefine) == []
+
+    def test_relax_ng_annotation_does_not_hide_a_name_class(self):
+        schema = read_schema(
+            f"""
+            <element xmlns="{RNG_NS}">
+              <annotation><empty/></annotation>
+              <name>root</name>
+              <empty/>
+            </element>
+            """
+        )
+
+        assert "relaxng-missing-name-class" not in codes(schema)
+        element = schema.start
+        assert isinstance(element, FullElement)
+        assert element.name_class is not None
+        assert element.name_class.local == "root"
+        assert any(isinstance(child, FullUnknown) for child in element.children)
+
+    def test_relax_ng_annotation_root_is_not_a_pattern(self):
         schema = read_schema(f'<annotation xmlns="{RNG_NS}"><text/></annotation>')
 
         assert codes(schema) == ["relaxng-root-not-pattern"]

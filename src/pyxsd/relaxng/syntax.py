@@ -122,7 +122,6 @@ _KNOWN_ATTRIBUTES: dict[str, frozenset[str]] = {
     "zeroOrMore": frozenset(),
     "anyName": frozenset(),
     "except": frozenset(),
-    "annotation": frozenset(),
 }
 
 #: Attributes allowed on every RELAX NG element.
@@ -141,11 +140,13 @@ class SchemaFinding:
 
 @dataclass(frozen=True)
 class Annotation:
-    """One recorded foreign or ``annotation`` element/attribute.
+    """One recorded foreign element or foreign attribute.
 
-    Annotation bytes are retained raw; nothing in the annotation influences
-    the grammar tree.  ``element`` is the authored subtree for element
-    annotations and is absent for attribute annotations.
+    RELAX NG 1.0 has no RELAX NG-namespace annotation production; only a
+    foreign element or attribute is an annotation.  Its bytes are retained
+    raw, and nothing inside it influences the grammar tree.  ``element`` is
+    the authored subtree for element annotations and is absent for attribute
+    annotations.
     """
 
     kind: Literal["element", "attribute"]
@@ -554,21 +555,14 @@ class _Reader:
                 f"the schema root {root.tag!r} is not a RELAX NG element",
                 location,
             )
-            start: FullPattern = self._unknown(root, location)
-        elif tag == "annotation":
-            self._finding(
-                "relaxng-root-not-pattern",
-                "a RELAX NG annotation is not a schema pattern",
-                location,
-            )
-            start = self._unknown(root, location)
+            start: FullPattern = self._unknown(root, location, self._annotations(root, location))
         elif tag not in _PATTERN_TAGS:
             self._finding(
                 "relaxng-root-not-pattern",
                 f"the RELAX NG {tag!r} element is not a schema pattern",
                 location,
             )
-            start = self._unknown(root, location)
+            start = self._unknown(root, location, self._annotations(root, location))
         else:
             start = self._pattern(
                 root,
@@ -645,7 +639,7 @@ class _Reader:
         annotations: list[Annotation] = []
         for child, child_location in self._child_locations(element, location):
             namespace, tag = _split_tag(child.tag)
-            if namespace != RELAX_NG_NAMESPACE or tag == "annotation":
+            if namespace != RELAX_NG_NAMESPACE:
                 annotations.append(
                     Annotation(
                         kind="element",
@@ -691,7 +685,6 @@ class _Reader:
             (child, child_location)
             for child, child_location in self._child_locations(element, location)
             if _split_tag(child.tag)[0] == RELAX_NG_NAMESPACE
-            and _split_tag(child.tag)[1] != "annotation"
         ]
 
     def _children(
@@ -908,7 +901,7 @@ class _Reader:
             f"unknown RELAX NG element {tag!r}",
             location,
         )
-        return self._unknown(element, location)
+        return self._unknown(element, location, annotations)
 
     def _element_pattern(
         self,
@@ -1274,7 +1267,12 @@ class _Reader:
         )
         return FullDiv(children, origins, annotations)
 
-    def _unknown(self, element: ET.Element, location: IssueLocation) -> FullUnknown:
+    def _unknown(
+        self,
+        element: ET.Element,
+        location: IssueLocation,
+        annotations: tuple[Annotation, ...] = (),
+    ) -> FullUnknown:
         children = tuple(
             self._unknown(child, child_location)
             for child, child_location in self._child_locations(element, location)
@@ -1285,4 +1283,5 @@ class _Reader:
             text=element.text,
             children=children,
             origins=self._origins(element, location),
+            annotations=annotations,
         )
