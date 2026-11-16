@@ -1,4 +1,4 @@
-"""Ordered RELAX NG 1.0 simplification and local grammar rewriting.
+"""Ordered RELAX NG 1.0 simplification and grammar composition.
 
 The compiler follows the specification's simplification rules in order.  This
 module performs the local prefix of that pipeline: annotation removal,
@@ -7,11 +7,10 @@ normalization, ``div`` splicing, child-count normalization, the
 ``mixed``/``optional``/``zeroOrMore`` rewrites, and the ``notAllowed``/``empty``
 reductions.
 
-Grammar composition is deliberately unresolved.  :class:`GrammarBundle`
-retains every authored grammar scope, start, definition, include, reference,
-and origin so that composition can resolve ``ref``, ``parentRef``,
-``externalRef``, ``include``, ``combine``, reachability, and legal recursion in
-the next stage.  Local placeholders are opaque pattern atoms until then.
+:class:`GrammarBundle` retains authored scopes, components, references, source
+origins, and compilation context. :func:`compose_grammars` expands resources,
+allocates definition slots before resolving references, and produces the final
+cyclic element graph. Local placeholders never escape that stage.
 
 Every simplified semantic pattern is interned in the caller's
 :class:`~pyxsd.relaxng.patterns.PatternPool`; origin tables union beside the
@@ -20,9 +19,11 @@ interned key exactly as they do for authored patterns.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import Literal, cast
+from xml.etree.ElementTree import ParseError
 
 from pyxsd.locations import IssueLocation
 from pyxsd.relaxng.datatypes import (
@@ -43,12 +44,16 @@ from pyxsd.relaxng.names import (
 from pyxsd.relaxng.origins import OriginTable
 from pyxsd.relaxng.patterns import (
     Attribute,
+    Choice,
     Data,
     DataExcept,
     Element,
     Empty,
+    Group,
+    Interleave,
     List,
     NotAllowed,
+    OneOrMore,
     Pattern,
     PatternPool,
     Ref,
@@ -59,6 +64,7 @@ from pyxsd.relaxng.patterns import (
     interleave,
     one_or_more,
 )
+from pyxsd.relaxng.resources import LoadedResource, ResourceDependency, ResourceLoader
 from pyxsd.relaxng.syntax import (
     FullAnyName,
     FullAttribute,
@@ -93,7 +99,10 @@ from pyxsd.relaxng.syntax import (
     FullZeroOrMore,
     GrammarScope,
     ReferencePlaceholder,
+    SchemaFinding,
+    read_full_syntax,
 )
+from pyxsd.resource_policy import ResourcePolicyError
 from pyxsd.validation import ValidationReport
 
 __all__ = [
@@ -101,10 +110,13 @@ __all__ = [
     "BundleInclude",
     "BundleScope",
     "BundleStart",
+    "CompiledGrammar",
+    "Definition",
     "GrammarBundle",
     "LocalGrammar",
     "Simplifier",
     "UnresolvedReference",
+    "compose_grammars",
     "simplify_schema",
 ]
 
@@ -236,6 +248,11 @@ class LocalGrammar(Ref):
     def __repr__(self) -> str:
         return f"LocalGrammar(scope={self.scope.key})"
 
+    @property
+    def origins(self) -> OriginTable:
+        """The authored grammar occurrence, independent of pool reductions."""
+        return self.scope.origins
+
 
 class UnresolvedReference(Ref):
     """An authored reference preserved until grammar composition.
@@ -246,7 +263,7 @@ class UnresolvedReference(Ref):
     matching definition.
     """
 
-    __slots__ = ("base", "href", "kind", "name", "ns_attribute", "scope")
+    __slots__ = ("base", "href", "kind", "name", "ns_attribute", "origins", "scope")
 
     kind: Literal["ref", "parentRef", "externalRef"]
     name: str | None
@@ -263,6 +280,7 @@ class UnresolvedReference(Ref):
         base: str | None,
         ns_attribute: str | None,
         scope: BundleScope | None,
+        origins: OriginTable,
     ) -> None:
         super().__init__()
         self.kind = kind
@@ -271,6 +289,7 @@ class UnresolvedReference(Ref):
         self.base = base
         self.ns_attribute = ns_attribute
         self.scope = scope
+        self.origins = origins
 
     def __repr__(self) -> str:
         scope_key = None if self.scope is None else self.scope.key
@@ -292,6 +311,12 @@ class GrammarBundle:
 
     start: Pattern
     scopes: tuple[BundleScope, ...]
+    report: ValidationReport = field(repr=False, compare=False)
+    graph: PatternPool = field(repr=False, compare=False)
+    libraries: DatatypeLibraryRegistry = field(repr=False, compare=False)
+    resource: LoadedResource = field(repr=False, compare=False)
+    findings: tuple[SchemaFinding, ...] = field(repr=False, compare=False)
+    references: tuple[UnresolvedReference | LocalGrammar, ...] = field(repr=False, compare=False)
 
     @property
     def root_scope(self) -> BundleScope | None:
@@ -320,13 +345,24 @@ class Simplifier:
         self.libraries = libraries
         self._scopes: dict[GrammarScope, BundleScope] = {}
         self._bundle_scopes: list[BundleScope] = []
+        self._references: list[UnresolvedReference | LocalGrammar] = []
 
     def simplify(self, schema: FullSchema) -> GrammarBundle:
         """Simplify *schema* into a local :class:`GrammarBundle`."""
         self._scopes = {}
         self._bundle_scopes = []
+        self._references = []
         start = self._root_pattern(schema.start)
-        return GrammarBundle(start=start, scopes=tuple(self._bundle_scopes))
+        return GrammarBundle(
+            start,
+            tuple(self._bundle_scopes),
+            self.report,
+            self.pool,
+            self.libraries,
+            schema.resource,
+            schema.findings,
+            tuple(self._references),
+        )
 
     # ------------------------------------------------------------------
     # Patterns
@@ -532,7 +568,9 @@ class Simplifier:
             node.base,
             node.ns_attribute,
             scope,
+            node.origins,
         )
+        self._references.append(reference)
         return self._intern(reference, node.origins)
 
     def _value(self, node: FullValue) -> Pattern:
@@ -645,7 +683,9 @@ class Simplifier:
 
     def _grammar(self, node: FullGrammar) -> Pattern:
         scope = self._bundle_scope(node.scope)
-        return self._intern(LocalGrammar(scope), node.origins)
+        grammar = LocalGrammar(scope)
+        self._references.append(grammar)
+        return self._intern(grammar, node.origins)
 
     def _bundle_scope(self, source_scope: GrammarScope) -> BundleScope:
         parent_source = source_scope.parent
@@ -884,6 +924,552 @@ class Simplifier:
 
     def _intern(self, pattern: Pattern, origins: OriginTable) -> Pattern:
         return self.pool.intern(pattern, origins)
+
+
+@dataclass(frozen=True)
+class Definition:
+    """One reachable element definition in the final cyclic graph."""
+
+    name: str
+    pattern: Element
+    origins: OriginTable
+
+
+@dataclass(frozen=True)
+class CompiledGrammar:
+    """A composed graph; all remaining reference edges are bound to elements."""
+
+    start: Pattern
+    definitions: Mapping[str, Definition]
+    graph: PatternPool
+    dependencies: tuple[ResourceDependency, ...]
+
+
+class _ElementReference(Ref):
+    """A final cycle edge with a deterministic, traversal-assigned identity.
+
+    Unlike a bare Ref's debugging repr, this key is independent of addresses.
+    The pool can therefore canonicalize choices containing recursive edges
+    without inspecting their targets or recursing through a cycle.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self.name = name
+
+    def __repr__(self) -> str:
+        return f"ElementRef({self.name!r})"
+
+
+@dataclass(frozen=True, eq=False)
+class _Part:
+    name: str | None
+    combine: str | None
+    pattern: Pattern
+    origins: OriginTable
+    environment: Mapping[BundleScope, _Scope]
+    enclosing: _Scope | None = None
+    checks: tuple[UnresolvedReference | LocalGrammar, ...] = ()
+
+
+class _Slot(Ref):
+    """Temporary named edge allocated before any definition is resolved."""
+
+    def __init__(self, key: str, parts: list[_Part]) -> None:
+        super().__init__()
+        self.key = key
+        self.parts = parts
+        self.pattern: Pattern | None = None
+        self.origins = OriginTable().union(*(part.origins for part in parts))
+
+    def __repr__(self) -> str:
+        return f"DefinitionSlot({self.key!r})"
+
+
+class _Scope:
+    def __init__(self, key: int, parent: _Scope | None, origins: OriginTable) -> None:
+        self.key = key
+        self.parent = parent
+        self.origins = origins
+        self.parts: list[_Part] = []
+        self.slots: dict[str | None, _Slot] | None = None
+
+
+def _reference_checks(
+    references: tuple[UnresolvedReference | LocalGrammar, ...],
+    origins: OriginTable,
+    scope: BundleScope,
+) -> tuple[UnresolvedReference | LocalGrammar, ...]:
+    location = _location(origins)
+    assert location is not None
+    return tuple(
+        reference
+        for reference in references
+        if _reference_scope(reference) is scope
+        and any(
+            origin.location is not None
+            and origin.location.path[: len(location.path)] == location.path
+            for origin in reference.origins
+        )
+    )
+
+
+def _reference_scope(reference: UnresolvedReference | LocalGrammar) -> BundleScope | None:
+    return reference.scope.parent if isinstance(reference, LocalGrammar) else reference.scope
+
+
+def _pattern_operands(pattern: Pattern) -> tuple[Pattern, ...]:
+    if isinstance(pattern, (Choice, Group, Interleave)):
+        return pattern.first, pattern.second
+    if isinstance(pattern, (Element, Attribute, List, OneOrMore)):
+        return (pattern.pattern,)
+    if isinstance(pattern, DataExcept):
+        return (pattern.excluded,)
+    return ()
+
+
+def _rebuild_pattern(pattern: Pattern, children: tuple[Pattern, ...]) -> Pattern:
+    if isinstance(pattern, Choice):
+        return choice(*children)
+    if isinstance(pattern, Group):
+        return group(*children)
+    if isinstance(pattern, Interleave):
+        return interleave(*children)
+    if isinstance(pattern, OneOrMore):
+        return one_or_more(children[0])
+    if isinstance(pattern, (Element, Attribute, List)):
+        if isinstance(pattern, (Attribute, List)) and isinstance(children[0], NotAllowed):
+            return NotAllowed()
+        if isinstance(pattern, List):
+            return List(children[0])
+        return type(pattern)(pattern.name_class, children[0])
+    if isinstance(pattern, DataExcept):
+        if isinstance(children[0], NotAllowed):
+            return Data(pattern.datatype)
+        return DataExcept(pattern.datatype, children[0])
+    return pattern
+
+
+class _Composer:
+    """Scope expansion first, reference resolution second, element graph last.
+
+    The temporary slots never escape. Non-element references are expanded
+    with an active-path check (specification 4.19); element boundaries enqueue
+    work instead, so legal recursive definitions never recursively expand.
+    Undefined references and combine errors are checked before reachability.
+    """
+
+    def __init__(self, bundle: GrammarBundle, loader: ResourceLoader) -> None:
+        self.report = bundle.report
+        self.pool = bundle.graph
+        self.libraries = bundle.libraries
+        self.loader = loader
+        self.scopes: list[_Scope] = []
+        self.slots: list[_Slot] = []
+        # Keep environments alive for the lifetime of identity-keyed memos,
+        # including empty environments for external bare patterns.
+        self.environments: list[Mapping[BundleScope, _Scope]] = []
+        self.element_work: list[tuple[Element, _ElementReference]] = []
+        self.expanded: dict[Pattern, Pattern] = {}
+        self.resolved: dict[tuple[Pattern, int], Pattern] = {}
+        self.external_parts: dict[tuple[Pattern, int], _Part | None] = {}
+
+    def error(self, code: str, message: str, origins: OriginTable) -> None:
+        self.report.add_error(message, code=code, phase="schema", location=_location(origins))
+
+    def prepare(
+        self,
+        bundle: GrammarBundle,
+        chain: tuple[str, ...],
+        destination: _Scope | None = None,
+        parent: _Scope | None = None,
+    ) -> tuple[_Part, list[_Part]]:
+        for finding in bundle.findings:
+            self.report.add_error(
+                finding.message, code=finding.code, phase="schema", location=finding.location
+            )
+        environment: dict[BundleScope, _Scope] = {}
+        self.environments.append(environment)
+        for scope in bundle.scopes:
+            enclosing = environment[scope.parent] if scope.parent is not None else parent
+            if scope is bundle.root_scope and destination is not None:
+                state = destination
+            else:
+                state = _Scope(len(self.scopes), enclosing, scope.origins)
+                self.scopes.append(state)
+            environment[scope] = state
+        # externalRef precedes include overrides in section 4. Its resources
+        # must be read even when the containing definition will be overridden.
+        # Preparation does not resolve named refs against half-built scopes.
+        for reference in bundle.references:
+            if isinstance(reference, UnresolvedReference) and reference.kind == "externalRef":
+                loaded = self.load(reference, bundle.resource, chain)
+                external_root = None
+                if loaded is not None:
+                    external_bundle, external_chain = loaded
+                    enclosing = (
+                        environment[reference.scope] if reference.scope is not None else parent
+                    )
+                    external_root, _ = self.prepare(
+                        external_bundle, external_chain, parent=enclosing
+                    )
+                self.external_parts[(reference, id(environment))] = external_root
+        included: list[_Part] = []
+        for scope in bundle.scopes:
+            state = environment[scope]
+            parts = self.components(scope, environment, bundle.resource, chain, bundle.references)
+            if scope is bundle.root_scope and destination is not None:
+                included = parts
+            else:
+                state.parts.extend(parts)
+        root = _Part(
+            None,
+            None,
+            bundle.start,
+            self.pool.origins(bundle.start),
+            environment,
+            parent,
+            tuple(ref for ref in bundle.references if _reference_scope(ref) is None),
+        )
+        return root, included
+
+    def components(
+        self,
+        scope: BundleScope,
+        environment: Mapping[BundleScope, _Scope],
+        resource: LoadedResource,
+        chain: tuple[str, ...],
+        references: tuple[UnresolvedReference | LocalGrammar, ...],
+    ) -> list[_Part]:
+        parts: list[_Part] = []
+        for component in scope.children:
+            if not isinstance(component, BundleInclude):
+                name = component.name if isinstance(component, BundleDefine) else None
+                if isinstance(component, BundleDefine) and name is None:
+                    self.error("relaxng-missing-name", "a define needs a name", component.origins)
+                    continue
+                parts.append(
+                    _Part(
+                        name,
+                        component.combine,
+                        component.pattern,
+                        component.origins,
+                        environment,
+                        checks=_reference_checks(references, component.origins, scope),
+                    )
+                )
+                continue
+            loaded = self.load(component, resource, chain)
+            if loaded is None:
+                continue
+            bundle, next_chain = loaded
+            if bundle.root_scope is None:
+                self.error(
+                    "relaxng-include-not-grammar",
+                    "include must reference a grammar",
+                    component.origins,
+                )
+                continue
+            _, imported = self.prepare(bundle, next_chain, environment[scope])
+            overrides: dict[str | None, OriginTable] = {}
+            for override in component.components:
+                name = override.name if isinstance(override, BundleDefine) else None
+                removed = [part for part in imported if part.name == name]
+                if not removed:
+                    self.error(
+                        "relaxng-include-override",
+                        f"include overrides absent component {name or 'start'!r}",
+                        override.origins,
+                    )
+                origins = component.origins.union(
+                    override.origins, *(part.origins for part in removed)
+                )
+                overrides[name] = origins
+                parts.append(
+                    _Part(
+                        name,
+                        override.combine,
+                        override.pattern,
+                        origins,
+                        environment,
+                        checks=_reference_checks(references, override.origins, scope),
+                    )
+                )
+            parts.extend(
+                replace(part, origins=part.origins.union(component.origins, scope.origins))
+                for part in imported
+                if part.name not in overrides
+            )
+        return parts
+
+    def load(
+        self,
+        reference: BundleInclude | UnresolvedReference,
+        containing: LoadedResource,
+        chain: tuple[str, ...],
+    ) -> tuple[GrammarBundle, tuple[str, ...]] | None:
+        origins = reference.origins
+        if reference.href is None:
+            self.error("relaxng-missing-href", "a resource reference needs an href", origins)
+            return None
+        try:
+            resource = self.loader.resolve(
+                reference.href, containing, reference.base, location=_location(origins)
+            )
+        except (OSError, ParseError, ResourcePolicyError) as exc:
+            self.error("relaxng-resource-read", str(exc), origins)
+            return None
+        if resource.canonical_id in chain:
+            self.error("relaxng-resource-cycle", "include/externalRef resource cycle", origins)
+            return None
+        namespace = reference.ns_attribute
+        if namespace is None:
+            namespace = containing.namespace_at(origins)
+        resource = resource.with_namespace(namespace)
+        bundle = Simplifier(self.report, self.pool, self.libraries).simplify(
+            read_full_syntax(resource)
+        )
+        return bundle, (*chain, resource.canonical_id)
+
+    def setup(self, scope: _Scope) -> dict[str | None, _Slot]:
+        if scope.slots is not None:
+            return scope.slots
+        grouped: dict[str | None, list[_Part]] = {}
+        for part in scope.parts:
+            grouped.setdefault(part.name, []).append(part)
+        scope.slots = {}
+        for name, parts in grouped.items():
+            slot = _Slot(f"scope{scope.key}:{name or '#start'}", parts)
+            scope.slots[name] = slot
+            self.slots.append(slot)
+        if None not in scope.slots:
+            self.error("relaxng-missing-start", "a grammar needs a start", scope.origins)
+        return scope.slots
+
+    def resolve(self, pattern: Pattern, part: _Part) -> Pattern:
+        memo_key = (pattern, id(part.environment))
+        if memo_key in self.resolved:
+            return self.resolved[memo_key]
+        origins = self.pool.origins(pattern)
+        if isinstance(pattern, LocalGrammar):
+            local_scope = part.environment[pattern.scope]
+            result: Pattern = self.setup(local_scope).get(None, NotAllowed())
+        elif isinstance(pattern, UnresolvedReference):
+            scope = part.environment[pattern.scope] if pattern.scope is not None else part.enclosing
+            if pattern.kind == "externalRef":
+                root = self.external_parts[memo_key]
+                result = NotAllowed() if root is None else self.resolve_part(root)
+            else:
+                if pattern.kind == "parentRef":
+                    scope = scope.parent if scope is not None else None
+                if scope is None:
+                    self.error(
+                        "relaxng-parent-reference"
+                        if pattern.kind == "parentRef"
+                        else "relaxng-undefined-reference",
+                        f"{pattern.kind} has no enclosing grammar",
+                        origins,
+                    )
+                    result = NotAllowed()
+                else:
+                    result = (
+                        self.setup(scope).get(pattern.name, NotAllowed())
+                        if pattern.name is not None
+                        else NotAllowed()
+                    )
+                    if isinstance(result, NotAllowed):
+                        self.error(
+                            "relaxng-undefined-reference",
+                            f"no definition for {pattern.name!r}",
+                            origins,
+                        )
+        else:
+            result = _rebuild_pattern(
+                pattern, tuple(self.resolve(child, part) for child in _pattern_operands(pattern))
+            )
+        result = self.pool.intern(result, origins)
+        self.resolved[memo_key] = result
+        return result
+
+    def resolve_slot(self, slot: _Slot) -> None:
+        parts = slot.parts
+        methods = {part.combine for part in parts if part.combine is not None}
+        if methods - {"choice", "interleave"}:
+            self.error(
+                "relaxng-invalid-combine", "combine must be choice or interleave", slot.origins
+            )
+        if {"choice", "interleave"} <= methods:
+            self.error("relaxng-conflicting-combine", "combine methods disagree", slot.origins)
+        if sum(part.combine is None for part in parts) > 1:
+            code = (
+                "relaxng-duplicate-start" if parts[0].name is None else "relaxng-duplicate-define"
+            )
+            self.error(code, "multiple components without combine", slot.origins)
+        constructor = interleave if methods == {"interleave"} else choice
+        patterns = [self.resolve_part(part) for part in parts]
+        result = patterns[0]
+        for pattern in patterns[1:]:
+            result = self.pool.intern(constructor(result, pattern), slot.origins)
+        slot.pattern = self.pool.intern(result, slot.origins)
+
+    def resolve_part(self, part: _Part) -> Pattern:
+        # Section 4.18 precedes notAllowed reductions: even a reference
+        # erased by a local smart constructor must resolve.
+        for reference in part.checks:
+            self.resolve(reference, part)
+        return self.resolve(part.pattern, part)
+
+    def dependencies(self, node: _Slot | _Part) -> list[tuple[_Slot | _Part, bool]]:
+        """Authored dependencies, retaining edges erased by local reductions."""
+        if isinstance(node, _Slot):
+            return [(part, False) for part in node.parts]
+        result: list[tuple[_Slot | _Part, bool]] = []
+        pending = [(self.resolve(node.pattern, node), False)]
+        seen: set[tuple[Pattern, bool]] = set()
+        while pending:
+            pattern, guarded = pending.pop()
+            if (pattern, guarded) in seen:
+                continue
+            seen.add((pattern, guarded))
+            if isinstance(pattern, _Slot):
+                result.append((pattern, guarded))
+            else:
+                pending.extend(
+                    (child, guarded or isinstance(pattern, Element))
+                    for child in _pattern_operands(pattern)
+                )
+        for reference in node.checks:
+            location = _location(reference.origins)
+            assert location is not None
+            tags = [step.name.rsplit("}", 1)[-1] for step in location.path]
+            # Start/define components establish a new expansion entry. A
+            # reference beneath an element cannot form an expandable loop.
+            boundary = max(
+                (index for index, tag in enumerate(tags) if tag in {"start", "define"}),
+                default=-1,
+            )
+            guarded = "element" in tags[boundary + 1 :]
+            external = self.external_parts.get((reference, id(node.environment)))
+            if external is not None:
+                result.append((external, guarded))
+            else:
+                target = self.resolve(reference, node)
+                if isinstance(target, _Slot):
+                    result.append((target, guarded))
+        return result
+
+    def check_recursion(self, root: _Part) -> bool:
+        """Check expandable cycles before notAllowed removes reachable refs."""
+        edges: dict[_Slot | _Part, list[tuple[_Slot | _Part, bool]]] = {}
+        pending: list[_Slot | _Part] = [root]
+        while pending:
+            node = pending.pop()
+            if node in edges:
+                continue
+            edges[node] = self.dependencies(node)
+            pending.extend(child for child, _ in edges[node])
+        colors: dict[_Slot | _Part, int] = {}
+        invalid = False
+        for entry in edges:
+            stack = [(entry, False)]
+            while stack:
+                node, leaving = stack.pop()
+                if leaving:
+                    colors[node] = 2
+                elif colors.get(node) == 1:
+                    self.error(
+                        "relaxng-recursive-reference",
+                        "expanding a non-element definition produces a loop",
+                        node.origins,
+                    )
+                    invalid = True
+                elif colors.get(node, 0) == 0:
+                    colors[node] = 1
+                    stack.append((node, True))
+                    stack.extend((child, False) for child, guarded in edges[node] if not guarded)
+        return invalid
+
+    def expand(self, pattern: Pattern) -> Pattern:
+        origins = self.pool.origins(pattern)
+        if pattern in self.expanded:
+            return self.pool.intern(self.expanded[pattern], origins)
+        if isinstance(pattern, _Slot):
+            assert pattern.pattern is not None
+            result = self.expand(pattern.pattern)
+        elif isinstance(pattern, Element):
+            edge = _ElementReference(f"element{len(self.element_work)}")
+            self.element_work.append((pattern, edge))
+            result = edge
+        else:
+            result = _rebuild_pattern(
+                pattern, tuple(self.expand(child) for child in _pattern_operands(pattern))
+            )
+        result = self.pool.intern(result, origins)
+        self.expanded[pattern] = result
+        return result
+
+    def compose(self, bundle: GrammarBundle) -> CompiledGrammar:
+        root, _ = self.prepare(bundle, (bundle.resource.canonical_id,))
+        # setup allocates every slot in a scope before resolving its content.
+        # Surviving authored grammar occurrences activate scopes, including
+        # unreachable definitions, but not subtrees removed by an override.
+        start = self.resolve_part(root)
+        index = 0
+        while index < len(self.slots):
+            self.resolve_slot(self.slots[index])
+            index += 1
+        start = (
+            self.pool.intern(NotAllowed(), self.pool.origins(start))
+            if self.check_recursion(root)
+            else self.expand(start)
+        )
+        index = 0
+        while index < len(self.element_work):
+            pattern, edge = self.element_work[index]
+            content = self.expand(pattern.pattern)
+            target = self.pool.intern(
+                Element(pattern.name_class, content),
+                self.pool.origins(pattern).union(self.pool.origins(edge)),
+            )
+            edge.bind(target)
+            index += 1
+        definitions: dict[str, Definition] = {}
+        seen: set[Pattern] = set()
+        pending = [start]
+        while pending:
+            node = pending.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            if isinstance(node, _ElementReference):
+                target = cast(Element, node.target)
+                origins = self.pool.origins(target).union(self.pool.origins(node))
+                self.pool.intern(target, origins)
+                definitions[node.name] = Definition(node.name, target, origins)
+                pending.append(target)
+            else:
+                pending.extend(reversed(_pattern_operands(node)))
+        # Reindex only the final closure. The staging pool contains authored
+        # placeholders, temporary slots, and unreachable patterns; none belong
+        # to the returned graph. These semantic nodes have already consumed
+        # the caller's compilation budget; copying their index is not new work
+        # against that budget.
+        graph = PatternPool()
+        for node in seen:
+            graph.intern(node, self.pool.origins(node))
+        return CompiledGrammar(
+            start, MappingProxyType(definitions), graph, self.loader.dependencies()
+        )
+
+
+def compose_grammars(bundle: GrammarBundle, loader: ResourceLoader) -> CompiledGrammar:
+    """Compose a locally simplified bundle using its report and datatype context.
+
+    Findings join ``bundle.report`` in the schema phase. Resource reads use
+    only ``loader``; capability failures and budget exhaustion propagate
+    unchanged. The result contains no unresolved authored placeholders.
+    """
+    return _Composer(bundle, loader).compose(bundle)
 
 
 def simplify_schema(

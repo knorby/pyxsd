@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+from copy import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, cast
@@ -72,6 +73,7 @@ class ResourceReference:
     reference: str
     base: str | None
     xml_base: str | None
+    location: IssueLocation | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,36 @@ class LoadedResource:
 
     def __repr__(self) -> str:
         return f"LoadedResource(canonical_id={self.canonical_id!r})"
+
+    def with_namespace(self, namespace: str) -> LoadedResource:
+        """A read-context view with an inherited RELAX NG ``ns``.
+
+        Transfer happens before the full-syntax reader resolves names and
+        QName values. Only the root is copied; namespace evidence for its
+        children is retained, and the loader's cached authored tree is never
+        changed. An explicit root ``ns`` always wins.
+        """
+        if "ns" in self.root.attrib or not namespace:
+            return self
+        root = copy(self.root)
+        root.attrib = dict(self.root.attrib)
+        root.set("ns", namespace)
+        context = NamespaceContext()
+        for node in self.root.iter():
+            context.record(node, self.namespaces.bindings_for(node))
+        context.record(root, self.namespaces.bindings_for(self.root))
+        return LoadedResource(self.canonical_id, root, context, self.origins)
+
+    def namespace_at(self, origins: OriginTable) -> str:
+        """The inherited RELAX NG namespace at an authored reference."""
+        origin = next(iter(origins))
+        assert origin.location is not None
+        node = self.root
+        namespace = node.get("ns", "")
+        for step in origin.location.path[1:]:
+            node = [child for child in node if child.tag == step.name][step.index - 1]
+            namespace = node.get("ns", namespace)
+        return namespace
 
 
 @dataclass
@@ -261,6 +293,8 @@ class ResourceLoader:
         reference: str,
         containing: LoadedResource,
         xml_base: str | None,
+        *,
+        location: IssueLocation | None = None,
     ) -> LoadedResource:
         """Load *reference* against *containing* and its ``xml:base``.
 
@@ -285,6 +319,7 @@ class ResourceLoader:
             base=base,
             xml_base=xml_base,
             canonical_id=resource.canonical_id,
+            location=location,
         )
         return resource
 
@@ -306,6 +341,9 @@ class ResourceLoader:
                         item.base or "",
                         item.xml_base or "",
                         item.canonical_id,
+                        tuple((step.name, step.index) for step in item.location.path)
+                        if item.location is not None
+                        else (),
                     ),
                 )
             )
@@ -383,6 +421,7 @@ class ResourceLoader:
         base: str,
         xml_base: str | None,
         canonical_id: str,
+        location: IssueLocation | None,
     ) -> None:
         record = self._dependencies[canonical_id]
         edge = ResourceReference(
@@ -391,6 +430,7 @@ class ResourceLoader:
             reference=reference,
             base=base,
             xml_base=xml_base,
+            location=location,
         )
         if edge not in record.references:
             record.references.append(edge)
