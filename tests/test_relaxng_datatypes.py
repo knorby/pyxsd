@@ -563,6 +563,23 @@ class TestXsd10AnyUri:
 
 
 class TestXsdEquality:
+    @pytest.mark.parametrize("precision", (28, 50))
+    @pytest.mark.parametrize(
+        ("type_name", "prefix"),
+        (("dateTime", "2000-01-01T00:00:00."), ("time", "01:00:00.")),
+    )
+    def test_temporal_equality_is_independent_of_decimal_context(
+        self, precision, type_name, prefix
+    ):
+        with decimal.localcontext() as context:
+            context.prec = precision
+            datatype = xsd(type_name)
+            left = prefix + "0" * 25 + "1Z"
+            right = prefix + "0" * 25 + "2Z"
+            assert datatype.allows(left, EMPTY)
+            assert not datatype.equal(left, EMPTY, right, EMPTY)
+            assert datatype.equal(left, EMPTY, left[:-1] + "0Z", EMPTY)
+
     def test_numeric_and_binary_spellings_compare_by_value(self):
         assert xsd("integer").equal("1", EMPTY, "01", EMPTY)
         assert xsd("decimal").equal("1.0", EMPTY, "1.00", EMPTY)
@@ -622,6 +639,60 @@ class TestXsdEquality:
 
 
 class TestXsd10TemporalNumbering:
+    @pytest.mark.parametrize("sign", ("", "-"))
+    @pytest.mark.parametrize(
+        ("type_name", "suffix"),
+        (
+            ("gYear", "Z"),
+            ("gYearMonth", "-02Z"),
+            ("date", "-02-28Z"),
+            ("dateTime", "-02-28T00:00:00Z"),
+        ),
+    )
+    def test_giant_years_keep_acceptance_identity_and_codecs(self, sign, type_name, suffix):
+        year = sign + "1" + "0" * 4300
+        other_year = sign + "1" + "0" * 4299 + "1"
+        lexical, other = year + suffix, other_year + suffix
+        datatype = xsd(type_name)
+        assert datatype.allows(lexical, EMPTY)
+        assert datatype.equal(lexical, EMPTY, lexical, EMPTY)
+        assert not datatype.equal(lexical, EMPTY, other, EMPTY)
+        decoded = datatype.decode(lexical, EMPTY)
+        assert decoded.lexical() == lexical
+        assert datatype.encode(decoded, EMPTY) == lexical
+        bounded = xsd(type_name, ("minExclusive", lexical))
+        assert bounded.allows(other, EMPTY) is (not sign)
+        assert not bounded.allows(lexical, EMPTY)
+
+    @pytest.mark.parametrize("type_name", ("date", "dateTime"))
+    def test_giant_year_calendar_validity_uses_the_full_year(self, type_name):
+        year = "1" + "0" * 4300
+        suffix = "T00:00:00Z" if type_name == "dateTime" else "Z"
+        datatype = xsd(type_name)
+        assert datatype.allows(year + "-02-29" + suffix, EMPTY)
+        assert not datatype.allows("-" + year + "-02-29" + suffix, EMPTY)
+        assert datatype.allows("-" + year[:-1] + "1-02-29" + suffix, EMPTY)
+        assert not datatype.allows(year[:-1] + "1-02-29" + suffix, EMPTY)
+        assert not datatype.allows(year + "-04-31" + suffix, EMPTY)
+        assert not datatype.allows("0" + year + "-01-01" + suffix, EMPTY)
+
+    @pytest.mark.parametrize("precision", (28, 50))
+    @pytest.mark.parametrize("zoned_bound", (False, True))
+    def test_exact_mixed_timezone_boundary(self, precision, zoned_bound):
+        tiny = "0" * 25 + "1"
+        bound = "2000-01-02T00:00:00"
+        suffix = "" if zoned_bound else "Z"
+        with decimal.localcontext() as context:
+            context.prec = precision
+            maximum = xsd("dateTime", ("maxExclusive", bound + ("Z" if zoned_bound else "")))
+            minimum = xsd("dateTime", ("minExclusive", bound + ("Z" if zoned_bound else "")))
+            assert maximum.allows("2000-01-01T09:59:59." + "9" * 26 + suffix, EMPTY)
+            assert not maximum.allows("2000-01-01T10:00:00" + suffix, EMPTY)
+            assert not maximum.allows("2000-01-01T10:00:00." + tiny + suffix, EMPTY)
+            assert minimum.allows("2000-01-02T14:00:00." + tiny + suffix, EMPTY)
+            assert not minimum.allows("2000-01-02T14:00:00" + suffix, EMPTY)
+            assert not minimum.allows("2000-01-02T13:59:59." + "9" * 26 + suffix, EMPTY)
+
     def test_1_bce_is_a_leap_year(self):
         datatype = xsd("date")
         assert datatype.allows("-0001-02-29", EMPTY)
@@ -826,6 +897,49 @@ class TestXsd10TemporalNumbering:
 
 
 class TestXsd10DurationOrder:
+    def test_giant_seconds_and_fractions_are_exact(self):
+        seconds = "1" + "0" * 4300
+        fraction = "0" * 4300 + "1"
+        lexical = "PT" + seconds + "." + fraction + "S"
+        other = "PT" + seconds + "." + fraction[:-1] + "2S"
+        datatype = xsd("duration")
+        assert datatype.allows(lexical, EMPTY)
+        assert datatype.equal(lexical, EMPTY, lexical, EMPTY)
+        assert not datatype.equal(lexical, EMPTY, other, EMPTY)
+        assert xsd("duration", ("minExclusive", lexical)).allows(other, EMPTY)
+
+    @pytest.mark.parametrize("precision", (28, 50))
+    @pytest.mark.parametrize("sign", ("", "-"))
+    def test_fractional_duration_neighbors_are_exact(self, precision, sign):
+        lower = sign + "PT1." + "0" * 25 + "1S"
+        upper = sign + "PT1." + "0" * 25 + "2S"
+        if sign:
+            lower, upper = upper, lower
+        with decimal.localcontext() as context:
+            context.prec = precision
+            bounded = xsd("duration", ("minExclusive", lower))
+            assert bounded.allows(upper, EMPTY)
+            assert not bounded.allows(lower, EMPTY)
+            assert not bounded.equal(lower, EMPTY, upper, EMPTY)
+            assert bounded.equal(lower, EMPTY, lower[:-1] + "0S", EMPTY)
+            assert xsd("duration", ("maxExclusive", upper)).allows(lower, EMPTY)
+            assert not xsd("duration", ("maxExclusive", lower)).allows(upper, EMPTY)
+
+    @pytest.mark.parametrize("precision", (28, 50))
+    def test_exact_fraction_does_not_collapse_duration_coordinates(self, precision):
+        fraction = "." + "0" * 25 + "1S"
+        with decimal.localcontext() as context:
+            context.prec = precision
+            datatype = xsd("duration")
+            assert not datatype.equal("PT60" + fraction, EMPTY, "PT1M0" + fraction, EMPTY)
+            for facet in ("minInclusive", "minExclusive", "maxInclusive", "maxExclusive"):
+                assert not xsd("duration", (facet, "PT60" + fraction)).allows(
+                    "PT1M0" + fraction, EMPTY
+                )
+                assert not xsd("duration", (facet, "P30DT0" + fraction)).allows(
+                    "P1MT0" + fraction, EMPTY
+                )
+
     def test_comparable_durations_follow_the_four_reference_dates(self):
         assert xsd("duration", ("minInclusive", "P364D")).allows("P1Y", EMPTY)
         assert xsd("duration", ("minExclusive", "P364D")).allows("P1Y", EMPTY)

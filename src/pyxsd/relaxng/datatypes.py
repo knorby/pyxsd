@@ -69,6 +69,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
+from fractions import Fraction
 from types import MappingProxyType, NotImplementedType
 from typing import Any, cast
 
@@ -145,7 +146,7 @@ XSD_LIBRARY = "http://www.w3.org/2001/XMLSchema-datatypes"
 #: Fixed identities of the built-in libraries.  Bump these when their
 #: observable behavior changes so retained candidate identities do not lie.
 BUILTIN_FINGERPRINT = "pyxsd.relaxng.builtin/1"
-XSD_FINGERPRINT = "pyxsd.relaxng.xsd-1.0/1"
+XSD_FINGERPRINT = "pyxsd.relaxng.xsd-1.0/2"
 
 _XSD_SHORTHAND = "xsd:"
 
@@ -231,7 +232,7 @@ _XSD10_TEMPORAL_TYPE_NAMES = frozenset(
 _XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace"
 _XSD11_YEAR_ZERO = re.compile(r"^-?0{4}(?![0-9])")
 _YEAR_PREFIX = re.compile(r"^(-?[0-9]{4,})")
-_TEMPORAL_TIMEZONE_SPAN = decimal.Decimal(14 * 3600)
+_TEMPORAL_TIMEZONE_SPAN = 14 * 3600
 _PROCESS_DEPENDENT_FINGERPRINT = re.compile(r"0x[0-9a-fA-F]+")
 
 _XSD_PARAMETER_NAMES = frozenset(
@@ -395,10 +396,15 @@ class _Xsd10TemporalValue(str):
 
 
 def _format_astro_year(year: int) -> str:
-    """Format an astronomical year in the XSD lexical four-digit form."""
-    if year < 0:
-        return f"-{-year:04d}"
-    return f"{year:04d}"
+    """Format an astronomical year without Python's integer-string limit."""
+    sign = "-" if year < 0 else ""
+    year = abs(year)
+    chunks: list[str] = []
+    base = 10**400
+    while year >= base:
+        year, chunk = divmod(year, base)
+        chunks.append(f"{chunk:0400d}")
+    return sign + (str(year) + "".join(reversed(chunks))).zfill(4)
 
 
 def _xsd10_temporal_value(type_name: str, text: str) -> _Xsd10TemporalValue:
@@ -418,9 +424,12 @@ def _xsd10_temporal_value(type_name: str, text: str) -> _Xsd10TemporalValue:
     if match is None or re.fullmatch(_YEAR, match.group(1)) is None:
         raise TypeError(f"Not a valid xs:{type_name}: {text!r}")
     year_text = match.group(1)
-    year = int(year_text)
+    year = _parse_decimal_int(year_text)
     astro_year = year + 1 if year < 0 else year
-    validation_text = _format_astro_year(astro_year) + text[len(year_text) :]
+    # Gregorian calendar validity repeats every 400 years.  Validate the
+    # already-checked year grammar using a small equivalent year, avoiding
+    # the shared date constructors' int(string) limit without changing them.
+    validation_text = _format_astro_year(2000 + astro_year % 400) + text[len(year_text) :]
     try:
         cast(Any, _XSD_10_TYPES[type_name])(validation_text)
     except (TypeError, ValueError) as exc:
@@ -433,18 +442,18 @@ def _xsd10_astro_lexical(text: str) -> str:
     match = _YEAR_PREFIX.match(text)
     assert match is not None
     year_text = match.group(1)
-    year = int(year_text)
+    year = _parse_decimal_int(year_text)
     astro_year = year + 1 if year < 0 else year
     return _format_astro_year(astro_year) + text[len(year_text) :]
 
 
-def _fraction_seconds(digits: str | None) -> decimal.Decimal:
-    """An exact Decimal for an XSD fractional-second digit string."""
-    return decimal.Decimal(f"0.{digits}") if digits else decimal.Decimal(0)
+def _fraction_seconds(digits: str | None) -> Fraction:
+    """Exact fractional seconds, independent of the ambient decimal context."""
+    return Fraction(_parse_decimal_int(digits), 10 ** len(digits)) if digits else Fraction(0)
 
 
-def _xsd10_temporal_key(type_name: str, text: str) -> decimal.Decimal:
-    """An exact Decimal-second timeline key for an XSD 1.0 temporal value.
+def _xsd10_temporal_key(type_name: str, text: str) -> Fraction:
+    """An exact rational-second timeline key for an XSD 1.0 temporal value.
 
     The key is normalized to UTC when a timezone is present and remains the
     local timeline when it is absent.  Fractional seconds are kept exactly,
@@ -455,52 +464,52 @@ def _xsd10_temporal_key(type_name: str, text: str) -> decimal.Decimal:
     if type_name == "date":
         match = _TEMPORAL_DATE.fullmatch(text)
         assert match is not None
-        year, month, day = (int(match.group(index)) for index in range(1, 4))
+        year = _parse_decimal_int(match.group(1))
+        month, day = (int(match.group(index)) for index in range(2, 4))
         offset = _offset_seconds(match.group(4))
-        return decimal.Decimal(_days_from_civil(year, month, day) * 86400 - offset)
+        return Fraction(_days_from_civil(year, month, day) * 86400 - offset)
     if type_name == "dateTime":
         match = _TEMPORAL_DATETIME.fullmatch(text)
         assert match is not None
-        year, month, day, hour, minute, second = (int(match.group(index)) for index in range(1, 7))
+        year = _parse_decimal_int(match.group(1))
+        month, day, hour, minute, second = (int(match.group(index)) for index in range(2, 7))
         fraction = _fraction_seconds(match.group(7))
         offset = _offset_seconds(match.group(8))
         days = _days_from_civil(year, month, day)
         if hour == 24:
             hour = 0
             days += 1
-        return (
-            decimal.Decimal(days * 86400 + hour * 3600 + minute * 60 + second) + fraction - offset
-        )
+        return Fraction(days * 86400 + hour * 3600 + minute * 60 + second) + fraction - offset
     if type_name == "gYear":
         match = _TEMPORAL_GYEAR.fullmatch(text)
         assert match is not None
-        year = int(match.group(1))
+        year = _parse_decimal_int(match.group(1))
         offset = _offset_seconds(match.group(2))
-        return decimal.Decimal(_days_from_civil(year, 1, 1) * 86400 - offset)
+        return Fraction(_days_from_civil(year, 1, 1) * 86400 - offset)
     if type_name == "gYearMonth":
         match = _TEMPORAL_GYEARMONTH.fullmatch(text)
         assert match is not None
-        year, month = int(match.group(1)), int(match.group(2))
+        year, month = _parse_decimal_int(match.group(1)), int(match.group(2))
         offset = _offset_seconds(match.group(3))
-        return decimal.Decimal(_days_from_civil(year, month, 1) * 86400 - offset)
+        return Fraction(_days_from_civil(year, month, 1) * 86400 - offset)
     if type_name == "gMonth":
         match = _TEMPORAL_GMONTH.fullmatch(text)
         assert match is not None
         month = int(match.group(1))
         offset = _offset_seconds(match.group(2))
-        return decimal.Decimal(_days_from_civil(1972, month, 1) * 86400 - offset)
+        return Fraction(_days_from_civil(1972, month, 1) * 86400 - offset)
     if type_name == "gMonthDay":
         match = _TEMPORAL_GMONTHDAY.fullmatch(text)
         assert match is not None
         month, day = int(match.group(1)), int(match.group(2))
         offset = _offset_seconds(match.group(3))
-        return decimal.Decimal(_days_from_civil(1972, month, day) * 86400 - offset)
+        return Fraction(_days_from_civil(1972, month, day) * 86400 - offset)
     if type_name == "gDay":
         match = _TEMPORAL_GDAY.fullmatch(text)
         assert match is not None
         day = int(match.group(1))
         offset = _offset_seconds(match.group(2))
-        return decimal.Decimal((day - 1) * 86400 - offset)
+        return Fraction((day - 1) * 86400 - offset)
     match = _TEMPORAL_TIME.fullmatch(text)
     assert match is not None
     hour, minute, second = (int(match.group(index)) for index in range(1, 4))
@@ -508,13 +517,13 @@ def _xsd10_temporal_key(type_name: str, text: str) -> decimal.Decimal:
     offset = _offset_seconds(match.group(5))
     if hour == 24:
         hour = 0
-    return decimal.Decimal(hour * 3600 + minute * 60 + second) + fraction - offset
+    return Fraction(hour * 3600 + minute * 60 + second) + fraction - offset
 
 
 def _xsd10_temporal_compare_keys(
-    left_key: decimal.Decimal,
+    left_key: Fraction,
     left_zoned: bool,
-    right_key: decimal.Decimal,
+    right_key: Fraction,
     right_zoned: bool,
 ) -> int | None:
     """XSD 1.0 §3.2.7.4 order for two temporal timeline keys."""
@@ -551,9 +560,9 @@ def _xsd10_temporal_bound_text(type_name: str, text: str) -> str:
 
 def _xsd10_temporal_bounds(
     type_name: str, parameters: tuple[DatatypeParameter, ...]
-) -> tuple[tuple[str, decimal.Decimal, str, bool], ...]:
+) -> tuple[tuple[str, Fraction, str, bool], ...]:
     """Parse and conflict-check XSD 1.0 temporal bounds."""
-    bounds: dict[str, tuple[decimal.Decimal, str, bool]] = {}
+    bounds: dict[str, tuple[Fraction, str, bool]] = {}
     for parameter in parameters:
         if parameter.name not in _BOUND_PARAMETER_NAMES:
             continue
@@ -594,7 +603,7 @@ class _Xsd10Duration:
     days: int
     hours: int
     minutes: int
-    seconds: decimal.Decimal
+    seconds: Fraction
 
 
 #: The four qualified dateTimes XSD 1.0 §3.2.6.2 uses to decide duration order.
@@ -603,11 +612,13 @@ _DURATION_REFERENCE_DATES = ((1696, 9), (1697, 2), (1903, 3), (1903, 7))
 
 def _parse_decimal_int(text: str) -> int:
     """Parse an arbitrary-length decimal integer without int-string limits."""
+    negative = text.startswith("-")
+    text = text.removeprefix("-")
     value = 0
     for start in range(0, len(text), 400):
         chunk = text[start : start + 400]
         value = value * 10 ** len(chunk) + int(chunk)
-    return value
+    return -value if negative else value
 
 
 def _parse_xsd10_duration(text: str) -> _Xsd10Duration:
@@ -619,7 +630,10 @@ def _parse_xsd10_duration(text: str) -> _Xsd10Duration:
         _parse_decimal_int(component[:-1]) if component is not None else 0
         for component in (years, months, days, hours, minutes)
     ]
-    seconds = decimal.Decimal(seconds_text[:-1]) if seconds_text is not None else decimal.Decimal(0)
+    seconds = Fraction(0)
+    if seconds_text is not None:
+        whole, _, fraction = seconds_text[:-1].partition(".")
+        seconds = _parse_decimal_int(whole) + _fraction_seconds(fraction)
     zero = not any(components) and not seconds
     sign = 1 if zero or not text.startswith("-") else -1
     return _Xsd10Duration(
@@ -643,11 +657,11 @@ def _xsd10_duration_value(text: str) -> tuple[_Xsd10Duration, str]:
     return _parse_xsd10_duration(text), text
 
 
-def _add_duration_to_reference(year: int, month: int, duration: _Xsd10Duration) -> decimal.Decimal:
+def _add_duration_to_reference(year: int, month: int, duration: _Xsd10Duration) -> Fraction:
     """The XSD 1.0 §E result of adding *duration* to a reference midnight.
 
     The four reference dateTimes are always the first of a month, so the
-    spec's day-pinning step is vacuous.  The result is a Decimal second count
+    spec's day-pinning step is vacuous.  The result is an exact rational second count
     on the UTC timeline, which is all the duration order needs.
     """
     signed_months = duration.sign * duration.months
@@ -670,12 +684,7 @@ def _add_duration_to_reference(year: int, month: int, duration: _Xsd10Duration) 
     day_number = (
         _days_from_civil(result_year, result_month, 1) + duration.sign * duration.days + day_carry
     )
-    return (
-        decimal.Decimal(day_number * 86400)
-        + result_hour * 3600
-        + result_minute * 60
-        + result_second
-    )
+    return Fraction(day_number * 86400) + result_hour * 3600 + result_minute * 60 + result_second
 
 
 def _xsd10_duration_compare(left: _Xsd10Duration, right: _Xsd10Duration) -> int | None:
@@ -817,7 +826,7 @@ class ScalarDatatype(Datatype):
     #: XSD 1.0 temporal bounds use the adapter's year numbering, not the
     #: shared facet ordering key.  Derived from ``parameters`` like the other
     #: facets, so it is excluded from datatype identity.
-    temporal_bounds: tuple[tuple[str, decimal.Decimal, str, bool], ...] = field(
+    temporal_bounds: tuple[tuple[str, Fraction, str, bool], ...] = field(
         default=(), compare=False, repr=False
     )
     #: XSD 1.0 duration bounds use the four-reference-date partial order, not
@@ -1263,7 +1272,7 @@ def _namespace_bindings(context: DatatypeContext) -> dict[str, str]:
     return bindings
 
 
-def _xsd10_duration_key(text: str) -> tuple[int, int, int, int, int, int, decimal.Decimal]:
+def _xsd10_duration_key(text: str) -> tuple[int, int, int, int, int, int, Fraction]:
     """The XSD 1.0 six-dimensional identity key for ``xs:duration``.
 
     XSD 1.0 treats the year, month, day, hour, minute and second components as
