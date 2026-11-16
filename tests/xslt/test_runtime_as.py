@@ -24,13 +24,20 @@ _SCHEMA = (
     '<xs:pattern value="[0-9]{3}-[A-Z]{2}"/></xs:restriction></xs:simpleType>'
     '<xs:simpleType name="Small"><xs:restriction base="xs:int">'
     '<xs:maxInclusive value="10"/></xs:restriction></xs:simpleType>'
+    '<xs:simpleType name="Base"><xs:restriction base="xs:string">'
+    '<xs:pattern value="[0-9]{3}-[A-Z]{2}"/></xs:restriction></xs:simpleType>'
+    '<xs:simpleType name="Derived"><xs:restriction base="sup:Base">'
+    '<xs:maxLength value="6"/></xs:restriction></xs:simpleType>'
     '<xs:attribute name="code" type="sup:PartNumber"/>'
     '<xs:complexType name="Entry"><xs:simpleContent>'
     '<xs:extension base="sup:PartNumber">'
     '<xs:attribute name="code" type="sup:PartNumber"/>'
+    '<xs:attribute ref="sup:code"/>'
     "</xs:extension></xs:simpleContent></xs:complexType>"
     '<xs:element name="doc" type="sup:PartNumber"/>'
     '<xs:element name="other" type="sup:Small"/>'
+    '<xs:element name="derived" type="sup:Derived"/>'
+    '<xs:element name="maybe" type="xs:string" nillable="true"/>'
     '<xs:element name="entry" type="sup:Entry"/>'
     '<xs:element name="wrap"><xs:complexType><xs:sequence>'
     '<xs:element name="inner" type="xs:string"/>'
@@ -50,6 +57,7 @@ def _pool() -> SchemaPool:
 def _stylesheet(body: str) -> bytes:
     return (
         f'<xsl:stylesheet version="3.0" xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" '
+        f'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
         f'xmlns:sup="{SUP}">{body}</xsl:stylesheet>'
     ).encode()
 
@@ -289,15 +297,97 @@ def test_an_untyped_element_does_not_satisfy_a_typed_test() -> None:
     )
 
 
-def test_schema_element_test_accepts_an_anonymous_declared_type() -> None:
+def test_schema_element_test_uses_an_anonymous_declared_type() -> None:
     serialized = _run(
         '<xsl:template name="t" as="schema-element(sup:wrap)">'
-        "<sup:wrap><sup:inner>x</sup:inner></sup:wrap></xsl:template>"
+        '<sup:wrap xsl:validation="strict"><sup:inner>x</sup:inner></sup:wrap>'
+        "</xsl:template>"
         '<xsl:template name="main"><out><xsl:call-template name="t"/></out></xsl:template>',
         initial_template="main",
     )
 
     assert "<sup:inner>x</sup:inner>" in serialized
+
+    # An unvalidated element carries no actual type, so it cannot satisfy the
+    # anonymous declaration either.
+    assert (
+        _code(
+            '<xsl:template name="t" as="schema-element(sup:wrap)">'
+            "<sup:wrap><sup:inner>x</sup:inner></sup:wrap></xsl:template>"
+            '<xsl:template name="main"><xsl:call-template name="t"/></xsl:template>',
+            initial_template="main",
+        )
+        == "XTTE0505"
+    )
+
+    # The declaration's anonymous type is complex, so a node annotated
+    # xs:integer cannot match it.
+    assert (
+        _code(
+            '<xsl:template name="t" as="schema-element(sup:wrap)">'
+            '<sup:wrap xsl:type="xs:integer">5</sup:wrap></xsl:template>'
+            '<xsl:template name="main"><xsl:call-template name="t"/></xsl:template>',
+            initial_template="main",
+        )
+        == "XTTE0505"
+    )
+
+
+def test_schema_attribute_test_uses_the_declaration() -> None:
+    """A global attribute declaration is matched by expanded name.
+
+    The fixture declares the global attribute before the complex type that
+    references it: ``Schema.components`` ordering hides a later global
+    attribute from ``SchemaPool.get_attribute`` when an earlier complex type
+    declares an attribute with the same local name (a pre-existing pyxsd pool
+    bug, unrelated to this seam).
+    """
+    serialized = _run(
+        '<xsl:variable name="e"><sup:entry xsl:validation="strict" sup:code="123-AB">'
+        "123-AB</sup:entry></xsl:variable>"
+        '<xsl:variable name="a" select="$e/*/@sup:code" as="schema-attribute(sup:code)"/>'
+        '<xsl:template name="main"><out><xsl:value-of select="$a"/></out></xsl:template>',
+        initial_template="main",
+    )
+
+    assert ">123-AB</out>" in serialized
+
+
+def test_a_derived_type_satisfies_its_base_type() -> None:
+    # sup:Derived restricts sup:Base; function conversion accepts a value
+    # already in the base type's value space (XPath 3.1 section 3.1.5.2).
+    serialized = _run(
+        '<xsl:template name="t"><xsl:param name="p" as="sup:Base"/>'
+        '<out><xsl:value-of select="$p"/></out></xsl:template>'
+        '<xsl:template name="main"><xsl:call-template name="t">'
+        '<xsl:with-param name="p"><sup:derived xsl:validation="strict">'
+        "123-AB</sup:derived></xsl:with-param>"
+        "</xsl:call-template></xsl:template>",
+        initial_template="main",
+    )
+
+    assert ">123-AB</out>" in serialized
+
+
+def test_element_test_rejects_a_nilled_element_unless_nillable() -> None:
+    # XPath 3.1 section 2.5.5.3: a nilled element matches an element test only
+    # when the type name carries the nillable (?) marker.
+    assert (
+        _code(
+            '<xsl:variable name="e" as="element(*, xs:string)">'
+            '<sup:maybe xsl:validation="strict" xsi:nil="true"/></xsl:variable>'
+            '<xsl:template name="main"><xsl:value-of select="$e"/></xsl:template>',
+            initial_template="main",
+        )
+        == "XTTE0570"
+    )
+    nillable = _run(
+        '<xsl:variable name="e" as="element(*, xs:string?)">'
+        '<sup:maybe xsl:validation="strict" xsi:nil="true"/></xsl:variable>'
+        '<xsl:template name="main"><out><xsl:value-of select="count($e)"/></out></xsl:template>',
+        initial_template="main",
+    )
+    assert ">1</out>" in nillable
 
 
 def test_a_declaration_absent_from_the_pool_does_not_match() -> None:

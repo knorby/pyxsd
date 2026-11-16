@@ -5683,6 +5683,10 @@ def _matches_item_type(
             if item_type.name is None or item.name != item_type.name:
                 return False
             return _node_matches_declaration(item, item_type.name, schema_pool, element=True)
+        # XPath 3.1 section 2.5.5.3: a nilled element matches an element test
+        # only when the test's TypeName carries the ``?`` (nillable) marker.
+        if item.nilled and not item_type.nillable:
+            return False
         if not (item_type.wildcard or item_type.name is None or item.name == item_type.name):
             return False
         if item_type.type_name is None:
@@ -5737,9 +5741,15 @@ def _node_matches_declaration(
     if declaration is None:
         return False
     declared_type = getattr(declaration, "type", None)
-    if declared_type is None or declared_type.name is None:
-        return True
-    return _node_has_type(item, declared_type.name, schema_pool)
+    if declared_type is not None and declared_type.name is not None:
+        return _node_has_type(item, declared_type.name, schema_pool)
+    # An anonymous declared type has no name to look up, so compare the
+    # generated type classes directly, as _node_has_type does.
+    declared_class = getattr(declared_type, "_type_class", None)
+    actual = getattr(item.annotation, "actual_type", None)
+    if isinstance(actual, type) and isinstance(declared_class, type):
+        return issubclass(actual, declared_class)
+    return False
 
 
 def _require_absolute(uri: str, label: str) -> str:
