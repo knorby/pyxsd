@@ -247,13 +247,15 @@ class Document:
 
         Any other callable keeps the legacy root-callable behavior:
 
-        - ``fn(root, *args, **kwargs)`` may return a new tree root (a
-          bound ``SchemaBase`` instance), which becomes the root of a
-          new :class:`Document` against the same schema — or anything
-          else, including ``None``, which is returned unchanged. When a
-          transform mutates the tree in place and returns ``None``, the
-          original document remains available to the caller; no new
-          document is created.
+        - ``fn(root, *args, **kwargs)`` may return a new tree root, which
+          becomes the root of a new document against the same schema —
+          or anything else, including ``None``, which is returned
+          unchanged. The schema-specific node check is the narrow
+          :meth:`_document_for_node_result` hook: XSD wraps a bound
+          ``SchemaBase`` root, while RELAX NG wraps its lexical
+          ``RelaxNGElement`` tree. When a transform mutates the tree in
+          place and returns ``None``, the original document remains
+          available to the caller; no new document is created.
 
         A returned document shares this document's report, which
         reflects the tree as it was parsed, not the transformed shape;
@@ -271,6 +273,18 @@ class Document:
                 )
             return fn.transform_document(self)
         result = fn(self.root, *args, **kwargs)
+        return self._document_for_node_result(result)
+
+    def _document_for_node_result(self, root: Any) -> Any:
+        """Wrap a schema-specific tree result as a new document.
+
+        This is the narrow schema-neutral seam for root-callable transform
+        results. The XSD document accepts only a bound
+        :class:`~pyxsd.schema_base.SchemaBase` root and returns anything
+        else unchanged; schema subclasses override it for their own node
+        types. The wrapping document deliberately keeps this document's
+        report snapshot, so the result is stale until :meth:`revalidate`.
+        """
         # Imported here (not at module level): a module-level import of
         # schema_base would drag the element_representatives stack in
         # behind this module, and that stack's internal import order is
@@ -278,15 +292,15 @@ class Document:
         # breaks it. Deferred, the import stays cold-safe.
         from pyxsd.schema_base import SchemaBase
 
-        if isinstance(result, SchemaBase):
+        if isinstance(root, SchemaBase):
             return Document(
                 schema=self.schema,
-                root=result,
+                root=root,
                 source=self.source,
                 report=self._report,
                 declarations=self._declarations,
             )
-        return result
+        return root
 
     def revalidate(self) -> Document:
         """Re-parses the serialized tree, returning a fresh :class:`Document`.

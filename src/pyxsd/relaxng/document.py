@@ -6,19 +6,28 @@ schema-phase findings followed by this parse's instance findings.  Phase 2
 exposes validation-only parsing, so the document records ``typed=False`` and
 has no pattern annotations or typed projections.  Methods that would require
 those Phase 3 capabilities fail explicitly instead of reaching an XSD
-converter, binder, or revalidation path.
+converter or binder.
+
+The document shares the generic traversal, XPath, writer, XDM, and transform
+behavior with XSD documents.  Schema-specific behavior is narrow: a
+root-callable transform returning a lexical node yields a new document with a
+stale report snapshot, and :meth:`revalidate` parses an independent clone of
+the current tree into fresh nodes and evidence while keeping the recorded
+namespace and base-URI frames.
 """
 
 from __future__ import annotations
 
 import os
+from io import StringIO
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, NoReturn
 
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
-from pyxsd.relaxng.tree import RelaxNGElement
-from pyxsd.relaxng.xml_writer import serialize_relaxng
+from pyxsd.locations import IssueLocation, NodeLookup
+from pyxsd.relaxng.tree import NodeContext, RelaxNGElement
+from pyxsd.relaxng.xml_writer import clone_relaxng, serialize_relaxng
 
 if TYPE_CHECKING:
     from pyxsd.data_conversion.contracts import Fidelity, FormatName
@@ -70,6 +79,7 @@ class RelaxNGDocument(Document):
         limits: RelaxNGLimits | None = None,
         namespace_context: Any = None,
         xdm_capture: Any = None,
+        interpretations_current: bool = True,
     ) -> None:
         if typed is not False:
             raise PyXSDError(_TYPED_DOCUMENT_CAPABILITY)
@@ -87,12 +97,17 @@ class RelaxNGDocument(Document):
         self._limits = limits
         self._namespace_context = namespace_context
         self._revision_id = root.revision.revision_id
+        self._interpretations_current = interpretations_current
 
     @property
     def interpretations_current(self) -> bool:
         """Whether the validation snapshot still describes the current revision."""
         revision = self.root.revision
-        return revision.revision_id == self._revision_id and not revision.dirty
+        return (
+            self._interpretations_current
+            and revision.revision_id == self._revision_id
+            and not revision.dirty
+        )
 
     @property
     def annotations(self) -> NoReturn:
@@ -148,6 +163,113 @@ class RelaxNGDocument(Document):
         dest.write(text)
         dest.flush()
 
-    def revalidate(self) -> NoReturn:
-        """Reject revalidation until the RELAX NG document adapter lands."""
-        raise PyXSDError("RELAX NG document revalidation is not supported in this release")
+    def _document_for_node_result(self, root: Any) -> Any:
+        """Wrap a lexical node result as a stale RELAX NG document.
+
+        A root callable may return the current root, a node from this
+        revision, or any node produced by a transform.  The returned
+        document keeps this revision's typed/capture, instance-limit, and
+        namespace settings plus the old report snapshot.  Its
+        ``interpretations_current`` is false until :meth:`revalidate`.
+        An unchanged root keeps the coherent XDM capture; any other root
+        starts without one.  Non-lexical results pass through unchanged.
+        """
+        if not isinstance(root, RelaxNGElement):
+            return root
+        return RelaxNGDocument(
+            schema=self.schema,
+            root=root,
+            source=self.source,
+            report=self._report,
+            typed=self.typed,
+            capture=self._capture,
+            limits=self._limits,
+            namespace_context=self._namespace_context,
+            xdm_capture=self._xdm_capture if root is self.root else None,
+            interpretations_current=False,
+        )
+
+    def revalidate(self) -> RelaxNGDocument:
+        """Validate an independent clone of the current tree.
+
+        The lexical tree is cloned into a fresh revision, serialized with the
+        schema-neutral writer, and parsed against the same schema with this
+        document's typed, capture, XDM, and instance-limit settings.  The
+        result has fresh nodes, a fresh report, and a new revision ID; this
+        document, its nodes, and its report snapshot are never refreshed.
+
+        Serialization emits the recorded namespace declarations so prefixed
+        QName values keep their external namespace context.  The recorded
+        namespace and effective base-URI frames are then restored onto the
+        repared nodes, because a bare string round trip cannot carry a
+        source-relative base URI.  A root tail is outside the document
+        element and is not carried into the new document.
+        """
+        cloned = clone_relaxng(self.root)
+        again = self.schema.parse(
+            StringIO(serialize_relaxng(cloned)),
+            typed=self.typed,
+            capture=self._capture,
+            capture_xdm=self._xdm_capture is not None,
+            limits=self._limits,
+        )
+        again.source = self.source
+        _restore_lexical_frames(cloned, again.root)
+        return again
+
+    def locate(self, location: IssueLocation) -> NodeLookup:
+        """Resolve one parse-specific occurrence to its lexical node.
+
+        RELAX NG parsing records an exact source address for every lexical
+        node instead of building an XSD binding provenance table.  This
+        lookup compares those recorded addresses; it never matches by
+        attribute value, local name, or position in another revision.  An
+        attribute address returns the original lexical attribute value, and
+        an address from another parse is ``missing``.
+        """
+        revision = self.root.revision
+        stack = [self.root]
+        while stack:
+            node = stack.pop()
+            recorded = revision.source_location_for(node)
+            if (
+                recorded is not None
+                and recorded.source == location.source
+                and recorded.path == location.path
+            ):
+                if location.attribute is None:
+                    return NodeLookup(location, node, "bound")
+                value = node.attribute_lexical(location.attribute)
+                if value is None:
+                    return NodeLookup(location, None, "missing")
+                return NodeLookup(location, value, "attribute")
+            stack.extend(reversed(node._children_))
+        return NodeLookup(location, None, "missing")
+
+
+def _restore_lexical_frames(source: RelaxNGElement, target: RelaxNGElement) -> None:
+    """Copy recorded namespace/base frames from *source* onto *target* nodes.
+
+    Both trees must have the same element shape, which the lexical writer and
+    parser guarantee for an unedited clone.  Source occurrences stay those of
+    the fresh parse: diagnostics and ``locate`` addresses belong to the new
+    revision, while namespace and base-URI frames are lexical context the
+    serialized text cannot fully express.
+    """
+    revision = target.revision
+    stack: list[tuple[RelaxNGElement, RelaxNGElement]] = [(source, target)]
+    while stack:
+        source_node, target_node = stack.pop()
+        source_context = source_node.revision.context_for(source_node)
+        target_context = revision.context_for(target_node)
+        revision._replace_context(
+            target_node,
+            NodeContext(
+                source_context.namespaces,
+                source_context.base_uri,
+                target_context.source,
+            ),
+        )
+        if len(source_node._children_) != len(target_node._children_):
+            raise PyXSDError("RELAX NG revalidation changed the lexical tree shape")
+        stack.extend(zip(source_node._children_, target_node._children_, strict=True))

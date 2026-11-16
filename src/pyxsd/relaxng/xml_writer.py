@@ -91,26 +91,14 @@ def clone_relaxng(root: RelaxNGElement) -> RelaxNGElement:
     revision = LexicalRevision()
     if source_revision.dirty:
         revision.mark_dirty()
-    clone_root = RelaxNGElement._new(
-        root._name_,
-        revision,
-        attributes=root._attribs_,
-        text=root.text_value(),
-        tail=root._tail_,
-    )
+    clone_root = type(root)._clone_new(root, revision)
     revision._adopt_root(clone_root)
     stack: list[tuple[RelaxNGElement, RelaxNGElement]] = [(root, clone_root)]
     while stack:
         source, target = stack.pop()
         revision._register_context(target, _copy_context(source.revision.context_for(source)))
         for source_child in source._children_:
-            child = RelaxNGElement._new(
-                source_child._name_,
-                revision,
-                attributes=source_child._attribs_,
-                text=source_child.text_value(),
-                tail=source_child._tail_,
-            )
+            child = type(source_child)._clone_new(source_child, revision)
             target._children_.append(child)
             child._parent_ = target
             stack.append((source_child, child))

@@ -497,7 +497,7 @@ def test_serialization_preserves_xsi_attributes_and_untyped_xdm():
     assert {attribute.type_name for attribute in xdm.root_element.attributes} == {UNTYPED_ATOMIC}
 
 
-def test_validation_only_documents_reject_annotation_and_revalidation_capabilities():
+def test_validation_only_documents_reject_annotations_and_revalidate_freshly():
     schema = compile_schema()
     document = schema.parse(io.StringIO("<doc><item>x</item></doc>"), typed=False)
 
@@ -507,11 +507,13 @@ def test_validation_only_documents_reject_annotation_and_revalidation_capabiliti
     with pytest.raises(PyXSDError, match="pattern capture is unavailable"):
         _ = document.annotations
 
-    with pytest.raises(PyXSDError, match="revalidat"):
-        document.revalidate()
-
     document.root.set_text("changed")
     assert document.interpretations_current is False
+
+    fresh = document.revalidate()
+    assert fresh is not document
+    assert fresh.interpretations_current is True
+    assert fresh.root.text_value() == "changed"
 
 
 def test_data_conversion_methods_fail_explicitly_without_xsd_dispatch(monkeypatch):

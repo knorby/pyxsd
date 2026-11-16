@@ -264,6 +264,22 @@ class RelaxNGElement:
     def _create_revision(cls) -> LexicalRevision:
         return LexicalRevision()
 
+    @classmethod
+    def _clone_new(cls, source: RelaxNGElement, revision: LexicalRevision) -> RelaxNGElement:
+        """Create one clone node through this concrete class's factory.
+
+        Cloning resolves the factory on the *concrete* node class, so a
+        generated projection subclass keeps its own construction contract
+        instead of collapsing to :class:`RelaxNGElement`.
+        """
+        return cls._new(
+            source._name_,
+            revision,
+            attributes=source._attribs_,
+            text=source.text_value(),
+            tail=source._tail_,
+        )
+
     @property
     def revision(self) -> LexicalRevision:
         """The revision that owns this node."""

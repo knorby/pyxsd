@@ -25,6 +25,7 @@ from tests.xslt.support import stylesheet
 from pyxsd.document import Document
 from pyxsd.document_transform import AncillaryResultError, DocumentTransform
 from pyxsd.exceptions import PyXSDError, ValidationError
+from pyxsd.relaxng import RelaxNGDocument, RelaxNGSchema
 from pyxsd.schema import Schema
 from pyxsd.xdm.errors import XdmInputError
 from pyxsd.xslt.adapter import XsltDocumentTransform
@@ -60,6 +61,16 @@ TARGET_SCHEMA = """<?xml version="1.0"?>
     </xs:complexType>
   </xs:element>
 </xs:schema>
+"""
+
+RELAXNG_SOURCE_SCHEMA = """<grammar xmlns="http://relaxng.org/ns/structure/1.0">
+  <start>
+    <element name="note">
+      <element name="to"><text/></element>
+      <element name="count"><text/></element>
+    </element>
+  </start>
+</grammar>
 """
 
 SUMMARY_XML = (
@@ -121,6 +132,14 @@ def _source_document(xml: str = SOURCE_XML) -> Document:
     return document
 
 
+def _relaxng_source_document(xml: str = SOURCE_XML) -> RelaxNGDocument:
+    schema = RelaxNGSchema.compile(io.StringIO(RELAXNG_SOURCE_SCHEMA))
+    assert not schema.report.has_errors, schema.report
+    document = schema.parse(io.StringIO(xml), typed=False, capture_xdm=True)
+    assert document.is_valid, document.report
+    return document
+
+
 def _target_schema() -> Schema:
     return _schema(TARGET_SCHEMA)
 
@@ -157,6 +176,20 @@ def test_document_adapter_fresh_target():
     assert converted.root._attribs_["total"] == expected._attribs_["total"]
     assert converted.root._attribs_["kind"] == expected._attribs_["kind"]
     assert converted._provenance is not source_document._provenance
+
+
+def test_document_adapter_accepts_relaxng_source_documents():
+    source_document = _relaxng_source_document()
+    target_schema = _target_schema()
+    adapter = _mapper_sheet().as_transform(target_schema=target_schema)
+
+    converted = source_document.transform(adapter)
+
+    assert converted is not source_document
+    assert converted.schema is target_schema
+    assert converted.is_valid
+    assert converted.to_xdm().root_element.name == "{urn:summary}summary"
+    assert source_document.interpretations_current is True
 
 
 def test_document_adapter_rejects_stale_or_ancillary_results():
