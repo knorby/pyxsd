@@ -14,7 +14,7 @@ import os.path
 import warnings
 import weakref
 from collections.abc import Iterable, Iterator, Mapping
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from io import BytesIO
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Literal
@@ -45,9 +45,12 @@ from pyxsd.resource_policy import (
     ResourcePolicy,
     ResourcePolicyError,
     ResourcePurpose,
+    is_root_read_source,
     new_validation_report,
+    policy_compilation,
     read_resource,
     record_declarations,
+    reject_parser_override,
     source_identifier,
     validate_purpose,
 )
@@ -93,7 +96,7 @@ from pyxsd.schema_context import (
     remember_components,
 )
 from pyxsd.schema_hints import absolute_schema_location_pairs, resolve_schema_hint
-from pyxsd.validation import ValidationReport
+from pyxsd.validation import ValidationReport, require_valid_report
 from pyxsd.version_gates import check_xsd10_vocabulary
 from pyxsd.versioning import apply_conditional_inclusion
 from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
@@ -468,7 +471,7 @@ class Schema:
         if xsd_version not in ("1.0", "1.1"):
             raise ValueError(f"xsd_version must be '1.0' or '1.1', not {xsd_version!r}")
         purpose = validate_purpose(_source_purpose)
-        _reject_parser_override(resource_policy, xml_policy, xml_limits)
+        reject_parser_override(resource_policy, xml_policy, xml_limits)
         if overlay is not None and classify_resource(overlay).kind == "remote":
             raise ResourcePolicyError(
                 f"the overlay '{overlay}' is remote; Python overlay modules are "
@@ -483,7 +486,7 @@ class Schema:
                 f"the remote schema '{source}' cannot load the local overlay "
                 f"'{overlay}'; Python overlays are never loaded for remote schemas"
             )
-        with _policy_compilation(resource_policy, root_read=isinstance(source, (str, os.PathLike))):
+        with policy_compilation(resource_policy, root_read=is_root_read_source(source)):
             original_source = source
             source_data = None
             if resource_policy is not None and not isinstance(source, ET.Element):
@@ -557,12 +560,7 @@ class Schema:
 
     def require_valid(self) -> None:
         """Raises :class:`pyxsd.ValidationError` if the report has errors."""
-        if self.report.has_errors:
-            raise ValidationError(
-                f"the schema is not valid: {self.report.error_count} error(s); "
-                "inspect ValidationError.report",
-                self.report,
-            )
+        require_valid_report(self.report)
 
     def _needs_entity_declarations(self) -> bool:
         """Whether this schema's classes can validate ENTITY/ENTITIES values.
@@ -882,7 +880,7 @@ class Schema:
         snapshot from this parse's exact source revision; it is only set by
         the public opt-in path and never by revalidation.
         """
-        _reject_parser_override(self.resource_policy, xml_policy, xml_limits)
+        reject_parser_override(self.resource_policy, xml_policy, xml_limits)
         collection_policy = xml_policy if xml_policy is not None else XmlParserPolicy.default()
         collected: DocumentDeclarations | None
         if isinstance(declarations, _CollectDeclarations):
@@ -1102,39 +1100,6 @@ class Schema:
 compile = Schema.compile
 
 
-@contextmanager
-def _policy_compilation(policy: ResourcePolicy | None, *, root_read: bool) -> Iterator[None]:
-    """Enter a policy's optional per-compilation closure scope.
-
-    :class:`~pyxsd.remote.RemoteResourcePolicy` advertises the hook through the
-    private ``_pyxsd_compilation_scope`` capability marker, not through the
-    public ``compilation()`` method's spelling, so a custom policy may define
-    an unrelated ``compilation`` attribute without breaking compilation. A
-    policy that wants the same per-compilation state publishes the marker
-    itself. ``root_read`` is false for an anonymous stream schema, whose
-    dependencies must still authorize local-to-remote loading.
-    """
-    enter = getattr(policy, "_pyxsd_compilation_scope", None)
-    if enter is None:
-        yield
-    else:
-        with enter(root_read=root_read):
-            yield
-
-
-def _reject_parser_override(
-    resource_policy: ResourcePolicy | None,
-    xml_policy: XmlParserPolicy | None,
-    xml_limits: XmlLimits | None,
-) -> None:
-    """Refuse parser arguments that a trusted ResourcePolicy would swallow."""
-    if resource_policy is not None and (xml_policy is not None or xml_limits is not None):
-        raise ValueError(
-            "xml_policy and xml_limits cannot be combined with resource_policy: "
-            "ResourcePolicy.parse() is trusted application code"
-        )
-
-
 def parse(
     xml: str | Path | os.PathLike[str] | IO[str] | ET.Element,
     *,
@@ -1179,7 +1144,7 @@ def parse(
       schema compile. They never become an implicit default for later
       :meth:`Schema.parse` calls.
     """
-    _reject_parser_override(resource_policy, xml_policy, xml_limits)
+    reject_parser_override(resource_policy, xml_policy, xml_limits)
     context = NamespaceContext()
     # The instance is parsed once, up front: for non-element sources
     # its prefix-to-URI bindings land in *context* (shared with the

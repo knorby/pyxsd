@@ -22,6 +22,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
 
 from pyxsd._diagnostic_encoding import encode_number
+from pyxsd.exceptions import ValidationError
 from pyxsd.locations import ConstraintInfo, IssueLocation, LocationPrecision, PathStep
 
 if TYPE_CHECKING:
@@ -338,6 +339,20 @@ class ValidationReport:
         lines = [header]
         lines.extend(f"  {issue.format()}" for issue in self._issues)
         return "\n".join(lines)
+
+
+def require_valid_report(report: ValidationReport) -> None:
+    """Raise :class:`~pyxsd.exceptions.ValidationError` when *report* has errors.
+
+    The shared ``require_valid()`` implementation for compiled schema types, so
+    the message shape and attached report cannot drift between them.
+    """
+    if report.has_errors:
+        raise ValidationError(
+            f"the schema is not valid: {report.error_count} error(s); "
+            "inspect ValidationError.report",
+            report,
+        )
 
 
 def _diagnostic_value(value: object) -> object:

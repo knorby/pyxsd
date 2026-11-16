@@ -78,6 +78,16 @@ XSD_SCHEMA = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <xs:element name="root" type="xs:string"/>
 </xs:schema>"""
 
+BROKEN_XSD_SCHEMA = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="a">
+    <xs:complexType>
+      <xs:complexContent>
+        <xs:extension base="NoSuchType"/>
+      </xs:complexContent>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"""
+
 EXPECTED_START = Element(
     Name(None, "doc"),
     Group(
@@ -769,3 +779,70 @@ def test_a_returned_schema_is_not_a_document_or_xsd_schema():
     assert not isinstance(schema, pyxsd.Schema)
     assert not hasattr(schema, "classes")
     assert schema.__class__.__module__ == "pyxsd.relaxng.schema"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"xml_policy": XmlParserPolicy.default()},
+        {"xml_limits": XmlLimits(max_bytes=1)},
+    ],
+)
+def test_both_compilers_reject_the_same_policy_parser_combinations(extra, tmp_path):
+    relaxng_stream = CountingStream(VALID)
+    xsd_stream = CountingStream(XSD_SCHEMA)
+
+    with pytest.raises(ValueError) as relaxng_error:
+        RelaxNGSchema.compile(relaxng_stream, resource_policy=ScopePolicy(), **extra)
+    with pytest.raises(ValueError) as xsd_error:
+        pyxsd.Schema.compile(xsd_stream, resource_policy=ScopePolicy(), **extra)
+
+    assert str(relaxng_error.value) == str(xsd_error.value)
+    assert "cannot be combined" in str(relaxng_error.value)
+    assert relaxng_stream.reads == 0
+    assert xsd_stream.reads == 0
+
+    for compiler in (RelaxNGSchema.compile, pyxsd.Schema.compile):
+        with pytest.raises(ValueError, match="cannot be combined"):
+            compiler(tmp_path / "missing.xml", resource_policy=ScopePolicy(), **extra)
+
+
+def test_both_compilers_share_the_require_valid_message_shape():
+    invalid_relaxng = compile_schema(io.StringIO(f'<grammar xmlns="{NS}"/>'))
+    invalid_xsd = pyxsd.Schema.compile(io.StringIO(BROKEN_XSD_SCHEMA))
+
+    assert invalid_relaxng.report.has_errors
+    assert invalid_xsd.report.has_errors
+    for schema in (invalid_relaxng, invalid_xsd):
+        with pytest.raises(ValidationError) as excinfo:
+            schema.require_valid()
+        error = excinfo.value
+        assert error.report is schema.report
+        assert str(error) == (
+            f"the schema is not valid: {schema.report.error_count} error(s); "
+            "inspect ValidationError.report"
+        )
+
+
+def test_both_compilers_enter_the_policy_scope_with_the_same_root_read(tmp_path):
+    path = tmp_path / "schema.xml"
+    path.write_text(VALID, encoding="utf-8")
+
+    relaxng_path_policy = ScopePolicy(VALID)
+    xsd_path_policy = ScopePolicy(XSD_SCHEMA)
+    RelaxNGSchema.compile(path, resource_policy=relaxng_path_policy)
+    pyxsd.Schema.compile(path, resource_policy=xsd_path_policy)
+    assert relaxng_path_policy.events == xsd_path_policy.events == [("enter", True), ("exit",)]
+
+    relaxng_stream_policy = ScopePolicy(VALID)
+    xsd_stream_policy = ScopePolicy(XSD_SCHEMA)
+    RelaxNGSchema.compile(io.StringIO(VALID), resource_policy=relaxng_stream_policy)
+    pyxsd.Schema.compile(io.StringIO(XSD_SCHEMA), resource_policy=xsd_stream_policy)
+    assert (
+        relaxng_stream_policy.events
+        == xsd_stream_policy.events
+        == [
+            ("enter", False),
+            ("exit",),
+        ]
+    )

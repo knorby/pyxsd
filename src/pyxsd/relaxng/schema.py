@@ -10,14 +10,12 @@ fails explicitly instead of returning a partial document.
 from __future__ import annotations
 
 import hashlib
-import os
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import NoReturn
 from xml.etree.ElementTree import ParseError
 
-from pyxsd.exceptions import PyXSDError, ValidationError
+from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import NamespaceContext
 from pyxsd.relaxng.checks import check_compiled_grammar
@@ -33,8 +31,18 @@ from pyxsd.relaxng.patterns import PatternPool
 from pyxsd.relaxng.resources import ResourceDependency, ResourceLoader, ResourceSource
 from pyxsd.relaxng.simplify import CompiledGrammar, Simplifier, compose_grammars
 from pyxsd.relaxng.syntax import SchemaFinding, read_full_syntax
-from pyxsd.resource_policy import ResourcePolicy
-from pyxsd.validation import IssueSeverity, ValidationIssue, ValidationReport
+from pyxsd.resource_policy import (
+    ResourcePolicy,
+    is_root_read_source,
+    policy_compilation,
+    reject_parser_override,
+)
+from pyxsd.validation import (
+    IssueSeverity,
+    ValidationIssue,
+    ValidationReport,
+    require_valid_report,
+)
 from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 __all__ = ["RelaxNGSchema", "compile"]
@@ -90,38 +98,6 @@ def _record_reader_findings(report: ValidationReport, findings: tuple[SchemaFind
             phase="schema",
             location=finding.location,
         )
-
-
-def _reject_parser_override(
-    resource_policy: ResourcePolicy | None,
-    xml_policy: XmlParserPolicy | None,
-    xml_limits: XmlLimits | None,
-) -> None:
-    """Refuse parser arguments that a trusted ResourcePolicy would swallow."""
-    if resource_policy is not None and (xml_policy is not None or xml_limits is not None):
-        raise ValueError(
-            "xml_policy and xml_limits cannot be combined with resource_policy: "
-            "ResourcePolicy.parse() is trusted application code"
-        )
-
-
-@contextmanager
-def _policy_scope(policy: ResourcePolicy | None, *, root_read: bool) -> Iterator[None]:
-    """Enter a policy's optional per-compilation closure scope.
-
-    :class:`~pyxsd.remote.RemoteResourcePolicy` advertises the hook through a
-    private capability marker rather than a public method name, so a custom
-    policy may use ``compilation`` for anything else.  The scope covers every
-    schema read, including includes and external references; ``root_read`` is
-    false for an anonymous stream, whose dependencies must still authorize
-    local-to-remote loading.
-    """
-    enter = getattr(policy, "_pyxsd_compilation_scope", None)
-    if enter is None:
-        yield
-    else:
-        with enter(root_read=root_read):
-            yield
 
 
 def _datatype_registry(
@@ -241,13 +217,13 @@ class RelaxNGSchema:
         :class:`~pyxsd.exceptions.PyXSDError` or a more specific
         :class:`~pyxsd.exceptions.PyXSDError` subclass.
         """
-        _reject_parser_override(resource_policy, xml_policy, xml_limits)
+        reject_parser_override(resource_policy, xml_policy, xml_limits)
         if limits is not None and not isinstance(limits, RelaxNGLimits):
             raise TypeError("limits must be a RelaxNGLimits value or None")
         effective_limits = limits if limits is not None else RelaxNGLimits()
         registry = _datatype_registry(datatype_libraries)
         loader = ResourceLoader(resource_policy, xml_policy=xml_policy, xml_limits=xml_limits)
-        with _policy_scope(resource_policy, root_read=isinstance(source, (str, os.PathLike))):
+        with policy_compilation(resource_policy, root_read=is_root_read_source(source)):
             try:
                 resource = loader.load(source)
             except OSError as exc:
@@ -279,12 +255,7 @@ class RelaxNGSchema:
 
     def require_valid(self) -> None:
         """Raise :class:`~pyxsd.exceptions.ValidationError` when compilation failed."""
-        if self.report.has_errors:
-            raise ValidationError(
-                f"the schema is not valid: {self.report.error_count} error(s); "
-                "inspect ValidationError.report",
-                self.report,
-            )
+        require_valid_report(self.report)
 
     def parse(self, xml: object, **options: object) -> NoReturn:
         """Reject instance parsing; the validator phase will implement it.
