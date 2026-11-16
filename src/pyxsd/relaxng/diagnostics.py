@@ -177,7 +177,7 @@ def report_mismatches(
     *,
     limits: RelaxNGLimits | None = None,
 ) -> None:
-    """Record every finding from a completed recovery traversal on *report*.
+    """Record every finding from a recovery traversal on *report*.
 
     Findings stay in traversal order, which is source order for independent
     occurrences.  ``limits.max_diagnostics`` tightens (never widens) the
@@ -188,14 +188,28 @@ def report_mismatches(
     if not outcome.valid and not outcome.mismatches:
         raise ValueError("an invalid RELAX NG recovery outcome must carry findings")
     report._tighten_issue_retention(None if limits is None else limits.max_diagnostics)
+    summaries: dict[int, ExpectationSummary] = {}
     for mismatch in outcome.mismatches:
-        _report_mismatch(mismatch, report)
-    report._set_diagnostics_complete(outcome.complete and report.suppressed_count == 0)
+        _report_mismatch(mismatch, report, summaries)
+    report._set_diagnostics_complete(report.suppressed_count == 0)
 
 
-def _report_mismatch(mismatch: ValidationMismatch, report: ValidationReport) -> None:
-    """Record one mismatch using the deterministic expectation projection."""
-    summary = expectations(mismatch.preceding)
+def _report_mismatch(
+    mismatch: ValidationMismatch,
+    report: ValidationReport,
+    summaries: dict[int, ExpectationSummary] | None = None,
+) -> None:
+    """Record one mismatch using the deterministic expectation projection.
+
+    A per-call cache keyed by the preceding residual's identity avoids repeated
+    projections when independent findings share a recovery state.
+    """
+    key = id(mismatch.preceding)
+    summary = None if summaries is None else summaries.get(key)
+    if summary is None:
+        summary = expectations(mismatch.preceding)
+        if summaries is not None:
+            summaries[key] = summary
     attribute_expected = False
     attribute_datatypes: set[str] = set()
     if mismatch.event == "attribute" and mismatch.name is not None:

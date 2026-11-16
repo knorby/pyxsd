@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from typing import NamedTuple, cast
+from typing import Final, NamedTuple, cast
 from xml.etree import ElementTree as ET
 
 from pyxsd.namespaces import XML_NS
@@ -67,6 +67,12 @@ from pyxsd.relaxng.tree import RelaxNGElement
 from pyxsd.relaxng.whitespace import XML_WHITESPACE
 
 __all__ = [
+    "RECOVERY_CONSUMED_ATTRIBUTE",
+    "RECOVERY_CONTINUED_CONTENT",
+    "RECOVERY_IGNORED_ATTRIBUTE",
+    "RECOVERY_IGNORED_SUBTREE",
+    "RECOVERY_MISSING_ATTRIBUTE",
+    "RECOVERY_MISSING_CONTENT",
     "DerivationContext",
     "RecoveryOutcome",
     "TokenSpan",
@@ -85,6 +91,19 @@ __all__ = [
     "validate_element_recovering",
     "xml_whitespace_tokens",
 ]
+
+#: An unexpected element occurrence was reported and its subtree ignored.
+RECOVERY_IGNORED_SUBTREE: Final = "ignored-subtree"
+#: An attribute occurrence was rejected and was not declared in the residual.
+RECOVERY_IGNORED_ATTRIBUTE: Final = "ignored-attribute"
+#: A declared attribute occurrence was rejected and its requirement consumed.
+RECOVERY_CONSUMED_ATTRIBUTE: Final = "consumed-attribute"
+#: A still-required attribute was reported and removed before content continued.
+RECOVERY_MISSING_ATTRIBUTE: Final = "missing-attribute"
+#: Character data was reported and content continuation retained.
+RECOVERY_CONTINUED_CONTENT: Final = "continued-content"
+#: Required content was reported missing and its continuation was popped.
+RECOVERY_MISSING_CONTENT: Final = "missing-content"
 
 #: The schema-side datatype context a compiled datatype without a retained
 #: context is compared in.  The Phase 1 ``Value`` contract keeps the real
@@ -605,14 +624,14 @@ class ValidationOutcome:
 
 @dataclass(frozen=True)
 class RecoveryOutcome:
-    """A completed diagnostic traversal with nonaccepting recovery states.
+    """A diagnostic traversal with nonaccepting recovery states.
 
     ``valid`` is true only when the traversal found no mismatch.  A recovery
     continuation is diagnostic evidence, never accepting evidence, so a
     recovered traversal stays invalid even when its residual is nullable.
     ``mismatches`` retains every independent finding in event order, and
-    ``residuals`` preserves all still-viable recovery states.  ``complete`` is
-    false only when a diagnostic budget stopped the traversal early; exhausted
+    ``residuals`` preserves all still-viable recovery states.  Report
+    incompleteness comes only from suppressed retained findings; exhausted
     derivative or memo work raises instead of producing this value.
     """
 
@@ -620,7 +639,6 @@ class RecoveryOutcome:
     residual: Pattern
     mismatches: tuple[ValidationMismatch, ...] = ()
     recovered: bool = False
-    complete: bool = True
 
     @property
     def residuals(self) -> tuple[Pattern, ...]:
@@ -754,9 +772,9 @@ def children_derivative(
 
 @dataclass
 class _ElementRecovery:
-    """Per-occurrence recovery state; rejected content suppresses missing-content."""
+    """Per-occurrence recovery state for text-dependent missing content."""
 
-    content_rejected: bool = False
+    rejected_text: bool = False
 
 
 def _without_attributes(pattern: Pattern, _memo: dict[int, Pattern] | None = None) -> Pattern:
@@ -906,16 +924,63 @@ def _pop_continuations(pattern: Pattern, _memo: dict[int, Pattern] | None = None
     return Empty()
 
 
+def _expects_attribute_name(pattern: Pattern, uri: str | None, local: str) -> bool:
+    """Whether *pattern* declares a current-position attribute with this name.
+
+    A declared attribute is "consumed" by recovery even when its value fails;
+    an undeclared name is merely "ignored".  Child element contents are not
+    entered, and reference cycles are guarded.
+    """
+    pending = [pattern]
+    seen: set[int] = set()
+    while pending:
+        node = pending.pop()
+        key = id(node)
+        if key in seen:
+            continue
+        seen.add(key)
+        if isinstance(node, _After):
+            pending.append(node.first)
+        elif isinstance(node, Ref):
+            pending.append(node.target)
+        elif isinstance(node, (Choice, Group, Interleave)):
+            pending.extend((node.first, node.second))
+        elif isinstance(node, OneOrMore):
+            pending.append(node.pattern)
+        elif isinstance(node, Attribute):
+            if node.name_class.contains(uri, local):
+                return True
+        elif isinstance(node, Element):
+            continue
+        elif not isinstance(node, (Data, DataExcept, Empty, List, NotAllowed, Text, Value)):
+            raise TypeError(f"unknown RELAX NG pattern {type(node).__name__}")
+    return False
+
+
+def _expects_character_data(pattern: Pattern) -> bool:
+    """Whether only character data remains required at this position.
+
+    A rejected text occurrence can satisfy such a continuation, so a later
+    missing-content finding would only repeat that rejection.  Required
+    elements keep the finding because a rejected element name did not match
+    them.
+    """
+    from pyxsd.relaxng.diagnostics import expectations
+
+    summary = expectations(pattern)
+    return not summary.elements and any(label != "empty" for label in summary.content)
+
+
 def _run_recovery_events(
     pattern: Pattern, events: Iterable[_Event], context: DerivationContext
 ) -> tuple[Pattern, tuple[ValidationMismatch, ...]]:
     """Continue through independent findings while keeping recovery nonaccepting.
 
     Unexpected subtrees are skipped whole, failed attributes are accounted for,
-    missing attributes are removed before content continues, and rejected
-    content suppresses only the missing-content cascade it explains.  Every
-    recovery continuation remains a diagnostic state; the caller never treats
-    it as accepting evidence.
+    missing attributes are removed before content continues, and rejected text
+    suppresses only the trailing scalar missing-content cascade it explains.
+    Every recovery continuation remains a diagnostic state; the caller never
+    treats it as accepting evidence.
     """
     original_context = context.datatype_context
     mismatches: list[ValidationMismatch] = []
@@ -940,21 +1005,17 @@ def _run_recovery_events(
             if event.kind == "start_tag_open":
                 derived = start_tag_open_derivative(previous, cast(str, event.name), context)
                 if isinstance(derived, NotAllowed):
-                    if states:
-                        states[-1].content_rejected = True
                     mismatches.append(
                         ValidationMismatch(
                             "start_tag_open",
                             owner,
                             previous,
                             event.name,
-                            recovery="ignored-subtree",
+                            recovery=RECOVERY_IGNORED_SUBTREE,
                         )
                     )
                     skipping = owner
                 else:
-                    if states:
-                        states[-1].content_rejected = False
                     pattern = derived
                     states.append(_ElementRecovery())
                 continue
@@ -964,6 +1025,7 @@ def _run_recovery_events(
                 )
                 if isinstance(derived, NotAllowed):
                     uri, local = expanded_name(cast(str, event.name))
+                    declared = _expects_attribute_name(previous, uri, local)
                     mismatches.append(
                         ValidationMismatch(
                             "attribute",
@@ -972,7 +1034,11 @@ def _run_recovery_events(
                             event.name,
                             event.lexical,
                             event.content_index,
-                            recovery="consumed-attribute",
+                            recovery=(
+                                RECOVERY_CONSUMED_ATTRIBUTE
+                                if declared
+                                else RECOVERY_IGNORED_ATTRIBUTE
+                            ),
                         )
                     )
                     pattern = context.canonical_residual(_consume_attribute(previous, uri, local))
@@ -987,7 +1053,7 @@ def _run_recovery_events(
                             "start_tag_close",
                             owner,
                             previous,
-                            recovery="missing-attribute",
+                            recovery=RECOVERY_MISSING_ATTRIBUTE,
                         )
                     )
                     pattern = context.canonical_residual(_without_attributes(previous))
@@ -998,13 +1064,14 @@ def _run_recovery_events(
                 derived = end_tag_derivative(previous, context)
                 state = states.pop()
                 if isinstance(derived, NotAllowed):
-                    if not state.content_rejected:
+                    suppress = state.rejected_text and _expects_character_data(previous)
+                    if not suppress:
                         mismatches.append(
                             ValidationMismatch(
                                 "end_tag",
                                 owner,
                                 previous,
-                                recovery="missing-content",
+                                recovery=RECOVERY_MISSING_CONTENT,
                             )
                         )
                     pattern = context.canonical_residual(_pop_continuations(previous))
@@ -1028,17 +1095,16 @@ def _run_recovery_events(
                         event.name,
                         event.lexical,
                         event.content_index,
-                        recovery="continued-content",
+                        recovery=RECOVERY_CONTINUED_CONTENT,
                     )
                 )
                 if isinstance(relaxed, NotAllowed):
-                    states[-1].content_rejected = True
                     pattern = previous
                 else:
-                    states[-1].content_rejected = False
                     pattern = context.canonical_residual(choice(previous, relaxed))
+                states[-1].rejected_text = True
             else:
-                states[-1].content_rejected = False
+                states[-1].rejected_text = False
                 pattern = derived
         return pattern, tuple(mismatches)
     finally:
@@ -1055,8 +1121,8 @@ def validate_element_recovering(
     failed scalars.  Recovery states are diagnostic only: any finding makes the
     outcome invalid even if later content would satisfy a relaxed residual.
     Exhausted derivative or memo budgets raise
-    :class:`~pyxsd.relaxng.errors.RelaxNGLimitError`; a retention cap is never
-    treated as a work budget here.
+    :class:`~pyxsd.relaxng.errors.RelaxNGLimitError`; retention caps never
+    change this traversal.
     """
     context = DerivationContext(_EMPTY_DATATYPE_CONTEXT, PatternPool(), limits)
     residual, mismatches = _run_recovery_events(start, _instance_events([root]), context)
@@ -1064,7 +1130,7 @@ def validate_element_recovering(
         mismatches = (ValidationMismatch("document_end", root, residual),)
     valid = not mismatches
     recovered = any(mismatch.recovery is not None for mismatch in mismatches)
-    return RecoveryOutcome(valid, residual, mismatches, recovered=recovered, complete=True)
+    return RecoveryOutcome(valid, residual, mismatches, recovered=recovered)
 
 
 def validate_element(

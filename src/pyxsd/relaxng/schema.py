@@ -420,9 +420,10 @@ class RelaxNGSchema:
         report_mismatches(outcome, instance_report, limits=limits)
 
         merged = new_validation_report(self._resource_policy)
-        # A RELAX NG report always specifies completeness.  Start from the
-        # completed traversal value so an unspecified policy report is not
-        # upgraded by the merge truth table; contributions can only downgrade.
+        # A RELAX NG merged report is deliberately initialized as complete,
+        # even when the policy factory left completeness unspecified.  The
+        # merge table can only downgrade it, so a policy-declared incomplete
+        # contribution stays incomplete.  XSD never runs this path.
         merged._set_diagnostics_complete(True)
         merged.extend(self.report)
         merged.extend(instance_report)

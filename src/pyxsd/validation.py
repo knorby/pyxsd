@@ -122,10 +122,10 @@ def _bounded_message(message: str, max_bytes: int | None) -> str:
 def _merge_diagnostics_complete(left: bool | None, right: bool | None) -> bool | None:
     """Merge two completeness contributions exactly.
 
-    ``False`` dominates because an incomplete contribution cannot be repaired
-    by a complete one.  Two known complete reports stay complete, and any
-    unspecified contribution keeps the merged value unspecified rather than
-    being upgraded.
+    ``False`` dominates every pair, including ``False + None``, because an
+    incomplete contribution cannot be repaired by an unspecified or complete
+    one.  Two known complete reports stay complete, and any unspecified
+    contribution keeps the merged value unspecified rather than upgrading it.
     """
     if left is False or right is False:
         return False
@@ -144,8 +144,9 @@ class ValidationReport:
 
     ``diagnostics_complete`` is ``None`` for the existing XSD contract.
     RELAX NG reports set it to a boolean so callers can distinguish a
-    completed diagnostic traversal from early stopping at a budget;
-    merged reports apply the documented dominance rule.
+    complete diagnostic report from one whose retained issue details were
+    suppressed by a retention budget.  Merged reports apply the documented
+    dominance rule.
     """
 
     def __init__(
@@ -305,11 +306,12 @@ class ValidationReport:
 
     @property
     def diagnostics_complete(self) -> bool | None:
-        """Whether diagnostic collection completed, or ``None`` when unspecified.
+        """Whether retained diagnostics are complete, or ``None`` when unspecified.
 
         ``None`` preserves the XSD wire contract.  RELAX NG reports set a
-        boolean; a merge can never upgrade unspecified evidence or override an
-        incomplete contribution.
+        boolean from actual retention: suppressed findings make it false.  A
+        merge can never upgrade unspecified evidence or override an incomplete
+        contribution.
         """
         return self._diagnostics_complete
 

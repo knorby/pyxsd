@@ -13,6 +13,7 @@ import pytest
 
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.relaxng import RelaxNGLimits, RelaxNGSchema
+from pyxsd.relaxng import diagnostics as relaxng_diagnostics
 from pyxsd.relaxng import validator as v
 from pyxsd.relaxng.datatypes import (
     BuiltinDatatypeFactory,
@@ -102,7 +103,6 @@ def test_two_independent_sibling_subtree_errors_are_both_reported():
 
     assert not outcome.valid
     assert outcome.recovered is True
-    assert outcome.complete is True
     assert codes(report) == [UNEXPECTED_ELEMENT, UNEXPECTED_ELEMENT]
     assert [issue.element for issue in report] == ["first", "second"]
     assert [issue.location for issue in report] == [
@@ -127,7 +127,7 @@ def test_multiple_invalid_attributes_report_each_occurrence_in_sorted_order():
     assert codes(report) == [INVALID_SCALAR, INVALID_SCALAR]
     assert [issue.location.attribute for issue in report] == ["a", "b"]
     assert all(issue.location.path == (PathStep("r", 1),) for issue in report)
-    assert all(issue.details["recovery"] == "consumed-attribute" for issue in report)
+    assert all(issue.details["recovery"] == v.RECOVERY_CONSUMED_ATTRIBUTE for issue in report)
     assert MISSING_ATTRIBUTE not in codes(report)
     assert report.diagnostics_complete is True
 
@@ -141,30 +141,64 @@ def test_missing_attribute_is_reported_before_a_recoverable_content_error():
     assert report.issues[0].location == IssueLocation("instance.xml", (PathStep("r", 1),))
     assert report.issues[0].location_precision == "container"
     assert report.issues[0].details["expected-attributes"] == ["flag"]
+    assert report.issues[0].details["recovery"] == v.RECOVERY_MISSING_ATTRIBUTE
     assert report.issues[1].details["content-index"] == 0
     assert report.issues[1].details["actual-lexical"] == "oops"
+    assert report.issues[1].details["recovery"] == v.RECOVERY_CONTINUED_CONTENT
     assert MISSING_CONTENT not in codes(report)
     assert report.diagnostics_complete is True
 
 
-def test_recovery_suppresses_follow_on_missing_content():
-    # Rejecting the only supplied text must not also report the expected child.
+def test_recovery_reports_independent_missing_content_after_rejections():
+    # A rejected text before the group cannot satisfy the required element a.
     _outcome, report = recover("<r>bad</r>", element("r", element("a")))
-    assert codes(report) == [UNEXPECTED_CONTENT]
+    assert codes(report) == [UNEXPECTED_CONTENT, MISSING_CONTENT]
+    assert report.issues[1].details["expected-elements"] == ["a"]
 
-    # Rejecting an unexpected subtree must not also report the expected child.
+    # A rejected element name cannot satisfy the required element a.
     _outcome, report = recover("<r><wrong/></r>", element("r", element("a")))
-    assert codes(report) == [UNEXPECTED_ELEMENT]
+    assert codes(report) == [UNEXPECTED_ELEMENT, MISSING_CONTENT]
+    assert report.issues[1].details["expected-elements"] == ["a"]
 
-    # A rejected text after accepted content must not also report missing b.
     pattern = element("r", Group(element("a"), element("b")))
+
+    # The rejected element is before the accepted required sibling b.
+    _outcome, report = recover("<r><wrong/><a/></r>", pattern)
+    assert codes(report) == [UNEXPECTED_ELEMENT, MISSING_CONTENT]
+    assert report.issues[1].details["expected-elements"] == ["b"]
+
+    # The rejected element is after the accepted required sibling a.
+    _outcome, report = recover("<r><a/><wrong/></r>", pattern)
+    assert codes(report) == [UNEXPECTED_ELEMENT, MISSING_CONTENT]
+    assert report.issues[1].details["expected-elements"] == ["b"]
+
+    # Rejected text does not satisfy a required element name either.
     _outcome, report = recover("<r><a/>bad</r>", pattern)
-    assert codes(report) == [UNEXPECTED_CONTENT]
+    assert codes(report) == [UNEXPECTED_CONTENT, MISSING_CONTENT]
+    assert report.issues[1].details["expected-elements"] == ["b"]
 
     # A genuinely missing sibling remains reportable.
     _outcome, report = recover("<r><a/></r>", pattern)
     assert codes(report) == [MISSING_CONTENT]
     assert report.issues[0].details["expected-elements"] == ["b"]
+    assert report.issues[0].details["recovery"] == v.RECOVERY_MISSING_CONTENT
+
+
+def test_recovery_suppresses_missing_content_for_a_rejected_text_scalar():
+    # The rejected text is the only supplied character data for the trailing
+    # scalar requirement, so missing content would repeat that rejection.
+    pattern = element("r", Group(element("a"), Data(INTEGER)))
+    outcome, report = recover("<r>bad<a/></r>", pattern)
+
+    assert not outcome.valid
+    assert codes(report) == [UNEXPECTED_CONTENT]
+    assert report.issues[0].details["recovery"] == v.RECOVERY_CONTINUED_CONTENT
+
+    # A later accepted text is progress, so the remaining scalar is missing.
+    pattern = element("r", Group(element("a"), Group(Text(), Data(INTEGER))))
+    _outcome, report = recover("<r>bad<a/>text</r>", pattern)
+    assert codes(report) == [UNEXPECTED_CONTENT, MISSING_CONTENT]
+    assert "data" in report.issues[1].details["expected-content"]
 
 
 def test_ignored_subtrees_do_not_generate_descendant_findings():
@@ -213,11 +247,13 @@ def test_unexpected_and_invalid_attribute_recovery_are_distinguished():
     _outcome, report = recover('<r a="1"/>', element("r"))
     assert codes(report) == [UNEXPECTED_ATTRIBUTE]
     assert report.issues[0].details["actual-name"] == "a"
+    assert report.issues[0].details["recovery"] == v.RECOVERY_IGNORED_ATTRIBUTE
 
     _outcome, report = recover('<r a="bad"/>', element("r", Attribute(AnyName(), Data(INTEGER))))
     assert codes(report) == [INVALID_SCALAR]
     assert report.issues[0].details["expected-attributes"] == ["*"]
     assert report.issues[0].details["expected-datatypes"] == ["xsd:integer"]
+    assert report.issues[0].details["recovery"] == v.RECOVERY_CONSUMED_ATTRIBUTE
 
 
 # ---------------------------------------------------------------------------
@@ -253,11 +289,10 @@ def test_recovery_retains_viable_states_and_the_first_fail_fast_mismatch():
     assert outcome.mismatches[0].element is fast.mismatch.element
     assert outcome.mismatches[0].name == fast.mismatch.name
     assert outcome.mismatches[0].preceding == fast.mismatch.preceding
-    assert outcome.mismatches[0].recovery == "ignored-subtree"
+    assert outcome.mismatches[0].recovery == v.RECOVERY_IGNORED_SUBTREE
     assert fast.mismatch.recovery is None
     assert outcome.residuals
     assert outcome.recovered is True
-    assert outcome.complete is True
 
 
 def test_recovery_root_mismatch_reports_one_unexpected_element():
@@ -277,7 +312,6 @@ def test_structural_failure_is_one_complete_finding_without_recovery():
 
     assert not outcome.valid
     assert outcome.recovered is False
-    assert outcome.complete is True
     assert codes(report) == [INVALID_STRUCTURE]
     assert report.issues[0].location is None
 
@@ -340,28 +374,52 @@ def test_partial_retention_retains_the_first_finding_and_stays_incomplete():
     assert tighter.diagnostics_complete is False
 
 
-def test_completeness_does_not_upgrade_an_unspecified_or_incomplete_report():
+def test_completeness_is_complete_without_suppression_and_never_upgrades():
     outcome = v.validate_element_recovering(tree("<r/>"), element("r"))
+    complete = ValidationReport()
+    report_mismatches(outcome, complete)
+    assert complete.diagnostics_complete is True
+
     report = ValidationReport(diagnostics_complete=False)
     report_mismatches(outcome, report)
     assert report.diagnostics_complete is False
-
-    mismatch = v.ValidationMismatch(
-        "start_tag_open", tree("<r/>"), element("r"), "wrong", recovery="ignored-subtree"
-    )
-    interrupted = v.RecoveryOutcome(
-        False, NotAllowed(), (mismatch,), recovered=True, complete=False
-    )
-    partial = ValidationReport()
-    report_mismatches(interrupted, partial)
-    assert partial.error_count == 1
-    assert partial.diagnostics_complete is False
 
 
 def test_invalid_recovery_outcome_requires_findings():
     outcome = v.RecoveryOutcome(False, NotAllowed())
     with pytest.raises(ValueError, match="findings"):
         report_mismatches(outcome, ValidationReport())
+
+
+def test_report_mismatches_caches_expectations_by_preceding_residual(monkeypatch):
+    root = tree("<r/>")
+    shared = element("r")
+    other = element("r", element("a"))
+    mismatches = (
+        v.ValidationMismatch(
+            "start_tag_open", root, shared, "wrong", recovery=v.RECOVERY_IGNORED_SUBTREE
+        ),
+        v.ValidationMismatch(
+            "start_tag_open", root, shared, "wrong2", recovery=v.RECOVERY_IGNORED_SUBTREE
+        ),
+        v.ValidationMismatch("start_tag_close", root, other, recovery=v.RECOVERY_MISSING_ATTRIBUTE),
+    )
+    outcome = v.RecoveryOutcome(False, NotAllowed(), mismatches, recovered=True)
+
+    calls: list[int] = []
+    original = relaxng_diagnostics.expectations
+
+    def counting(pattern):
+        calls.append(id(pattern))
+        return original(pattern)
+
+    monkeypatch.setattr(relaxng_diagnostics, "expectations", counting)
+    report = ValidationReport()
+    report_mismatches(outcome, report)
+
+    assert calls == [id(shared), id(other)]
+    assert report.error_count == 3
+    assert report.diagnostics_complete is True
 
 
 def test_recovery_uses_limits_for_retention_not_worked_around_them():
@@ -579,6 +637,37 @@ def test_pop_continuations_keeps_viable_continuation_states():
     assert v._pop_continuations(Empty()) == Empty()
     assert v._pop_continuations(NotAllowed()) == Empty()
     assert v._pop_continuations(Data(INTEGER)) == Empty()
+
+
+def test_attribute_name_and_character_data_detection_cover_current_position():
+    a = attribute("a")
+    assert v._expects_attribute_name(a, None, "a")
+    assert v._expects_attribute_name(v._After(a, element("tail")), None, "a")
+    assert v._expects_attribute_name(Choice(Text(), a), None, "a")
+    assert v._expects_attribute_name(Interleave(Text(), a), None, "a")
+    assert v._expects_attribute_name(OneOrMore(a), None, "a")
+    ref = Ref()
+    ref.bind(a)
+    assert v._expects_attribute_name(ref, None, "a")
+    cyclic = Ref()
+    cyclic.bind(Group(Empty(), cyclic))
+    assert not v._expects_attribute_name(cyclic, None, "a")
+    assert not v._expects_attribute_name(NotAllowed(), None, "a")
+    assert not v._expects_attribute_name(element("n", a), None, "a")
+
+    class Unknown(Pattern):
+        pass
+
+    with pytest.raises(TypeError, match="unknown RELAX NG pattern"):
+        v._expects_attribute_name(Unknown(), None, "a")
+
+    assert v._expects_character_data(Data(INTEGER))
+    assert v._expects_character_data(Text())
+    assert v._expects_character_data(List(Data(INTEGER)))
+    assert not v._expects_character_data(Group(element("a"), Data(INTEGER)))
+    assert not v._expects_character_data(Choice(element("a"), Data(INTEGER)))
+    assert not v._expects_character_data(element("a"))
+    assert not v._expects_character_data(Empty())
 
 
 # ---------------------------------------------------------------------------
