@@ -24,6 +24,7 @@ import pytest
 import pyxsd
 import pyxsd.relaxng as relaxng
 from pyxsd.exceptions import PyXSDError, ValidationError
+from pyxsd.locations import ConstraintInfo, IssueLocation
 from pyxsd.namespaces import parse_with_namespaces
 from pyxsd.relaxng.datatypes import (
     BUILTIN_LIBRARY,
@@ -52,7 +53,7 @@ from pyxsd.relaxng.patterns import (
     Text,
     nullable,
 )
-from pyxsd.relaxng.schema import RelaxNGSchema
+from pyxsd.relaxng.schema import RelaxNGSchema, _SchemaReport
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.validation import ValidationReport
 from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
@@ -698,22 +699,104 @@ def test_pattern_node_budget_exhaustion_is_a_limit_error():
     )
 
 
-def test_max_diagnostics_bounds_report_retention_without_changing_verdict():
+@pytest.mark.parametrize("retained", [0, 1])
+def test_max_diagnostics_bounds_report_retention_without_changing_verdict(retained):
     xml = (
         f'<grammar xmlns="{NS}">'
         '<start><element name="x"><unknown/><other/></element></start>'
         "</grammar>"
     )
 
-    schema = compile_schema(io.StringIO(xml), limits=RelaxNGLimits(max_diagnostics=1))
+    schema = compile_schema(io.StringIO(xml), limits=RelaxNGLimits(max_diagnostics=retained))
 
-    assert len(schema.report) == 1
+    assert len(schema.report) == retained
     assert schema.report.error_count == 4
     assert schema.report.warning_count == 0
-    assert schema.report.suppressed_count == 3
+    assert schema.report.suppressed_count == 4 - retained
     assert schema.report.has_errors
     with pytest.raises(ValidationError):
         schema.require_valid()
+
+
+@pytest.mark.parametrize("policy_bound", [None, 0, 2])
+@pytest.mark.parametrize("diagnostic_bound", [None, 0, 1, 3])
+def test_policy_report_factory_preserves_identity_bounds_and_counts(policy_bound, diagnostic_bound):
+    class ReportPolicy(ScopePolicy):
+        def __init__(self):
+            super().__init__()
+            self.report = ValidationReport(max_issues=policy_bound, max_message_bytes=12)
+            self.calls = 0
+
+        def new_report(self):
+            self.calls += 1
+            return self.report
+
+    policy = ReportPolicy()
+    xml = (
+        f'<grammar xmlns="{NS}">'
+        '<start><element name="x"><unknown/><other/></element></start>'
+        "</grammar>"
+    )
+    schema = compile_schema(
+        io.StringIO(xml),
+        resource_policy=policy,
+        limits=RelaxNGLimits(max_diagnostics=diagnostic_bound),
+    )
+
+    assert policy.calls == 1
+    assert schema.report is policy.report
+    bounds = [bound for bound in (policy_bound, diagnostic_bound, 4) if bound is not None]
+    retained = min(bounds)
+    assert len(schema.report) == retained
+    assert schema.report.phase == "schema"
+    assert schema.report.error_count == 4
+    assert schema.report.warning_count == 0
+    assert schema.report.suppressed_count == 4 - retained
+    assert all(issue.phase == "schema" for issue in schema.report)
+    assert all(len(issue.message.encode("utf-8")) <= 12 for issue in schema.report)
+    assert all(issue.message.endswith("...") for issue in schema.report)
+    with pytest.raises(ValidationError) as excinfo:
+        schema.require_valid()
+    assert excinfo.value.report is policy.report
+
+
+@pytest.mark.parametrize("diagnostic_bound", [None, 0, 1, 4])
+def test_schema_report_sink_preserves_existing_state_and_deduplicates_both_severities(
+    diagnostic_bound,
+):
+    report = ValidationReport(max_issues=5, max_message_bytes=100)
+    report.add_error("existing error", code="existing-error")
+    report.add_warning("existing warning", code="existing-warning")
+    sink = _SchemaReport(report, diagnostic_bound)
+    location = IssueLocation("schema.rng", ())
+    constraint = ConstraintInfo("schema", expected="valid", actual="invalid")
+    details = {"test": "evidence"}
+    for add in (sink.add_error, sink.add_warning):
+        for _ in range(2):
+            add(
+                "unique finding",
+                code=add.__name__,
+                element="element",
+                location=location,
+                constraint=constraint,
+                details=details,
+                location_precision="exact",
+            )
+
+    assert report.phase == sink.phase == "schema"
+    assert report.error_count == report.warning_count == 2
+    assert sink.error_count == sink.warning_count == 1
+    retained = 4 if diagnostic_bound is None else diagnostic_bound
+    assert len(report) == retained
+    assert report.suppressed_count == 4 - retained
+    assert report.has_errors
+    for issue in report.issues[2:]:
+        assert issue.phase == "schema"
+        assert issue.element == "element"
+        assert issue.location == location
+        assert issue.constraint is constraint
+        assert issue.details is details
+        assert issue.location_precision == "exact"
 
 
 def test_limits_must_be_a_relaxng_limits_value():

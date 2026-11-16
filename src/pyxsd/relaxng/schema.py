@@ -34,6 +34,7 @@ from pyxsd.relaxng.syntax import SchemaFinding, read_full_syntax
 from pyxsd.resource_policy import (
     ResourcePolicy,
     is_root_read_source,
+    new_validation_report,
     policy_compilation,
     reject_parser_override,
 )
@@ -56,12 +57,14 @@ _RESERVED_DATATYPE_LIBRARIES = {BUILTIN_LIBRARY: "built-in", XSD_LIBRARY: "XSD"}
 
 
 class _SchemaReport(ValidationReport):
-    """One schema-phase report whose logically identical findings appear once.
+    """Deduplicating compiler sink for the policy-owned schema-phase report.
 
     The compiler stages write directly into this report, so deduplication runs
     at their single insertion point.  ``add_error`` and ``add_warning``
     increment their counters before ``_retain`` is called; a dropped duplicate
-    therefore removes the count it just added.  A finding is a duplicate only
+    therefore removes the count it just added.  Unique findings are forwarded
+    to the original report, preserving its identity, message bounds, counters,
+    and application-specific behavior.  A finding is a duplicate only
     when its stable code, message, and exact source location all match, so
     distinct restrictions that share a code stay visible.  ``max_issues`` is
     the caller's diagnostic-retention budget: findings beyond it remain counted
@@ -69,8 +72,17 @@ class _SchemaReport(ValidationReport):
     explicitly incomplete rather than invalidating the verdict.
     """
 
-    def __init__(self, max_issues: int | None = None) -> None:
-        super().__init__(max_issues=max_issues)
+    def __init__(self, report: ValidationReport, max_issues: int | None = None) -> None:
+        super().__init__()
+        self._report = report
+        # Tighten, never replace, the policy's issue-retention budget. Existing
+        # counts survive even if the factory supplied already-retained issues.
+        if max_issues is not None:
+            report._max_issues = (
+                max_issues if report._max_issues is None else min(max_issues, report._max_issues)
+            )
+            del report._issues[report._max_issues :]
+        report.phase = "schema"
         self.phase = "schema"
         self._seen: set[tuple[str, str, IssueLocation | None]] = set()
 
@@ -81,7 +93,21 @@ class _SchemaReport(ValidationReport):
             self._warning_count -= issue.severity is IssueSeverity.WARNING
             return
         self._seen.add(key)
-        super()._retain(issue)
+        add = (
+            self._report.add_error
+            if issue.severity is IssueSeverity.ERROR
+            else self._report.add_warning
+        )
+        add(
+            issue.message,
+            code=issue.code,
+            element=issue.element,
+            phase=issue.phase,
+            location=issue.location,
+            constraint=issue.constraint,
+            details=issue.details,
+            location_precision=issue.location_precision,
+        )
 
 
 def _record_reader_findings(report: ValidationReport, findings: tuple[SchemaFinding, ...]) -> None:
@@ -208,9 +234,10 @@ class RelaxNGSchema:
         - ``limits`` bounds schema-side compiler work.  ``None`` leaves every
           budget unlimited; exhaustion of a work budget raises
           :class:`~pyxsd.relaxng.errors.RelaxNGLimitError`.  A configured
-          ``max_diagnostics`` bounds report retention: beyond it, findings stay
-          counted but are not retained, so ``suppressed_count`` exposes the
-          incomplete report.
+          ``max_diagnostics`` only bounds report retention, further tightening
+          any policy report bound: beyond it, findings stay counted but are not
+          retained, so ``suppressed_count`` exposes the incomplete report.
+          Truncation never raises a limit error or removes an invalid verdict.
 
         Grammatical errors are recorded on :attr:`report` instead of raising.
         Unreadable or malformed input and unsupported capabilities raise
@@ -230,16 +257,17 @@ class RelaxNGSchema:
                 raise PyXSDError(f"the schema file could not be opened: {exc}") from exc
             except ParseError as exc:
                 raise PyXSDError(f"the schema file is not well-formed XML: {exc}") from exc
-            report = _SchemaReport(effective_limits.max_diagnostics)
+            report = new_validation_report(resource_policy)
+            compiler_report = _SchemaReport(report, effective_limits.max_diagnostics)
             full = read_full_syntax(resource)
-            _record_reader_findings(report, full.findings)
+            _record_reader_findings(compiler_report, full.findings)
             bundle = Simplifier(
-                report,
+                compiler_report,
                 PatternPool(BudgetCounter("compile", effective_limits)),
                 registry,
             ).simplify(full)
             compiled = compose_grammars(bundle, loader)
-            check_compiled_grammar(compiled, report)
+            check_compiled_grammar(compiled, compiler_report)
         return cls(
             report=report,
             grammar=compiled,

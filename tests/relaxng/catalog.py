@@ -132,6 +132,8 @@ def _in_scope_namespaces(element: DomElement) -> dict[str, str]:
             if name == "xmlns":
                 if value:
                     namespaces[name] = value
+                else:
+                    namespaces.pop(name, None)
             elif name.startswith("xmlns:"):
                 namespaces[name] = value
     return namespaces

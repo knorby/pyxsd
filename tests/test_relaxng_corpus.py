@@ -12,6 +12,7 @@ import hashlib
 import tomllib
 from pathlib import Path
 from xml.dom import minidom
+from xml.etree import ElementTree as ET
 
 import pytest
 from tests.relaxng.baseline import (
@@ -63,6 +64,10 @@ from tests.relaxng.model import (
     corpus_enabled,
     satisfies_expected,
 )
+
+from pyxsd.relaxng import RelaxNGSchema
+from pyxsd.relaxng.names import Name
+from pyxsd.relaxng.patterns import Element, Ref, Value
 
 CORPUS = Path(__file__).resolve().parent / "relaxng" / "corpus"
 CORPUS_FILES = (SPECTEST_FILE, XSDTEST_FILE, "LICENSE", "PROVENANCE.md", "SHA256SUMS")
@@ -626,6 +631,39 @@ def test_xml_syntax_catalog_does_not_inject_an_empty_default_namespace(tmp_path)
     assert 'xmlns=""' not in schema
 
 
+def test_xml_syntax_catalog_materializes_inherited_default_namespace_undeclaration(tmp_path):
+    write(
+        tmp_path / SPECTEST_FILE,
+        """<testSuite xmlns="urn:outer" xmlns:p="urn:prefixed"
+            xmlns:r="http://relaxng.org/ns/structure/1.0">
+          <testSuite xmlns="">
+            <testCase>
+              <correct><r:element name="doc"><r:value>foo</r:value></r:element></correct>
+              <valid><doc><p:child/></doc></valid>
+            </testCase>
+          </testSuite>
+        </testSuite>""",
+    )
+    cases = {item.id: item for item in load_xml_syntax_catalog(tmp_path)}
+    case = cases["spectest-0001/valid-1"]
+    schema_xml = case.schema.read_text(encoding="utf-8")
+    instance_xml = case.instance.read_text(encoding="utf-8")
+    assert 'xmlns="urn:outer"' not in schema_xml + instance_xml
+    assert 'xmlns:p="urn:prefixed"' in schema_xml
+    assert ET.fromstring(schema_xml).tag == "{http://relaxng.org/ns/structure/1.0}element"
+    instance = ET.fromstring(instance_xml)
+    assert instance.tag == "doc"
+    assert instance[0].tag == "{urn:prefixed}child"
+    schema = RelaxNGSchema.compile(case.schema)
+    schema.require_valid()
+    start = schema.grammar.start
+    while isinstance(start, Ref):
+        start = start.target
+    assert isinstance(start, Element)
+    assert start.name_class == Name(None, "doc")
+    assert schema.namespace_context.root_bindings.get("", "") == ""
+
+
 # ---------------------------------------------------------------------------
 # Synthetic XSD datatype catalog
 # ---------------------------------------------------------------------------
@@ -662,6 +700,40 @@ SYNTHETIC_XSDTEST = """\
 def synthetic_xsdtest(tmp_path: Path) -> Path:
     write(tmp_path / XSDTEST_FILE, SYNTHETIC_XSDTEST)
     return tmp_path
+
+
+def test_xsd_catalog_data_and_value_paths_preserve_default_namespace_undeclaration(tmp_path):
+    write(
+        tmp_path / XSDTEST_FILE,
+        """<xsdtest xmlns="urn:outer" xmlns:p="urn:prefixed">
+          <datatype name="QName" xmlns="">
+            <valid>local</valid>
+            <equiv><class><value>local</value><value>local</value></class></equiv>
+          </datatype>
+        </xsdtest>""",
+    )
+    cases = {item.id: item for item in load_xsd_datatype_catalog(tmp_path)}
+    for number in (1, 2):
+        case = cases[f"xsdtest-QName-{number:02d}/valid-1"]
+        instance_xml = case.instance.read_text(encoding="utf-8")
+        assert 'xmlns="urn:outer"' not in instance_xml
+        assert 'xmlns:p="urn:prefixed"' in instance_xml
+        assert ET.fromstring(instance_xml).tag == "doc"
+        schema_xml = case.schema.read_text(encoding="utf-8")
+        assert 'xmlns="urn:outer"' not in schema_xml
+        schema = RelaxNGSchema.compile(case.schema)
+        schema.require_valid()
+        start = schema.grammar.start
+        while isinstance(start, Ref):
+            start = start.target
+        assert isinstance(start, Element)
+        assert start.name_class == Name(None, "doc")
+        if number == 2:
+            assert isinstance(start.pattern, Value)
+            datatype = start.pattern.datatype
+            assert datatype.context.namespaces.get("", "") == ""
+            decoded = datatype.decode("local", datatype.context)
+            assert decoded.to_expanded_name(strict=True) == "local"
 
 
 def test_synthetic_xsd_datatype_catalog_expands_facets_and_skips_xsd11(

@@ -2,9 +2,10 @@
 
 ``None`` leaves a budget unlimited, which preserves the core's behavior on
 trusted input. A configured budget is a non-negative integer and the bound is
-inclusive: observing exactly the configured count succeeds, and the next unit
-raises :class:`~pyxsd.relaxng.errors.RelaxNGLimitError`. Exhaustion never
-turns into semantic invalidity.
+inclusive: observing exactly the configured work count succeeds, and the next
+unit raises :class:`~pyxsd.relaxng.errors.RelaxNGLimitError`. Exhaustion never
+turns into semantic invalidity. ``max_diagnostics`` instead bounds retained
+findings; suppressed findings remain counted and do not erase the verdict.
 """
 
 from __future__ import annotations
@@ -33,8 +34,9 @@ class RelaxNGLimits:
 
     A pattern-node budget counts distinct semantic graph nodes. Derivative,
     memo-entry, evidence-state, evidence-edge, scalar-witness, binding-summary,
-    capture-entry, projection-route, and diagnostic budgets bound their named
-    work. The compiler's graph and semantic correctness checks run regardless
+    capture-entry, and projection-route budgets bound their named work.
+    ``max_diagnostics`` is a truncatable retention budget, not a work budget.
+    The compiler's graph and semantic correctness checks run regardless
     of these values; a projection budget never skips a correctness check.
     """
 
