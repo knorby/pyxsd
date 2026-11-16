@@ -16,6 +16,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
+from pyxsd.exceptions import ValidationError
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import parse_with_namespaces
 from pyxsd.relaxng.origins import SourceOrigin
@@ -26,6 +27,7 @@ from pyxsd.relaxng.resources import (
     ResourceReference,
     resolve_xml_base,
 )
+from pyxsd.relaxng.schema import RelaxNGSchema
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
@@ -455,6 +457,12 @@ class TestDependencies:
 
 
 class TestXmlBase:
+    @pytest.mark.parametrize("base", ["local.rng", "https://example.com/main.rng"])
+    @pytest.mark.parametrize("xml_base", ["%zz/", "https://example.com/%zz/"])
+    def test_malformed_uri_reference_is_rejected_before_resolution(self, base, xml_base):
+        with pytest.raises(ResourcePolicyError, match="URI reference"):
+            resolve_xml_base(base, xml_base)
+
     def test_trailing_slash_directory_semantics_are_preserved(self):
         main = str((FIXTURES / "external" / "main.rng").resolve())
 
@@ -650,3 +658,70 @@ def test_a_malformed_utf8_local_reference_is_rejected():
 
     with pytest.raises(ResourcePolicyError, match="UTF-8"):
         resolve_xml_base(local, "%FF")
+
+
+def test_malformed_xml_base_never_opens_a_local_decoy(tmp_path):
+    decoy = tmp_path / "%zz" / "child.rng"
+    decoy.parent.mkdir()
+    decoy.write_text(f'<element xmlns="{RNG_NS}" name="child"><empty/></element>', encoding="utf-8")
+    main = tmp_path / "main.rng"
+    main.write_text(
+        f'<externalRef xmlns="{RNG_NS}" xml:base="%zz/" href="child.rng"/>',
+        encoding="utf-8",
+    )
+    policy = RecordingPolicy(tmp_path)
+
+    schema = RelaxNGSchema.compile(main, resource_policy=policy)
+
+    with pytest.raises(ValidationError):
+        schema.require_valid()
+    finding = next(issue for issue in schema.report.issues if issue.code == "relaxng-invalid-base")
+    assert finding.location == IssueLocation(
+        str(main),
+        (PathStep(f"{{{RNG_NS}}}externalRef", 1),),
+        attribute="{http://www.w3.org/XML/1998/namespace}base",
+    )
+    assert len(finding.message) < 200
+    assert str(decoy) not in {source for source, _, _ in policy.reads}
+    assert [dependency.canonical_id for dependency in schema.dependencies] == [str(main)]
+
+
+@pytest.mark.parametrize("xml_base", ["%zz/", "https://example.com/%zz/"])
+def test_malformed_xml_base_never_opens_a_remote_decoy(xml_base):
+    main = "https://example.com/main.rng"
+    decoy = "https://example.com/%zz/child.rng"
+    policy = MemoryPolicy(
+        {
+            main: f'<externalRef xmlns="{RNG_NS}" xml:base="{xml_base}" href="child.rng"/>'.encode(),
+            decoy: f'<element xmlns="{RNG_NS}" name="child"><empty/></element>'.encode(),
+        }
+    )
+
+    schema = RelaxNGSchema.compile(main, resource_policy=policy)
+
+    with pytest.raises(ValidationError):
+        schema.require_valid()
+    assert "relaxng-invalid-base" in {issue.code for issue in schema.report.issues}
+    assert decoy not in {source for source, _, _ in policy.reads}
+    assert [dependency.canonical_id for dependency in schema.dependencies] == [main]
+
+
+@pytest.mark.parametrize("remote", [False, True])
+@pytest.mark.parametrize("xml_base", ["caf\u00e9 %23/", "caf%C3%A9%20%23/"])
+def test_valid_xml_base_keeps_unicode_space_and_encoded_hash(tmp_path, remote, xml_base):
+    base = "https://example.com" if remote else str(tmp_path)
+    main = f"{base}/main.rng"
+    directory = "caf%C3%A9%20%23" if remote else "caf\u00e9 #"
+    child = f"{base}/{directory}/child.rng"
+    policy = MemoryPolicy(
+        {
+            main: f'<externalRef xmlns="{RNG_NS}" xml:base="{xml_base}" href="child.rng"/>'.encode(),
+            child: f'<element xmlns="{RNG_NS}" name="child"><empty/></element>'.encode(),
+        }
+    )
+
+    schema = RelaxNGSchema.compile(main, resource_policy=policy)
+
+    schema.require_valid()
+    assert policy.reads == [(main, None, "schema"), (child, None, "schema")]
+    assert {dependency.canonical_id for dependency in schema.dependencies} == {main, child}

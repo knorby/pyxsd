@@ -26,7 +26,7 @@ from xml.etree import ElementTree as ET
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
 from pyxsd.relaxng.origins import OriginTable, SourceOrigin
-from pyxsd.relaxng.uris import xlink_escape
+from pyxsd.relaxng.uris import is_uri_reference, xlink_escape
 from pyxsd.resource_policy import (
     ResourceData,
     ResourcePolicy,
@@ -217,6 +217,8 @@ def resolve_xml_base(base: str, xml_base: str) -> str:
     escaped = xlink_escape(xml_base)
     if "#" in escaped:
         raise ResourcePolicyError("a RELAX NG xml:base value must not use a fragment identifier")
+    if not is_uri_reference(escaped):
+        raise ResourcePolicyError("a RELAX NG xml:base value must be a legal URI reference")
     return _resolve_against(base, escaped)
 
 
