@@ -5,6 +5,7 @@ re-export RELAX NG names from :mod:`pyxsd`, and it never routes RELAX NG work
 through the XSD compiler.
 """
 
+from pyxsd.relaxng.document import RelaxNGDocument
 from pyxsd.relaxng.errors import (
     AmbiguousValueError,
     RelaxNGLimitError,
@@ -12,9 +13,12 @@ from pyxsd.relaxng.errors import (
 )
 from pyxsd.relaxng.limits import RelaxNGLimits
 from pyxsd.relaxng.schema import RelaxNGSchema, compile
+from pyxsd.relaxng.tree import RelaxNGElement
 
 __all__ = [
     "AmbiguousValueError",
+    "RelaxNGDocument",
+    "RelaxNGElement",
     "RelaxNGLimitError",
     "RelaxNGLimits",
     "RelaxNGSchema",

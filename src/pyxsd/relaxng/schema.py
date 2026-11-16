@@ -3,21 +3,25 @@
 Schema compilation is the Phase 1 contract.  Grammatical problems are recorded
 as schema-phase findings on :attr:`RelaxNGSchema.report`; only input that
 cannot be read or parsed and unsupported capabilities interrupt compilation.
-Instance parsing belongs to the validator phase, so :meth:`RelaxNGSchema.parse`
-fails explicitly instead of returning a partial document.
+Validation-only instance parsing is the Phase 2 contract: a valid schema parses
+one source into a lexical :class:`~pyxsd.relaxng.tree.RelaxNGElement` tree and
+returns a :class:`~pyxsd.relaxng.document.RelaxNGDocument` with a fresh report.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import NoReturn
-from xml.etree.ElementTree import ParseError
+from dataclasses import dataclass, field
+from io import BytesIO
+from pathlib import Path
+from typing import IO, Any
+from xml.etree import ElementTree as ET
 
 from pyxsd.exceptions import PyXSDError
-from pyxsd.locations import IssueLocation
-from pyxsd.namespaces import NamespaceContext
+from pyxsd.locations import IssueLocation, PathStep
+from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
 from pyxsd.relaxng.checks import check_compiled_grammar
 from pyxsd.relaxng.datatypes import (
     BUILTIN_LIBRARY,
@@ -26,17 +30,23 @@ from pyxsd.relaxng.datatypes import (
     DatatypeLibraryRegistry,
     DatatypeRegistrationError,
 )
+from pyxsd.relaxng.diagnostics import report_first_mismatch
+from pyxsd.relaxng.document import RelaxNGDocument
 from pyxsd.relaxng.limits import BudgetCounter, RelaxNGLimits
 from pyxsd.relaxng.patterns import PatternPool
 from pyxsd.relaxng.resources import ResourceDependency, ResourceLoader, ResourceSource
 from pyxsd.relaxng.simplify import CompiledGrammar, Simplifier, compose_grammars
 from pyxsd.relaxng.syntax import SchemaFinding, read_full_syntax
+from pyxsd.relaxng.tree import RelaxNGElement
+from pyxsd.relaxng.validator import validate_element
 from pyxsd.resource_policy import (
     ResourcePolicy,
     is_root_read_source,
     new_validation_report,
     policy_compilation,
+    read_resource,
     reject_parser_override,
+    source_identifier,
 )
 from pyxsd.validation import (
     IssueSeverity,
@@ -192,9 +202,8 @@ class RelaxNGSchema:
     ``datatype_fingerprint`` identifies the effective datatype registry.
 
     Separate schema objects are independent and may be compiled or used
-    concurrently.  One schema does not support reentrant instance parsing; the
-    parser phase that would impose that restriction is not part of this
-    release.
+    concurrently.  One schema does not support reentrant instance parsing;
+    parses of one schema must not run concurrently or reentrantly.
     """
 
     report: ValidationReport
@@ -202,6 +211,9 @@ class RelaxNGSchema:
     namespace_context: NamespaceContext
     limits: RelaxNGLimits
     datatype_fingerprint: str
+    #: The compilation's trusted resource policy (if any), retained so instance
+    #: reads use the same authorized source and parser evidence.
+    _resource_policy: ResourcePolicy | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def compile(
@@ -255,7 +267,7 @@ class RelaxNGSchema:
                 resource = loader.load(source)
             except OSError as exc:
                 raise PyXSDError(f"the schema file could not be opened: {exc}") from exc
-            except ParseError as exc:
+            except ET.ParseError as exc:
                 raise PyXSDError(f"the schema file is not well-formed XML: {exc}") from exc
             report = new_validation_report(resource_policy)
             compiler_report = _SchemaReport(report, effective_limits.max_diagnostics)
@@ -274,6 +286,7 @@ class RelaxNGSchema:
             namespace_context=bundle.resource.namespaces,
             limits=effective_limits,
             datatype_fingerprint=_datatype_fingerprint(registry),
+            _resource_policy=resource_policy,
         )
 
     @property
@@ -285,16 +298,150 @@ class RelaxNGSchema:
         """Raise :class:`~pyxsd.exceptions.ValidationError` when compilation failed."""
         require_valid_report(self.report)
 
-    def parse(self, xml: object, **options: object) -> NoReturn:
-        """Reject instance parsing; the validator phase will implement it.
+    def parse(
+        self,
+        xml: str | Path | os.PathLike[str] | IO[str] | IO[bytes] | ET.Element,
+        *,
+        xml_policy: XmlParserPolicy | None = None,
+        xml_limits: XmlLimits | None = None,
+        typed: bool = True,
+        capture: str = "none",
+        capture_xdm: bool = False,
+        limits: RelaxNGLimits | None = None,
+    ) -> RelaxNGDocument:
+        """Parse one instance document with validation-only semantics.
 
-        The argument is accepted for the eventual parser signature but is
-        never read, and no partial or fabricated document is returned.
+        - ``xml`` accepts a path, a readable text/binary stream, or a
+          pre-parsed ``Element`` at the caller-trusted boundary, matching
+          :meth:`pyxsd.Schema.parse`.  Malformed or unreadable input raises
+          :class:`~pyxsd.exceptions.PyXSDError`; grammar mismatches return a
+          document with instance findings.
+
+        - ``xml_policy`` and ``xml_limits`` configure this instance parse only.
+          A pre-parsed ``Element`` is a trusted value, so parser options do
+          not apply to it.  A schema compiled with a trusted
+          :class:`~pyxsd.resource_policy.ResourcePolicy` reads and parses
+          instances through that policy instead; combining the two is
+          rejected before input is read.
+
+        - ``typed`` must be ``False`` in this phase.  The approved default
+          remains ``True`` for the eventual typed contract, but requesting
+          typed parsing raises before any input is read.
+
+        - ``capture`` is ``"none"``.  ``"patterns"`` requires typed parsing
+          and is rejected with ``ValueError`` before any input is read; other
+          values are rejected the same way.
+
+        - ``capture_xdm`` retains the existing opt-in XDM meaning: the same
+          source revision also becomes an unannotated XML-tree view.
+
+        - ``limits`` bounds this instance's derivative work.  ``None`` leaves
+          it unlimited and value exhaustion raises
+          :class:`~pyxsd.relaxng.errors.RelaxNGLimitError` instead of
+          reporting invalidity.
+
+        The schema report's errors are rejected before instance input is
+        consumed.  Every successful call returns a fresh document report:
+        frozen schema-phase issue objects followed by this parse's instance
+        findings.
         """
-        del xml, options
-        raise PyXSDError(
-            "RELAX NG instance parsing is not supported in this release; "
-            "use RelaxNGSchema.compile for schema compilation"
+        if typed is not False:
+            raise PyXSDError(
+                "RELAX NG instance parsing is not supported with typed=True in this "
+                "release; pass typed=False for validation-only parsing"
+            )
+        if not isinstance(capture, str) or capture not in ("none", "patterns"):
+            raise ValueError("capture must be 'none' or 'patterns'")
+        if capture == "patterns":
+            raise ValueError(
+                "capture='patterns' requires typed=True, which is not supported in this release"
+            )
+        if limits is not None and not isinstance(limits, RelaxNGLimits):
+            raise TypeError("limits must be a RelaxNGLimits value or None")
+        reject_parser_override(self._resource_policy, xml_policy, xml_limits)
+        self.require_valid()
+
+        source = xml
+        source_id = source_identifier(source)
+        namespace_context = NamespaceContext()
+        xdm_source = None
+        element_namespaces: NamespaceContext | None = namespace_context
+        if self._resource_policy is not None:
+            try:
+                data = read_resource(source, self._resource_policy, purpose="instance")
+                tree = self._resource_policy.parse(data, namespace_context)
+            except OSError as exc:
+                raise PyXSDError(f"the xml input could not be read: {exc}") from exc
+            except ET.ParseError as exc:
+                raise PyXSDError(f"the xml file is not well-formed XML: {exc}") from exc
+            source_id = data.source_id
+            if capture_xdm:
+                from pyxsd.xdm.document import CaptureSource
+
+                xdm_source = CaptureSource.from_content(data.content, source_name=data.source_id)
+        elif isinstance(source, ET.Element):
+            tree = source
+            element_namespaces = None
+            if capture_xdm:
+                from pyxsd.xdm.document import CaptureSource
+
+                xdm_source = CaptureSource.from_input(source)
+        else:
+            if capture_xdm:
+                from pyxsd.xdm.document import CaptureSource
+
+                max_bytes = None if xml_limits is None else xml_limits.max_bytes
+                try:
+                    xdm_source = CaptureSource.from_input(source, max_bytes=max_bytes)
+                except OSError as exc:
+                    raise PyXSDError(f"the xml input could not be read: {exc}") from exc
+            parse_source: Any = BytesIO(xdm_source.data) if xdm_source is not None else source
+            try:
+                tree = parse_with_namespaces(
+                    parse_source,
+                    namespace_context,
+                    policy=xml_policy,
+                    limits=xml_limits,
+                )
+            except OSError as exc:
+                raise PyXSDError(f"the xml input could not be read: {exc}") from exc
+            except ET.ParseError as exc:
+                raise PyXSDError(f"the xml file is not well-formed XML: {exc}") from exc
+
+        root = RelaxNGElement.from_etree(
+            tree,
+            namespaces=element_namespaces,
+            base_uri=source_id,
+            source=IssueLocation(source_id, (PathStep(tree.tag, 1),)),
+        )
+        instance_report = new_validation_report(self._resource_policy)
+        outcome = validate_element(root, self.grammar.start, limits=limits)
+        report_first_mismatch(outcome, instance_report)
+
+        merged = new_validation_report(self._resource_policy)
+        merged.extend(self.report)
+        merged.extend(instance_report)
+
+        xdm_capture = None
+        if xdm_source is not None:
+            from pyxsd.xdm.annotations import OccurrenceCapture
+            from pyxsd.xdm.document import capture_document
+
+            xdm_capture = capture_document(
+                xdm_source,
+                root,
+                annotations=OccurrenceCapture(),
+            )
+        return RelaxNGDocument(
+            schema=self,
+            root=root,
+            source=source,
+            report=merged,
+            typed=False,
+            capture=capture,
+            limits=limits,
+            namespace_context=namespace_context,
+            xdm_capture=xdm_capture,
         )
 
 
