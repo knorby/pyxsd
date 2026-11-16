@@ -226,6 +226,50 @@ def test_root_callable_transform_returns_a_stale_relaxng_document():
     assert refreshed.interpretations_current is True
 
 
+def test_unchanged_root_transform_keeps_a_coherent_xdm_capture():
+    document = _schema().parse(
+        io.StringIO("<doc><item>x</item></doc>"), typed=False, capture_xdm=True
+    )
+    assert document.is_valid
+
+    stale = document.transform(lambda root: root)
+
+    assert isinstance(stale, RelaxNGDocument)
+    assert stale.interpretations_current is False
+    assert stale.to_xdm() is document.to_xdm()
+    assert stale.to_xdm().root_element.name == "doc"
+
+
+def test_moved_root_transform_has_no_stale_xdm_capture():
+    document = _schema().parse(
+        io.StringIO("<doc><item>x</item></doc>"), typed=False, capture_xdm=True
+    )
+
+    moved = document.transform(lambda root: root.children[0])
+
+    assert isinstance(moved, RelaxNGDocument)
+    assert moved.interpretations_current is False
+    with pytest.raises(XdmInputError, match="capture_xdm=True"):
+        moved.to_xdm()
+
+
+def test_in_place_edit_returning_the_root_rejects_the_stale_xdm_capture():
+    document = _schema().parse(
+        io.StringIO("<doc><item>x</item></doc>"), typed=False, capture_xdm=True
+    )
+
+    def edit(root: RelaxNGElement) -> RelaxNGElement:
+        root.set_text("changed")
+        return root
+
+    edited = document.transform(edit)
+
+    assert isinstance(edited, RelaxNGDocument)
+    assert edited.interpretations_current is False
+    with pytest.raises(XdmInputError, match="changed since XDM capture"):
+        edited.to_xdm()
+
+
 def test_transform_non_tree_results_pass_through():
     document = _document("<doc/>")
 
@@ -351,6 +395,65 @@ def test_locate_resolves_parse_specific_source_occurrences(tmp_path):
 
     # The same address in another parse is not this revision's occurrence.
     assert second.locate(issue.location).status == "missing"
+
+
+def test_locate_returns_parse_time_attribute_values_after_edit():
+    schema = _schema(INTEGER_ATTRIBUTE_SCHEMA)
+    document = schema.parse(io.StringIO('<doc n="bad"/>'), typed=False)
+    [issue] = list(document.report)
+    assert issue.location is not None
+    assert issue.location.source is None
+    assert issue.location.attribute == "n"
+    assert document.locate(issue.location).bound == "bad"
+
+    document.root.set_attribute("n", "7")
+
+    assert document.root.attribute_lexical("n") == "7"
+    lookup = document.locate(issue.location)
+    assert lookup.status == "attribute"
+    assert lookup.bound == "bad"
+
+    document.root.delete_attribute("n")
+    assert document.locate(issue.location).status == "attribute"
+    assert document.locate(issue.location).bound == "bad"
+
+
+def test_revalidation_records_a_fresh_attribute_snapshot(tmp_path):
+    schema = _schema(INTEGER_ATTRIBUTE_SCHEMA)
+    path = tmp_path / "document.xml"
+    path.write_text('<doc n="bad"/>', encoding="utf-8")
+    document = schema.parse(path, typed=False)
+    [issue] = list(document.report)
+    assert issue.location is not None
+
+    document.root.set_attribute("n", "8x")
+    assert document.locate(issue.location).bound == "bad"
+
+    fresh = document.revalidate()
+    [fresh_issue] = list(fresh.report)
+    assert fresh_issue.location is not None
+    assert fresh_issue.location.attribute == "n"
+    assert fresh.locate(fresh_issue.location).bound == "8x"
+    assert document.locate(issue.location).bound == "bad"
+
+
+def test_locate_on_a_source_less_tree_reports_missing():
+    schema = _schema()
+    parsed = schema.parse(io.StringIO("<doc/>"), typed=False)
+    root = RelaxNGElement.from_etree(ET.fromstring("<doc/>"))
+
+    document = RelaxNGDocument(
+        schema=schema,
+        root=root,
+        source=None,
+        report=parsed.report,
+        typed=False,
+    )
+
+    lookup = document.locate(IssueLocation(None, (PathStep("doc", 1),)))
+
+    assert lookup.status == "missing"
+    assert lookup.bound is None
 
 
 class _ProjectedElement(RelaxNGElement):

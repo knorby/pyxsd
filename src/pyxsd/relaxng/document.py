@@ -19,13 +19,15 @@ namespace and base-URI frames.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from io import StringIO
 from pathlib import Path
+from types import MappingProxyType
 from typing import IO, TYPE_CHECKING, Any, NoReturn
 
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
-from pyxsd.locations import IssueLocation, NodeLookup
+from pyxsd.locations import IssueLocation, NodeLookup, PathStep
 from pyxsd.relaxng.tree import NodeContext, RelaxNGElement
 from pyxsd.relaxng.xml_writer import clone_relaxng, serialize_relaxng
 
@@ -50,6 +52,9 @@ _TYPED_DOCUMENT_CAPABILITY = (
     "pass typed=False for validation-only parsing"
 )
 _CAPTURE_CAPABILITY = "capture must be 'none' for validation-only RELAX NG documents"
+
+_AttributeAddress = tuple[str | None, tuple[PathStep, ...]]
+_AttributeSnapshot = Mapping[_AttributeAddress, Mapping[str, str]]
 
 
 class RelaxNGDocument(Document):
@@ -80,6 +85,7 @@ class RelaxNGDocument(Document):
         namespace_context: Any = None,
         xdm_capture: Any = None,
         interpretations_current: bool = True,
+        attribute_snapshot: _AttributeSnapshot | None = None,
     ) -> None:
         if typed is not False:
             raise PyXSDError(_TYPED_DOCUMENT_CAPABILITY)
@@ -98,6 +104,11 @@ class RelaxNGDocument(Document):
         self._namespace_context = namespace_context
         self._revision_id = root.revision.revision_id
         self._interpretations_current = interpretations_current
+        self._attribute_snapshot = (
+            _snapshot_original_attributes(root)
+            if attribute_snapshot is None
+            else attribute_snapshot
+        )
 
     @property
     def interpretations_current(self) -> bool:
@@ -187,6 +198,7 @@ class RelaxNGDocument(Document):
             namespace_context=self._namespace_context,
             xdm_capture=self._xdm_capture if root is self.root else None,
             interpretations_current=False,
+            attribute_snapshot=self._attribute_snapshot,
         )
 
     def revalidate(self) -> RelaxNGDocument:
@@ -224,8 +236,9 @@ class RelaxNGDocument(Document):
         node instead of building an XSD binding provenance table.  This
         lookup compares those recorded addresses; it never matches by
         attribute value, local name, or position in another revision.  An
-        attribute address returns the original lexical attribute value, and
-        an address from another parse is ``missing``.
+        attribute address returns the parse-time lexical attribute value from
+        this document's immutable snapshot, so later edits neither change nor
+        create old addresses.  An address from another parse is ``missing``.
         """
         revision = self.root.revision
         stack = [self.root]
@@ -239,12 +252,33 @@ class RelaxNGDocument(Document):
             ):
                 if location.attribute is None:
                     return NodeLookup(location, node, "bound")
-                value = node.attribute_lexical(location.attribute)
+                attributes = self._attribute_snapshot.get((recorded.source, recorded.path), {})
+                value = attributes.get(location.attribute)
                 if value is None:
                     return NodeLookup(location, None, "missing")
                 return NodeLookup(location, value, "attribute")
             stack.extend(reversed(node._children_))
         return NodeLookup(location, None, "missing")
+
+
+def _snapshot_original_attributes(root: RelaxNGElement) -> _AttributeSnapshot:
+    """Freeze each addressed node's parse-time lexical attributes.
+
+    The snapshot is keyed by the exact source occurrence the parse recorded,
+    so an edited tree cannot change or add old addresses.  A source-less tree
+    has no addresses and produces an empty snapshot; ``locate`` then reports
+    every attribute address as missing, matching its element behavior.
+    """
+    revision = root.revision
+    snapshot: dict[_AttributeAddress, Mapping[str, str]] = {}
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        location = revision.source_location_for(node)
+        if location is not None:
+            snapshot[(location.source, location.path)] = MappingProxyType(dict(node._attribs_))
+        stack.extend(reversed(node._children_))
+    return MappingProxyType(snapshot)
 
 
 def _restore_lexical_frames(source: RelaxNGElement, target: RelaxNGElement) -> None:
