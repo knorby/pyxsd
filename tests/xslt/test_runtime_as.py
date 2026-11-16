@@ -390,6 +390,21 @@ def test_element_test_rejects_a_nilled_element_unless_nillable() -> None:
     assert ">1</out>" in nillable
 
 
+@pytest.mark.parametrize("test", ["element(*)", "element(sup:maybe)"])
+def test_untyped_element_tests_match_a_nilled_element(test: str) -> None:
+    # The nilled rule in XPath 3.1 section 2.5.5.3 applies only to a typed
+    # element test: element(*) and element(Name) match a nilled element
+    # regardless of its nilled property.
+    serialized = _run(
+        f'<xsl:variable name="e" as="{test}">'
+        '<sup:maybe xsl:validation="strict" xsi:nil="true"/></xsl:variable>'
+        '<xsl:template name="main"><out><xsl:value-of select="count($e)"/>'
+        "</out></xsl:template>",
+        initial_template="main",
+    )
+    assert ">1</out>" in serialized
+
+
 def test_a_declaration_absent_from_the_pool_does_not_match() -> None:
     element = XdmDocument.parse(b"<doc/>").root_element
 

@@ -5683,14 +5683,16 @@ def _matches_item_type(
             if item_type.name is None or item.name != item_type.name:
                 return False
             return _node_matches_declaration(item, item_type.name, schema_pool, element=True)
-        # XPath 3.1 section 2.5.5.3: a nilled element matches an element test
-        # only when the test's TypeName carries the ``?`` (nillable) marker.
-        if item.nilled and not item_type.nillable:
-            return False
         if not (item_type.wildcard or item_type.name is None or item.name == item_type.name):
             return False
         if item_type.type_name is None:
             return True
+        # XPath 3.1 section 2.5.5.3 applies the nilled rule only to a typed
+        # element test: ``element(*)`` and ``element(Name)`` match a nilled
+        # element, while ``element(Name, TypeName)`` matches it only when the
+        # test's TypeName carries the ``?`` (nillable) marker.
+        if item.nilled and not item_type.nillable:
+            return False
         return _node_has_type(item, item_type.type_name, schema_pool)
     if kind in ("attribute", "schema-attribute"):
         if not (isinstance(item, XdmNode) and item.kind is NodeKind.ATTRIBUTE):
