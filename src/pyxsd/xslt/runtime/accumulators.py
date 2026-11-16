@@ -31,7 +31,12 @@ from pyxsd.xdm import XdmSequence
 from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xpath.environment import Focus
 from pyxsd.xslt.compiler.patterns import PatternMatcher
-from pyxsd.xslt.errors import XsltDynamicError, XsltError, error_code_from_exception
+from pyxsd.xslt.errors import (
+    XsltDynamicError,
+    XsltError,
+    error_code_from_exception,
+    is_budget_alarm,
+)
 from pyxsd.xslt.runtime.context import EvaluationContext
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
@@ -233,7 +238,9 @@ class AccumulatorManager:
             )
         try:
             values = self._compute(definition, root, cache_key)
-        except XsltError:
+        except XsltError as error:
+            if is_budget_alarm(error):
+                raise
             # A later node failed.  The requested node's value may already be
             # known; only a functionally dependent call signals the error.
             values = self._values[cache_key]
@@ -360,6 +367,8 @@ class AccumulatorManager:
             self._errors[cache_key] = exc
             raise
         except Exception as exc:
+            if is_budget_alarm(exc):
+                raise
             error = XsltDynamicError(
                 str(exc) or type(exc).__name__,
                 code=error_code_from_exception(exc),

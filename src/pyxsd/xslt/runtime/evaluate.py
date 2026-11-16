@@ -33,7 +33,7 @@ from pyxsd.xpath.environment import (
     XPathStaticContext,
 )
 from pyxsd.xslt.compiler.plans import _EvaluatePlan
-from pyxsd.xslt.errors import XsltDynamicError, error_code_from_exception
+from pyxsd.xslt.errors import XsltDynamicError, error_code_from_exception, is_budget_alarm
 from pyxsd.xslt.runtime.context import EvaluationContext
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
@@ -260,6 +260,8 @@ class DynamicExpressionCache:
                 identity.xpath_static_context(),
             )
         except Exception as exc:
+            if is_budget_alarm(exc):
+                raise
             raise XsltDynamicError(
                 f"the dynamic XPath expression {expression!r} is not a valid expression: {exc}",
                 code="XTDE3160",
@@ -327,6 +329,8 @@ def evaluate_dynamic(
             focus=focus,
         )
     except Exception as exc:
+        if is_budget_alarm(exc):
+            raise
         code = error_code_from_exception(exc)
         if code == "XPST0008":
             raise XsltDynamicError(

@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Literal, NoReturn, TypeAlias
 from pyxsd.locations import IssueLocation
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xpath.engine import CompiledExpression, XPathEngine
-from pyxsd.xslt.errors import XsltStaticError, error_code_from_exception
+from pyxsd.xslt.errors import XsltStaticError, error_code_from_exception, is_budget_alarm
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
     from pyxsd.xslt.compiler.context import StaticContext
@@ -908,6 +908,8 @@ def compile_xpath(
     try:
         compiled = engine.compile(source, context.xpath_static_context())
     except Exception as exc:
+        if is_budget_alarm(exc):
+            raise
         raise _static_error(
             context,
             f"invalid XPath expression {source!r}: {exc}",

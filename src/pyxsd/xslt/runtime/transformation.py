@@ -29,7 +29,12 @@ from pyxsd.xpath.continuation import ContinuationMachine, HostFunction, XPathClo
 from pyxsd.xpath.engine import CompiledExpression
 from pyxsd.xpath.environment import ExpressionEnvironment
 from pyxsd.xpath.functions import atomic_to_elementpath
-from pyxsd.xslt.errors import XsltDynamicError, XsltError, error_code_from_exception
+from pyxsd.xslt.errors import (
+    XsltDynamicError,
+    XsltError,
+    error_code_from_exception,
+    is_budget_alarm,
+)
 from pyxsd.xslt.policy import NestedTransformationPolicy
 from pyxsd.xslt.profiles import LanguageProfile, RecoveryPolicy, RecoveryRule
 from pyxsd.xslt.runtime.frames import (
@@ -422,7 +427,9 @@ class Transformation:
                     if name not in XSLT_CONTEXT_FUNCTION_NAMES
                 },
             )
-        except Exception:
+        except Exception as exc:
+            if is_budget_alarm(exc):
+                raise
             plan = None
         self._xpath_plans[key] = plan
         return plan

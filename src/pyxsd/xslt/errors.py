@@ -31,6 +31,14 @@ if TYPE_CHECKING:
 #: Namespace of every specification-defined XSLT and XPath error code.
 ERROR_NAMESPACE = "http://www.w3.org/2005/xqt-errors"
 
+#: Stable implementation code for an exhausted execution budget.
+#:
+#: The execution runtime raises it with ``allow_catch=False`` so no ``xsl:try``
+#: can turn a resource limit into a recoverable error.  It is defined here
+#: rather than in the runtime so error classification never imports the
+#: scheduler.
+IMPLEMENTATION_BUDGET_CODE = "PYXSD-XSLT-001"
+
 _ERROR_CODE = re.compile(r"\b([A-Z]{4}\d{4})\b")
 
 
@@ -512,8 +520,30 @@ class XsltSerializationError(XsltError):
         return self.secondary and bool(self.code) and not is_static_error_code(self.code)
 
 
+def is_budget_alarm(error: BaseException) -> bool:
+    """Whether *error* is an execution-budget alarm rather than an engine failure.
+
+    Two independent budgets can expire while the engine works, and neither one
+    describes a failure of the stylesheet or of the expression being evaluated:
+
+    * the caller's wall-clock alarm, which the conformance harness raises as a
+      ``TimeoutError`` from ``SIGALRM``; and
+    * the engine's own ``ExecutionLimits`` budget, which arrives as a dynamic
+      error carrying :data:`IMPLEMENTATION_BUDGET_CODE`.
+
+    A handler that converts a caught exception into a non-match or a different
+    error must let both through unchanged.  Converting the alarm cancels the
+    bound the caller placed on the work, so the runaway expression keeps
+    running instead of stopping at its budget.
+    """
+    if isinstance(error, TimeoutError):
+        return True
+    return isinstance(error, XsltDynamicError) and error.code == IMPLEMENTATION_BUDGET_CODE
+
+
 __all__ = [
     "ERROR_NAMESPACE",
+    "IMPLEMENTATION_BUDGET_CODE",
     "XsltDynamicError",
     "XsltError",
     "XsltInspectionError",
@@ -521,6 +551,7 @@ __all__ = [
     "XsltStaticError",
     "error_code_from_exception",
     "expanded_error_code",
+    "is_budget_alarm",
     "is_static_error_code",
     "normalized_error_code",
 ]

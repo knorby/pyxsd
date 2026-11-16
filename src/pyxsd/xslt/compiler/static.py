@@ -36,7 +36,7 @@ from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xpath.engine import XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
 from pyxsd.xslt.compiler.modules import ModuleKind, SourceModule
-from pyxsd.xslt.errors import XsltStaticError, error_code_from_exception
+from pyxsd.xslt.errors import XsltStaticError, error_code_from_exception, is_budget_alarm
 from pyxsd.xslt.precedence import compare_precedence
 from pyxsd.xslt.runtime.functions import (
     SYSTEM_PROPERTIES as _SYSTEM_PROPERTIES,
@@ -750,6 +750,8 @@ class _StaticEvaluator:
             compiled = self._engine.compile(expression, context)
             return self._engine.evaluate(compiled, environment, focus=Focus.absent())
         except Exception as exc:
+            if is_budget_alarm(exc):
+                raise
             code = error_code_from_exception(exc, "XTSE0010")
             raise XsltStaticError(
                 f"static expression failed: {exc}",

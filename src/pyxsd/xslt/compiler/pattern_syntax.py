@@ -33,7 +33,7 @@ from pyxsd.xslt.compiler.expressions import (
     compile_sequence_type,
     validate_variable_references,
 )
-from pyxsd.xslt.errors import XsltStaticError, error_code_from_exception
+from pyxsd.xslt.errors import XsltStaticError, error_code_from_exception, is_budget_alarm
 
 FN_NS = "http://www.w3.org/2005/xpath-functions"
 _INTERNAL_NS = "urn:pyxsd:xslt:pattern"
@@ -1102,6 +1102,8 @@ def _compile_expression(
     try:
         compiled = engine.compile(rewritten, static_context)
     except Exception as exc:
+        if is_budget_alarm(exc):
+            raise
         raise _static_error(
             context,
             f"invalid pattern predicate {source!r}: {exc}",

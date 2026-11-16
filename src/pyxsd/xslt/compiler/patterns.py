@@ -16,7 +16,9 @@ two plans:
 
 Both plans share one predicate evaluator, rooted-function implementation, and
 schema-test implementation, and every dynamic error raised while matching one
-item is treated as a non-match as required by XSLT 3.0 section 5.5.4.
+item is treated as a non-match as required by XSLT 3.0 section 5.5.4.  An
+execution-budget alarm is re-raised instead: converting it would cancel the
+caller's bound on the work.
 
 A bare ``map(*)`` is a sequence type and is rejected with ``XTSE0340``; the
 generalized item pattern is ``.[. instance of map(*)]``.
@@ -67,6 +69,7 @@ from pyxsd.xslt.compiler.pattern_syntax import (
     _static_error,
     parse_pattern,
 )
+from pyxsd.xslt.errors import is_budget_alarm
 
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 
@@ -388,7 +391,13 @@ class PatternMatcher:
         self.statistics.cache_misses += 1
         try:
             result = self._evaluate_alternative(alternative, item, environment)
-        except Exception:
+        except Exception as exc:
+            # XSLT 3.0 section 5.5.4 makes a dynamic error raised while
+            # matching one item a non-match, but an execution-budget alarm is
+            # not a pattern failure: converting it would cancel the caller's
+            # bound on the work and let the match continue unbounded.
+            if is_budget_alarm(exc):
+                raise
             self.statistics.errors_ignored += 1
             result = False
         self._matches[key] = result

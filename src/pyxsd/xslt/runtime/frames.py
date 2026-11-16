@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from pyxsd.locations import IssueLocation
 from pyxsd.xpath.environment import Focus
-from pyxsd.xslt.errors import XsltDynamicError
+from pyxsd.xslt.errors import IMPLEMENTATION_BUDGET_CODE, XsltDynamicError
 from pyxsd.xslt.runtime.context import EvaluationContext
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
@@ -57,7 +57,7 @@ __all__ = [
 ]
 
 #: Stable implementation error code for transformation resource limits.
-PYXSD_FRAME_EXHAUSTED = "PYXSD-XSLT-001"
+PYXSD_FRAME_EXHAUSTED = IMPLEMENTATION_BUDGET_CODE
 
 #: Sentinel distinguishing "no delivered child result" from an XDM value.
 NO_INPUT = object()

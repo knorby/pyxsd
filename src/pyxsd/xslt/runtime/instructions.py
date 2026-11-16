@@ -76,6 +76,7 @@ from pyxsd.xslt.errors import (
     XsltDynamicError,
     XsltError,
     error_code_from_exception,
+    is_budget_alarm,
     is_static_error_code,
 )
 from pyxsd.xslt.profiles import LanguageProfile
@@ -1701,6 +1702,8 @@ def execute_assert(
     try:
         satisfied = _effective_boolean(invocation._evaluate(plan.test, context))
     except Exception as exc:
+        if is_budget_alarm(exc):
+            raise
         failure = exc
     if satisfied:
         return
@@ -1722,6 +1725,8 @@ def execute_assert(
             detail = document.string_value.strip()
             value = (document,)
     except Exception as exc:
+        if is_budget_alarm(exc):
+            raise
         message_failure = exc
         detail = f"message construction failed: {exc}"
     code = "XTMM9001"
@@ -1730,6 +1735,8 @@ def execute_assert(
             selected = invocation._value_source(plan.error_code, context)
             code = _diagnostic_error_code(selected, plan.instruction.namespaces)
         except Exception as exc:
+            if is_budget_alarm(exc):
+                raise
             if message_failure is None:
                 message_failure = exc
                 if not detail:
