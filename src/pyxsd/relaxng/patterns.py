@@ -22,13 +22,13 @@ point is reached without unbounded recursion.
 ``Data``, ``DataExcept``, and ``Value`` carry the compiled datatype contract
 of the datatype stage in an opaque ``datatype`` field.  The contract must be
 hashable and value-comparable, and its ``repr`` must be deterministic because
-canonical choice order sorts leaves by ``repr``.
+canonical choice order sorts non-empty leaves by ``repr``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 from pyxsd.relaxng.limits import BudgetCounter
 from pyxsd.relaxng.names import NameClass
@@ -63,92 +63,166 @@ class Pattern:
     """One node of the simplified RELAX NG pattern graph."""
 
 
-@dataclass(frozen=True)
-class Empty(Pattern):
+@dataclass(frozen=True, eq=False, repr=False)
+class _StructuralPattern(Pattern):
+    """Dataclass value operations without Python recursion through operands.
+
+    The hash is the same field-tuple hash a frozen dataclass would generate.
+    Caching it beside the immutable fields makes repeated pool lookups cheap;
+    neither the cache nor source origins participate in semantic identity.
+    Ref deliberately does not inherit these operations: it remains opaque.
+    """
+
+    def __hash__(self) -> int:
+        pending = [(self, False)]
+        while pending:
+            node, ready = pending.pop()
+            if "_semantic_hash" in node.__dict__:
+                continue
+            values = tuple(getattr(node, item.name) for item in fields(node))
+            if not ready:
+                pending.append((node, True))
+                pending.extend(
+                    (value, False) for value in values if isinstance(value, _StructuralPattern)
+                )
+            else:
+                object.__setattr__(node, "_semantic_hash", hash(values))
+        return self.__dict__["_semantic_hash"]
+
+    def __getstate__(self) -> dict[str, object]:
+        # Python salts field hashes per process; never serialize that cache.
+        return {item.name: getattr(self, item.name) for item in fields(self)}
+
+    def __eq__(self, other: object) -> bool:
+        if type(self) is not type(other):
+            return NotImplemented
+        pending = [(self, other)]
+        seen: set[tuple[int, int]] = set()
+        while pending:
+            first, second = pending.pop()
+            key = (id(first), id(second))
+            if first is second or key in seen:
+                continue
+            seen.add(key)
+            if type(first) is not type(second):
+                return False
+            for item in fields(first):
+                left, right = getattr(first, item.name), getattr(second, item.name)
+                if isinstance(left, _StructuralPattern) and isinstance(right, _StructuralPattern):
+                    pending.append((left, right))
+                elif (left,) != (right,):
+                    return False
+        return True
+
+    def __repr__(self) -> str:
+        parts: list[str] = []
+        pending: list[str | _StructuralPattern] = [self]
+        while pending:
+            value = pending.pop()
+            if isinstance(value, _StructuralPattern):
+                parts.append(f"{type(value).__qualname__}(")
+                pending.append(")")
+                items = fields(value)
+                for index in range(len(items) - 1, -1, -1):
+                    item = items[index]
+                    operand = getattr(value, item.name)
+                    pending.append(
+                        operand if isinstance(operand, _StructuralPattern) else repr(operand)
+                    )
+                    pending.append(f"{item.name}=")
+                    if index:
+                        pending.append(", ")
+            else:
+                parts.append(value)
+        return "".join(parts)
+
+
+@dataclass(frozen=True, eq=False, repr=False)
+class Empty(_StructuralPattern):
     """Matches the empty sequence."""
 
 
-@dataclass(frozen=True)
-class NotAllowed(Pattern):
+@dataclass(frozen=True, eq=False, repr=False)
+class NotAllowed(_StructuralPattern):
     """Matches nothing."""
 
 
-@dataclass(frozen=True)
-class Text(Pattern):
+@dataclass(frozen=True, eq=False, repr=False)
+class Text(_StructuralPattern):
     """Matches any run of character data."""
 
 
-@dataclass(frozen=True)
-class Choice(Pattern):
+@dataclass(frozen=True, eq=False, repr=False)
+class Choice(_StructuralPattern):
     """Matches either operand."""
 
     first: Pattern
     second: Pattern
 
 
-@dataclass(frozen=True)
-class Group(Pattern):
+@dataclass(frozen=True, eq=False, repr=False)
+class Group(_StructuralPattern):
     """Matches the first operand followed by the second."""
 
     first: Pattern
     second: Pattern
 
 
-@dataclass(frozen=True)
-class Interleave(Pattern):
+@dataclass(frozen=True, eq=False, repr=False)
+class Interleave(_StructuralPattern):
     """Matches the operands in any interleaving."""
 
     first: Pattern
     second: Pattern
 
 
-@dataclass(frozen=True)
-class OneOrMore(Pattern):
+@dataclass(frozen=True, eq=False, repr=False)
+class OneOrMore(_StructuralPattern):
     """Matches one or more repetitions of its operand."""
 
     pattern: Pattern
 
 
-@dataclass(frozen=True)
-class Element(Pattern):
+@dataclass(frozen=True, eq=False, repr=False)
+class Element(_StructuralPattern):
     """Matches an element with a name in *name_class* and *pattern* content."""
 
     name_class: NameClass
     pattern: Pattern
 
 
-@dataclass(frozen=True)
-class Attribute(Pattern):
+@dataclass(frozen=True, eq=False, repr=False)
+class Attribute(_StructuralPattern):
     """Matches an attribute with a name in *name_class* and *pattern* value."""
 
     name_class: NameClass
     pattern: Pattern
 
 
-@dataclass(frozen=True)
-class List(Pattern):
+@dataclass(frozen=True, eq=False, repr=False)
+class List(_StructuralPattern):
     """Matches whitespace-delimited tokens against *pattern*."""
 
     pattern: Pattern
 
 
-@dataclass(frozen=True)
-class Data(Pattern):
+@dataclass(frozen=True, eq=False, repr=False)
+class Data(_StructuralPattern):
     """Matches a lexical value allowed by *datatype*."""
 
     datatype: object
 
 
-@dataclass(frozen=True)
-class DataExcept(Pattern):
+@dataclass(frozen=True, eq=False, repr=False)
+class DataExcept(_StructuralPattern):
     """Matches a value allowed by *datatype* and not by *excluded*."""
 
     datatype: object
     excluded: Pattern
 
 
-@dataclass(frozen=True)
-class Value(Pattern):
+@dataclass(frozen=True, eq=False, repr=False)
+class Value(_StructuralPattern):
     """Matches a value equal to the schema-side *lexical* value.
 
     The compiled *datatype* retains the schema-side context needed to
@@ -201,13 +275,18 @@ def _choice_leaves(pattern: Pattern) -> Iterator[Pattern]:
             yield node
 
 
+def _choice_key(pattern: Pattern) -> tuple[bool, str]:
+    """Empty first, then the existing deterministic representation order."""
+    return not isinstance(pattern, Empty), repr(pattern)
+
+
 def choice(first: Pattern, second: Pattern) -> Pattern:
-    """Build a binary choice with flattened, deduplicated, ordered leaves."""
+    """Build a flattened, deduplicated choice: empty first, then repr order."""
     leaves: dict[Pattern, None] = {}
     for pattern in (first, second):
         for leaf in _choice_leaves(pattern):
             leaves.setdefault(leaf, None)
-    ordered = sorted(leaves, key=repr)
+    ordered = sorted(leaves, key=_choice_key)
     if not ordered:
         return NotAllowed()
     result = ordered[0]
@@ -349,35 +428,79 @@ class PatternPool:
         return self._origins.get(pattern, OriginTable())
 
     def _intern(self, pattern: Pattern) -> Pattern:
-        canonical = self._nodes.get(pattern)
-        if canonical is not None:
-            return canonical
-        rebuilt = self._rebuild(pattern)
-        canonical = self._nodes.get(rebuilt)
-        if canonical is not None:
-            return canonical
-        self._budget.consume("max_pattern_nodes")
-        self._nodes[rebuilt] = rebuilt
-        return rebuilt
+        completed: dict[int, Pattern] = {}
+        pending = [(pattern, False)]
+        while pending:
+            node, ready = pending.pop()
+            canonical = self._nodes.get(node)
+            if canonical is not None:
+                completed[id(node)] = canonical
+                continue
+            if not ready:
+                pending.append((node, True))
+                pending.extend((child, False) for child in reversed(_operands(node)))
+                continue
+            rebuilt = self._rebuild(node, completed)
+            completed[id(node)] = self._store(rebuilt)
+        return completed[id(pattern)]
 
-    def _rebuild(self, pattern: Pattern) -> Pattern:
+    def _store(self, pattern: Pattern) -> Pattern:
+        canonical = self._nodes.get(pattern)
+        if canonical is None:
+            self._budget.consume("max_pattern_nodes")
+            self._nodes[pattern] = pattern
+            canonical = pattern
+        return canonical
+
+    def _rebuild(self, pattern: Pattern, completed: dict[int, Pattern]) -> Pattern:
         """Intern the children of *pattern* and apply the smart constructors."""
         if isinstance(pattern, Choice):
-            return choice(self._intern(pattern.first), self._intern(pattern.second))
+            first, second = completed[id(pattern.first)], completed[id(pattern.second)]
+            last = first.second if isinstance(first, Choice) else first
+            # Canonical first operands are already ordered left folds. Appending
+            # a larger leaf preserves that form without re-flattening every
+            # prefix of a deep choice produced by the smart constructor.
+            if (
+                not isinstance(first, NotAllowed)
+                and not isinstance(second, (Choice, NotAllowed))
+                and _choice_key(last) < _choice_key(second)
+            ):
+                return Choice(first, second)
+            result = choice(first, second)
+            # Flattening can create prefixes absent from either input tree.
+            # Intern those too, so every child of a canonical node is canonical.
+            leaves: list[Pattern] = []
+            while isinstance(result, Choice):
+                leaves.append(result.second)
+                result = result.first
+            for leaf in reversed(leaves):
+                result = self._store(Choice(result, leaf))
+            return result
         if isinstance(pattern, Group):
-            return group(self._intern(pattern.first), self._intern(pattern.second))
+            return group(completed[id(pattern.first)], completed[id(pattern.second)])
         if isinstance(pattern, Interleave):
-            return interleave(self._intern(pattern.first), self._intern(pattern.second))
+            return interleave(completed[id(pattern.first)], completed[id(pattern.second)])
         if isinstance(pattern, OneOrMore):
-            return one_or_more(self._intern(pattern.pattern))
+            return one_or_more(completed[id(pattern.pattern)])
         if isinstance(pattern, Element):
-            return Element(pattern.name_class, self._intern(pattern.pattern))
+            return Element(pattern.name_class, completed[id(pattern.pattern)])
         if isinstance(pattern, Attribute):
-            return Attribute(pattern.name_class, self._intern(pattern.pattern))
+            return Attribute(pattern.name_class, completed[id(pattern.pattern)])
         if isinstance(pattern, List):
-            return List(self._intern(pattern.pattern))
+            return List(completed[id(pattern.pattern)])
         if isinstance(pattern, DataExcept):
-            return DataExcept(pattern.datatype, self._intern(pattern.excluded))
+            return DataExcept(pattern.datatype, completed[id(pattern.excluded)])
         if isinstance(pattern, (Data, Empty, NotAllowed, Ref, Text, Value)):
             return pattern
         raise TypeError(f"unknown RELAX NG pattern {type(pattern).__name__}")
+
+
+def _operands(pattern: Pattern) -> tuple[Pattern, ...]:
+    """Tree operands only; references close cycles and stay opaque."""
+    if isinstance(pattern, (Choice, Group, Interleave)):
+        return pattern.first, pattern.second
+    if isinstance(pattern, (Element, Attribute, List, OneOrMore)):
+        return (pattern.pattern,)
+    if isinstance(pattern, DataExcept):
+        return (pattern.excluded,)
+    return ()

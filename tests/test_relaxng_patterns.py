@@ -7,6 +7,10 @@ the legal recursive element graphs produced by reference resolution.
 
 from __future__ import annotations
 
+import os
+import pickle
+import subprocess
+import sys
 from dataclasses import FrozenInstanceError, dataclass
 
 import pytest
@@ -55,6 +59,55 @@ INTEGER = StubDatatype("integer")
 
 
 class TestConstructors:
+    def test_value_operations_preserve_dataclass_field_semantics(self):
+        shared = float("nan")
+        first, second = Data(shared), Data(shared)
+        assert first == second
+        assert hash(first) == hash((shared,))
+        assert Empty() != Text()
+        assert Group(Empty(), Text()) != Group(Text(), Text())
+        assert Group(Text(), Text()) != Interleave(Text(), Text())
+        assert Data(STRING) != Data(INTEGER)
+        assert Value(STRING, "a") != Value(STRING, "b")
+        assert repr(Group(Text(), Empty())) == "Group(first=Text(), second=Empty())"
+
+    def test_equality_of_shared_dags_is_structural_not_alias_sensitive(self):
+        left: Pattern = Text()
+        right: Pattern = Text()
+        for _ in range(50):
+            left = Group(left, left)
+            right = Group(right, right)
+        assert left == right
+        assert hash(left) == hash(right)
+        assert Group(Text(), Text()) == Group(Text(), Text())
+
+    @pytest.mark.parametrize("seed", ["11", "23"])
+    def test_hashed_patterns_roundtrip_across_process_hash_seeds(self, seed):
+        node = Element(Name(None, "node"), Group(Text(), Empty()))
+        hash(node)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                """
+import pickle
+import sys
+from pyxsd.relaxng.names import Name
+from pyxsd.relaxng.patterns import Element, Empty, Group, Text
+node = pickle.loads(sys.stdin.buffer.read())
+fresh = Element(Name(None, "node"), Group(Text(), Empty()))
+assert node == fresh
+assert fresh in {node}
+assert repr(node) == repr(fresh)
+""",
+            ],
+            input=pickle.dumps(node),
+            capture_output=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr.decode("utf-8")
+
     def test_every_constructor_is_a_pattern(self):
         patterns = [
             Empty(),
@@ -128,6 +181,13 @@ class TestSmartConstructors:
 
 
 class TestDeterministicChoiceOrder:
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_empty_precedes_leaves_whose_repr_sorts_before_empty(self, reverse):
+        leaf = Attribute(Name(None, "a"), Text())
+        result = choice(leaf, Empty()) if reverse else choice(Empty(), leaf)
+        assert result == Choice(Empty(), leaf)
+        assert nullable(result)
+
     def test_choice_order_is_independent_of_argument_order(self):
         assert choice(Text(), Empty()) == choice(Empty(), Text())
 
@@ -154,6 +214,40 @@ class TestDeterministicChoiceOrder:
 
 
 class TestInterning:
+    def test_flattened_choice_interns_every_rebuilt_prefix(self):
+        a, b, c, d = (Element(Name(None, name), Empty()) for name in "abcd")
+        pool = PatternPool()
+        prefix = pool.intern(choice(a, b))
+        result = pool.intern(Choice(Choice(d, b), Choice(c, a)))
+        assert isinstance(result, Choice)
+        assert isinstance(result.first, Choice)
+        assert result.first.first is prefix
+        assert pool.intern(result.first) is result.first
+        assert pool.intern(result.first.first) is result.first.first
+
+    def test_deep_structures_keep_value_keys_and_canonical_children(self):
+        first: Pattern = Text()
+        second: Pattern = Text()
+        for _ in range(1100):
+            first = Element(Name(None, "node"), Group(first, Text()))
+            second = Element(Name(None, "node"), Group(second, Text()))
+        assert first == second
+        assert hash(first) == hash(second)
+        assert repr(first) == repr(second)
+        pool = PatternPool()
+        canonical = pool.intern(first, OriginTable((ORIGIN_A,)))
+        assert pool.intern(second, OriginTable((ORIGIN_B,))) is canonical
+        assert pool.origins(second) == OriginTable((ORIGIN_A, ORIGIN_B))
+        assert len(pool) == 2201
+        for _ in range(1100):
+            assert isinstance(canonical, Element)
+            assert pool.intern(canonical) is canonical
+            content = canonical.pattern
+            assert isinstance(content, Group)
+            assert content.second is pool.intern(Text())
+            canonical = content.first
+        assert canonical is pool.intern(Text())
+
     @pytest.mark.parametrize(
         "build",
         [

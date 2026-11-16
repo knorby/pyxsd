@@ -348,12 +348,14 @@ class Simplifier:
         self._scopes: dict[GrammarScope, BundleScope] = {}
         self._bundle_scopes: list[BundleScope] = []
         self._references: list[UnresolvedReference | LocalGrammar] = []
+        self._patterns: dict[int, Pattern] = {}
 
     def simplify(self, schema: FullSchema) -> GrammarBundle:
         """Simplify *schema* into a local :class:`GrammarBundle`."""
         self._scopes = {}
         self._bundle_scopes = []
         self._references = []
+        self._patterns = {}
         start = self._root_pattern(schema.start)
         return GrammarBundle(
             start,
@@ -375,6 +377,33 @@ class Simplifier:
         return self._pattern(node)
 
     def _pattern(self, node: FullNode) -> Pattern:
+        """Simplify pattern content in postorder without authored call depth.
+
+        Grammar scopes still establish their environment before simplifying
+        their components. Only actual pattern operands are scheduled here;
+        invalid children remain diagnostics, not accidentally active scopes.
+        """
+        pending = [(node, False)]
+        while pending:
+            current, ready = pending.pop()
+            if id(current) in self._patterns:
+                continue
+            if not ready:
+                pending.append((current, True))
+                children: tuple[FullNode, ...] = ()
+                if isinstance(
+                    current,
+                    _GroupableContent | FullAttribute | FullGroup | FullInterleave | FullChoice,
+                ):
+                    children = current.children
+                pending.extend(
+                    (child, False) for child in reversed(tuple(_spliced_patterns(children)))
+                )
+                continue
+            self._patterns[id(current)] = self._pattern_node(current)
+        return self._patterns[id(node)]
+
+    def _pattern_node(self, node: FullNode) -> Pattern:
         if isinstance(node, FullElement):
             return self._element(node)
         if isinstance(node, FullAttribute):
@@ -519,13 +548,7 @@ class Simplifier:
         return self._fold(group, parts, origins)
 
     def _pattern_children(self, children: tuple[FullNode, ...]) -> list[Pattern]:
-        parts: list[Pattern] = []
-        for child in children:
-            if isinstance(child, FullDiv):
-                parts.extend(self._pattern_children(child.children))
-            else:
-                parts.append(self._pattern(child))
-        return parts
+        return [self._pattern(child) for child in _spliced_patterns(children)]
 
     def _fold(
         self,
@@ -1259,9 +1282,22 @@ class _Composer:
         return scope.slots
 
     def resolve(self, pattern: Pattern, part: _Part) -> Pattern:
+        pending = [(pattern, False)]
+        environment = id(part.environment)
+        while pending:
+            node, ready = pending.pop()
+            if (node, environment) in self.resolved:
+                continue
+            children = _pattern_operands(node)
+            if children and not ready:
+                pending.append((node, True))
+                pending.extend((child, False) for child in reversed(children))
+                continue
+            self._resolve_node(node, part)
+        return self.resolved[(pattern, environment)]
+
+    def _resolve_node(self, pattern: Pattern, part: _Part) -> Pattern:
         memo_key = (pattern, id(part.environment))
-        if memo_key in self.resolved:
-            return self.resolved[memo_key]
         origins = self.pool.origins(pattern)
         if isinstance(pattern, LocalGrammar):
             local_scope = part.environment[pattern.scope]
@@ -1297,7 +1333,11 @@ class _Composer:
                         )
         else:
             result = _rebuild_pattern(
-                pattern, tuple(self.resolve(child, part) for child in _pattern_operands(pattern))
+                pattern,
+                tuple(
+                    self.resolved[(child, id(part.environment))]
+                    for child in _pattern_operands(pattern)
+                ),
             )
         result = self.pool.intern(result, origins)
         self.resolved[memo_key] = result
@@ -1450,6 +1490,7 @@ class _Composer:
             else self.expand(start)
         )
         index = 0
+        targets: dict[_ElementReference, Element] = {}
         while index < len(self.element_work):
             pattern, edge = self.element_work[index]
             content = self.expand(pattern.pattern)
@@ -1457,8 +1498,15 @@ class _Composer:
                 Element(pattern.name_class, content),
                 self.pool.origins(pattern).union(self.pool.origins(edge)),
             )
-            edge.bind(target)
+            targets[edge] = cast(Element, target)
             index += 1
+        # Reindex only the final closure. The staging pool contains authored
+        # placeholders, temporary slots, and unreachable patterns. Indexing
+        # nodes already charged to the caller is not new compilation work.
+        # Canonicalize in the returned pool before closing write-once edges.
+        # Ref is opaque to interning, so this also preserves recursive cycles.
+        graph = PatternPool()
+        start = graph.intern(start, self.pool.origins(start))
         definitions: dict[str, Definition] = {}
         seen: set[Pattern] = set()
         pending = [start]
@@ -1467,22 +1515,16 @@ class _Composer:
             if node in seen:
                 continue
             seen.add(node)
+            graph.intern(node, self.pool.origins(node))
             if isinstance(node, _ElementReference):
-                target = cast(Element, node.target)
+                target = targets[node]
                 origins = self.pool.origins(target).union(self.pool.origins(node))
-                self.pool.intern(target, origins)
+                target = cast(Element, graph.intern(target, origins))
+                node.bind(target)
                 definitions[node.name] = Definition(node.name, target, origins)
                 pending.append(target)
             else:
                 pending.extend(reversed(_pattern_operands(node)))
-        # Reindex only the final closure. The staging pool contains authored
-        # placeholders, temporary slots, and unreachable patterns; none belong
-        # to the returned graph. These semantic nodes have already consumed
-        # the caller's compilation budget; copying their index is not new work
-        # against that budget.
-        graph = PatternPool()
-        for node in seen:
-            graph.intern(node, self.pool.origins(node))
         return CompiledGrammar(
             start, MappingProxyType(definitions), graph, self.loader.dependencies()
         )
@@ -1590,6 +1632,17 @@ def _grouping_origins(children: tuple[FullNode, ...]) -> OriginTable:
         if isinstance(child, FullDiv):
             origins = origins.union(child.origins, _grouping_origins(child.children))
     return origins
+
+
+def _spliced_patterns(children: tuple[FullNode, ...]) -> Iterator[FullNode]:
+    """Splice transparent divs in authored order without recursive descent."""
+    pending = list(reversed(children))
+    while pending:
+        child = pending.pop()
+        if isinstance(child, FullDiv):
+            pending.extend(reversed(child.children))
+        else:
+            yield child
 
 
 def _full_name_class_mentions(node: FullNameClass, kinds: tuple[type[FullNameClass], ...]) -> bool:

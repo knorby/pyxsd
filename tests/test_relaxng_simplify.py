@@ -114,6 +114,41 @@ def datatype(
     )
 
 
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        (
+            '<optional><attribute name="a"/></optional>',
+            Choice(Empty(), attribute("a")),
+        ),
+        (
+            '<choice><attribute name="a"/><empty/></choice>',
+            Choice(Empty(), attribute("a")),
+        ),
+        (
+            '<choice><empty/><attribute name="a"/></choice>',
+            Choice(Empty(), attribute("a")),
+        ),
+        (
+            '<optional><zeroOrMore><optional><attribute name="a"/></optional>'
+            "</zeroOrMore></optional>",
+            Choice(Empty(), one_or_more(Choice(Empty(), attribute("a")))),
+        ),
+        (
+            '<optional><choice><optional><attribute name="a"/></optional>'
+            '<attribute name="b"/></choice></optional>',
+            Choice(Choice(Empty(), attribute("a")), attribute("b")),
+        ),
+    ],
+)
+def test_empty_is_first_in_optional_zero_or_more_and_nested_choices(body, expected):
+    bundle, report, pool = run_simplify(schema(body))
+    assert not report.has_errors
+    assert bundle.start == element("root", expected)
+    assert isinstance(bundle.start, Element)
+    assert pool.intern(bundle.start.pattern) is bundle.start.pattern
+
+
 class RejectingFactory(DatatypeFactory):
     """A custom library whose every type is rejected at compilation."""
 

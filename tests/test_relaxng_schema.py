@@ -47,8 +47,10 @@ from pyxsd.relaxng.patterns import (
     Interleave,
     List,
     OneOrMore,
+    Pattern,
     Ref,
     Text,
+    nullable,
 )
 from pyxsd.relaxng.schema import RelaxNGSchema
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
@@ -92,7 +94,7 @@ EXPECTED_START = Element(
     Name(None, "doc"),
     Group(
         Attribute(Name(None, "id"), Text()),
-        Choice(Element(Name(None, "item"), Text()), Empty()),
+        Choice(Empty(), Element(Name(None, "item"), Text())),
     ),
 )
 
@@ -243,6 +245,120 @@ def test_a_bare_pattern_root_compiles_like_a_grammar_start():
 
     assert not schema.report.has_errors
     assert resolve(schema.grammar.start) == Element(Name(None, "x"), Empty())
+
+
+@pytest.mark.parametrize("construct", ["element", "group", "choice", "mixed"])
+def test_deep_authored_patterns_compile_to_deterministic_canonical_graphs(construct):
+    depth = 1100
+    if construct == "element":
+        body = '<element name="node">' * depth + "<empty/>" + "</element>" * depth
+    elif construct == "mixed":
+        body = (
+            '<element name="node"><group><text/><choice><empty/>' * depth
+            + "<text/>"
+            + "</choice></group></element>" * depth
+        )
+    elif construct == "group":
+        body = f"<{construct}><text/>" * depth + "<text/>" + f"</{construct}>" * depth
+        body = f'<element name="root">{body}</element>'
+    else:
+        body = (
+            "".join(
+                f'<choice><element name="child{index}"><empty/></element>' for index in range(depth)
+            )
+            + "<text/>"
+            + "</choice>" * depth
+        )
+        body = f'<element name="root">{body}</element>'
+    xml = f'<grammar xmlns="{NS}"><start>{body}</start></grammar>'
+    signatures = []
+    for _ in range(2):
+        schema = compile_schema(io.StringIO(xml))
+        assert not schema.report.has_errors
+        compiled = schema.grammar
+        pending = [compiled.start, *(item.pattern for item in compiled.definitions.values())]
+        seen = set()
+        signature = []
+        while pending:
+            node = pending.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            assert compiled.graph.intern(node) is node
+            signature.append((type(node).__name__, nullable(node)))
+            if construct == "choice" and isinstance(node, Choice):
+                assert nullable(node) is isinstance(node.second, Text)
+            else:
+                assert nullable(node) is isinstance(node, (Empty, Text, Group, Choice))
+            if isinstance(node, Ref):
+                assert compiled.graph.intern(node.target) is node.target
+                pending.append(node.target)
+            elif isinstance(node, (Choice, Group, Interleave)):
+                pending.extend((node.second, node.first))
+            elif isinstance(node, Element):
+                pending.append(node.pattern)
+        signatures.append(signature)
+        assert not nullable(compiled.start)
+        expected_definitions = {"element": depth, "mixed": depth, "group": 1, "choice": depth + 1}
+        assert len(compiled.definitions) == expected_definitions[construct]
+        if construct == "group":
+            assert sum(kind == "Group" for kind, _ in signature) == depth
+        elif construct == "choice":
+            assert sum(kind == "Choice" for kind, _ in signature) == depth
+            assert nullable(deref(compiled.start).pattern)
+        elif construct == "element":
+            assert len(compiled.graph) == depth * 2 + 1
+        else:
+            assert sum(kind == "Choice" for kind, _ in signature) == depth
+    assert signatures[0] == signatures[1]
+
+
+def test_every_final_ref_and_definition_uses_the_final_pool_identity():
+    schema = compile_schema(
+        io.StringIO(f"""<grammar xmlns="{NS}">
+      <start><ref name="a"/></start>
+      <define name="a"><element name="a"><choice>
+        <empty/><ref name="b"/><ref name="b"/>
+      </choice></element></define>
+      <define name="b"><element name="b"><optional><ref name="a"/></optional>
+      </element></define>
+    </grammar>""")
+    )
+    assert not schema.report.has_errors
+    compiled = schema.grammar
+    pending: list[Pattern] = [
+        compiled.start,
+        *(item.pattern for item in compiled.definitions.values()),
+    ]
+    seen = set()
+    refs = []
+    while pending:
+        node = pending.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        assert compiled.graph.intern(node) is node
+        assert compiled.graph.origins(node)
+        if isinstance(node, Ref):
+            refs.append(node)
+            assert compiled.graph.intern(node.target) is node.target
+            pending.append(node.target)
+        elif isinstance(node, Choice):
+            pending.extend((node.first, node.second))
+        elif isinstance(node, Element):
+            pending.append(node.pattern)
+    assert len(refs) == 2
+    assert {id(ref.target) for ref in refs} == {
+        id(item.pattern) for item in compiled.definitions.values()
+    }
+    a = deref(compiled.start)
+    b = deref(a.pattern.second)
+    assert b.pattern.second.target is a
+    assert any(
+        origin.location is not None
+        and any(step.name == f"{{{NS}}}ref" for step in origin.location.path)
+        for origin in compiled.graph.origins(b)
+    )
 
 
 def test_compile_accepts_binary_streams():
