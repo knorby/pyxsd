@@ -4,8 +4,8 @@ A compiled :class:`~pyxsd.relaxng.schema.RelaxNGSchema` owns one report, one
 composed semantic graph, one complete dependency closure, and one stable
 datatype-registry identity.  Grammatical problems are schema findings; only
 unreadable/malformed input and unsupported capabilities interrupt compilation.
-Instance parsing is a later phase and is rejected explicitly before any input
-is consumed.
+Typed instance parsing is a later phase and is rejected explicitly before any
+input is consumed.
 """
 
 from __future__ import annotations
@@ -930,19 +930,38 @@ def test_the_datatype_library_mapping_is_validated_before_reading():
 # Phase boundary and XSD compatibility
 
 
-def test_parse_is_explicitly_unsupported_without_consuming_input():
+def test_typed_parse_is_rejected_before_consuming_input():
+    schema = compile_schema()
+
+    for options in ({}, {"typed": True}):
+        stream = CountingStream("<doc/>")
+        with pytest.raises(PyXSDError, match="typed=False"):
+            schema.parse(stream, **options)  # type: ignore[arg-type]
+        assert stream.reads == 0
+
+
+def test_pattern_capture_is_rejected_before_consuming_input():
     schema = compile_schema()
     stream = CountingStream("<doc/>")
 
-    with pytest.raises(PyXSDError, match="RELAX NG instance parsing is not supported"):
-        schema.parse(stream)
-    assert stream.reads == 0
-
-    with pytest.raises(ValueError, match="not supported"):
+    with pytest.raises(ValueError, match="capture"):
         schema.parse("<doc/>", typed=False, capture="patterns")
 
-    with pytest.raises(PyXSDError, match="not supported"):
-        compile_schema(io.StringIO(f'<grammar xmlns="{NS}"/>')).parse("<doc/>")
+    with pytest.raises(ValueError, match="capture"):
+        schema.parse(stream, typed=False, capture="patterns")
+    assert stream.reads == 0
+
+
+def test_a_broken_schema_is_rejected_before_instance_input():
+    schema = compile_schema(io.StringIO(f'<grammar xmlns="{NS}"/>'))
+    assert schema.report.has_errors
+    stream = CountingStream("<doc/>")
+
+    with pytest.raises(ValidationError) as excinfo:
+        schema.parse(stream, typed=False)
+
+    assert stream.reads == 0
+    assert excinfo.value.report is schema.report
 
 
 def test_the_relaxng_package_exposes_the_real_compile_entry_point():

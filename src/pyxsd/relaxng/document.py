@@ -11,14 +11,17 @@ converter, binder, or revalidation path.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, NoReturn
+import os
+from pathlib import Path
+from typing import IO, TYPE_CHECKING, Any, NoReturn
 
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
 from pyxsd.relaxng.tree import RelaxNGElement
+from pyxsd.relaxng.xml_writer import serialize_relaxng
 
 if TYPE_CHECKING:
-    from pyxsd.data_conversion.contracts import Fidelity, FormatName, JsonValue
+    from pyxsd.data_conversion.contracts import Fidelity, FormatName
     from pyxsd.relaxng.limits import RelaxNGLimits
     from pyxsd.relaxng.schema import RelaxNGSchema
     from pyxsd.validation import ValidationReport
@@ -26,13 +29,18 @@ if TYPE_CHECKING:
 __all__ = ["RelaxNGDocument"]
 
 _ANNOTATION_CAPABILITY = (
-    "RELAX NG pattern annotations are not available on a validation-only document; "
-    "reparse with typed=True and capture='patterns'"
+    "RELAX NG pattern capture is unavailable in this release; "
+    "validation-only documents expose no pattern annotations"
 )
-_TYPED_EXPORT_CAPABILITY = (
-    "typed=True RELAX NG export is not supported in this release; "
-    "use typed=False for lexical export"
+_DATA_CONVERSION_CAPABILITY = (
+    "RELAX NG data conversion is unavailable in this release; "
+    "Phase 5 owns to_dict, to_data, and to_json export"
 )
+_TYPED_DOCUMENT_CAPABILITY = (
+    "RELAX NG typed documents are not supported in this release; "
+    "pass typed=False for validation-only parsing"
+)
+_CAPTURE_CAPABILITY = "capture must be 'none' for validation-only RELAX NG documents"
 
 
 class RelaxNGDocument(Document):
@@ -42,7 +50,8 @@ class RelaxNGDocument(Document):
     reports whether the recorded validation snapshot still belongs to the
     current, unedited lexical revision.  ``root``, ``report``, and ``source``
     keep the lexical tree, the merged schema/instance report, and the original
-    caller source respectively.
+    caller source respectively.  Direct construction preserves the Phase 2
+    invariants instead of accepting a typed or capture-bearing document.
     """
 
     schema: RelaxNGSchema  # type: ignore[assignment]
@@ -62,6 +71,10 @@ class RelaxNGDocument(Document):
         namespace_context: Any = None,
         xdm_capture: Any = None,
     ) -> None:
+        if typed is not False:
+            raise PyXSDError(_TYPED_DOCUMENT_CAPABILITY)
+        if capture != "none":
+            raise ValueError(_CAPTURE_CAPABILITY)
         super().__init__(
             schema=schema,  # type: ignore[arg-type]
             root=root,
@@ -83,14 +96,13 @@ class RelaxNGDocument(Document):
 
     @property
     def annotations(self) -> NoReturn:
-        """Reject annotation access; validation-only documents have no capture."""
+        """Reject annotation access; pattern capture is absent in this release."""
         raise PyXSDError(_ANNOTATION_CAPABILITY)
 
-    def to_dict(self, *, typed: bool = True, always_list: bool = False) -> dict[str, Any]:
-        """Export lexically; typed projections are a later capability."""
-        if typed:
-            raise PyXSDError(_TYPED_EXPORT_CAPABILITY)
-        return super().to_dict(typed=False, always_list=always_list)
+    def to_dict(self, *, typed: bool = True, always_list: bool = False) -> NoReturn:
+        """Reject data conversion; Phase 5 owns the RELAX NG adapter."""
+        del typed, always_list
+        raise PyXSDError(_DATA_CONVERSION_CAPABILITY)
 
     def to_data(
         self,
@@ -99,20 +111,42 @@ class RelaxNGDocument(Document):
         fidelity: Fidelity = "best-effort",
         typed: bool = True,
         always_list: bool = False,
-    ) -> JsonValue:
-        """Export lexical data contracts; schema-aware/typed routes are absent."""
-        if typed:
-            raise PyXSDError(_TYPED_EXPORT_CAPABILITY)
-        if format == "pyxsd-json":
-            raise PyXSDError(
-                "the schema-aware pyxsd-json RELAX NG export is not supported in this release"
-            )
-        return super().to_data(
-            format=format,
-            fidelity=fidelity,
-            typed=False,
-            always_list=always_list,
-        )
+    ) -> NoReturn:
+        """Reject data conversion; Phase 5 owns the RELAX NG adapter."""
+        del format, fidelity, typed, always_list
+        raise PyXSDError(_DATA_CONVERSION_CAPABILITY)
+
+    def to_json(
+        self,
+        *,
+        indent: int | None = None,
+        format: FormatName = "pyxsd",
+        fidelity: Fidelity = "best-effort",
+        typed: bool = True,
+        always_list: bool = False,
+    ) -> NoReturn:
+        """Reject JSON conversion; Phase 5 owns the RELAX NG adapter."""
+        del indent, format, fidelity, typed, always_list
+        raise PyXSDError(_DATA_CONVERSION_CAPABILITY)
+
+    def to_string(self) -> str:
+        """Serialize the lexical tree without XSD writer behavior or mutation."""
+        return serialize_relaxng(self.root)
+
+    def write(self, dest: str | Path | os.PathLike[str] | IO[str]) -> None:
+        """Write the exact lexical serialization to a path or caller file object.
+
+        Paths are opened and closed here with UTF-8 encoding.  Caller file
+        objects are written and flushed but left open, matching the existing
+        path-versus-file ownership convention.
+        """
+        text = self.to_string()
+        if isinstance(dest, (str, os.PathLike)):
+            with open(dest, "w", encoding="utf-8") as stream:
+                stream.write(text)
+            return
+        dest.write(text)
+        dest.flush()
 
     def revalidate(self) -> NoReturn:
         """Reject revalidation until the RELAX NG document adapter lands."""

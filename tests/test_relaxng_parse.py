@@ -11,7 +11,6 @@ synthesized.
 from __future__ import annotations
 
 import io
-import json
 import os
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -19,6 +18,7 @@ from xml.etree import ElementTree as ET
 import pytest
 
 import pyxsd.relaxng as relaxng
+from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError, ValidationError
 from pyxsd.locations import PathStep
 from pyxsd.namespaces import parse_with_namespaces
@@ -33,6 +33,7 @@ from pyxsd.relaxng.diagnostics import MISSING_ATTRIBUTE, UNEXPECTED_ELEMENT
 from pyxsd.resource_policy import ResourceData
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import IssueSeverity
+from pyxsd.xdm.annotations import UNTYPED, UNTYPED_ATOMIC
 from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 NS = "http://relaxng.org/ns/structure/1.0"
@@ -50,6 +51,27 @@ REQUIRED_ATTRIBUTE_SCHEMA = f"""<grammar xmlns="{NS}">
     <element name="doc">
       <attribute name="flag"><text/></attribute>
       <empty/>
+    </element>
+  </start>
+</grammar>"""
+
+MIXED_SCHEMA = f"""<grammar xmlns="{NS}">
+  <start>
+    <element name="doc">
+      <mixed>
+        <zeroOrMore><element name="item"><text/></element></zeroOrMore>
+      </mixed>
+    </element>
+  </start>
+</grammar>"""
+
+XSI_ATTRIBUTE_SCHEMA = f"""<grammar xmlns="{NS}">
+  <start>
+    <element name="doc">
+      <zeroOrMore><attribute><anyName/></attribute></zeroOrMore>
+      <mixed>
+        <zeroOrMore><element name="item"><empty/></element></zeroOrMore>
+      </mixed>
     </element>
   </start>
 </grammar>"""
@@ -74,6 +96,18 @@ class UnreadableStream:
     def read(self, *args: object) -> str:
         self.reads += 1
         raise AssertionError("instance input was consumed")
+
+
+class FlushRecorder(io.StringIO):
+    """A caller-owned writer that records explicit flushes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.flushes = 0
+
+    def flush(self) -> None:
+        self.flushes += 1
+        super().flush()
 
 
 class RecordingPolicy:
@@ -415,36 +449,116 @@ def test_validation_adds_no_defaults_and_retrieves_no_external_dtd(tmp_path):
     assert {issue.code for issue in external.report} == {MISSING_ATTRIBUTE}
 
 
-def test_validation_only_documents_reject_typed_and_annotation_capabilities():
+def test_writers_preserve_mixed_content_tails_without_xsd_writer_behavior(tmp_path):
+    schema = compile_schema(MIXED_SCHEMA)
+    document = schema.parse(io.StringIO("<doc>a<item>x</item>b</doc>"), typed=False)
+    expected = "<doc>a<item>x</item>b</doc>"
+
+    assert document.is_valid
+    assert document.to_string() == expected
+
+    path = tmp_path / "mixed.xml"
+    document.write(path)
+    assert path.read_text(encoding="utf-8") == expected
+
+    stream = FlushRecorder()
+    document.write(stream)
+    assert stream.getvalue() == expected
+    assert stream.flushes == 1
+    assert not stream.closed
+
+
+def test_serialization_preserves_xsi_attributes_and_untyped_xdm():
+    schema = compile_schema(XSI_ATTRIBUTE_SCHEMA)
+    xml = (
+        '<doc xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:nil="true" xsi:type="xs:string" '
+        'xmlns:xs="http://www.w3.org/2001/XMLSchema"><item/></doc>'
+    )
+    document = schema.parse(io.StringIO(xml), typed=False, capture_xdm=True)
+    root = document.root
+    attributes_before = dict(root.attributes)
+    revision = root.revision
+
+    serialized = document.to_string()
+
+    assert document.is_valid
+    assert 'xsi:nil="true"' in serialized
+    assert 'xsi:type="xs:string"' in serialized
+    assert dict(root.attributes) == attributes_before
+    assert root.revision is revision
+    assert not revision.dirty
+    assert document.interpretations_current
+
+    xdm = document.to_xdm()
+    assert xdm.root_element.type_name == UNTYPED
+    assert xdm.root_element.children[0].type_name == UNTYPED
+    assert xdm.root_element.attributes
+    assert {attribute.type_name for attribute in xdm.root_element.attributes} == {UNTYPED_ATOMIC}
+
+
+def test_validation_only_documents_reject_annotation_and_revalidation_capabilities():
     schema = compile_schema()
     document = schema.parse(io.StringIO("<doc><item>x</item></doc>"), typed=False)
 
     assert document.typed is False
     assert document.interpretations_current is True
 
-    with pytest.raises(PyXSDError, match="typed=True"):
+    with pytest.raises(PyXSDError, match="pattern capture is unavailable"):
         _ = document.annotations
-
-    with pytest.raises(PyXSDError, match="typed=True"):
-        document.to_dict()
-
-    assert document.to_dict(typed=False) == {"item": "x"}
-
-    with pytest.raises(PyXSDError, match="typed=True"):
-        document.to_data()
-
-    assert document.to_data(typed=False) == {"item": "x"}
-
-    with pytest.raises(PyXSDError, match="typed=True"):
-        document.to_json()
-
-    assert json.loads(document.to_json(typed=False)) == {"item": "x"}
-
-    with pytest.raises(PyXSDError, match="pyxsd-json"):
-        document.to_data(format="pyxsd-json", typed=False)
 
     with pytest.raises(PyXSDError, match="revalidat"):
         document.revalidate()
 
     document.root.set_text("changed")
     assert document.interpretations_current is False
+
+
+def test_data_conversion_methods_fail_explicitly_without_xsd_dispatch(monkeypatch):
+    schema = compile_schema()
+    document = schema.parse(io.StringIO("<doc><item>x</item></doc>"), typed=False)
+    attributes_before = dict(document.root.attributes)
+    revision = document.root.revision
+    report = document.report
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("an XSD conversion path was reached")
+
+    monkeypatch.setattr(Document, "to_dict", fail)
+    monkeypatch.setattr(Document, "to_data", fail)
+    monkeypatch.setattr(Document, "to_json", fail)
+
+    calls = (
+        lambda: document.to_dict(),
+        lambda: document.to_dict(typed=False),
+        lambda: document.to_data(),
+        lambda: document.to_data(format="jsonml", typed=False),
+        lambda: document.to_json(),
+        lambda: document.to_json(typed=False),
+    )
+    for call in calls:
+        with pytest.raises(PyXSDError, match="Phase 5"):
+            call()
+
+    assert dict(document.root.attributes) == attributes_before
+    assert document.root.revision is revision
+    assert not revision.dirty
+    assert document.report is report
+
+
+def test_direct_document_construction_rejects_phase2_invariant_violations():
+    schema = compile_schema()
+    parsed = schema.parse(io.StringIO(VALID_XML), typed=False)
+    common = {
+        "schema": parsed.schema,
+        "root": parsed.root,
+        "source": parsed.source,
+        "report": parsed.report,
+    }
+
+    with pytest.raises(PyXSDError, match="typed=False"):
+        RelaxNGDocument(**common, typed=True)
+
+    for capture in ("patterns", "bogus", None):
+        with pytest.raises(ValueError, match="capture"):
+            RelaxNGDocument(**common, typed=False, capture=capture)
