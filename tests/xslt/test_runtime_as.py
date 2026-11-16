@@ -28,12 +28,12 @@ _SCHEMA = (
     '<xs:pattern value="[0-9]{3}-[A-Z]{2}"/></xs:restriction></xs:simpleType>'
     '<xs:simpleType name="Derived"><xs:restriction base="sup:Base">'
     '<xs:maxLength value="6"/></xs:restriction></xs:simpleType>'
-    '<xs:attribute name="code" type="sup:PartNumber"/>'
     '<xs:complexType name="Entry"><xs:simpleContent>'
     '<xs:extension base="sup:PartNumber">'
     '<xs:attribute name="code" type="sup:PartNumber"/>'
     '<xs:attribute ref="sup:code"/>'
     "</xs:extension></xs:simpleContent></xs:complexType>"
+    '<xs:attribute name="code" type="sup:PartNumber"/>'
     '<xs:element name="doc" type="sup:PartNumber"/>'
     '<xs:element name="other" type="sup:Small"/>'
     '<xs:element name="derived" type="sup:Derived"/>'
@@ -336,11 +336,9 @@ def test_schema_element_test_uses_an_anonymous_declared_type() -> None:
 def test_schema_attribute_test_uses_the_declaration() -> None:
     """A global attribute declaration is matched by expanded name.
 
-    The fixture declares the global attribute before the complex type that
-    references it: ``Schema.components`` ordering hides a later global
-    attribute from ``SchemaPool.get_attribute`` when an earlier complex type
-    declares an attribute with the same local name (a pre-existing pyxsd pool
-    bug, unrelated to this seam).
+    The fixture's complex type declares a local attribute with the same
+    local name as the global declaration that follows it; both are distinct
+    components, so the global one still resolves through ``SchemaPool``.
     """
     serialized = _run(
         '<xsl:variable name="e"><sup:entry xsl:validation="strict" sup:code="123-AB">'

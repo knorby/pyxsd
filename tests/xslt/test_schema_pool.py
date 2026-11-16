@@ -750,6 +750,43 @@ def test_imported_global_attributes_are_registered(tmp_path: Path):
     assert imported.type.name == f"{{{XSD_NS}}}string"
 
 
+_LOCAL_ATTRIBUTE = '<xs:attribute name="code" type="xs:string"/>'
+_GLOBAL_ATTRIBUTE = '<xs:attribute name="code" type="xs:int"/>'
+_LOCAL_ATTRIBUTE_TYPE = '<xs:complexType name="Inner">' + _LOCAL_ATTRIBUTE + "</xs:complexType>"
+
+
+@pytest.mark.parametrize("global_first", [False, True], ids=["local-first", "global-first"])
+def test_global_attribute_survives_a_local_name_collision(global_first: bool) -> None:
+    """A local attribute declaration must never shadow a global one.
+
+    The component table is keyed by local name and holds one entry per
+    (kind, expanded name, declaration scope), so a local ``code`` inside
+    a complex type and a global ``code`` are distinct components.  A
+    collision on the local name must keep both, or ``SchemaPool`` sees
+    only the local declaration and the global one disappears.
+    """
+    declarations = (
+        (_GLOBAL_ATTRIBUTE, _LOCAL_ATTRIBUTE_TYPE)
+        if global_first
+        else (_LOCAL_ATTRIBUTE_TYPE, _GLOBAL_ATTRIBUTE)
+    )
+    schema = _compile_text(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="urn:t">
+          {"".join(declarations)}
+        </xs:schema>"""
+    )
+
+    entries = schema.components["code"]
+    scopes = sorted(entry.isGlobalDeclaration() for entry in entries)
+    assert scopes == [False, True]
+    local_entry = next(entry for entry in entries if not entry.isGlobalDeclaration())
+    assert local_entry.getType() is xsd.String
+
+    attribute = SchemaPool.from_schema(schema).get_attribute("{urn:t}code")
+    assert attribute is not None
+    assert attribute.type.name == f"{{{XSD_NS}}}int"
+
+
 def test_schema_invalidity_and_identity_matching(tmp_path: Path):
     bad = _write(
         tmp_path / "bad.xsd",

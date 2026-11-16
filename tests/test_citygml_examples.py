@@ -349,11 +349,18 @@ def test_real_lod2_building_geometry(citygml_schema):
 
 @requires_cache
 def test_real_lod2_known_schema_findings(citygml_schema):
-    """Stock GML 3.1.1 closure findings, plus the instance's three errors."""
+    """Stock GML 3.1.1 closure findings, plus the instance's three errors.
+
+    GML declares the global ``uom`` attribute after the types that reference
+    it, and those types also declare a local attribute of that name.  The
+    two declarations are distinct components, so ``gml:uom`` resolves and no
+    ``unknown-attributeRef`` is reported.
+    """
     report = citygml_schema.parse(LOD2_SAMPLE).report
     assert report.error_count <= 30
     codes = {issue.code for issue in report.issues}
-    assert {"particle-restriction", "unknown-attributeRef", "order"} <= codes
+    assert {"particle-restriction", "order"} <= codes
+    assert "unknown-attributeRef" not in codes
 
 
 @requires_cache

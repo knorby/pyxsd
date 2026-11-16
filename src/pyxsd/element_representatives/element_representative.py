@@ -109,6 +109,13 @@ _COMPONENT_KINDS = {
 }
 
 
+#: Component kinds whose local and global declarations share one symbol
+#: space yet remain distinct components: a local declaration is scoped to
+#: its containing type, so it may neither shadow nor be shadowed by a
+#: global declaration of the same expanded name.
+_SCOPE_DISTINCT_KINDS = frozenset({"element", "attribute"})
+
+
 def componentKind(obj):
     """Returns the XSD component kind for a representative, or ``None``."""
     return _COMPONENT_KINDS.get(type(obj).__name__)
@@ -1635,12 +1642,13 @@ class ElementRepresentative:
         schema ER), so a later parser cannot see or overwrite earlier
         declarations. Declarations are keyed by name and kind, and the
         first declaration of a given (kind, name) wins — except that a
-        local (or global) **element** declaration must not shadow a
-        same-named declaration of the other scope: wildcard admission
-        and the XSD 1.1 dynamic EDC rule resolve the global declaration
-        a wildcard selects, and a local particle sharing the expanded
-        name is a distinct component (wild063/wild076). A different
-        kind may always register the same name.
+        local (or global) **element** or **attribute** declaration must
+        not shadow a same-named declaration of the other scope: a local
+        declaration is scoped to its containing type while the global one
+        is the component every reference resolves to, so the two are
+        distinct components (wild063/wild076 for elements; a same-named
+        local attribute must not hide the global declaration). A
+        different kind may always register the same name.
         """
         table = _tableFor(obj)
         entries = table.setdefault(name, [])
@@ -1651,7 +1659,7 @@ class ElementRepresentative:
         def conflicts(entry) -> bool:
             if componentKind(entry) != kind or entry.getNamespace() != namespace:
                 return False
-            if kind == "element":
+            if kind in _SCOPE_DISTINCT_KINDS:
                 return entry.isGlobalDeclaration() == global_
             return True
 
