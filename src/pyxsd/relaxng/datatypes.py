@@ -27,13 +27,15 @@ profile:
   astronomical ``y + 1``), not the shared classes' XSD 1.1 numbering;
 * duration equality uses the six-dimensional XSD 1.0 value space, so
   ``P1Y`` and ``P12M`` are distinct values;
+* duration bound facets use the XSD 1.0 §3.2.6.2 four-reference-date partial
+  order, and an indeterminate comparison is false for every bound facet, as
+  §3.2.6.3 requires;
 * ``anyURI`` uses the XSD 1.0 lexical space: the XLink 5.4 escaping
   procedure is applied, and the result must be an RFC 2396 URI reference
   as amended by RFC 2732.  XSD 1.1's "any XML character sequence" rule is
   not used.  Equality remains identity of the lexical URI-reference
   representation; XSD 1.0 defines no anyURI normalization.
 
-Duration ordering inside facet bounds still uses the shared facet helper.
 Scheme-specific URI syntax is not checked, matching XSD 1.0's conformance
 note; the generic URI-reference grammar is.
 
@@ -63,6 +65,7 @@ from __future__ import annotations
 import base64
 import decimal
 import ipaddress
+import math
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping
@@ -98,6 +101,7 @@ from pyxsd.xsd_data_types import (
     XsdDataType,
     _date_key,
     _datetime_key,
+    _days_from_civil,
     _gyear_key,
     _gyearmonth_key,
     _has_timezone,
@@ -490,6 +494,154 @@ def _xsd10_temporal_bounds(
     return tuple((name, key, text) for name, (key, text) in sorted(bounds.items()))
 
 
+@dataclass(frozen=True)
+class _Xsd10Duration:
+    """The six XSD 1.0 duration coordinates plus the sign."""
+
+    sign: int
+    years: int
+    months: int
+    days: int
+    hours: int
+    minutes: int
+    seconds: decimal.Decimal
+
+
+#: The four qualified dateTimes XSD 1.0 §3.2.6.2 uses to decide duration order.
+_DURATION_REFERENCE_DATES = ((1696, 9), (1697, 2), (1903, 3), (1903, 7))
+
+
+def _parse_xsd10_duration(text: str) -> _Xsd10Duration:
+    """Parse a duration lexical already validated by the shared Duration class."""
+    match = _DURATION_PARTS.fullmatch(text)
+    assert match is not None
+    years, months, days, hours, minutes, seconds_text = match.groups()
+    components = [
+        int(component[:-1]) if component is not None else 0
+        for component in (years, months, days, hours, minutes)
+    ]
+    seconds = decimal.Decimal(seconds_text[:-1]) if seconds_text is not None else decimal.Decimal(0)
+    zero = not any(components) and not seconds
+    sign = 1 if zero or not text.startswith("-") else -1
+    return _Xsd10Duration(
+        sign,
+        components[0],
+        components[1],
+        components[2],
+        components[3],
+        components[4],
+        seconds,
+    )
+
+
+def _xsd10_duration_value(text: str) -> tuple[_Xsd10Duration, str]:
+    """Validate an XSD 1.0 duration lexical and return its coordinates."""
+    text = whitespace_transform("collapse", text)
+    try:
+        Duration(text)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"Not a valid xs:duration: {text!r}") from exc
+    return _parse_xsd10_duration(text), text
+
+
+def _add_duration_to_reference(year: int, month: int, duration: _Xsd10Duration) -> decimal.Decimal:
+    """The XSD 1.0 §E result of adding *duration* to a reference midnight.
+
+    The four reference dateTimes are always the first of a month, so the
+    spec's day-pinning step is vacuous.  The result is a Decimal second count
+    on the UTC timeline, which is all the duration order needs.
+    """
+    signed_months = duration.sign * duration.months
+    temp_month = month + signed_months
+    result_month = (temp_month - 1) % 12 + 1
+    result_year = year + duration.sign * duration.years + (temp_month - 1) // 12
+
+    signed_seconds = duration.sign * duration.seconds
+    second_carry = math.floor(signed_seconds / 60)
+    result_second = signed_seconds - second_carry * 60
+
+    signed_minutes = duration.sign * duration.minutes + second_carry
+    result_minute = signed_minutes % 60
+    minute_carry = signed_minutes // 60
+
+    signed_hours = duration.sign * duration.hours + minute_carry
+    result_hour = signed_hours % 24
+    day_carry = signed_hours // 24
+
+    day_number = (
+        _days_from_civil(result_year, result_month, 1) + duration.sign * duration.days + day_carry
+    )
+    return (
+        decimal.Decimal(day_number * 86400)
+        + result_hour * 3600
+        + result_minute * 60
+        + result_second
+    )
+
+
+def _xsd10_duration_compare(left: _Xsd10Duration, right: _Xsd10Duration) -> int | None:
+    """Compare durations under the XSD 1.0 §3.2.6.2 partial order.
+
+    Returns ``-1`` or ``1`` when every reference-date result is strictly
+    ordered, ``0`` for identical duration values, and ``None`` for every
+    indeterminate case (including distinct values that add identically to all
+    four references, such as ``P1Y`` and ``P12M``).  XSD 1.0 §3.2.6.3 makes
+    every indeterminate bound comparison false.
+    """
+    if left == right:
+        return 0
+    directions: set[int] = set()
+    for year, month in _DURATION_REFERENCE_DATES:
+        left_result = _add_duration_to_reference(year, month, left)
+        right_result = _add_duration_to_reference(year, month, right)
+        if left_result < right_result:
+            directions.add(-1)
+        elif left_result > right_result:
+            directions.add(1)
+        else:
+            directions.add(0)
+    if directions == {-1}:
+        return -1
+    if directions == {1}:
+        return 1
+    return None
+
+
+def _xsd10_duration_bounds(
+    parameters: tuple[DatatypeParameter, ...],
+) -> tuple[tuple[str, _Xsd10Duration, str], ...]:
+    """Parse and conflict-check the partial-order bounds of xs:duration."""
+    bounds: dict[str, tuple[_Xsd10Duration, str]] = {}
+    for parameter in parameters:
+        if parameter.name not in _BOUND_PARAMETER_NAMES:
+            continue
+        try:
+            value, text = _xsd10_duration_value(parameter.value)
+        except (TypeError, ValueError) as exc:
+            raise DatatypeParameterError(
+                f"{parameter.name} value {parameter.value!r} is not valid for xs:duration: {exc}"
+            ) from exc
+        bounds[parameter.name] = (value, text)
+    if "minInclusive" in bounds and "minExclusive" in bounds:
+        raise DatatypeParameterError("cannot specify both 'minInclusive' and 'minExclusive'")
+    if "maxInclusive" in bounds and "maxExclusive" in bounds:
+        raise DatatypeParameterError("cannot specify both 'maxInclusive' and 'maxExclusive'")
+    lower = bounds.get("minInclusive") or bounds.get("minExclusive")
+    upper = bounds.get("maxInclusive") or bounds.get("maxExclusive")
+    if lower is not None and upper is not None:
+        # The interval is non-empty only when the upper bound is strictly
+        # above the lower bound, or they are the identical duration and both
+        # sides are inclusive.  An indeterminate pair can contain no value:
+        # lower <= x <= upper would otherwise make the bounds comparable.
+        comparison = _xsd10_duration_compare(upper[0], lower[0])
+        exclusive = "minExclusive" in bounds or "maxExclusive" in bounds
+        if comparison is None or comparison < 0 or (comparison == 0 and exclusive):
+            raise DatatypeParameterError(
+                "the declared duration bounds leave no value in the partial order"
+            )
+    return tuple((name, value, text) for name, (value, text) in sorted(bounds.items()))
+
+
 def _is_xml_char(code: int) -> bool:
     """Whether *code* is an XML 1.0 Char (XSD 1.0 lexical space)."""
     return (
@@ -635,6 +787,11 @@ class ScalarDatatype(Datatype):
     #: shared facet ordering key.  Derived from ``parameters`` like the other
     #: facets, so it is excluded from datatype identity.
     temporal_bounds: tuple[tuple[str, int, str], ...] = field(default=(), compare=False, repr=False)
+    #: XSD 1.0 duration bounds use the four-reference-date partial order, not
+    #: the shared total-order helper.  Also derived from ``parameters``.
+    duration_bounds: tuple[tuple[str, _Xsd10Duration, str], ...] = field(
+        default=(), compare=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         semantic = tuple(self.context.namespaces.items()) if self.type_name in _QNAME_TYPES else ()
@@ -713,6 +870,7 @@ class ScalarDatatype(Datatype):
         text, value = self._prepare(lexical, context)
         self.constraints.check(value, text)
         self._check_temporal_bounds(text)
+        self._check_duration_bounds(text)
         return text, value
 
     def _check_temporal_bounds(self, text: str) -> None:
@@ -733,6 +891,28 @@ class ScalarDatatype(Datatype):
                 raise FacetViolation(
                     f"facet {name!r} violated: {text!r} is outside the XSD 1.0 "
                     f"temporal bound {bound_text!r}",
+                    ConstraintInfo(name, bound_text, text),
+                )
+
+    def _check_duration_bounds(self, text: str) -> None:
+        """Enforce XSD 1.0 duration bounds under the partial order."""
+        if not self.duration_bounds:
+            return
+        actual = _parse_xsd10_duration(text)
+        for name, bound, bound_text in self.duration_bounds:
+            comparison = _xsd10_duration_compare(actual, bound)
+            if name == "minInclusive":
+                accepted = comparison in (0, 1)
+            elif name == "minExclusive":
+                accepted = comparison == 1
+            elif name == "maxInclusive":
+                accepted = comparison in (-1, 0)
+            else:
+                accepted = comparison == -1
+            if not accepted:
+                raise FacetViolation(
+                    f"facet {name!r} violated: {text!r} is not ordered against "
+                    f"the XSD 1.0 duration bound {bound_text!r}",
                     ConstraintInfo(name, bound_text, text),
                 )
 
@@ -976,13 +1156,14 @@ class XsdDatatypeFactory(DatatypeFactory):
             raise _unsupported_xsd_type(type_name)
         prepared = _prepare_xsd_parameters(type_name, parameters)
         temporal = type_name in _XSD10_TEMPORAL_TYPE_NAMES
-        # XSD 1.0 temporal bounds need the adapter's year numbering and leap
-        # rule, so they are parsed outside the shared facet builder.
+        duration = type_name == "duration"
+        # XSD 1.0 temporal and duration bounds need adapter-level ordering, so
+        # they are parsed outside the shared facet builder.
         source_parameters = (
             tuple(
                 parameter for parameter in prepared if parameter.name not in _BOUND_PARAMETER_NAMES
             )
-            if temporal
+            if temporal or duration
             else prepared
         )
         result = build_constraints(
@@ -1007,6 +1188,7 @@ class XsdDatatypeFactory(DatatypeFactory):
         if patterns:
             constraints = replace(constraints, patterns=tuple((pattern,) for pattern in patterns))
         temporal_bounds = _xsd10_temporal_bounds(type_name, prepared) if temporal else ()
+        duration_bounds = _xsd10_duration_bounds(prepared) if duration else ()
         return ScalarDatatype(
             library_uri=XSD_LIBRARY,
             type_name=type_name,
@@ -1016,6 +1198,7 @@ class XsdDatatypeFactory(DatatypeFactory):
             constraints=constraints,
             white_space=_xsd_white_space(xsd_type),
             temporal_bounds=temporal_bounds,
+            duration_bounds=duration_bounds,
         )
 
     @staticmethod
@@ -1040,27 +1223,16 @@ def _xsd10_duration_key(text: str) -> tuple[int, int, int, int, int, int, decima
     independent coordinates, so ``P1Y`` and ``P12M`` are distinct values.
     XSD 1.1 changed this; the RELAX NG XSD adapter deliberately keeps 1.0.
     """
-    match = _DURATION_PARTS.fullmatch(text)
-    assert match is not None
-    groups = match.groups()
-    years, months, days, hours, minutes, seconds_text = groups
-    components = [
-        int(component[:-1]) if component is not None else 0
-        for component in (years, months, days, hours, minutes)
-    ]
-    seconds = decimal.Decimal(seconds_text[:-1]) if seconds_text is not None else decimal.Decimal(0)
-    zero = not any(components) and not seconds
-    sign = 1 if zero or not text.startswith("-") else -1
-    key: tuple[int, int, int, int, int, int, decimal.Decimal] = (
-        sign,
-        components[0],
-        components[1],
-        components[2],
-        components[3],
-        components[4],
-        seconds,
+    parsed = _parse_xsd10_duration(text)
+    return (
+        parsed.sign,
+        parsed.years,
+        parsed.months,
+        parsed.days,
+        parsed.hours,
+        parsed.minutes,
+        parsed.seconds,
     )
-    return key
 
 
 def resolve_datatype_selector(selector: DatatypeSelector) -> tuple[str, str]:

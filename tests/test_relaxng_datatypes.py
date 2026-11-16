@@ -707,6 +707,100 @@ class TestXsd10TemporalNumbering:
         assert not datatype.allows("0001-01-01", EMPTY)
 
 
+class TestXsd10DurationOrder:
+    def test_comparable_durations_follow_the_four_reference_dates(self):
+        assert xsd("duration", ("minInclusive", "P364D")).allows("P1Y", EMPTY)
+        assert xsd("duration", ("minExclusive", "P364D")).allows("P1Y", EMPTY)
+        assert not xsd("duration", ("maxInclusive", "P364D")).allows("P1Y", EMPTY)
+        assert xsd("duration", ("maxExclusive", "P1Y")).allows("P364D", EMPTY)
+
+        # The shared helper puts P1M above P32D; XSD 1.0 puts it below.
+        assert not xsd("duration", ("minInclusive", "P32D")).allows("P1M", EMPTY)
+        assert xsd("duration", ("maxInclusive", "P32D")).allows("P1M", EMPTY)
+        assert xsd("duration", ("maxExclusive", "P32D")).allows("P1M", EMPTY)
+
+        assert xsd("duration", ("maxInclusive", "P154D")).allows("P5M", EMPTY)
+        assert not xsd("duration", ("minInclusive", "P154D")).allows("P5M", EMPTY)
+        assert xsd("duration", ("maxInclusive", "P367D")).allows("P1Y", EMPTY)
+        assert not xsd("duration", ("minInclusive", "P367D")).allows("P1Y", EMPTY)
+        assert xsd("duration", ("minInclusive", "P1000000Y")).allows("P1000001Y", EMPTY)
+        assert not xsd("duration", ("minInclusive", "P1000000Y")).allows("P999999Y", EMPTY)
+
+    def test_negative_durations_follow_the_same_partial_order(self):
+        assert xsd("duration", ("maxInclusive", "-P364D")).allows("-P1Y", EMPTY)
+        assert not xsd("duration", ("minInclusive", "-P364D")).allows("-P1Y", EMPTY)
+        assert xsd("duration", ("maxInclusive", "PT0S")).allows("-PT0.5S", EMPTY)
+        assert not xsd("duration", ("minInclusive", "PT0S")).allows("-PT0.5S", EMPTY)
+        assert xsd("duration", ("maxInclusive", "-PT30M")).allows("-PT1H", EMPTY)
+        assert xsd("duration", ("minInclusive", "PT1S")).allows("PT1.5S", EMPTY)
+        assert not xsd("duration", ("minExclusive", "PT1.5S")).allows("PT1S", EMPTY)
+        assert xsd("duration", ("maxExclusive", "PT1.5S")).allows("PT1S", EMPTY)
+
+    def test_incomparable_durations_reject_every_bound(self):
+        for value, bound in (("P1M", "P30D"), ("P1Y", "P365D"), ("P5M", "P150D")):
+            for facet in ("minInclusive", "minExclusive", "maxInclusive", "maxExclusive"):
+                assert not xsd("duration", (facet, bound)).allows(value, EMPTY)
+
+    def test_distinct_but_order_indistinguishable_durations(self):
+        # These pairs add identically to all four references but are distinct
+        # XSD 1.0 values, so no bound may accept them as equal.
+        for value, bound in (
+            ("P1Y", "P12M"),
+            ("P12M", "P1Y"),
+            ("PT90S", "PT1M30S"),
+            ("PT1M", "PT60S"),
+            ("PT24H", "P1D"),
+        ):
+            for facet in ("minInclusive", "minExclusive", "maxInclusive", "maxExclusive"):
+                assert not xsd("duration", (facet, bound)).allows(value, EMPTY)
+
+    def test_identical_duration_bounds_are_inclusive(self):
+        for facet in ("minInclusive", "maxInclusive"):
+            assert xsd("duration", (facet, "P1Y")).allows("P1Y", EMPTY)
+            assert xsd("duration", (facet, "P1Y")).allows("P1Y0M", EMPTY)
+        for facet in ("minExclusive", "maxExclusive"):
+            assert not xsd("duration", (facet, "P1Y")).allows("P1Y", EMPTY)
+        assert xsd("duration", ("minInclusive", "PT0S")).allows("-PT0S", EMPTY)
+        assert xsd("duration", ("maxInclusive", "-PT0S")).allows("PT0S", EMPTY)
+
+    def test_duration_bound_conflicts_are_parameter_errors(self):
+        for parameters in (
+            (("minInclusive", "P1Y"), ("maxInclusive", "P364D")),
+            (("minInclusive", "P1M"), ("maxInclusive", "P30D")),
+            (("minInclusive", "P12M"), ("maxInclusive", "P1Y")),
+            (("minInclusive", "P1Y"), ("maxExclusive", "P1Y")),
+            (("minInclusive", "P1Y"), ("minExclusive", "P1Y")),
+            (("maxInclusive", "P1Y"), ("maxExclusive", "P1Y")),
+            (("minInclusive", "not-a-duration"),),
+        ):
+            with pytest.raises(DatatypeParameterError):
+                xsd("duration", *parameters)
+
+    def test_valid_duration_bound_ranges(self):
+        singleton = xsd("duration", ("minInclusive", "P1Y"), ("maxInclusive", "P1Y"))
+        assert singleton.allows("P1Y", EMPTY)
+        assert not singleton.allows("P12M", EMPTY)
+
+        ranged = xsd("duration", ("minInclusive", "P1D"), ("maxInclusive", "P1Y"))
+        assert ranged.allows("P1D", EMPTY)
+        assert ranged.allows("P1M", EMPTY)
+        assert not ranged.allows("P2Y", EMPTY)
+
+        carried = xsd("duration", ("minInclusive", "P1Y"))
+        assert carried.allows("P13M", EMPTY)
+
+    def test_duration_bounds_combine_with_pattern_facets(self):
+        datatype = xsd("duration", ("pattern", "P.*"), ("minInclusive", "P1D"))
+        assert datatype.allows("P1D", EMPTY)
+        assert not datatype.allows("P0D", EMPTY)
+        assert not datatype.allows("-P1D", EMPTY)
+
+    def test_duration_value_equality_is_not_the_partial_order(self):
+        datatype = xsd("duration")
+        assert not datatype.equal("P1Y", EMPTY, "P12M", EMPTY)
+        assert datatype.equal("-PT0S", EMPTY, "PT0S", EMPTY)
+
+
 class TestXsdValuePatterns:
     def test_repeated_patterns_intersect(self):
         datatype = xsd("string", ("pattern", "[a-z]+"), ("pattern", ".{3}"))
