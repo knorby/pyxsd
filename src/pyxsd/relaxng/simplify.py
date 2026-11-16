@@ -1390,23 +1390,37 @@ class _Composer:
         return invalid
 
     def expand(self, pattern: Pattern) -> Pattern:
-        origins = self.pool.origins(pattern)
-        if pattern in self.expanded:
-            return self.pool.intern(self.expanded[pattern], origins)
-        if isinstance(pattern, _Slot):
-            assert pattern.pattern is not None
-            result = self.expand(pattern.pattern)
-        elif isinstance(pattern, Element):
-            edge = _ElementReference(f"element{len(self.element_work)}")
-            self.element_work.append((pattern, edge))
-            result = edge
-        else:
-            result = _rebuild_pattern(
-                pattern, tuple(self.expand(child) for child in _pattern_operands(pattern))
-            )
-        result = self.pool.intern(result, origins)
-        self.expanded[pattern] = result
-        return result
+        # Expand children before their parent without using Python call depth.
+        # Element contents remain separate work items, closing guarded cycles
+        # through memoized edges rather than following them here.
+        pending = [(pattern, False)]
+        while pending:
+            node, ready = pending.pop()
+            origins = self.pool.origins(node)
+            if node in self.expanded:
+                self.pool.intern(self.expanded[node], origins)
+                continue
+            if isinstance(node, Element):
+                edge = _ElementReference(f"element{len(self.element_work)}")
+                self.element_work.append((node, edge))
+                result: Pattern = edge
+            else:
+                if isinstance(node, _Slot):
+                    assert node.pattern is not None
+                    children: tuple[Pattern, ...] = (node.pattern,)
+                else:
+                    children = _pattern_operands(node)
+                if children and not ready:
+                    pending.append((node, True))
+                    pending.extend((child, False) for child in reversed(children))
+                    continue
+                result = (
+                    self.expanded[children[0]]
+                    if isinstance(node, _Slot)
+                    else _rebuild_pattern(node, tuple(self.expanded[child] for child in children))
+                )
+            self.expanded[node] = self.pool.intern(result, origins)
+        return self.expanded[pattern]
 
     def compose(self, bundle: GrammarBundle) -> CompiledGrammar:
         root, _ = self.prepare(bundle, (bundle.resource.canonical_id,))

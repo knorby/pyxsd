@@ -94,6 +94,43 @@ def test_forward_reference_and_unreachable_definitions():
     assert len(compiled.graph) == 3
 
 
+@pytest.mark.parametrize("recursive", [False, True])
+def test_long_alias_chain_expands_without_using_the_python_call_stack(recursive):
+    count = 1100
+    aliases = "".join(
+        f'<define name="a{index}"><ref name="a{index + 1}"/></define>' for index in range(count)
+    )
+    content = '<optional><ref name="a0"/></optional>' if recursive else "<empty/>"
+    compiled, report = run(
+        grammar(
+            '<start><ref name="a0"/></start>'
+            + aliases
+            + f'<define name="a{count}">{element("root", content)}</define>'
+        )
+    )
+
+    assert not report.errors
+    root = deref(compiled.start)
+    assert isinstance(root, Element)
+    assert root.name_class == Name(None, "root")
+    assert len(compiled.definitions) == 1
+    if recursive:
+        assert isinstance(root.pattern, Choice)
+        assert nullable(root.pattern)
+        back = root.pattern.second if isinstance(root.pattern.first, Empty) else root.pattern.first
+        assert deref(back) is root
+    else:
+        assert root.pattern == Empty()
+    define_indexes = {
+        step.index
+        for origin in compiled.graph.origins(root)
+        if origin.location is not None
+        for step in origin.location.path
+        if step.name == f"{{{NS}}}define"
+    }
+    assert define_indexes == set(range(1, count + 2))
+
+
 @pytest.mark.parametrize("method,kind", [("choice", Choice), ("interleave", Interleave)])
 @pytest.mark.parametrize("explicit_first", [False, True])
 def test_combine_definitions(method, kind, explicit_first):
