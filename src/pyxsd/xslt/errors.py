@@ -535,10 +535,20 @@ def is_budget_alarm(error: BaseException) -> bool:
     error must let both through unchanged.  Converting the alarm cancels the
     bound the caller placed on the work, so the runaway expression keeps
     running instead of stopping at its budget.
+
+    ``TimeoutError`` is class-only: ``socket.timeout``, ``asyncio.TimeoutError``
+    and ``concurrent.futures.TimeoutError`` are that class on Python 3.11+, so a
+    foreign timeout arriving at a guarded engine site is treated as an alarm.
+    Extension and Python-rule callbacks are converted at their own boundary
+    before this predicate ever sees the error.
     """
     if isinstance(error, TimeoutError):
         return True
-    return isinstance(error, XsltDynamicError) and error.code == IMPLEMENTATION_BUDGET_CODE
+    return (
+        isinstance(error, XsltDynamicError)
+        and error.code == IMPLEMENTATION_BUDGET_CODE
+        and not error.allow_catch
+    )
 
 
 __all__ = [

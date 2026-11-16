@@ -26,6 +26,7 @@ from tests.xslt.outcomes import Outcome
 from tests.xslt.suite import SUITE_PROFILES, run_case
 from tests.xslt.support import stylesheet
 
+from pyxsd.resource_policy import ResourceData
 from pyxsd.xdm.nodes import XdmDocument, XdmNode
 from pyxsd.xpath.engine import XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
@@ -95,10 +96,14 @@ def test_budget_alarm_predicate_separates_alarms_from_failures() -> None:
     alarm = TimeoutError("budget")
     exhausted = XsltDynamicError("budget", code=IMPLEMENTATION_BUDGET_CODE, allow_catch=False)
     genuine = XsltDynamicError("division by zero", code="FOAR0001")
+    # A stylesheet can name any code in ``error-code``; only the engine's own
+    # non-catchable limit is an alarm.
+    forged = XsltDynamicError("budget", code=IMPLEMENTATION_BUDGET_CODE)
 
     assert is_budget_alarm(alarm)
     assert is_budget_alarm(exhausted)
     assert not is_budget_alarm(genuine)
+    assert not is_budget_alarm(forged)
     assert not is_budget_alarm(RuntimeError("harness defect"))
 
 
@@ -120,6 +125,10 @@ def test_pattern_evaluation_propagates_the_budget_alarm(
     "failure",
     [
         pytest.param(XsltDynamicError("division by zero", code="FOAR0001"), id="coded-error"),
+        pytest.param(
+            XsltDynamicError("forged budget", code=IMPLEMENTATION_BUDGET_CODE),
+            id="forged-budget-code",
+        ),
         pytest.param(RuntimeError("matching defect"), id="uncoded-error"),
     ],
 )
@@ -221,6 +230,118 @@ def test_static_expression_compile_propagates_the_budget_alarm(
         XsltProcessor().compile(
             io.BytesIO(stylesheet('<xsl:template match="/"/>', attributes=' use-when="true()"'))
         )
+
+    assert caught.value is alarm
+
+
+# ---------------------------------------------------------------------------
+# XPath engine compile fallback
+
+
+def test_engine_compile_fallback_does_not_swallow_the_alarm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The engine's optional seam must not turn an alarm into "no plan"."""
+    alarm = TimeoutError("the case exceeded its 0.1 s budget")
+    monkeypatch.setattr("pyxsd.xpath.continuation.compile_expression", _raise(alarm))
+
+    with pytest.raises(TimeoutError) as caught:
+        XPathEngine("3.1").compile("1 + 1", XPathStaticContext())
+
+    assert caught.value is alarm
+
+
+def test_engine_compile_fallback_still_falls_back_for_a_lowering_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "pyxsd.xpath.continuation.compile_expression", _raise(RuntimeError("unsupported"))
+    )
+
+    compiled = XPathEngine("3.1").compile("1 + 1", XPathStaticContext())
+
+    assert compiled.continuation_plan is None
+
+
+# ---------------------------------------------------------------------------
+# Foreign I/O boundaries: a policy or destination timeout is the alarm
+
+DOCUMENT_URI = "urn:test:document"
+TEXT_URI = "urn:test:text"
+
+
+class _TimeoutPolicy:
+    """A resource policy that raises the caller's alarm for instance and text reads.
+
+    The stylesheet's own module read shares this policy (purpose ``schema``),
+    so it serves those bytes back unchanged and fails only where the transform
+    loads a source document or a text resource.
+    """
+
+    def __init__(self, alarm: BaseException) -> None:
+        self.alarm = alarm
+
+    def read(self, source, *, base, purpose) -> ResourceData:
+        if purpose in ("instance", "text"):
+            raise self.alarm
+        stream = getattr(source, "getvalue", None)
+        return ResourceData("<memory>", b"" if stream is None else stream())
+
+
+class _TimeoutDestination:
+    """A binary destination whose write raises the caller's alarm."""
+
+    def __init__(self, alarm: BaseException) -> None:
+        self.alarm = alarm
+
+    def write(self, data: bytes) -> None:
+        raise self.alarm
+
+
+def test_document_read_propagates_the_budget_alarm() -> None:
+    alarm = TimeoutError("the case exceeded its 0.1 s budget")
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        f"<out><xsl:value-of select=\"doc('{DOCUMENT_URI}')/a\"/></out>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor(resource_policy=_TimeoutPolicy(alarm)).compile(io.BytesIO(source))
+
+    with pytest.raises(TimeoutError) as caught:
+        compiled.transform()
+
+    assert caught.value is alarm
+
+
+def test_text_read_propagates_the_budget_alarm() -> None:
+    alarm = TimeoutError("the case exceeded its 0.1 s budget")
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        f"<out><xsl:value-of select=\"unparsed-text('{TEXT_URI}')\"/></out>"
+        "</xsl:template>"
+    )
+    compiled = XsltProcessor(resource_policy=_TimeoutPolicy(alarm)).compile(io.BytesIO(source))
+
+    with pytest.raises(TimeoutError) as caught:
+        compiled.transform()
+
+    assert caught.value is alarm
+
+
+def test_result_write_propagates_the_budget_alarm() -> None:
+    alarm = TimeoutError("the case exceeded its 0.1 s budget")
+    source = stylesheet(
+        '<xsl:template name="xsl:initial-template"><primary/></xsl:template>',
+        attributes=' exclude-result-prefixes="xs"',
+    )
+    result = (
+        XsltProcessor()
+        .compile(io.BytesIO(source))
+        .transform(output_uri="https://example.test/out.xml")
+    )
+
+    with pytest.raises(TimeoutError) as caught:
+        result.write(_TimeoutDestination(alarm))
 
     assert caught.value is alarm
 

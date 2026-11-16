@@ -24,7 +24,7 @@ from pyxsd.exceptions import PyXSDError
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.xdm.document import DocumentValidationError, parse_typed_document
 from pyxsd.xdm.nodes import XdmDocument, XdmNode
-from pyxsd.xslt.errors import XsltDynamicError
+from pyxsd.xslt.errors import XsltDynamicError, is_budget_alarm
 from pyxsd.xslt.runtime.frames import ExecutionBudget, resource_error
 from pyxsd.xslt.runtime.whitespace import apply_source_space_rules
 
@@ -190,7 +190,11 @@ class DocumentResources:
         when no application policy is configured.  A policy denial propagates
         as :class:`ResourcePolicyError`; an ordinary read failure or malformed
         XML becomes ``FODC0002`` with the original exception preserved as the
-        cause.  Schema-aware validation uses the requested pool and validation
+        cause, but an execution-budget alarm is re-raised instead of converted.
+        ``TimeoutError`` is one class, so a policy's own timeout and the
+        caller's alarm are indistinguishable here; once a budget is set the
+        alarm is by far the likelier origin.  Schema-aware validation uses the
+        requested pool and validation
         mode; a cached document is reused only for the same validation, type,
         pool, annotation mode, and package.  The package's space declarations
         are applied to the captured document; a caller-owned registry entry is
@@ -232,6 +236,8 @@ class DocumentResources:
                 try:
                     data = policy.read(target, base=None, purpose=DOCUMENT_PURPOSE)
                 except OSError as exc:
+                    if is_budget_alarm(exc):
+                        raise
                     raise XsltDynamicError(
                         f"the document {uri!r} could not be read",
                         code="FODC0002",
@@ -286,8 +292,12 @@ class DocumentResources:
         :meth:`resolve` uses for source documents, including the local-only
         default for a canonical ``file`` URI.  A missing authorization is
         ``FOUT1170``, an unsupported encoding is ``FOUT1190``, and a policy
-        denial keeps its own :class:`ResourcePolicyError` identity.  The cache
-        belongs to this invocation and is keyed by target and encoding.
+        denial keeps its own :class:`ResourcePolicyError` identity.  As in
+        :meth:`resolve`, an execution-budget alarm is re-raised instead of
+        becoming ``FOUT1170``: a policy's own ``TimeoutError`` and the caller's
+        alarm share one class, and the alarm is the likelier origin once a
+        budget is set.  The cache belongs to this invocation and is keyed by
+        target and encoding.
         """
         target = resolve_document_uri(uri, base)
         key = (target, encoding)
@@ -302,6 +312,8 @@ class DocumentResources:
         try:
             data = policy.read(target, base=None, purpose=TEXT_PURPOSE)
         except OSError as exc:
+            if is_budget_alarm(exc):
+                raise
             raise XsltDynamicError(
                 f"the text resource {uri!r} could not be read",
                 code="FOUT1170",

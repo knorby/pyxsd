@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pyxsd.exceptions import PyXSDError
 from pyxsd.xdm.nodes import XdmDocument, XdmNode
 from pyxsd.xdm.values import XdmItem, XdmSequence
-from pyxsd.xslt.errors import XsltDynamicError
+from pyxsd.xslt.errors import XsltDynamicError, is_budget_alarm
 from pyxsd.xslt.policy import OutputPolicy
 from pyxsd.xslt.runtime.builder import (
     _append_complex_content as _append_complex_content,
@@ -310,7 +310,11 @@ class TransformationResult:
         the entry must already carry an absolute output URI, and a configured
         output policy authorizes this destination again with
         ``principal=(uri is None)``.  A destination ``OSError`` becomes a
-        ``code=None`` dynamic error retaining the original exception.
+        ``code=None`` dynamic error retaining the original exception, except
+        for an execution-budget alarm, which is re-raised: ``TimeoutError`` is
+        one class, so a destination's own timeout and the caller's alarm are
+        indistinguishable here, and the alarm is the likelier origin once a
+        budget is set.
         """
         entry = self._entry(uri)
         if entry.output_uri is None:
@@ -325,6 +329,8 @@ class TransformationResult:
         try:
             Serializer.write(entry.raw, resolved, destination)
         except OSError as error:
+            if is_budget_alarm(error):
+                raise
             raise XsltDynamicError(
                 f"cannot write the result {entry.output_uri!r}: {error}",
                 cause=error,

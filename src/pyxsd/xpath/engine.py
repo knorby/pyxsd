@@ -872,7 +872,11 @@ class XPathEngine:
                     variable_types=static_context.variable_types,
                     default_collation=static_context.default_collation,
                 )
-            except Exception:
+            except Exception as exc:
+                from pyxsd.xslt.errors import is_budget_alarm
+
+                if is_budget_alarm(exc):
+                    raise
                 # The optional seam lowers a subset; any parse/lowering miss
                 # falls back to the full elementpath evaluator.
                 plan = None
