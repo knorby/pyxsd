@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<grammar xmlns="http://relaxng.org/ns/structure/1.0">
+  <start combine="choice">
+    <ref name="root"/>
+  </start>
+  <define name="root" combine="interleave">
+    <element name="doc">
+      <group>
+        <attribute name="id"><text/></attribute>
+        <zeroOrMore>
+          <element name="item">
+            <mixed><text/></mixed>
+          </element>
+        </zeroOrMore>
+      </group>
+    </element>
+  </define>
+</grammar>

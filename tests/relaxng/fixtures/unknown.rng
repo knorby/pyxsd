@@ -1,0 +1,12 @@
+<grammar xmlns="http://relaxng.org/ns/structure/1.0">
+  <start>
+    <element name="doc"
+             xmlns:r="http://relaxng.org/ns/structure/1.0"
+             r:bogus="2"
+             r:name="ignored"
+             unsupported="1">
+      <bogus/>
+      <empty/>
+    </element>
+  </start>
+</grammar>

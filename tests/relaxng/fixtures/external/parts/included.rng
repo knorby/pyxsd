@@ -1,0 +1,4 @@
+<grammar xmlns="http://relaxng.org/ns/structure/1.0">
+  <start><ref name="included"/></start>
+  <define name="included"><element name="included"><empty/></element></define>
+</grammar>

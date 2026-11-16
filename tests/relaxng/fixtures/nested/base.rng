@@ -1,0 +1,8 @@
+<grammar xmlns="http://relaxng.org/ns/structure/1.0">
+  <start xml:base="parts/">
+    <element name="root" xml:base="sub/">
+      <externalRef href="child.rng"/>
+    </element>
+    <externalRef href="other.rng"/>
+  </start>
+</grammar>
