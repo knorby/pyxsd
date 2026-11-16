@@ -1,0 +1,742 @@
+"""Datatype protocols, the built-in library, and the XSD 1.0 adapter.
+
+RELAX NG delegates lexical acceptance and value equality to datatype
+libraries.  The built-in library has only ``string`` and ``token``; the XSD
+library adapts pyxsd's built-in datatype classes with XSD 1.0 semantics.  A
+compiled datatype keeps the schema-side context beside its immutable
+parameters so a ``value`` pattern can compare it against an instance-side
+context later.
+"""
+
+from __future__ import annotations
+
+import decimal
+import re
+from dataclasses import FrozenInstanceError
+
+import pytest
+
+from pyxsd.relaxng.datatypes import (
+    BUILTIN_FINGERPRINT,
+    BUILTIN_LIBRARY,
+    XSD_FINGERPRINT,
+    XSD_LIBRARY,
+    BuiltinDatatypeFactory,
+    Datatype,
+    DatatypeContext,
+    DatatypeFactory,
+    DatatypeLibraryRegistration,
+    DatatypeLibraryRegistry,
+    DatatypeParameter,
+    DatatypeParameterError,
+    DatatypeRegistrationError,
+    UnsupportedDatatypeError,
+    UnsupportedDatatypeOperation,
+    XsdDatatypeFactory,
+    resolve_datatype_selector,
+)
+from pyxsd.relaxng.patterns import Data, Text, Value, choice
+from pyxsd.xsd_data_types import QName, qname_context
+
+BUILTIN = BuiltinDatatypeFactory()
+XSD = XsdDatatypeFactory()
+EMPTY = DatatypeContext(None, {})
+
+XSD_10_TYPES = (
+    "ENTITIES",
+    "ENTITY",
+    "ID",
+    "IDREF",
+    "IDREFS",
+    "NCName",
+    "NMTOKEN",
+    "NMTOKENS",
+    "NOTATION",
+    "Name",
+    "QName",
+    "anySimpleType",
+    "anyURI",
+    "base64Binary",
+    "boolean",
+    "byte",
+    "date",
+    "dateTime",
+    "decimal",
+    "double",
+    "duration",
+    "float",
+    "gDay",
+    "gMonth",
+    "gMonthDay",
+    "gYear",
+    "gYearMonth",
+    "hexBinary",
+    "int",
+    "integer",
+    "language",
+    "long",
+    "negativeInteger",
+    "nonNegativeInteger",
+    "nonPositiveInteger",
+    "normalizedString",
+    "positiveInteger",
+    "short",
+    "string",
+    "time",
+    "token",
+    "unsignedByte",
+    "unsignedInt",
+    "unsignedLong",
+    "unsignedShort",
+)
+
+
+def parameter(name: str, value: str) -> DatatypeParameter:
+    """A terse constructor for a datatype parameter."""
+    return DatatypeParameter(name, value)
+
+
+def xsd(type_name: str, *parameters: tuple[str, str]) -> Datatype:
+    """Create an XSD datatype with string pairs as parameters."""
+    return XSD.create(
+        type_name,
+        tuple(parameter(name, value) for name, value in parameters),
+        EMPTY,
+    )
+
+
+class OpaqueDatatype(Datatype):
+    """A minimal custom datatype with validation but no codecs."""
+
+    def allows(self, lexical: str, context: DatatypeContext) -> bool:
+        return lexical == "ok"
+
+    def equal(
+        self,
+        left: str,
+        left_context: DatatypeContext,
+        right: str,
+        right_context: DatatypeContext,
+    ) -> bool:
+        return left == right
+
+
+class OpaqueFactory(DatatypeFactory):
+    """A custom library factory returning :class:`OpaqueDatatype`."""
+
+    def create(
+        self,
+        type_name: str,
+        parameters: tuple[DatatypeParameter, ...],
+        context: DatatypeContext,
+    ) -> Datatype:
+        del type_name, parameters, context
+        return OpaqueDatatype()
+
+
+class TestDatatypeContext:
+    def test_context_is_frozen(self):
+        context = DatatypeContext("urn:base", {"p": "urn:p"})
+        with pytest.raises(FrozenInstanceError):
+            context.base_uri = "urn:other"  # type: ignore[misc]
+
+    def test_namespaces_are_an_immutable_mapping(self):
+        context = DatatypeContext(None, {"p": "urn:p"})
+        assert context.namespaces == {"p": "urn:p"}
+        assert dict(context.namespaces) == {"p": "urn:p"}
+        with pytest.raises(TypeError):
+            context.namespaces["q"] = "urn:q"  # type: ignore[index]
+
+    def test_mapping_equality_ignores_insertion_order(self):
+        first = DatatypeContext(None, {"a": "1", "b": "2"})
+        second = DatatypeContext(None, {"b": "2", "a": "1"})
+        assert first == second
+        assert hash(first) == hash(second)
+        assert repr(first) == repr(second)
+
+    def test_namespace_mapping_does_not_equal_an_unrelated_object(self):
+        context = DatatypeContext(None, {"a": "1"})
+        assert context.namespaces != object()
+        assert object() != context.namespaces
+
+    def test_namespace_mapping_is_copied_from_the_input(self):
+        source = {"p": "urn:p"}
+        context = DatatypeContext(None, source)
+        source["q"] = "urn:q"
+        assert dict(context.namespaces) == {"p": "urn:p"}
+
+    def test_context_equality_includes_the_base_uri(self):
+        assert DatatypeContext("urn:a", {}) != DatatypeContext("urn:b", {})
+        assert DatatypeContext(None, {}) != DatatypeContext("", {})
+
+
+class TestDatatypeParameter:
+    def test_parameter_is_frozen_and_hashable(self):
+        first = DatatypeParameter("length", "2")
+        second = DatatypeParameter("length", "2")
+        assert first == second
+        assert hash(first) == hash(second)
+        with pytest.raises(FrozenInstanceError):
+            first.value = "3"  # type: ignore[misc]
+
+    def test_parameter_rejects_an_empty_or_non_string_name(self):
+        with pytest.raises(ValueError):
+            DatatypeParameter("", "2")
+        with pytest.raises(ValueError):
+            DatatypeParameter(1, "2")  # type: ignore[arg-type]
+
+    def test_parameter_rejects_a_non_string_value(self):
+        with pytest.raises(ValueError):
+            DatatypeParameter("length", 2)  # type: ignore[arg-type]
+
+
+class TestBuiltinLibrary:
+    def test_string_preserves_characters(self):
+        datatype = BUILTIN.create("string", (), EMPTY)
+        lexical = " leading\tand\u00a0non-breaking "
+        assert datatype.allows(lexical, EMPTY)
+        assert datatype.decode(lexical, EMPTY) == lexical
+        assert datatype.encode(lexical, EMPTY) == lexical
+        assert not datatype.equal("a\tb", EMPTY, "a b", EMPTY)
+
+    def test_token_equality_normalizes_only_xml_whitespace(self):
+        datatype = BUILTIN.create("token", (), EMPTY)
+        assert datatype.allows(" anything\tgoes ", EMPTY)
+        assert datatype.equal(" a\tb\n", EMPTY, "a b", EMPTY)
+        assert not datatype.equal("a\u00a0b", EMPTY, "a b", EMPTY)
+        assert datatype.decode(" a\tb ", EMPTY) == "a b"
+        assert datatype.encode(" a\tb ", EMPTY) == "a b"
+
+    def test_builtin_datatypes_ignore_their_context(self):
+        first = BUILTIN.create("string", (), EMPTY)
+        second = BUILTIN.create("string", (), DatatypeContext("urn:b", {"p": "urn:p"}))
+        assert first == second
+        assert hash(first) == hash(second)
+        assert first.context.base_uri is None
+        assert second.context.base_uri == "urn:b"
+
+    def test_builtin_library_rejects_parameters(self):
+        with pytest.raises(DatatypeParameterError):
+            BUILTIN.create("string", (parameter("length", "1"),), EMPTY)
+
+    def test_builtin_library_rejects_unknown_types(self):
+        with pytest.raises(UnsupportedDatatypeError):
+            BUILTIN.create("integer", (), EMPTY)
+
+    def test_builtin_datatype_repr_is_deterministic(self):
+        first = BUILTIN.create("token", (), EMPTY)
+        second = BUILTIN.create("token", (), EMPTY)
+        assert repr(first) == repr(second)
+        assert "0x" not in repr(first)
+
+    def test_datatype_is_frozen(self):
+        datatype = BUILTIN.create("string", (), EMPTY)
+        with pytest.raises(FrozenInstanceError):
+            datatype.type_name = "token"  # type: ignore[misc]
+
+    def test_factory_repr_is_deterministic(self):
+        assert repr(BUILTIN) == "BuiltinDatatypeFactory()"
+        assert repr(XSD) == "XsdDatatypeFactory()"
+
+
+class TestSelectorsAndRegistry:
+    def test_string_selector_names_the_builtin_library(self):
+        assert resolve_datatype_selector("string") == (BUILTIN_LIBRARY, "string")
+
+    def test_xsd_shorthand_uses_the_xsd_library(self):
+        assert resolve_datatype_selector("xsd:integer") == (XSD_LIBRARY, "integer")
+
+    def test_tuple_selector_is_the_library_and_type_name(self):
+        selector = (XSD_LIBRARY, "integer")
+        assert resolve_datatype_selector(selector) == selector
+
+    def test_shorthand_and_tuple_selectors_create_equal_datatypes(self):
+        registry = DatatypeLibraryRegistry()
+        shorthand = registry.create("xsd:integer", (), EMPTY)
+        explicit = registry.create((XSD_LIBRARY, "integer"), (), EMPTY)
+        assert shorthand == explicit
+
+    def test_bad_selectors_are_rejected(self):
+        with pytest.raises(UnsupportedDatatypeError):
+            resolve_datatype_selector("xsd:")
+        with pytest.raises(UnsupportedDatatypeError):
+            resolve_datatype_selector("other:integer")
+        with pytest.raises(TypeError):
+            resolve_datatype_selector(3)  # type: ignore[arg-type]
+        with pytest.raises(TypeError):
+            resolve_datatype_selector(("urn:library",))  # type: ignore[arg-type]
+        with pytest.raises(TypeError):
+            resolve_datatype_selector((XSD_LIBRARY, 3))  # type: ignore[arg-type]
+
+    def test_registry_has_fixed_builtin_identities(self):
+        registry = DatatypeLibraryRegistry()
+        assert registry.library_uris() == (BUILTIN_LIBRARY, XSD_LIBRARY)
+        assert registry.registration(BUILTIN_LIBRARY).fingerprint == BUILTIN_FINGERPRINT
+        assert registry.registration(XSD_LIBRARY).fingerprint == XSD_FINGERPRINT
+        assert isinstance(registry.registration(BUILTIN_LIBRARY).factory, BuiltinDatatypeFactory)
+        assert isinstance(registry.registration(XSD_LIBRARY).factory, XsdDatatypeFactory)
+
+    def test_registry_resolves_selectors(self):
+        registry = DatatypeLibraryRegistry()
+        assert registry.resolve("token") == (BUILTIN_LIBRARY, "token")
+        assert registry.resolve("xsd:date") == (XSD_LIBRARY, "date")
+        assert registry.resolve((XSD_LIBRARY, "date")) == (XSD_LIBRARY, "date")
+
+    def test_unknown_library_and_type_are_unsupported(self):
+        registry = DatatypeLibraryRegistry()
+        with pytest.raises(UnsupportedDatatypeError):
+            registry.registration("urn:unknown")
+        with pytest.raises(UnsupportedDatatypeError):
+            registry.create(("urn:unknown", "thing"), (), EMPTY)
+        with pytest.raises(UnsupportedDatatypeError):
+            registry.create("xsd:unknown", (), EMPTY)
+
+    def test_custom_registration_is_used(self):
+        registry = DatatypeLibraryRegistry()
+        registration = DatatypeLibraryRegistration(OpaqueFactory(), "opaque/1")
+        registry.register("urn:opaque", registration)
+        datatype = registry.create(("urn:opaque", "thing"), (), EMPTY)
+        assert datatype.allows("ok", EMPTY)
+        assert not datatype.allows("no", EMPTY)
+        assert datatype.equal("a", EMPTY, "a", EMPTY)
+        with pytest.raises(UnsupportedDatatypeOperation):
+            datatype.decode("ok", EMPTY)
+        with pytest.raises(UnsupportedDatatypeOperation):
+            datatype.encode("ok", EMPTY)
+        assert registry.library_uris() == (BUILTIN_LIBRARY, XSD_LIBRARY, "urn:opaque")
+        assert registry.registration("urn:opaque") == registration
+
+    def test_custom_datatype_without_codecs_reports_absent_operations(self):
+        datatype = OpaqueDatatype()
+        with pytest.raises(UnsupportedDatatypeOperation):
+            datatype.decode("ok", EMPTY)
+        with pytest.raises(UnsupportedDatatypeOperation):
+            datatype.encode("ok", EMPTY)
+
+    def test_a_custom_datatype_may_support_only_one_codec(self):
+        class Decoder(OpaqueDatatype):
+            def decode(self, lexical: str, context: DatatypeContext) -> str:
+                del context
+                return lexical
+
+        datatype = Decoder()
+        assert datatype.decode("ok", EMPTY) == "ok"
+        with pytest.raises(UnsupportedDatatypeOperation):
+            datatype.encode("ok", EMPTY)
+
+    def test_blank_fingerprints_are_rejected(self):
+        for fingerprint in ("", "   "):
+            registry = DatatypeLibraryRegistry()
+            registration = DatatypeLibraryRegistration(OpaqueFactory(), fingerprint)
+            with pytest.raises(DatatypeRegistrationError):
+                registry.register("urn:custom", registration)
+            assert "urn:custom" not in registry.library_uris()
+
+    def test_process_dependent_fingerprints_are_rejected(self):
+        for fingerprint in (repr(object()), "<factory at 0xdeadbeef>"):
+            registry = DatatypeLibraryRegistry()
+            registration = DatatypeLibraryRegistration(OpaqueFactory(), fingerprint)
+            with pytest.raises(DatatypeRegistrationError):
+                registry.register("urn:custom", registration)
+
+    def test_non_string_fingerprints_are_rejected(self):
+        registry = DatatypeLibraryRegistry()
+        registration = DatatypeLibraryRegistration(OpaqueFactory(), 1)  # type: ignore[arg-type]
+        with pytest.raises(DatatypeRegistrationError):
+            registry.register("urn:custom", registration)
+
+    def test_registration_rejects_duplicates_and_builtin_overrides(self):
+        registry = DatatypeLibraryRegistry()
+        registry.register("urn:custom", DatatypeLibraryRegistration(OpaqueFactory(), "cfg/1"))
+        with pytest.raises(DatatypeRegistrationError):
+            registry.register("urn:custom", DatatypeLibraryRegistration(OpaqueFactory(), "cfg/2"))
+        with pytest.raises(DatatypeRegistrationError):
+            registry.register(BUILTIN_LIBRARY, DatatypeLibraryRegistration(OpaqueFactory(), "cfg"))
+        with pytest.raises(DatatypeRegistrationError):
+            registry.register(XSD_LIBRARY, DatatypeLibraryRegistration(OpaqueFactory(), "cfg"))
+
+    def test_registration_requires_a_factory(self):
+        registry = DatatypeLibraryRegistry()
+        registration = DatatypeLibraryRegistration(object(), "cfg/1")  # type: ignore[arg-type]
+        with pytest.raises(DatatypeRegistrationError):
+            registry.register("urn:custom", registration)
+
+    def test_registration_requires_a_registration_object(self):
+        registry = DatatypeLibraryRegistry()
+        with pytest.raises(TypeError):
+            registry.register("urn:custom", OpaqueFactory())  # type: ignore[arg-type]
+
+    def test_registration_requires_a_string_uri(self):
+        registry = DatatypeLibraryRegistry()
+        registration = DatatypeLibraryRegistration(OpaqueFactory(), "cfg/1")
+        with pytest.raises(TypeError):
+            registry.register(3, registration)  # type: ignore[arg-type]
+
+
+class TestXsdDecoding:
+    def test_integers_decode_to_python_ints_and_encode_explicitly(self):
+        datatype = xsd("integer")
+        assert datatype.allows(" 42 ", EMPTY)
+        assert not datatype.allows("42.0", EMPTY)
+        assert datatype.decode("+042", EMPTY) == 42
+        assert datatype.encode(42, EMPTY) == "42"
+        with pytest.raises(TypeError):
+            datatype.encode(True, EMPTY)
+        with pytest.raises(TypeError):
+            datatype.encode("42", EMPTY)
+
+    def test_dates_decode_to_typed_lexical_values(self):
+        datatype = xsd("date")
+        decoded = datatype.decode("2000-02-29Z", EMPTY)
+        assert decoded == "2000-02-29Z"
+        assert datatype.encode(decoded, EMPTY) == "2000-02-29Z"
+        with pytest.raises(TypeError):
+            datatype.decode("2001-02-29", EMPTY)
+        with pytest.raises(TypeError):
+            datatype.encode("not-a-date", EMPTY)
+
+    def test_booleans_decode_and_encode_explicitly(self):
+        datatype = xsd("boolean")
+        decoded = datatype.decode("1", EMPTY)
+        assert decoded is True
+        assert isinstance(decoded, bool)
+        assert datatype.decode("false", EMPTY) is False
+        assert datatype.encode(True, EMPTY) == "true"
+        assert datatype.encode(0, EMPTY) == "false"
+        assert datatype.encode(datatype.decode("false", EMPTY), EMPTY) == "false"
+        with pytest.raises(TypeError):
+            datatype.encode("true", EMPTY)
+        with pytest.raises(TypeError):
+            datatype.encode(2, EMPTY)
+
+    def test_binary_types_decode_to_bytes_and_encode_canonically(self):
+        hexadecimal = xsd("hexBinary")
+        assert hexadecimal.decode("00ff", EMPTY) == b"\x00\xff"
+        assert hexadecimal.encode(b"\x00\xff", EMPTY) == "00FF"
+        assert hexadecimal.encode(bytearray(b"\x00\xff"), EMPTY) == "00FF"
+        with pytest.raises(TypeError):
+            hexadecimal.encode("00ff", EMPTY)
+
+        base64 = xsd("base64Binary")
+        assert base64.decode("A P8=", EMPTY) == b"\x00\xff"
+        assert base64.encode(b"\x00\xff", EMPTY) == "AP8="
+        with pytest.raises(TypeError):
+            base64.encode("AP8=", EMPTY)
+
+    def test_xsd_white_space_facets_follow_the_builtin_types(self):
+        any_simple = xsd("anySimpleType")
+        assert any_simple.decode(" a\tb ", EMPTY) == " a\tb "
+        assert any_simple.encode(" a\tb ", EMPTY) == " a\tb "
+        assert not any_simple.equal("a\tb", EMPTY, "a b", EMPTY)
+
+        normalized = xsd("normalizedString")
+        assert normalized.equal("a\tb", EMPTY, "a b", EMPTY)
+        assert normalized.decode("a\nb", EMPTY) == "a b"
+
+        token = xsd("token")
+        assert token.equal(" a\tb ", EMPTY, "a b", EMPTY)
+
+    def test_decimal_and_float_encoding(self):
+        decimal_type = xsd("decimal")
+        assert decimal_type.decode("1.50", EMPTY) == decimal_type.decode("1.5", EMPTY)
+        assert decimal_type.encode(1, EMPTY) == "1"
+        assert decimal_type.encode(decimal.Decimal("1.5"), EMPTY) == "1.5"
+        with pytest.raises(TypeError):
+            decimal_type.encode(1.5, EMPTY)
+        with pytest.raises(TypeError):
+            decimal_type.encode(True, EMPTY)
+        with pytest.raises(TypeError):
+            decimal_type.encode("1.5", EMPTY)
+
+        float_type = xsd("double")
+        assert float_type.decode("INF", EMPTY) == float("inf")
+        assert float_type.encode(float("inf"), EMPTY) == "INF"
+        assert float_type.encode(1, EMPTY) == "1.0"
+        with pytest.raises(TypeError):
+            float_type.encode(False, EMPTY)
+        with pytest.raises(TypeError):
+            float_type.encode("1.0", EMPTY)
+
+    def test_text_encoding_requires_a_string(self):
+        with pytest.raises(TypeError):
+            xsd("string").encode(3, EMPTY)
+
+    def test_decode_enforces_the_parameterized_value_space(self):
+        bounded = xsd("integer", ("minInclusive", "10"))
+        assert bounded.allows("10", EMPTY)
+        assert not bounded.allows("9", EMPTY)
+        with pytest.raises(TypeError):
+            bounded.decode("9", EMPTY)
+
+    def test_encode_rejects_a_value_outside_the_parameterized_value_space(self):
+        bounded = xsd("integer", ("minInclusive", "10"))
+        assert bounded.encode(10, EMPTY) == "10"
+        with pytest.raises(TypeError):
+            bounded.encode(9, EMPTY)
+
+
+class TestXsdEquality:
+    def test_numeric_and_binary_spellings_compare_by_value(self):
+        assert xsd("integer").equal("1", EMPTY, "01", EMPTY)
+        assert xsd("decimal").equal("1.0", EMPTY, "1.00", EMPTY)
+        assert xsd("hexBinary").equal("FF", EMPTY, "ff", EMPTY)
+        assert xsd("base64Binary").equal("AP8=", EMPTY, "A P8=", EMPTY)
+
+    def test_temporal_equality_uses_the_xsd_value_space(self):
+        zoned = xsd("dateTime")
+        assert zoned.equal("2000-01-01T00:00:00Z", EMPTY, "2000-01-01T01:00:00+01:00", EMPTY)
+        assert not zoned.equal("2000-01-01T00:00:00", EMPTY, "2000-01-01T00:00:00Z", EMPTY)
+
+    def test_duration_equality_is_xsd_1_0_identity(self):
+        duration = xsd("duration")
+        assert duration.equal("P1Y", EMPTY, "P1Y", EMPTY)
+        assert not duration.equal("P1Y", EMPTY, "P12M", EMPTY)
+        assert not duration.equal("P1D", EMPTY, "PT24H", EMPTY)
+        assert duration.equal("PT1M", EMPTY, "PT01M", EMPTY)
+        assert duration.equal("PT0.5S", EMPTY, "PT0.50S", EMPTY)
+        assert duration.equal("-PT0S", EMPTY, "PT0S", EMPTY)
+
+    def test_equality_ignores_parameterized_facets(self):
+        bounded = xsd("integer", ("minInclusive", "10"))
+        assert bounded.equal("1", EMPTY, "01", EMPTY)
+
+    def test_invalid_lexical_forms_never_compare_equal(self):
+        assert not xsd("date").equal("2001-02-29", EMPTY, "2001-02-29", EMPTY)
+        assert not xsd("integer").equal("x", EMPTY, "x", EMPTY)
+
+
+class TestXsdValuePatterns:
+    def test_repeated_patterns_intersect(self):
+        datatype = xsd("string", ("pattern", "[a-z]+"), ("pattern", ".{3}"))
+        assert datatype.allows("abc", EMPTY)
+        assert not datatype.allows("ab", EMPTY)
+        assert not datatype.allows("abcd", EMPTY)
+        assert not datatype.allows("ABC", EMPTY)
+        assert xsd("string", ("pattern", "[a-z]+"), ("pattern", "[a-z]+")).allows("abc", EMPTY)
+
+    def test_repeated_patterns_are_order_independent(self):
+        first = xsd("string", ("pattern", "[a-z]+"), ("pattern", ".{3}"))
+        second = xsd("string", ("pattern", ".{3}"), ("pattern", "[a-z]+"))
+        assert first == second
+
+    def test_pattern_datatypes_stay_equal_across_regex_cache_eviction(self):
+        first = xsd("string", ("pattern", "[a-z]+"))
+        re.purge()
+        second = xsd("string", ("pattern", "[a-z]+"))
+        assert first == second
+        assert hash(first) == hash(second)
+        assert repr(first) == repr(second)
+
+    def test_patterns_see_the_whitespace_processed_lexical_form(self):
+        datatype = xsd("token", ("pattern", "a b"))
+        assert datatype.allows(" a\tb ", EMPTY)
+        assert not datatype.allows("ab", EMPTY)
+
+    def test_length_and_digit_facets_are_enforced(self):
+        sized = xsd("string", ("length", "2"))
+        assert sized.allows("ab", EMPTY)
+        assert not sized.allows("abc", EMPTY)
+
+        digits = xsd("decimal", ("totalDigits", "2"))
+        assert digits.allows("12", EMPTY)
+        assert not digits.allows("123", EMPTY)
+
+        fraction = xsd("decimal", ("fractionDigits", "1"))
+        assert fraction.allows("1.2", EMPTY)
+        assert not fraction.allows("1.23", EMPTY)
+
+    def test_inclusive_bounds_are_enforced(self):
+        datatype = xsd("integer", ("minInclusive", "2"), ("maxInclusive", "4"))
+        assert not datatype.allows("1", EMPTY)
+        assert datatype.allows("2", EMPTY)
+        assert datatype.allows("4", EMPTY)
+        assert not datatype.allows("5", EMPTY)
+
+    def test_encoding_uses_the_parameterized_value_space(self):
+        datatype = xsd("string", ("pattern", "[a-z]+"))
+        assert datatype.encode("abc", EMPTY) == "abc"
+        with pytest.raises(TypeError):
+            datatype.encode("ABC", EMPTY)
+
+
+class TestXsdParameters:
+    def test_duplicate_non_pattern_parameters_are_rejected(self):
+        with pytest.raises(DatatypeParameterError):
+            xsd("string", ("length", "1"), ("length", "2"))
+
+    def test_white_space_is_rejected(self):
+        with pytest.raises(DatatypeParameterError, match="whiteSpace"):
+            xsd("string", ("whiteSpace", "collapse"))
+
+    def test_enumeration_is_rejected(self):
+        with pytest.raises(DatatypeParameterError, match="enumeration"):
+            xsd("string", ("enumeration", "a"))
+
+    def test_unknown_parameters_are_rejected(self):
+        with pytest.raises(DatatypeParameterError):
+            xsd("string", ("facet", "value"))
+
+    def test_inapplicable_parameters_are_rejected(self):
+        with pytest.raises(DatatypeParameterError):
+            xsd("integer", ("length", "2"))
+
+    def test_bounds_are_only_accepted_for_ordered_types(self):
+        assert xsd("date", ("minInclusive", "2000-01-01")).allows("2000-01-02", EMPTY)
+        with pytest.raises(DatatypeParameterError):
+            xsd("boolean", ("minInclusive", "true"))
+        with pytest.raises(DatatypeParameterError):
+            xsd("string", ("maxInclusive", "z"))
+        with pytest.raises(DatatypeParameterError):
+            xsd("hexBinary", ("minInclusive", "00"))
+
+    def test_illegal_facet_values_are_rejected(self):
+        with pytest.raises(DatatypeParameterError):
+            xsd("integer", ("minInclusive", "not-an-integer"))
+        with pytest.raises(DatatypeParameterError):
+            xsd("string", ("length", "-1"))
+
+    def test_conflicting_facets_are_rejected(self):
+        with pytest.raises(DatatypeParameterError):
+            xsd("integer", ("minInclusive", "10"), ("maxInclusive", "1"))
+
+    def test_illegal_patterns_are_rejected(self):
+        with pytest.raises(DatatypeParameterError):
+            xsd("string", ("pattern", "["))
+
+    def test_parameter_instances_are_required(self):
+        with pytest.raises(TypeError):
+            XSD.create("string", (("length", "2"),), EMPTY)  # type: ignore[arg-type]
+
+
+class TestXsdInventory:
+    def test_every_xsd_1_0_builtin_type_is_available(self):
+        assert len(XSD_10_TYPES) == 45
+        for type_name in XSD_10_TYPES:
+            datatype = xsd(type_name)
+            assert isinstance(datatype, Datatype)
+            assert datatype.type_name == type_name
+            assert datatype.library_uri == XSD_LIBRARY
+
+    def test_xsd_1_1_only_types_are_rejected_explicitly(self):
+        for type_name in ("anyAtomicType", "dateTimeStamp", "dayTimeDuration", "yearMonthDuration"):
+            with pytest.raises(UnsupportedDatatypeError, match=r"XSD 1\.1"):
+                xsd(type_name)
+
+    def test_non_simple_types_are_rejected(self):
+        for type_name in ("anyType", "List", "noSuchType"):
+            with pytest.raises(UnsupportedDatatypeError):
+                xsd(type_name)
+
+    def test_xsd_1_0_year_zero_is_rejected(self):
+        assert not xsd("date").allows("0000-01-01", EMPTY)
+        assert not xsd("dateTime").allows("0000-01-01T00:00:00", EMPTY)
+        assert not xsd("gYear").allows("0000Z", EMPTY)
+        assert not xsd("gYearMonth").allows("-0000-01", EMPTY)
+        assert xsd("date").allows("-0001-01-01", EMPTY)
+        assert xsd("dateTime").allows("0001-01-01T00:00:00", EMPTY)
+
+    def test_year_zero_invalidity_applies_to_equality(self):
+        datatype = xsd("date")
+        assert not datatype.equal("0000-01-01", EMPTY, "0000-01-01", EMPTY)
+
+
+class TestXsdQNames:
+    SCHEMA = DatatypeContext("urn:schema", {"p": "urn:one", "": "urn:schema-default"})
+    INSTANCE = DatatypeContext("urn:instance", {"q": "urn:one", "": "urn:instance-default"})
+
+    def test_qname_resolution_uses_each_side_context(self):
+        datatype = XSD.create("QName", (), self.SCHEMA)
+        assert datatype.allows("p:item", self.SCHEMA)
+        assert not datatype.allows("p:item", EMPTY)
+        assert datatype.equal("p:item", self.SCHEMA, "q:item", self.INSTANCE)
+        assert not datatype.equal("p:item", self.SCHEMA, "q:item", EMPTY)
+        assert not datatype.equal("p:item", self.SCHEMA, "r:item", self.SCHEMA)
+
+    def test_default_namespace_applies_to_unprefixed_qnames(self):
+        datatype = XSD.create("QName", (), self.SCHEMA)
+        assert datatype.allows("item", self.SCHEMA)
+        assert datatype.equal("item", self.SCHEMA, "item", self.SCHEMA)
+        assert not datatype.equal("item", self.SCHEMA, "item", self.INSTANCE)
+
+    def test_qname_decoding_requires_a_bound_prefix(self):
+        datatype = XSD.create("QName", (), self.SCHEMA)
+        decoded = datatype.decode("p:item", self.SCHEMA)
+        assert isinstance(decoded, QName)
+        assert decoded == "p:item"
+        assert datatype.encode(decoded, self.SCHEMA) == "p:item"
+        assert datatype.encode("p:item", self.SCHEMA) == "p:item"
+        with pytest.raises(TypeError):
+            datatype.decode("p:item", EMPTY)
+
+    def test_qname_encoding_never_invents_a_prefix(self):
+        datatype = XSD.create("QName", (), self.SCHEMA)
+        with pytest.raises(TypeError):
+            datatype.encode("p:item", EMPTY)
+        assert datatype.encode("p:item", DatatypeContext(None, {"p": "urn:elsewhere"})) == "p:item"
+        decoded = datatype.decode("p:item", self.SCHEMA)
+        with pytest.raises(ValueError):
+            datatype.encode(decoded, DatatypeContext(None, {"p": "urn:elsewhere"}))
+        with pytest.raises(TypeError):
+            datatype.encode(3, self.SCHEMA)
+
+    def test_unresolved_qname_values_are_reencoded_with_the_supplied_context(self):
+        datatype = XSD.create("QName", (), self.SCHEMA)
+        assert datatype.encode(QName("p:item"), self.SCHEMA) == "p:item"
+
+    def test_resolved_qname_without_a_namespace_cannot_be_encoded(self):
+        datatype = XSD.create("QName", (), self.SCHEMA)
+        with qname_context({}):
+            value = QName("p:item")
+        with pytest.raises(ValueError):
+            datatype.encode(value, self.SCHEMA)
+
+    def test_default_namespace_mismatch_prevents_encoding(self):
+        datatype = XSD.create("QName", (), self.SCHEMA)
+        decoded = datatype.decode("item", self.SCHEMA)
+        assert datatype.encode(decoded, self.SCHEMA) == "item"
+        with pytest.raises(ValueError):
+            datatype.encode(decoded, self.INSTANCE)
+
+    def test_xml_prefix_is_implicitly_bound(self):
+        datatype = XSD.create("QName", (), self.SCHEMA)
+        assert datatype.allows("xml:lang", EMPTY)
+        assert datatype.equal(
+            "xml:lang",
+            EMPTY,
+            "xml:lang",
+            DatatypeContext(None, {"xml": "http://www.w3.org/XML/1998/namespace"}),
+        )
+
+    def test_notation_uses_qname_value_semantics(self):
+        datatype = XSD.create("NOTATION", (), self.SCHEMA)
+        assert datatype.equal("p:item", self.SCHEMA, "q:item", self.INSTANCE)
+        assert isinstance(datatype.decode("p:item", self.SCHEMA), QName)
+
+    def test_qname_datatype_identity_includes_its_context(self):
+        first = XSD.create("QName", (), self.SCHEMA)
+        second = XSD.create("QName", (), self.INSTANCE)
+        assert first != second
+        assert first == XSD.create("QName", (), self.SCHEMA)
+        assert xsd("integer") == XSD.create("integer", (), self.SCHEMA)
+        assert "p" in repr(first)
+
+
+class TestPatternPayloads:
+    def test_datatypes_are_hashable_pattern_payloads(self):
+        datatype = xsd("integer")
+        data = Data(datatype)
+        value = Value(datatype, "12")
+        assert hash(data) == hash(Data(xsd("integer")))
+        assert value.datatype == datatype
+        assert value.lexical == "12"
+
+    def test_datatypes_do_not_destabilize_choice_order(self):
+        first = choice(Data(xsd("integer")), Text())
+        second = choice(Text(), Data(xsd("integer")))
+        assert first == second
+
+    def test_value_pattern_retains_the_schema_side_context(self):
+        schema = DatatypeContext("urn:schema", {"p": "urn:one"})
+        datatype = XSD.create("QName", (), schema)
+        pattern = Value(datatype, "p:item")
+        assert pattern.datatype.context == schema
