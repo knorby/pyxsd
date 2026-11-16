@@ -228,6 +228,20 @@ def test_compile_returns_the_valid_composed_schema_with_an_empty_report():
     assert schema.datatype_fingerprint.startswith("pyxsd.relaxng.datatypes/1:")
 
 
+def test_a_bare_pattern_root_compiles_like_a_grammar_start():
+    schema = compile_schema(io.StringIO(f'<element xmlns="{NS}" name="x"><empty/></element>'))
+
+    assert not schema.report.has_errors
+    assert resolve(schema.grammar.start) == Element(Name(None, "x"), Empty())
+
+
+def test_compile_accepts_binary_streams():
+    schema = RelaxNGSchema.compile(io.BytesIO(VALID.encode("utf-8")))
+
+    assert not schema.report.has_errors
+    assert resolve(schema.grammar.start) == EXPECTED_START
+
+
 def test_compiled_schema_attributes_are_read_only():
     schema = compile_schema()
 
