@@ -249,7 +249,7 @@ class TestResolve:
         main = loader.load(FIXTURES / "external" / "main.rng")
 
         direct = loader.resolve("parts/child.rng", main, None)
-        relative = loader.resolve("child.rng", main, "parts/")
+        relative = loader.resolve("child.rng", main, resolve_xml_base(main.canonical_id, "parts/"))
         normalized = loader.resolve("parts/../parts/child.rng", main, None)
 
         expected = str((FIXTURES / "external" / "parts" / "child.rng").resolve())
@@ -310,7 +310,7 @@ class TestResolve:
         loader = ResourceLoader(policy=policy)
         containing = loader.load(main_url)
 
-        loaded = loader.resolve("child.rng", containing, "parts/")
+        loaded = loader.resolve("child.rng", containing, resolve_xml_base(main_url, "parts/"))
 
         assert loaded.canonical_id == child_url
         assert loaded.root.get("name") == "child"
@@ -382,7 +382,7 @@ class TestDependencies:
         loader = ResourceLoader()
         main = loader.load(FIXTURES / "external" / "main.rng")
         child = loader.resolve("parts/child.rng", main, None)
-        loader.resolve("child.rng", main, "parts/")
+        loader.resolve("child.rng", main, resolve_xml_base(main.canonical_id, "parts/"))
 
         dependencies = loader.dependencies()
 
@@ -563,6 +563,62 @@ def test_fragment_href_is_rejected_without_a_policy(tmp_path):
 
     with pytest.raises(ResourcePolicyError, match="fragment"):
         loader.resolve("child.rng#fragment", main, None)
+
+
+def test_fragment_with_dot_segments_is_rejected_before_path_normalization(tmp_path):
+    target = tmp_path / "target.rng"
+    target.write_text(RNG_START, encoding="utf-8")
+    main_path = tmp_path / "main.rng"
+    main_path.write_text(RNG_START, encoding="utf-8")
+    policy = RecordingPolicy(tmp_path)
+    loader = ResourceLoader(policy=policy)
+    main = loader.load(main_path)
+    reads = list(policy.reads)
+
+    with pytest.raises(ResourcePolicyError, match="fragment"):
+        loader.resolve("child.rng#fragment/../target.rng", main, None)
+
+    assert policy.reads == reads
+    assert str(target.resolve()) not in {item.canonical_id for item in loader.dependencies()}
+
+
+def test_percent_encoded_hash_is_a_filename_not_a_fragment(tmp_path):
+    child = tmp_path / "child#name.rng"
+    child.write_text(RNG_START, encoding="utf-8")
+    main_path = tmp_path / "main.rng"
+    main_path.write_text(RNG_START, encoding="utf-8")
+    policy = RecordingPolicy(tmp_path)
+    loader = ResourceLoader(policy=policy)
+    main = loader.load(main_path)
+    reads = list(policy.reads)
+
+    loaded = loader.resolve("child%23name.rng", main, None)
+
+    assert loaded.canonical_id == str(child.resolve())
+    assert policy.reads == [*reads, (str(child.resolve()), None, "schema")]
+    assert str(child.resolve()) in {item.canonical_id for item in loader.dependencies()}
+
+
+def test_nested_effective_bases_are_not_percent_decoded_again(tmp_path):
+    correct_directory = tmp_path / "parts%20" / "sub "
+    correct_directory.mkdir(parents=True)
+    correct = correct_directory / "child.rng"
+    correct.write_text(RNG_START, encoding="utf-8")
+    decoy_directory = tmp_path / "parts " / "sub "
+    decoy_directory.mkdir(parents=True)
+    decoy = decoy_directory / "child.rng"
+    decoy.write_text(RNG_START, encoding="utf-8")
+    main_path = tmp_path / "main.rng"
+    main_path.write_text(RNG_START, encoding="utf-8")
+    loader = ResourceLoader()
+    main = loader.load(main_path)
+
+    base = resolve_xml_base(resolve_xml_base(main.canonical_id, "parts%2520/"), "sub%20/")
+    assert base == str(correct_directory.resolve()) + "/"
+    loaded = loader.resolve("child.rng", main, base)
+
+    assert loaded.canonical_id == str(correct.resolve())
+    assert loaded.canonical_id != str(decoy.resolve())
 
 
 def test_xml_base_values_are_xlink_escaped():

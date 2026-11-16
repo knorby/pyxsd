@@ -312,40 +312,45 @@ class ResourceLoader:
         self,
         reference: str,
         containing: LoadedResource,
-        xml_base: str | None,
+        base: str | None,
         *,
         location: IssueLocation | None = None,
     ) -> LoadedResource:
-        """Load *reference* against *containing* and its ``xml:base``.
+        """Load *reference* against *containing* and its effective *base*.
+
+        ``base`` is already normalized: it includes every in-scope
+        ``xml:base`` and is never parsed as URI text a second time.  Only the
+        authored reference is XLink-escaped and resolved.  A raw ``#`` in
+        that authored reference is a URI fragment and rejects XML retrieval
+        before any dot-segment or filesystem normalization, so a ``%23``
+        escape remains a legal filename character.
 
         A missing resource raises the ordinary ``OSError`` or policy denial;
         a malformed one raises :class:`xml.etree.ElementTree.ParseError`.
         Composition decides whether such a required dependency is a schema
-        finding.  A failed read records no dependency.  The reference is
-        transformed by the XLink 1.0 section 5.4 escaping procedure before
-        resolution, and an XML retrieval never opens a fragment-bearing URI.
+        finding.  A failed read records no dependency.
         """
         reference = xlink_escape(reference)
-        base = containing.canonical_id
-        reference_kind = classify_resource(reference).kind
-        absolute = reference_kind == "remote" or (
-            reference_kind == "local" and Path(reference).is_absolute()
-        )
-        if not absolute and xml_base is not None and xml_base != "":
-            base = resolve_xml_base(base, xml_base)
-        canonical = _resolve_against(base, reference)
-        if "#" in canonical:
+        if "#" in reference:
             raise ResourcePolicyError(
                 "a RELAX NG include or externalRef href must not use a fragment "
                 "identifier for XML retrieval"
             )
+        reference_kind = classify_resource(reference).kind
+        absolute = reference_kind == "remote" or (
+            reference_kind == "local" and Path(reference).is_absolute()
+        )
+        resolved_base = containing.canonical_id
+        if not absolute and base is not None and base != "":
+            resolved_base = base
+        canonical = _resolve_against(resolved_base, reference)
         cached = self._resources.get(canonical)
         resource = cached if cached is not None else self.load(canonical)
         self._record_reference(
             containing_id=containing.canonical_id,
             reference=reference,
-            base=base,
-            xml_base=xml_base,
+            base=resolved_base,
+            xml_base=base,
             canonical_id=resource.canonical_id,
             location=location,
         )

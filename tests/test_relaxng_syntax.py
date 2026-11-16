@@ -1170,6 +1170,52 @@ class TestCharacterContent:
 
         assert "relaxng-invalid-character-content" in codes(schema)
 
+    @pytest.mark.parametrize("tag", ["anyName", "nsName"])
+    @pytest.mark.parametrize(
+        "except_body",
+        [
+            "before<name>skip</name>",
+            "<name>skip</name>after",
+        ],
+    )
+    def test_wildcard_except_character_data_is_reported(self, tag, except_body):
+        ns = ' ns="urn:example:wildcard"' if tag == "nsName" else ""
+        schema = read_schema(
+            f'<element xmlns="{RNG_NS}">'
+            f"<{tag}{ns}><except>{except_body}</except></{tag}>"
+            "<empty/></element>"
+        )
+
+        assert "relaxng-invalid-character-content" in codes(schema)
+
+    @pytest.mark.parametrize("tag", ["anyName", "nsName"])
+    def test_wildcard_except_xml_whitespace_is_allowed(self, tag):
+        ns = ' ns="urn:example:wildcard"' if tag == "nsName" else ""
+        schema = read_schema(
+            f'<element xmlns="{RNG_NS}">'
+            f"<{tag}{ns}><except> \t\r\n<name>skip</name> \t\r\n</except></{tag}>"
+            "<empty/></element>"
+        )
+
+        assert "relaxng-invalid-character-content" not in codes(schema)
+
+    def test_wildcard_except_foreign_annotation_is_opaque(self):
+        schema = read_schema(
+            f"""
+            <element xmlns="{RNG_NS}" xmlns:a="urn:example:annotation">
+              <anyName>
+                <except>
+                  <a:documentation>not whitespace</a:documentation>
+                  <name>skip</name>
+                </except>
+              </anyName>
+              <empty/>
+            </element>
+            """
+        )
+
+        assert "relaxng-invalid-character-content" not in codes(schema)
+
 
 class TestNameClassPlacement:
     @pytest.mark.parametrize("tag", ["element", "attribute"])

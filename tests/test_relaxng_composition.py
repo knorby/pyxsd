@@ -334,6 +334,77 @@ def test_two_authored_paths_one_resource_and_xml_base(tmp_path):
     assert deref(compiled.start).name_class == Name(None, "external")
 
 
+def test_nested_percent_encoded_effective_base_resolves_once(tmp_path):
+    correct_directory = tmp_path / "parts%20" / "sub "
+    correct_directory.mkdir(parents=True)
+    correct = correct_directory / "child.rng"
+    correct.write_text(f'<element xmlns="{NS}" name="correct"><empty/></element>', encoding="utf-8")
+    decoy_directory = tmp_path / "parts " / "sub "
+    decoy_directory.mkdir(parents=True)
+    decoy = decoy_directory / "child.rng"
+    decoy.write_text(f'<element xmlns="{NS}" name="decoy"><empty/></element>', encoding="utf-8")
+
+    compiled, report = run(
+        grammar(
+            '<start xml:base="parts%2520/">'
+            '<externalRef xml:base="sub%20/" href="child.rng"/>'
+            "</start>"
+        ),
+        path=tmp_path / "root.rng",
+    )
+
+    assert not report.errors
+    assert deref(compiled.start).name_class == Name(None, "correct")
+    dependency_ids = {dependency.canonical_id for dependency in compiled.dependencies}
+    assert str(correct.resolve()) in dependency_ids
+    assert str(decoy.resolve()) not in dependency_ids
+
+
+@pytest.mark.parametrize("kind", ["include", "externalRef"])
+def test_fragment_with_dot_segments_is_rejected_for_both_references(tmp_path, kind):
+    target = tmp_path / "target.rng"
+    target.write_text(grammar("<start><empty/></start>"), encoding="utf-8")
+    href = "child.rng#fragment/../target.rng"
+    body = (
+        f'<include href="{href}"/>'
+        if kind == "include"
+        else f'<start><externalRef href="{href}"/></start>'
+    )
+
+    compiled, report = run(grammar(body), path=tmp_path / "root.rng")
+
+    assert "relaxng-resource-read" in codes(report)
+    assert [dependency.canonical_id for dependency in compiled.dependencies] == [
+        str((tmp_path / "root.rng").resolve())
+    ]
+
+
+@pytest.mark.parametrize("kind", ["include", "externalRef"])
+def test_nested_effective_base_fragment_is_rejected_before_normalization(tmp_path, kind):
+    double_decoded = tmp_path / "parts " / "target.rng"
+    double_decoded.parent.mkdir()
+    double_decoded.write_text(grammar("<start><empty/></start>"), encoding="utf-8")
+    once_decoded = tmp_path / "parts%20" / "target.rng"
+    once_decoded.parent.mkdir()
+    once_decoded.write_text(grammar("<start><empty/></start>"), encoding="utf-8")
+    href = "child.rng#fragment/../target.rng"
+    reference = f'<{kind} xml:base="parts%2520/" href="{href}"/>'
+    body = reference if kind == "include" else f"<start>{reference}</start>"
+
+    compiled, report = run(grammar(body), path=tmp_path / "root.rng")
+
+    assert "relaxng-resource-read" in codes(report)
+    assert [dependency.canonical_id for dependency in compiled.dependencies] == [
+        str((tmp_path / "root.rng").resolve())
+    ]
+    assert str(double_decoded.resolve()) not in {
+        dependency.canonical_id for dependency in compiled.dependencies
+    }
+    assert str(once_decoded.resolve()) not in {
+        dependency.canonical_id for dependency in compiled.dependencies
+    }
+
+
 def test_failed_dependency_records_no_resource(tmp_path):
     compiled, report = run(
         grammar('<start><externalRef href="missing.rng"/></start>'), path=tmp_path / "root.rng"

@@ -1465,6 +1465,10 @@ class _Reader:
         location: IssueLocation,
         namespace: str,
     ) -> _Pending:
+        # A wildcard's except is planned directly rather than through the
+        # ``_plan`` dispatch, so its own text and child tails need the same
+        # character-data check as every other RELAX NG element.
+        self._check_character_data(element, location, "except")
         self._check_attributes(element, "except", location)
         except_namespace = element.attrib.get("ns", namespace)
         visits = self._plan_name_class_alternatives(element, location, except_namespace)
