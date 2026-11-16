@@ -11,10 +11,13 @@ from pyxsd.relaxng.errors import (
     StaleInterpretationError,
 )
 from pyxsd.relaxng.limits import RelaxNGLimits
+from pyxsd.relaxng.schema import RelaxNGSchema, compile
 
 __all__ = [
     "AmbiguousValueError",
     "RelaxNGLimitError",
     "RelaxNGLimits",
+    "RelaxNGSchema",
     "StaleInterpretationError",
+    "compile",
 ]

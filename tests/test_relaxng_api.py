@@ -11,6 +11,7 @@ import pickle
 import subprocess
 import sys
 from dataclasses import FrozenInstanceError, fields
+from io import StringIO
 
 import pytest
 
@@ -25,6 +26,7 @@ from pyxsd.relaxng.errors import (
 )
 from pyxsd.relaxng.limits import BudgetCounter, RelaxNGLimits
 from pyxsd.relaxng.origins import OriginTable, SourceOrigin
+from pyxsd.relaxng.schema import RelaxNGSchema
 
 LIMIT_FIELDS = tuple(field.name for field in fields(RelaxNGLimits))
 
@@ -41,21 +43,36 @@ def test_the_package_exposes_only_the_settled_public_contracts():
         "AmbiguousValueError",
         "RelaxNGLimitError",
         "RelaxNGLimits",
+        "RelaxNGSchema",
         "StaleInterpretationError",
+        "compile",
     }
     assert relaxng.RelaxNGLimitError is RelaxNGLimitError
     assert relaxng.AmbiguousValueError is AmbiguousValueError
     assert relaxng.StaleInterpretationError is StaleInterpretationError
     assert relaxng.RelaxNGLimits is RelaxNGLimits
+    assert relaxng.RelaxNGSchema is RelaxNGSchema
 
 
-def test_the_package_exposes_no_placeholder_compiler():
-    assert "compile" not in relaxng.__all__
-    assert not hasattr(relaxng, "compile")
+def test_the_package_exposes_the_real_compiler_entry_point():
+    assert relaxng.compile.__func__ is RelaxNGSchema.compile.__func__
+    schema = relaxng.compile(
+        StringIO(
+            '<grammar xmlns="http://relaxng.org/ns/structure/1.0">'
+            '<start><element name="root"><empty/></element></start>'
+            "</grammar>"
+        )
+    )
+    assert isinstance(schema, RelaxNGSchema)
+    assert not schema.report.has_errors
 
 
 def test_relaxng_contracts_are_not_reexported_at_the_top_level():
     for name in relaxng.__all__:
+        if name == "compile":
+            # pyxsd.compile is the XSD compiler, never the RELAX NG one.
+            assert pyxsd.compile is not relaxng.compile
+            continue
         assert name not in pyxsd.__all__
         assert not hasattr(pyxsd, name)
 
