@@ -35,6 +35,13 @@ failure signatures, and signature groups.  It never compares or writes a
 baseline, and it cannot be combined with ``--check``, ``--enforce``, or
 ``--write-baseline``.
 
+``--include-gated`` measures, in addition, the cases the profile's selection
+excludes because they declare a ``unicode-version`` dependency the engine's
+tables do not satisfy.  It requires ``--census``: those outcomes are recorded in
+a labelled ``gated`` section, excluded from the profile totals, and can never
+become or be compared with a baseline.  The gated set is computed from the
+catalog with the profile's version claim cleared, never from an outcome.
+
 The report contains no timestamps, absolute paths, or wall-clock values.  It is
 a function of the checked-in baseline, the pinned catalog, and the profile
 identity.
@@ -46,7 +53,7 @@ import argparse
 import os
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 #: Repository root; tests point ``repo_root`` at a synthetic fixture instead.
@@ -55,8 +62,10 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from tests.xslt import baseline, census, report  # noqa: E402
 from tests.xslt.catalog import CatalogError, load_catalog  # noqa: E402
+from tests.xslt.model import TestCase  # noqa: E402
+from tests.xslt.outcomes import CaseResult  # noqa: E402
 from tests.xslt.selection import select_cases  # noqa: E402
-from tests.xslt.suite import SUITE_PROFILES, run_parallel  # noqa: E402
+from tests.xslt.suite import SUITE_PROFILES, run_parallel, with_unicode_version  # noqa: E402
 
 #: The pinned corpus, relative to the repository root.
 CORPUS_PATH = Path("tests/xslt/corpus")
@@ -108,6 +117,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="PATH",
         help="execute the profile and write a deterministic census to this JSON file",
     )
+    parser.add_argument(
+        "--include-gated",
+        action="store_true",
+        help=(
+            "with --census, also measure the cases excluded by a declared "
+            "unicode-version dependency, in their own section outside the totals"
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument(
         "--list-only",
@@ -148,6 +165,16 @@ def case_timeout(args: argparse.Namespace) -> float:
         return args.timeout
     configured = os.environ.get("PYXSD_XSLT_TIMEOUT")
     return float(configured) if configured else DEFAULT_TIMEOUT
+
+
+def progress_reporter(noun: str) -> Callable[[int, int], None]:
+    """A progress callback that reports every 250 cases and the last one."""
+
+    def report(done: int, total: int) -> None:
+        if done % 250 == 0 or done == total:
+            print(f"  ...{done}/{total} {noun}", file=sys.stderr)
+
+    return report
 
 
 def report_from_baseline(profile: str, recorded: baseline.Baseline) -> report.Report:
@@ -246,19 +273,27 @@ def run_corpus(args: argparse.Namespace, repo_root: Path) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     cases = select_cases(catalog, profile.feature_profile)
+    gated_cases: tuple[TestCase, ...] = ()
+    if args.include_gated:
+        # Applicability, not verdicts: the catalog's declarations under a
+        # profile that makes no Unicode-version claim, minus what this profile
+        # already selects.
+        selected = {case.name for case in cases}
+        cleared = with_unicode_version(profile, "").feature_profile
+        gated_cases = tuple(
+            case for case in select_cases(catalog, cleared) if case.name not in selected
+        )
     if args.filter:
         cases = tuple(case for case in cases if args.filter in case.name)
+        gated_cases = tuple(case for case in gated_cases if args.filter in case.name)
     if args.limit is not None:
         cases = cases[: args.limit]
+        gated_cases = gated_cases[: args.limit]
     complete = not args.filter and args.limit is None
 
     if args.list_only:
         print(f"{len(cases)} cases would run under profile {args.profile}")
         return 0
-
-    def progress(done: int, total: int) -> None:
-        if done % 250 == 0 or done == total:
-            print(f"  ...{done}/{total} cases", file=sys.stderr)
 
     timeout = case_timeout(args)
     results = run_parallel(
@@ -266,8 +301,17 @@ def run_corpus(args: argparse.Namespace, repo_root: Path) -> int:
         profile,
         timeout=timeout,
         jobs=args.jobs,
-        on_progress=progress,
+        on_progress=progress_reporter("cases"),
     )
+    gated_results: tuple[CaseResult, ...] = ()
+    if args.include_gated:
+        gated_results = run_parallel(
+            gated_cases,
+            with_unicode_version(profile, ""),
+            timeout=timeout,
+            jobs=args.jobs,
+            on_progress=progress_reporter("gated cases"),
+        )
     if args.census is not None:
         observed = census.build_census(
             results,
@@ -275,10 +319,11 @@ def run_corpus(args: argparse.Namespace, repo_root: Path) -> int:
             corpus=pinned_corpus(repo_root) or catalog.corpus_revision,
             timeout_seconds=timeout,
             root=repo_root,
+            gated=gated_results,
         )
         census.write_census(args.census, observed)
         print(
-            f"wrote {len(results)} census records to {args.census}",
+            f"wrote {len(results) + len(gated_results)} census records to {args.census}",
             file=sys.stderr,
         )
         return 0
@@ -347,6 +392,9 @@ def run_corpus(args: argparse.Namespace, repo_root: Path) -> int:
 def run(argv: Sequence[str] | None = None, *, repo_root: Path = REPO_ROOT) -> int:
     """Run or check one profile; return the process exit code."""
     args = parse_args(argv)
+    if args.include_gated and args.census is None:
+        print("error: --include-gated requires --census", file=sys.stderr)
+        return 2
     if args.census is not None:
         conflicts = [
             flag

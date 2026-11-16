@@ -5,6 +5,11 @@ actually observed so failures can be grouped into families, and it never
 compares against or rewrites a baseline.  Every case contributes one record and
 every record contributes to exactly one signature group.
 
+A run may also carry a ``gated`` section: cases the profile's selection excluded
+and the caller measured anyway, such as a family pinned to another Unicode
+version.  Those records have their own totals and are excluded from the profile
+totals and signatures; a case contributes to exactly one section, never to both.
+
 The document contains no timestamps, absolute paths, or wall-clock values, and
 its JSON rendering is byte-stable for the same results.  Case records and
 signature groups are sorted, so two renders of one result set are identical.
@@ -59,6 +64,12 @@ _ABSOLUTE_PATH = re.compile(
 #: What an absolute filesystem path becomes in a census message.
 PATH_PLACEHOLDER = "<path>"
 
+#: Why a census carries cases outside its profile totals.
+GATED_NOTE = (
+    "excluded from totals: the profile declares these cases not applicable because of "
+    "a declared unicode-version dependency"
+)
+
 
 def failure_signature(result: CaseResult) -> str:
     """One deterministic family key for a case result.
@@ -100,50 +111,64 @@ def _sanitize_message(text: str, root: Path | None) -> str:
     return _ABSOLUTE_PATH.sub(PATH_PLACEHOLDER, text)
 
 
+def _section(
+    results: Iterable[CaseResult],
+) -> tuple[dict[str, int], list[dict[str, str]], list[dict[str, Any]]]:
+    """One section's outcome totals, sorted case records and signature groups."""
+    totals = {outcome.value: 0 for outcome in CENSUS_OUTCOMES}
+    counts: Counter[str] = Counter()
+    outcomes: dict[str, Counter[str]] = {}
+    samples: dict[str, list[str]] = {}
+    cases: list[dict[str, str]] = []
+    for result in sorted(results, key=lambda item: item.name):
+        outcome = str(result.outcome)
+        totals[outcome] += 1
+        signature = failure_signature(result)
+        counts[signature] += 1
+        outcomes.setdefault(signature, Counter())[outcome] += 1
+        samples.setdefault(signature, []).append(result.name)
+        cases.append(
+            {
+                "name": result.name,
+                "outcome": outcome,
+                "signature": signature,
+                "message": result.message,
+            }
+        )
+    signatures = [
+        {
+            "signature": signature,
+            "count": counts[signature],
+            "outcomes": {
+                outcome.value: outcomes[signature][outcome.value]
+                for outcome in CENSUS_OUTCOMES
+                if outcomes[signature][outcome.value]
+            },
+            "samples": sorted(samples[signature])[:SAMPLE_LIMIT],
+        }
+        for signature in sorted(counts, key=lambda item: (-counts[item], item))
+    ]
+    return totals, cases, signatures
+
+
 @dataclass(frozen=True)
 class Census:
-    """One profile run's normalized case records and signature groups."""
+    """One profile run's normalized case records and signature groups.
+
+    ``gated`` holds cases this profile's selection excluded and the caller
+    measured anyway.  They form the separate ``gated`` section and never reach
+    the profile totals or signatures.
+    """
 
     profile: str
     corpus: str
     timeout_seconds: int | float
     results: tuple[CaseResult, ...]
+    gated: tuple[CaseResult, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        totals = {outcome.value: 0 for outcome in CENSUS_OUTCOMES}
-        counts: Counter[str] = Counter()
-        outcomes: dict[str, Counter[str]] = {}
-        samples: dict[str, list[str]] = {}
-        cases: list[dict[str, str]] = []
-        for result in sorted(self.results, key=lambda item: item.name):
-            outcome = str(result.outcome)
-            totals[outcome] += 1
-            signature = failure_signature(result)
-            counts[signature] += 1
-            outcomes.setdefault(signature, Counter())[outcome] += 1
-            samples.setdefault(signature, []).append(result.name)
-            cases.append(
-                {
-                    "name": result.name,
-                    "outcome": outcome,
-                    "signature": signature,
-                    "message": result.message,
-                }
-            )
-        signatures = [
-            {
-                "signature": signature,
-                "count": counts[signature],
-                "outcomes": {
-                    outcome.value: outcomes[signature][outcome.value]
-                    for outcome in CENSUS_OUTCOMES
-                    if outcomes[signature][outcome.value]
-                },
-                "samples": sorted(samples[signature])[:SAMPLE_LIMIT],
-            }
-            for signature in sorted(counts, key=lambda item: (-counts[item], item))
-        ]
-        return {
+        totals, cases, signatures = _section(self.results)
+        document: dict[str, Any] = {
             "profile": self.profile,
             "corpus": self.corpus,
             "timeout_seconds": self.timeout_seconds,
@@ -151,21 +176,18 @@ class Census:
             "cases": cases,
             "signatures": signatures,
         }
+        if self.gated:
+            gated_totals, gated_cases, _ = _section(self.gated)
+            document["gated"] = {
+                "note": GATED_NOTE,
+                "totals": gated_totals,
+                "cases": gated_cases,
+            }
+        return document
 
 
-def build_census(
-    results: Iterable[CaseResult],
-    *,
-    profile: str,
-    corpus: str,
-    timeout_seconds: float,
-    root: Path | None = None,
-) -> Census:
-    """Build one census from explicit case results, rejecting nameless doubles.
-
-    *root* is the repository checkout whose absolute prefix messages should not
-    retain; ``None`` still replaces absolute filesystem paths outside it.
-    """
+def _validated(results: Iterable[CaseResult], root: Path | None) -> tuple[CaseResult, ...]:
+    """*results* with names checked and machine-specific message text removed."""
     entries: list[CaseResult] = []
     names: set[str] = set()
     for result in results:
@@ -175,11 +197,38 @@ def build_census(
             raise ValueError(f"duplicate case result: {result.name}")
         names.add(result.name)
         entries.append(replace(result, message=_sanitize_message(result.message, root)))
+    return tuple(entries)
+
+
+def build_census(
+    results: Iterable[CaseResult],
+    *,
+    profile: str,
+    corpus: str,
+    timeout_seconds: float,
+    root: Path | None = None,
+    gated: Iterable[CaseResult] = (),
+) -> Census:
+    """Build one census from explicit case results, rejecting nameless doubles.
+
+    *root* is the repository checkout whose absolute prefix messages should not
+    retain; ``None`` still replaces absolute filesystem paths outside it.
+    *gated* holds the cases the profile's selection excluded and the caller
+    chose to measure anyway: they get their own section and never contribute to
+    the profile totals.  A case contributes to exactly one section, so a name
+    that appears in both is rejected.
+    """
+    entries = _validated(results, root)
+    gated_entries = _validated(gated, root)
+    shared = {result.name for result in entries} & {result.name for result in gated_entries}
+    if shared:
+        raise ValueError(f"case result in both sections: {min(shared)}")
     return Census(
         profile=profile,
         corpus=corpus,
         timeout_seconds=_budget_seconds(timeout_seconds),
-        results=tuple(entries),
+        results=entries,
+        gated=gated_entries,
     )
 
 

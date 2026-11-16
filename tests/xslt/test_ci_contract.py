@@ -28,12 +28,16 @@ from tests.xslt.model import Collection, Output, Package, Resource, Schema
 from tests.xslt.outcomes import CaseResult, Outcome
 from tests.xslt.selection import select_cases
 from tests.xslt.suite import (
+    ENGINE_UNICODE_VERSION,
     SUITE_PROFILES,
+    SuiteProfile,
     UnsupportedCase,
+    _run_payload,
     case_budget,
     execute_case,
     run_case,
     run_parallel,
+    with_unicode_version,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -676,6 +680,40 @@ def test_parallel_execution_preserves_catalog_order(tmp_path: Path) -> None:
         "gate/case-002": Outcome.PASS,
         "gate/case-003": Outcome.PASS,
     }
+
+
+def test_worker_payload_carries_the_profile_unicode_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker gates exactly as the parent did, even for a cleared profile."""
+    root = _fixture_repo(tmp_path)
+    catalog = load_catalog(root / "tests" / "xslt" / "corpus" / "catalog.xml")
+    case = catalog.cases["gate/case-001"]
+    seen: list[str] = []
+
+    def record(item: object, profile: SuiteProfile, **kwargs: object) -> CaseResult:
+        seen.append(profile.feature_profile.unicode_version)
+        return CaseResult.passed(case.name)
+
+    monkeypatch.setattr("tests.xslt.suite.run_case", record)
+
+    passed = (case.name, CaseResult.passed(case.name))
+    assert _run_payload(("xslt30", "", case, None)) == passed
+    assert seen == [""]
+    assert _run_payload(("xslt30", "9.0", case, None)) == passed
+    assert seen == ["", "9.0"]
+    assert _run_payload(("xslt30", ENGINE_UNICODE_VERSION, case, None)) == passed
+    assert seen == ["", "9.0", ENGINE_UNICODE_VERSION]
+
+    # An unchanged version reuses the checked-in profile; another version keeps
+    # the same processor identity and moves only the applicability claim.
+    assert (
+        with_unicode_version(SUITE_PROFILES["xslt30"], ENGINE_UNICODE_VERSION)
+        is SUITE_PROFILES["xslt30"]
+    )
+    cleared = with_unicode_version(SUITE_PROFILES["xslt30"], "")
+    assert cleared.feature_profile.unicode_version == ""
+    assert cleared.processor is SUITE_PROFILES["xslt30"].processor
 
 
 # ---------------------------------------------------------------------------

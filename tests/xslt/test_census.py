@@ -26,6 +26,14 @@ GATE_CATALOG = """\
 <?xml version="1.0" encoding="UTF-8"?>
 <catalog xmlns="http://www.w3.org/2012/10/xslt-test-catalog">
   <test-set name="gate" file="gate/_gate-test-set.xml"/>
+  <test-set name="pinned" file="pinned/_pinned-test-set.xml"/>
+</catalog>
+"""
+
+GATE_ONLY_CATALOG = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="http://www.w3.org/2012/10/xslt-test-catalog">
+  <test-set name="gate" file="gate/_gate-test-set.xml"/>
 </catalog>
 """
 
@@ -38,6 +46,24 @@ GATE_TEST_SET = """\
   <test-case name="case-001">
     <environment ref="gate-env"/>
     <test><stylesheet file="case-001.xsl"/></test>
+    <result><assert-xml><![CDATA[<out>right</out>]]></assert-xml></result>
+  </test-case>
+</test-set>
+"""
+
+PINNED_TEST_SET = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<test-set xmlns="http://www.w3.org/2012/10/xslt-test-catalog" name="pinned">
+  <dependencies>
+    <spec value="XSLT20+"/>
+    <unicode-version value="{version}" satisfied="true"/>
+  </dependencies>
+  <environment name="pinned-env">
+    <source role="."><content><![CDATA[<doc/>]]></content></source>
+  </environment>
+  <test-case name="pinned-001">
+    <environment ref="pinned-env"/>
+    <test><stylesheet file="pinned-001.xsl"/></test>
     <result><assert-xml><![CDATA[<out>right</out>]]></assert-xml></result>
   </test-case>
 </test-set>
@@ -56,15 +82,29 @@ def _no_ambient_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PYXSD_XSLT_TIMEOUT", raising=False)
 
 
-def _fixture_repo(tmp_path: Path) -> Path:
-    """A synthetic repo with one case, its stylesheet, and no baseline."""
+def _fixture_repo(tmp_path: Path, *, pinned_version: str | None = None) -> Path:
+    """A synthetic repo with the gate case, plus a version-pinned one if asked.
+
+    The pinned test set declares a ``unicode-version`` dependency the xslt30
+    profile's tables do not satisfy, so its case is gated out of the profile
+    but still measurable through ``--include-gated``.
+    """
     root = tmp_path / "repo"
     corpus = root / "tests" / "xslt" / "corpus"
     gate = corpus / "gate"
     gate.mkdir(parents=True)
-    (corpus / "catalog.xml").write_text(GATE_CATALOG, encoding="utf-8")
+    catalog = GATE_ONLY_CATALOG
+    (corpus / "catalog.xml").write_text(catalog, encoding="utf-8")
     (gate / "_gate-test-set.xml").write_text(GATE_TEST_SET, encoding="utf-8")
     (gate / "case-001.xsl").write_text(SHEET, encoding="utf-8")
+    if pinned_version is not None:
+        pinned = corpus / "pinned"
+        pinned.mkdir()
+        (corpus / "catalog.xml").write_text(GATE_CATALOG, encoding="utf-8")
+        (pinned / "_pinned-test-set.xml").write_text(
+            PINNED_TEST_SET.format(version=pinned_version), encoding="utf-8"
+        )
+        (pinned / "pinned-001.xsl").write_text(SHEET, encoding="utf-8")
     (root / "tests" / "xslt" / "baselines").mkdir(parents=True)
     return root
 
@@ -390,6 +430,62 @@ def test_census_rejects_nameless_and_duplicate_results() -> None:
         )
 
 
+def test_gated_results_form_their_own_labelled_section() -> None:
+    observed = census.build_census(
+        (CaseResult.passed("kept"),),
+        profile="xslt30",
+        corpus="pinned",
+        timeout_seconds=5.0,
+        gated=(
+            CaseResult.timeout("gated-b", detail="the case exceeded its 5 s budget"),
+            CaseResult.passed("gated-a"),
+        ),
+    ).to_dict()
+
+    # The profile section describes only its own cases.
+    assert observed["totals"]["pass"] == 1
+    assert sum(observed["totals"].values()) == 1
+    assert [case["name"] for case in observed["cases"]] == ["kept"]
+    assert all(case["name"] != "gated-a" for case in observed["cases"])
+
+    gated = observed["gated"]
+    assert set(gated) == {"note", "totals", "cases"}
+    assert gated["note"] == census.GATED_NOTE
+    assert list(gated["totals"]) == [outcome.value for outcome in census.CENSUS_OUTCOMES]
+    assert gated["totals"]["pass"] == 1
+    assert gated["totals"]["timeout"] == 1
+    assert [case["name"] for case in gated["cases"]] == ["gated-a", "gated-b"]
+    assert gated["cases"][1]["signature"] == "timeout"
+    assert "signatures" not in gated
+
+
+def test_an_empty_gated_tuple_leaves_the_document_unchanged() -> None:
+    plain = census.render_json(_census(_mixed_results()))
+    empty = census.render_json(
+        census.build_census(
+            _mixed_results(),
+            profile="xslt30",
+            corpus="pinned",
+            timeout_seconds=5.0,
+            gated=(),
+        )
+    )
+
+    assert plain == empty
+    assert "gated" not in json.loads(empty)
+
+
+def test_census_rejects_a_case_result_in_both_sections() -> None:
+    with pytest.raises(ValueError, match="both sections"):
+        census.build_census(
+            (CaseResult.passed("a"),),
+            profile="xslt30",
+            corpus="c",
+            timeout_seconds=5.0,
+            gated=(CaseResult.failed("a"),),
+        )
+
+
 def test_write_census_creates_parents_and_is_stable(tmp_path: Path) -> None:
     target = tmp_path / "nested" / "census.json"
     observed = _census(_mixed_results())
@@ -468,3 +564,120 @@ def test_check_mode_never_executes_cases(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.setattr(report_xslt, "run_parallel", forbidden)
 
     assert report_xslt.run(["--profile", "xslt30", "--check"], repo_root=root) == 0
+
+
+def test_progress_reports_a_multiple_of_250_and_the_last_case(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = report_xslt.progress_reporter("gated cases")
+
+    report(1, 3)
+    assert capsys.readouterr().err == ""
+    report(250, 1000)
+    assert "...250/1000 gated cases" in capsys.readouterr().err
+    report(1000, 1000)
+    assert "...1000/1000 gated cases" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag", ["--check", "--enforce", "--write-baseline", None])
+def test_include_gated_requires_census(
+    flag: str | None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A gated measurement must never become or be compared with a baseline."""
+    argv = ["--profile", "xslt30", "--include-gated"]
+    if flag is not None:
+        argv.append(flag)
+    if flag == "--write-baseline":
+        argv.append(str(tmp_path / "baseline.toml"))
+
+    assert report_xslt.run(argv, repo_root=tmp_path) == 2
+    error = capsys.readouterr().err
+    assert "--include-gated requires --census" in error
+    assert not (tmp_path / "baseline.toml").exists()
+
+
+def test_include_gated_keeps_gated_outcomes_out_of_totals(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _fixture_repo(tmp_path, pinned_version="9.0")
+    target = tmp_path / "census.json"
+
+    argv = ["--profile", "xslt30", "--census", str(target), "--include-gated"]
+    assert report_xslt.run(argv, repo_root=root) == 0
+
+    document = json.loads(target.read_text(encoding="utf-8"))
+    # The pinned case is gated out of the profile, so only the plain case counts.
+    assert [case["name"] for case in document["cases"]] == ["gate/case-001"]
+    assert document["totals"]["fail"] == 1
+    assert document["totals"]["pass"] == 0
+    # It is still measured, in its own labelled section, at the same budget.
+    gated = document["gated"]
+    assert gated["note"] == census.GATED_NOTE
+    assert [case["name"] for case in gated["cases"]] == ["pinned/pinned-001"]
+    assert gated["cases"][0]["outcome"] == "fail"
+    assert gated["totals"]["fail"] == 1
+    assert document["timeout_seconds"] == report_xslt.DEFAULT_TIMEOUT
+    assert "wrote 2 census records" in capsys.readouterr().err
+
+
+def test_gated_section_is_absent_without_the_flag(tmp_path: Path) -> None:
+    """A census without ``--include-gated`` keeps its exact bytes."""
+    root = _fixture_repo(tmp_path, pinned_version="9.0")
+    plain = tmp_path / "plain.json"
+    flagged = tmp_path / "flagged.json"
+
+    assert report_xslt.run(["--profile", "xslt30", "--census", str(plain)], repo_root=root) == 0
+    assert "gated" not in json.loads(plain.read_text(encoding="utf-8"))
+
+    # The same repo with no gated cases renders identically with the flag.
+    empty = _fixture_repo(tmp_path / "empty")
+    assert (
+        report_xslt.run(
+            ["--profile", "xslt30", "--census", str(flagged), "--include-gated"], repo_root=empty
+        )
+        == 0
+    )
+    assert plain.read_bytes() == flagged.read_bytes()
+    assert "gated" not in json.loads(flagged.read_text(encoding="utf-8"))
+
+
+def test_a_filtered_gated_run_measures_only_the_matching_family(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path, pinned_version="9.0")
+    target = tmp_path / "census.json"
+
+    argv = [
+        "--profile",
+        "xslt30",
+        "--filter",
+        "pinned",
+        "--census",
+        str(target),
+        "--include-gated",
+    ]
+    assert report_xslt.run(argv, repo_root=root) == 0
+
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert document["cases"] == []
+    assert [case["name"] for case in document["gated"]["cases"]] == ["pinned/pinned-001"]
+
+    # A limited slice applies to both sections, so a bounded gated refresh never
+    # silently widens into the whole family.
+    limited = tmp_path / "limited.json"
+    assert (
+        report_xslt.run(
+            [
+                "--profile",
+                "xslt30",
+                "--limit",
+                "1",
+                "--census",
+                str(limited),
+                "--include-gated",
+            ],
+            repo_root=root,
+        )
+        == 0
+    )
+    bounded = json.loads(limited.read_text(encoding="utf-8"))
+    assert [case["name"] for case in bounded["cases"]] == ["gate/case-001"]
+    assert [case["name"] for case in bounded["gated"]["cases"]] == ["pinned/pinned-001"]

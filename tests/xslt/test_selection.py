@@ -1,9 +1,9 @@
 """Applicability selection from declared catalog dependencies.
 
 Selection is metadata-only.  These tests build cases with controlled
-dependencies and prove that applicability comes from ``spec`` and ``feature``
-declarations (plus declared schema versions), never from filenames, source
-documents, or streamable syntax.
+dependencies and prove that applicability comes from ``spec``, ``feature`` and
+``unicode-version`` declarations (plus declared schema versions), never from
+filenames, source documents, streamable syntax, or an observed verdict.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from tests.xslt.model import (
 )
 from tests.xslt.model import TestCase as CatalogCase
 from tests.xslt.outcomes import Outcome
+from tests.xslt.runner import unsatisfiable_dependencies
 from tests.xslt.selection import (
     XSLT30_NON_STREAMING,
     FeatureProfile,
@@ -38,6 +39,8 @@ def case(
     excluded_specs: Iterable[str] = (),
     features: Iterable[str] = (),
     exclusions: Iterable[str] = (),
+    unicode_versions: Iterable[str] = (),
+    excluded_unicode_versions: Iterable[str] = (),
     source_document: bool = False,
     schema_versions: Iterable[str] = (),
 ) -> CatalogCase:
@@ -46,6 +49,10 @@ def case(
     dependencies.extend(Dependency("spec", spec, False) for spec in excluded_specs)
     dependencies.extend(Dependency("feature", feature) for feature in features)
     dependencies.extend(Dependency("feature", feature, False) for feature in exclusions)
+    dependencies.extend(Dependency("unicode-version", version) for version in unicode_versions)
+    dependencies.extend(
+        Dependency("unicode-version", version, False) for version in excluded_unicode_versions
+    )
     return CatalogCase(
         name=name,
         local_name=name,
@@ -242,6 +249,91 @@ def test_xsd_version_gates_schema_requirements() -> None:
     assert inapplicability(xsd_10, older) is None
 
 
+def test_unicode_version_dependency_is_not_applicable_to_another_version() -> None:
+    pinned = case("pinned", unicode_versions=("9.0",))
+    modern = replace(XSLT30_NON_STREAMING, unicode_version="14.0")
+
+    assert inapplicability(pinned, modern) is Outcome.NOT_APPLICABLE
+    assert select_cases(catalog(pinned), modern) == ()
+
+
+def test_a_case_whose_unicode_version_matches_stays_applicable() -> None:
+    pinned = case("pinned", unicode_versions=("14.0",))
+    modern = replace(XSLT30_NON_STREAMING, unicode_version="14.0")
+
+    assert inapplicability(pinned, modern) is None
+    assert select_cases(catalog(pinned), modern) == (pinned,)
+
+
+def test_unicode_version_dependency_without_a_value_is_applicable() -> None:
+    unconstrained = replace(
+        case("unconstrained"),
+        dependencies=(Dependency("unicode-version", None),),
+    )
+    modern = replace(XSLT30_NON_STREAMING, unicode_version="14.0")
+
+    assert inapplicability(unconstrained, modern) is None
+
+
+def test_unicode_version_dependency_with_a_malformed_value_is_applicable() -> None:
+    """A value the profile cannot compare must not constrain the case."""
+    modern = replace(XSLT30_NON_STREAMING, unicode_version="14.0")
+
+    for value in ("9", "nine", "9.0.1"):
+        malformed = case(f"malformed-{value}", unicode_versions=(value,))
+        assert inapplicability(malformed, modern) is None, value
+
+
+def test_negative_unicode_version_dependency_inverts_the_match() -> None:
+    not_nine = case("not-nine", excluded_unicode_versions=("9.0",))
+    nine = replace(XSLT30_NON_STREAMING, unicode_version="9.0")
+    modern = replace(XSLT30_NON_STREAMING, unicode_version="14.0")
+
+    assert inapplicability(not_nine, modern) is None
+    assert inapplicability(not_nine, nine) is Outcome.NOT_APPLICABLE
+
+
+def test_unicode_version_dependency_is_not_evaluated_without_a_profile_version() -> None:
+    pinned = case("pinned", unicode_versions=("9.0",))
+
+    assert XSLT30_NON_STREAMING.unicode_version == ""
+    assert inapplicability(pinned, XSLT30_NON_STREAMING) is None
+    assert select_cases(catalog(pinned), XSLT30_NON_STREAMING) == (pinned,)
+
+
+def test_unicode_version_gate_never_hides_an_unsupported_feature() -> None:
+    pinned = case("pinned", features={"XML_1.1"}, unicode_versions=("9.0",))
+    modern = replace(XSLT30_NON_STREAMING, unicode_version="14.0")
+
+    assert inapplicability(pinned, modern) is Outcome.UNSUPPORTED_FEATURE
+
+
+def test_unicode_version_gate_never_hides_an_unsupported_schema_version() -> None:
+    pinned = case("pinned", schema_versions={"1.2"}, unicode_versions=("9.0",))
+    modern = replace(XSLT30_NON_STREAMING, unicode_version="14.0")
+
+    assert inapplicability(pinned, modern) is Outcome.UNSUPPORTED_FEATURE
+
+
+def test_unsatisfiable_specs_still_dispute_with_a_unicode_version_dependency() -> None:
+    disputed = case("disputed", specs=("XSLT30+", "XSLT20"))
+    pinned = case("disputed", specs=("XSLT30+", "XSLT20"), unicode_versions=("9.0",))
+
+    assert unsatisfiable_dependencies(disputed) == unsatisfiable_dependencies(pinned)
+    assert unsatisfiable_dependencies(pinned) == (
+        "unsatisfiable inherited spec dependencies: XSLT30+, XSLT20"
+    )
+
+
+def test_clearing_the_profile_unicode_version_restores_only_the_version_gated_cases() -> None:
+    gated = case("gated", unicode_versions=("9.0",))
+    also_unsupported = case("also-unsupported", features={"XML_1.1"}, unicode_versions=("9.0",))
+    modern = replace(XSLT30_NON_STREAMING, unicode_version="14.0")
+
+    assert select_cases(catalog(gated, also_unsupported), modern) == ()
+    assert select_cases(catalog(gated, also_unsupported), XSLT30_NON_STREAMING) == (gated,)
+
+
 def test_version_features_are_derived_from_profile_versions() -> None:
     assert XSLT30_NON_STREAMING.supports("XPath_3.0")
     assert XSLT30_NON_STREAMING.supports("XPath_3.1")
@@ -261,19 +353,42 @@ def test_select_cases_preserves_catalog_order() -> None:
     ]
 
 
-@pytest.mark.parametrize("field", ["language", "xpath_version", "xsd_version"])
+@pytest.mark.parametrize("field", ["language", "xpath_version", "xsd_version", "unicode_version"])
 def test_profile_versions_must_be_dotted(field: str) -> None:
     arguments = {
         "name": "bad",
         "language": "3.0",
         "xpath_version": "3.1",
         "xsd_version": "1.1",
+        "unicode_version": "14.0",
         "features": frozenset(),
     }
     arguments[field] = "three"
 
     with pytest.raises(ValueError, match=field):
         FeatureProfile(**arguments)
+
+
+def test_a_profile_may_declare_no_unicode_version() -> None:
+    """The empty string means "this profile makes no Unicode-version claim"."""
+    profile = FeatureProfile(
+        name="unclaimed",
+        language="3.0",
+        xpath_version="3.1",
+        xsd_version="1.1",
+        features=frozenset(),
+    )
+
+    assert profile.unicode_version == ""
+    with pytest.raises(ValueError, match="unicode_version"):
+        FeatureProfile(
+            name="one-component",
+            language="3.0",
+            xpath_version="3.1",
+            xsd_version="1.1",
+            unicode_version="14",
+            features=frozenset(),
+        )
 
 
 def test_profile_rejects_supported_and_declined_overlap() -> None:

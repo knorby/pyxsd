@@ -22,12 +22,13 @@ import os
 import signal
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
+from elementpath.regex import unicode_version
 from tests.xslt.assertions import ResultSnapshot
 from tests.xslt.model import Param, Source, TestCase
 from tests.xslt.outcomes import CaseResult
@@ -93,6 +94,13 @@ _PRE_30_DECLINED = frozenset(
 #: expected error never masquerades as a matching code.
 UNCODED_ERROR = "pyxsd-error"
 
+#: The Unicode version of the character tables the engine grades against.
+#:
+#: It is read from the engine, never from a census, a baseline or a case list:
+#: a catalog case that pins another version is not applicable to these
+#: profiles.  The value moves only when the engine's tables move.
+ENGINE_UNICODE_VERSION = unicode_version()
+
 #: Headroom over a case budget before the parent treats a worker as wedged.
 #: The in-worker alarm normally fires first; the parent deadline catches a
 #: C-level hang that Python signals cannot interrupt.
@@ -140,6 +148,7 @@ def _profile(
             xsd_version=xsd_version,
             features=features,
             declined_features=declined - features,
+            unicode_version=ENGINE_UNICODE_VERSION,
             description=description,
         ),
         processor=XsltProcessor(
@@ -155,7 +164,7 @@ def _profile(
 SUITE_PROFILES: Mapping[str, SuiteProfile] = {
     "xslt30": SuiteProfile(
         name="xslt30",
-        feature_profile=XSLT30_NON_STREAMING,
+        feature_profile=replace(XSLT30_NON_STREAMING, unicode_version=ENGINE_UNICODE_VERSION),
         processor=XsltProcessor(language="3.0", xpath="3.1"),
     ),
     "xslt20": _profile(
@@ -542,10 +551,35 @@ def run_suite(
     return tuple(run_case(case, profile, timeout=timeout) for case in cases)
 
 
-def _run_payload(payload: tuple[str, TestCase, float | None]) -> tuple[str, CaseResult]:
-    """Worker entry point: a profile name resolves to an immutable identity here."""
-    profile_name, case, timeout = payload
-    return case.name, run_case(case, SUITE_PROFILES[profile_name], timeout=timeout)
+def with_unicode_version(profile: SuiteProfile, unicode_version: str) -> SuiteProfile:
+    """*profile* with another declared Unicode version.
+
+    The suite profile is the same processor identity; only the version the
+    applicability gate compares moves.  An empty version makes the profile
+    claim none, which is how a gated measurement reaches the cases the normal
+    selection excludes.
+    """
+    if profile.feature_profile.unicode_version == unicode_version:
+        return profile
+    return SuiteProfile(
+        name=profile.name,
+        feature_profile=replace(profile.feature_profile, unicode_version=unicode_version),
+        processor=profile.processor,
+    )
+
+
+def _run_payload(
+    payload: tuple[str, str, TestCase, float | None],
+) -> tuple[str, CaseResult]:
+    """Worker entry point: the payload names the profile's gated identity.
+
+    The profile name resolves to an immutable processor identity here, and the
+    payload's Unicode version rebuilds the applicability gate the parent used,
+    so a version-cleared measurement is not re-gated inside a worker.
+    """
+    profile_name, unicode_version, case, timeout = payload
+    profile = with_unicode_version(SUITE_PROFILES[profile_name], unicode_version)
+    return case.name, run_case(case, profile, timeout=timeout)
 
 
 def default_jobs() -> int:
@@ -568,12 +602,15 @@ def run_parallel(
 
     Workers receive the profile name rather than the profile object: the
     immutable processor configuration is not picklable, and resolving the
-    checked-in profile by name is the same identity every worker executes.
+    checked-in profile by name is the same identity every worker executes.  The
+    profile's declared Unicode version travels with the payload, so a worker
+    gates exactly as the parent did.
     """
     cases = tuple(cases)
     workers = default_jobs() if jobs is None else max(1, jobs)
     if workers == 1 or len(cases) <= 1:
         return run_suite(cases, profile, timeout=timeout)
+    unicode_version = profile.feature_profile.unicode_version
     method = "fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn"
     context = multiprocessing.get_context(method)
     budget = None if timeout is None else timeout + _PARENT_GRACE
@@ -587,7 +624,9 @@ def run_parallel(
             submitted = [
                 (
                     case,
-                    pool.apply_async(_run_payload, ((profile.name, case, timeout),)),
+                    pool.apply_async(
+                        _run_payload, ((profile.name, unicode_version, case, timeout),)
+                    ),
                 )
                 for case in batch
             ]

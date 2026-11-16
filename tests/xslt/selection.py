@@ -1,14 +1,21 @@
 """Applicability selection from the catalog's declared metadata.
 
-The pinned catalog declares applicability through ``spec`` and ``feature``
-dependencies and through the ``xsd-version`` of source schemas.  Selection
-consults exactly those declarations.  It never inspects stylesheet syntax,
-source documents, filenames, or test-set names, so a case that merely uses
-streamable constructs remains applicable to the non-streaming profile.
+The pinned catalog declares applicability through ``spec``, ``feature`` and
+``unicode-version`` dependencies and through the ``xsd-version`` of source
+schemas.  Selection consults those four declarations.  It never inspects
+stylesheet syntax, source documents, filenames, or test-set names, so a case
+that merely uses streamable constructs remains applicable to the non-streaming
+profile.
 
 A case that needs an optional feature the profile deliberately excludes (for
 example streaming) is not applicable.  A case that needs a capability nobody
 declared (yet) is unsupported, which is a different, honest outcome.
+
+A ``unicode-version`` dependency is honoured only when the profile declares a
+Unicode version: a profile that claims no version cannot exclude a
+version-pinned case.  XSD 1.1 Part 2 §G.4.2.2 and F&O 3.1 §1.1 make the tables
+an implementation choose ·implementation-defined·, so grading one version
+against a case that pins another has no conformance meaning.
 """
 
 from __future__ import annotations
@@ -28,6 +35,9 @@ _VERSION_FEATURE = re.compile(r"^(?P<axis>XPath|XSD)_(?P<major>\d+)\.(?P<minor>\
 #: A dotted major.minor version.
 _VERSION = re.compile(r"^\d+\.\d+$")
 
+#: A dotted version with at least two components: ``9.0``, ``14.0.0``.
+_UNICODE_VERSION = re.compile(r"^\d+(?:\.\d+)+$")
+
 
 def _version(value: str) -> tuple[int, int]:
     major, minor = value.split(".")
@@ -39,12 +49,14 @@ class FeatureProfile:
     """A processor profile described by its declared capabilities.
 
     ``language``, ``xpath_version`` and ``xsd_version`` are the versions the
-    profile implements.  ``features`` names the optional capabilities it
-    provides; :meth:`supports` derives ``XPath_3.1`` and ``XSD_1.1`` from the
-    version fields instead of duplicating them.  ``declined_features`` names
-    capabilities deliberately outside the profile, which keeps them distinct
-    from capabilities that are merely not implemented yet.  Both collections
-    are normalised to immutable frozensets.
+    profile implements; ``unicode_version`` is the version of the Unicode
+    character tables it grades against, or ``""`` when it makes no claim.
+    ``features`` names the optional capabilities it provides; :meth:`supports`
+    derives ``XPath_3.1`` and ``XSD_1.1`` from the version fields instead of
+    duplicating them.  ``declined_features`` names capabilities deliberately
+    outside the profile, which keeps them distinct from capabilities that are
+    merely not implemented yet.  Both collections are normalised to immutable
+    frozensets.
     """
 
     name: str
@@ -53,6 +65,7 @@ class FeatureProfile:
     xsd_version: str
     features: frozenset[str]
     declined_features: frozenset[str] = frozenset()
+    unicode_version: str = ""
     description: str = ""
 
     def __post_init__(self) -> None:
@@ -65,6 +78,11 @@ class FeatureProfile:
         ):
             if not _VERSION.fullmatch(value):
                 raise ValueError(f"{dimension} must be a dotted version, got {value!r}")
+        # An empty `unicode_version` is the profile making no version claim.
+        if self.unicode_version and not _UNICODE_VERSION.fullmatch(self.unicode_version):
+            raise ValueError(
+                f"unicode_version must be a dotted version, got {self.unicode_version!r}"
+            )
         overlap = self.features & self.declined_features
         if overlap:
             names = ", ".join(sorted(overlap))
@@ -110,12 +128,54 @@ def _specs_satisfied(case: TestCase, profile: FeatureProfile) -> bool:
     )
 
 
+def _unicode_version_matches(declared: str, engine: str) -> bool:
+    """Whether *declared* names the same Unicode version as *engine*.
+
+    Only the first two components are compared: the catalog's ``value`` is
+    ``major.minor`` (``9.0``) while an engine reports ``major.minor.patch``
+    (``14.0.0``).  Table versions do not differ in their patch release.
+    """
+    return _version(".".join(declared.split(".")[:2])) == _version(".".join(engine.split(".")[:2]))
+
+
+def _unicode_version_satisfied(dependency: Dependency, engine: str) -> bool:
+    """Whether one ``unicode-version`` dependency holds for *engine*.
+
+    A dependency that names no value, or a profile that declares no version,
+    cannot constrain the case, so both match.  A malformed value — the catalog
+    schema wants exactly ``major.minor`` — is likewise not comparable, and a
+    value that cannot be compared must not exclude a case.
+    ``satisfied="false"`` inverts the comparison, as it does for every other
+    dependency kind.
+    """
+    declared = dependency.value or ""
+    if not declared or not engine:
+        return True
+    if _VERSION.fullmatch(declared) is None:
+        return True
+    matched = _unicode_version_matches(declared, engine)
+    if dependency.satisfied is False:
+        return not matched
+    return matched
+
+
+def _unicode_versions_satisfied(case: TestCase, profile: FeatureProfile) -> bool:
+    return all(
+        _unicode_version_satisfied(dependency, profile.unicode_version)
+        for dependency in case.dependencies
+        if dependency.kind == "unicode-version"
+    )
+
+
 def inapplicability(case: TestCase, profile: FeatureProfile) -> Outcome | None:
     """Why *case* is outside *profile*, or ``None`` when it is applicable.
 
-    Returns :attr:`Outcome.NOT_APPLICABLE` for a language or capability the
-    profile deliberately excludes, and :attr:`Outcome.UNSUPPORTED_FEATURE` for
-    a declared capability the profile does not implement.
+    Returns :attr:`Outcome.NOT_APPLICABLE` for a language, capability or Unicode
+    version the profile deliberately excludes, and
+    :attr:`Outcome.UNSUPPORTED_FEATURE` for a declared capability the profile
+    does not implement.  The Unicode-version gate runs last, so a version-pinned
+    case that also needs a feature or schema the profile lacks still reports
+    ``UNSUPPORTED_FEATURE``.
     """
     if not _specs_satisfied(case, profile):
         return Outcome.NOT_APPLICABLE
@@ -129,6 +189,8 @@ def inapplicability(case: TestCase, profile: FeatureProfile) -> Outcome | None:
     for schema in case.environment.schemas:
         if _version(profile.xsd_version) < _version(schema.xsd_version):
             return Outcome.UNSUPPORTED_FEATURE
+    if not _unicode_versions_satisfied(case, profile):
+        return Outcome.NOT_APPLICABLE
     return None
 
 

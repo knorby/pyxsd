@@ -26,14 +26,23 @@ budget is refused before any verdict is compared.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from elementpath.regex import unicode_version
 from tests import report_xslt
 from tests.xslt.baseline import build_baseline, gate_changes, load_baseline
 from tests.xslt.catalog import load_catalog
-from tests.xslt.selection import select_cases
-from tests.xslt.suite import SUITE_PROFILES, default_jobs, run_parallel
+from tests.xslt.model import Dependency
+from tests.xslt.outcomes import Outcome
+from tests.xslt.selection import inapplicability, select_cases
+from tests.xslt.suite import (
+    ENGINE_UNICODE_VERSION,
+    SUITE_PROFILES,
+    default_jobs,
+    run_parallel,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CORPUS = REPO_ROOT / "tests" / "xslt" / "corpus" / "catalog.xml"
@@ -44,7 +53,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 #: The three profiles select independent sets from the same pinned catalog.
-EXPECTED_CASES = {"xslt30": 10457, "xslt20": 7982, "xslt10": 1978}
+#: The Unicode-version gate is part of selection: 1,580 cases declare a
+#: ``unicode-version`` dependency that differs from the engine's tables, so
+#: they are not applicable to the 3.0 and 2.0 profiles.  The 1.0 profile
+#: already excluded them through the inherited ``XSLT20+`` spec dependency.
+EXPECTED_CASES = {"xslt30": 8877, "xslt20": 6402, "xslt10": 1978}
 
 #: Total cases in the pinned catalogue, including cases outside every profile.
 EXPECTED_TOTAL = 14601
@@ -65,6 +78,81 @@ def test_catalog_parses_and_profiles_select_the_declared_cases() -> None:
         selected = select_cases(catalog, SUITE_PROFILES[name].feature_profile)
         assert len(selected) == expected, name
         assert len({case.name for case in selected}) == expected
+
+
+def test_every_profile_declares_the_engine_unicode_version() -> None:
+    """The gate compares the tables the engine reports, never a constant."""
+    assert unicode_version() == ENGINE_UNICODE_VERSION
+    assert ENGINE_UNICODE_VERSION
+    for name, profile in SUITE_PROFILES.items():
+        assert profile.feature_profile.unicode_version == ENGINE_UNICODE_VERSION, name
+
+
+def test_unicode_version_gate_selects_exactly_the_version_pinned_cases() -> None:
+    catalog = load_catalog(CORPUS)
+    gated = {
+        case.name: case
+        for case in catalog.cases.values()
+        if any(dependency.kind == "unicode-version" for dependency in case.dependencies)
+    }
+
+    # The pinned metadata declares two versions, inherited into every case.
+    assert len(gated) == 1580
+    assert {
+        dependency.value
+        for case in gated.values()
+        for dependency in case.dependencies
+        if dependency.kind == "unicode-version"
+    } == {"9.0", "6.0"}
+    assert {
+        test_set: sum(1 for case in gated.values() if case.test_set == test_set)
+        for test_set in {case.test_set for case in gated.values()}
+    } == {"unicode-90": 1460, "regex-classes": 120}
+
+    selected: dict[str, set[str]] = {}
+    for name in ("xslt30", "xslt20"):
+        profile = SUITE_PROFILES[name].feature_profile
+        chosen = select_cases(catalog, profile)
+        selected[name] = {case.name for case in chosen}
+        assert len(chosen) == EXPECTED_CASES[name], name
+        assert not selected[name] & set(gated), name
+        for case in gated.values():
+            assert inapplicability(case, profile) is Outcome.NOT_APPLICABLE, case.name
+
+    # The gate reads the declared version: the same case stays applicable when
+    # its declaration names the engine's own major.minor.
+    sample = next(case for case in gated.values() if case.test_set == "unicode-90")
+    matching = replace(
+        sample,
+        dependencies=(
+            Dependency("unicode-version", ".".join(ENGINE_UNICODE_VERSION.split(".")[:2])),
+        ),
+    )
+    assert inapplicability(matching, SUITE_PROFILES["xslt30"].feature_profile) is None
+
+    # Clearing the claim restores exactly the gated families, and nothing else.
+    cleared = replace(SUITE_PROFILES["xslt30"].feature_profile, unicode_version="")
+    restored = {case.name for case in select_cases(catalog, cleared)}
+    assert restored - selected["xslt30"] == set(gated)
+    assert not selected["xslt30"] - restored
+    assert len(restored) == 10457
+
+    # Unrelated dependencies still exclude a case from a version-cleared profile.
+    unsupported = [
+        case
+        for case in catalog.cases.values()
+        if case.name not in restored
+        and inapplicability(case, cleared) is Outcome.UNSUPPORTED_FEATURE
+    ]
+    older = [
+        case
+        for case in catalog.cases.values()
+        if "XSLT10" in case.specs and case.name not in restored
+    ]
+    assert unsupported
+    assert older
+    for case in older:
+        assert inapplicability(case, cleared) is Outcome.NOT_APPLICABLE, case.name
 
 
 def test_each_baseline_names_the_pinned_catalog_and_profile() -> None:
