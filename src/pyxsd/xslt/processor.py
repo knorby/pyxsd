@@ -149,6 +149,7 @@ from pyxsd.xslt.compiler.plans import (
     _WithParamPlan,
 )
 from pyxsd.xslt.compiler.python_instructions import PYTHON_INSTRUCTION_COMPILERS
+from pyxsd.xslt.compiler.schema_imports import _merge_schema_pools
 from pyxsd.xslt.compiler.static import (
     EffectiveAttribute,
     EffectiveElement,
@@ -619,6 +620,7 @@ class XsltProcessor:
             resolver=resolver,
             xsd_version=self.xsd_version,
             resource_policy=self.resource_policy,
+            schema=pool,
             profile=self._profile(),
         )
         self._check_static_profile(package, effective)
@@ -664,6 +666,7 @@ class XsltProcessor:
             resolver=_copy_resolver(resolver),
             xsd_version=self.xsd_version,
             resource_policy=self.resource_policy,
+            schema=pool,
             top_level=False,
             profile=self._profile(),
         )
@@ -711,6 +714,7 @@ class XsltProcessor:
             resolver=synthetic_resolver,
             xsd_version=self.xsd_version,
             resource_policy=self.resource_policy,
+            schema=pool,
         )
         self._check_static_profile(layer_package, layer_effective)
         return _compile_stylesheet(
@@ -1008,31 +1012,6 @@ def _reject_non_schema_aware_features(package: CompiledPackage) -> None:
                         uri=module.identity,
                         location=node.source_location(),
                     )
-
-
-def _merge_schema_pools(
-    primary: SchemaPool | None,
-    imported: SchemaPool | None,
-) -> SchemaPool | None:
-    """Compose an explicit caller schema pool with imported schemas."""
-    if primary is None:
-        return imported
-    if imported is None:
-        return primary
-    if primary.xsd_version != imported.xsd_version:
-        raise ValueError("the explicit schema pool and imported schemas use different XSD versions")
-    try:
-        return SchemaPool(
-            (*primary.raw_schemas, *imported.raw_schemas),
-            xsd_version=primary.xsd_version,
-            merge_namespaces=True,
-        )
-    except ValueError as exc:
-        raise XsltStaticError(
-            str(exc),
-            code="XTSE0220",
-            cause=exc,
-        ) from exc
 
 
 # ---------------------------------------------------------------------------

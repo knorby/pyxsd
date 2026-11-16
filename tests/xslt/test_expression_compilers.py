@@ -835,3 +835,18 @@ def test_compile_xpath_wraps_code_less_exceptions(
         compile_xpath("1", StaticContext())
     assert _code(caught.value) == "XPST0003"
     assert isinstance(caught.value.cause, ValueError)
+
+
+def test_xpath_variable_with_a_supplied_schema_type_compiles(tmp_path: Path) -> None:
+    context = _context(tmp_path).with_schema(_schema(tmp_path))
+    payload = compile_sequence_type("doc:Payload", context)
+    name = f"{{{DOC_NS}}}payload"
+    context = context.with_variables(
+        {
+            name: StaticVariable(
+                name=name, kind="variable", visibility="public", sequence_type=payload
+            )
+        }
+    )
+
+    assert compile_xpath("$doc:payload instance of doc:Payload", context).source

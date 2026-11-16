@@ -116,6 +116,8 @@ from pyxsd.xslt.compiler.schema_imports import (
     _IMPORT_SCHEMA,
     _attach_schema_pools,
     _check_schema_consistency,
+    _compile_schema_import_declarations,
+    _merge_schema_pools,
     _parse_schema_import,
     _SchemaImport,
 )
@@ -802,6 +804,7 @@ def compile_package_set(
     principal: PackageInput | None = None,
     xsd_version: str = "1.1",
     resource_policy: Any = None,
+    schema: SchemaPool | None = None,
     top_level: bool = True,
     profile: ProfileOptions | None = None,
 ) -> CompiledPackage:
@@ -811,6 +814,11 @@ def compile_package_set(
     through a matching ``xsl:use-package`` declaration.  An explicit
     ``principal`` selects a different supplied source (or loads one additional
     source) without changing that registration rule.
+
+    *schema* is the caller's in-scope schema definitions (the
+    ``XsltProcessor.compile(schema=...)`` pool); it is visible to every
+    package's component signatures, exactly as the composed stylesheet merges
+    it into every package's expression context.
 
     ``xsl:import-schema`` declarations in the resulting package closure are
     compiled through pyxsd under *xsd_version* and the explicit
@@ -855,7 +863,12 @@ def compile_package_set(
         principal_module = loaded[-1][1]
     if principal_module is None:
         raise ValueError("compile_package_set requires at least one package source")
-    compiled = _PackageCompiler(resolver).compile(
+    compiled = _PackageCompiler(
+        resolver,
+        schema=schema,
+        xsd_version=xsd_version,
+        resource_policy=resource_policy,
+    ).compile(
         _descriptor(principal_module),
         top_level=top_level,
     )
@@ -1243,8 +1256,18 @@ def _parse_use_package(element: EffectiveElement, module: EffectiveModule) -> _U
 
 
 class _PackageCompiler:
-    def __init__(self, resolver: PackageResolver) -> None:
+    def __init__(
+        self,
+        resolver: PackageResolver,
+        *,
+        schema: SchemaPool | None = None,
+        xsd_version: str = "1.1",
+        resource_policy: Any = None,
+    ) -> None:
         self._resolver = resolver
+        self._schema = schema
+        self._xsd_version = xsd_version
+        self._resource_policy = resource_policy
         self._cache: dict[tuple[str | None, str], CompiledPackage] = {}
         self._active: list[tuple[str | None, str]] = []
 
@@ -1272,6 +1295,14 @@ class _PackageCompiler:
 
     def _build(self, descriptor: PackageDescriptor, *, top_level: bool) -> CompiledPackage:
         local = _collect(descriptor)
+        imported = _compile_schema_import_declarations(
+            local.schema_imports,
+            xsd_version=self._xsd_version,
+            resource_policy=self._resource_policy,
+            uri=descriptor.module.identity,
+            location=descriptor.module.root.source_location(),
+        )
+        schema = _merge_schema_pools(self._schema, imported)
         groups = _group_declarations(local.declarations, descriptor)
         local_visibility = _build_local_components(descriptor, groups, local.exposes)
 
@@ -1437,7 +1468,7 @@ class _PackageCompiler:
                             module=site.module,
                         )
                     assert target.signature is not None
-                    signature = _signature(parsed.declarations[0])
+                    signature = _signature(parsed.declarations[0], schema=schema)
                     if not _signatures_compatible(target.signature, signature):
                         raise _error(
                             f"the overriding signature for {name!r} is incompatible",
@@ -1523,7 +1554,7 @@ class _PackageCompiler:
             if group.kind == "mode":
                 continue
             key = _component_key(group.kind, group.name, group.arity)
-            signature = _signature(group.declarations[-1])
+            signature = _signature(group.declarations[-1], schema=schema)
             components[key] = _make_component(
                 group,
                 signature=signature,
@@ -1613,6 +1644,7 @@ class _PackageCompiler:
             ),
             location=descriptor.module.root.source_location(),
             schema_imports=local.schema_imports,
+            schema_pool=imported,
             input_type_annotations=_package_input_type_annotations(descriptor),
             default_validation=_package_default_validation(descriptor),
         )

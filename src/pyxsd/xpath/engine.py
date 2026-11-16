@@ -966,7 +966,7 @@ def _build_parser(
         options: dict[str, Any] = {
             "namespaces": dict(static_context.namespaces),
             "default_namespace": static_context.default_namespace,
-            "variable_types": dict(static_context.variable_types),
+            "variable_types": {},
             "base_uri": base_uri if base_uri is not None else static_context.base_uri,
             "default_collation": static_context.default_collation,
             "xsd_version": static_context.xsd_version,
@@ -985,6 +985,11 @@ def _build_parser(
         _install_legacy_1_0_overrides(parser)
     else:
         _register_schema_constructors(parser, static_context)
+        # A declared type may be a user-defined schema type the parser can only
+        # resolve once its pool proxy is bound; pyxsd validated the declaration
+        # already (XPST0051/XPST0008), so assign the full map here instead of
+        # letting the constructor reject it.
+        parser.variable_types = dict(static_context.variable_types)
 
     for name in static_context.functions:
         _register_declared_function(

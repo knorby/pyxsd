@@ -35,6 +35,7 @@ from pyxsd.xslt.errors import XsltStaticError
 from pyxsd.xslt.precedence import compare_precedence
 
 if TYPE_CHECKING:
+    from pyxsd.xdm.schema import SchemaPool
     from pyxsd.xslt.compiler.packages import CompiledPackage, PackageDescriptor
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -848,8 +849,8 @@ def _parse_priority(element: EffectiveElement, module: EffectiveModule) -> Decim
     return priority
 
 
-def _module_context(module: EffectiveModule) -> StaticContext:
-    return StaticContext.for_module(module)
+def _module_context(module: EffectiveModule, *, schema: SchemaPool | None = None) -> StaticContext:
+    return StaticContext.for_module(module, schema=schema)
 
 
 def _type(
@@ -867,8 +868,10 @@ def _type(
 def _parameter_signatures(
     element: EffectiveElement,
     module: EffectiveModule,
+    *,
+    schema: SchemaPool | None = None,
 ) -> tuple[ParameterSignature, ...]:
-    context = _module_context(module)
+    context = _module_context(module, schema=schema)
     parameters: list[ParameterSignature] = []
     seen: set[str] = set()
     for child in element.elements:
@@ -938,19 +941,19 @@ def _context_item_signature(
     )
 
 
-def _signature(declaration: _Declaration) -> Signature:
+def _signature(declaration: _Declaration, *, schema: SchemaPool | None = None) -> Signature:
     element = declaration.element
     module = declaration.module
     if declaration.kind == "template":
-        context = _module_context(module)
+        context = _module_context(module, schema=schema)
         return Signature(
             kind="template",
             return_type=_type(element, "as", context, default="item()*"),
-            parameters=_parameter_signatures(element, module),
+            parameters=_parameter_signatures(element, module, schema=schema),
             context_item=_context_item_signature(element, module, context),
         )
     if declaration.kind == "function":
-        context = _module_context(module)
+        context = _module_context(module, schema=schema)
         flags = {
             name: value
             for name in (
@@ -966,11 +969,11 @@ def _signature(declaration: _Declaration) -> Signature:
         return Signature(
             kind="function",
             return_type=_type(element, "as", context, default="item()*"),
-            parameters=_parameter_signatures(element, module),
+            parameters=_parameter_signatures(element, module, schema=schema),
             flags=flags,
         )
     if declaration.kind == "variable":
-        context = _module_context(module)
+        context = _module_context(module, schema=schema)
         required = _yes_no(
             element.attribute("required"),
             False,
@@ -1000,7 +1003,7 @@ def _signature(declaration: _Declaration) -> Signature:
             },
         )
     if declaration.kind == "accumulator":
-        context = _module_context(module)
+        context = _module_context(module, schema=schema)
         return Signature(
             kind="accumulator",
             sequence_type=_type(element, "as", context, default="item()*"),

@@ -10,6 +10,7 @@ the advisory XSD inspection report.
 
 from __future__ import annotations
 
+import io
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any
@@ -3761,3 +3762,84 @@ def test_higher_precedence_resolves_conflicting_decimal_format_attributes(
     )
     path = _write(tmp_path, "decimal-resolved.xsl", principal)
     assert compile_package_set(path).decimal_format("app:d").attribute("decimal-separator") == ";"
+
+
+def test_supplied_schema_type_reaches_a_used_package_signature() -> None:
+    from pyxsd.schema import Schema
+    from pyxsd.xdm.schema import SchemaPool
+
+    namespace = "urn:example:supplied"
+    pool = SchemaPool(
+        (
+            Schema.compile(
+                io.BytesIO(
+                    (
+                        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+                        f'xmlns:sup="{namespace}" targetNamespace="{namespace}">'
+                        '<xs:simpleType name="PartNumber">'
+                        '<xs:restriction base="xs:string"/></xs:simpleType></xs:schema>'
+                    ).encode()
+                ),
+                xsd_version="1.0",
+            ),
+        ),
+        xsd_version="1.1",
+        merge_namespaces=True,
+    )
+    base = (
+        '<xsl:package name="urn:base" version="1.0" '
+        f'xmlns:xsl="{XSLT_NS}" xmlns:sup="{namespace}" xmlns:b="urn:base">'
+        '<xsl:function name="b:part" visibility="public" as="sup:PartNumber">'
+        '<xsl:param name="p" as="sup:PartNumber"/><xsl:sequence select="$p"/>'
+        "</xsl:function></xsl:package>"
+    )
+    principal = (
+        '<xsl:package name="urn:app" version="1.0" '
+        f'xmlns:xsl="{XSLT_NS}" xmlns:b="urn:base" xmlns:sup="{namespace}">'
+        '<xsl:use-package name="urn:base"/>'
+        '<xsl:template name="main" visibility="public">'
+        '<xsl:sequence select="b:part(sup:PartNumber(&quot;1&quot;))"/>'
+        "</xsl:template></xsl:package>"
+    )
+
+    compiled = compile_package_set(base, principal, schema=pool)
+
+    assert compiled.components  # the used package's typed signature resolved
+
+
+def test_used_package_import_schema_type_resolves_in_its_signature(tmp_path: Path) -> None:
+    namespace = "urn:example:supplied"
+    extra = tmp_path / "extra.xsd"
+    extra.write_text(
+        (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+            f'xmlns:sup="{namespace}" targetNamespace="{namespace}">'
+            '<xs:simpleType name="Extra"><xs:restriction base="xs:string"/>'
+            "</xs:simpleType></xs:schema>"
+        ),
+        encoding="utf-8",
+    )
+    base = tmp_path / "base.xsl"
+    base.write_text(
+        (
+            '<xsl:package name="urn:base" version="1.0" '
+            f'xmlns:xsl="{XSLT_NS}" xmlns:sup="{namespace}" xmlns:b="urn:base">'
+            f'<xsl:import-schema namespace="{namespace}" schema-location="extra.xsd"/>'
+            '<xsl:function name="b:extra" visibility="public" as="sup:Extra">'
+            '<xsl:param name="p" as="sup:Extra"/><xsl:sequence select="$p"/>'
+            "</xsl:function></xsl:package>"
+        ),
+        encoding="utf-8",
+    )
+    principal = (
+        '<xsl:package name="urn:app" version="1.0" '
+        f'xmlns:xsl="{XSLT_NS}" xmlns:b="urn:base" xmlns:sup="{namespace}">'
+        '<xsl:use-package name="urn:base"/>'
+        '<xsl:template name="main" visibility="public">'
+        '<xsl:sequence select="b:extra(sup:Extra(&quot;1&quot;))"/>'
+        "</xsl:template></xsl:package>"
+    )
+
+    compiled = compile_package_set(base, principal)
+
+    assert compiled.components  # the library's own import pool reached its signature

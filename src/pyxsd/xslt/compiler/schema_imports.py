@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from functools import cmp_to_key
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -158,12 +159,39 @@ def _attach_schema_pools(
         _attach_schema_pools(dependency, xsd_version=xsd_version, resource_policy=resource_policy)
         for dependency in package.dependencies
     )
+    if package.schema_pool is not None:
+        return replace(package, dependencies=dependencies)
     pool = _compile_schema_imports(
         package,
         xsd_version=xsd_version,
         resource_policy=resource_policy,
     )
     return replace(package, dependencies=dependencies, schema_pool=pool)
+
+
+def _merge_schema_pools(
+    primary: SchemaPool | None,
+    imported: SchemaPool | None,
+) -> SchemaPool | None:
+    """Compose an explicit caller schema pool with imported schemas."""
+    if primary is None:
+        return imported
+    if imported is None:
+        return primary
+    if primary.xsd_version != imported.xsd_version:
+        raise ValueError("the explicit schema pool and imported schemas use different XSD versions")
+    try:
+        return SchemaPool(
+            (*primary.raw_schemas, *imported.raw_schemas),
+            xsd_version=primary.xsd_version,
+            merge_namespaces=True,
+        )
+    except ValueError as exc:
+        raise XsltStaticError(
+            str(exc),
+            code="XTSE0220",
+            cause=exc,
+        ) from exc
 
 
 def _check_schema_consistency(package: CompiledPackage) -> None:
@@ -195,7 +223,25 @@ def _compile_schema_imports(
     resource_policy: Any,
 ) -> SchemaPool | None:
     """Compile one package's own ``xsl:import-schema`` declarations."""
-    declarations = list(package.schema_imports)
+    return _compile_schema_import_declarations(
+        package.schema_imports,
+        xsd_version=xsd_version,
+        resource_policy=resource_policy,
+        uri=package.modules[0].identity if package.modules else None,
+        location=package.location,
+    )
+
+
+def _compile_schema_import_declarations(
+    declarations: Sequence[_SchemaImport],
+    *,
+    xsd_version: str,
+    resource_policy: Any,
+    uri: str | None,
+    location: IssueLocation | None,
+) -> SchemaPool | None:
+    """Compile declarations collected before the compiled package exists."""
+    declarations = list(declarations)
     if not declarations:
         return None
 
@@ -246,8 +292,8 @@ def _compile_schema_imports(
         raise XsltStaticError(
             str(exc),
             code="XTSE0220",
-            uri=package.modules[0].identity if package.modules else None,
-            location=package.location,
+            uri=uri,
+            location=location,
             cause=exc,
         ) from exc
 
