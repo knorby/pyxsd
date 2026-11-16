@@ -465,6 +465,22 @@ class TestPlaceholders:
         assert isinstance(ref, ReferencePlaceholder)
         assert ref.base == "<memory>"
 
+    def test_xml_base_fragment_is_a_finding(self):
+        schema = read_schema(
+            f"""
+            <grammar xmlns="{RNG_NS}">
+              <start xml:base="parts/#fragment">
+                <externalRef href="child.rng"/>
+              </start>
+            </grammar>
+            """
+        )
+
+        assert "relaxng-invalid-base" in codes(schema)
+        ref = find_one(schema, ReferencePlaceholder)
+        assert isinstance(ref, ReferencePlaceholder)
+        assert ref.base == "<memory>"
+
 
 class TestNames:
     def test_element_names_use_relax_ng_namespace_inheritance(self):

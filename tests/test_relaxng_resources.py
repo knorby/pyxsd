@@ -487,6 +487,17 @@ class TestXmlBase:
         main = (FIXTURES / "external" / "main.rng").resolve()
         assert resolve_xml_base(str(main), "") == str(main)
 
+    def test_xml_base_fragment_is_rejected_before_filesystem_normalization(self, tmp_path):
+        main = (tmp_path / "main.rng").resolve()
+
+        with pytest.raises(ResourcePolicyError, match="fragment"):
+            resolve_xml_base(str(main), "parts/#fragment")
+
+        assert (
+            resolve_xml_base(str(main), "parts%23fragment/")
+            == str(tmp_path / "parts#fragment") + "/"
+        )
+
     def test_absolute_remote_xml_base_is_used_verbatim(self):
         url = "https://example.com/schema.rng"
         assert resolve_xml_base("local.rng", url) == url

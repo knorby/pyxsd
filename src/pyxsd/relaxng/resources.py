@@ -209,8 +209,15 @@ def resolve_xml_base(base: str, xml_base: str) -> str:
     current base.  An anonymous memory base cannot resolve a relative value
     because it has no directory.  The value is transformed by the XLink 1.0
     section 5.4 escaping procedure first, as RELAX NG section 4.5 requires.
+
+    A base URI has no fragment component (RFC 3986 section 5.1), so a raw
+    ``#`` is rejected before it can become a filesystem character.  A
+    percent-encoded ``%23`` remains a legal filename character.
     """
-    return _resolve_against(base, xlink_escape(xml_base))
+    escaped = xlink_escape(xml_base)
+    if "#" in escaped:
+        raise ResourcePolicyError("a RELAX NG xml:base value must not use a fragment identifier")
+    return _resolve_against(base, escaped)
 
 
 def _resolve_against(base: str, reference: str) -> str:
