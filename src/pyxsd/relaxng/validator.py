@@ -72,6 +72,7 @@ __all__ = [
     "attribute_derivative",
     "children_derivative",
     "end_tag_derivative",
+    "expanded_name",
     "list_derivative",
     "nullable",
     "start_tag_close_derivative",
@@ -521,14 +522,14 @@ def _derive_event(
             return _apply_after(lambda tail: group(tail, rest), derived)
         return group(derived, rest)
     if event == "open" and isinstance(pattern, Element):
-        uri, local = _expanded_name(name)
+        uri, local = expanded_name(name)
         return (
             _after(pattern.pattern, Empty())
             if pattern.name_class.contains(uri, local)
             else NotAllowed()
         )
     if event == "attribute" and isinstance(pattern, Attribute):
-        uri, local = _expanded_name(name)
+        uri, local = expanded_name(name)
         if pattern.name_class.contains(uri, local):
             cx = cast(DerivationContext, context)
             if (_nullable(pattern.pattern) and _whitespace(lexical)) or _nullable(
@@ -538,7 +539,8 @@ def _derive_event(
     return NotAllowed()
 
 
-def _expanded_name(name: str) -> tuple[str | None, str]:
+def expanded_name(name: str) -> tuple[str | None, str]:
+    """Split an expanded Clark event name into its namespace URI and local part."""
     if name.startswith("{"):
         uri, local = name[1:].split("}", 1)
         return uri, local
