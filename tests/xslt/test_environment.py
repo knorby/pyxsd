@@ -36,6 +36,7 @@ from tests.xslt.model import (
     Stylesheet,
 )
 from tests.xslt.model import TestCase as CatalogCase
+from tests.xslt.runner import CaseExecutionError
 from tests.xslt.support import stylesheet
 
 from pyxsd.schema import Schema as CompiledSchema
@@ -85,6 +86,7 @@ def _case(
     schemas: tuple[Schema, ...] = (),
     packages: tuple[Package, ...] = (),
     collections: tuple[Collection, ...] = (),
+    sources: tuple[Source, ...] = (),
     params: tuple[Param, ...] = (),
 ) -> CatalogCase:
     return CatalogCase(
@@ -97,6 +99,7 @@ def _case(
             schemas=schemas,
             packages=packages,
             collections=collections,
+            sources=sources,
         ),
         invocation=Invocation(
             stylesheets=(Stylesheet(role="principal", path=PurePosixPath("sheet.xsl")),),
@@ -339,6 +342,25 @@ def test_a_resource_policy_reaches_the_schema_compiler(
     ]
 
 
+def test_the_schema_cache_is_keyed_by_the_resource_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A policy can serve different bytes for one path, so it is cache identity."""
+    _write(tmp_path, "money.xsd", _simple_schema(MONEY_NS, "amount"))
+    case = _case(tmp_path, schemas=(_schema("secondary", "money.xsd"),))
+    calls = _counting_compiles(monkeypatch)
+    first = object()
+    second = object()
+
+    build_schema_pool(case, xsd_version="1.1", resource_policy=first)
+    build_schema_pool(case, xsd_version="1.1", resource_policy=first)
+    build_schema_pool(case, xsd_version="1.1", resource_policy=second)
+    build_schema_pool(case, xsd_version="1.1")
+
+    assert len(calls) == 3
+    assert len(_COMPILED_SCHEMAS) == 3
+
+
 # ---------------------------------------------------------------------------
 # Environment fingerprint
 
@@ -382,6 +404,25 @@ def test_the_fingerprint_tracks_every_schema_version(tmp_path: Path) -> None:
     assert environment_fingerprint(ten) != environment_fingerprint(eleven)
 
 
+def test_the_fingerprint_tracks_schema_roles(tmp_path: Path) -> None:
+    """Role decides pool composition, so it is part of the identity."""
+    imported = _case(tmp_path, schemas=(_schema("stylesheet-import", "money.xsd"),))
+    supporting = _case(tmp_path, schemas=(_schema("secondary", "money.xsd"),))
+
+    assert environment_fingerprint(imported) != environment_fingerprint(supporting)
+
+
+def test_the_fingerprint_tracks_schema_uris(tmp_path: Path) -> None:
+    """A declared namespace URI can select a hinted schema, so it is identity."""
+    plain = _case(tmp_path, schemas=(_schema("source-reference", "money.xsd"),))
+    hinted = _case(
+        tmp_path,
+        schemas=(_schema("source-reference", "money.xsd", uri=MONEY_NS),),
+    )
+
+    assert environment_fingerprint(plain) != environment_fingerprint(hinted)
+
+
 def test_the_fingerprint_tracks_packages() -> None:
     library = Package(role="secondary", path=PurePosixPath("lib.xsl"))
 
@@ -421,7 +462,7 @@ def test_the_fingerprint_is_a_stable_digest(tmp_path: Path) -> None:
     )
     payload = json.dumps(
         [
-            [["money.xsd", "1.0"]],
+            [["money.xsd", "stylesheet-import", "", "1.0"]],
             [["lib.xsl", "secondary", "", ""]],
             [["urn:c", []]],
         ],
@@ -448,6 +489,14 @@ def _hat_schema(*, maximum: int = 10) -> str:
 
 
 HAT_SCHEMA = _hat_schema()
+
+
+def _xhtml_schema(element: str, type_name: str) -> str:
+    return f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{XHTML_NS}"
+    xmlns:h="{XHTML_NS}" elementFormDefault="qualified">
+  <xs:complexType name="{type_name}"/>
+  <xs:element name="{element}" type="h:{type_name}"/>
+</xs:schema>"""
 
 
 def _hat_sheet(root: Path) -> Path:
@@ -530,3 +579,50 @@ def test_static_parameters_still_receive_the_pool(
     assert snapshot.xml == "<out>4</out>"
     assert isinstance(seen[0], SchemaPool)
     assert suite._COMPILED == {}
+
+
+def test_swapped_schema_roles_never_share_a_compiled_artifact(tmp_path: Path) -> None:
+    """One path set, two roles: the pool differs, so the artifact must too.
+
+    Both schemas target the XHTML namespace, so the secondary filter keeps
+    exactly one document: whichever declaration is not ``secondary``.  The
+    stylesheet needs an element that only the ``a`` document declares, so
+    sharing the artifact would decide the second case with the first case's
+    pool instead of failing its compile.
+    """
+    _write(tmp_path, "xhtml-a.xsd", _xhtml_schema("html", "htmlType"))
+    _write(tmp_path, "xhtml-b.xsd", _xhtml_schema("body", "bodyType"))
+    _write(
+        tmp_path,
+        "sheet.xsl",
+        stylesheet(
+            '<xsl:template match="schema-element(h:html)"><out>typed</out></xsl:template>'
+            '<xsl:template match="/"><out>other</out></xsl:template>',
+            namespaces={"h": XHTML_NS},
+        ).decode("utf-8"),
+    )
+    source = (Source(role=".", content=f'<html xmlns="{XHTML_NS}"/>'),)
+    a_is_imported = _case(
+        tmp_path,
+        schemas=(
+            _schema("stylesheet-import", "xhtml-a.xsd"),
+            _schema("secondary", "xhtml-b.xsd"),
+        ),
+        sources=source,
+    )
+    b_is_imported = _case(
+        tmp_path,
+        schemas=(
+            _schema("secondary", "xhtml-a.xsd"),
+            _schema("stylesheet-import", "xhtml-b.xsd"),
+        ),
+        sources=source,
+    )
+
+    assert environment_fingerprint(a_is_imported) != environment_fingerprint(b_is_imported)
+    assert suite.execute_case(a_is_imported, XSLT30).xml == "<out>other</out>"
+    with pytest.raises(CaseExecutionError, match="schema-element"):
+        suite.execute_case(b_is_imported, XSLT30)
+    # The failing case caches nothing, so one artifact exists: the one whose
+    # pool names ``h:html``.
+    assert len(suite._COMPILED) == 1

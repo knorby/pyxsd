@@ -32,10 +32,13 @@ from pyxsd.xdm.schema import SchemaPool
 #: case touches only its own few, so a small cache covers every family.
 _COMPILED_SCHEMA_CACHE_SIZE = 8
 
-#: Compiled corpus schemas by ``(corpus path, declared xsd_version)``.  The
-#: corpus is pinned and immutable for a run, so a hit is the same schema the
-#: compiler would build; the entries are shared by every pool that names them.
-_COMPILED_SCHEMAS: dict[tuple[str, str], Schema] = {}
+#: Compiled corpus schemas by ``(corpus path, declared xsd_version, resource
+#: policy identity)``.  The corpus is pinned and immutable for a run, so for one
+#: policy a hit is the same schema the compiler would build, and the entries are
+#: shared by every pool that names them.  A policy can serve different bytes for
+#: one path, so it is part of the identity; each entry keeps its policy object
+#: alive, which keeps a live entry's identity from being recycled by another one.
+_COMPILED_SCHEMAS: dict[tuple[str, str, int | None], tuple[Schema, Any]] = {}
 
 
 def _source_identity(source: Source) -> tuple[str, str]:
@@ -49,12 +52,21 @@ def environment_fingerprint(case: TestCase) -> str:
     """A stable digest of every declaration that changes a compiled artifact.
 
     The fingerprint covers the schema set, the package set, and the collections
-    a case declares, sorted so declaration order never matters.  A case that
-    declares none of them has the empty fingerprint, which is also what a case
-    with no environment has: both compile against no environment.
+    a case declares, sorted so declaration order never matters.  A schema is
+    identified by its file, its declared XSD version, its role and its declared
+    namespace URI: the role decides which documents the pool composes as roots
+    (a ``secondary`` document the principal already includes is not one), and a
+    URI is a schema-hint target a source can select.  A case that declares none
+    of these has the empty fingerprint, which is also what a case with no
+    environment has: both compile against no environment.
     """
     schemas = sorted(
-        ("" if schema.path is None else str(schema.path), schema.xsd_version)
+        (
+            "" if schema.path is None else str(schema.path),
+            schema.role,
+            schema.uri or "",
+            schema.xsd_version,
+        )
         for schema in case.environment.schemas
     )
     packages = sorted(
@@ -124,14 +136,15 @@ def _compiled_schema(
     declaration: SchemaDeclaration,
     resource_policy: Any,
 ) -> Schema:
-    """One declared schema, compiled once per ``(path, xsd_version)`` per process."""
+    """One declared schema, compiled once per path, version, and policy."""
     if declaration.path is None:
         raise CatalogError(f"case {case.name!r} declares a schema without a file or a namespace")
     assert case.document_root is not None  # checked by build_schema_pool
     path = case.document_root / Path(str(declaration.path))
-    key = (str(path), declaration.xsd_version)
-    compiled = _COMPILED_SCHEMAS.get(key)
-    if compiled is None:
+    identity = None if resource_policy is None else id(resource_policy)
+    key = (str(path), declaration.xsd_version, identity)
+    cached = _COMPILED_SCHEMAS.get(key)
+    if cached is None:
         if not path.is_file():
             raise CatalogError(
                 f"the schema {str(declaration.path)!r} declared by case "
@@ -144,5 +157,6 @@ def _compiled_schema(
         )
         if len(_COMPILED_SCHEMAS) >= _COMPILED_SCHEMA_CACHE_SIZE:
             _COMPILED_SCHEMAS.pop(next(iter(_COMPILED_SCHEMAS)))
-        _COMPILED_SCHEMAS[key] = compiled
-    return compiled
+        _COMPILED_SCHEMAS[key] = (compiled, resource_policy)
+        return compiled
+    return cached[0]
