@@ -184,15 +184,29 @@ def test_recovery_reports_independent_missing_content_after_rejections():
     assert report.issues[0].details["recovery"] == v.RECOVERY_MISSING_CONTENT
 
 
-def test_recovery_suppresses_missing_content_for_a_rejected_text_scalar():
-    # The rejected text is the only supplied character data for the trailing
-    # scalar requirement, so missing content would repeat that rejection.
+def test_rejected_text_dependency_is_positional():
+    # The rejected text precedes the accepted child a, so it cannot satisfy the
+    # trailing scalar after a; the missing scalar is independent.
     pattern = element("r", Group(element("a"), Data(INTEGER)))
     outcome, report = recover("<r>bad<a/></r>", pattern)
-
     assert not outcome.valid
-    assert codes(report) == [UNEXPECTED_CONTENT]
+    assert codes(report) == [UNEXPECTED_CONTENT, MISSING_CONTENT]
     assert report.issues[0].details["recovery"] == v.RECOVERY_CONTINUED_CONTENT
+    assert "data" in report.issues[1].details["expected-content"]
+
+    # The text occurs at the trailing scalar position itself; its scalar
+    # continuation advances that slot, so no duplicate missing-content finding
+    # appears.
+    _outcome, report = recover("<r><a/>bad</r>", pattern)
+    assert codes(report) == [INVALID_SCALAR]
+    assert report.issues[0].details["recovery"] == v.RECOVERY_CONTINUED_CONTENT
+
+    # An intervening accepted child cannot carry an earlier text rejection into
+    # the trailing scalar position.
+    pattern = element("r", Group(element("a"), Group(element("b"), Data(INTEGER))))
+    _outcome, report = recover("<r><a/>bad<b/></r>", pattern)
+    assert codes(report) == [UNEXPECTED_CONTENT, MISSING_CONTENT]
+    assert "data" in report.issues[1].details["expected-content"]
 
     # A later accepted text is progress, so the remaining scalar is missing.
     pattern = element("r", Group(element("a"), Group(Text(), Data(INTEGER))))
@@ -660,14 +674,6 @@ def test_attribute_name_and_character_data_detection_cover_current_position():
 
     with pytest.raises(TypeError, match="unknown RELAX NG pattern"):
         v._expects_attribute_name(Unknown(), None, "a")
-
-    assert v._expects_character_data(Data(INTEGER))
-    assert v._expects_character_data(Text())
-    assert v._expects_character_data(List(Data(INTEGER)))
-    assert not v._expects_character_data(Group(element("a"), Data(INTEGER)))
-    assert not v._expects_character_data(Choice(element("a"), Data(INTEGER)))
-    assert not v._expects_character_data(element("a"))
-    assert not v._expects_character_data(Empty())
 
 
 # ---------------------------------------------------------------------------

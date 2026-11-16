@@ -770,13 +770,6 @@ def children_derivative(
     return result
 
 
-@dataclass
-class _ElementRecovery:
-    """Per-occurrence recovery state for text-dependent missing content."""
-
-    rejected_text: bool = False
-
-
 def _without_attributes(pattern: Pattern, _memo: dict[int, Pattern] | None = None) -> Pattern:
     """Remove current-position attribute requirements from *pattern*.
 
@@ -957,34 +950,20 @@ def _expects_attribute_name(pattern: Pattern, uri: str | None, local: str) -> bo
     return False
 
 
-def _expects_character_data(pattern: Pattern) -> bool:
-    """Whether only character data remains required at this position.
-
-    A rejected text occurrence can satisfy such a continuation, so a later
-    missing-content finding would only repeat that rejection.  Required
-    elements keep the finding because a rejected element name did not match
-    them.
-    """
-    from pyxsd.relaxng.diagnostics import expectations
-
-    summary = expectations(pattern)
-    return not summary.elements and any(label != "empty" for label in summary.content)
-
-
 def _run_recovery_events(
     pattern: Pattern, events: Iterable[_Event], context: DerivationContext
 ) -> tuple[Pattern, tuple[ValidationMismatch, ...]]:
     """Continue through independent findings while keeping recovery nonaccepting.
 
     Unexpected subtrees are skipped whole, failed attributes are accounted for,
-    missing attributes are removed before content continues, and rejected text
-    suppresses only the trailing scalar missing-content cascade it explains.
-    Every recovery continuation remains a diagnostic state; the caller never
-    treats it as accepting evidence.
+    and missing attributes are removed before content continues.  A rejected
+    text advances only the scalar slot it occupied, so a later required element
+    or scalar is still reported independently; every recovery continuation
+    remains a diagnostic state and the caller never treats it as accepting
+    evidence.
     """
     original_context = context.datatype_context
     mismatches: list[ValidationMismatch] = []
-    states: list[_ElementRecovery] = []
     skipping: RelaxNGElement | None = None
     try:
         for event in events:
@@ -1017,7 +996,6 @@ def _run_recovery_events(
                     skipping = owner
                 else:
                     pattern = derived
-                    states.append(_ElementRecovery())
                 continue
             if event.kind == "attribute":
                 derived = attribute_derivative(
@@ -1062,18 +1040,15 @@ def _run_recovery_events(
                 continue
             if event.kind == "end_tag":
                 derived = end_tag_derivative(previous, context)
-                state = states.pop()
                 if isinstance(derived, NotAllowed):
-                    suppress = state.rejected_text and _expects_character_data(previous)
-                    if not suppress:
-                        mismatches.append(
-                            ValidationMismatch(
-                                "end_tag",
-                                owner,
-                                previous,
-                                recovery=RECOVERY_MISSING_CONTENT,
-                            )
+                    mismatches.append(
+                        ValidationMismatch(
+                            "end_tag",
+                            owner,
+                            previous,
+                            recovery=RECOVERY_MISSING_CONTENT,
                         )
+                    )
                     pattern = context.canonical_residual(_pop_continuations(previous))
                 else:
                     pattern = derived
@@ -1102,9 +1077,7 @@ def _run_recovery_events(
                     pattern = previous
                 else:
                     pattern = context.canonical_residual(choice(previous, relaxed))
-                states[-1].rejected_text = True
             else:
-                states[-1].rejected_text = False
                 pattern = derived
         return pattern, tuple(mismatches)
     finally:
