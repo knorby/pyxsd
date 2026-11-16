@@ -32,6 +32,7 @@ from pyxsd.relaxng.datatypes import (
     DatatypeLibraryRegistry,
     DatatypeParameter,
     DatatypeParameterError,
+    UnsupportedDatatypeError,
 )
 from pyxsd.relaxng.names import (
     AnyName,
@@ -596,6 +597,11 @@ class Simplifier:
         except DatatypeParameterError as exc:
             self._error("relaxng-invalid-datatype", str(exc), node.origins)
             return self._intern(NotAllowed(), node.origins)
+        except UnsupportedDatatypeError as exc:
+            if library != BUILTIN_LIBRARY:
+                raise
+            self._error("relaxng-unknown-datatype", str(exc), node.origins)
+            return self._intern(NotAllowed(), node.origins)
         return self._intern(Value(datatype, node.lexical), node.origins)
 
     def _value_namespaces(self, node: FullValue) -> dict[str, str]:
@@ -644,6 +650,11 @@ class Simplifier:
             )
         except DatatypeParameterError as exc:
             self._error("relaxng-invalid-datatype", str(exc), origins)
+            return self._intern(NotAllowed(), origins)
+        except UnsupportedDatatypeError as exc:
+            if node.datatype_library != BUILTIN_LIBRARY:
+                raise
+            self._error("relaxng-unknown-datatype", str(exc), origins)
             return self._intern(NotAllowed(), origins)
         if len(excepts) > 1:
             self._error(

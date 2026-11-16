@@ -5,11 +5,15 @@ tree exactly enough for ordered simplification and composition to decide
 legality: grammar scopes with parent links, ``start``/``define``/``combine``
 components, unresolved reference placeholders, name classes, datatype-library
 and namespace context, annotations, structural findings, and a source origin
-for every construct.
+for every construct.  Lexical QName/NCName errors, relative or fragment-bearing
+datatype-library URIs, duplicate ``except`` clauses, and element children of
+``name``/``value`` are structural findings too.
 """
 
 from __future__ import annotations
 
+import re
+from bisect import bisect_right
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Literal, cast
@@ -126,6 +130,153 @@ _KNOWN_ATTRIBUTES: dict[str, frozenset[str]] = {
 
 #: Attributes allowed on every RELAX NG element.
 _COMMON_ATTRIBUTES = frozenset({"datatypeLibrary", "ns"})
+
+# ---------------------------------------------------------------------------
+# XML 1.0 lexical names and datatype-library URIs
+# ---------------------------------------------------------------------------
+#
+# RELAX NG's ``name`` attributes are XML QNames and its ``ref``/``define``
+# names are NCNames.  The 2001 specification predates XML 1.0 Fifth Edition,
+# so the Fourth Edition character classes below apply: a combining mark such
+# as U+0E35 is a name character but cannot start a name.  The tables encode
+# productions [85]-[89] as inclusive hexadecimal ranges.
+
+_BASE_CHAR = (
+    "0041-005A 0061-007A 00C0-00D6 00D8-00F6 00F8-00FF 0100-0131 0134-013E 0141-0148 "
+    "014A-017E 0180-01C3 01CD-01F0 01F4-01F5 01FA-0217 0250-02A8 02BB-02C1 0386 0388-038A "
+    "038C 038E-03A1 03A3-03CE 03D0-03D6 03DA 03DC 03DE 03E0 03E2-03F3 0401-040C 040E-044F "
+    "0451-045C 045E-0481 0490-04C4 04C7-04C8 04CB-04CC 04D0-04EB 04EE-04F5 04F8-04F9 "
+    "0531-0556 0559 0561-0586 05D0-05EA 05F0-05F2 0621-063A 0641-064A 0671-06B7 06BA-06BE "
+    "06C0-06CE 06D0-06D3 06D5 06E5-06E6 0905-0939 093D 0958-0961 0985-098C 098F-0990 "
+    "0993-09A8 09AA-09B0 09B2 09B6-09B9 09DC-09DD 09DF-09E1 09F0-09F1 0A05-0A0A 0A0F-0A10 "
+    "0A13-0A28 0A2A-0A30 0A32-0A33 0A35-0A36 0A38-0A39 0A59-0A5C 0A5E 0A72-0A74 0A85-0A8B "
+    "0A8D 0A8F-0A91 0A93-0AA8 0AAA-0AB0 0AB2-0AB3 0AB5-0AB9 0ABD 0AE0 0B05-0B0C 0B0F-0B10 "
+    "0B13-0B28 0B2A-0B30 0B32-0B33 0B36-0B39 0B3D 0B5C-0B5D 0B5F-0B61 0B85-0B8A 0B8E-0B90 "
+    "0B92-0B95 0B99-0B9A 0B9C 0B9E-0B9F 0BA3-0BA4 0BA8-0BAA 0BAE-0BB5 0BB7-0BB9 0C05-0C0C "
+    "0C0E-0C10 0C12-0C28 0C2A-0C33 0C35-0C39 0C60-0C61 0C85-0C8C 0C8E-0C90 0C92-0CA8 "
+    "0CAA-0CB3 0CB5-0CB9 0CDE 0CE0-0CE1 0D05-0D0C 0D0E-0D10 0D12-0D28 0D2A-0D39 0D60-0D61 "
+    "0E01-0E2E 0E30 0E32-0E33 0E40-0E45 0E81-0E82 0E84 0E87-0E88 0E8A 0E8D 0E94-0E97 "
+    "0E99-0E9F 0EA1-0EA3 0EA5 0EA7 0EAA-0EAB 0EAD-0EAE 0EB0 0EB2-0EB3 0EBD 0EC0-0EC4 "
+    "0F40-0F47 0F49-0F69 10A0-10C5 10D0-10F6 1100 1102-1103 1105-1107 1109 110B-110C "
+    "110E-1112 113C 113E 1140 114C 114E 1150 1154-1155 1159 115F-1161 1163 1165 1167 1169 "
+    "116D-116E 1172-1173 1175 119E 11A8 11AB 11AE-11AF 11B7-11B8 11BA 11BC-11C2 11EB 11F0 "
+    "11F9 1E00-1E9B 1EA0-1EF9 1F00-1F15 1F18-1F1D 1F20-1F45 1F48-1F4D 1F50-1F57 1F59 1F5B "
+    "1F5D 1F5F-1F7D 1F80-1FB4 1FB6-1FBC 1FBE 1FC2-1FC4 1FC6-1FCC 1FD0-1FD3 1FD6-1FDB "
+    "1FE0-1FEC 1FF2-1FF4 1FF6-1FFC 2126 212A-212B 212E 2180-2182 3041-3094 30A1-30FA "
+    "3105-312C AC00-D7A3 "
+)
+
+_IDEOGRAPHIC = "3007 3021-3029 4E00-9FA5"
+
+_DIGIT = (
+    "0030-0039 0660-0669 06F0-06F9 0966-096F 09E6-09EF 0A66-0A6F 0AE6-0AEF 0B66-0B6F "
+    "0BE7-0BEF 0C66-0C6F 0CE6-0CEF 0D66-0D6F 0E50-0E59 0ED0-0ED9 0F20-0F29 "
+)
+
+_COMBINING_CHAR = (
+    "0300-0345 0360-0361 0483-0486 0591-05A1 05A3-05B9 05BB-05BD 05BF 05C1-05C2 05C4 "
+    "064B-0652 0670 06D6-06DC 06DD-06DF 06E0-06E4 06E7-06E8 06EA-06ED 0901-0903 093C "
+    "093E-094C 094D 0951-0954 0962-0963 0981-0983 09BC 09BE 09BF 09C0-09C4 09C7-09C8 "
+    "09CB-09CD 09D7 09E2-09E3 0A02 0A3C 0A3E 0A3F 0A40-0A42 0A47-0A48 0A4B-0A4D 0A70-0A71 "
+    "0A81-0A83 0ABC 0ABE-0AC5 0AC7-0AC9 0ACB-0ACD 0B01-0B03 0B3C 0B3E-0B43 0B47-0B48 "
+    "0B4B-0B4D 0B56-0B57 0B82-0B83 0BBE-0BC2 0BC6-0BC8 0BCA-0BCD 0BD7 0C01-0C03 0C3E-0C44 "
+    "0C46-0C48 0C4A-0C4D 0C55-0C56 0C82-0C83 0CBE-0CC4 0CC6-0CC8 0CCA-0CCD 0CD5-0CD6 "
+    "0D02-0D03 0D3E-0D43 0D46-0D48 0D4A-0D4D 0D57 0E31 0E34-0E3A 0E47-0E4E 0EB1 0EB4-0EB9 "
+    "0EBB-0EBC 0EC8-0ECD 0F18-0F19 0F35 0F37 0F39 0F3E 0F3F 0F71-0F84 0F86-0F8B 0F90-0F95 "
+    "0F97 0F99-0FAD 0FB1-0FB7 0FB9 20D0-20DC 20E1 302A-302F 3099 309A "
+)
+
+_EXTENDER = "00B7 02D0 02D1 0387 0640 0E46 0EC6 3005 3031-3035 309D-309E 30FC-30FE"
+
+
+def _merge_ranges(ranges: list[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1] + 1:
+            previous_start, previous_end = merged[-1]
+            merged[-1] = (previous_start, max(previous_end, end))
+        else:
+            merged.append((start, end))
+    return tuple(merged)
+
+
+def _parse_ranges(text: str) -> tuple[tuple[int, int], ...]:
+    ranges: list[tuple[int, int]] = []
+    for item in text.split():
+        start, _, end = item.partition("-")
+        ranges.append((int(start, 16), int(end or start, 16)))
+    return _merge_ranges(ranges)
+
+
+def _in_ranges(code: int, ranges: tuple[tuple[int, int], ...]) -> bool:
+    index = bisect_right(ranges, (code, 0x10FFFF)) - 1
+    return index >= 0 and code <= ranges[index][1]
+
+
+_NCNAME_START = _parse_ranges(f"{_BASE_CHAR} {_IDEOGRAPHIC} 005F")
+_NCNAME_CHAR = _parse_ranges(
+    f"{_BASE_CHAR} {_IDEOGRAPHIC} {_DIGIT} {_COMBINING_CHAR} {_EXTENDER} 002D 002E 005F"
+)
+
+#: RFC 2396's unreserved and reserved characters; ``%`` is handled separately
+#: as a two-digit escape.
+_URI_CHARACTERS = frozenset(";/?:@&=+$,-_.!~*'()")
+_URI_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*:")
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
+def _is_ncname(value: str) -> bool:
+    """Whether *value* is an NCName in XML 1.0 Fourth Edition terms."""
+    if not value or not _in_ranges(ord(value[0]), _NCNAME_START):
+        return False
+    return all(_in_ranges(ord(character), _NCNAME_CHAR) for character in value[1:])
+
+
+def _split_qname(value: str) -> tuple[str | None, str] | None:
+    """Split a lexical QName, or return ``None`` when it is not one."""
+    if ":" not in value:
+        return (None, value) if _is_ncname(value) else None
+    if value.count(":") != 1:
+        return None
+    prefix, local = value.split(":", 1)
+    if not _is_ncname(prefix) or not _is_ncname(local):
+        return None
+    return prefix, local
+
+
+def _is_datatype_library_uri(value: str) -> bool:
+    """Whether *value* is an absolute RFC 2396 URI reference sans fragment.
+
+    The RELAX NG XML syntax makes ``datatypeLibrary`` an absolute URI
+    reference: a relative reference or a fragment identifier is a schema
+    error.  An empty value names the built-in library and is accepted.
+    """
+    if not value:
+        return True
+    if "#" in value:
+        return False
+    scheme = _URI_SCHEME.match(value)
+    if scheme is None:
+        return False
+    remainder = value[scheme.end() :]
+    if not remainder:
+        return False
+    index = 0
+    while index < len(remainder):
+        character = remainder[index]
+        if character == "%":
+            if index + 2 >= len(remainder):
+                return False
+            if remainder[index + 1] not in _HEX_DIGITS or remainder[index + 2] not in _HEX_DIGITS:
+                return False
+            index += 3
+            continue
+        if not character.isascii() or (
+            not character.isalnum() and character not in _URI_CHARACTERS
+        ):
+            return False
+        index += 1
+    return True
 
 
 @dataclass(frozen=True)
@@ -666,6 +817,13 @@ class _Reader:
 
     def _check_attributes(self, element: ET.Element, tag: str, location: IssueLocation) -> None:
         allowed = _KNOWN_ATTRIBUTES.get(tag, frozenset())
+        library = element.get("datatypeLibrary")
+        if library is not None and not _is_datatype_library_uri(library):
+            self._finding(
+                "relaxng-invalid-datatype-library",
+                f"the datatypeLibrary value {library!r} is not an absolute URI reference",
+                replace(location, attribute="datatypeLibrary"),
+            )
         for attribute in sorted(element.attrib):
             namespace, name = _split_tag(attribute)
             if namespace is not None and namespace != RELAX_NG_NAMESPACE:
@@ -676,6 +834,20 @@ class _Reader:
                 "relaxng-unknown-attribute",
                 f"the RELAX NG {tag!r} element has no {name!r} attribute",
                 replace(location, attribute=attribute),
+            )
+
+    def _check_reference_name(self, name: str | None, location: IssueLocation, tag: str) -> None:
+        """Validate a ``ref``, ``parentRef``, or ``define`` NCName."""
+        if name is None:
+            return
+        text = name.strip()
+        if not text:
+            return
+        if not _is_ncname(text):
+            self._finding(
+                "relaxng-invalid-name",
+                f"the RELAX NG {tag} name {text!r} is not an NCName",
+                replace(location, attribute="name"),
             )
 
     def _child_specs(
@@ -829,6 +1001,12 @@ class _Reader:
                 annotations,
             )
         if tag == "value":
+            if any(_split_tag(child.tag)[0] != RELAX_NG_NAMESPACE for child in element):
+                self._finding(
+                    "relaxng-invalid-value-content",
+                    "a RELAX NG value element must contain only its lexical value",
+                    location,
+                )
             namespaces = tuple(sorted(self.resource.namespaces.bindings_for(element).items()))
             return FullValue(
                 datatype_library=library,
@@ -866,6 +1044,7 @@ class _Reader:
                     f"a RELAX NG {tag} element needs a name attribute",
                     replace(location, attribute="name"),
                 )
+            self._check_reference_name(name, location, tag)
             return ReferencePlaceholder(
                 kind=cast(Literal["ref", "parentRef"], tag),
                 name=name,
@@ -971,8 +1150,19 @@ class _Reader:
         location_attribute: str | None,
     ) -> FullName:
         text = lexical.strip()
-        if ":" in text:
-            prefix, local = text.split(":", 1)
+        parts = _split_qname(text)
+        if parts is None:
+            self._finding(
+                "relaxng-invalid-name",
+                f"the RELAX NG name {text!r} is not a QName",
+                replace(location, attribute=location_attribute)
+                if location_attribute is not None
+                else location,
+            )
+            prefix, local = text.split(":", 1) if ":" in text else (None, text)
+        else:
+            prefix, local = parts
+        if prefix is not None:
             if prefix == "xml":
                 uri: str | None = XML_NS
             else:
@@ -986,7 +1176,6 @@ class _Reader:
                         else location,
                     )
         else:
-            local = text
             uri = None if attribute_mode and "ns" not in element.attrib else _namespace(namespace)
         return FullName(
             lexical=lexical,
@@ -1010,6 +1199,12 @@ class _Reader:
         self._check_attributes(element, tag, location)
 
         if tag == "name":
+            if len(element):
+                self._finding(
+                    "relaxng-invalid-name-content",
+                    "a RELAX NG name element must contain only a QName",
+                    location,
+                )
             return self._qname_name(
                 element.text or "",
                 element,
@@ -1061,19 +1256,28 @@ class _Reader:
         location: IssueLocation,
         namespace: str,
     ) -> FullNameClass | None:
-        for child, child_location in self._child_specs(element, location):
-            _, tag = _split_tag(child.tag)
-            if tag != "except":
-                continue
-            self._check_attributes(child, "except", child_location)
-            except_namespace = child.attrib.get("ns", namespace)
-            alternatives = self._name_class_alternatives(child, child_location, except_namespace)
-            return FullNameExcept(
-                alternatives,
-                self._origins(child, child_location),
-                self._annotations(child, child_location),
+        excepts = [
+            (child, child_location)
+            for child, child_location in self._child_specs(element, location)
+            if _split_tag(child.tag)[1] == "except"
+        ]
+        for _, duplicate_location in excepts[1:]:
+            self._finding(
+                "relaxng-duplicate-except",
+                f"a RELAX NG {_split_tag(element.tag)[1]} element allows at most one except",
+                duplicate_location,
             )
-        return None
+        if not excepts:
+            return None
+        child, child_location = excepts[0]
+        self._check_attributes(child, "except", child_location)
+        except_namespace = child.attrib.get("ns", namespace)
+        alternatives = self._name_class_alternatives(child, child_location, except_namespace)
+        return FullNameExcept(
+            alternatives,
+            self._origins(child, child_location),
+            self._annotations(child, child_location),
+        )
 
     def _param(
         self,
@@ -1161,6 +1365,7 @@ class _Reader:
                 "a RELAX NG define element needs a name attribute",
                 replace(location, attribute="name"),
             )
+        self._check_reference_name(name, location, "define")
         return FullDefine(
             name=name,
             combine=element.get("combine"),

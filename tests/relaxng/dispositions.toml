@@ -1,0 +1,4 @@
+# The pinned catalogs contain no compact-syntax or DTD Compatibility cases.
+# Core and XSD 1.0 datatype assertions are release-required, so every case
+# keeps its catalog profile and needs no explicit exclusion entry.  Any future
+# entry here must name the feature its cases actually depend on.

@@ -313,10 +313,20 @@ class TestWhitespaceAndDatatypes:
         assert codes(report) == ["relaxng-invalid-datatype"]
         assert all(issue.phase == "schema" for issue in report.errors)
 
-    def test_unknown_datatypes_are_capability_failures(self):
+    def test_unknown_builtin_datatypes_are_schema_errors(self):
+        bundle, report, _ = run_simplify(
+            f'<element xmlns="{RNG_NS}" name="root"><data type="noSuchType"/></element>'
+        )
+
+        assert bundle.start == element("root", NotAllowed())
+        assert codes(report) == ["relaxng-unknown-datatype"]
+        assert all(issue.phase == "schema" for issue in report.errors)
+
+    def test_unknown_datatype_libraries_are_capability_failures(self):
         with pytest.raises(UnsupportedDatatypeError):
             run_simplify(
-                f'<element xmlns="{RNG_NS}" name="root"><data type="noSuchType"/></element>'
+                f'<element xmlns="{RNG_NS}" name="root">'
+                '<data type="noSuchType" datatypeLibrary="urn:unregistered"/></element>'
             )
 
     def test_parameter_without_a_name_is_a_schema_error(self):
