@@ -390,18 +390,29 @@ def test_each_parse_has_an_isolated_report_after_frozen_schema_issues():
     assert valid.report.error_count == 0
 
 
-def test_validation_does_not_retrieve_external_dtd_default_attributes(tmp_path):
+def test_validation_adds_no_defaults_and_retrieves_no_external_dtd(tmp_path):
+    """RELAX NG adds no defaults and performs no DTD Compatibility processing.
+
+    ElementTree's pre-existing application of internal-subset defaults is an
+    input-infoset behavior, not RELAX NG synthesis; this regression neither
+    depends on nor asserts against that parser behavior.
+    """
     schema = compile_schema(REQUIRED_ATTRIBUTE_SCHEMA)
+
+    plain = schema.parse(io.StringIO("<doc/>"), typed=False)
+    assert plain.root.attribute_lexical("flag") is None
+    assert {issue.code for issue in plain.report} == {MISSING_ATTRIBUTE}
+
     defaults = tmp_path / "defaults.dtd"
     defaults.write_text('<!ATTLIST doc flag CDATA "yes">', encoding="utf-8")
     path = tmp_path / "document.xml"
     path.write_text(f'<!DOCTYPE doc SYSTEM "{defaults.name}"><doc/>', encoding="utf-8")
 
-    document = schema.parse(path, typed=False)
+    external = schema.parse(path, typed=False)
 
-    assert not document.is_valid
-    assert document.root.attribute_lexical("flag") is None
-    assert {issue.code for issue in document.report} == {MISSING_ATTRIBUTE}
+    assert not external.is_valid
+    assert external.root.attribute_lexical("flag") is None
+    assert {issue.code for issue in external.report} == {MISSING_ATTRIBUTE}
 
 
 def test_validation_only_documents_reject_typed_and_annotation_capabilities():

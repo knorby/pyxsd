@@ -41,6 +41,8 @@ OTHER_LOCATION = IssueLocation("included.rng", (PathStep("define", 1),))
 def test_the_package_exposes_only_the_settled_public_contracts():
     assert set(relaxng.__all__) == {
         "AmbiguousValueError",
+        "RelaxNGDocument",
+        "RelaxNGElement",
         "RelaxNGLimitError",
         "RelaxNGLimits",
         "RelaxNGSchema",

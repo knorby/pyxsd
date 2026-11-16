@@ -938,7 +938,7 @@ def test_parse_is_explicitly_unsupported_without_consuming_input():
         schema.parse(stream)
     assert stream.reads == 0
 
-    with pytest.raises(PyXSDError, match="not supported"):
+    with pytest.raises(ValueError, match="not supported"):
         schema.parse("<doc/>", typed=False, capture="patterns")
 
     with pytest.raises(PyXSDError, match="not supported"):
@@ -948,6 +948,8 @@ def test_parse_is_explicitly_unsupported_without_consuming_input():
 def test_the_relaxng_package_exposes_the_real_compile_entry_point():
     assert set(relaxng.__all__) == {
         "AmbiguousValueError",
+        "RelaxNGDocument",
+        "RelaxNGElement",
         "RelaxNGLimitError",
         "RelaxNGLimits",
         "RelaxNGSchema",
