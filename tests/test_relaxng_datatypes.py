@@ -212,6 +212,7 @@ class TestBuiltinLibrary:
         second = BUILTIN.create("string", (), DatatypeContext("urn:b", {"p": "urn:p"}))
         assert first == second
         assert hash(first) == hash(second)
+        assert repr(first) == repr(second)
         assert first.context.base_uri is None
         assert second.context.base_uri == "urn:b"
 
@@ -344,6 +345,10 @@ class TestSelectorsAndRegistry:
         registration = DatatypeLibraryRegistration(OpaqueFactory(), 1)  # type: ignore[arg-type]
         with pytest.raises(DatatypeRegistrationError):
             registry.register("urn:custom", registration)
+
+    def test_registration_requires_a_fingerprint(self):
+        with pytest.raises(TypeError):
+            DatatypeLibraryRegistration(OpaqueFactory())  # type: ignore[call-arg]
 
     def test_registration_rejects_duplicates_and_builtin_overrides(self):
         registry = DatatypeLibraryRegistry()
@@ -491,6 +496,11 @@ class TestXsd10AnyUri:
             "http://[v1.x]",
             "http://[::1]:x",
             "http://[::1%25eth0]",
+            "http://",
+            "//",
+            "http:///path",
+            "///path",
+            "a://",
         )
         for lexical in invalid:
             assert not datatype.allows(lexical, EMPTY)
@@ -507,6 +517,8 @@ class TestXsd10AnyUri:
             "a|b",
             "\u00e9",
             "http://example.com/\u00e9dition",
+            "http://host",
+            "//host",
             "http://[::1]/x",
             "http://[::1]:8080",
             "http://[::1]:",
@@ -561,6 +573,35 @@ class TestXsdEquality:
         zoned = xsd("dateTime")
         assert zoned.equal("2000-01-01T00:00:00Z", EMPTY, "2000-01-01T01:00:00+01:00", EMPTY)
         assert not zoned.equal("2000-01-01T00:00:00", EMPTY, "2000-01-01T00:00:00Z", EMPTY)
+
+    def test_temporal_equality_keeps_fractional_seconds_exact(self):
+        date_time = xsd("dateTime")
+        assert not date_time.equal(
+            "2000-01-01T00:00:00.0000001Z",
+            EMPTY,
+            "2000-01-01T00:00:00.0000002Z",
+            EMPTY,
+        )
+        assert date_time.equal(
+            "2000-01-01T00:00:00.0000001Z",
+            EMPTY,
+            "2000-01-01T00:00:00.00000010Z",
+            EMPTY,
+        )
+
+        time = xsd("time")
+        assert not time.equal(
+            "00:00:00.0000001Z",
+            EMPTY,
+            "00:00:00.0000002Z",
+            EMPTY,
+        )
+        assert time.equal(
+            "00:00:00.0000001Z",
+            EMPTY,
+            "00:00:00.00000010Z",
+            EMPTY,
+        )
 
     def test_duration_equality_is_xsd_1_0_identity(self):
         duration = xsd("duration")
@@ -706,6 +747,83 @@ class TestXsd10TemporalNumbering:
         assert datatype.allows("-0001-01-01", EMPTY)
         assert not datatype.allows("0001-01-01", EMPTY)
 
+    def test_mixed_timezone_temporal_bounds_are_incomparable(self):
+        cases = (
+            ("date", "2000-01-20", "2000-01-20Z"),
+            ("dateTime", "2000-01-20T12:00:00", "2000-01-20T12:00:00Z"),
+            ("gYear", "2000", "2000Z"),
+            ("gYearMonth", "2000-01", "2000-01Z"),
+            ("gMonth", "--01", "--01Z"),
+            ("gMonthDay", "--01-01", "--01-01Z"),
+            ("gDay", "---01", "---01Z"),
+            ("time", "12:00:00", "12:00:00Z"),
+        )
+        for type_name, unzoned, zoned in cases:
+            for facet in ("minInclusive", "minExclusive", "maxInclusive", "maxExclusive"):
+                assert not xsd(type_name, (facet, zoned)).allows(unzoned, EMPTY)
+                assert not xsd(type_name, (facet, unzoned)).allows(zoned, EMPTY)
+
+    def test_mixed_timezone_temporal_bounds_can_be_determinate(self):
+        assert xsd("dateTime", ("maxInclusive", "2000-01-02T00:00:00Z")).allows(
+            "2000-01-01T00:00:00", EMPTY
+        )
+        assert xsd("dateTime", ("minInclusive", "2000-01-01T00:00:00Z")).allows(
+            "2000-01-03T00:00:00", EMPTY
+        )
+        assert not xsd("dateTime", ("maxInclusive", "2000-01-01T00:00:00Z")).allows(
+            "2000-01-02T00:00:00", EMPTY
+        )
+        assert xsd("date", ("maxInclusive", "2000-01-02Z")).allows("2000-01-01", EMPTY)
+        assert xsd("time", ("maxInclusive", "23:00:00Z")).allows("01:00:00", EMPTY)
+        assert xsd("dateTime", ("maxInclusive", "2000-01-02T00:00:00")).allows(
+            "2000-01-01T00:00:00Z", EMPTY
+        )
+        assert xsd("dateTime", ("minInclusive", "2000-01-01T00:00:00")).allows(
+            "2000-01-03T00:00:00Z", EMPTY
+        )
+
+    def test_midnight_24_temporal_equality(self):
+        assert xsd("dateTime").equal("2000-01-01T24:00:00Z", EMPTY, "2000-01-02T00:00:00Z", EMPTY)
+        assert xsd("time").equal("24:00:00Z", EMPTY, "00:00:00Z", EMPTY)
+
+    def test_invalid_non_year_temporal_bound_is_rejected(self):
+        with pytest.raises(DatatypeParameterError):
+            xsd("time", ("minInclusive", "not-a-time"))
+
+    def test_mixed_timezone_temporal_bound_pairs(self):
+        for type_name, unzoned, zoned in (
+            ("dateTime", "2000-01-01T00:00:00", "2000-01-01T00:00:00Z"),
+            ("date", "2000-01-01", "2000-01-01Z"),
+            ("time", "12:00:00", "12:00:00Z"),
+        ):
+            with pytest.raises(DatatypeParameterError):
+                xsd(
+                    type_name,
+                    ("minInclusive", unzoned),
+                    ("maxInclusive", zoned),
+                )
+            with pytest.raises(DatatypeParameterError):
+                xsd(
+                    type_name,
+                    ("minInclusive", zoned),
+                    ("maxInclusive", unzoned),
+                )
+
+        comparable = xsd(
+            "dateTime",
+            ("minInclusive", "2000-01-01T00:00:00"),
+            ("maxInclusive", "2000-01-03T00:00:00Z"),
+        )
+        assert comparable.allows("2000-01-02T00:00:00", EMPTY)
+
+    def test_fractional_temporal_bounds_are_exact(self):
+        bounded = xsd(
+            "dateTime",
+            ("maxInclusive", "2000-01-01T00:00:00.0000001Z"),
+        )
+        assert bounded.allows("2000-01-01T00:00:00.0000001Z", EMPTY)
+        assert not bounded.allows("2000-01-01T00:00:00.0000002Z", EMPTY)
+
 
 class TestXsd10DurationOrder:
     def test_comparable_durations_follow_the_four_reference_dates(self):
@@ -799,6 +917,14 @@ class TestXsd10DurationOrder:
         datatype = xsd("duration")
         assert not datatype.equal("P1Y", EMPTY, "P12M", EMPTY)
         assert datatype.equal("-PT0S", EMPTY, "PT0S", EMPTY)
+
+    def test_huge_duration_equality_returns_bool(self):
+        datatype = xsd("duration")
+        huge = "P" + "9" * 10000 + "Y"
+        other = "P" + "9" * 9999 + "8Y"
+        assert datatype.allows(huge, EMPTY)
+        assert datatype.equal(huge, EMPTY, huge, EMPTY) is True
+        assert datatype.equal(huge, EMPTY, other, EMPTY) is False
 
 
 class TestXsdValuePatterns:
@@ -914,7 +1040,13 @@ class TestXsdInventory:
             assert datatype.library_uri == XSD_LIBRARY
 
     def test_xsd_1_1_only_types_are_rejected_explicitly(self):
-        for type_name in ("anyAtomicType", "dateTimeStamp", "dayTimeDuration", "yearMonthDuration"):
+        for type_name in (
+            "anyAtomicType",
+            "dateTimeStamp",
+            "dayTimeDuration",
+            "precisionDecimal",
+            "yearMonthDuration",
+        ):
             with pytest.raises(UnsupportedDatatypeError, match=r"XSD 1\.1"):
                 xsd(type_name)
 
@@ -947,6 +1079,12 @@ class TestXsdQNames:
         assert datatype.equal("p:item", self.SCHEMA, "q:item", self.INSTANCE)
         assert not datatype.equal("p:item", self.SCHEMA, "q:item", EMPTY)
         assert not datatype.equal("p:item", self.SCHEMA, "r:item", self.SCHEMA)
+        assert not datatype.equal(
+            "p:item",
+            DatatypeContext(None, {"p": "urn:one"}),
+            "p:item",
+            DatatypeContext(None, {"p": "urn:two"}),
+        )
 
     def test_default_namespace_applies_to_unprefixed_qnames(self):
         datatype = XSD.create("QName", (), self.SCHEMA)
@@ -1027,9 +1165,15 @@ class TestPatternPayloads:
         assert value.lexical == "12"
 
     def test_datatypes_do_not_destabilize_choice_order(self):
-        first = choice(Data(xsd("integer")), Text())
-        second = choice(Text(), Data(xsd("integer")))
+        first_datatype = XSD.create("integer", (), DatatypeContext(None, {"p": "urn:one"}))
+        second_datatype = XSD.create("integer", (), DatatypeContext(None, {"q": "urn:two"}))
+        assert first_datatype == second_datatype
+        assert repr(first_datatype) == repr(second_datatype)
+
+        first = choice(Data(first_datatype), Text())
+        second = choice(Text(), Data(second_datatype))
         assert first == second
+        assert repr(first) == repr(second)
 
     def test_value_pattern_retains_the_schema_side_context(self):
         schema = DatatypeContext("urn:schema", {"p": "urn:one"})

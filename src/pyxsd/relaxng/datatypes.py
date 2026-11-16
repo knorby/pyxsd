@@ -86,6 +86,14 @@ from pyxsd.facets import (
 from pyxsd.locations import ConstraintInfo
 from pyxsd.xsd_data_types import (
     _DURATION_PARTS,
+    _TEMPORAL_DATE,
+    _TEMPORAL_DATETIME,
+    _TEMPORAL_GDAY,
+    _TEMPORAL_GMONTH,
+    _TEMPORAL_GMONTHDAY,
+    _TEMPORAL_GYEAR,
+    _TEMPORAL_GYEARMONTH,
+    _TEMPORAL_TIME,
     _YEAR,
     AnyURI,
     Base64Binary,
@@ -99,12 +107,9 @@ from pyxsd.xsd_data_types import (
     String,
     Token,
     XsdDataType,
-    _date_key,
-    _datetime_key,
     _days_from_civil,
-    _gyear_key,
-    _gyearmonth_key,
     _has_timezone,
+    _offset_seconds,
     qname_context,
     xsd_value_key,
 )
@@ -219,10 +224,15 @@ DatatypeSelector = str | tuple[str, str]
 
 _QNAME_TYPES = frozenset({"QName", "NOTATION"})
 #: Types whose lexical year has XSD 1.0-specific numbering and leap-day rules.
-_XSD10_TEMPORAL_TYPE_NAMES = frozenset({"date", "dateTime", "gYear", "gYearMonth"})
+_XSD10_YEAR_TYPE_NAMES = frozenset({"date", "dateTime", "gYear", "gYearMonth"})
+#: Timezone-bearing temporal types with the XSD 1.0 partial order.
+_XSD10_TEMPORAL_TYPE_NAMES = frozenset(
+    {"date", "dateTime", "gDay", "gMonth", "gMonthDay", "gYear", "gYearMonth", "time"}
+)
 _XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace"
 _XSD11_YEAR_ZERO = re.compile(r"^-?0{4}(?![0-9])")
 _YEAR_PREFIX = re.compile(r"^(-?[0-9]{4,})")
+_TEMPORAL_TIMEZONE_SPAN = decimal.Decimal(14 * 3600)
 _PROCESS_DEPENDENT_FINGERPRINT = re.compile(r"0x[0-9a-fA-F]+")
 
 #: XSD 1.0 §3.2.17 defines the anyURI lexical space through the XLink 5.4
@@ -236,7 +246,8 @@ _XLINK_ESCAPED_ASCII = frozenset(
 )
 _ANYURI_PATH = re.compile(r"^(?:[A-Za-z0-9\-_.!~*'():@&=+$,;]|/|%[0-9A-Fa-f]{2})*$")
 _ANYURI_URIC = re.compile(r"^(?:[A-Za-z0-9\-_.!~*'();/?:@&=+$,\[\]]|%[0-9A-Fa-f]{2})*$")
-_ANYURI_AUTHORITY = re.compile(r"^(?:[A-Za-z0-9\-_.!~*'()$+,;:@&=]|%[0-9A-Fa-f]{2}|\[|\])*$")
+_ANYURI_AUTHORITY = re.compile(r"^(?:[A-Za-z0-9\-_.!~*'()$+,;:@&=]|%[0-9A-Fa-f]{2}|\[|\])+$")
+_ANYURI_SCHEME_PREFIX = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 _XSD_PARAMETER_NAMES = frozenset(
     {
@@ -442,37 +453,135 @@ def _xsd10_astro_lexical(text: str) -> str:
     return _format_astro_year(astro_year) + text[len(year_text) :]
 
 
-def _xsd10_temporal_comparable_key(type_name: str, text: str) -> int:
-    """The XSD 1.0 value-space ordering key for one year-bearing type."""
-    key_text = _xsd10_astro_lexical(text)
+def _fraction_seconds(digits: str | None) -> decimal.Decimal:
+    """An exact Decimal for an XSD fractional-second digit string."""
+    return decimal.Decimal(f"0.{digits}") if digits else decimal.Decimal(0)
+
+
+def _xsd10_temporal_key(type_name: str, text: str) -> decimal.Decimal:
+    """An exact Decimal-second timeline key for an XSD 1.0 temporal value.
+
+    The key is normalized to UTC when a timezone is present and remains the
+    local timeline when it is absent.  Fractional seconds are kept exactly,
+    unlike the shared microsecond keys.
+    """
+    if type_name in _XSD10_YEAR_TYPE_NAMES:
+        text = _xsd10_astro_lexical(text)
     if type_name == "date":
-        key = _date_key(key_text)
-    elif type_name == "dateTime":
-        key = _datetime_key(key_text)
-    elif type_name == "gYear":
-        key = _gyear_key(key_text)
-    else:
-        key = _gyearmonth_key(key_text)
-    return cast(int, key)
+        match = _TEMPORAL_DATE.fullmatch(text)
+        assert match is not None
+        year, month, day = (int(match.group(index)) for index in range(1, 4))
+        offset = _offset_seconds(match.group(4))
+        return decimal.Decimal(_days_from_civil(year, month, day) * 86400 - offset)
+    if type_name == "dateTime":
+        match = _TEMPORAL_DATETIME.fullmatch(text)
+        assert match is not None
+        year, month, day, hour, minute, second = (int(match.group(index)) for index in range(1, 7))
+        fraction = _fraction_seconds(match.group(7))
+        offset = _offset_seconds(match.group(8))
+        days = _days_from_civil(year, month, day)
+        if hour == 24:
+            hour = 0
+            days += 1
+        return (
+            decimal.Decimal(days * 86400 + hour * 3600 + minute * 60 + second) + fraction - offset
+        )
+    if type_name == "gYear":
+        match = _TEMPORAL_GYEAR.fullmatch(text)
+        assert match is not None
+        year = int(match.group(1))
+        offset = _offset_seconds(match.group(2))
+        return decimal.Decimal(_days_from_civil(year, 1, 1) * 86400 - offset)
+    if type_name == "gYearMonth":
+        match = _TEMPORAL_GYEARMONTH.fullmatch(text)
+        assert match is not None
+        year, month = int(match.group(1)), int(match.group(2))
+        offset = _offset_seconds(match.group(3))
+        return decimal.Decimal(_days_from_civil(year, month, 1) * 86400 - offset)
+    if type_name == "gMonth":
+        match = _TEMPORAL_GMONTH.fullmatch(text)
+        assert match is not None
+        month = int(match.group(1))
+        offset = _offset_seconds(match.group(2))
+        return decimal.Decimal(_days_from_civil(1972, month, 1) * 86400 - offset)
+    if type_name == "gMonthDay":
+        match = _TEMPORAL_GMONTHDAY.fullmatch(text)
+        assert match is not None
+        month, day = int(match.group(1)), int(match.group(2))
+        offset = _offset_seconds(match.group(3))
+        return decimal.Decimal(_days_from_civil(1972, month, day) * 86400 - offset)
+    if type_name == "gDay":
+        match = _TEMPORAL_GDAY.fullmatch(text)
+        assert match is not None
+        day = int(match.group(1))
+        offset = _offset_seconds(match.group(2))
+        return decimal.Decimal((day - 1) * 86400 - offset)
+    match = _TEMPORAL_TIME.fullmatch(text)
+    assert match is not None
+    hour, minute, second = (int(match.group(index)) for index in range(1, 4))
+    fraction = _fraction_seconds(match.group(4))
+    offset = _offset_seconds(match.group(5))
+    if hour == 24:
+        hour = 0
+    return decimal.Decimal(hour * 3600 + minute * 60 + second) + fraction - offset
+
+
+def _xsd10_temporal_compare_keys(
+    left_key: decimal.Decimal,
+    left_zoned: bool,
+    right_key: decimal.Decimal,
+    right_zoned: bool,
+) -> int | None:
+    """XSD 1.0 §3.2.7.4 order for two temporal timeline keys."""
+    if left_zoned == right_zoned:
+        if left_key < right_key:
+            return -1
+        if left_key > right_key:
+            return 1
+        return 0
+    if left_zoned:
+        if left_key < right_key - _TEMPORAL_TIMEZONE_SPAN:
+            return -1
+        if left_key > right_key + _TEMPORAL_TIMEZONE_SPAN:
+            return 1
+        return None
+    if left_key + _TEMPORAL_TIMEZONE_SPAN < right_key:
+        return -1
+    if left_key - _TEMPORAL_TIMEZONE_SPAN > right_key:
+        return 1
+    return None
+
+
+def _xsd10_temporal_bound_text(type_name: str, text: str) -> str:
+    """Validate a temporal bound literal and return its processed lexical."""
+    if type_name in _XSD10_YEAR_TYPE_NAMES:
+        return str(_xsd10_temporal_value(type_name, text))
+    text = whitespace_transform("collapse", text)
+    try:
+        cast(Any, _XSD_10_TYPES[type_name])(text)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"Not a valid xs:{type_name}: {text!r}") from exc
+    return text
 
 
 def _xsd10_temporal_bounds(
     type_name: str, parameters: tuple[DatatypeParameter, ...]
-) -> tuple[tuple[str, int, str], ...]:
-    """Parse and conflict-check the temporal bounds of an XSD 1.0 datatype."""
-    bounds: dict[str, tuple[int, str]] = {}
+) -> tuple[tuple[str, decimal.Decimal, str, bool], ...]:
+    """Parse and conflict-check XSD 1.0 temporal bounds."""
+    bounds: dict[str, tuple[decimal.Decimal, str, bool]] = {}
     for parameter in parameters:
         if parameter.name not in _BOUND_PARAMETER_NAMES:
             continue
         try:
-            value = _xsd10_temporal_value(type_name, parameter.value)
+            text = _xsd10_temporal_bound_text(type_name, parameter.value)
         except (TypeError, ValueError) as exc:
             raise DatatypeParameterError(
                 f"{parameter.name} value {parameter.value!r} is not valid for xs:{type_name}: {exc}"
             ) from exc
         bounds[parameter.name] = (
-            _xsd10_temporal_comparable_key(type_name, str(value)),
-            str(value),
+            _xsd10_temporal_key(type_name, text),
+            text,
+            _has_timezone(text),
         )
     if "minInclusive" in bounds and "minExclusive" in bounds:
         raise DatatypeParameterError("cannot specify both 'minInclusive' and 'minExclusive'")
@@ -481,17 +590,13 @@ def _xsd10_temporal_bounds(
     lower = bounds.get("minInclusive") or bounds.get("minExclusive")
     upper = bounds.get("maxInclusive") or bounds.get("maxExclusive")
     if lower is not None and upper is not None:
-        lower_key = lower[0]
-        upper_key = upper[0]
-        lower_exclusive = "minExclusive" in bounds
-        upper_exclusive = "maxExclusive" in bounds
-        if lower_key > upper_key or (
-            lower_key == upper_key and (lower_exclusive or upper_exclusive)
-        ):
+        comparison = _xsd10_temporal_compare_keys(upper[0], upper[2], lower[0], lower[2])
+        exclusive = "minExclusive" in bounds or "maxExclusive" in bounds
+        if comparison is None or comparison < 0 or (comparison == 0 and exclusive):
             raise DatatypeParameterError(
                 "the declared temporal bounds leave no value in the datatype's value space"
             )
-    return tuple((name, key, text) for name, (key, text) in sorted(bounds.items()))
+    return tuple((name, key, text, zoned) for name, (key, text, zoned) in sorted(bounds.items()))
 
 
 @dataclass(frozen=True)
@@ -511,13 +616,22 @@ class _Xsd10Duration:
 _DURATION_REFERENCE_DATES = ((1696, 9), (1697, 2), (1903, 3), (1903, 7))
 
 
+def _parse_decimal_int(text: str) -> int:
+    """Parse an arbitrary-length decimal integer without int-string limits."""
+    value = 0
+    for start in range(0, len(text), 400):
+        chunk = text[start : start + 400]
+        value = value * 10 ** len(chunk) + int(chunk)
+    return value
+
+
 def _parse_xsd10_duration(text: str) -> _Xsd10Duration:
     """Parse a duration lexical already validated by the shared Duration class."""
     match = _DURATION_PARTS.fullmatch(text)
     assert match is not None
     years, months, days, hours, minutes, seconds_text = match.groups()
     components = [
-        int(component[:-1]) if component is not None else 0
+        _parse_decimal_int(component[:-1]) if component is not None else 0
         for component in (years, months, days, hours, minutes)
     ]
     seconds = decimal.Decimal(seconds_text[:-1]) if seconds_text is not None else decimal.Decimal(0)
@@ -688,11 +802,29 @@ def _check_anyuri_authority(netloc: str) -> None:
             raise TypeError(f"anyURI port {port!r} is not numeric")
 
 
+def _has_empty_authority(escaped: str) -> bool:
+    """Whether the escaped reference contains an empty ``//`` authority."""
+    rest = escaped
+    scheme = _ANYURI_SCHEME_PREFIX.match(rest)
+    if scheme is not None:
+        rest = rest[scheme.end() :]
+    if not rest.startswith("//"):
+        return False
+    authority = rest[2:]
+    for separator in "/?#":
+        index = authority.find(separator)
+        if index != -1:
+            authority = authority[:index]
+    return not authority
+
+
 def _require_xsd10_anyuri(text: str) -> str:
     """Return the XLink-escaped form when *text* is an XSD 1.0 anyURI lexical."""
     escaped = _xlink_escape(text)
     if escaped.count("#") > 1:
         raise TypeError("anyURI contains more than one fragment separator")
+    if _has_empty_authority(escaped):
+        raise TypeError(f"anyURI {text!r} has an empty authority component")
     try:
         parts = urlsplit(escaped)
     except ValueError as exc:
@@ -763,7 +895,7 @@ class DatatypeFactory(ABC):
         return f"{type(self).__name__}()"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class ScalarDatatype(Datatype):
     """A frozen scalar datatype backed by one pyxsd XSD built-in class.
 
@@ -786,7 +918,9 @@ class ScalarDatatype(Datatype):
     #: XSD 1.0 temporal bounds use the adapter's year numbering, not the
     #: shared facet ordering key.  Derived from ``parameters`` like the other
     #: facets, so it is excluded from datatype identity.
-    temporal_bounds: tuple[tuple[str, int, str], ...] = field(default=(), compare=False, repr=False)
+    temporal_bounds: tuple[tuple[str, decimal.Decimal, str, bool], ...] = field(
+        default=(), compare=False, repr=False
+    )
     #: XSD 1.0 duration bounds use the four-reference-date partial order, not
     #: the shared total-order helper.  Also derived from ``parameters``.
     duration_bounds: tuple[tuple[str, _Xsd10Duration, str], ...] = field(
@@ -796,6 +930,15 @@ class ScalarDatatype(Datatype):
     def __post_init__(self) -> None:
         semantic = tuple(self.context.namespaces.items()) if self.type_name in _QNAME_TYPES else ()
         object.__setattr__(self, "semantic_context", semantic)
+
+    def __repr__(self) -> str:
+        """Represent exactly the fields that participate in equality."""
+        return (
+            f"ScalarDatatype(library_uri={self.library_uri!r}, "
+            f"type_name={self.type_name!r}, xsd_type={self.xsd_type!r}, "
+            f"parameters={self.parameters!r}, white_space={self.white_space!r}, "
+            f"semantic_context={self.semantic_context!r})"
+        )
 
     def allows(self, lexical: str, context: DatatypeContext) -> bool:
         try:
@@ -874,23 +1017,27 @@ class ScalarDatatype(Datatype):
         return text, value
 
     def _check_temporal_bounds(self, text: str) -> None:
-        """Enforce XSD 1.0 temporal bounds with the adapter's year numbering."""
+        """Enforce XSD 1.0 temporal bounds under the timezone partial order."""
         if not self.temporal_bounds:
             return
-        actual = _xsd10_temporal_comparable_key(self.type_name, text)
-        for name, bound, bound_text in self.temporal_bounds:
+        actual_key = _xsd10_temporal_key(self.type_name, text)
+        actual_zoned = _has_timezone(text)
+        for name, bound_key, bound_text, bound_zoned in self.temporal_bounds:
+            comparison = _xsd10_temporal_compare_keys(
+                actual_key, actual_zoned, bound_key, bound_zoned
+            )
             if name == "minInclusive":
-                violated = actual < bound
+                accepted = comparison in (0, 1)
             elif name == "minExclusive":
-                violated = actual <= bound
+                accepted = comparison == 1
             elif name == "maxInclusive":
-                violated = actual > bound
+                accepted = comparison in (-1, 0)
             else:
-                violated = actual >= bound
-            if violated:
+                accepted = comparison == -1
+            if not accepted:
                 raise FacetViolation(
-                    f"facet {name!r} violated: {text!r} is outside the XSD 1.0 "
-                    f"temporal bound {bound_text!r}",
+                    f"facet {name!r} violated: {text!r} is not ordered against "
+                    f"the XSD 1.0 temporal bound {bound_text!r}",
                     ConstraintInfo(name, bound_text, text),
                 )
 
@@ -931,7 +1078,7 @@ class ScalarDatatype(Datatype):
         return value
 
     def _build_value(self, text: str, context: DatatypeContext) -> Any:
-        if self.type_name in _XSD10_TEMPORAL_TYPE_NAMES:
+        if self.type_name in _XSD10_YEAR_TYPE_NAMES:
             return _xsd10_temporal_value(self.type_name, text)
         if self.type_name == "anyURI":
             return _xsd10_anyuri_value(text)
@@ -953,7 +1100,8 @@ class ScalarDatatype(Datatype):
             text = str(value)
             return (
                 self.type_name,
-                (_xsd10_temporal_comparable_key(self.type_name, text), _has_timezone(text)),
+                _has_timezone(text),
+                _xsd10_temporal_key(self.type_name, text),
             )
         if isinstance(value, QName):
             return ("QName", (value._uri_ or "", value._local_))
