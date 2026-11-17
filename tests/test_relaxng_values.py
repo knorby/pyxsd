@@ -305,6 +305,23 @@ CUSTOM_SCHEMA = (
 )
 
 
+def shared_interior_schema(*, multi_anchor=False, reverse=False):
+    """Legal recursive elements whose optional content is interned together."""
+    definitions = [
+        f'<define name="{name}"><element name="{name}">'
+        '<optional><ref name="c"/></optional></element></define>'
+        for name in (("a", "b", "c") if multi_anchor else ("a", "c"))
+    ]
+    start = '<ref name="a"/>'
+    if multi_anchor:
+        start = '<choice><ref name="a"/><ref name="b"/></choice>'
+    return (
+        f'<grammar xmlns="{RNG_NS}"><start>{start}</start>'
+        + "".join(reversed(definitions) if reverse else definitions)
+        + "</grammar>"
+    )
+
+
 def doubling_schema(depth):
     """A definition chain where each level references the previous one twice."""
     definitions = ['<define name="d0"><element name="n"><empty/></element></define>']
@@ -557,6 +574,110 @@ class TestPatternIdentity:
         with pytest.raises(ValueError, match="outside a bound reference"):
             pattern_identity(cycle)
 
+        # An enclosing bound reference must not legalize a purely structural loop.
+        reference = Ref()
+        reference.bind(cycle)
+        with pytest.raises(ValueError, match="outside a bound reference"):
+            pattern_identity(reference)
+
+    @pytest.mark.parametrize("multi_anchor", [False, True])
+    def test_shared_interior_reference_cycles_have_content_identities(self, multi_anchor):
+        snapshots = []
+        for reverse in (False, True):
+            schema = compile_schema(
+                shared_interior_schema(multi_anchor=multi_anchor, reverse=reverse)
+            )
+            elements = [definition.pattern for definition in schema.grammar.definitions.values()]
+            shared = elements[0].pattern
+            assert all(element.pattern is shared for element in elements)
+            fingerprint = grammar_fingerprint(schema.grammar, schema.datatype_fingerprint)
+            snapshots.append((pattern_identity(schema.grammar.start), pattern_identity(shared)))
+            repeat = compile_schema(
+                shared_interior_schema(multi_anchor=multi_anchor, reverse=reverse)
+            )
+            assert fingerprint == grammar_fingerprint(repeat.grammar, repeat.datatype_fingerprint)
+            assert candidate_id(fingerprint, atomic_contract()) == candidate_id(
+                grammar_fingerprint(repeat.grammar, repeat.datatype_fingerprint), atomic_contract()
+            )
+            assert tuple(sorted(schema.projection.routes)) == tuple(
+                sorted(repeat.projection.routes)
+            )
+            document = schema.parse(io.StringIO("<a><c><c/></c></a>"), typed=True)
+            assert document.is_valid
+            assert schema.parse(io.StringIO("<a><c/></a>"), typed=False).is_valid
+            assert not schema.parse(io.StringIO("<a><wrong/></a>"), typed=False).is_valid
+            assert not document.report.has_errors
+        assert snapshots[0] == snapshots[1]
+
+    def test_shared_interior_cycles_are_process_independent(self):
+        program = """
+import io
+from tests.test_relaxng_values import shared_interior_schema
+from pyxsd.relaxng import describe_schema
+from pyxsd.relaxng.contracts import candidate_id, grammar_fingerprint, pattern_identity, scalar_contract
+from pyxsd.relaxng.patterns import Text
+from pyxsd.relaxng.schema import RelaxNGSchema
+for multi in (False, True):
+    schema = RelaxNGSchema.compile(io.StringIO(shared_interior_schema(multi_anchor=multi)))
+    fingerprint = grammar_fingerprint(schema.grammar, schema.datatype_fingerprint)
+    print(fingerprint)
+    print(candidate_id(fingerprint, scalar_contract(Text())))
+    print(pattern_identity(schema.grammar.start))
+    print([component.id for component in describe_schema(schema).components])
+    print(schema.parse(io.StringIO("<a><c/></a>"), typed=True).is_valid)
+"""
+        outputs = [
+            subprocess.run(
+                [sys.executable, "-c", program],
+                env={**os.environ, "PYTHONHASHSEED": seed},
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout
+            for seed in ("1", "42")
+        ]
+        assert outputs[0] == outputs[1]
+        assert outputs[0].splitlines().count("True") == 2
+
+    def test_shared_interior_recursion_keeps_scalar_candidates_and_evidence(self, tmp_path):
+        xml = shared_interior_schema(multi_anchor=True).replace(
+            "<optional>",
+            '<attribute name="n"><choice>'
+            f'<data type="integer" datatypeLibrary="{XSD_LIB}"/>'
+            '<data type="string"/></choice></attribute><optional>',
+        )
+        snapshots = []
+        for index in range(2):
+            path = tmp_path / f"schema-{index}.rng"
+            path.write_text(xml, encoding="utf-8")
+            schema = RelaxNGSchema.compile(path)
+            schema.require_valid()
+            document = schema.parse(
+                io.StringIO('<a n="12"><c n="13"/></a>'), typed=True, capture="patterns"
+            )
+            assert document.is_valid
+            assert document.binding_evidence is not None
+            assert document.annotations is not None
+            value = document.root.attribute_value("n")
+            assert isinstance(value, AlternativeValue)
+            assert value.as_type("xsd:integer") == 12
+            assert value.as_type("string") == "12"
+            child_value = document.root.children[0].attribute_value("n")
+            assert isinstance(child_value, AlternativeValue)
+            assert child_value.as_type("xsd:integer") == 13
+            assert tuple(candidate.candidate_id for candidate in child_value.candidates) == tuple(
+                candidate.candidate_id for candidate in value.candidates
+            )
+            snapshots.append(
+                (
+                    value.grammar_fingerprint,
+                    tuple(candidate.candidate_id for candidate in value.candidates),
+                    tuple(candidate.contract for candidate in value.candidates),
+                    tuple(sorted(schema.projection.routes)),
+                )
+            )
+        assert snapshots[0] == snapshots[1]
+
     def test_non_scalar_patterns_are_rejected(self):
         with pytest.raises(TypeError, match="not a RELAX NG scalar"):
             scalar_contract(Empty())
@@ -611,6 +732,15 @@ class TestGrammarFingerprint:
         assert grammar_fingerprint(
             first.grammar, first.datatype_fingerprint
         ) == grammar_fingerprint(second.grammar, second.datatype_fingerprint)
+        # Successful pre-NodeBack encodings retain their release-facing IDs.
+        assert grammar_fingerprint(first.grammar, first.datatype_fingerprint) == (
+            "pyxsd.relaxng.grammar/1:"
+            "0d701bb688fb89c1ae20e1c428f7f9d92476c1175199b51039b47f11881029ae"
+        )
+        assert pattern_identity(first.grammar.start) == (
+            "pyxsd.relaxng.pattern/1:"
+            "e237b39f83503d0868b104c531aaa728bcae9f7fe508f437b991b06a71d847fe"
+        )
 
     def test_structure_and_registry_identity_change_the_fingerprint(self):
         schema = compile_schema(SCHEMA)

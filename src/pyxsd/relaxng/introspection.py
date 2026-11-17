@@ -7,16 +7,15 @@ an authored ``define`` name therefore does not appear in the inventory.  Every
 definition component is marked :attr:`RelaxNGComponentDescription.synthetic`
 and its origins retain the authored evidence that produced it.
 
-Component IDs cover normalized grammar semantics, never source paths, object
-addresses, process hash seeds, or mapping insertion order.  Locations and
-origins are evidence beside those identities: relocating a resource or
-recompiling an equivalent grammar changes locations, not IDs.  Name classes
-use a canonical, alternative-ordered presentation; pattern components use
-:func:`pyxsd.relaxng.contracts.pattern_identity`; route components use the
-projection planner's route ID directly.  A node on the interior of a legal
-reference cycle gets a contextual ID keyed by a definition element's pattern
-identity and a structural path, because ``pattern_identity`` is defined only
-for a graph root and rejects re-entering an active structural node.
+Component IDs cover normalized grammar semantics and dependency-content
+identities, never source paths, object addresses, process hash seeds, or
+mapping insertion order.  Locations and origins are evidence beside those
+identities: relocating or recompiling identical resource content changes
+locations, not IDs.  Name classes use a canonical, alternative-ordered
+presentation. Every pattern component, including an interior shared by a
+legal reference cycle, uses :func:`pyxsd.relaxng.contracts.pattern_identity`.
+Route components use the projection planner's route ID directly.
+
 """
 
 from __future__ import annotations
@@ -104,13 +103,24 @@ class RelaxNGComponentDescription:
 
     ``kind`` is ``grammar``, ``define``, ``pattern``, ``name-class``,
     ``datatype``, ``route``, or ``resource``.  ``namespace`` is an
-    expanded-name namespace only (never a datatype-library URI).  A
-    definition's ``name`` is the composer-generated key and ``synthetic`` is
-    true; authored ``define`` names survive only as origins.  ``name_class``
+    expanded-name namespace only (never a datatype-library URI).
+    ``name`` is a local name for exact element/attribute patterns and exact
+    name classes, an expanded element name for routes, a datatype type name for
+    datatypes, and the first canonical resource ID for resources; otherwise it
+    is absent.  A definition's ``name`` is the composer-generated key.
+    ``synthetic`` is true only for these generated definitions, not for
+    patterns or routes; authored ``define`` names survive only as origins.
+    ``owner_id`` is ``None`` for the grammar and ``"grammar"`` for all other
+    components: it denotes inventory ownership, not an authored parent.
+    ``name_class``
     is the canonical presentation of an element/attribute/route/name-class
     name class.  Datatype components carry their normalized library, type, and
     ordered parameters.  There are deliberately no XSD-only fields: no
     ``global_declaration``, Python binding, occurrence count, or default.
+    Origins union every contributing site.  Location is the smallest origin
+    by source ID then source/path/attribute, except resources: their location
+    is the first sorted reference's location (possibly absent), ordered by
+    containing ID, reference, base, xml:base, canonical ID, then location.
     """
 
     id: str
@@ -353,17 +363,7 @@ class _Builder:
 
 
 def _add_patterns(grammar: CompiledGrammar, builder: _Builder) -> dict[int, str]:
-    """Describe the whole final graph from the start and every definition.
-
-    Reference cycles are legal.  ``pattern_identity`` is defined for a graph
-    root; it rejects a cycle entered from a non-anchor interior node (for
-    example the content choice of a recursive element whose back edge targets
-    that element).  Such a node receives a contextual ID built from its
-    deterministic anchor's ``pattern_identity`` and the deterministic
-    structural path discovered from that anchor.  The anchor is a definition
-    element or, as a fallback, the start pattern; both are cycle entries for
-    which ``pattern_identity`` is defined.
-    """
+    """Describe the whole final graph using content-derived pattern identities."""
     nodes: dict[int, Pattern] = {}
     order: list[Pattern] = []
     links: dict[int, tuple[tuple[str, Pattern], ...]] = {}
@@ -382,24 +382,7 @@ def _add_patterns(grammar: CompiledGrammar, builder: _Builder) -> dict[int, str]
         links[key] = children
         pending.extend(child for _, child in children)
 
-    ids: dict[int, str] = {}
-    contextual: list[Pattern] = []
-    for node in order:
-        try:
-            ids[id(node)] = "pattern:" + pattern_identity(node)
-        except ValueError as error:
-            if "outside a bound reference" not in str(error):
-                raise
-            contextual.append(node)
-    if contextual:
-        anchors = _anchor_roots(grammar)
-        discovered = _discover_paths(links, anchors)
-        for node in contextual:
-            anchor_id, path = discovered[id(node)]
-            digest = sha256(
-                json.dumps([anchor_id, *path], ensure_ascii=True).encode("utf-8")
-            ).hexdigest()
-            ids[id(node)] = "pattern:context:" + digest
+    ids = {id(node): "pattern:" + pattern_identity(node) for node in order}
 
     for node in order:
         component_id = ids[id(node)]
@@ -418,7 +401,7 @@ def _add_patterns(grammar: CompiledGrammar, builder: _Builder) -> dict[int, str]
         if name_class is not None:
             builder.add_edge(component_id, _add_name_class(name_class, origins, builder))
         if isinstance(node, (Data, DataExcept, Value)):
-            builder.add_edge(component_id, _add_datatype(node.datatype, builder))
+            builder.add_edge(component_id, _add_datatype(node.datatype, origins, builder))
         for _, child in links[id(node)]:
             builder.add_edge(component_id, ids[id(child)])
     return ids
@@ -435,38 +418,6 @@ def _pattern_links(pattern: Pattern) -> tuple[tuple[str, Pattern], ...]:
     if isinstance(pattern, (Attribute, Element, List, OneOrMore)):
         return (("content", pattern.pattern),)
     return ()
-
-
-def _anchor_roots(grammar: CompiledGrammar) -> list[tuple[str, Pattern]]:
-    """Return definition anchors first, then the start pattern, deterministically."""
-    anchors: list[tuple[str, Pattern]] = [
-        (
-            "pattern:" + pattern_identity(grammar.definitions[name].pattern),
-            grammar.definitions[name].pattern,
-        )
-        for name in sorted(grammar.definitions)
-    ]
-    anchors.append(("pattern:" + pattern_identity(grammar.start), grammar.start))
-    return anchors
-
-
-def _discover_paths(
-    links: dict[int, tuple[tuple[str, Pattern], ...]],
-    roots: list[tuple[str, Pattern]],
-) -> dict[int, tuple[str, tuple[str, ...]]]:
-    """Record one anchor and structural path for every reachable pattern."""
-    discovered: dict[int, tuple[str, tuple[str, ...]]] = {}
-    for anchor_id, root in roots:
-        stack: list[tuple[Pattern, tuple[str, ...]]] = [(root, ())]
-        while stack:
-            node, path = stack.pop()
-            key = id(node)
-            if key in discovered:
-                continue
-            discovered[key] = (anchor_id, path)
-            for label, child in reversed(links[key]):
-                stack.append((child, (*path, label)))
-    return discovered
 
 
 def _pattern_kind(pattern: Pattern) -> str:
@@ -549,7 +500,7 @@ def _add_name_class(
     return component_id
 
 
-def _add_datatype(datatype: object, builder: _Builder) -> str:
+def _add_datatype(datatype: object, origins: OriginTable, builder: _Builder) -> str:
     """Add one datatype component from its stable schema-static description."""
     contract = scalar_contract(Data(datatype))
     component_id = "datatype:" + contract.pattern_identity
@@ -557,6 +508,7 @@ def _add_datatype(datatype: object, builder: _Builder) -> str:
         component_id,
         kind="datatype",
         name=contract.type_name,
+        origins=origins,
         datatype_library=contract.library_uri,
         datatype_name=contract.type_name,
         datatype_parameters=tuple(
@@ -587,19 +539,19 @@ def _add_resources(grammar: CompiledGrammar, builder: _Builder) -> list[str]:
             component_id,
             kind="resource",
             name=group[0].canonical_id,
-            origins=_resource_origins(first_reference),
+            origins=OriginTable(
+                frozenset(
+                    SourceOrigin(reference.containing_id, reference.location)
+                    for reference in references
+                )
+            ),
+        )
+        builder.records[component_id] = replace(
+            builder.records[component_id],
+            location=first_reference.location if first_reference is not None else None,
         )
         component_ids.append(component_id)
     return component_ids
-
-
-def _resource_origins(first_reference: ResourceReference | None) -> OriginTable:
-    """Locate one resource at its first sorted authored reference."""
-    if first_reference is None or first_reference.location is None:
-        return OriginTable()
-    return OriginTable(
-        frozenset({SourceOrigin(first_reference.containing_id, first_reference.location)})
-    )
 
 
 def _reference_order(reference: ResourceReference) -> _ReferenceOrder:

@@ -9,14 +9,16 @@ authored sites are still evidence through each component's origins.
 from __future__ import annotations
 
 import io
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError, fields, replace
 from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
 
 import pytest
+from tests.test_relaxng_values import shared_interior_schema
 
 from pyxsd.exceptions import ValidationError
+from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import NamespaceContext
 from pyxsd.relaxng import (
     RelaxNGComponentDescription,
@@ -26,7 +28,7 @@ from pyxsd.relaxng import (
     find_components,
     related_components,
 )
-from pyxsd.relaxng.contracts import pattern_identity, scalar_contract
+from pyxsd.relaxng.contracts import grammar_fingerprint, pattern_identity, scalar_contract
 from pyxsd.relaxng.datatypes import (
     Datatype,
     DatatypeContext,
@@ -36,7 +38,9 @@ from pyxsd.relaxng.datatypes import (
     UnsupportedDatatypeOperation,
 )
 from pyxsd.relaxng.limits import RelaxNGLimits
-from pyxsd.relaxng.patterns import Data, DataExcept, PatternPool, Ref, Value
+from pyxsd.relaxng.origins import OriginTable, SourceOrigin
+from pyxsd.relaxng.patterns import Data, DataExcept, Empty, Group, PatternPool, Ref, Value
+from pyxsd.relaxng.resources import ResourceDependency, ResourceReference
 from pyxsd.relaxng.schema import RelaxNGSchema
 from pyxsd.relaxng.simplify import CompiledGrammar
 from pyxsd.validation import ValidationReport
@@ -376,7 +380,7 @@ def test_nested_choice_and_except_name_classes_have_components_and_edges():
         if item.name_class == "except(anyName, " + inner.name_class + ")"
     )
     assert outer.namespace is None
-    assert inner not in related_components(schema, outer.id, direction="used_by", depth=1)
+    assert outer in related_components(schema, inner.id, direction="used_by", depth=1)
     assert inner in related_components(schema, outer.id, direction="uses", depth=1)
 
 
@@ -403,7 +407,11 @@ def test_datatype_components_normalize_parameters_and_fail_without_metadata():
     )
     assert described_data.datatype_name is None
     assert described_data.datatype_library is None
-    assert describe_component(second, datatype.id) == datatype
+    assert (
+        describe_component(second, datatype.id).datatype_parameters == datatype.datatype_parameters
+    )
+    assert datatype.origins == described_data.origins
+    assert datatype.location == described_data.location
 
     datatype_node = next(
         node
@@ -481,7 +489,7 @@ def test_route_edges_reach_children_scalars_and_wildcards():
         f'<data type="integer" datatypeLibrary="{XSD}"/></attribute></zeroOrMore>'
         "<choice>"
         '<element name="a"><text/></element>'
-        f'<element name="b"><data type="integer" datatypeLibrary="{XSD}"/></element>'
+        f'<element name="b"><data type="boolean" datatypeLibrary="{XSD}"/></element>'
         "</choice>"
     )
     plan = schema.projection
@@ -501,13 +509,17 @@ def test_route_edges_reach_children_scalars_and_wildcards():
         if component.pattern_kind == "text"
     }
     assert text_ids and text_ids <= uses_ids
-    assert any(component.pattern_kind == "data" for component in uses), (
-        "the wildcard and child datatypes are route dependencies"
-    )
-
+    assert root.wildcards
     for wildcard in root.wildcards:
         assert wildcard.child_route_id is None
         assert wildcard.scalar_contracts
+        for contract in wildcard.scalar_contracts:
+            assert all(
+                contract not in field.scalar_contracts
+                for field in (*root.attributes.values(), *root.children.values(), root.content)
+            )
+            encoding = plan.encoding_patterns[contract.pattern_identity]
+            assert "pattern:" + pattern_identity(encoding) in uses_ids
     assert len(uses_ids) == len({component.id for component in uses})
 
 
@@ -526,7 +538,17 @@ def test_resources_deduplicate_content_but_keep_every_dependency(tmp_path):
     assert external_component.name == str((tmp_path / "schemas" / "a.rng").resolve())
     assert external_component.location is not None
     assert external_component.location.source.endswith("root.rng")
-    assert len(external_component.origins) == 1
+    assert len(external_component.origins) == 2
+    references = [
+        reference
+        for dependency in description.dependencies
+        if dependency.content_sha256 == digest
+        for reference in dependency.references
+    ]
+    assert {origin.location for origin in external_component.origins} == {
+        reference.location for reference in references
+    }
+    assert external_component.location == references[0].location
     root_component = next(
         component for component in resources if component.id != external_component.id
     )
@@ -565,6 +587,50 @@ def test_resource_ids_are_stable_after_relocation(tmp_path):
     assert first_resource.location is not None and second_resource.location is not None
     assert first_resource.location.source != second_resource.location.source
     assert second_resource.name != first_resource.name
+
+
+@pytest.mark.parametrize("first_location", [None, IssueLocation(source="z-location", path=())])
+def test_resource_origins_include_unlocated_sites_and_keep_first_reference_location(first_location):
+    schema = compiled_element("<empty/>")
+    references = (
+        ResourceReference("target", "container", "a", None, None, location=first_location),
+        ResourceReference(
+            "target",
+            "container",
+            "b",
+            None,
+            None,
+            location=IssueLocation(source="a-location", path=()),
+        ),
+        ResourceReference("target", "other", "c", None, None),
+    )
+    dependency = ResourceDependency("target", "target", "schema", "digest", references)
+    schema = replace(schema, grammar=replace(schema.grammar, dependencies=(dependency,)))
+    (resource,) = find_components(schema, kind="resource")
+    assert resource.location == first_location
+    assert resource.origins == OriginTable(
+        frozenset(
+            SourceOrigin(reference.containing_id, reference.location) for reference in references
+        )
+    )
+    assert resource.synthetic is False
+
+
+def test_names_distinguish_local_pattern_names_from_expanded_route_names():
+    schema = compile_xml(f'<element xmlns="{NS}" name="doc" ns="urn:doc"><empty/></element>')
+    schema.require_valid()
+    (route,) = find_components(schema, kind="route")
+    pattern = next(
+        component
+        for component in find_components(schema, kind="pattern")
+        if component.pattern_kind == "element"
+    )
+    (name_class,) = find_components(schema, kind="name-class")
+    assert route.name == "{urn:doc}doc"
+    assert pattern.name == name_class.name == "doc"
+    assert route.namespace == pattern.namespace == name_class.namespace == "urn:doc"
+    assert route.owner_id == pattern.owner_id == name_class.owner_id == "grammar"
+    assert route.synthetic is pattern.synthetic is name_class.synthetic is False
 
 
 def test_invalid_schema_describes_grammar_patterns_and_dependencies_without_routes():
@@ -664,6 +730,12 @@ def test_illegal_reference_chain_fails_explicitly():
     with pytest.raises(ValueError, match="reference chain"):
         describe_schema(schema)
 
+    cycle = Group(Empty(), Empty())
+    object.__setattr__(cycle, "first", cycle)
+    schema = replace(schema, grammar=replace(schema.grammar, start=cycle))
+    with pytest.raises(ValueError, match="cyclic RELAX NG pattern outside a bound reference"):
+        describe_schema(schema)
+
 
 def test_describe_component_accepts_only_exact_component_ids():
     schema = rich_schema()
@@ -738,10 +810,94 @@ def test_related_components_terminates_on_recursive_grammars(tmp_path):
     first.require_valid()
     second.require_valid()
     assert ids(first, kind="pattern") == ids(second, kind="pattern")
-    assert any(
-        component.id.startswith("pattern:context:")
-        for component in find_components(first, kind="pattern")
+    assert ids(first, kind="pattern") == {
+        "pattern:" + pattern_identity(node) for node in _patterns(first.grammar.start)
+    }
+
+
+@pytest.mark.parametrize("multi_anchor", [False, True])
+def test_shared_interior_recursion_uses_one_content_component(tmp_path, multi_anchor):
+    snapshots = []
+    for index, reverse in enumerate((False, True, False)):
+        schema = compile_xml(
+            shared_interior_schema(multi_anchor=multi_anchor, reverse=reverse),
+            path=tmp_path / f"relocated-{index}.rng",
+        )
+        schema.require_valid()
+        elements = [definition.pattern for definition in schema.grammar.definitions.values()]
+        shared = elements[0].pattern
+        assert all(element.pattern is shared for element in elements)
+        shared_id = "pattern:" + pattern_identity(shared)
+        description = describe_schema(schema)
+        matches = find_components(schema, kind="pattern", text=shared_id)
+        assert len(matches) == 1
+        assert describe_component(schema, shared_id) == matches[0]
+        assert matches[0].origins == schema.grammar.graph.origins(shared)
+        reordered = replace(
+            schema,
+            grammar=replace(
+                schema.grammar,
+                definitions=MappingProxyType(
+                    dict(reversed(tuple(schema.grammar.definitions.items())))
+                ),
+            ),
+        )
+        assert describe_schema(reordered) == description
+        assert grammar_fingerprint(schema.grammar, schema.datatype_fingerprint) == (
+            grammar_fingerprint(reordered.grammar, reordered.datatype_fingerprint)
+        )
+        assert {
+            component.id for component in description.components if component.kind == "pattern"
+        } == {"pattern:" + pattern_identity(node) for node in _patterns(schema.grammar.start)}
+        for direction in ("uses", "used_by"):
+            related = related_components(schema, shared_id, direction=direction, depth=100)
+            assert related
+            assert shared_id not in {component.id for component in related}
+            assert len(related) == len({component.id for component in related})
+            assert related == related_components(schema, shared_id, direction=direction, depth=101)
+        assert schema.parse(io.StringIO("<a><c><c/></c></a>"), typed=True).is_valid
+        snapshots.append(tuple(component.id for component in description.components))
+    assert snapshots[0] == snapshots[2]
+
+    # Source-content digests intentionally change for reordered XML, so
+    # resources and grammar-fingerprint-based routes are not semantic IDs.
+    def semantic(snapshot):
+        return {
+            component_id
+            for component_id in snapshot
+            if not component_id.startswith(("resource:", "pyxsd.relaxng.route/"))
+        }
+
+    assert semantic(snapshots[0]) == semantic(snapshots[1])
+
+
+def test_datatype_origins_union_data_value_and_except_sites():
+    schema = compiled_element(
+        '<choice><element name="a"><data type="token"/></element>'
+        '<element name="b"><value>fixed</value></element>'
+        '<element name="c"><data type="token"><except><value>no</value></except>'
+        "</data></element></choice>"
     )
+    expected = schema.grammar.graph.origins(
+        next(node for node in _patterns(schema.grammar.start) if isinstance(node, Data))
+    )
+    for node in _patterns(schema.grammar.start):
+        if isinstance(node, (Data, Value, DataExcept)):
+            expected = expected.union(schema.grammar.graph.origins(node))
+    (datatype,) = find_components(schema, kind="datatype")
+    assert datatype.origins == expected
+    assert len(expected) >= 4
+    located = [origin for origin in expected if origin.location is not None]
+    primary = min(
+        located,
+        key=lambda origin: (
+            origin.source_id,
+            origin.location.source or "",
+            tuple((step.name, step.index) for step in origin.location.path),
+            origin.location.attribute or "",
+        ),
+    )
+    assert datatype.location == primary.location
 
 
 def test_related_components_matches_xsd_errors():

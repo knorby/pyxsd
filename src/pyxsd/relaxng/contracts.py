@@ -408,9 +408,12 @@ def _write_pattern(
     target emit ``RefShared`` and the ordinal of that first expansion, so a
     doubling definition graph expands each distinct target once instead of
     exponentially.  Ordinals depend only on traversal order, never on object
-    addresses or process hashes.
+    addresses or process hashes.  A shared structural interior can be re-entered
+    after crossing a bound reference; ``NodeBack`` records its active ordinal.
+    The reference depth at entry distinguishes that legal cycle from an
+    unguarded structural loop.  Existing successful encodings are unchanged.
     """
-    active: dict[int, int] = {}
+    active: dict[int, tuple[int, int]] = {}
     reference_chain: set[int] = set()
     pending: list[tuple[str, Pattern | int]] = [("node", root)]
     while pending:
@@ -429,7 +432,7 @@ def _write_pattern(
             target_key = id(target)
             if target_key in active:
                 _write_text(out, "RefBack")
-                _write_int(out, active[target_key])
+                _write_int(out, active[target_key][0])
                 continue
             if key in reference_chain:
                 raise ValueError("cyclic RELAX NG reference chain without a pattern node")
@@ -447,8 +450,13 @@ def _write_pattern(
             continue
         key = id(node)
         if key in active:
+            ordinal, entry_depth = active[key]
+            if len(reference_chain) > entry_depth:
+                _write_text(out, "NodeBack")
+                _write_int(out, ordinal)
+                continue
             raise ValueError("cyclic RELAX NG pattern outside a bound reference")
-        active[key] = len(active)
+        active[key] = (len(active), len(reference_chain))
         pending.append(("close", key))
         children = _write_pattern_head(out, node)
         pending.extend(("node", child) for child in reversed(children))
