@@ -181,13 +181,15 @@ def test_typed_and_validation_only_verdicts_match(body, xml, expected_valid):
         assert validation_document.binding_evidence is None
 
 
-def test_typed_parse_returns_the_generic_tree_without_generated_classes():
+def test_typed_parse_uses_generated_projection_classes_for_stable_routes():
     compiled = scalar_schema()
 
     document = typed(compiled, io.StringIO("<doc>12</doc>"))
 
     assert document.typed is True
-    assert type(document.root) is RelaxNGElement
+    generated = compiled.projection_classes.class_for(compiled.projection.roots[0])
+    assert type(document.root) is generated
+    assert issubclass(type(document.root), RelaxNGElement)
     assert not hasattr(compiled, "classes")
     assert not hasattr(document, "classes")
 

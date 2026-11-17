@@ -33,6 +33,11 @@ from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
 from pyxsd.relaxng.annotations import AnnotationCapture
+from pyxsd.relaxng.binding import (
+    ProjectionClassFactory,
+    bind_projection,
+    projection_class_factory,
+)
 from pyxsd.relaxng.checks import check_compiled_grammar
 from pyxsd.relaxng.contracts import grammar_fingerprint
 from pyxsd.relaxng.datatypes import (
@@ -425,6 +430,16 @@ class RelaxNGSchema:
         self.require_valid()
         return plan_projections(self.grammar, limits=self.limits)
 
+    @cached_property
+    def projection_classes(self) -> ProjectionClassFactory:
+        """The generated-class factory for this schema's finite route plan.
+
+        One factory per compiled schema preserves class identity across
+        repeated parses, capture settings, and recursive instance depths.
+        Separate schemas own separate class objects even for equivalent plans.
+        """
+        return projection_class_factory(self.projection)
+
     @property
     def dependencies(self) -> tuple[ResourceDependency, ...]:
         """The complete canonical resource closure of the compilation."""
@@ -496,10 +511,12 @@ class RelaxNGSchema:
 
         - ``typed`` defaults to ``True``.  A valid typed document receives
           complete binding evidence and exposes ``scalar_value()`` and
-          ``attribute_value()`` on the generic tree; no generated class is
-          required.  ``typed=False`` remains evidence-free validation-only
-          parsing and rejects typed access explicitly.  Typed parsing never
-          changes the boolean verdict.
+          ``attribute_value()`` on the lexical tree; stable routes use their
+          generated projection class, while a route with a semantic fallback
+          and every descendant without a unique route stay generic.  No
+          instance value chooses a class layout.  ``typed=False`` remains
+          evidence-free validation-only parsing and rejects typed access
+          explicitly.  Typed parsing never changes the boolean verdict.
 
         - ``capture`` is ``"none"`` by default.  ``"patterns"`` is accepted
           with ``typed=True`` as the setting for an optional, parse-scoped
@@ -776,7 +793,7 @@ class RelaxNGSchema:
                 root,
                 annotations=OccurrenceCapture(),
             )
-        return RelaxNGDocument(
+        document = RelaxNGDocument(
             schema=self,
             root=root,
             source=source,
@@ -790,6 +807,17 @@ class RelaxNGSchema:
             binding_evidence=binding_evidence,
             annotations=annotations,
         )
+        if binding_evidence is not None:
+            # Binding runs after the document owns its typed snapshot.  Route
+            # selection is plan-only; the evidence argument proves ownership and
+            # keeps descriptor reads on the same revision-scoped interpretation.
+            bind_projection(
+                document.root,
+                self.projection,
+                binding_evidence,
+                factory=self.projection_classes,
+            )
+        return document
 
 
 compile = RelaxNGSchema.compile
