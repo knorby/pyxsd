@@ -69,10 +69,12 @@ from pyxsd.relaxng.simplify import CompiledGrammar
 __all__ = [
     "LIST_LIBRARY",
     "LIST_TYPE_NAME",
+    "ListShape",
     "ScalarContract",
     "ScalarRestriction",
     "candidate_id",
     "grammar_fingerprint",
+    "list_shape",
     "pattern_identity",
     "scalar_contract",
 ]
@@ -644,3 +646,87 @@ def scalar_contract(pattern: Pattern) -> ScalarContract:
             identity,
         )
     raise TypeError(f"{type(pattern).__name__} is not a RELAX NG scalar pattern")
+
+
+#: Schema-static typing shape of one whole-list pattern.
+#:
+#: ``tuple`` is a fixed sequence of one-token scalar items, ``list`` is a
+#: homogeneous repetition of one-token scalar items, and ``interpretation``
+#: covers every optional, repeating, or ambiguous heterogeneous arrangement.
+#: It is deliberately a three-way classification rather than an instance
+#: measurement: the outer representation must not depend on which lexical value
+#: a particular valid instance happened to use.
+ListShape = Literal["tuple", "list", "interpretation"]
+
+#: Internal post-order result: a fixed token count, homogeneous repetition, or
+#: an arrangement that has no schema-static plain shape.
+_ListAnalysis = tuple[Literal["fixed", "list"], int] | None
+
+
+def _list_analysis_children(pattern: Pattern) -> tuple[Pattern, ...]:
+    """Return the operands whose shape decides this content node's shape."""
+    if isinstance(pattern, Ref):
+        return (pattern.target,)
+    if isinstance(pattern, Group):
+        return (pattern.first, pattern.second)
+    if isinstance(pattern, OneOrMore):
+        return (pattern.pattern,)
+    return ()
+
+
+def _list_analysis(pattern: Pattern, results: dict[int, _ListAnalysis]) -> _ListAnalysis:
+    """Combine already-analysed operands into one shape result."""
+    if isinstance(pattern, Ref):
+        return results[id(pattern.target)]
+    if isinstance(pattern, Empty):
+        return ("fixed", 0)
+    if isinstance(pattern, (Data, DataExcept, Value)):
+        return ("fixed", 1)
+    if isinstance(pattern, Group):
+        first = results[id(pattern.first)]
+        second = results[id(pattern.second)]
+        if first is not None and second is not None and first[0] == second[0] == "fixed":
+            return ("fixed", first[1] + second[1])
+        return None
+    if isinstance(pattern, OneOrMore):
+        item = results[id(pattern.pattern)]
+        if item is not None and item[0] == "fixed" and item[1] == 1:
+            return ("list", 0)
+        return None
+    return None
+
+
+def list_shape(pattern: Pattern) -> ListShape:
+    """Return the schema-static plain typing shape of one compiled list pattern.
+
+    A fixed sequence of one-token scalar items is a ``tuple``; a repetition of
+    one such item is a ``list``.  Choice, interleave, ``text``, optional or
+    repeating heterogeneous arrangements, and recursive content have no plain
+    shape and expose a list interpretation instead.  References are followed to
+    their compiled targets.  The analysis is iterative, so deep pattern graphs
+    do not recurse through the Python stack.
+    """
+    if not isinstance(pattern, List):
+        raise TypeError(f"{type(pattern).__name__} is not a RELAX NG list pattern")
+    content = pattern.pattern
+    context = _IdentityContext()
+    if not _is_acyclic(content, context):
+        return "interpretation"
+    results: dict[int, _ListAnalysis] = {}
+    pending: list[tuple[Pattern, bool]] = [(content, False)]
+    while pending:
+        node, ready = pending.pop()
+        key = id(node)
+        if key in results:
+            continue
+        if not ready:
+            pending.append((node, True))
+            for child in _list_analysis_children(node):
+                if id(child) not in results:
+                    pending.append((child, False))
+            continue
+        results[key] = _list_analysis(node, results)
+    analysed = results[id(content)]
+    if analysed is None:
+        return "interpretation"
+    return "tuple" if analysed[0] == "fixed" else "list"

@@ -1,4 +1,4 @@
-"""Immutable scalar alternatives built only from accepting RELAX NG evidence.
+"""Immutable scalar and list alternatives built only from accepting evidence.
 
 Candidates identify schema-static contracts, not values or whole derivations.
 An alternative snapshot retains the original lexical characters, the surviving
@@ -6,16 +6,29 @@ candidate interpretations, the occurrence's immutable datatype context, the
 compiled grammar fingerprint, and the parse revision.  It is deliberately
 unhashable and has no implicit equality to a raw Python scalar: a lexical
 ``"12"`` is not the integer ``12`` merely because a datatype could decode it.
+
+A whole list keeps token spans, per-token marginal candidates, and a compact
+constraint graph.  Selecting one datatype per token is checked against a
+complete retained list derivation; the marginal views are never multiplied into
+an alleged cross-product.  Equal Python values from distinct contracts remain
+distinct candidates and interpretations.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
-from types import NotImplementedType
+from collections import defaultdict
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType, NotImplementedType
 from typing import Any, cast
 
-from pyxsd.relaxng.contracts import ScalarContract, candidate_id, scalar_contract
+from pyxsd.relaxng.contracts import (
+    ListShape,
+    ScalarContract,
+    candidate_id,
+    list_shape,
+    scalar_contract,
+)
 from pyxsd.relaxng.datatypes import (
     Datatype,
     DatatypeContext,
@@ -24,13 +37,17 @@ from pyxsd.relaxng.datatypes import (
     resolve_datatype_selector,
 )
 from pyxsd.relaxng.errors import AmbiguousValueError
-from pyxsd.relaxng.evidence import ScalarWitness
+from pyxsd.relaxng.evidence import EvidenceGraph, ScalarWitness, TokenConstraintGraph
+from pyxsd.relaxng.validator import TokenSpan
 
 __all__ = [
     "AlternativeValue",
     "Candidate",
+    "ListInterpretation",
     "alternative_value_from_witnesses",
     "candidate_for_witness",
+    "list_interpretation",
+    "list_value",
 ]
 
 
@@ -89,6 +106,211 @@ class Candidate:
 
 
 @dataclass(frozen=True, eq=False, repr=False)
+class ListInterpretation:
+    """One whole-list contract with correlated token assignment evidence.
+
+    ``token_candidates`` is a per-token marginal view, not a product: choosing
+    one candidate at each position is only legal when the retained list
+    derivation graph contains a complete assignment using them.  ``as_types``
+    performs that whole-assignment check.  ``as_python`` returns a value only
+    when exactly one complete decodable interpretation survives; equal Python
+    values from distinct contracts are never merged.
+
+    ``shape`` is the schema-static typing classification.  ``tuple`` and
+    ``list`` are ordinary typed results when every token decodes; any other
+    arrangement keeps this interpretation object so callers can inspect token
+    alternatives instead of receiving an invented value.  An empty permitted
+    list is a valid interpretation with no token groups, never a failure.
+    """
+
+    lexical: str
+    token_spans: tuple[TokenSpan, ...]
+    token_candidates: tuple[tuple[Candidate, ...], ...]
+    context: DatatypeContext
+    grammar_fingerprint: str
+    revision: int
+    contract: ScalarContract
+    candidate_id: str
+    shape: ListShape
+    constraints: TokenConstraintGraph = field(repr=False, compare=False)
+    _witness_candidates: Mapping[ScalarWitness, Candidate] = field(
+        repr=False, compare=False, default_factory=dict
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.lexical, str):
+            raise TypeError("a list interpretation's lexical value must be a string")
+        if not isinstance(self.context, DatatypeContext):
+            raise TypeError("a list interpretation's context must be a DatatypeContext")
+        if not isinstance(self.grammar_fingerprint, str) or not self.grammar_fingerprint:
+            raise ValueError("a list interpretation needs a nonempty grammar fingerprint")
+        if not isinstance(self.revision, int) or isinstance(self.revision, bool):
+            raise ValueError("a list interpretation's revision must be an integer")
+        if not isinstance(self.contract, ScalarContract):
+            raise TypeError("a list interpretation's contract must be a ScalarContract")
+        if self.contract.kind != "list":
+            raise ValueError("a list interpretation requires a whole-list contract")
+        if not isinstance(self.candidate_id, str) or not self.candidate_id:
+            raise ValueError("a list interpretation's candidate ID must be nonempty")
+        if self.shape not in ("tuple", "list", "interpretation"):
+            raise ValueError("a list interpretation's shape is not a list shape")
+        if not isinstance(self.constraints, TokenConstraintGraph):
+            raise TypeError("a list interpretation requires a token constraint graph")
+        spans = tuple(self.token_spans)
+        for span in spans:
+            if not isinstance(span, TokenSpan):
+                raise TypeError("token spans must be TokenSpan values")
+        groups: list[tuple[Candidate, ...]] = []
+        for group in self.token_candidates:
+            candidates = tuple(group)
+            if not candidates:
+                raise ValueError("every token position requires at least one candidate")
+            for item in candidates:
+                if not isinstance(item, Candidate):
+                    raise TypeError("token candidates must be Candidate values")
+            identifiers = [item.candidate_id for item in candidates]
+            if len(set(identifiers)) != len(identifiers):
+                raise ValueError("token candidate IDs must be unique at one token")
+            contracts = [item.contract for item in candidates]
+            if len(set(contracts)) != len(contracts):
+                raise ValueError("token candidate contracts must be unique at one token")
+            groups.append(tuple(sorted(candidates, key=lambda item: item.candidate_id)))
+        if len(groups) != len(spans):
+            raise ValueError("a list interpretation needs one candidate group per token span")
+        object.__setattr__(self, "token_spans", spans)
+        object.__setattr__(self, "token_candidates", tuple(groups))
+        object.__setattr__(
+            self,
+            "context",
+            DatatypeContext(self.context.base_uri, dict(self.context.namespaces)),
+        )
+        object.__setattr__(
+            self,
+            "_witness_candidates",
+            MappingProxyType(dict(self._witness_candidates)),
+        )
+
+    def __eq__(self, other: object) -> bool | NotImplementedType:
+        if not isinstance(other, ListInterpretation):
+            return NotImplemented
+        return (
+            self.lexical == other.lexical
+            and self.token_spans == other.token_spans
+            and self.token_candidates == other.token_candidates
+            and self.context == other.context
+            and self.grammar_fingerprint == other.grammar_fingerprint
+            and self.revision == other.revision
+            and self.contract == other.contract
+            and self.candidate_id == other.candidate_id
+            and self.shape == other.shape
+        )
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:
+        """Represent IDs and shape, never a decoded candidate object's repr."""
+        return (
+            f"ListInterpretation(lexical={self.lexical!r}, "
+            f"candidate_id={self.candidate_id!r}, shape={self.shape!r}, "
+            f"token_candidate_ids="
+            f"{tuple(tuple(item.candidate_id for item in group) for group in self.token_candidates)!r}, "
+            f"revision={self.revision!r})"
+        )
+
+    def __str__(self) -> str:
+        """Return the original list lexical characters."""
+        return self.lexical
+
+    @property
+    def is_plain(self) -> bool:
+        """Whether this is a statically plain, completely decodable list."""
+        return self.shape != "interpretation" and self._decoded() is not None
+
+    def _decoded(self) -> tuple[Any, ...] | list[Any] | None:
+        """Return one complete plain decoded sequence, or None.
+
+        Only a unique candidate at every token that all decode yields a value.
+        A nondecodable token and a genuinely ambiguous token both return None;
+        the caller distinguishes them for its error.
+        """
+        values: list[Any] = []
+        for group in self.token_candidates:
+            if len(group) != 1:
+                return None
+            candidate = group[0]
+            if not candidate.decodable:
+                return None
+            values.append(candidate.decoded)
+        return list(values) if self.shape == "list" else tuple(values)
+
+    def as_python(self) -> tuple[Any, ...] | list[Any]:
+        """Return the only complete decodable interpretation, or fail explicitly."""
+        value = self._decoded()
+        if value is not None:
+            return value
+        if any(len(group) > 1 for group in self.token_candidates):
+            raise AmbiguousValueError(
+                "several token interpretations survive in this list; "
+                "select a complete assignment with as_types(selectors)"
+            )
+        raise UnsupportedDatatypeOperation(
+            "the only surviving token interpretation of this list has no datatype decoder"
+        )
+
+    def as_types(self, selectors: tuple[DatatypeSelector, ...]) -> tuple[Any, ...]:
+        """Decode one datatype selector per token after a whole-assignment check.
+
+        A selector names the atomic datatype expected at that token position.
+        Per-token existence is insufficient: the selected contracts must occur
+        together in a complete retained list derivation.  The check reuses the
+        compact constraint graph, so it never enumerates token assignments.
+        """
+        chosen = tuple(selectors)
+        if len(chosen) != len(self.token_spans):
+            raise ValueError("as_types requires exactly one selector per token")
+        selected: list[Candidate] = []
+        for index, selector in enumerate(chosen):
+            library_uri, type_name = resolve_datatype_selector(selector)
+            matches = tuple(
+                candidate
+                for candidate in self.token_candidates[index]
+                if candidate.contract.kind == "atomic"
+                and candidate.contract.library_uri == library_uri
+                and candidate.contract.type_name == type_name
+            )
+            if not matches:
+                raise ValueError(
+                    f"no surviving token candidate matches datatype "
+                    f"{(library_uri, type_name)!r} at token {index}"
+                )
+            contracts = {candidate.contract for candidate in matches}
+            if len(contracts) > 1:
+                raise AmbiguousValueError(
+                    f"token {index} has several distinct contracts for datatype "
+                    f"{(library_uri, type_name)!r}; select one with as_candidate(candidate_id)"
+                )
+            candidate = matches[0]
+            if not candidate.decodable:
+                raise UnsupportedDatatypeOperation(
+                    f"token candidate {candidate.candidate_id!r} has no datatype decoder"
+                )
+            selected.append(candidate)
+
+        def matches_assignment(witness: ScalarWitness) -> bool:
+            candidate = self._witness_candidates.get(witness)
+            if candidate is None:
+                return False
+            if candidate.contract.kind == "list":
+                return candidate.candidate_id == self.candidate_id
+            index = cast(int, witness.occurrence.token_index)
+            return candidate.contract == selected[index].contract
+
+        if not self.constraints.accepts(matches_assignment):
+            raise ValueError("the selected token datatypes do not form a complete list derivation")
+        return tuple(candidate.decoded for candidate in selected)
+
+
+@dataclass(frozen=True, eq=False, repr=False)
 class AlternativeValue:
     """One immutable, non-preferential scalar interpretation snapshot."""
 
@@ -97,6 +319,7 @@ class AlternativeValue:
     context: DatatypeContext
     grammar_fingerprint: str
     revision: int
+    interpretations: tuple[ListInterpretation, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.lexical, str):
@@ -119,8 +342,39 @@ class AlternativeValue:
         contracts = [item.contract for item in candidates]
         if len(set(contracts)) != len(contracts):
             raise ValueError("candidate contracts must be unique within an alternative value")
+        interpretations = tuple(self.interpretations)
+        by_candidate = {item.candidate_id: item for item in candidates}
+        seen: set[str] = set()
+        for interpretation in interpretations:
+            if not isinstance(interpretation, ListInterpretation):
+                raise TypeError("list interpretations must be ListInterpretation values")
+            if interpretation.candidate_id in seen:
+                raise ValueError(
+                    "list interpretation candidate IDs must be unique within an alternative value"
+                )
+            seen.add(interpretation.candidate_id)
+            candidate = by_candidate.get(interpretation.candidate_id)
+            if candidate is None:
+                raise ValueError("a list interpretation requires a matching whole-list candidate")
+            if candidate.contract != interpretation.contract:
+                raise ValueError("a list interpretation's contract must match its candidate")
+            if interpretation.lexical != self.lexical:
+                raise ValueError("a list interpretation's lexical value must match its wrapper")
+            if interpretation.context != self.context:
+                raise ValueError("a list interpretation's context must match its wrapper")
+            if interpretation.grammar_fingerprint != self.grammar_fingerprint:
+                raise ValueError(
+                    "a list interpretation's grammar fingerprint must match its wrapper"
+                )
+            if interpretation.revision != self.revision:
+                raise ValueError("a list interpretation's revision must match its wrapper")
         object.__setattr__(
             self, "candidates", tuple(sorted(candidates, key=lambda item: item.candidate_id))
+        )
+        object.__setattr__(
+            self,
+            "interpretations",
+            tuple(sorted(interpretations, key=lambda interpretation: interpretation.candidate_id)),
         )
         # Copy the immutable context so a later revision-tree replacement or
         # caller mapping cannot alter this snapshot.
@@ -139,6 +393,7 @@ class AlternativeValue:
             and self.context == other.context
             and self.grammar_fingerprint == other.grammar_fingerprint
             and self.revision == other.revision
+            and self.interpretations == other.interpretations
         )
 
     __hash__ = None  # type: ignore[assignment]
@@ -178,11 +433,24 @@ class AlternativeValue:
         """Decode the candidate with exactly *candidate_id*."""
         for item in self.candidates:
             if item.candidate_id == candidate_id:
+                for interpretation in self.interpretations:
+                    if interpretation.candidate_id == candidate_id:
+                        return interpretation.as_python()
                 if not item.decodable:
                     raise UnsupportedDatatypeOperation(
                         f"candidate {candidate_id!r} has no datatype decoder"
                     )
                 return item.decoded
+        raise ValueError(f"no candidate {candidate_id!r} survives at this scalar position")
+
+    def as_interpretation(self, candidate_id: str) -> ListInterpretation:
+        """Return the list interpretation attached to *candidate_id*."""
+        for interpretation in self.interpretations:
+            if interpretation.candidate_id == candidate_id:
+                return interpretation
+        for item in self.candidates:
+            if item.candidate_id == candidate_id:
+                raise ValueError(f"candidate {candidate_id!r} is not a list interpretation")
         raise ValueError(f"no candidate {candidate_id!r} survives at this scalar position")
 
     def as_python(self) -> Any:
@@ -192,6 +460,8 @@ class AlternativeValue:
                 "several scalar candidates survive at this position; "
                 "select one with as_candidate(candidate_id)"
             )
+        if self.interpretations:
+            return self.interpretations[0].as_python()
         return self._decoded_match(self.candidates, "the only scalar candidate")
 
     def _decoded_match(self, matches: tuple[Candidate, ...], description: str) -> Any:
@@ -241,6 +511,7 @@ def alternative_value_from_witnesses(
     *,
     grammar_fingerprint: str,
     revision: int,
+    list_interpretations: Iterable[ListInterpretation] = (),
 ) -> AlternativeValue:
     """Build one alternative snapshot from the witnesses at a single site.
 
@@ -248,6 +519,11 @@ def alternative_value_from_witnesses(
     and immutable context.  Equal contracts collapse to one candidate even
     when several accepting derivations produced them.  The wrapper retains
     every surviving candidate; it does not select a preferred datatype.
+
+    A whole-list witness decodes only when a matching ``ListInterpretation``
+    yields one complete decodable token assignment.  Supplying no interpretation
+    keeps the list candidate lexical, matching the scalar-only construction
+    boundary.
     """
     items = tuple(witnesses)
     if not items:
@@ -264,9 +540,24 @@ def alternative_value_from_witnesses(
             raise ValueError("candidates at one occurrence must share one lexical value")
         if witness.context != first.context:
             raise ValueError("candidates at one occurrence must share one context")
+    interpretations = tuple(list_interpretations)
+    for interpretation in interpretations:
+        if not isinstance(interpretation, ListInterpretation):
+            raise TypeError("list interpretations must be ListInterpretation values")
+    by_candidate = {
+        interpretation.candidate_id: interpretation for interpretation in interpretations
+    }
     candidates: dict[str, Candidate] = {}
     for witness in items:
         candidate = candidate_for_witness(witness, grammar_fingerprint=grammar_fingerprint)
+        attached = by_candidate.get(candidate.candidate_id)
+        if candidate.contract.kind == "list" and attached is not None:
+            decoded = attached._decoded()
+            candidate = (
+                Candidate(candidate.candidate_id, candidate.contract, decoded, True)
+                if decoded is not None
+                else Candidate(candidate.candidate_id, candidate.contract, None, False)
+            )
         candidates.setdefault(candidate.candidate_id, candidate)
     return AlternativeValue(
         first.lexical,
@@ -274,4 +565,129 @@ def alternative_value_from_witnesses(
         first.context,
         grammar_fingerprint,
         revision,
+        interpretations,
+    )
+
+
+def list_interpretation(
+    witness: ScalarWitness,
+    graph: EvidenceGraph,
+    *,
+    grammar_fingerprint: str,
+    revision: int,
+) -> ListInterpretation:
+    """Build the correlated token view of one retained whole-list witness.
+
+    Token candidates are collected only from that witness's compact constraint
+    subgraph, so another list contract at the same lexical site cannot leak
+    candidates into this interpretation.  No token assignment is constructed
+    here; the graph retains the correlations for later whole-assignment checks.
+    """
+    if not isinstance(witness, ScalarWitness):
+        raise TypeError("a list interpretation requires a ScalarWitness")
+    if not isinstance(graph, EvidenceGraph):
+        raise TypeError("a list interpretation requires an EvidenceGraph")
+    contract = scalar_contract(witness.pattern)
+    if contract.kind != "list":
+        raise TypeError("a list interpretation requires a whole-list witness")
+    constraints = graph.token_constraints(witness)
+    by_token: dict[int, list[ScalarWitness]] = defaultdict(list)
+    for edge in constraints.edges:
+        for token_witness in edge.witnesses:
+            occurrence = token_witness.occurrence
+            if occurrence.kind == "token" and occurrence.parent is constraints.site:
+                by_token[cast(int, occurrence.token_index)].append(token_witness)
+    whole_candidate = candidate_for_witness(witness, grammar_fingerprint=grammar_fingerprint)
+    witness_candidates: dict[ScalarWitness, Candidate] = {witness: whole_candidate}
+    token_candidates: list[tuple[Candidate, ...]] = []
+    for occurrence in constraints.token_occurrences:
+        candidates: dict[str, Candidate] = {}
+        for token_witness in by_token.get(cast(int, occurrence.token_index), ()):
+            candidate = candidate_for_witness(
+                token_witness, grammar_fingerprint=grammar_fingerprint
+            )
+            candidates.setdefault(candidate.candidate_id, candidate)
+            witness_candidates[token_witness] = candidate
+        token_candidates.append(tuple(candidates.values()))
+    return ListInterpretation(
+        witness.lexical,
+        tuple(witness.token_spans),
+        tuple(token_candidates),
+        witness.context,
+        grammar_fingerprint,
+        revision,
+        contract,
+        whole_candidate.candidate_id,
+        list_shape(witness.pattern),
+        constraints,
+        witness_candidates,
+    )
+
+
+def list_value(
+    witnesses: Iterable[ScalarWitness],
+    graph: EvidenceGraph,
+    *,
+    schema_contracts: Iterable[ScalarContract],
+    grammar_fingerprint: str,
+    revision: int,
+) -> tuple[Any, ...] | list[Any] | AlternativeValue:
+    """Return the schema-static value form of one whole-list scalar position.
+
+    ``schema_contracts`` is the complete set of list contracts the position can
+    have in the grammar, not merely this instance's survivors.  One plain,
+    completely decodable contract returns an ordinary tuple or list.  A
+    schema-ambiguous position, and one whose only list contract lacks a plain
+    complete decoding, returns an immutable :class:`AlternativeValue` whose
+    whole-list candidate carries the attached interpretation.  Selection is
+    therefore independent of which branch this particular lexical value made
+    easiest.
+    """
+    if not isinstance(graph, EvidenceGraph):
+        raise TypeError("a list value requires an EvidenceGraph")
+    items = tuple(witnesses)
+    if not items:
+        raise ValueError("a list value requires at least one surviving witness")
+    for witness in items:
+        if not isinstance(witness, ScalarWitness):
+            raise TypeError("list values require ScalarWitness values")
+    contracts = tuple(dict.fromkeys(schema_contracts))
+    if not contracts:
+        raise ValueError("a list value requires at least one schema contract")
+    for contract in contracts:
+        if not isinstance(contract, ScalarContract):
+            raise TypeError("schema contracts must be ScalarContract values")
+        if contract.kind != "list":
+            raise TypeError("list values require whole-list schema contracts")
+    witness_by_contract: dict[ScalarContract, ScalarWitness] = {}
+    for witness in items:
+        contract = scalar_contract(witness.pattern)
+        if contract.kind != "list":
+            raise ValueError("list values require whole-list witnesses")
+        if contract not in contracts:
+            raise ValueError("a surviving witness is not among the schema contracts")
+        witness_by_contract.setdefault(contract, witness)
+    if len(contracts) == 1:
+        interpretation = list_interpretation(
+            next(iter(witness_by_contract.values())),
+            graph,
+            grammar_fingerprint=grammar_fingerprint,
+            revision=revision,
+        )
+        if interpretation.is_plain:
+            return interpretation.as_python()
+    interpretations = tuple(
+        list_interpretation(
+            witness,
+            graph,
+            grammar_fingerprint=grammar_fingerprint,
+            revision=revision,
+        )
+        for witness in witness_by_contract.values()
+    )
+    return alternative_value_from_witnesses(
+        items,
+        grammar_fingerprint=grammar_fingerprint,
+        revision=revision,
+        list_interpretations=interpretations,
     )

@@ -16,7 +16,7 @@ views of matched semantic patterns, never premises of an acceptance proof.
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast
 
@@ -67,6 +67,7 @@ __all__ = [
     "EvidenceNode",
     "EvidenceOccurrence",
     "ScalarWitness",
+    "TokenConstraintGraph",
     "build_binding_evidence",
 ]
 
@@ -132,6 +133,45 @@ class EvidenceEdge:
     witnesses: tuple[ScalarWitness, ...] = ()
 
 
+@dataclass(frozen=True, eq=False)
+class TokenConstraintGraph:
+    """Compact token-assignment constraints for one whole-list interpretation.
+
+    The graph is the part of the retained accepting proof that belongs to one
+    whole-list witness: its derivation roots, the token-site states they reach,
+    and the AND/OR edges among them.  :meth:`accepts` re-runs the same
+    least-fixed-point viability used by whole-document pruning after removing
+    witness edges that a caller rejects.  It never enumerates assignments, so
+    the work per query is linear in the retained list subgraph, not exponential
+    in the number of tokens.
+    """
+
+    site: EvidenceOccurrence
+    roots: tuple[EvidenceNode, ...]
+    nodes: tuple[EvidenceNode, ...]
+    edges: tuple[EvidenceEdge, ...]
+    token_occurrences: tuple[EvidenceOccurrence, ...]
+
+    def __post_init__(self) -> None:
+        if not self.roots:
+            raise ValueError("a token constraint graph requires accepting roots")
+
+    def accepts(self, matches: Callable[[ScalarWitness], bool]) -> bool:
+        """Whether a complete token derivation survives the witness filter.
+
+        *matches* decides whether one scalar witness may participate.  Edges
+        carrying no witness are structural and remain.  A root is accepted when
+        the filtered graph has a complete proof for it.
+        """
+        if not callable(matches):
+            raise TypeError("token constraint matching must be callable")
+        filtered = tuple(
+            edge for edge in self.edges if all(matches(witness) for witness in edge.witnesses)
+        )
+        viable = _viability(filtered)
+        return any(root in viable for root in self.roots)
+
+
 @dataclass(frozen=True)
 class EvidenceGraph:
     """Immutable accepting proof snapshot and deterministic marginal views."""
@@ -140,6 +180,59 @@ class EvidenceGraph:
     retained_nodes: tuple[EvidenceNode, ...]
     retained_edges: tuple[EvidenceEdge, ...]
     occurrences: tuple[EvidenceOccurrence, ...]
+
+    def token_constraints(self, witness: ScalarWitness) -> TokenConstraintGraph:
+        """Return the token subgraph belonging to one whole-list witness.
+
+        The witness must be a retained whole-list witness in this graph.  Its
+        proof nodes become the constraint roots; every retained premise they
+        reach is retained, so another list contract at the same lexical site
+        cannot contribute token candidates to this interpretation.  Empty lists
+        yield the same structure with no token occurrences.
+        """
+        if not isinstance(witness, ScalarWitness):
+            raise TypeError("token constraints require a ScalarWitness")
+        if not isinstance(witness.pattern, List):
+            raise TypeError("token constraints require a whole-list witness")
+        site = witness.occurrence
+        outgoing: dict[EvidenceNode, list[int]] = defaultdict(list)
+        for index, edge in enumerate(self.retained_edges):
+            outgoing[edge.predecessors[0]].append(index)
+        roots = tuple(
+            dict.fromkeys(
+                edge.predecessors[0] for edge in self.retained_edges if witness in edge.witnesses
+            )
+        )
+        if not roots:
+            raise ValueError("the witness is not a retained whole-list proof")
+        included_nodes: set[EvidenceNode] = set(roots)
+        included_edges: set[int] = set()
+        pending = list(roots)
+        while pending:
+            node = pending.pop()
+            for index in outgoing.get(node, ()):
+                included_edges.add(index)
+                for child in self.retained_edges[index].successors:
+                    if child not in included_nodes:
+                        included_nodes.add(child)
+                        pending.append(child)
+        token_occurrences = tuple(
+            sorted(
+                (
+                    occurrence
+                    for occurrence in self.occurrences
+                    if occurrence.kind == "token" and occurrence.parent is site
+                ),
+                key=lambda occurrence: cast(int, occurrence.token_index),
+            )
+        )
+        return TokenConstraintGraph(
+            site,
+            roots,
+            tuple(node for node in self.retained_nodes if node in included_nodes),
+            tuple(self.retained_edges[index] for index in sorted(included_edges)),
+            token_occurrences,
+        )
 
     def origins_at(self, occurrence: EvidenceOccurrence) -> OriginTable:
         """Authored-origin unions of retained matched semantic patterns only."""
@@ -159,24 +252,17 @@ class EvidenceGraph:
         )
 
 
-def _prune(
-    nodes: list[EvidenceNode],
-    edges: list[EvidenceEdge],
-    roots: tuple[EvidenceNode, ...],
-) -> tuple[tuple[EvidenceNode, ...], tuple[EvidenceEdge, ...]]:
-    """Least-fixed-point viability, then accepting-root forward reachability.
+def _viability(edges: Sequence[EvidenceEdge]) -> set[EvidenceNode]:
+    """Least-fixed-point viable nodes over the given AND/OR edges.
 
-    An unfounded cycle is not a proof. An AND with one dead premise is dead;
-    an OR can retain its other premises. Indexing dependencies makes this
-    linear in graph size, rather than rescanning every edge per event.
+    Zero-premise AND edges are local facts.  An AND needs every premise; an OR
+    needs one.  Cycles without a founded fact stay dead.
     """
     dependents: dict[EvidenceNode, list[int]] = defaultdict(list)
-    outgoing: dict[EvidenceNode, list[int]] = defaultdict(list)
     remaining = []
     ready: deque[int] = deque()
     for index, edge in enumerate(edges):
         remaining.append(len(edge.successors))
-        outgoing[edge.predecessors[0]].append(index)
         for child in edge.successors:
             dependents[child].append(index)
         if not edge.successors and edge.kind == "and":
@@ -192,8 +278,26 @@ def _prune(
             remaining[index] -= 1
             if edges[index].kind == "or" or remaining[index] == 0:
                 ready.append(index)
-    reachable: set[EvidenceNode] = set()
+    return viable
+
+
+def _prune(
+    nodes: list[EvidenceNode],
+    edges: list[EvidenceEdge],
+    roots: tuple[EvidenceNode, ...],
+) -> tuple[tuple[EvidenceNode, ...], tuple[EvidenceEdge, ...]]:
+    """Least-fixed-point viability, then accepting-root forward reachability.
+
+    An unfounded cycle is not a proof. An AND with one dead premise is dead;
+    an OR can retain its other premises. Indexing dependencies makes this
+    linear in graph size, rather than rescanning every edge per event.
+    """
+    viable = _viability(edges)
+    outgoing: dict[EvidenceNode, list[int]] = defaultdict(list)
     retained: dict[int, EvidenceEdge] = {}
+    for index, edge in enumerate(edges):
+        outgoing[edge.predecessors[0]].append(index)
+    reachable: set[EvidenceNode] = set()
     pending = list(roots)
     while pending:
         node = pending.pop()
