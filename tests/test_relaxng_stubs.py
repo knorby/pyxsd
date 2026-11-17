@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import ast
-import decimal
+import importlib
 import io
 import os
 import re
 import subprocess
 import sys
+import types
 from collections.abc import MutableSequence
 from dataclasses import replace
 from pathlib import Path
@@ -98,16 +99,59 @@ def _assert_full_annotation_spelling(text: str) -> None:
         and any(alias.name == "annotations" for alias in node.names)
         for node in tree.body
     )
-    module_names: set[str] = set()
+    bindings: list[str] = []
+    module_aliases: dict[str, str] = {}
+
+    def bind(name: str) -> str:
+        bindings.append(name)
+        return name
+
     for node in tree.body:
-        if isinstance(node, ast.ImportFrom):
-            module_names.update(alias.asname or alias.name for alias in node.names)
-        elif isinstance(node, ast.Import):
-            module_names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                binding = bind(alias.asname or alias.name.split(".")[0])
+                module_aliases[binding] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                binding = bind(alias.asname or alias.name)
+                if node.module == "__future__":
+                    continue
+                module = importlib.import_module(node.module or "")
+                imported = getattr(module, alias.name, None)
+                if isinstance(imported, types.ModuleType):
+                    module_aliases[binding] = f"{node.module}.{alias.name}"
+        elif isinstance(node, ast.ClassDef):
+            bind(node.name)
         elif isinstance(node, ast.Assign) and len(node.targets) == 1:
             target = node.targets[0]
             if isinstance(target, ast.Name):
-                module_names.add(target.id)
+                bind(target.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            bind(node.target.id)
+    assert len(bindings) == len(set(bindings)), "duplicate module-level binding"
+
+    def check_annotation(annotation: ast.expr, fields: set[str]) -> None:
+        names = {child.id for child in ast.walk(annotation) if isinstance(child, ast.Name)}
+        assert not (names & fields)
+        assert all(name.startswith("_") for name in names)
+        assert names <= set(bindings)
+        for child in ast.walk(annotation):
+            if not isinstance(child, ast.Attribute):
+                continue
+            root: ast.expr = child
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            assert isinstance(root, ast.Name)
+            assert root.id in module_aliases, (
+                f"attribute {ast.unparse(child)!r} is not qualified by a module alias"
+            )
+            assert not child.attr.startswith("_")
+            assert re.fullmatch(r"_t\d+", child.attr) is None
+            module = importlib.import_module(module_aliases[root.id])
+            assert hasattr(module, child.attr), (
+                f"{module_aliases[root.id]}.{child.attr} is not a public member"
+            )
+
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             fields = {
@@ -116,18 +160,28 @@ def _assert_full_annotation_spelling(text: str) -> None:
                 if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
             }
             for item in node.body:
-                if not isinstance(item, ast.AnnAssign):
-                    continue
-                names = {
-                    child.id for child in ast.walk(item.annotation) if isinstance(child, ast.Name)
-                }
-                assert not (names & fields)
-                assert all(name.startswith("_") for name in names)
-                assert names <= module_names
+                if isinstance(item, ast.AnnAssign):
+                    check_annotation(item.annotation, fields)
         elif isinstance(node, ast.AnnAssign):
-            names = {child.id for child in ast.walk(node.annotation) if isinstance(child, ast.Name)}
-            assert all(name.startswith("_") for name in names)
-            assert names <= module_names
+            check_annotation(node.annotation, set())
+
+
+def test_ast_invariant_rejects_qualified_class_alias_and_reserved_root():
+    broken_alias = (
+        "from __future__ import annotations\n"
+        "from pyxsd import xsd_data_types as _xsd\n"
+        "class A:\n"
+        "    value: _xsd._t0\n"
+    )
+    with pytest.raises(AssertionError):
+        _assert_full_annotation_spelling(broken_alias)
+    duplicate_root = (
+        "from __future__ import annotations\n"
+        "import builtins as _builtins\n"
+        "annotations: _builtins.int\n"
+    )
+    with pytest.raises(AssertionError):
+        _assert_full_annotation_spelling(duplicate_root)
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -196,8 +250,6 @@ def _matches(value: Any, annotation: str, generated: dict[str, type[Any]]) -> bo
     builtin_match = re_match_builtin(annotation, "float")
     if builtin_match:
         return isinstance(value, float)
-    if re_match_private_module(annotation, "decimal") == "Decimal":
-        return isinstance(value, decimal.Decimal)
     if annotation.startswith("_xsd."):
         xsd_class = getattr(xsd_data_types, annotation.removeprefix("_xsd."))
         return isinstance(value, xsd_class)
@@ -1281,12 +1333,21 @@ def test_full_annotations_use_private_names_for_colliding_xml_names(tmp_path):
     child_root.require_valid()
     private_root = _compile_root("_builtins", "<empty/>")
     alias_root = _compile_root("_t0", "<empty/>")
+    xsd_names_root = RelaxNGSchema.compile(FIXTURES / "collisions-xsd-names.rng")
+    xsd_names_root.require_valid()
+    int_root = _compile_root("Int", f'<data type="int" datatypeLibrary="{XSD}"/>')
+    reserved_roots = [
+        _compile_root(name, "<empty/>") for name in sorted(stub_module._RESERVED_START_NAMES)
+    ]
 
     texts = [
         emit_relaxng_stub(scalar_root),
         emit_relaxng_stub(child_root),
         emit_relaxng_stub(private_root),
         emit_relaxng_stub(alias_root),
+        emit_relaxng_stub(xsd_names_root),
+        emit_relaxng_stub(int_root),
+        *(emit_relaxng_stub(schema) for schema in reserved_roots),
     ]
     for text in texts:
         _assert_full_annotation_spelling(text)
@@ -1299,6 +1360,17 @@ def test_full_annotations_use_private_names_for_colliding_xml_names(tmp_path):
     assert "generic: _rng" in texts[1]
     assert "_builtins: _builtins_2.type[_t0]" in texts[2]
     assert "_t0: _builtins.type[_t0_2]" in texts[3]
+    assert "annotations: _builtins.type" not in texts[4]
+    assert "alias 'annotations' collides with a reserved module binding" in texts[4]
+    assert "typed_value: _xsd.Decimal" in texts[4]
+    assert "typed_value: _xsd.Int" in texts[4]
+    assert "typed_value: _xsd.QName" in texts[4]
+    assert "typed_value: _xsd.String" in texts[4]
+    assert "_xsd._t" not in texts[4]
+    assert "typed_value: _xsd.Int" in texts[5]
+    assert "_xsd._t" not in texts[5]
+    for text in texts[6:]:
+        assert "collides with a reserved module binding" in text
 
     paths = []
     for index, text in enumerate(texts):
@@ -1313,13 +1385,14 @@ def test_full_annotations_use_private_names_for_colliding_xml_names(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_decimal_imports_and_private_alias_collision_binding():
+def test_decimal_uses_the_exact_xsd_class_and_private_alias_collision_binding():
     schema = compile_body(
         f'<attribute name="value"><data type="decimal" datatypeLibrary="{XSD}"/></attribute>'
     )
     text = emit_relaxng_stub(schema)
-    assert "value: _decimal.Decimal" in text
-    assert "import decimal as _decimal" in text
+    assert "value: _xsd.Decimal" in text
+    assert "import decimal" not in text
+    assert "_decimal" not in text
     assert (
         stub_module._collision_binding("_builtins", {}, frozenset({"_builtins"}))
         == "a private stub alias"
@@ -1336,7 +1409,7 @@ def test_compact_start_note_keeps_the_sanitized_xml_name():
 def test_header_marks_an_empty_or_generic_selection():
     schema = compile_fixture("stable")
     empty = emit_relaxng_stub(schema, component_ids=())
-    assert "#\n# import it for type checking:" in empty
+    assert "# import it for type checking:\n#" in empty
     assert "This selection emits no projection classes" in empty
     generic_schema = compile_fixture("generic")
     route = next(

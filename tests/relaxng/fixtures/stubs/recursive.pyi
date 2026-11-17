@@ -4,8 +4,8 @@
 # This file is a typing surface for the classes a compiled RELAX NG
 # schema creates at runtime; the classes live in
 # ``schema.projection_classes``. Save this stub next to your code and
-#
 # import it for type checking:
+#
 #     if TYPE_CHECKING:
 #         from schema_stubs import Node
 #     root = cast(Node, document.root)

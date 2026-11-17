@@ -113,12 +113,28 @@ _COMPACT_FIXED = (
 #: complete set of generated class names, member aliases, and start candidates.
 _FULL_ALIAS_BASES = (
     ("builtins", "_builtins"),
-    ("decimal", "_decimal"),
     ("mutable", "_mutable"),
     ("any", "_any"),
     ("alternative", "_alt"),
     ("element", "_rng"),
     ("xsd", "_xsd"),
+)
+
+#: Module bindings a full start alias must not recreate at module scope.
+_RESERVED_START_NAMES = frozenset(
+    {
+        "annotations",
+        "__name__",
+        "__doc__",
+        "__package__",
+        "__loader__",
+        "__spec__",
+        "__file__",
+        "__cached__",
+        "__builtins__",
+        "__annotations__",
+        "__all__",
+    }
 )
 
 
@@ -174,7 +190,6 @@ class _FullNames:
     """Private full-mode names chosen against the whole emitted namespace."""
 
     builtins: str
-    decimal: str
     mutable: str
     any: str
     alternative: str
@@ -189,7 +204,6 @@ class _FullNames:
         return frozenset(
             {
                 self.builtins,
-                self.decimal,
                 self.mutable,
                 self.any,
                 self.alternative,
@@ -333,7 +347,6 @@ def _full_names(
 
     return _FullNames(
         builtins=fixed["builtins"],
-        decimal=fixed["decimal"],
         mutable=fixed["mutable"],
         any=fixed["any"],
         alternative=fixed["alternative"],
@@ -801,6 +814,8 @@ def _collision_binding(
         return f"class {candidate!r}"
     if candidate in private_names:
         return "a private stub alias"
+    if candidate in _RESERVED_START_NAMES:
+        return "a reserved module binding"
     return None
 
 
@@ -942,8 +957,8 @@ def _full_header(schema: RelaxNGSchema, example: str | None, *, classes: bool) -
         "# This file is a typing surface for the classes a compiled RELAX NG",
         "# schema creates at runtime; the classes live in",
         "# ``schema.projection_classes``. Save this stub next to your code and",
-        "#",
         "# import it for type checking:",
+        "#",
     ]
     if example is not None:
         lines.extend(
@@ -994,7 +1009,6 @@ def _full_annotation(text: str, names: _FullNames, class_names: dict[str, str]) 
         lambda match: f"{names.builtins}.{match.group(1)}",
         text,
     )
-    text = re.sub(r"_xsd\.Decimal\b", f"{names.decimal}.Decimal", text)
     text = re.sub(
         r"_xsd\.([A-Za-z_][A-Za-z0-9_]*)",
         lambda match: f"{names.xsd}.{match.group(1)}",
@@ -1012,7 +1026,7 @@ def _full_annotation(text: str, names: _FullNames, class_names: dict[str, str]) 
     }
     for class_name in sorted(class_aliases, key=len, reverse=True):
         text = re.sub(
-            rf"(?<!\w){re.escape(class_name)}(?!\w)",
+            rf"(?<![\w.]){re.escape(class_name)}(?!\w)",
             class_aliases[class_name],
             text,
         )
@@ -1024,8 +1038,6 @@ def _full_imports(body: str, names: _FullNames, *, classes: bool) -> list[str]:
     stdlib: list[str] = []
     if re.search(rf"{re.escape(names.builtins)}\.", body):
         stdlib.append(f"import builtins as {names.builtins}")
-    if re.search(rf"{re.escape(names.decimal)}\.", body):
-        stdlib.append(f"import decimal as {names.decimal}")
     if _uses_token(names.mutable, body):
         stdlib.append(f"from collections.abc import MutableSequence as {names.mutable}")
     if _uses_token(names.any, body):
