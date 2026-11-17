@@ -5,8 +5,11 @@ typed scalar access.  They retain surviving authored origins, the named grammar
 definitions those origins belong to, and the scalar alternatives at each site.
 They never choose a branch, prove acceptance, or change mandatory evidence.
 
-Capture is deliberately truncatable.  A capture budget counts annotated lexical
-nodes in preorder; retained records are sound subsets, and a dropped record
+Capture is deliberately truncatable and lazy.  Parsing stores a deferred
+capture plan; the first ``document.annotations`` read materializes and caches
+the immutable table.  A capture budget counts annotated lexical nodes in
+preorder before any scalar value is constructed, so retained records are sound
+subsets and dropped records never invoke a custom decoder.  A dropped record
 marks both the table and every queried node incomplete instead of implying that
 no match exists.  Typed values and candidate identities come from the complete
 evidence graph and are independent of this budget.
@@ -194,6 +197,65 @@ class AnnotationTable:
         )
 
 
+class AnnotationCapture:
+    """Deferred, parse-scoped materialization of one annotation table.
+
+    A parse stores the fresh root, accepting evidence, schema identity,
+    revision, and capture budget without constructing scalar values.  The first
+    successful :meth:`materialize` call builds and caches the immutable table
+    for this capture object, so repeated ``document.annotations`` reads share
+    one build.  A failing build caches nothing and is retried on the next
+    access; a declared decoder failure therefore surfaces only when a caller
+    explicitly requests annotations, never during parsing.
+    """
+
+    __slots__ = (
+        "_definition_origins",
+        "_evidence",
+        "_max_capture_entries",
+        "_revision_id",
+        "_root",
+        "_schema_id",
+        "_table",
+    )
+
+    def __init__(
+        self,
+        *,
+        root: RelaxNGElement,
+        evidence: EvidenceGraph,
+        schema_id: str,
+        revision_id: int,
+        definition_origins: Mapping[str, OriginTable],
+        max_capture_entries: int | None,
+    ) -> None:
+        self._root = root
+        self._evidence = evidence
+        self._schema_id = schema_id
+        self._revision_id = revision_id
+        self._definition_origins = definition_origins
+        self._max_capture_entries = max_capture_entries
+        self._table: AnnotationTable | None = None
+
+    @property
+    def revision_id(self) -> int:
+        """The parse revision this deferred table belongs to."""
+        return self._revision_id
+
+    def materialize(self) -> AnnotationTable:
+        """Build the table once and cache it for later annotation reads."""
+        if self._table is None:
+            self._table = build_annotation_table(
+                self._root,
+                self._evidence,
+                schema_id=self._schema_id,
+                revision_id=self._revision_id,
+                definition_origins=self._definition_origins,
+                max_capture_entries=self._max_capture_entries,
+            )
+        return self._table
+
+
 def _site_interpretations(
     witnesses: tuple[ScalarWitness, ...],
     evidence: EvidenceGraph,
@@ -330,6 +392,32 @@ def _scalar_annotations(
     return tuple(scalar)
 
 
+def _has_annotation_entries(
+    node: RelaxNGElement,
+    *,
+    origins_by_element: Mapping[RelaxNGElement, set[SourceOrigin]],
+    text_sites: Mapping[RelaxNGElement, EvidenceOccurrence],
+    attribute_sites: Mapping[tuple[RelaxNGElement, str], EvidenceOccurrence],
+    witnesses: Mapping[EvidenceOccurrence, tuple[ScalarWitness, ...]],
+) -> bool:
+    """Whether a node would have any retained annotation record.
+
+    This check uses only references already present in the evidence graph.  It
+    never constructs an ``AlternativeValue`` or invokes a datatype decoder, so
+    a capture budget can reject a record before materialization.
+    """
+    if origins_by_element.get(node):
+        return True
+    text_site = text_sites.get(node)
+    if text_site is not None and node.text_value() is not None and witnesses.get(text_site):
+        return True
+    for name in node.attributes:
+        occurrence = attribute_sites.get((node, name))
+        if occurrence is not None and witnesses.get(occurrence):
+            return True
+    return False
+
+
 def build_annotation_table(
     root: RelaxNGElement,
     evidence: EvidenceGraph,
@@ -343,8 +431,10 @@ def build_annotation_table(
 
     Annotated nodes are visited in lexical preorder.  The first
     ``max_capture_entries`` records are retained; observing another annotated
-    node marks the table incomplete and stops capture without raising.  ``None``
-    retains every record.
+    node marks the table incomplete and stops capture without raising.  The
+    annotated-node list and budget are settled before any scalar value is
+    materialized, so a dropped record can never invoke a custom decoder.
+    ``None`` retains every record.
     """
     origins_by_element: dict[RelaxNGElement, set[SourceOrigin]] = {}
     for evidence_node in evidence.retained_nodes:
@@ -371,16 +461,31 @@ def build_annotation_table(
         for origin in origins:
             definitions_by_origin.setdefault(origin, set()).add(name)
 
-    retained: dict[
-        RelaxNGElement,
-        tuple[tuple[SourceOrigin, ...], tuple[str, ...], tuple[ScalarAnnotation, ...]],
-    ] = {}
+    retained_nodes: list[RelaxNGElement] = []
     complete = True
     stack = [root]
     while stack:
         node = stack.pop()
         stack.extend(reversed(node.children))
+        if not _has_annotation_entries(
+            node,
+            origins_by_element=origins_by_element,
+            text_sites=text_sites,
+            attribute_sites=attribute_sites,
+            witnesses=witnesses,
+        ):
+            continue
+        if max_capture_entries is not None and len(retained_nodes) >= max_capture_entries:
+            complete = False
+            break
+        retained_nodes.append(node)
+
+    entries: dict[RelaxNGElement, NodeAnnotations] = {}
+    for node in retained_nodes:
         patterns = tuple(sorted(origins_by_element.get(node, ()), key=_origin_key))
+        definitions = tuple(
+            sorted({name for origin in patterns for name in definitions_by_origin.get(origin, ())})
+        )
         scalar = _scalar_annotations(
             node,
             evidence=evidence,
@@ -390,18 +495,7 @@ def build_annotation_table(
             grammar_fingerprint=schema_id,
             revision=revision_id,
         )
-        if not patterns and not scalar:
-            continue
-        if max_capture_entries is not None and len(retained) >= max_capture_entries:
-            complete = False
-            break
-        definitions = tuple(
-            sorted({name for origin in patterns for name in definitions_by_origin.get(origin, ())})
-        )
-        retained[node] = (patterns, definitions, scalar)
-
-    entries = {
-        node: NodeAnnotations(
+        entries[node] = NodeAnnotations(
             schema_id,
             revision_id,
             patterns,
@@ -409,6 +503,4 @@ def build_annotation_table(
             scalar,
             complete,
         )
-        for node, (patterns, definitions, scalar) in retained.items()
-    }
     return AnnotationTable(schema_id, revision_id, complete, root.revision, entries)

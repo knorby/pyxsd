@@ -28,15 +28,27 @@ from pyxsd.relaxng import (
     StaleInterpretationError,
 )
 from pyxsd.relaxng.annotations import AnnotationTable, build_annotation_table
+from pyxsd.relaxng.datatypes import (
+    Datatype,
+    DatatypeContext,
+    DatatypeFactory,
+    DatatypeLibraryRegistration,
+    DatatypeParameter,
+)
 from pyxsd.relaxng.origins import SourceOrigin
 from pyxsd.relaxng.tree import RelaxNGElement
 
 NS = "http://relaxng.org/ns/structure/1.0"
 XSD = "http://www.w3.org/2001/XMLSchema-datatypes"
+CUSTOM = "urn:custom"
 
 
 def data(type_name: str) -> str:
     return f'<data type="{type_name}" datatypeLibrary="{XSD}"/>'
+
+
+def custom_data(type_name: str) -> str:
+    return f'<data type="{type_name}" datatypeLibrary="{CUSTOM}"/>'
 
 
 def element(name: str, content: str = "<empty/>") -> str:
@@ -47,11 +59,87 @@ def attribute(name: str, content: str) -> str:
     return f'<attribute name="{name}">{content}</attribute>'
 
 
-def compile_schema(body: str) -> RelaxNGSchema:
+def compile_schema(body: str, **kwargs: object) -> RelaxNGSchema:
     source = f'<grammar xmlns="{NS}"><start>{body}</start></grammar>'
-    compiled = RelaxNGSchema.compile(io.StringIO(source))  # type: ignore[arg-type]
+    compiled = RelaxNGSchema.compile(io.StringIO(source), **kwargs)  # type: ignore[arg-type]
     assert not compiled.report.has_errors, [issue.message for issue in compiled.report.issues]
     return compiled
+
+
+class ExplodingDatatype(Datatype):
+    """A declared decoder whose call is observable and always fails."""
+
+    library_uri = CUSTOM
+    type_name = "explodes"
+    parameters = ()
+    supports_decode = True
+    calls = 0
+
+    def allows(self, lexical: str, context: DatatypeContext) -> bool:
+        del lexical, context
+        return True
+
+    def equal(
+        self,
+        left: str,
+        left_context: DatatypeContext,
+        right: str,
+        right_context: DatatypeContext,
+    ) -> bool:
+        del left_context, right_context
+        return left == right
+
+    def decode(self, lexical: str, context: DatatypeContext) -> object:
+        del lexical, context
+        type(self).calls += 1
+        raise RuntimeError("decoder exploded")
+
+
+class CountingDatatype(Datatype):
+    """A declared decoder that returns the lexical value and counts calls."""
+
+    library_uri = CUSTOM
+    type_name = "counts"
+    parameters = ()
+    supports_decode = True
+    calls = 0
+
+    def allows(self, lexical: str, context: DatatypeContext) -> bool:
+        del lexical, context
+        return True
+
+    def equal(
+        self,
+        left: str,
+        left_context: DatatypeContext,
+        right: str,
+        right_context: DatatypeContext,
+    ) -> bool:
+        del left_context, right_context
+        return left == right
+
+    def decode(self, lexical: str, context: DatatypeContext) -> object:
+        del context
+        type(self).calls += 1
+        return lexical
+
+
+class _CustomFactory(DatatypeFactory):
+    def create(
+        self,
+        type_name: str,
+        parameters: tuple[DatatypeParameter, ...],
+        context: DatatypeContext,
+    ) -> Datatype:
+        del parameters, context
+        if type_name == "explodes":
+            return ExplodingDatatype()
+        return CountingDatatype()
+
+
+CUSTOM_LIBRARIES = {
+    CUSTOM: DatatypeLibraryRegistration(_CustomFactory(), "test-custom/1"),
+}
 
 
 def typed(compiled: RelaxNGSchema, xml: str | ET.Element, **kwargs: object):
@@ -517,6 +605,147 @@ def test_zero_capture_budget_marks_annotations_incomplete_without_truncating_typ
     ]
 
 
+def test_capture_materialization_is_lazy_and_decoder_failure_surfaces_on_access():
+    ExplodingDatatype.calls = 0
+    compiled = compile_schema(
+        element("doc", custom_data("explodes")),
+        datatype_libraries=CUSTOM_LIBRARIES,
+    )
+
+    without = typed(compiled, io.StringIO("<doc>boom</doc>"), capture="none")
+    with_capture = typed(compiled, io.StringIO("<doc>boom</doc>"), capture="patterns")
+
+    assert ExplodingDatatype.calls == 0
+    assert without.is_valid and with_capture.is_valid
+    assert with_capture.binding_evidence is not None
+    assert with_capture.interpretations_current is True
+
+    with pytest.raises(RuntimeError, match="decoder exploded"):
+        _ = with_capture.annotations
+    assert ExplodingDatatype.calls == 1
+
+    with pytest.raises(PyXSDError, match="capture='patterns'"):
+        _ = without.annotations
+    assert ExplodingDatatype.calls == 1
+
+
+def test_annotation_materialization_is_cached_after_one_build():
+    CountingDatatype.calls = 0
+    compiled = compile_schema(
+        element("doc", custom_data("counts")),
+        datatype_libraries=CUSTOM_LIBRARIES,
+    )
+    document = typed(compiled, io.StringIO("<doc>boom</doc>"), capture="patterns")
+
+    assert CountingDatatype.calls == 0
+    first = document.annotations
+    assert CountingDatatype.calls == 1
+    second = document.annotations
+    assert second is first
+    assert CountingDatatype.calls == 1
+    assert first.for_node(document.root).scalar[0].value.candidates[0].decoded == "boom"
+    assert CountingDatatype.calls == 1
+
+    fresh = document.revalidate()
+    assert CountingDatatype.calls == 1
+    fresh_table = fresh.annotations
+    assert fresh_table is not first
+    assert CountingDatatype.calls == 2
+
+
+def test_capture_budgets_never_materialize_dropped_scalar_records():
+    ExplodingDatatype.calls = 0
+    compiled = compile_schema(
+        element(
+            "doc",
+            element("value", custom_data("explodes")) + element("ok", data("integer")),
+        ),
+        datatype_libraries=CUSTOM_LIBRARIES,
+    )
+    xml = "<doc><value>boom</value><ok>7</ok></doc>"
+
+    zero = typed(
+        compiled,
+        io.StringIO(xml),
+        capture="patterns",
+        limits=RelaxNGLimits(max_capture_entries=0),
+    )
+    zero_table = zero.annotations
+    assert zero_table.complete is False
+    assert zero_table.for_node(zero.root).patterns == ()
+    assert ExplodingDatatype.calls == 0
+    assert zero.root.children[1].scalar_value() == 7
+
+    partial = typed(
+        compiled,
+        io.StringIO(xml),
+        capture="patterns",
+        limits=RelaxNGLimits(max_capture_entries=1),
+    )
+    partial_table = partial.annotations
+    assert partial_table.complete is False
+    root_entry = partial_table.for_node(partial.root)
+    assert root_entry.patterns
+    assert root_entry.scalar == ()
+    assert root_entry.complete is False
+    assert partial_table.for_node(partial.root.children[0]).patterns == ()
+    assert ExplodingDatatype.calls == 0
+    assert partial.root.children[1].scalar_value() == 7
+
+    retained = typed(
+        compiled,
+        io.StringIO(xml),
+        capture="patterns",
+        limits=RelaxNGLimits(max_capture_entries=2),
+    )
+    assert ExplodingDatatype.calls == 0
+    with pytest.raises(RuntimeError, match="decoder exploded"):
+        _ = retained.annotations
+    assert ExplodingDatatype.calls == 1
+
+
+def test_a_retained_list_site_keeps_all_candidates_under_a_partial_budget():
+    compiled = compile_schema(
+        element(
+            "doc",
+            element(
+                "values",
+                f"<choice><list><zeroOrMore>{data('integer')}</zeroOrMore></list>"
+                f"{data('string')}</choice>",
+            )
+            + element("tail", "<empty/>"),
+        )
+    )
+    document = typed(
+        compiled,
+        io.StringIO("<doc><values>1 2</values><tail/></doc>"),
+        capture="patterns",
+        limits=RelaxNGLimits(max_capture_entries=2),
+    )
+
+    table = document.annotations
+    assert table.complete is False
+    values = document.root.children[0]
+    tail = document.root.children[1]
+    entry = table.for_node(values)
+    assert entry.complete is False
+    assert len(entry.scalar) == 1
+    value = entry.scalar[0].value
+    assert len(value.candidates) == 2
+    list_id = next(
+        candidate.candidate_id
+        for candidate in value.candidates
+        if candidate.contract.kind == "list"
+    )
+    assert value.as_candidate(list_id) == [1, 2]
+    assert value.as_interpretation(list_id).as_python() == [1, 2]
+    assert table.for_node(tail).patterns == ()
+
+    typed_value = values.scalar_value()
+    assert isinstance(typed_value, AlternativeValue)
+    assert scalar_ids(typed_value) == scalar_ids(value)
+
+
 def test_annotations_reject_unknown_elements_and_foreign_revisions():
     compiled = scalar_schema()
     document = typed(compiled, io.StringIO("<doc>12</doc>"), capture="patterns")
@@ -634,6 +863,70 @@ def test_builder_ignores_nodes_with_no_surviving_annotation_entries():
     assert entry.definitions == ()
     assert entry.scalar == ()
     assert entry.complete is True
+
+
+def test_builder_keeps_scalar_only_records_when_origins_are_absent():
+    text_compiled = compile_schema(element("doc", data("integer")))
+    text_document = typed(text_compiled, io.StringIO("<doc>12</doc>"), capture="none")
+    text_evidence = text_document.binding_evidence
+    assert text_evidence is not None
+    text_table = build_annotation_table(
+        text_document.root,
+        text_evidence,
+        schema_id="schema",
+        revision_id=text_document.root.revision.revision_id,
+        definition_origins={},
+        max_capture_entries=None,
+    )
+    text_entry = text_table.for_node(text_document.root)
+    assert text_entry.patterns == ()
+    assert len(text_entry.scalar) == 1
+    assert text_entry.scalar[0].value.as_python() == 12
+    assert text_table.complete is True
+
+    attribute_compiled = compile_schema(
+        element("doc", attribute("a", data("integer")) + "<empty/>")
+    )
+    attribute_document = typed(
+        attribute_compiled,
+        io.StringIO('<doc a="1"/>'),
+        capture="none",
+    )
+    attribute_evidence = attribute_document.binding_evidence
+    assert attribute_evidence is not None
+    attribute_table = build_annotation_table(
+        attribute_document.root,
+        attribute_evidence,
+        schema_id="schema",
+        revision_id=attribute_document.root.revision.revision_id,
+        definition_origins={},
+        max_capture_entries=None,
+    )
+    attribute_entry = attribute_table.for_node(attribute_document.root)
+    assert attribute_entry.patterns == ()
+    assert [item.name for item in attribute_entry.scalar] == ["a"]
+    assert attribute_entry.scalar[0].value.as_python() == 1
+    assert attribute_table.complete is True
+
+    flag_compiled = compile_schema(
+        '<element name="doc"><optional><attribute name="flag"><empty/></attribute>'
+        "</optional><empty/></element>"
+    )
+    flag_document = typed(flag_compiled, io.StringIO('<doc flag=""/>'), capture="none")
+    flag_evidence = flag_document.binding_evidence
+    assert flag_evidence is not None
+    flag_table = build_annotation_table(
+        flag_document.root,
+        flag_evidence,
+        schema_id="schema",
+        revision_id=flag_document.root.revision.revision_id,
+        definition_origins={},
+        max_capture_entries=None,
+    )
+    flag_entry = flag_table.for_node(flag_document.root)
+    assert flag_entry.patterns == ()
+    assert flag_entry.scalar == ()
+    assert flag_table.complete is True
 
 
 def test_direct_document_construction_keeps_annotations_parse_scoped():

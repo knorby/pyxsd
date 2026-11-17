@@ -32,7 +32,7 @@ from pyxsd.dtd_declarations import (
 from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
-from pyxsd.relaxng.annotations import AnnotationTable, build_annotation_table
+from pyxsd.relaxng.annotations import AnnotationCapture
 from pyxsd.relaxng.checks import check_compiled_grammar
 from pyxsd.relaxng.contracts import grammar_fingerprint
 from pyxsd.relaxng.datatypes import (
@@ -489,7 +489,10 @@ class RelaxNGSchema:
           with ``ValueError`` before any input is read.  Other values are
           rejected the same way.  The independent ``max_capture_entries``
           budget truncates only that table, visibly and without raising;
-          capture settings never truncate mandatory scalar evidence.
+          capture settings never truncate mandatory scalar evidence.  Table
+          materialization is lazy: parsing succeeds whenever ``capture="none"``
+          does, and a declared datatype decoder failure surfaces only when
+          ``document.annotations`` is requested.
 
         - ``capture_xdm`` retains the existing opt-in XDM meaning: the same
           source revision also becomes an unannotated XML-tree view.
@@ -694,7 +697,7 @@ class RelaxNGSchema:
                 limits=effective_limits,
             )
             binding_evidence: EvidenceGraph | None = None
-            annotations: AnnotationTable | None = None
+            annotations: AnnotationCapture | None = None
             if typed and outcome.valid:
                 binding_evidence = build_binding_evidence(
                     root,
@@ -704,9 +707,9 @@ class RelaxNGSchema:
                     origins=self.grammar.graph.origins if capture == "patterns" else None,
                 )
                 if capture == "patterns":
-                    annotations = build_annotation_table(
-                        root,
-                        binding_evidence,
+                    annotations = AnnotationCapture(
+                        root=root,
+                        evidence=binding_evidence,
                         schema_id=self._grammar_fingerprint,
                         revision_id=root.revision.revision_id,
                         definition_origins={

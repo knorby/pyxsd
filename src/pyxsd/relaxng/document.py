@@ -33,7 +33,11 @@ from typing import IO, TYPE_CHECKING, Any, NoReturn, cast
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError, ValidationError
 from pyxsd.locations import IssueLocation, NodeLookup, PathStep
-from pyxsd.relaxng.annotations import AnnotationTable, typed_value_at_site
+from pyxsd.relaxng.annotations import (
+    AnnotationCapture,
+    AnnotationTable,
+    typed_value_at_site,
+)
 from pyxsd.relaxng.contracts import ScalarContract
 from pyxsd.relaxng.errors import StaleInterpretationError
 from pyxsd.relaxng.evidence import EvidenceGraph, EvidenceOccurrence
@@ -251,10 +255,10 @@ class RelaxNGDocument(Document):
     ``binding_evidence`` is the immutable evidence graph for a valid typed
     document, or ``None`` for validation-only and invalid typed documents.
     ``annotations`` is the immutable pattern-annotation table for a valid typed
-    parse requested with ``capture="patterns"``, and raises an explicit
-    capability error when capture did not run.  ``root``, ``report``, and
-    ``source`` keep the lexical tree, the merged schema/instance report, and the
-    original caller source respectively.
+    parse requested with ``capture="patterns"``, materialized lazily on first
+    access, and raises an explicit capability error when capture did not run.
+    ``root``, ``report``, and ``source`` keep the lexical tree, the merged
+    schema/instance report, and the original caller source respectively.
     """
 
     schema: RelaxNGSchema  # type: ignore[assignment]
@@ -277,7 +281,7 @@ class RelaxNGDocument(Document):
         interpretations_current: bool = True,
         attribute_snapshot: _AttributeSnapshot | None = None,
         binding_evidence: EvidenceGraph | None = None,
-        annotations: AnnotationTable | None = None,
+        annotations: AnnotationTable | AnnotationCapture | None = None,
     ) -> None:
         if not isinstance(typed, bool):
             raise TypeError("typed must be a bool")
@@ -287,8 +291,10 @@ class RelaxNGDocument(Document):
             raise ValueError(_CAPTURE_CAPABILITY)
         if binding_evidence is not None and not isinstance(binding_evidence, EvidenceGraph):
             raise TypeError("binding_evidence must be an EvidenceGraph or None")
-        if annotations is not None and not isinstance(annotations, AnnotationTable):
-            raise TypeError("annotations must be an AnnotationTable or None")
+        if annotations is not None and not isinstance(
+            annotations, (AnnotationTable, AnnotationCapture)
+        ):
+            raise TypeError("annotations must be an AnnotationTable, AnnotationCapture, or None")
         if not typed and binding_evidence is not None:
             raise ValueError("a validation-only RELAX NG document carries no binding evidence")
         if not typed and annotations is not None:
@@ -401,6 +407,13 @@ class RelaxNGDocument(Document):
         its report, and an edited or transformed revision raises
         :class:`~pyxsd.relaxng.errors.StaleInterpretationError` before either
         validity or capture is considered.
+
+        Materialization is deferred until this property is read.  A valid
+        capture-on parse therefore succeeds whenever a capture-off parse does;
+        a declared datatype decoder failure surfaces here, when annotations are
+        explicitly requested, and is retried on the next access because no
+        table is cached after a failed build.  Successful tables are cached for
+        this parse revision.
         """
         if not self.typed:
             raise PyXSDError(_ANNOTATION_VALIDATION_ONLY)
@@ -412,6 +425,8 @@ class RelaxNGDocument(Document):
             _raise_invalid_document(self._report)
         if self._annotations is None:
             raise PyXSDError(_ANNOTATION_NOT_CAPTURED)
+        if isinstance(self._annotations, AnnotationCapture):
+            return self._annotations.materialize()
         return self._annotations
 
     def to_dict(self, *, typed: bool = True, always_list: bool = False) -> NoReturn:
