@@ -505,3 +505,117 @@ print(json.dumps(([a.candidate_id, b.candidate_id], [g.compatible([a]), g.compat
     ]
     assert outputs[0] == outputs[1]
     assert outputs[0][1] == [True, False]
+
+
+@pytest.mark.parametrize(
+    "xcontent, xcandidate",
+    [
+        ('<data type="string"/>', "string"),
+        ('<value type="string"></value>', "string"),
+        ("<list><empty/></list>", "list"),
+    ],
+    ids=["empty-string", "empty-value", "empty-list"],
+)
+@pytest.mark.parametrize("optional", [False, True], ids=["required-x", "optional-x"])
+def test_selected_empty_scalar_cannot_escape_through_weak_text_skip(xcontent, xcandidate, optional):
+    absent_scalar = element("x", "<empty/>")
+    if optional:
+        absent_scalar = f"<optional>{absent_scalar}</optional>"
+    schema, document, graph = parse(
+        f"<choice><group>{element('x', xcontent)}{element('y', data('integer'))}</group>"
+        f"<group>{absent_scalar}{element('y', data('string'))}</group></choice>",
+        "<r><x/><y>12</y></r>",
+    )
+    x, y = document.root.children
+    selected_x = selection_for(schema, graph, scalar_site(graph, x), xcandidate)
+    selected_y = selection_for(schema, graph, scalar_site(graph, y), "string")
+    assert graph.compatible((selected_x,))
+    assert graph.compatible((selected_y,))
+    assert not graph.compatible((selected_x, selected_y))
+    assert graph.compatible(
+        (selected_x, selection_for(schema, graph, scalar_site(graph, y), "integer"))
+    )
+    assert graph.compatible(())
+    # The no-witness branch is required when x has no scalar selection.
+    assert graph.compatible((selected_y,))
+    if optional:
+        omitted = schema.parse(io.StringIO("<r><y>12</y></r>"), typed=True)
+        assert omitted.is_valid
+        assert not omitted.binding_evidence.compatible((selected_x,))
+
+
+@pytest.mark.parametrize(
+    "xcontent, xcandidate",
+    [
+        ('<data type="string"/>', "string"),
+        ("<list><empty/></list>", "list"),
+    ],
+    ids=["empty-atomic", "empty-list"],
+)
+def test_selected_empty_attribute_cannot_escape_through_nullable_shortcut(xcontent, xcandidate):
+    schema, document, graph = parse(
+        f'<choice><group><attribute name="x">{xcontent}</attribute>'
+        f"{element('y', data('integer'))}</group>"
+        '<group><optional><attribute name="x"><empty/></attribute></optional>'
+        f"{element('y', data('string'))}</group></choice>",
+        '<r x=""><y>12</y></r>',
+    )
+    xsite = next(site for site in graph.occurrences if site.kind == "attribute")
+    selected_x = selection_for(schema, graph, xsite, xcandidate)
+    selected_y = selection_for(
+        schema, graph, scalar_site(graph, document.root.children[0]), "string"
+    )
+    assert graph.compatible((selected_x,))
+    assert graph.compatible((selected_y,))
+    assert not graph.compatible((selected_x, selected_y))
+    assert graph.compatible(())
+    # An occurrence from another parse cannot be selected when that optional
+    # attribute is absent, even if its contract is schema-possible.
+    omitted = schema.parse(io.StringIO("<r><y>12</y></r>"), typed=True)
+    assert omitted.is_valid
+    assert not omitted.binding_evidence.compatible((selected_x,))
+
+
+@pytest.mark.parametrize(
+    "xcontent, xcandidate",
+    [
+        ('<data type="string"/>', "string"),
+        ("<list><empty/></list>", "list"),
+    ],
+)
+def test_empty_scalar_participation_composes_with_token_parent_requirement(xcontent, xcandidate):
+    schema, document, graph = parse(
+        f"<choice><group>{element('x', xcontent)}"
+        f"{element('y', '<list>' + data('integer') + '</list>')}</group>"
+        f"<group>{element('x', '<empty/>')}"
+        f"{element('y', '<list>' + data('string') + '</list>')}</group></choice>",
+        "<r><x/><y>12</y></r>",
+    )
+    selected_x = selection_for(
+        schema, graph, scalar_site(graph, document.root.children[0]), xcandidate
+    )
+    token = next(site for site in graph.occurrences if site.kind == "token")
+    integer_token = selection_for(schema, graph, token, "integer")
+    string_token = selection_for(schema, graph, token, "string")
+    assert graph.compatible((selected_x,))
+    assert graph.compatible((integer_token,))
+    assert graph.compatible((string_token,))
+    assert graph.compatible((selected_x, integer_token))
+    assert not graph.compatible((selected_x, string_token))
+
+
+def test_unselected_nullable_attribute_alternative_remains_a_valid_local_fact():
+    schema, _, graph = parse(
+        '<attribute name="x"><choice><empty/><data type="string"/></choice></attribute>',
+        '<r x=""/>',
+    )
+    site = next(site for site in graph.occurrences if site.kind == "attribute")
+    selected = selection_for(schema, graph, site, "string")
+    assert graph.compatible(())
+    assert graph.compatible((selected,))
+    witnessless = replace(
+        graph, retained_edges=tuple(edge for edge in graph.retained_edges if not edge.witnesses)
+    )
+    assert not witnessless.scalar_witnesses_at(site)
+    assert witnessless.compatible(())
+    assert not witnessless.compatible((selected,))

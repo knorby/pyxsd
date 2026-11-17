@@ -150,12 +150,18 @@ class EvidenceNode:
 
 @dataclass(frozen=True)
 class EvidenceEdge:
-    """A conjunctive or alternative dependency, optionally carrying witnesses."""
+    """A conjunctive or alternative dependency, optionally carrying witnesses.
+
+    ``skips_scalar`` marks a local alternative that consumes its predecessor's
+    occurrence without a scalar witness (weak text or a nullable attribute).
+    Other witness-free edges remain necessary structural proof steps.
+    """
 
     kind: Literal["and", "or"]
     predecessors: tuple[EvidenceNode, ...]
     successors: tuple[EvidenceNode, ...]
     witnesses: tuple[ScalarWitness, ...] = ()
+    skips_scalar: bool = False
 
 
 @dataclass(frozen=True, eq=False)
@@ -245,8 +251,10 @@ class EvidenceGraph:
         Tokens require a whole-list proof at their parent scalar site. Each
         parent's compact token graph determines its allowed list candidates
         before filtering the whole-document graph. Selecting a whole list alone
-        leaves its tokens free. All queries reuse least-fixed-point AND/OR
-        viability; no candidate products or token assignments are enumerated.
+        leaves its tokens free. A selected scalar cannot use an occurrence-skip
+        alternative; unselected skips and structural edges remain. All queries
+        reuse least-fixed-point AND/OR viability; no candidate products or token
+        assignments are enumerated.
 
         IDs are derived from contracts only: this query never invokes datatype
         decoders. Anonymous graphs still expose marginal views but cannot
@@ -310,7 +318,8 @@ class EvidenceGraph:
         filtered = tuple(
             edge
             for edge in self.retained_edges
-            if all(matches(witness) for witness in edge.witnesses)
+            if not (edge.skips_scalar and edge.predecessors[0].occurrence in allowed)
+            and all(matches(witness) for witness in edge.witnesses)
         )
         viable = _viability(filtered)
         return any(root in viable for root in self.accepting_roots)
@@ -465,7 +474,9 @@ def _prune(
                 continue
             if edge.kind == "or" and not children:
                 continue
-            retained[index] = EvidenceEdge(edge.kind, edge.predecessors, children, edge.witnesses)
+            retained[index] = EvidenceEdge(
+                edge.kind, edge.predecessors, children, edge.witnesses, edge.skips_scalar
+            )
             pending.extend(children)
     return (
         tuple(node for node in nodes if node in reachable),
@@ -503,6 +514,7 @@ class _Builder:
         kind: Literal["and", "or"] = "and",
         matched: Pattern | None = None,
         witnesses: tuple[ScalarWitness, ...] = (),
+        skips_scalar: bool = False,
     ) -> EvidenceNode:
         self.counter.consume("max_evidence_states")
         key = self.residuals.setdefault(residual, len(self.residuals))
@@ -514,7 +526,7 @@ class _Builder:
         result = EvidenceNode(site, key, origins)
         self.nodes.append(result)
         self.counter.consume("max_evidence_edges")
-        self.edges.append(EvidenceEdge(kind, (result,), children, witnesses))
+        self.edges.append(EvidenceEdge(kind, (result,), children, witnesses, skips_scalar))
         return result
 
     def merge(
@@ -569,7 +581,9 @@ class _Builder:
             for residual, local in self.derive(previous, site, event, name, lexical, cx).items():
                 alternatives.append((residual, self.node(site, residual, (prefix, local))))
             if event == "weak_text":
-                alternatives.append((previous, self.node(site, previous, (prefix,))))
+                alternatives.append(
+                    (previous, self.node(site, previous, (prefix,), skips_scalar=True))
+                )
         return self.merge(site, alternatives)
 
     def derive(
@@ -651,13 +665,21 @@ class _Builder:
             *,
             matched: Pattern | None = None,
             scalar: bool = False,
+            skips_scalar: bool = False,
         ) -> None:
             if not isinstance(residual, NotAllowed):
                 witnesses = (self.scalar(pattern, lexical, site, cx),) if scalar else ()
                 alternatives.append(
                     (
                         residual,
-                        self.node(site, residual, proofs, matched=matched, witnesses=witnesses),
+                        self.node(
+                            site,
+                            residual,
+                            proofs,
+                            matched=matched,
+                            witnesses=witnesses,
+                            skips_scalar=skips_scalar,
+                        ),
                     )
                 )
 
@@ -722,7 +744,7 @@ class _Builder:
         elif event == "attribute" and isinstance(pattern, Attribute):
             if pattern.name_class.contains(*expanded_name(name)):
                 if _nullable(pattern.pattern) and _whitespace(lexical):
-                    add(Empty(), matched=pattern)
+                    add(Empty(), matched=pattern, skips_scalar=True)
                 for residual, proof in self.derive(
                     pattern.pattern, site, "text", "", lexical, cx
                 ).items():
