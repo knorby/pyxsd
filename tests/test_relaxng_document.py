@@ -19,6 +19,7 @@ import pytest
 from pyxsd.document_transform import DocumentTransform
 from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, PathStep
+from pyxsd.namespaces import parse_with_namespaces
 from pyxsd.relaxng import (
     RelaxNGDocument,
     RelaxNGElement,
@@ -26,7 +27,9 @@ from pyxsd.relaxng import (
     RelaxNGSchema,
 )
 from pyxsd.relaxng.document import _restore_lexical_frames
+from pyxsd.relaxng.schema import _parse_guard
 from pyxsd.relaxng.xml_writer import clone_relaxng
+from pyxsd.resource_policy import ResourceData
 from pyxsd.xdm.annotations import UNTYPED, UNTYPED_ATOMIC
 from pyxsd.xdm.errors import XdmInputError
 
@@ -54,13 +57,17 @@ MIXED_SCHEMA = f"""<grammar xmlns="{NS}">
 CONTEXT_SCHEMA = f"""<grammar xmlns="{NS}">
   <start>
     <element name="doc">
+      <optional><attribute name="xml:base"><text/></attribute></optional>
       <optional>
         <attribute name="kind">
           <data type="QName" datatypeLibrary="{XSD_DATATYPES}"/>
         </attribute>
       </optional>
       <mixed>
-        <zeroOrMore><element name="item"><empty/></element></zeroOrMore>
+        <zeroOrMore><element name="item">
+          <optional><attribute name="xml:base"><text/></attribute></optional>
+          <empty/>
+        </element></zeroOrMore>
       </mixed>
     </element>
   </start>
@@ -435,6 +442,181 @@ def test_revalidation_records_a_fresh_attribute_snapshot(tmp_path):
     assert fresh_issue.location.attribute == "n"
     assert fresh.locate(fresh_issue.location).bound == "8x"
     assert document.locate(issue.location).bound == "bad"
+
+
+@pytest.mark.parametrize("type_name", ["ENTITY", "ENTITIES"])
+def test_revalidation_retains_internal_entity_declarations_through_transforms(
+    type_name, monkeypatch
+):
+    schema = _schema(
+        f'<element xmlns="{NS}" name="doc">'
+        f'<data datatypeLibrary="{XSD_DATATYPES}" type="{type_name}"/></element>'
+    )
+    xml = (
+        "<!DOCTYPE doc [<!ENTITY foo SYSTEM 'foo.bin' NDATA data>"
+        "<!ENTITY bar SYSTEM 'bar.bin' NDATA data>]>"
+        f"<doc>{'foo' if type_name == 'ENTITY' else ' foo bar '}</doc>"
+    )
+    document = schema.parse(io.StringIO(xml), typed=False)
+    assert document.is_valid
+    assert "<!DOCTYPE" not in document.to_string()
+
+    def fail_collection(*args, **kwargs):
+        raise AssertionError("revalidation must not collect a replacement prolog")
+
+    monkeypatch.setattr("pyxsd.relaxng.schema.collect_document_declarations", fail_collection)
+    stale = document.transform(lambda root: clone_relaxng(root))
+    fresh = stale.revalidate().revalidate()
+    assert fresh.is_valid
+    assert fresh.report.diagnostics_complete is True
+    assert fresh._declarations is document._declarations
+    assert stale._declarations is document._declarations
+
+    fresh.root.set_text("missing")
+    invalid = fresh.revalidate()
+    assert not invalid.is_valid
+    assert {issue.code for issue in invalid.report} == {"invalid-scalar"}
+
+
+@pytest.mark.parametrize("type_name", ["ENTITY", "ENTITIES"])
+@pytest.mark.parametrize("max_diagnostics", [None, 0])
+def test_revalidation_retains_external_entity_advisory_and_completeness(type_name, max_diagnostics):
+    schema = _schema(
+        f'<element xmlns="{NS}" name="doc">'
+        f'<data datatypeLibrary="{XSD_DATATYPES}" type="{type_name}"/></element>'
+    )
+    document = schema.parse(
+        io.StringIO(
+            '<!DOCTYPE doc SYSTEM "never-retrieve.dtd">'
+            f"<doc>{'foo' if type_name == 'ENTITY' else 'foo bar'}</doc>"
+        ),
+        typed=False,
+        limits=RelaxNGLimits(max_diagnostics=max_diagnostics),
+    )
+    fresh = document.revalidate().revalidate()
+    assert document.is_valid
+    assert fresh.is_valid
+    assert fresh._declarations is document._declarations
+    assert fresh.report.warning_count == 1
+    assert fresh.report.error_count == 0
+    assert fresh.report.suppressed_count == (1 if max_diagnostics == 0 else 0)
+    assert fresh.report.diagnostics_complete is (max_diagnostics is None)
+    assert [issue.code for issue in fresh.report] == (
+        [] if max_diagnostics == 0 else ["dtd-external-skipped"]
+    )
+
+
+@pytest.mark.parametrize("type_name", ["ENTITY", "ENTITIES"])
+def test_revalidation_preserves_absent_and_empty_declaration_evidence(type_name):
+    schema = _schema(
+        f'<element xmlns="{NS}" name="doc">'
+        f'<data datatypeLibrary="{XSD_DATATYPES}" type="{type_name}"/></element>'
+    )
+    # A readable prolog without a DOCTYPE is complete evidence of no declarations.
+    empty = schema.parse(io.StringIO("<doc>foo</doc>"), typed=False)
+    assert not empty.is_valid
+    assert not empty.revalidate().is_valid
+    # A trusted Element has no admitted declaration evidence, not an empty set.
+    absent = schema.parse(ET.fromstring("<doc>foo</doc>"), typed=False)
+    assert absent.is_valid
+    assert absent._declarations is None
+    fresh = absent.transform(lambda root: root).revalidate()
+    assert fresh.is_valid
+    assert fresh._declarations is None
+    assert list(fresh.report) == []
+
+
+@pytest.mark.parametrize("source_kind", ["path", "named-stream", "anonymous"])
+def test_revalidation_preserves_source_identity_for_fresh_occurrences_and_xdm(
+    tmp_path, source_kind
+):
+    schema = _schema(
+        f'<element xmlns="{NS}" name="doc"><oneOrMore><element name="item">'
+        f'<attribute name="n"><data datatypeLibrary="{XSD_DATATYPES}" type="integer"/>'
+        "</attribute></element></oneOrMore></element>"
+    )
+    xml = '<doc><item n="1"/><item n="bad"/></doc>'
+    path = tmp_path / "source.xml"
+    if source_kind == "path":
+        path.write_text(xml, encoding="utf-8")
+        source = path
+    else:
+        source = io.StringIO(xml)
+        if source_kind == "named-stream":
+            source.name = str(path)
+    expected_source = None if source_kind == "anonymous" else str(path)
+    document = schema.parse(source, typed=False, capture_xdm=True)
+    # Reparse current shape, not old occurrence paths, after removing a sibling.
+    document.root.remove_child(document.root.children[0])
+    fresh = document.revalidate()
+    assert fresh.source is document.source
+    assert fresh.root is not document.root
+    assert fresh.root.revision.revision_id != document.root.revision.revision_id
+    assert fresh.root.source_location is not None
+    assert fresh.root.source_location.source == expected_source
+    assert fresh.root.source_location.path == (PathStep("doc", 1),)
+    [issue] = list(fresh.report)
+    assert issue.location is not None
+    assert issue.location.source == expected_source
+    assert issue.location.path == (PathStep("doc", 1), PathStep("item", 1))
+    assert issue.location.attribute == "n"
+    assert fresh.locate(issue.location).status == "attribute"
+    assert fresh.locate(issue.location).bound == "bad"
+    occurrence = IssueLocation(expected_source, issue.location.path)
+    assert fresh.locate(occurrence).bound is fresh.root.children[0]
+    xdm = fresh.to_xdm()
+    assert xdm.source_name == (expected_source or "<memory>")
+    assert xdm.root_element.name == "doc"
+
+
+def test_revalidation_resource_policy_source_identity_boundary(tmp_path):
+    class CanonicalPolicy:
+        def read(self, source, *, base, purpose):
+            with open(source, "rb") as stream:
+                return ResourceData("urn:canonical:" + purpose, stream.read())
+
+        def parse(self, data, context):
+            return parse_with_namespaces(io.BytesIO(data.content), context)
+
+    schema_path = tmp_path / "schema.rng"
+    schema_path.write_text(SIMPLE_SCHEMA, encoding="utf-8")
+    path = tmp_path / "source.xml"
+    path.write_text("<doc><other/></doc>", encoding="utf-8")
+    schema = RelaxNGSchema.compile(schema_path, resource_policy=CanonicalPolicy())
+    document = schema.parse(path, typed=False, capture_xdm=True)
+    assert document.root.source_location is not None
+    assert document.root.source_location.source == "urn:canonical:instance"
+    fresh = document.revalidate()
+    # Paths go through policy.read; the serialized stream only goes through
+    # policy.parse. Its identifier is the original caller's path, not the
+    # policy's canonical identifier from the original read.
+    assert fresh.source is path
+    assert fresh.root.source_location is not None
+    assert fresh.root.source_location.source == str(path)
+    assert fresh.root.base_uri == document.root.base_uri
+    [issue] = list(fresh.report)
+    assert issue.location is not None
+    assert issue.location.source == str(path)
+    assert fresh.locate(issue.location).bound is fresh.root.children[0]
+    assert fresh.to_xdm().source_name == str(path)
+
+
+def test_revalidation_shares_the_parse_guard_and_releases_it_after_failure():
+    document = _document("<doc/>")
+    guard = _parse_guard(document.schema)
+    assert guard.acquire(blocking=False)
+    try:
+        with pytest.raises(RuntimeError, match="concurrently or reentrantly"):
+            document.revalidate()
+    finally:
+        guard.release()
+    assert document.revalidate().is_valid
+
+    document.root.set_name("invalid name")
+    with pytest.raises(PyXSDError, match="not well-formed"):
+        document.revalidate()
+    document.root.set_name("doc")
+    assert document.revalidate().is_valid
 
 
 def test_locate_on_a_source_less_tree_reports_missing():

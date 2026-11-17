@@ -204,7 +204,10 @@ def test_namespace_and_base_context_reach_the_lexical_tree(tmp_path):
     schema = compile_schema(
         f"""<grammar xmlns="{NS}">
   <start>
-    <element name="doc" ns="urn:example"><empty/></element>
+    <element name="doc" ns="urn:example">
+      <attribute name="xml:base"><text/></attribute>
+      <empty/>
+    </element>
   </start>
 </grammar>"""
     )
@@ -221,6 +224,27 @@ def test_namespace_and_base_context_reach_the_lexical_tree(tmp_path):
     assert document.root.namespaces is not None
     assert document.root.namespaces["p"] == "urn:example"
     assert document.root.base_uri == "https://example.test/base/"
+
+
+@pytest.mark.parametrize(("name", "value"), [("base", "parts/"), ("space", "preserve")])
+def test_xml_context_attributes_participate_in_the_instance_grammar(name, value):
+    schema = compile_schema(
+        f'<element xmlns="{NS}" name="doc">'
+        f'<attribute name="xml:{name}"><text/></attribute></element>'
+    )
+    present = schema.parse(io.StringIO(f'<doc xml:{name}="{value}"/>'), typed=False)
+    assert present.is_valid
+    assert list(present.report) == []
+
+
+@pytest.mark.parametrize(("name", "value"), [("base", "parts/"), ("space", "preserve")])
+def test_undeclared_xml_context_attributes_are_unexpected(name, value):
+    unexpected = compile_schema().parse(io.StringIO(f'<doc xml:{name}="{value}"/>'), typed=False)
+    assert not unexpected.is_valid
+    [issue] = list(unexpected.report)
+    assert issue.code == "unexpected-attribute"
+    assert issue.location is not None
+    assert issue.location.attribute == f"{{http://www.w3.org/XML/1998/namespace}}{name}"
 
 
 def test_malformed_and_unreadable_inputs_raise_pyxserror(tmp_path):

@@ -17,6 +17,7 @@ import weakref
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from dataclasses import fields as dataclass_fields
+from enum import Enum
 from io import BytesIO
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Literal, cast
@@ -87,6 +88,13 @@ _PARSE_GUARDS_LOCK = threading.Lock()
 #: The versioned shape of the registry identity.  Bump it when the digest
 #: input or the built-in library identities change meaning.
 _DATATYPE_FINGERPRINT_PREFIX = "pyxsd.relaxng.datatypes/1"
+
+
+class _CollectDeclarations(Enum):
+    """Distinguish a fresh prolog read from explicitly absent evidence."""
+
+    COLLECT = "collect"
+
 
 #: Library URIs whose implementations are part of the RELAX NG contract.
 _RESERVED_DATATYPE_LIBRARIES = {BUILTIN_LIBRARY: "built-in", XSD_LIBRARY: "XSD"}
@@ -508,6 +516,29 @@ class RelaxNGSchema:
         if limits is not None and not isinstance(limits, RelaxNGLimits):
             raise TypeError("limits must be a RelaxNGLimits value or None")
         reject_parser_override(self._resource_policy, xml_policy, xml_limits)
+        return self._parse_guarded_instance(
+            xml,
+            xml_policy=xml_policy,
+            xml_limits=xml_limits,
+            capture=capture,
+            capture_xdm=capture_xdm,
+            limits=limits,
+        )
+
+    def _parse_guarded_instance(
+        self,
+        xml: str | Path | os.PathLike[str] | IO[str] | IO[bytes] | ET.Element,
+        *,
+        xml_policy: XmlParserPolicy | None,
+        xml_limits: XmlLimits | None,
+        capture: str,
+        capture_xdm: bool,
+        limits: RelaxNGLimits | None,
+        declarations: DocumentDeclarations
+        | _CollectDeclarations
+        | None = _CollectDeclarations.COLLECT,
+    ) -> RelaxNGDocument:
+        """Guard both public parsing and private revalidation with saved evidence."""
         guard = _parse_guard(self)
         if not guard.acquire(blocking=False):
             raise RuntimeError(_PARSE_BUSY)
@@ -519,6 +550,7 @@ class RelaxNGSchema:
                 capture=capture,
                 capture_xdm=capture_xdm,
                 limits=limits,
+                declarations=declarations,
             )
         finally:
             guard.release()
@@ -571,14 +603,18 @@ class RelaxNGSchema:
         capture: str,
         capture_xdm: bool,
         limits: RelaxNGLimits | None,
+        declarations: DocumentDeclarations | _CollectDeclarations | None,
     ) -> RelaxNGDocument:
         """Read, validate, and wrap one instance while the parse guard is held."""
         self.require_valid()
         effective_limits = _instance_limits(self.limits, limits)
 
-        declarations: DocumentDeclarations | None = None
-        if _grammar_uses_unparsed_entity_types(self.grammar.start):
-            declarations = self._instance_declarations(xml, xml_policy)
+        if declarations is _CollectDeclarations.COLLECT:
+            declarations = (
+                self._instance_declarations(xml, xml_policy)
+                if _grammar_uses_unparsed_entity_types(self.grammar.start)
+                else None
+            )
 
         source = xml
         source_id = source_identifier(source)
@@ -689,6 +725,7 @@ class RelaxNGSchema:
             capture=capture,
             limits=limits,
             namespace_context=namespace_context,
+            declarations=declarations,
             xdm_capture=xdm_capture,
         )
 

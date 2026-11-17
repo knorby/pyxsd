@@ -30,9 +30,11 @@ from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, NodeLookup, PathStep
 from pyxsd.relaxng.tree import NodeContext, RelaxNGElement
 from pyxsd.relaxng.xml_writer import clone_relaxng, serialize_relaxng
+from pyxsd.resource_policy import source_identifier
 
 if TYPE_CHECKING:
     from pyxsd.data_conversion.contracts import Fidelity, FormatName
+    from pyxsd.dtd_declarations import DocumentDeclarations
     from pyxsd.relaxng.limits import RelaxNGLimits
     from pyxsd.relaxng.schema import RelaxNGSchema
     from pyxsd.validation import ValidationReport
@@ -55,6 +57,14 @@ _CAPTURE_CAPABILITY = "capture must be 'none' for validation-only RELAX NG docum
 
 _AttributeAddress = tuple[str | None, tuple[PathStep, ...]]
 _AttributeSnapshot = Mapping[_AttributeAddress, Mapping[str, str]]
+
+
+class _RevalidationSource(StringIO):
+    """Serialized current tree named for the original caller's source."""
+
+    def __init__(self, text: str, name: str | None) -> None:
+        super().__init__(text)
+        self.name = name
 
 
 class RelaxNGDocument(Document):
@@ -83,6 +93,7 @@ class RelaxNGDocument(Document):
         capture: str = "none",
         limits: RelaxNGLimits | None = None,
         namespace_context: Any = None,
+        declarations: DocumentDeclarations | None = None,
         xdm_capture: Any = None,
         interpretations_current: bool = True,
         attribute_snapshot: _AttributeSnapshot | None = None,
@@ -96,6 +107,7 @@ class RelaxNGDocument(Document):
             root=root,
             source=source,
             report=report,
+            declarations=declarations,
             xdm_capture=xdm_capture,
         )
         self.typed = typed
@@ -196,6 +208,7 @@ class RelaxNGDocument(Document):
             capture=self._capture,
             limits=self._limits,
             namespace_context=self._namespace_context,
+            declarations=self._declarations,
             xdm_capture=self._xdm_capture if root is self.root else None,
             interpretations_current=False,
             attribute_snapshot=self._attribute_snapshot,
@@ -216,14 +229,25 @@ class RelaxNGDocument(Document):
         repared nodes, because a bare string round trip cannot carry a
         source-relative base URI.  A root tail is outside the document
         element and is not carried into the new document.
+
+        The original DTD declaration evidence is reused without retrieving a
+        DTD or serializing a DOCTYPE.  Absent evidence stays absent.  Source
+        addresses and XDM capture use the original caller's source identifier,
+        including a named stream's name; anonymous inputs stay anonymous.
+        With a trusted resource policy, an original path read may have supplied
+        a different canonical identifier.  Revalidation passes a named stream
+        through the policy parser, not its path reader, so that reader's
+        canonical identifier is not restored.
         """
         cloned = clone_relaxng(self.root)
-        again = self.schema.parse(
-            StringIO(serialize_relaxng(cloned)),
-            typed=self.typed,
+        again = self.schema._parse_guarded_instance(
+            _RevalidationSource(serialize_relaxng(cloned), source_identifier(self.source)),
+            xml_policy=None,
+            xml_limits=None,
             capture=self._capture,
             capture_xdm=self._xdm_capture is not None,
             limits=self._limits,
+            declarations=self._declarations,
         )
         again.source = self.source
         _restore_lexical_frames(cloned, again.root)

@@ -188,14 +188,23 @@ def test_comments_and_processing_instructions_are_excluded_and_text_is_coalesced
     assert v.validate_element(root, element("r")).valid
 
 
-def test_namespace_declarations_and_xml_context_attributes_are_not_content_attributes():
-    xml = '<r xmlns:p="urn:p" xml:base="parts/" xml:space="preserve"/>'
-    assert verdict(xml, element("r"))
+def test_only_namespace_declarations_are_not_content_attributes():
+    assert verdict('<r xmlns:p="urn:p"/>', element("r"))
     assert not verdict('<r xml:lang="en"/>', element("r"))
     root = tree("<r/>")
     root.set_attribute("xmlns", "urn:default")
+    root.set_attribute("xmlns:p", "urn:p")
     root.set_attribute("{http://www.w3.org/2000/xmlns/}p", "urn:p")
     assert v.validate_element(root, element("r")).valid
+
+
+@pytest.mark.parametrize(("name", "value"), [("base", "parts/"), ("space", "preserve")])
+def test_xml_context_attributes_are_ordinary_required_or_unexpected_attributes(name, value):
+    xml = f'<r xml:{name}="{value}"/>'
+    required = element("r", Attribute(Name("http://www.w3.org/XML/1998/namespace", name), Text()))
+    assert verdict(xml, required)
+    assert not verdict("<r/>", required)
+    assert not verdict(xml, element("r"))
 
 
 @pytest.mark.parametrize("name", ["nil", "type"])
@@ -450,6 +459,7 @@ def test_nested_base_uri_context_reaches_attribute_and_text_datatypes():
             return left == right == right_context.base_uri
 
     datatype = Data(BaseDatatype())
+    base = Attribute(Name("http://www.w3.org/XML/1998/namespace", "base"), Text())
     root = tree(
         '<r a="https://example/root/" xml:base="https://example/root/">'
         '<n xml:base="child/" a="https://example/root/child/">'
@@ -458,8 +468,11 @@ def test_nested_base_uri_context_reaches_attribute_and_text_datatypes():
     pattern = element(
         "r",
         Group(
-            attribute("a", datatype),
-            Group(element("n", Group(attribute("a", datatype), datatype)), datatype),
+            Group(base, attribute("a", datatype)),
+            Group(
+                element("n", Group(base, Group(attribute("a", datatype), datatype))),
+                datatype,
+            ),
         ),
     )
     assert v.validate_element(root, pattern).valid

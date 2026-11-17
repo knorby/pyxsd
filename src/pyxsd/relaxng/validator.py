@@ -40,7 +40,6 @@ from dataclasses import dataclass, field
 from typing import Final, NamedTuple, cast
 from xml.etree import ElementTree as ET
 
-from pyxsd.namespaces import XML_NS
 from pyxsd.relaxng.datatypes import Datatype, DatatypeContext
 from pyxsd.relaxng.limits import BudgetCounter, RelaxNGLimits
 from pyxsd.relaxng.patterns import (
@@ -958,7 +957,7 @@ def _instance_events(
         else:
             yield _Event("start_tag_open", item, item._name_)
             for name, lexical in sorted(item.attributes.items()):
-                if name in (f"{{{XML_NS}}}base", f"{{{XML_NS}}}space", "xmlns") or name.startswith(
+                if name == "xmlns" or name.startswith(
                     ("{http://www.w3.org/2000/xmlns/}", "xmlns:")
                 ):
                     continue
