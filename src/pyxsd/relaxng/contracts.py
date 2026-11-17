@@ -10,20 +10,22 @@ Pattern identities encode the compiled semantic pattern graph as
 length-prefixed fields.  A :class:`~pyxsd.relaxng.patterns.Ref` is followed to
 its bound target and encoded as a deterministic back-reference when its target
 is already being encoded, so legal recursive element definitions terminate.
-Origins are provenance and never participate.  Acyclic sharing is expanded
-structurally, so two equal patterns have the same identity whether or not the
-pool shares one node.
+Origins are provenance and never participate.  Equal acyclic patterns have the
+same identity whether or not the pool shares one node, and a repeated
+reference target is encoded once with a deterministic shared-reference
+ordinal instead of expanding an exponentially large acyclic graph.
 
-Datatype payloads that expose stable ``library_uri`` and ``type_name``
-attributes (the built-in/XSD adapters, and any custom datatype that chooses to
-expose them) contribute their library, type, ordered parameters, whitespace
-mode, and QName/NOTATION schema-side namespace identity.  Any other custom
-datatype contributes only its stable class identity; the datatype-library
-registration fingerprint in :func:`grammar_fingerprint` is authoritative for
-that library's behavior.  A custom datatype without those attributes cannot
-be turned into a :class:`ScalarContract`, because RELAX NG exposes no stable
-public input naming its library/type; construction fails explicitly instead of
-inventing metadata.
+Datatype payloads must expose a stable ``library_uri``, ``type_name``, and
+validated parameter/context metadata.  Built-in/XSD adapters and custom
+datatypes that opt into the same stable attributes contribute their library,
+type, ordered parameters, whitespace mode, and QName/NOTATION schema-side
+namespace identity.  A datatype without that metadata — or with malformed
+metadata — is rejected with :class:`UnsupportedDatatypeOperation`.  RELAX NG
+exposes no stable public input naming an opaque datatype's library/type, so no
+class, module, factory address, or object identity is substituted.  The
+datatype-library registration fingerprint in :func:`grammar_fingerprint` still
+identifies the library as a whole for datatypes that provide their own stable
+metadata.
 """
 
 from __future__ import annotations
@@ -153,39 +155,246 @@ def _normalize_restrictions(
     return tuple(sorted(result, key=lambda item: (item.kind, item.pattern_identity)))
 
 
-def _write_datatype(out: bytearray, datatype: object) -> None:
-    """Encode a datatype's stable semantic description, never its address."""
+def _datatype_description(
+    datatype: object,
+) -> tuple[
+    str,
+    str,
+    tuple[DatatypeParameter, ...],
+    str | None,
+    tuple[tuple[str, str], ...],
+]:
+    """Return validated, stable metadata for one compiled datatype.
+
+    Opaque custom datatypes are rejected rather than identified by class or
+    factory identity.  Stable metadata with malformed parameters, whitespace,
+    or schema-side namespace context is likewise rejected explicitly: a
+    caller-supplied ``None`` or unrelated object must not become an incidental
+    ``TypeError`` or a silently different identity.
+    """
     library_uri = getattr(datatype, "library_uri", None)
     type_name = getattr(datatype, "type_name", None)
-    if isinstance(library_uri, str) and isinstance(type_name, str) and type_name:
-        _write_text(out, "namedDatatype")
-        _write_text(out, library_uri)
-        _write_text(out, type_name)
+    if not isinstance(library_uri, str) or not isinstance(type_name, str) or not type_name:
+        raise UnsupportedDatatypeOperation(
+            "the datatype does not expose stable RELAX NG library and type metadata"
+        )
+    try:
         parameters = _normalize_parameters(getattr(datatype, "parameters", ()))
-        _write_int(out, len(parameters))
-        for parameter in parameters:
-            _write_text(out, parameter.name)
-            _write_text(out, parameter.value)
-        white_space = getattr(datatype, "white_space", None)
-        _write_optional_text(out, white_space if isinstance(white_space, str) else None)
-        semantic_context = getattr(datatype, "semantic_context", ())
-        _write_int(out, len(semantic_context))
-        for prefix, uri in semantic_context:
-            _write_text(out, prefix)
-            _write_text(out, uri)
-        return
-    _write_text(out, "opaqueDatatype")
-    _write_text(out, type(datatype).__module__)
-    _write_text(out, type(datatype).__qualname__)
+    except (TypeError, ValueError) as error:
+        raise UnsupportedDatatypeOperation(
+            "the datatype exposes malformed parameters; a stable identity requires "
+            "DatatypeParameter values"
+        ) from error
+    white_space = getattr(datatype, "white_space", None)
+    if white_space is not None and not isinstance(white_space, str):
+        raise UnsupportedDatatypeOperation("the datatype exposes a malformed whitespace mode")
+    try:
+        raw_context = tuple(getattr(datatype, "semantic_context", ()))
+    except TypeError as error:
+        raise UnsupportedDatatypeOperation(
+            "the datatype exposes malformed schema-side namespace context"
+        ) from error
+    semantic_context: list[tuple[str, str]] = []
+    for item in raw_context:
+        if isinstance(item, str):
+            raise UnsupportedDatatypeOperation(
+                "the datatype exposes malformed schema-side namespace context"
+            )
+        try:
+            prefix, uri = item
+        except (TypeError, ValueError) as error:
+            raise UnsupportedDatatypeOperation(
+                "the datatype exposes malformed schema-side namespace context"
+            ) from error
+        if not isinstance(prefix, str) or not isinstance(uri, str):
+            raise UnsupportedDatatypeOperation(
+                "the datatype exposes malformed schema-side namespace context"
+            )
+        semantic_context.append((prefix, uri))
+    return library_uri, type_name, parameters, white_space, tuple(semantic_context)
 
 
-def _write_pattern(out: bytearray, root: Pattern) -> None:
-    """Encode a pattern graph iteratively, with deterministic Ref back-references.
+def _write_datatype(out: bytearray, datatype: object) -> None:
+    """Encode a datatype's stable semantic description, never its address."""
+    library_uri, type_name, parameters, white_space, semantic_context = _datatype_description(
+        datatype
+    )
+    _write_text(out, "namedDatatype")
+    _write_text(out, library_uri)
+    _write_text(out, type_name)
+    _write_int(out, len(parameters))
+    for parameter in parameters:
+        _write_text(out, parameter.name)
+        _write_text(out, parameter.value)
+    _write_optional_text(out, white_space)
+    _write_int(out, len(semantic_context))
+    for prefix, uri in semantic_context:
+        _write_text(out, prefix)
+        _write_text(out, uri)
 
-    Only ancestors on the current traversal path receive indices.  A reference
-    whose target is one of those ancestors emits that path index; sharing an
-    already-completed acyclic node is expanded again, so sharing never changes
-    the identity.
+
+def _pattern_operands(pattern: Pattern) -> tuple[Pattern, ...]:
+    """Return every semantic child, including a bound reference target."""
+    if isinstance(pattern, (Choice, Group, Interleave)):
+        return (pattern.first, pattern.second)
+    if isinstance(pattern, (Element, Attribute, List, OneOrMore)):
+        return (pattern.pattern,)
+    if isinstance(pattern, DataExcept):
+        return (pattern.excluded,)
+    if isinstance(pattern, Ref):
+        return (pattern.target,)
+    return ()
+
+
+def _write_pattern_head(out: bytearray, pattern: Pattern) -> tuple[Pattern, ...]:
+    """Write one non-reference node's tag and local payload; return its children."""
+    if isinstance(pattern, Empty):
+        _write_text(out, "Empty")
+    elif isinstance(pattern, NotAllowed):
+        _write_text(out, "NotAllowed")
+    elif isinstance(pattern, Text):
+        _write_text(out, "Text")
+    elif isinstance(pattern, Choice):
+        _write_text(out, "Choice")
+        return (pattern.first, pattern.second)
+    elif isinstance(pattern, Group):
+        _write_text(out, "Group")
+        return (pattern.first, pattern.second)
+    elif isinstance(pattern, Interleave):
+        _write_text(out, "Interleave")
+        return (pattern.first, pattern.second)
+    elif isinstance(pattern, OneOrMore):
+        _write_text(out, "OneOrMore")
+        return (pattern.pattern,)
+    elif isinstance(pattern, Element):
+        _write_text(out, "Element")
+        _write_name_class(out, pattern.name_class)
+        return (pattern.pattern,)
+    elif isinstance(pattern, Attribute):
+        _write_text(out, "Attribute")
+        _write_name_class(out, pattern.name_class)
+        return (pattern.pattern,)
+    elif isinstance(pattern, List):
+        _write_text(out, "List")
+        return (pattern.pattern,)
+    elif isinstance(pattern, Data):
+        _write_text(out, "Data")
+        _write_datatype(out, pattern.datatype)
+    elif isinstance(pattern, DataExcept):
+        _write_text(out, "DataExcept")
+        _write_datatype(out, pattern.datatype)
+        return (pattern.excluded,)
+    elif isinstance(pattern, Value):
+        _write_text(out, "Value")
+        _write_datatype(out, pattern.datatype)
+        _write_text(out, pattern.lexical)
+    else:
+        raise TypeError(f"unknown RELAX NG pattern {type(pattern).__name__}")
+    return ()
+
+
+class _IdentityContext:
+    """Per-identity-work caches; never participates in encoded bytes."""
+
+    __slots__ = ("acyclic", "digests", "work")
+
+    def __init__(self) -> None:
+        self.acyclic: dict[int, bool] = {}
+        self.digests: dict[int, bytes] = {}
+        self.work = 0
+
+
+def _is_acyclic(root: Pattern, context: _IdentityContext) -> bool:
+    """Whether *root*'s reachable graph contains no reference cycle."""
+    cached = context.acyclic.get(id(root))
+    if cached is not None:
+        return cached
+    colors: dict[int, int] = {}
+    visited: list[Pattern] = []
+    pending: list[tuple[Pattern, int]] = [(root, 0)]
+    acyclic = True
+    while pending:
+        node, index = pending[-1]
+        key = id(node)
+        if index == 0:
+            colors[key] = 1
+            visited.append(node)
+        children = _pattern_operands(node)
+        if index < len(children):
+            child = children[index]
+            pending[-1] = (node, index + 1)
+            state = colors.get(id(child), 0)
+            if state == 1:
+                acyclic = False
+                pending.clear()
+                break
+            if state == 0:
+                pending.append((child, 0))
+        else:
+            colors[key] = 2
+            pending.pop()
+    for node in visited:
+        context.acyclic[id(node)] = acyclic
+    return acyclic
+
+
+def _acyclic_digest(root: Pattern, context: _IdentityContext) -> bytes:
+    """Return a sharing-insensitive structural digest of an acyclic subgraph."""
+    cached = context.digests.get(id(root))
+    if cached is not None:
+        return cached
+    pending: list[tuple[Pattern, bool]] = [(root, False)]
+    while pending:
+        node, ready = pending.pop()
+        key = id(node)
+        if key in context.digests:
+            continue
+        if not ready:
+            pending.append((node, True))
+            pending.extend((child, False) for child in reversed(_pattern_operands(node)))
+            continue
+        context.work += 1
+        if isinstance(node, Ref):
+            out = bytearray(b"ref\x00")
+            out += context.digests[id(node.target)]
+            context.digests[key] = hashlib.sha256(out).digest()
+            continue
+        out = bytearray(b"node\x00")
+        children = _write_pattern_head(out, node)
+        for child in children:
+            out += context.digests[id(child)]
+        context.digests[key] = hashlib.sha256(out).digest()
+    return context.digests[id(root)]
+
+
+def _ref_key(target: Pattern, context: _IdentityContext) -> bytes | int:
+    """Return an internal expansion key for one reference target.
+
+    Acyclic targets use a content digest, so separately constructed equal
+    targets share one encoded expansion.  A cyclic target uses its live node
+    identity only as an internal cache key; that identity is never encoded or
+    hashed into an ID.
+    """
+    if _is_acyclic(target, context):
+        return _acyclic_digest(target, context)
+    return id(target)
+
+
+def _write_pattern(
+    out: bytearray,
+    root: Pattern,
+    context: _IdentityContext,
+    expanded: dict[bytes | int, int],
+) -> None:
+    """Encode a pattern graph iteratively with bounded shared-reference work.
+
+    The first occurrence of each acyclic target and each live cyclic target is
+    expanded in the existing deterministic byte form, including path-relative
+    ``RefBack`` indices for cycles.  Later occurrences of the same semantic
+    target emit ``RefShared`` and the ordinal of that first expansion, so a
+    doubling definition graph expands each distinct target once instead of
+    exponentially.  Ordinals depend only on traversal order, never on object
+    addresses or process hashes.
     """
     active: dict[int, int] = {}
     reference_chain: set[int] = set()
@@ -199,6 +408,7 @@ def _write_pattern(out: bytearray, root: Pattern) -> None:
             reference_chain.remove(cast(int, item))
             continue
         node = cast(Pattern, item)
+        context.work += 1
         if isinstance(node, Ref):
             key = id(node)
             target = node.target
@@ -209,6 +419,13 @@ def _write_pattern(out: bytearray, root: Pattern) -> None:
                 continue
             if key in reference_chain:
                 raise ValueError("cyclic RELAX NG reference chain without a pattern node")
+            ref_key = _ref_key(target, context)
+            ordinal = expanded.get(ref_key)
+            if ordinal is not None:
+                _write_text(out, "RefShared")
+                _write_int(out, ordinal)
+                continue
+            expanded[ref_key] = len(expanded)
             reference_chain.add(key)
             _write_text(out, "Ref")
             pending.append(("unref", key))
@@ -219,51 +436,8 @@ def _write_pattern(out: bytearray, root: Pattern) -> None:
             raise ValueError("cyclic RELAX NG pattern outside a bound reference")
         active[key] = len(active)
         pending.append(("close", key))
-        if isinstance(node, Empty):
-            _write_text(out, "Empty")
-        elif isinstance(node, NotAllowed):
-            _write_text(out, "NotAllowed")
-        elif isinstance(node, Text):
-            _write_text(out, "Text")
-        elif isinstance(node, Choice):
-            _write_text(out, "Choice")
-            pending.append(("node", node.second))
-            pending.append(("node", node.first))
-        elif isinstance(node, Group):
-            _write_text(out, "Group")
-            pending.append(("node", node.second))
-            pending.append(("node", node.first))
-        elif isinstance(node, Interleave):
-            _write_text(out, "Interleave")
-            pending.append(("node", node.second))
-            pending.append(("node", node.first))
-        elif isinstance(node, OneOrMore):
-            _write_text(out, "OneOrMore")
-            pending.append(("node", node.pattern))
-        elif isinstance(node, Element):
-            _write_text(out, "Element")
-            _write_name_class(out, node.name_class)
-            pending.append(("node", node.pattern))
-        elif isinstance(node, Attribute):
-            _write_text(out, "Attribute")
-            _write_name_class(out, node.name_class)
-            pending.append(("node", node.pattern))
-        elif isinstance(node, List):
-            _write_text(out, "List")
-            pending.append(("node", node.pattern))
-        elif isinstance(node, Data):
-            _write_text(out, "Data")
-            _write_datatype(out, node.datatype)
-        elif isinstance(node, DataExcept):
-            _write_text(out, "DataExcept")
-            _write_datatype(out, node.datatype)
-            pending.append(("node", node.excluded))
-        elif isinstance(node, Value):
-            _write_text(out, "Value")
-            _write_datatype(out, node.datatype)
-            _write_text(out, node.lexical)
-        else:
-            raise TypeError(f"unknown RELAX NG pattern {type(node).__name__}")
+        children = _write_pattern_head(out, node)
+        pending.extend(("node", child) for child in reversed(children))
 
 
 @dataclass(frozen=True)
@@ -319,6 +493,14 @@ class ScalarContract:
             raise ValueError("a non-text scalar contract requires a nonempty type name")
 
 
+def _pattern_identity_and_work(pattern: Pattern) -> tuple[str, int]:
+    """Return a pattern identity and the structural encoding work it required."""
+    context = _IdentityContext()
+    out = bytearray(b"pyxsd.relaxng.pattern/1\x00")
+    _write_pattern(out, pattern, context, {})
+    return _PATTERN_PREFIX + hashlib.sha256(out).hexdigest(), context.work
+
+
 def pattern_identity(pattern: Pattern) -> str:
     """Return a deterministic identity for one compiled semantic pattern.
 
@@ -328,9 +510,8 @@ def pattern_identity(pattern: Pattern) -> str:
     instance values, so recompiling the same semantic grammar yields the same
     identity.
     """
-    out = bytearray(b"pyxsd.relaxng.pattern/1\x00")
-    _write_pattern(out, pattern)
-    return _PATTERN_PREFIX + hashlib.sha256(out).hexdigest()
+    identity, _ = _pattern_identity_and_work(pattern)
+    return identity
 
 
 def grammar_fingerprint(grammar: CompiledGrammar, datatype_fingerprint: str) -> str:
@@ -357,14 +538,15 @@ def grammar_fingerprint(grammar: CompiledGrammar, datatype_fingerprint: str) -> 
         raise ValueError("the datatype fingerprint must not be empty")
     out = bytearray(b"pyxsd.relaxng.grammar/1\x00")
     _write_text(out, datatype_fingerprint)
+    context = _IdentityContext()
     _write_text(out, "start")
-    _write_pattern(out, grammar.start)
+    _write_pattern(out, grammar.start, context, {})
     _write_text(out, "definitions")
     names = sorted(grammar.definitions)
     _write_int(out, len(names))
     for name in names:
         _write_text(out, name)
-        _write_pattern(out, grammar.definitions[name].pattern)
+        _write_pattern(out, grammar.definitions[name].pattern, context, {})
     dependencies = sorted(
         {(dependency.purpose, dependency.content_sha256) for dependency in grammar.dependencies}
     )
@@ -413,14 +595,8 @@ def candidate_id(grammar_fingerprint: str, contract: ScalarContract) -> str:
 
 
 def _datatype_metadata(datatype: object) -> tuple[str, str, tuple[DatatypeParameter, ...]]:
-    """Read stable RELAX NG library/type metadata from a compiled datatype."""
-    library_uri = getattr(datatype, "library_uri", None)
-    type_name = getattr(datatype, "type_name", None)
-    if not isinstance(library_uri, str) or not isinstance(type_name, str) or not type_name:
-        raise UnsupportedDatatypeOperation(
-            "the custom datatype does not expose stable RELAX NG library and type metadata"
-        )
-    parameters = _normalize_parameters(getattr(datatype, "parameters", ()))
+    """Read validated RELAX NG library/type metadata from a compiled datatype."""
+    library_uri, type_name, parameters, _, _ = _datatype_description(datatype)
     return library_uri, type_name, parameters
 
 

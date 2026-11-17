@@ -34,7 +34,7 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(frozen=True, eq=False, repr=False)
 class Candidate:
     """One surviving scalar contract, its optional decoded value, and its ID.
 
@@ -58,6 +58,17 @@ class Candidate:
             raise TypeError("candidate decodability must be a bool")
         if not self.decodable and self.decoded is not None:
             raise ValueError("a nondecodable candidate cannot carry a fabricated value")
+        if self.decodable and self.decoded is None:
+            raise ValueError("a decodable candidate must carry its decoded value")
+        if self.contract.kind == "text" and self.decodable:
+            raise ValueError("text is a lexical contract and cannot be decoded")
+
+    def __repr__(self) -> str:
+        """Represent stable contract identity without a decoded object's repr."""
+        return (
+            f"Candidate(candidate_id={self.candidate_id!r}, "
+            f"contract={self.contract!r}, decodable={self.decodable!r})"
+        )
 
     def __eq__(self, other: object) -> bool | NotImplementedType:
         if not isinstance(other, Candidate):
@@ -77,7 +88,7 @@ class Candidate:
     __hash__ = None  # type: ignore[assignment]
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(frozen=True, eq=False, repr=False)
 class AlternativeValue:
     """One immutable, non-preferential scalar interpretation snapshot."""
 
@@ -105,6 +116,9 @@ class AlternativeValue:
         identifiers = [item.candidate_id for item in candidates]
         if len(set(identifiers)) != len(identifiers):
             raise ValueError("candidate IDs must be unique within an alternative value")
+        contracts = [item.contract for item in candidates]
+        if len(set(contracts)) != len(contracts):
+            raise ValueError("candidate contracts must be unique within an alternative value")
         object.__setattr__(
             self, "candidates", tuple(sorted(candidates, key=lambda item: item.candidate_id))
         )
@@ -128,6 +142,15 @@ class AlternativeValue:
         )
 
     __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:
+        """Represent lexical content, candidate IDs, and revision, not decoded objects."""
+        return (
+            f"AlternativeValue(lexical={self.lexical!r}, "
+            f"candidate_ids={tuple(item.candidate_id for item in self.candidates)!r}, "
+            f"context={self.context!r}, grammar_fingerprint={self.grammar_fingerprint!r}, "
+            f"revision={self.revision!r})"
+        )
 
     def __str__(self) -> str:
         """Return the original lexical characters, never a datatype choice."""

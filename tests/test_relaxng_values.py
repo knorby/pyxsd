@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 from dataclasses import FrozenInstanceError
+from typing import Any
 from xml.etree import ElementTree as ET
 
 import pytest
@@ -23,6 +24,7 @@ from pyxsd.relaxng.contracts import (
     LIST_TYPE_NAME,
     ScalarContract,
     ScalarRestriction,
+    _pattern_identity_and_work,
     candidate_id,
     grammar_fingerprint,
     pattern_identity,
@@ -37,6 +39,7 @@ from pyxsd.relaxng.datatypes import (
     DatatypeFactory,
     DatatypeLibraryRegistration,
     DatatypeParameter,
+    UnsupportedDatatypeError,
     UnsupportedDatatypeOperation,
     XsdDatatypeFactory,
     resolve_datatype_selector,
@@ -138,9 +141,9 @@ def atomic_contract(
 
 
 def candidate(identifier, contract=None, decoded=1, decodable=True):
-    return Candidate(
-        identifier, atomic_contract() if contract is None else contract, decoded, decodable
-    )
+    if contract is None:
+        contract = atomic_contract(pattern=f"pattern-{identifier}")
+    return Candidate(identifier, contract, decoded, decodable)
 
 
 def wrapper(candidates, *, lexical="12", context=CX, grammar="grammar", revision=1):
@@ -149,6 +152,12 @@ def wrapper(candidates, *, lexical="12", context=CX, grammar="grammar", revision
 
 class OpaqueDatatype(Datatype):
     """A custom datatype with no stable public library/type metadata."""
+
+    def __init__(self, config="opaque"):
+        self.config = config
+
+    def __repr__(self):
+        return f"OpaqueDatatype(config={self.config!r})"
 
     def allows(self, lexical, context):
         return lexical == "ok"
@@ -163,12 +172,14 @@ class OpaqueFactory(DatatypeFactory):
         return OpaqueDatatype()
 
 
-class NonDecodingDatatype(Datatype):
-    """A named custom datatype that validates but provides no decoder."""
+class ConfiguredOpaqueDatatype(Datatype):
+    """Same class, different configuration, still without stable metadata."""
 
-    library_uri = "urn:custom"
-    type_name = "opaque"
-    parameters = ()
+    def __init__(self, config):
+        self.config = config
+
+    def __repr__(self):
+        return f"ConfiguredOpaqueDatatype(config={self.config!r})"
 
     def allows(self, lexical, context):
         return lexical == "ok"
@@ -177,12 +188,46 @@ class NonDecodingDatatype(Datatype):
         return left == right
 
 
+class NonDecodingDatatype(Datatype):
+    """A named custom datatype that validates but provides no decoder."""
+
+    library_uri = "urn:custom"
+    type_name = "opaque"
+    parameters = ()
+
+    def __repr__(self):
+        return f"{type(self).__name__}()"
+
+    def allows(self, lexical, context):
+        return lexical == "ok"
+
+    def equal(self, left, left_context, right, right_context):
+        return left == right
+
+
+class NamedOpaqueDatatype(NonDecodingDatatype):
+    """A named custom datatype suitable for grammar identity tests."""
+
+    type_name = "named"
+
+
+class NamedOpaqueFactory(DatatypeFactory):
+    """A factory whose datatypes expose stable metadata for identity."""
+
+    def create(self, type_name, parameters, context):
+        del type_name, parameters, context
+        return NamedOpaqueDatatype()
+
+
 class ExplodingDecodeDatatype(Datatype):
     """A named custom datatype whose decoder fails for a reason other than capability."""
 
     library_uri = "urn:custom"
     type_name = "exploding"
     parameters = ()
+
+    def __repr__(self):
+        return f"{type(self).__name__}()"
 
     def allows(self, lexical, context):
         return lexical == "ok"
@@ -202,8 +247,28 @@ class OtherNamedCustomDatatype(NonDecodingDatatype):
     type_name = "other"
 
 
-class OtherOpaqueDatatype(OpaqueDatatype):
-    pass
+class MalformedParametersDatatype(NonDecodingDatatype):
+    parameters: Any = None
+
+
+class MalformedWhiteSpaceDatatype(NonDecodingDatatype):
+    white_space = 3
+
+
+class MalformedContextDatatype(NonDecodingDatatype):
+    semantic_context = (("p",),)
+
+
+class NonIterableContextDatatype(NonDecodingDatatype):
+    semantic_context = None
+
+
+class StringContextDatatype(NonDecodingDatatype):
+    semantic_context = ("p",)
+
+
+class NonStringContextDatatype(NonDecodingDatatype):
+    semantic_context = ((1, "urn:p"),)
 
 
 def compile_schema(xml, *, datatype_libraries=None):
@@ -214,6 +279,10 @@ def compile_schema(xml, *, datatype_libraries=None):
 
 def registration(fingerprint):
     return DatatypeLibraryRegistration(OpaqueFactory(), fingerprint)
+
+
+def named_registration(fingerprint):
+    return DatatypeLibraryRegistration(NamedOpaqueFactory(), fingerprint)
 
 
 SCHEMA = (
@@ -233,6 +302,22 @@ CUSTOM_SCHEMA = (
     f'<element xmlns="{RNG_NS}" name="r">'
     '<data type="opaque" datatypeLibrary="urn:custom"/></element>'
 )
+
+
+def doubling_schema(depth):
+    """A definition chain where each level references the previous one twice."""
+    definitions = ['<define name="d0"><element name="n"><empty/></element></define>']
+    for index in range(1, depth + 1):
+        definitions.append(
+            f'<define name="d{index}"><element name="n"><group>'
+            f'<ref name="d{index - 1}"/><ref name="d{index - 1}"/>'
+            "</group></element></define>"
+        )
+    return (
+        f'<grammar xmlns="{RNG_NS}"><start>'
+        f'<element name="root"><ref name="d{depth}"/></element>'
+        f"</start>{''.join(definitions)}</grammar>"
+    )
 
 
 class TestScalarContract:
@@ -335,6 +420,23 @@ class TestScalarContract:
     def test_opaque_custom_datatypes_cannot_fabricate_metadata(self):
         with pytest.raises(UnsupportedDatatypeOperation, match="stable"):
             scalar_contract(Data(OpaqueDatatype()))
+        with pytest.raises(UnsupportedDatatypeOperation, match="stable"):
+            pattern_identity(Data(OpaqueDatatype("configured")))
+
+    @pytest.mark.parametrize(
+        "datatype, message",
+        [
+            (MalformedParametersDatatype(), "parameters"),
+            (MalformedWhiteSpaceDatatype(), "whitespace"),
+            (MalformedContextDatatype(), "namespace context"),
+            (NonIterableContextDatatype(), "namespace context"),
+            (StringContextDatatype(), "namespace context"),
+            (NonStringContextDatatype(), "namespace context"),
+        ],
+    )
+    def test_malformed_custom_metadata_is_an_explicit_capability_failure(self, datatype, message):
+        with pytest.raises(UnsupportedDatatypeOperation, match=message):
+            scalar_contract(Data(datatype))
 
 
 class TestPatternIdentity:
@@ -423,23 +525,28 @@ class TestPatternIdentity:
         with pytest.raises(TypeError, match="not a RELAX NG scalar"):
             scalar_contract(Empty())
 
+    def test_reference_targets_traverse_data_except_exclusions(self):
+        target = DataExcept(INTEGER, Value(INTEGER, "0"))
+        first = Ref()
+        second = Ref()
+        first.bind(target)
+        second.bind(target)
+        assert pattern_identity(first) == pattern_identity(second)
+
     def test_datatype_payload_structure_participates_in_identity(self):
         constrained = XSD.create("integer", (DatatypeParameter("maxInclusive", "10"),), CX)
         qname_p = XSD.create("QName", (), DatatypeContext(None, {"p": "urn:p"}))
         qname_q = XSD.create("QName", (), DatatypeContext(None, {"q": "urn:q"}))
         named = Data(NamedCustomDatatype())
         other_named = Data(OtherNamedCustomDatatype())
-        opaque = Data(OpaqueDatatype())
-        other_opaque = Data(OtherOpaqueDatatype())
 
         assert pattern_identity(Data(INTEGER)) != pattern_identity(Data(constrained))
         assert pattern_identity(Data(qname_p)) != pattern_identity(Data(qname_q))
         assert pattern_identity(named) != pattern_identity(other_named)
-        assert pattern_identity(named) != pattern_identity(opaque)
-        assert pattern_identity(opaque) != pattern_identity(other_opaque)
-        # Opaque custom datatypes are identified by their stable class; the
-        # custom registration fingerprint in the grammar ID covers behavior.
-        assert pattern_identity(opaque) == pattern_identity(Data(OpaqueDatatype()))
+        with pytest.raises(UnsupportedDatatypeOperation, match="stable"):
+            pattern_identity(Data(OpaqueDatatype()))
+        with pytest.raises(UnsupportedDatatypeOperation, match="stable"):
+            pattern_identity(Data(OpaqueDatatype("other")))
         assert pattern_identity(Value(INTEGER, "0")) != pattern_identity(Value(INTEGER, "1"))
         assert pattern_identity(DataExcept(INTEGER, Value(INTEGER, "0"))) != pattern_identity(
             DataExcept(INTEGER, Value(INTEGER, "1"))
@@ -480,15 +587,15 @@ class TestGrammarFingerprint:
     def test_custom_registration_fingerprints_participate(self):
         first = compile_schema(
             CUSTOM_SCHEMA,
-            datatype_libraries={"urn:custom": registration("custom/1")},
+            datatype_libraries={"urn:custom": named_registration("custom/1")},
         )
         second = compile_schema(
             CUSTOM_SCHEMA,
-            datatype_libraries={"urn:custom": registration("custom/2")},
+            datatype_libraries={"urn:custom": named_registration("custom/2")},
         )
         repeat = compile_schema(
             CUSTOM_SCHEMA,
-            datatype_libraries={"urn:custom": registration("custom/1")},
+            datatype_libraries={"urn:custom": named_registration("custom/1")},
         )
 
         first_id = grammar_fingerprint(first.grammar, first.datatype_fingerprint)
@@ -497,6 +604,17 @@ class TestGrammarFingerprint:
         assert first_id == grammar_fingerprint(repeat.grammar, repeat.datatype_fingerprint)
         contract = atomic_contract()
         assert candidate_id(first_id, contract) != candidate_id(second_id, contract)
+
+    def test_opaque_custom_datatype_grammar_identity_is_rejected_but_validation_is_not(self):
+        schema = compile_schema(
+            CUSTOM_SCHEMA,
+            datatype_libraries={"urn:custom": registration("custom/1")},
+        )
+        with pytest.raises(UnsupportedDatatypeOperation, match="stable"):
+            grammar_fingerprint(schema.grammar, schema.datatype_fingerprint)
+
+        document = schema.parse(io.StringIO("<r>ok</r>"), typed=False)
+        assert document.is_valid
 
     def test_source_location_is_not_part_of_the_fingerprint(self, tmp_path):
         schema = compile_schema(SCHEMA)
@@ -519,6 +637,45 @@ class TestGrammarFingerprint:
             grammar_fingerprint(schema.grammar, None)  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="fingerprint"):
             grammar_fingerprint(schema.grammar, "")
+
+
+class TestBoundedIdentityWork:
+    def test_doubling_references_are_encoded_once_and_recompile_stably(self):
+        xml = doubling_schema(30)
+        first = compile_schema(xml)
+        second = compile_schema(xml)
+
+        first_identity, work = _pattern_identity_and_work(first.grammar.start)
+        second_identity, second_work = _pattern_identity_and_work(second.grammar.start)
+        assert first_identity == second_identity
+        assert work == second_work
+        assert work < 5000, work
+        assert grammar_fingerprint(first.grammar, first.datatype_fingerprint) == (
+            grammar_fingerprint(second.grammar, second.datatype_fingerprint)
+        )
+
+    def test_doubling_ids_are_process_independent(self):
+        xml = doubling_schema(30)
+        program = """
+import io
+import sys
+from pyxsd.relaxng.contracts import grammar_fingerprint, pattern_identity
+from pyxsd.relaxng.schema import RelaxNGSchema
+schema = RelaxNGSchema.compile(io.StringIO(sys.argv[1]))
+print(grammar_fingerprint(schema.grammar, schema.datatype_fingerprint))
+print(pattern_identity(schema.grammar.start))
+"""
+        outputs = [
+            subprocess.run(
+                [sys.executable, "-c", program, xml],
+                env={**os.environ, "PYTHONHASHSEED": seed},
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout
+            for seed in ("1", "42")
+        ]
+        assert outputs[0] == outputs[1]
 
 
 class TestCandidateIdentity:
@@ -559,6 +716,15 @@ class TestCandidateIdentity:
             candidate_id("", contract)
         with pytest.raises(TypeError, match="ScalarContract"):
             candidate_id("grammar", object())  # type: ignore[arg-type]
+
+    def test_builtin_schema_candidate_id_is_preserved(self):
+        schema = compile_schema(OTHER_SCHEMA)
+        fingerprint = grammar_fingerprint(schema.grammar, schema.datatype_fingerprint)
+        contract = scalar_contract(Data(INTEGER))
+        assert candidate_id(fingerprint, contract) == (
+            "pyxsd.relaxng.candidate/1:"
+            "dac777a231f900f1626adc6b5a2c124ae68b2b2625664dd58cda7fbdf361ccab"
+        )
 
     def test_ids_do_not_change_with_instance_values(self):
         data = Data(INTEGER)
@@ -626,11 +792,43 @@ class TestCandidateAndAlternativeConstruction:
             (("a", object(), 1, True), TypeError),
             (("a", atomic_contract(), 1, "yes"), TypeError),
             (("a", atomic_contract(), 1, False), ValueError),
+            (("a", atomic_contract(), None, True), ValueError),
+            (("a", scalar_contract(Text()), "words", True), ValueError),
         ],
     )
     def test_invalid_candidates_are_rejected(self, args, error):
         with pytest.raises(error):
             Candidate(*args)
+
+    def test_text_candidates_are_never_decodable(self):
+        text = scalar_contract(Text())
+        candidate = Candidate("a", text, None, False)
+        assert candidate.decoded is None
+        assert not candidate.decodable
+        with pytest.raises(ValueError, match="lexical"):
+            Candidate("a", text, "words", True)
+
+    def test_alternative_rejects_equal_contracts_with_different_manual_ids(self):
+        with pytest.raises(ValueError, match="contracts"):
+            wrapper(
+                (
+                    candidate("a", contract=atomic_contract()),
+                    candidate("b", contract=atomic_contract()),
+                )
+            )
+
+    def test_reprs_are_stable_and_avoid_decoded_object_representations(self):
+        class Decoded:
+            pass
+
+        decoded = Decoded()
+        item = Candidate("a", atomic_contract(), decoded, True)
+        value = wrapper((item,))
+        assert repr(item) == repr(Candidate("a", atomic_contract(), decoded, True))
+        assert repr(decoded) not in repr(item)
+        assert repr(value) == repr(wrapper((candidate("a"),)))
+        assert repr(value).startswith("AlternativeValue(lexical=")
+        assert "'a'" in repr(value)
 
     def test_alternatives_reject_zero_or_duplicate_candidates(self):
         with pytest.raises(ValueError, match="zero"):
@@ -855,6 +1053,30 @@ class TestAtomicAlternatives:
         with pytest.raises(ValueError, match="no surviving"):
             value.as_type("list")
 
+    def test_distinct_opaque_configurations_in_exclusions_fail_instead_of_collapsing(self):
+        first = Value(ConfiguredOpaqueDatatype("a"), "y")
+        second = Value(ConfiguredOpaqueDatatype("b"), "y")
+        start = element("r", Choice(DataExcept(INTEGER, first), DataExcept(INTEGER, second)))
+        root = tree("<r>12</r>")
+        graph = evidence(root, start)
+        witnesses = graph.scalar_witnesses_at(site(graph, root))
+        assert len(witnesses) == 2
+
+        with pytest.raises(UnsupportedDatatypeOperation, match="stable"):
+            alternative_value_from_witnesses(witnesses, grammar_fingerprint="grammar", revision=1)
+
+    def test_distinct_opaque_configurations_in_values_fail_instead_of_collapsing(self):
+        first = Value(ConfiguredOpaqueDatatype("a"), "ok")
+        second = Value(ConfiguredOpaqueDatatype("b"), "ok")
+        start = element("r", Choice(first, second))
+        root = tree("<r>ok</r>")
+        graph = evidence(root, start)
+        witnesses = graph.scalar_witnesses_at(site(graph, root))
+        assert len(witnesses) == 2
+
+        with pytest.raises(UnsupportedDatatypeOperation, match="stable"):
+            alternative_value_from_witnesses(witnesses, grammar_fingerprint="grammar", revision=1)
+
     def test_duplicate_contracts_collapse_to_one_candidate(self):
         _, witnesses = witnesses_for("<r>12</r>", Data(INTEGER))
         (witness,) = witnesses
@@ -919,7 +1141,7 @@ class TestAtomicAlternatives:
 
     def test_xsd_shorthand_rejects_namespace_prefixed_selectors(self):
         value = wrapper((candidate("a"),))
-        with pytest.raises(Exception, match="xsd:"):
+        with pytest.raises(UnsupportedDatatypeError, match="xsd:"):
             value.as_type("p:integer")
         assert resolve_datatype_selector("xsd:integer") == (XSD_LIBRARY, "integer")
         assert resolve_datatype_selector("integer") == (BUILTIN_LIBRARY, "integer")
