@@ -241,6 +241,7 @@ class EvidenceGraph:
         default_factory=dict, repr=False, hash=False, compare=False
     )
     _grammar_fingerprint: str | None = field(default=None, repr=False, hash=False, compare=False)
+    _projection_fingerprint: str | None = field(default=None, repr=False, hash=False, compare=False)
 
     def __post_init__(self) -> None:
         if self._grammar_fingerprint is not None:
@@ -248,7 +249,23 @@ class EvidenceGraph:
                 raise TypeError("the evidence grammar fingerprint must be a string")
             if not self._grammar_fingerprint:
                 raise ValueError("the evidence grammar fingerprint must be nonempty")
+        if self._projection_fingerprint is not None:
+            if not isinstance(self._projection_fingerprint, str):
+                raise TypeError("the evidence projection fingerprint must be a string")
+            if not self._projection_fingerprint:
+                raise ValueError("the evidence projection fingerprint must be nonempty")
         object.__setattr__(self, "_schema_patterns", MappingProxyType(dict(self._schema_patterns)))
+
+    @property
+    def projection_fingerprint(self) -> str | None:
+        """The compile-time structural plan this evidence belongs to.
+
+        This is metadata for projection binding consistency.  It is separate
+        from ``_grammar_fingerprint``, which remains the registry-inclusive
+        identity for candidates and joint selections.  Anonymous hand-built
+        graphs have no projection fingerprint and are not bindable.
+        """
+        return self._projection_fingerprint
 
     def compatible(self, selections: Iterable[CandidateSelection]) -> bool:
         """Whether all selections coexist in one complete accepting proof.
@@ -800,6 +817,7 @@ def build_binding_evidence(
     limits: RelaxNGLimits | None,
     origins: Callable[[Pattern], OriginTable] | None = None,
     grammar_fingerprint: str | None = None,
+    projection_fingerprint: str | None = None,
 ) -> EvidenceGraph:
     """Build a complete proof for a valid lexical tree, or raise an internal error.
 
@@ -808,6 +826,8 @@ def build_binding_evidence(
     The optional origin lookup is consulted only for provenance materialization.
     ``grammar_fingerprint`` enables grammar-scoped joint candidate queries;
     omitting it preserves marginal views but disables ``compatible``.
+    ``projection_fingerprint`` records the structural plan this evidence may be
+    bound to; it is binding metadata, never a candidate or validation identity.
     Every site uses the same recorded context as Phase 2. Present root
     metadata overrides ``datatype_context``. If a root namespace frame or base
     URI is absent, a nonempty fallback for that component raises ValueError:
@@ -870,4 +890,5 @@ def build_binding_evidence(
         tuple(site for site in builder.occurrences if site in retained_sites),
         _schema_patterns=schema_patterns,
         _grammar_fingerprint=grammar_fingerprint,
+        _projection_fingerprint=projection_fingerprint,
     )

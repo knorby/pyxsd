@@ -9,6 +9,7 @@ interface without taking stable parents or siblings with them.
 from __future__ import annotations
 
 import io
+import keyword
 import os
 import subprocess
 import sys
@@ -20,11 +21,13 @@ import pytest
 from pyxsd.exceptions import PyXSDError
 from pyxsd.relaxng import AlternativeValue, StaleInterpretationError
 from pyxsd.relaxng.binding import (
+    GENERATED_MODULE,
     WILDCARD_CHILDREN,
     AttributeDescriptor,
     ChildDescriptor,
     ChildSequence,
     ProjectionClassFactory,
+    ScalarDescriptor,
     WildcardChildren,
     bind_projection,
     projection_class_factory,
@@ -75,7 +78,8 @@ def test_class_for_is_cached_and_stable_across_repeated_parses():
     generated = factory.class_for(route.route_id)
 
     assert factory.class_for(route.route_id) is generated
-    assert generated.__module__ == "pyxsd.relaxng.generated"
+    assert generated.__module__.startswith(GENERATED_MODULE + ".")
+    assert generated.__module__ == factory.module
     assert generated.__qualname__ == "Doc"
     assert generated.__slots__ == ()
     assert issubclass(generated, RelaxNGElement)
@@ -107,6 +111,18 @@ def test_projection_class_factory_cache_identity_is_plan_scoped():
     right = equivalent.projection_classes.class_for(other_route.route_id)
     assert left is not right
     assert (left.__module__, left.__qualname__) == (right.__module__, right.__qualname__)
+    assert schema.projection_classes.class_for(route.route_id) is left
+
+    different = compile_body(element("a", "<empty/>"))
+    assert different.projection.grammar_fingerprint != plan.grammar_fingerprint
+    different_route = different.projection.routes[different.projection.roots[0]]
+    different_class = different.projection_classes.class_for(different_route.route_id)
+    assert (left.__module__, left.__qualname__) != (
+        different_class.__module__,
+        different_class.__qualname__,
+    )
+    assert different_class is not left
+    assert left.__qualname__ == different_class.__qualname__ == "Doc"
 
 
 def test_class_names_are_deterministic_identifiers_for_every_route():
@@ -116,6 +132,9 @@ def test_class_names_are_deterministic_identifiers_for_every_route():
             <element name="class"><empty/></element>
             <element name="a-b"><empty/></element>
             <element name="_private"><empty/></element>
+            <element name="true"><empty/></element>
+            <element name="false"><empty/></element>
+            <element name="none"><empty/></element>
             <element><anyName><except><name>class</name></except></anyName><empty/></element>
             <element name="a" ns="urn:one"><empty/></element>
             <element name="a" ns="urn:two"><empty/></element>
@@ -130,7 +149,11 @@ def test_class_names_are_deterministic_identifiers_for_every_route():
     assert len(classes) == len(plan.roots)
     assert len({cls.__qualname__ for cls in classes}) == len(classes)
     assert all(cls.__qualname__.isidentifier() for cls in classes)
-    assert all(cls.__module__ == "pyxsd.relaxng.generated" for cls in classes)
+    assert all(cls.__module__.startswith(GENERATED_MODULE + ".") for cls in classes)
+    for cls in classes:
+        assert not keyword.iskeyword(cls.__qualname__)
+        assert not cls.__qualname__.startswith("_")
+        compile(f"class {cls.__qualname__}: pass", "<generated>", "exec")
     anonymous = [
         cls.__qualname__
         for cls in classes
@@ -140,6 +163,28 @@ def test_class_names_are_deterministic_identifiers_for_every_route():
     assert anonymous[0].startswith("Element_")
     a_names = {cls.__qualname__ for cls in classes if cls.__qualname__.startswith("A")}
     assert len(a_names) == 3
+
+
+def test_generated_class_names_survive_leading_digits_and_odd_route_ids():
+    schema = compile_body(element("a", "<empty/>"))
+    route = root_route(schema)
+    digit = replace(route, route_id="digit-route", expanded_name="1st")
+    anonymous = replace(route, route_id="bad id!!", expanded_name=None)
+    plan = ProjectionPlan(
+        (digit.route_id, anonymous.route_id),
+        {digit.route_id: digit, anonymous.route_id: anonymous},
+        route.occurrence.grammar_fingerprint,
+    )
+    factory = ProjectionClassFactory(plan)
+
+    for route_id in plan.roots:
+        generated = factory.class_for(route_id)
+        assert generated.__qualname__.isidentifier()
+        assert not keyword.iskeyword(generated.__qualname__)
+        assert not generated.__qualname__.startswith("_")
+        compile(f"class {generated.__qualname__}: pass", "<generated>", "exec")
+    assert factory.class_for(digit.route_id).__qualname__ == "Element_1st"
+    assert factory.class_for(anonymous.route_id).__qualname__.startswith("Element_bad_x20_id")
 
 
 def test_class_name_collisions_and_equivalent_plans_are_deterministic():
@@ -394,6 +439,73 @@ def test_mixed_scalar_and_list_site_wraps_both_candidates():
     assert {candidate.contract.kind for candidate in value.candidates} == {"list", "text"}
 
 
+def test_typed_value_descriptor_exposes_unique_scalar_values():
+    integer_schema = compile_body(data("integer"))
+    integer_document = typed(integer_schema, "<doc>12</doc>")
+    root = integer_document.root
+
+    assert type(root)._relaxng_scalar_field_ == "typed_value"
+    assert isinstance(type(root).typed_value, ScalarDescriptor)
+    assert root.typed_value == root.scalar_value() == 12
+    with pytest.raises(AttributeError, match="read-only"):
+        root.typed_value = 5
+
+    string_schema = compile_body(data("string"))
+    string_document = typed(string_schema, "<doc>hello</doc>")
+    assert string_document.root.typed_value == "hello"
+
+
+def test_typed_value_descriptor_wraps_schema_ambiguous_text():
+    schema = compile_body("<choice>" + data("integer") + data("string") + "</choice>")
+    document = typed(schema, "<doc>12</doc>")
+    root = document.root
+
+    value = root.typed_value
+
+    assert isinstance(value, AlternativeValue)
+    assert value == root.scalar_value()
+    assert value.as_type("xsd:integer") == 12
+    root.set_text("13")
+    with pytest.raises(StaleInterpretationError):
+        _ = root.typed_value
+
+
+def test_typed_value_descriptor_suffixes_past_generated_field_collisions():
+    schema = compile_body(
+        '<attribute name="typed_value"><text/></attribute>'
+        '<attribute name="typed_value_"><text/></attribute>' + data("integer")
+    )
+    document = typed(schema, '<doc typed_value="a" typed_value_="b">12</doc>')
+    root = document.root
+
+    assert type(root)._relaxng_scalar_field_ == "typed_value__"
+    assert root.typed_value__ == root.scalar_value() == 12
+    assert isinstance(type(root).typed_value, AttributeDescriptor)
+    assert type(root).typed_value.expanded_name == "typed_value"
+    assert isinstance(root.typed_value, AlternativeValue)
+    with pytest.raises(AttributeError, match="read-only"):
+        root.typed_value__ = 13
+
+
+def test_scalar_descriptor_is_absent_without_scalar_content_contracts():
+    schema = compile_body(element("item", "<empty/>"))
+    document = typed(schema, "<doc><item/></doc>")
+    root = document.root
+
+    assert type(root)._relaxng_scalar_field_ is None
+    assert not hasattr(root, "typed_value")
+
+
+def test_empty_repeatable_descriptor_returns_an_empty_live_sequence():
+    schema = compile_body("<zeroOrMore>" + element("many", "<text/>") + "</zeroOrMore>")
+    document = typed(schema, "<doc/>")
+    root = document.root
+
+    assert isinstance(root.many, ChildSequence)
+    assert len(root.many) == 0
+    assert list(root.many) == []
+
+
 def test_generic_descendant_preserves_stable_parent_and_sibling_accessors():
     schema = compile_body(
         '<element name="bad"><choice>'
@@ -600,7 +712,7 @@ def test_cloning_a_projection_tree_preserves_its_generated_classes():
     assert cloned.children[0] is not root.children[0]
 
 
-def test_bind_projection_accepts_hand_built_evidence_without_a_document():
+def test_bind_projection_accepts_hand_built_evidence_for_the_same_projection():
     schema = compile_body(element("item", "<text/>"))
     root = RelaxNGElement.from_etree(ET.fromstring("<doc><item>one</item></doc>"))
     evidence = build_binding_evidence(
@@ -608,6 +720,7 @@ def test_bind_projection_accepts_hand_built_evidence_without_a_document():
         schema.grammar.start,
         datatype_context=DatatypeContext(None, {}),
         limits=None,
+        projection_fingerprint=schema.projection.grammar_fingerprint,
     )
 
     bound = bind_projection(root, schema.projection, evidence)
@@ -619,6 +732,25 @@ def test_bind_projection_accepts_hand_built_evidence_without_a_document():
     )
     with pytest.raises(PyXSDError):
         root.item.scalar_value()
+
+
+def test_bind_projection_rejects_anonymous_or_foreign_projection_evidence():
+    schema = compile_body(element("item", "<text/>"))
+    other = compile_body(element("item", "<empty/>"))
+    document = typed(schema, "<doc><item>one</item></doc>")
+    other_document = typed(other, "<doc><item/></doc>")
+    root = RelaxNGElement.from_etree(ET.fromstring("<doc><item>one</item></doc>"))
+    anonymous = build_binding_evidence(
+        root,
+        schema.grammar.start,
+        datatype_context=DatatypeContext(None, {}),
+        limits=None,
+    )
+
+    with pytest.raises(ValueError, match="projection fingerprint"):
+        bind_projection(document.root, schema.projection, other_document.binding_evidence)
+    with pytest.raises(ValueError, match="projection fingerprint"):
+        bind_projection(root, schema.projection, anonymous)
 
 
 def test_bind_projection_is_idempotent_and_rejects_foreign_evidence():
@@ -669,12 +801,18 @@ def test_bind_projection_requires_one_document_site_and_one_revision():
     schema = compile_body(element("item", "<text/>"))
     document = typed(schema, "<doc><item>one</item></doc>")
     root = document.root
+    fingerprint = schema.projection.grammar_fingerprint
+
+    with pytest.raises(TypeError, match="projection fingerprint must be a string"):
+        EvidenceGraph((), (), (), (), _projection_fingerprint=1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="projection fingerprint must be nonempty"):
+        EvidenceGraph((), (), (), (), _projection_fingerprint="")
 
     with pytest.raises(ValueError, match="typed evidence"):
         bind_projection(
             root,
             schema.projection,
-            EvidenceGraph((), (), (), ()),
+            EvidenceGraph((), (), (), (), _projection_fingerprint=fingerprint),
         )
 
     foreign = RelaxNGElement.from_etree(ET.fromstring("<other/>"))
@@ -686,6 +824,7 @@ def test_bind_projection_requires_one_document_site_and_one_revision():
             EvidenceOccurrence(root, "document"),
             EvidenceOccurrence(foreign, "text"),
         ),
+        _projection_fingerprint=fingerprint,
     )
     with pytest.raises(ValueError, match="lexical revision"):
         bind_projection(root, schema.projection, mixed)
@@ -746,8 +885,12 @@ def test_bind_projection_falls_back_when_a_wildcard_name_does_not_match():
     plan = other.projection
     route = plan.routes[plan.roots[0]]
     factory = ProjectionClassFactory(plan)
+    evidence = replace(
+        document.binding_evidence,
+        _projection_fingerprint=plan.grammar_fingerprint,
+    )
 
-    bind_projection(root, plan, document.binding_evidence, factory=factory)
+    bind_projection(root, plan, evidence, factory=factory)
 
     assert type(root) is factory.class_for(route.route_id)
     assert type(root.children[0]) is RelaxNGElement

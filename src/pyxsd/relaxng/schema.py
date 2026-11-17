@@ -741,6 +741,7 @@ class RelaxNGSchema:
                     limits=effective_limits,
                     origins=self.grammar.graph.origins if capture == "patterns" else None,
                     grammar_fingerprint=self._grammar_fingerprint,
+                    projection_fingerprint=self.projection.grammar_fingerprint,
                 )
                 if capture == "patterns":
                     annotations = AnnotationCapture(

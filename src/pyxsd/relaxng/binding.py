@@ -38,14 +38,16 @@ __all__ = [
     "ChildDescriptor",
     "ChildSequence",
     "ProjectionClassFactory",
+    "ScalarDescriptor",
     "WildcardChildren",
     "bind_projection",
     "projection_class_factory",
 ]
 
-#: Synthetic module identity for deterministic generated-class names.  These
-#: classes are runtime view types, not importable declarations; stubs emit the
-#: matching source instead of importing this path.
+#: Base module prefix for deterministic generated-class names.  Each plan
+#: appends its own projection-fingerprint token, so semantically different plans
+#: cannot share a fully-qualified name.  These classes are runtime view types,
+#: not importable declarations; stubs emit the matching source instead.
 GENERATED_MODULE = "pyxsd.relaxng.generated"
 
 
@@ -59,6 +61,34 @@ class _WildcardChildrenKey:
 
 
 WILDCARD_CHILDREN = _WildcardChildrenKey()
+
+
+class ScalarDescriptor:
+    """The route's whole-element typed scalar as a stable public descriptor.
+
+    ``typed_value`` delegates to the inherited :meth:`RelaxNGElement.scalar_value`
+    so it keeps the same schema-static wrapper, stale gate, invalid-document
+    error, and evidence decoding.  It never stringifies or decodes a value on
+    its own.  Assignment belongs to Task 3; this phase exposes a read-only seam.
+    """
+
+    __slots__ = ("field_name",)
+
+    def __init__(self, field_name: str) -> None:
+        self.field_name = field_name
+
+    def __get__(self, instance: RelaxNGElement | None, owner: type[Any] | None = None) -> Any:
+        del owner
+        if instance is None:
+            return self
+        return instance.scalar_value()
+
+    def __set__(self, instance: RelaxNGElement, value: Any) -> None:
+        del instance, value
+        raise AttributeError(
+            "the RELAX NG typed_value descriptor is read-only until typed "
+            "assignment support is available"
+        )
 
 
 class AttributeDescriptor:
@@ -205,19 +235,37 @@ class ChildDescriptor:
         return None
 
 
-def _class_base_name(route: RouteContract) -> str:
-    """Return the deterministic class-name stem for one stable route."""
-    if route.expanded_name is None:
-        suffix = route.route_id.rsplit(":", 1)[-1][:8]
-        return f"Element_{suffix}"
-    local = normalize("NFKC", route.expanded_name.rsplit("}", 1)[-1])
-    escaped = "".join(
+def _sanitize_identifier(value: str) -> str:
+    """Escape every character that cannot occur in a Python identifier."""
+    return "".join(
         character if ("_" + character).isidentifier() else f"_x{ord(character):x}_"
-        for character in local
+        for character in normalize("NFKC", value)
     )
-    if not escaped.isidentifier() or keyword.iskeyword(escaped) or escaped.startswith("_"):
-        escaped = "Element_" + escaped
-    return escaped[:1].upper() + escaped[1:]
+
+
+def _safe_class_name(stem: str) -> str:
+    """Validate the final capitalized class name, not only its stem."""
+    candidate = stem[:1].upper() + stem[1:]
+    if candidate.startswith("_"):
+        candidate = "Element" + candidate
+    if not candidate.isidentifier() or keyword.iskeyword(candidate):
+        candidate = "Element_" + candidate
+    return candidate
+
+
+def _class_base_name(route: RouteContract) -> str:
+    """Return the deterministic, source-valid class-name stem for one route."""
+    if route.expanded_name is None:
+        suffix = _sanitize_identifier(route.route_id.rsplit(":", 1)[-1])[:24]
+        return _safe_class_name("Element_" + (suffix or "anonymous"))
+    local = route.expanded_name.rsplit("}", 1)[-1]
+    return _safe_class_name(_sanitize_identifier(local))
+
+
+def _module_name(plan: ProjectionPlan) -> str:
+    """Return a deterministic module identity carrying the plan fingerprint."""
+    token = plan.grammar_fingerprint.rsplit(":", 1)[-1]
+    return f"{GENERATED_MODULE}.{token}"
 
 
 def _class_names(plan: ProjectionPlan) -> dict[str, str]:
@@ -238,16 +286,27 @@ def _class_names(plan: ProjectionPlan) -> dict[str, str]:
     return names
 
 
+def _scalar_field_name(used: set[str]) -> str:
+    """Choose the stable scalar descriptor name around field/API collisions."""
+    name = "typed_value"
+    while name in used or hasattr(RelaxNGElement, name):
+        name += "_"
+    return name
+
+
 class ProjectionClassFactory:
     """Build and cache one generated class per stable route in a plan.
 
     Class identity is fixed per factory and therefore per compiled schema.
-    Separate schemas never share mutable class objects even when their plans
-    are equivalent; their deterministic module and qualified names agree.
-    Generic routes resolve to the generic lexical class.
+    Separate schemas own separate class objects even when their plans are
+    equivalent.  Equivalent plans intentionally share the contract fully
+    qualified name because their projection fingerprint is the same; distinct
+    plans append different fingerprint tokens.  Consumers must cache class
+    objects, never FQN strings.  Generic routes resolve to the generic lexical
+    class.
     """
 
-    __slots__ = ("__weakref__", "_classes", "_lock", "_names", "_plan")
+    __slots__ = ("__weakref__", "_classes", "_lock", "_module", "_names", "_plan")
 
     def __init__(self, plan: ProjectionPlan) -> None:
         if not isinstance(plan, ProjectionPlan):
@@ -255,12 +314,18 @@ class ProjectionClassFactory:
         self._plan = plan
         self._classes: dict[str, type[RelaxNGElement]] = {}
         self._lock = threading.Lock()
+        self._module = _module_name(plan)
         self._names = _class_names(plan)
 
     @property
     def plan(self) -> ProjectionPlan:
         """The immutable plan this factory belongs to."""
         return self._plan
+
+    @property
+    def module(self) -> str:
+        """The deterministic synthetic module shared by this plan's classes."""
+        return self._module
 
     def class_for(self, route_id: str) -> type[RelaxNGElement]:
         """Return the cached class for *route_id*.
@@ -296,7 +361,7 @@ class ProjectionClassFactory:
 
         namespace: dict[str, Any] = {
             "__slots__": (),
-            "__module__": GENERATED_MODULE,
+            "__module__": self._module,
             "__qualname__": name,
             "__doc__": (
                 "Schema-static RELAX NG projection for "
@@ -312,9 +377,17 @@ class ProjectionClassFactory:
             namespace[contract.alias] = AttributeDescriptor(contract)
         for contract in route.children.values():
             namespace[contract.alias] = ChildDescriptor(contract)
+        scalar_field: str | None = None
+        if route.content.scalar_contracts:
+            scalar_field = _scalar_field_name(set(namespace))
+            namespace[scalar_field] = ScalarDescriptor(scalar_field)
         namespace["_relaxng_fields_"] = tuple(
             namespace[contract.alias]
             for contract in (*route.attributes.values(), *route.children.values())
+        )
+        namespace["_relaxng_scalar_field_"] = scalar_field
+        namespace["_relaxng_scalar_descriptor_"] = (
+            None if scalar_field is None else namespace[scalar_field]
         )
         return type(name, (RelaxNGElement,), namespace)
 
@@ -366,8 +439,14 @@ def _child_route(plan: ProjectionPlan, route: RouteContract, expanded: str) -> s
     return None
 
 
-def _require_owned_evidence(root: RelaxNGElement, evidence: EvidenceGraph) -> None:
-    """Require complete typed evidence for the supplied root and revision."""
+def _require_owned_evidence(
+    root: RelaxNGElement, plan: ProjectionPlan, evidence: EvidenceGraph
+) -> None:
+    """Require complete typed evidence for the supplied plan, root, and revision."""
+    if evidence.projection_fingerprint != plan.grammar_fingerprint:
+        raise ValueError(
+            "projection binding requires evidence from the plan's projection fingerprint"
+        )
     documents = [occurrence for occurrence in evidence.occurrences if occurrence.kind == "document"]
     if len(documents) != 1 or documents[0].element is not root:
         raise ValueError("projection binding requires typed evidence owned by the supplied root")
@@ -403,7 +482,7 @@ def bind_projection(
         factory = projection_class_factory(plan)
     elif factory.plan is not plan:
         raise ValueError("the projection class factory belongs to a different plan")
-    _require_owned_evidence(root, evidence)
+    _require_owned_evidence(root, plan, evidence)
     stack: list[tuple[RelaxNGElement, str | None]] = [(root, _root_route(plan, root._name_))]
     while stack:
         node, route_id = stack.pop()
