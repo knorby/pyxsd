@@ -17,6 +17,7 @@ import pytest
 from pyxsd.namespaces import NamespaceContext
 from pyxsd.relaxng.contracts import (
     candidate_id,
+    list_items_decodable,
     list_shape,
     scalar_contract,
 )
@@ -165,8 +166,13 @@ class TestListShape:
             (Group(Data(INTEGER), Group(Data(TOKEN), Data(INTEGER))), "tuple"),
             (OneOrMore(Data(INTEGER)), "list"),
             (OneOrMore(Value(INTEGER, "1")), "list"),
+            (Choice(Empty(), OneOrMore(Data(INTEGER))), "list"),
+            (Choice(OneOrMore(Data(INTEGER)), Empty()), "list"),
+            (Choice(Empty(), OneOrMore(Data(TOKEN))), "list"),
             (Choice(Data(INTEGER), Data(STRING)), "interpretation"),
             (Choice(Empty(), Data(INTEGER)), "interpretation"),
+            (Choice(Empty(), OneOrMore(Choice(Data(INTEGER), Data(STRING)))), "interpretation"),
+            (Choice(Empty(), OneOrMore(Group(Data(INTEGER), Data(TOKEN)))), "interpretation"),
             (OneOrMore(Choice(Data(INTEGER), Data(STRING))), "interpretation"),
             (OneOrMore(Group(Data(INTEGER), Data(TOKEN))), "interpretation"),
             (Group(OneOrMore(Data(INTEGER)), Data(TOKEN)), "interpretation"),
@@ -204,6 +210,18 @@ class TestListShape:
             )
         )
         assert list_shape(nested) == "tuple"
+
+    def test_plain_item_decoder_eligibility_is_schema_static(self):
+        assert list_items_decodable(List(Data(INTEGER)))
+        assert list_items_decodable(List(Choice(Empty(), OneOrMore(Data(INTEGER)))))
+        assert list_items_decodable(List(Empty()))
+        assert not list_items_decodable(List(Data(NonDecodingDatatype())))
+        assert not list_items_decodable(
+            List(Choice(Empty(), OneOrMore(Data(NonDecodingDatatype()))))
+        )
+        assert not list_items_decodable(List(Choice(Data(INTEGER), Data(STRING))))
+        with pytest.raises(TypeError, match="list"):
+            list_items_decodable(Data(INTEGER))
 
     def test_only_list_patterns_have_a_list_shape(self):
         with pytest.raises(TypeError, match="list"):
@@ -405,24 +423,87 @@ class TestEmptyLists:
         contracts = (scalar_contract(start.pattern),)
         assert value_at(graph, occurrence, contracts) == ()
 
-    def test_permitted_empty_repetition_exposes_one_empty_interpretation(self):
+    def test_zero_or_more_homogeneous_empty_list_is_a_plain_empty_list(self):
         content = List(Choice(Empty(), OneOrMore(Data(INTEGER))))
         graph, start, occurrence = build("<r/>", content)
         interpretation = interpret(graph, occurrence)
 
         assert interpretation.token_spans == ()
         assert interpretation.token_candidates == ()
-        assert interpretation.shape == "interpretation"
-        assert not interpretation.is_plain
-        assert interpretation.as_python() == ()
+        assert interpretation.shape == "list"
+        assert interpretation.is_plain
+        assert interpretation.as_python() == []
         assert interpretation.as_types(()) == ()
+
+        contracts = (scalar_contract(start.pattern),)
+        assert value_at(graph, occurrence, contracts) == []
+
+    def test_zero_or_more_homogeneous_nonempty_list_is_a_plain_list(self):
+        content = List(Choice(Empty(), OneOrMore(Data(INTEGER))))
+        graph, start, occurrence = build("<r>1 2</r>", content)
+        interpretation = interpret(graph, occurrence)
+
+        assert interpretation.shape == "list"
+        assert interpretation.is_plain
+        assert interpretation.as_python() == [1, 2]
+        assert interpretation.as_types(("xsd:integer", "xsd:integer")) == (1, 2)
+
+        contracts = (scalar_contract(start.pattern),)
+        assert value_at(graph, occurrence, contracts) == [1, 2]
+
+    @pytest.mark.parametrize("xml", ["<r/>", "<r>1 2</r>"])
+    def test_zero_or_more_form_behind_a_reference_is_list_shaped(self, xml):
+        reference = Ref()
+        reference.bind(Choice(Empty(), OneOrMore(Data(INTEGER))))
+        content = List(reference)
+        graph, start, occurrence = build(xml, content)
+        interpretation = interpret(graph, occurrence)
+
+        expected = [] if xml == "<r/>" else [1, 2]
+        assert interpretation.shape == "list"
+        assert interpretation.is_plain
+        assert interpretation.as_python() == expected
+
+        contracts = (scalar_contract(start.pattern),)
+        assert value_at(graph, occurrence, contracts) == expected
+
+    @pytest.mark.parametrize("xml", ["<r/>", "<r>1 2</r>"])
+    def test_zero_or_more_branches_behind_references_are_list_shaped(self, xml):
+        empty = Ref()
+        empty.bind(Empty())
+        repeated = Ref()
+        repeated.bind(OneOrMore(Data(INTEGER)))
+        content = List(Choice(empty, repeated))
+        graph, start, occurrence = build(xml, content)
+        interpretation = interpret(graph, occurrence)
+
+        expected = [] if xml == "<r/>" else [1, 2]
+        assert interpretation.shape == "list"
+        assert interpretation.is_plain
+        assert interpretation.as_python() == expected
+
+        contracts = (scalar_contract(start.pattern),)
+        assert value_at(graph, occurrence, contracts) == expected
+
+    @pytest.mark.parametrize("xml", ["<r/>", "<r>ok</r>"])
+    def test_zero_or_more_nondecodable_items_never_unwrap(self, xml):
+        content = List(Choice(Empty(), OneOrMore(Data(NonDecodingDatatype()))))
+        graph, start, occurrence = build(xml, content)
+        interpretation = interpret(graph, occurrence)
+
+        assert interpretation.shape == "list"
+        assert not interpretation.is_plain
+        with pytest.raises(UnsupportedDatatypeOperation):
+            interpretation.as_python()
 
         contracts = (scalar_contract(start.pattern),)
         value = value_at(graph, occurrence, contracts)
         assert isinstance(value, AlternativeValue)
-        assert value.as_python() == ()
         (candidate,) = value.candidates
-        assert candidate.decoded == ()
+        assert candidate.decodable is False
+        assert candidate.decoded is None
+        with pytest.raises(UnsupportedDatatypeOperation):
+            value.as_python()
         assert value.as_interpretation(candidate.candidate_id) == interpretation
 
 
@@ -554,7 +635,7 @@ class TestAsTypesRequiresAWholeAssignment:
         interpretation = interpret(graph, occurrence)
 
         assert len(interpretation.token_candidates[0]) == 2
-        with pytest.raises(AmbiguousValueError, match="as_candidate"):
+        with pytest.raises(AmbiguousValueError, match="cannot distinguish"):
             interpretation.as_types(("xsd:integer",))
 
     def test_text_tokens_have_no_datatype_selector(self):
@@ -641,6 +722,30 @@ class TestSchemaStaticWrapperSelection:
         assert len(integer_value.candidates) == 1
         assert len(boolean_value.candidates) == 1
         assert integer_value.candidates[0].contract != boolean_value.candidates[0].contract
+
+    def test_a_mixed_scalar_route_keeps_a_list_only_survivor_wrapped(self):
+        content = Choice(Data(INTEGER), List(Data(TOKEN)))
+        start = element("r", content)
+        contracts = tuple(scalar_contract(pattern) for pattern in (content.first, content.second))
+        root = tree("<r>abc</r>")
+        assert validate_element(root, start).valid
+        graph = build_binding_evidence(root, start, datatype_context=CX, limits=None)
+        occurrence = site(graph, root)
+        value = value_at(graph, occurrence, contracts)
+
+        assert isinstance(value, AlternativeValue)
+        assert len(value.candidates) == 1
+        assert value.candidates[0].contract.kind == "list"
+        assert value.as_python() == ("abc",)
+        (interpretation,) = value.interpretations
+        assert interpretation.as_types(("token",)) == ("abc",)
+
+        list_only = element("r", List(Data(TOKEN)))
+        list_graph = build_binding_evidence(root, list_only, datatype_context=CX, limits=None)
+        list_value_contract = (scalar_contract(list_only.pattern),)
+        list_only_value = value_at(list_graph, site(list_graph, root), list_value_contract)
+        assert list_only_value == ("abc",)
+        assert not isinstance(list_only_value, AlternativeValue)
 
     def test_equal_python_values_from_distinct_list_interpretations_stay_distinct(self):
         content = Choice(List(Data(QNAME)), List(Data(STRING)))
@@ -756,6 +861,7 @@ class TestListInterpretationConstruction:
             ("candidate_id", "", ValueError, "candidate ID"),
             ("shape", "unknown", ValueError, "shape"),
             ("constraints", object(), TypeError, "constraint"),
+            ("_static_decodable", "yes", TypeError, "decoder eligibility"),
             ("token_candidates", ("12",), TypeError, "candidates"),
             ("token_candidates", ((), ()), ValueError, "candidate"),
             (
@@ -1011,7 +1117,7 @@ class TestListValueValidation:
                 revision=1,
             )
 
-    def test_schema_contracts_must_be_nonempty_list_contracts(self):
+    def test_schema_contracts_must_include_a_whole_list_contract(self):
         with pytest.raises(ValueError, match="contract"):
             list_value(
                 (self.witness,),
@@ -1028,7 +1134,7 @@ class TestListValueValidation:
                 grammar_fingerprint="grammar",
                 revision=1,
             )
-        with pytest.raises(TypeError, match="list"):
+        with pytest.raises(ValueError, match="whole-list"):
             list_value(
                 (self.witness,),
                 self.graph,
@@ -1036,6 +1142,20 @@ class TestListValueValidation:
                 grammar_fingerprint="grammar",
                 revision=1,
             )
+
+    def test_mixed_scalar_schema_contracts_are_accepted(self):
+        value = list_value(
+            (self.witness,),
+            self.graph,
+            schema_contracts=(
+                self.contract,
+                scalar_contract(Data(INTEGER)),
+            ),
+            grammar_fingerprint="grammar",
+            revision=1,
+        )
+        assert isinstance(value, AlternativeValue)
+        assert value.candidates[0].contract.kind == "list"
 
     def test_surviving_witnesses_must_belong_to_the_schema_contracts(self):
         with pytest.raises(ValueError, match="schema"):

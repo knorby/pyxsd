@@ -36,6 +36,7 @@ from typing import Literal, cast
 
 from pyxsd.relaxng.datatypes import (
     BUILTIN_LIBRARY,
+    Datatype,
     DatatypeParameter,
     UnsupportedDatatypeOperation,
 )
@@ -74,6 +75,7 @@ __all__ = [
     "ScalarRestriction",
     "candidate_id",
     "grammar_fingerprint",
+    "list_items_decodable",
     "list_shape",
     "pattern_identity",
     "scalar_contract",
@@ -651,16 +653,39 @@ def scalar_contract(pattern: Pattern) -> ScalarContract:
 #: Schema-static typing shape of one whole-list pattern.
 #:
 #: ``tuple`` is a fixed sequence of one-token scalar items, ``list`` is a
-#: homogeneous repetition of one-token scalar items, and ``interpretation``
+#: homogeneous repetition of one-token scalar items (including the compiled
+#: zero-or-more form ``Choice(Empty, OneOrMore(...))``), and ``interpretation``
 #: covers every optional, repeating, or ambiguous heterogeneous arrangement.
 #: It is deliberately a three-way classification rather than an instance
 #: measurement: the outer representation must not depend on which lexical value
 #: a particular valid instance happened to use.
 ListShape = Literal["tuple", "list", "interpretation"]
 
+
+@dataclass(frozen=True)
+class _ListShapePart:
+    """One analysed plain list fragment and its static decoder eligibility."""
+
+    kind: Literal["fixed", "list"]
+    count: int
+    decodable: bool
+
+
 #: Internal post-order result: a fixed token count, homogeneous repetition, or
 #: an arrangement that has no schema-static plain shape.
-_ListAnalysis = tuple[Literal["fixed", "list"], int] | None
+_ListAnalysis = _ListShapePart | None
+
+
+def _datatype_has_decoder(datatype: object) -> bool:
+    """Whether a compiled datatype provides any decoder at all.
+
+    This is a schema-static capability check for empty homogeneous lists, where
+    no token witness exists to demonstrate decodability.  A datatype that
+    inherits :meth:`Datatype.decode` only to raise
+    ``UnsupportedDatatypeOperation`` has no decoder; one that overrides it does.
+    """
+    decode = getattr(type(datatype), "decode", None)
+    return decode is not None and decode is not Datatype.decode
 
 
 def _list_analysis_children(pattern: Pattern) -> tuple[Pattern, ...]:
@@ -668,6 +693,8 @@ def _list_analysis_children(pattern: Pattern) -> tuple[Pattern, ...]:
     if isinstance(pattern, Ref):
         return (pattern.target,)
     if isinstance(pattern, Group):
+        return (pattern.first, pattern.second)
+    if isinstance(pattern, Choice):
         return (pattern.first, pattern.second)
     if isinstance(pattern, OneOrMore):
         return (pattern.pattern,)
@@ -679,39 +706,44 @@ def _list_analysis(pattern: Pattern, results: dict[int, _ListAnalysis]) -> _List
     if isinstance(pattern, Ref):
         return results[id(pattern.target)]
     if isinstance(pattern, Empty):
-        return ("fixed", 0)
+        return _ListShapePart("fixed", 0, True)
     if isinstance(pattern, (Data, DataExcept, Value)):
-        return ("fixed", 1)
+        return _ListShapePart("fixed", 1, _datatype_has_decoder(pattern.datatype))
     if isinstance(pattern, Group):
         first = results[id(pattern.first)]
         second = results[id(pattern.second)]
-        if first is not None and second is not None and first[0] == second[0] == "fixed":
-            return ("fixed", first[1] + second[1])
+        if first is None or second is None:
+            return None
+        if first.kind == second.kind == "fixed":
+            return _ListShapePart(
+                "fixed", first.count + second.count, first.decodable and second.decodable
+            )
         return None
     if isinstance(pattern, OneOrMore):
         item = results[id(pattern.pattern)]
-        if item is not None and item[0] == "fixed" and item[1] == 1:
-            return ("list", 0)
+        if item is not None and item.kind == "fixed" and item.count == 1:
+            return _ListShapePart("list", 0, item.decodable)
+        return None
+    if isinstance(pattern, Choice):
+        first = results[id(pattern.first)]
+        second = results[id(pattern.second)]
+        if first is not None and second is not None:
+            if first.kind == "fixed" and first.count == 0 and second.kind == "list":
+                return second
+            if second.kind == "fixed" and second.count == 0 and first.kind == "list":
+                return first
         return None
     return None
 
 
-def list_shape(pattern: Pattern) -> ListShape:
-    """Return the schema-static plain typing shape of one compiled list pattern.
-
-    A fixed sequence of one-token scalar items is a ``tuple``; a repetition of
-    one such item is a ``list``.  Choice, interleave, ``text``, optional or
-    repeating heterogeneous arrangements, and recursive content have no plain
-    shape and expose a list interpretation instead.  References are followed to
-    their compiled targets.  The analysis is iterative, so deep pattern graphs
-    do not recurse through the Python stack.
-    """
+def _analyse_list(pattern: Pattern) -> _ListAnalysis:
+    """Analyse one compiled list pattern without Python recursion."""
     if not isinstance(pattern, List):
         raise TypeError(f"{type(pattern).__name__} is not a RELAX NG list pattern")
     content = pattern.pattern
     context = _IdentityContext()
     if not _is_acyclic(content, context):
-        return "interpretation"
+        return None
     results: dict[int, _ListAnalysis] = {}
     pending: list[tuple[Pattern, bool]] = [(content, False)]
     while pending:
@@ -726,7 +758,34 @@ def list_shape(pattern: Pattern) -> ListShape:
                     pending.append((child, False))
             continue
         results[key] = _list_analysis(node, results)
-    analysed = results[id(content)]
+    return results[id(content)]
+
+
+def list_shape(pattern: Pattern) -> ListShape:
+    """Return the schema-static plain typing shape of one compiled list pattern.
+
+    A fixed sequence of one-token scalar items is a ``tuple``; a homogeneous
+    repetition of one such item, including the compiled zero-or-more
+    ``Choice(Empty, OneOrMore(...))`` form, is a ``list``.  Choice of different
+    items, interleave, ``text``, optional or repeating heterogeneous
+    arrangements, and recursive content have no plain shape and expose a list
+    interpretation instead.  References are followed to their compiled targets.
+    The analysis is iterative, so deep pattern graphs do not recurse through the
+    Python stack.
+    """
+    analysed = _analyse_list(pattern)
     if analysed is None:
         return "interpretation"
-    return "tuple" if analysed[0] == "fixed" else "list"
+    return "tuple" if analysed.kind == "fixed" else "list"
+
+
+def list_items_decodable(pattern: Pattern) -> bool:
+    """Whether every scalar item of a plain list shape has a decoder.
+
+    An empty zero-or-more list has no token witness to demonstrate decodability,
+    so eligibility is decided from the compiled item datatype.  ``False`` also
+    covers every ``interpretation`` shape: it has no static plain item set from
+    which to promise ordinary typed data.
+    """
+    analysed = _analyse_list(pattern)
+    return analysed is not None and analysed.decodable

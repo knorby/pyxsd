@@ -26,6 +26,7 @@ from pyxsd.relaxng.contracts import (
     ListShape,
     ScalarContract,
     candidate_id,
+    list_items_decodable,
     list_shape,
     scalar_contract,
 )
@@ -136,6 +137,7 @@ class ListInterpretation:
     _witness_candidates: Mapping[ScalarWitness, Candidate] = field(
         repr=False, compare=False, default_factory=dict
     )
+    _static_decodable: bool = field(repr=False, compare=False, default=True)
 
     def __post_init__(self) -> None:
         if not isinstance(self.lexical, str):
@@ -156,6 +158,8 @@ class ListInterpretation:
             raise ValueError("a list interpretation's shape is not a list shape")
         if not isinstance(self.constraints, TokenConstraintGraph):
             raise TypeError("a list interpretation requires a token constraint graph")
+        if not isinstance(self._static_decodable, bool):
+            raise TypeError("list decoder eligibility must be a bool")
         spans = tuple(self.token_spans)
         for span in spans:
             if not isinstance(span, TokenSpan):
@@ -224,15 +228,24 @@ class ListInterpretation:
     @property
     def is_plain(self) -> bool:
         """Whether this is a statically plain, completely decodable list."""
-        return self.shape != "interpretation" and self._decoded() is not None
+        return (
+            self.shape != "interpretation"
+            and self._static_decodable
+            and self._decoded() is not None
+        )
 
     def _decoded(self) -> tuple[Any, ...] | list[Any] | None:
         """Return one complete plain decoded sequence, or None.
 
         Only a unique candidate at every token that all decode yields a value.
         A nondecodable token and a genuinely ambiguous token both return None;
-        the caller distinguishes them for its error.
+        the caller distinguishes them for its error.  Empty homogeneous lists
+        use the schema-static item decoder eligibility, so an empty instance
+        cannot fabricate an ordinary list for a contract whose items could never
+        decode.
         """
+        if self.shape != "interpretation" and not self._static_decodable:
+            return None
         values: list[Any] = []
         for group in self.token_candidates:
             if len(group) != 1:
@@ -287,7 +300,8 @@ class ListInterpretation:
             if len(contracts) > 1:
                 raise AmbiguousValueError(
                     f"token {index} has several distinct contracts for datatype "
-                    f"{(library_uri, type_name)!r}; select one with as_candidate(candidate_id)"
+                    f"{(library_uri, type_name)!r}; datatype selectors cannot "
+                    "distinguish those token contracts"
                 )
             candidate = matches[0]
             if not candidate.decodable:
@@ -621,6 +635,7 @@ def list_interpretation(
         list_shape(witness.pattern),
         constraints,
         witness_candidates,
+        list_items_decodable(witness.pattern),
     )
 
 
@@ -634,14 +649,15 @@ def list_value(
 ) -> tuple[Any, ...] | list[Any] | AlternativeValue:
     """Return the schema-static value form of one whole-list scalar position.
 
-    ``schema_contracts`` is the complete set of list contracts the position can
-    have in the grammar, not merely this instance's survivors.  One plain,
-    completely decodable contract returns an ordinary tuple or list.  A
-    schema-ambiguous position, and one whose only list contract lacks a plain
-    complete decoding, returns an immutable :class:`AlternativeValue` whose
-    whole-list candidate carries the attached interpretation.  Selection is
-    therefore independent of which branch this particular lexical value made
-    easiest.
+    ``schema_contracts`` is the complete set of scalar contracts the position
+    can have in the grammar, including atomic or text alternatives on the same
+    route, not merely this instance's survivors.  One plain, completely
+    decodable list contract returns an ordinary tuple or list only when it is
+    the sole schema-possible contract.  Any additional scalar branch, a
+    schema-ambiguous position, and a list contract without a plain complete
+    decoding return an immutable :class:`AlternativeValue` whose whole-list
+    candidate carries the attached interpretation.  Selection is therefore
+    independent of which branch this particular lexical value made easiest.
     """
     if not isinstance(graph, EvidenceGraph):
         raise TypeError("a list value requires an EvidenceGraph")
@@ -657,8 +673,8 @@ def list_value(
     for contract in contracts:
         if not isinstance(contract, ScalarContract):
             raise TypeError("schema contracts must be ScalarContract values")
-        if contract.kind != "list":
-            raise TypeError("list values require whole-list schema contracts")
+    if not any(contract.kind == "list" for contract in contracts):
+        raise ValueError("a list value requires at least one whole-list schema contract")
     witness_by_contract: dict[ScalarContract, ScalarWitness] = {}
     for witness in items:
         contract = scalar_contract(witness.pattern)
