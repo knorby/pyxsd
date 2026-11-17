@@ -305,7 +305,13 @@ class _IdentityContext:
 
 
 def _is_acyclic(root: Pattern, context: _IdentityContext) -> bool:
-    """Whether *root*'s reachable graph contains no reference cycle."""
+    """Whether *root*'s reachable graph contains no reference cycle.
+
+    A successful traversal proves every visited node acyclic and caches them.
+    A failed traversal proves only the queried root reachable-graph is cyclic;
+    an acyclic descendant visited before the back edge must not be poisoned, or
+    equal descendants would get different identities based on sharing.
+    """
     cached = context.acyclic.get(id(root))
     if cached is not None:
         return cached
@@ -319,6 +325,7 @@ def _is_acyclic(root: Pattern, context: _IdentityContext) -> bool:
         if index == 0:
             colors[key] = 1
             visited.append(node)
+            context.work += 1
         children = _pattern_operands(node)
         if index < len(children):
             child = children[index]
@@ -333,8 +340,11 @@ def _is_acyclic(root: Pattern, context: _IdentityContext) -> bool:
         else:
             colors[key] = 2
             pending.pop()
-    for node in visited:
-        context.acyclic[id(node)] = acyclic
+    if acyclic:
+        for node in visited:
+            context.acyclic[id(node)] = True
+    else:
+        context.acyclic[id(root)] = False
     return acyclic
 
 
@@ -508,7 +518,11 @@ def pattern_identity(pattern: Pattern) -> str:
     schema-side QName namespace identity, value lexicals, and bound reference
     cycles.  It ignores origins, source locations, object identity, and
     instance values, so recompiling the same semantic grammar yields the same
-    identity.
+    identity.  Structural identity is sharing-insensitive for acyclic
+    patterns: equal acyclic nodes expand once whether the pool shares one
+    object.  Equal but separately constructed cyclic graphs may encode
+    separate expansions; that limitation is deterministic and never embeds an
+    object address or process hash in the public ID.
     """
     identity, _ = _pattern_identity_and_work(pattern)
     return identity

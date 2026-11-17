@@ -320,6 +320,41 @@ def doubling_schema(depth):
     )
 
 
+def cyclic_sharing_root(*, shared_leaf, leaf_first=True):
+    """A cyclic element plus a root that reuses its acyclic leaf descendant."""
+    leaf = Element(Name(None, "leaf"), Empty())
+    other_leaf = leaf if shared_leaf else Element(Name(None, "leaf"), Empty())
+    self_reference = Ref()
+    leaf_reference = Ref()
+    leaf_reference.bind(leaf)
+    content = Choice(leaf_reference, self_reference)
+    if not leaf_first:
+        content = Choice(self_reference, leaf_reference)
+    branch = Element(Name(None, "b"), content)
+    self_reference.bind(branch)
+    branch_reference = Ref()
+    branch_reference.bind(branch)
+    first_leaf_reference = Ref()
+    first_leaf_reference.bind(leaf)
+    second_leaf_reference = Ref()
+    second_leaf_reference.bind(other_leaf)
+    return Group(
+        branch_reference,
+        Group(first_leaf_reference, second_leaf_reference),
+    )
+
+
+def equal_cyclic_roots(*, shared_branch):
+    """Two references to one cyclic branch, or to equal separate branches."""
+    first_branch = cyclic_sharing_root(shared_leaf=True)
+    second_branch = first_branch if shared_branch else cyclic_sharing_root(shared_leaf=True)
+    first_reference = Ref()
+    first_reference.bind(first_branch)
+    second_reference = Ref()
+    second_reference.bind(second_branch)
+    return Group(first_reference, second_reference)
+
+
 class TestScalarContract:
     def test_contracts_are_frozen_hashable_and_deterministically_represented(self):
         first = scalar_contract(Data(INTEGER))
@@ -640,6 +675,47 @@ class TestGrammarFingerprint:
 
 
 class TestBoundedIdentityWork:
+    def test_cyclic_root_does_not_poison_shared_acyclic_descendants(self):
+        for leaf_first in (True, False):
+            shared = pattern_identity(cyclic_sharing_root(shared_leaf=True, leaf_first=leaf_first))
+            distinct = pattern_identity(
+                cyclic_sharing_root(shared_leaf=False, leaf_first=leaf_first)
+            )
+            assert shared == distinct
+
+    def test_cyclic_descendant_sharing_is_process_independent(self):
+        program = """
+from tests.test_relaxng_values import cyclic_sharing_root, equal_cyclic_roots
+from pyxsd.relaxng.contracts import pattern_identity
+for leaf_first in (True, False):
+    print(pattern_identity(cyclic_sharing_root(shared_leaf=True, leaf_first=leaf_first)))
+    print(pattern_identity(cyclic_sharing_root(shared_leaf=False, leaf_first=leaf_first)))
+print(pattern_identity(equal_cyclic_roots(shared_branch=True)))
+print(pattern_identity(equal_cyclic_roots(shared_branch=False)))
+"""
+        outputs = [
+            subprocess.run(
+                [sys.executable, "-c", program],
+                env={**os.environ, "PYTHONHASHSEED": seed},
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout
+            for seed in ("1", "42")
+        ]
+        assert outputs[0] == outputs[1]
+        lines = outputs[0].splitlines()
+        assert len(lines) == 6
+        assert lines[0] == lines[1]
+        assert lines[2] == lines[3]
+        assert lines[4] != lines[5]
+
+    def test_equal_but_distinct_cyclic_targets_do_not_share_an_expansion(self):
+        shared = pattern_identity(equal_cyclic_roots(shared_branch=True))
+        distinct = pattern_identity(equal_cyclic_roots(shared_branch=False))
+        assert shared != distinct
+        assert distinct == pattern_identity(equal_cyclic_roots(shared_branch=False))
+
     def test_doubling_references_are_encoded_once_and_recompile_stably(self):
         xml = doubling_schema(30)
         first = compile_schema(xml)
@@ -649,7 +725,7 @@ class TestBoundedIdentityWork:
         second_identity, second_work = _pattern_identity_and_work(second.grammar.start)
         assert first_identity == second_identity
         assert work == second_work
-        assert work < 5000, work
+        assert work < 1000, work
         assert grammar_fingerprint(first.grammar, first.datatype_fingerprint) == (
             grammar_fingerprint(second.grammar, second.datatype_fingerprint)
         )
