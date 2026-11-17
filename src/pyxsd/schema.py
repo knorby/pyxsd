@@ -34,6 +34,7 @@ from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
     componentKind,
 )
+from pyxsd.element_representatives.xsd_type import OWNER_SCHEMA_ATTRIBUTE
 from pyxsd.exceptions import PyXSDError, PyXSDWarning, ValidationError
 from pyxsd.extensions import Extensions
 from pyxsd.import_visibility import audit_direct_imports
@@ -1298,7 +1299,7 @@ def load_overlay_classes(
             logger.debug("Loaded the %s class", className)
     schema.classes.update(newClasses)
     for cls in newClasses.values():
-        cls.schema = schema
+        setattr(cls, OWNER_SCHEMA_ATTRIBUTE, schema)
     # Overlay classes can introduce or remove ENTITY/ENTITIES reachability,
     # so the lazily cached activation decision is recomputed on next use.
     schema._entity_declarations_needed = None
@@ -1538,7 +1539,7 @@ def _compile_into_context(
         # back-reference is stamped in one pass here (overlay classes
         # are stamped by ``load_overlay_classes``).
         for cls in ctx.classes.values():
-            cls.schema = schema
+            setattr(cls, OWNER_SCHEMA_ATTRIBUTE, schema)
         schema._host = host
         schema.resource_policy = ctx.resource_policy
         schema.declaration_origins = ctx.declaration_origins

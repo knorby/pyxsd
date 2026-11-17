@@ -1141,6 +1141,14 @@ class SchemaPool:
     ``constructors``, and ``schemas`` are read-only mappings built once in
     ``__init__``.  Built-in XSD types are always available; imported named
     atomic types gain constructor functions.
+
+    ``_graph_cache`` is rooted by ``id()``: each key pairs the id of a
+    package-local proxy with the id of a declaration, and the compiled
+    schemas own both for as long as the pool exists. No id can therefore
+    be recycled while its entry is live, and no entry outlives its key.
+    The lazy caches are filled without a lock; use one pool from one
+    thread at a time (separate pools are independent, and one compiled
+    ``Schema`` may not be parsed concurrently).
     """
 
     _schemas: dict[str | None, PyxsdSchemaProxy | _MergedSchemaProxy]

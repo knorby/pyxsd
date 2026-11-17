@@ -31,11 +31,17 @@ _CLASS_IN_PROGRESS = object()
 #: once that class exists.
 _SELF_CONTENT = object()
 
+#: The class attribute the compile stamps the owning ``Schema`` onto after a
+#: generated class exists. This is the single source for the stamp spelling:
+#: the compile (``pyxsd.schema``) and the lazy class builder both set this key.
+OWNER_SCHEMA_ATTRIBUTE = "schema"
+
 #: Class-attribute keys stamped on a generated class after the class body no
-#: longer exists. An element declaration whose local name is one of these is
-#: bound under its alias (see ``clsFor``), because the stamp would otherwise
-#: replace the descriptor while ``_elementNames_`` still lists the key.
-_STAMPED_CLASS_KEYS = frozenset({"schema"})
+#: longer exists. An element or attribute declaration whose local name is one
+#: of these is bound under its alias (see ``clsFor``), because the stamp would
+#: otherwise replace the descriptor while ``_elementNames_``/
+#: ``_attributeNames_`` still lists the key.
+_STAMPED_CLASS_KEYS = frozenset({OWNER_SCHEMA_ATTRIBUTE})
 
 
 def _attribute_use_label(attr: Any, attrName: str | None) -> str:
@@ -1329,19 +1335,33 @@ class XsdType(ElementRepresentative):
         ownElementNames = {element.name for element in elements}
         ownAttributeNames = {attr.name for attr in attributes}
 
-        def allocateAlias(name: str) -> str:
-            """Returns a free ``<name>_element`` class-attribute key."""
-            alias = f"{name}_element"
+        def allocateAliasKey(base: str) -> str:
+            """Returns *base* or the first free ``<base>_<n>`` key."""
+            key = base
             suffix = 2
             while (
-                alias in namespace
-                or alias in ownElementNames
-                or alias in ownAttributeNames
-                or alias in inheritedKeys
+                key in namespace
+                or key in ownElementNames
+                or key in ownAttributeNames
+                or key in inheritedKeys
             ):
-                alias = f"{name}_element_{suffix}"
+                key = f"{base}_{suffix}"
                 suffix += 1
-            return alias
+            return key
+
+        def allocateAlias(name: str) -> str:
+            """Returns a free ``<name>_element`` class-attribute key."""
+            return allocateAliasKey(f"{name}_element")
+
+        def allocateAttributeAlias(name: str) -> str:
+            """Returns a free ``<name>_attribute`` class-attribute key.
+
+            Mirrors :func:`allocateAlias`: the natural accessor stays with
+            the stamp (or an inherited declaration), so an attribute
+            declaration bound under a stamped key moves aside instead of
+            being overwritten after class creation.
+            """
+            return allocateAliasKey(f"{name}_attribute")
 
         for element in elements:
             element.host = host
@@ -1423,6 +1443,15 @@ class XsdType(ElementRepresentative):
                     counter += 1
                 # Intentional binding (see the unnamed-element branch).
                 attr._aliased_ = True
+            elif key in _STAMPED_CLASS_KEYS:
+                # The compile stamps the owning ``Schema`` onto the class
+                # under this key after class creation (``cls.schema``);
+                # binding the descriptor there would be replaced by the
+                # stamp while ``_attributeNames_`` still lists the key.
+                # Move the declaration to ``<name>_attribute`` so both the
+                # stamp and the use survive.
+                key = allocateAttributeAlias(key)
+                attr._aliased_ = True
             if key in namespace:
                 # Two attribute uses share a local name but differ in
                 # namespace (attQ019): bind the later one under a unique
@@ -1461,7 +1490,7 @@ class XsdType(ElementRepresentative):
         end of it (the Schema object does not exist while a class is
         being built); a class built afterwards — an ``xs:alternative``'s
         inline type selected at binding time, say — is stamped here from
-        the schema representative's back-reference, so the ``schema``
+        the schema representative's back-reference, so the owner-schema
         stamp (the class's only parser seam) resolves for it too.
         """
         try:
@@ -1469,7 +1498,7 @@ class XsdType(ElementRepresentative):
         except (AttributeError, RuntimeError):
             return
         if owner is not None:
-            cls.schema = owner
+            setattr(cls, OWNER_SCHEMA_ATTRIBUTE, owner)
 
     @staticmethod
     def _findInheritedElement(bases, name):

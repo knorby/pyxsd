@@ -35,6 +35,20 @@ def _compose(body: str) -> tuple[Schema, SchemaPool]:
     return schema, SchemaPool.from_schema(schema)
 
 
+def _iter_names(root: PyxsdElement, limit: int = 5000) -> list[str]:
+    """Collect a whole traversal, failing rather than hanging on a cycle.
+
+    ``iter()`` skips a branch that repeats a declaration already on it.
+    If that guard regresses, an unbounded walk of the bundled recursive
+    schema would never return; the bound turns that into a test failure.
+    """
+    names: list[str] = []
+    for element in root.iter():
+        names.append(element.name or "")
+        assert len(names) <= limit, "schema graph traversal did not terminate"
+    return names
+
+
 RECURSIVE = """
   <xs:element name="a" type="t:a"/>
   <xs:complexType name="a">
@@ -103,7 +117,7 @@ def test_recursive_traversal_terminates_with_the_documented_shape() -> None:
 
     # One declaration plus the reference that closes the cycle: a bounded,
     # exact count rather than a timeout.
-    assert [item.name for item in element.iter()] == [f"{{{T}}}a", f"{{{T}}}a"]
+    assert _iter_names(element) == [f"{{{T}}}a", f"{{{T}}}a"]
     assert [item.name for item in element.iter("*")] == [f"{{{T}}}a", f"{{{T}}}a"]
     assert element.find(f"./{{{T}}}a") is element.children[0]
     assert element.find(f"{{{T}}}a") is element.children[0]
@@ -206,6 +220,60 @@ def test_element_named_schema_keeps_its_adapter() -> None:
     assert schema.classes["environmentType"].schema is schema
 
 
+def test_attribute_named_schema_keeps_its_adapter() -> None:
+    """Attribute declarations named ``schema`` survive the class stamp.
+
+    The compile stamps the owning ``Schema`` onto every generated class
+    under the ``schema`` attribute, after the class body exists. A local
+    attribute use and a reference to a global, namespaced attribute both
+    bind a descriptor under that name; without an alias the stamp replaced
+    the descriptor while ``_attributeNames_`` still listed the key, and
+    ``_attribute_descriptors`` read ``name`` off the ``Schema``.
+    """
+    schema, pool = _compose(
+        """
+        <xs:attribute name="schema" type="xs:string"/>
+        <xs:element name="local" type="t:localType"/>
+        <xs:complexType name="localType">
+          <xs:attribute name="schema" type="xs:int"/>
+        </xs:complexType>
+        <xs:element name="referring" type="t:referringType"/>
+        <xs:complexType name="referringType">
+          <xs:attribute ref="t:schema"/>
+        </xs:complexType>
+        """
+    )
+
+    cases = (
+        ("local", f"{{{XSD_NS}}}int", b'<t:local xmlns:t="urn:t" schema="5"/>', 5),
+        ("referring", f"{{{XSD_NS}}}string", b'<t:referring xmlns:t="urn:t" t:schema="x"/>', "x"),
+    )
+    for declaration, expected_type, instance, value in cases:
+        element = pool.get_element(f"{{{T}}}{declaration}")
+        assert element is not None
+        descriptor = element.attrib.get("schema")
+        assert descriptor is not None
+        assert descriptor.name == "schema"
+        assert descriptor.type is not None
+        assert descriptor.type.name == expected_type
+
+        document = schema.parse(io.BytesIO(instance))
+        assert document.is_valid
+        # The value binds through the alias; ``schema`` itself is the stamp.
+        assert document.root.schema_attribute == value
+
+    for type_name in ("localType", "referringType"):
+        cls = schema.classes[type_name]
+        # The stamp keeps the natural accessor...
+        assert cls.schema is schema
+        # ...and the declaration is bound under its alias, which
+        # ``_attributeNames_`` records like any other use.
+        assert cls._attributeNames_ == ["schema_attribute"]
+        bound = cls.__dict__["schema_attribute"]
+        assert bound.name == "schema"
+        assert bound.bindingKey == "schema_attribute"
+
+
 def test_xhtml_shaped_recursion_composes() -> None:
     _, pool = _compose(
         """
@@ -240,7 +308,7 @@ def test_bundled_xslt_schema_composes() -> None:
     # accepts instruction content that can contain another template. The
     # graph still terminates and keeps every declaration it reaches.
     assert f"{{{XSLT_NS}}}literal-result-element" in names
-    visited = [element.name for element in template.iter()]
+    visited = _iter_names(template)
     assert visited[0] == f"{{{XSLT_NS}}}template"
     assert visited.count(f"{{{XSLT_NS}}}literal-result-element") >= 2
     assert len(visited) > len(template)
