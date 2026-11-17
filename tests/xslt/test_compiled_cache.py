@@ -85,12 +85,17 @@ def _case(root: Path, params: tuple[Param, ...] = ()) -> CatalogCase:
     )
 
 
+def _units(stylesheet: Path) -> suite._Units:
+    """The compilation units of a case whose principal is its only unit."""
+    return suite._Units(principal=stylesheet)
+
+
 def test_one_stylesheet_compiles_once_per_profile(
     monkeypatch: pytest.MonkeyPatch, sheet: Path
 ) -> None:
     recorder = _Recorder(monkeypatch)
-    first = suite._compile_stylesheet(PROFILE, sheet, {})
-    second = suite._compile_stylesheet(PROFILE, sheet, {})
+    first = suite._compile_stylesheet(PROFILE, _units(sheet), {})
+    second = suite._compile_stylesheet(PROFILE, _units(sheet), {})
     assert first is second
     assert len(recorder) == 1
     assert recorder.calls == [(sheet, None)]
@@ -99,8 +104,8 @@ def test_one_stylesheet_compiles_once_per_profile(
 def test_profile_identity_is_part_of_the_key(monkeypatch: pytest.MonkeyPatch, sheet: Path) -> None:
     recorder = _Recorder(monkeypatch)
     other = cast(suite.SuiteProfile, _OtherProfile(name="xslt20", processor=PROFILE.processor))
-    suite._compile_stylesheet(PROFILE, sheet, {})
-    suite._compile_stylesheet(other, sheet, {})
+    suite._compile_stylesheet(PROFILE, _units(sheet), {})
+    suite._compile_stylesheet(other, _units(sheet), {})
     assert len(recorder) == 2
     assert [path for path, _ in recorder.calls] == [sheet, sheet]
 
@@ -115,9 +120,9 @@ def test_distinct_stylesheets_are_distinct_entries(
         target.write_bytes(
             stylesheet('<xsl:template name="xsl:initial-template"><out/></xsl:template>')
         )
-    suite._compile_stylesheet(PROFILE, first, {})
-    suite._compile_stylesheet(PROFILE, second, {})
-    suite._compile_stylesheet(PROFILE, first, {})
+    suite._compile_stylesheet(PROFILE, _units(first), {})
+    suite._compile_stylesheet(PROFILE, _units(second), {})
+    suite._compile_stylesheet(PROFILE, _units(first), {})
     assert len(recorder) == 2
 
 
@@ -129,18 +134,18 @@ def test_the_cache_is_bounded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         target = tmp_path / f"{index}.xsl"
         target.write_bytes(source)
         paths.append(target)
-        suite._compile_stylesheet(PROFILE, target, {})
+        suite._compile_stylesheet(PROFILE, _units(target), {})
     assert len(recorder) == suite._COMPILED_CACHE_SIZE + 1
     assert len(suite._COMPILED) == suite._COMPILED_CACHE_SIZE
     # The oldest entry was evicted, so asking for it compiles again.
-    suite._compile_stylesheet(PROFILE, paths[0], {})
+    suite._compile_stylesheet(PROFILE, _units(paths[0]), {})
     assert len(recorder) == suite._COMPILED_CACHE_SIZE + 2
 
 
 def test_static_parameters_bypass_the_cache(monkeypatch: pytest.MonkeyPatch, sheet: Path) -> None:
     recorder = _Recorder(monkeypatch)
-    suite._compile_stylesheet(PROFILE, sheet, {"flag": ("yes",)})
-    suite._compile_stylesheet(PROFILE, sheet, {"flag": ("yes",)})
+    suite._compile_stylesheet(PROFILE, _units(sheet), {"flag": ("yes",)})
+    suite._compile_stylesheet(PROFILE, _units(sheet), {"flag": ("yes",)})
     assert len(recorder) == 2
     assert recorder.calls == [(sheet, {"flag": ("yes",)}), (sheet, {"flag": ("yes",)})]
     assert suite._COMPILED == {}
@@ -169,14 +174,14 @@ def test_rewritten_stylesheet_is_compiled_again(
     monkeypatch: pytest.MonkeyPatch, sheet: Path
 ) -> None:
     recorder = _Recorder(monkeypatch)
-    suite._compile_stylesheet(PROFILE, sheet, {})
+    suite._compile_stylesheet(PROFILE, _units(sheet), {})
     sheet.write_bytes(
         stylesheet(
             '<xsl:template name="xsl:initial-template"><out>'
             '<xsl:value-of select="2 + 2"/></out></xsl:template>'
         )
     )
-    compiled = suite._compile_stylesheet(PROFILE, sheet, {})
+    compiled = suite._compile_stylesheet(PROFILE, _units(sheet), {})
     assert len(recorder) == 2
     assert compiled.transform().principal_tree.string_value == "4"
 
@@ -184,7 +189,7 @@ def test_rewritten_stylesheet_is_compiled_again(
 def test_an_unreadable_stylesheet_fails_without_caching(sheet: Path) -> None:
     missing = sheet.parent / "missing.xsl"
     with pytest.raises(XsltStaticError):
-        suite._compile_stylesheet(PROFILE, missing, {})
+        suite._compile_stylesheet(PROFILE, _units(missing), {})
     assert suite._COMPILED == {}
 
 
@@ -202,7 +207,7 @@ def test_a_denied_digest_read_falls_back_to_the_compiler(
         return original(self)
 
     monkeypatch.setattr(Path, "read_bytes", deny_first)
-    compiled = suite._compile_stylesheet(PROFILE, sheet, {})
+    compiled = suite._compile_stylesheet(PROFILE, _units(sheet), {})
     assert calls[0] == sheet
     assert compiled.transform().principal_tree.string_value == "2"
     assert suite._COMPILED == {}
@@ -224,7 +229,7 @@ def test_the_budget_alarm_survives_the_digest_read(
 
     monkeypatch.setattr(Path, "read_bytes", slow_read)
     with pytest.raises(TimeoutError, match="budget"), suite.case_budget(0.05):
-        suite._compile_stylesheet(PROFILE, sheet, {})
+        suite._compile_stylesheet(PROFILE, _units(sheet), {})
     assert suite._COMPILED == {}
 
 
@@ -243,10 +248,10 @@ def test_an_imported_module_edit_is_not_seen(
         )
     )
     recorder = _Recorder(monkeypatch)
-    first = suite._compile_stylesheet(PROFILE, principal, {})
+    first = suite._compile_stylesheet(PROFILE, _units(principal), {})
     assert first.transform().principal_tree.string_value == "1"
     imported.write_bytes(stylesheet('<xsl:template name="m"><v>2</v></xsl:template>'))
-    second = suite._compile_stylesheet(PROFILE, principal, {})
+    second = suite._compile_stylesheet(PROFILE, _units(principal), {})
     assert second is first
     assert len(recorder) == 1
     assert second.transform().principal_tree.string_value == "1"

@@ -31,7 +31,6 @@ from tests.xslt.model import (
     Environment,
     Invocation,
     Output,
-    Package,
     Resource,
     Schema,
     Stylesheet,
@@ -611,13 +610,6 @@ def test_executor_reports_unsupported_environment_shapes_as_adapter_gaps(
             environment=replace(
                 case.environment,
                 collections=(Collection(uri="urn:collection"),),
-            ),
-        ),
-        "packages": replace(
-            case,
-            invocation=replace(
-                case.invocation,
-                packages=(Package(role="principal", path=PurePosixPath("pkg.xsl")),),
             ),
         ),
         "result-variable output": replace(

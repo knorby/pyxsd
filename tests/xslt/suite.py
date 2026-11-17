@@ -7,8 +7,8 @@ themselves — the 2.0 one schema-aware, the 1.0 one not — so their verdicts n
 describe a ``version`` attribute on a 3.0 processor.
 
 The executor covers the invocation shapes the catalog declares in
-``<environment>`` and ``<test>`` (context items, sources, parameters, entry
-points, and delivery).  A shape the harness cannot drive is reported as
+``<environment>`` and ``<test>`` (context items, sources, packages, parameters,
+entry points, and delivery).  A shape the harness cannot drive is reported as
 ``adapter-gap``; an engine exception is a ``fail`` with its message, never a
 silent pass.  Every executed case is bounded by a per-case budget, so one
 pathological stylesheet cannot stall a profile run.
@@ -43,6 +43,7 @@ from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath.engine import XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
 from pyxsd.xslt import CompiledStylesheet, TransformationResult, XsltProcessor
+from pyxsd.xslt.compiler.packages import PackageResolver
 from pyxsd.xslt.errors import XsltError
 
 #: Capabilities a native XSLT 2.0 processor implements in addition to its
@@ -439,8 +440,6 @@ def _delivery(case: TestCase) -> str:
 
 
 def _stylesheet(case: TestCase) -> Path:
-    if case.packages:
-        raise UnsupportedCase("packages")
     stylesheets = [sheet for sheet in case.stylesheets if sheet.role != "secondary"]
     if len(stylesheets) != 1:
         raise UnsupportedCase(f"{len(stylesheets)} principal stylesheets")
@@ -451,55 +450,145 @@ def _stylesheet(case: TestCase) -> Path:
     return case.document_root / Path(str(stylesheets[0].path))
 
 
+@dataclass(frozen=True)
+class _Units:
+    """The compilation units one case compiles: a principal and its libraries.
+
+    ``libraries`` are the case's secondary packages, in declaration order.  The
+    principal is the module the invocation compiles; a library is a package the
+    principal reaches through ``xsl:use-package``.
+    """
+
+    principal: Path
+    libraries: tuple[Path, ...] = ()
+
+
+def _package_paths(case: TestCase, root: Path, *, secondary: bool) -> tuple[Path, ...]:
+    """The distinct corpus paths of one role's package declarations.
+
+    A catalog case may repeat one declaration — the environment and the test can
+    both name the same package file — and repeating one compilation unit must
+    not look like two.  Declaration order is preserved.
+    """
+    paths: list[Path] = []
+    for package in case.packages:
+        if (package.role == "secondary") is not secondary:
+            continue
+        if package.path is None:
+            raise UnsupportedCase(
+                "secondary package without a file"
+                if secondary
+                else "principal package without a file"
+            )
+        path = root / Path(str(package.path))
+        if path not in paths:
+            paths.append(path)
+    return tuple(paths)
+
+
+def _compilation_units(case: TestCase) -> _Units:
+    """The principal a case compiles plus the secondary packages it reaches.
+
+    A case that declares packages compiles one principal package with every
+    secondary package registered as a library.  A case that names no principal
+    package still has a principal stylesheet — an ordinary ``xsl:stylesheet``
+    may use packages — so that stylesheet is the principal.  A case with neither
+    has no compilation unit at all.
+    """
+    if not case.packages:
+        return _Units(principal=_stylesheet(case))
+    if case.document_root is None:
+        raise UnsupportedCase("case without a corpus root")
+    principals = _package_paths(case, case.document_root, secondary=False)
+    if len(principals) > 1:
+        raise UnsupportedCase(f"{len(principals)} principal packages")
+    if principals:
+        principal = principals[0]
+    elif not any(sheet.role != "secondary" for sheet in case.stylesheets):
+        raise UnsupportedCase("packages without a principal")
+    else:
+        principal = _stylesheet(case)
+    libraries = _package_paths(case, case.document_root, secondary=True)
+    return _Units(principal=principal, libraries=libraries)
+
+
+def _processor_for(profile: SuiteProfile, units: _Units) -> XsltProcessor:
+    """The profile's processor with this case's libraries registered.
+
+    A case without libraries keeps the profile processor itself, so an ordinary
+    stylesheet compiles exactly as before.  ``from_sources`` reads the local
+    corpus files only: a package name is never dereferenced, so a lookup can
+    never reach the network.
+    """
+    if not units.libraries:
+        return profile.processor
+    resolver = PackageResolver.from_sources(*(str(path) for path in units.libraries))
+    return replace(profile.processor, resolver=resolver)
+
+
 #: How many compiled stylesheets one worker keeps for reuse.  The bulk
 #: conformance sets compile the same stylesheet for hundreds of consecutive
 #: cases, so a handful of entries covers them without holding every artifact
 #: of a whole profile in memory.
 _COMPILED_CACHE_SIZE = 8
 
-#: Compiled stylesheets by ``(profile, stylesheet path, bytes digest,
-#: environment fingerprint)``.  Only stylesheets compiled with no static
-#: parameters are cached: the artifact is then a pure function of the
-#: stylesheet closure, the profile identity, and the environment the case
-#: declares.  The corpus is pinned and immutable for a run, so the digest
-#: guards against a principal stylesheet rewritten between cases, not against
-#: an edit inside the closure it imports.  The fingerprint keeps two cases that
-#: share one stylesheet apart when their schema sets differ.
+#: Compiled stylesheets by ``(profile, principal path, bytes digest,
+#: environment fingerprint)``.  Only units compiled with no static parameters
+#: are cached: the artifact is then a pure function of the compilation units,
+#: the profile identity, and the environment the case declares.  The corpus is
+#: pinned and immutable for a run, so the digest guards against a unit rewritten
+#: between cases; it covers the principal and every library the case registers,
+#: but not a module one of them reaches through ``xsl:include`` or
+#: ``xsl:import``.  The fingerprint keeps two cases that share a principal apart
+#: when their schema sets or package declarations differ.
 _COMPILED: dict[tuple[str, str, bytes, str], CompiledStylesheet] = {}
+
+
+def _closure_digest(units: _Units) -> bytes:
+    """One digest over every unit the compile registers, principal first.
+
+    Two cases with the same principal and different libraries must never share
+    an artifact, so the libraries' bytes are part of the identity.  With no
+    libraries the digest is the principal's own digest.
+    """
+    digest = hashlib.sha256(units.principal.read_bytes())
+    for library in units.libraries:
+        digest.update(library.read_bytes())
+    return digest.digest()
 
 
 def _compile_stylesheet(
     profile: SuiteProfile,
-    stylesheet: Path,
+    units: _Units,
     static_parameters: Mapping[str, Any],
     *,
     schema: SchemaPool | None = None,
     environment: str = "",
 ) -> CompiledStylesheet:
-    """Compile one case's stylesheet, reusing an invariant artifact.
+    """Compile one case's compilation units, reusing an invariant artifact.
 
     *schema* is the case's compile-time schema pool and *environment* its
     fingerprint; both are part of the cache identity, so an artifact is never
     shared between cases whose declared schemas differ.
     """
     if static_parameters:
-        return profile.processor.compile(
-            stylesheet,
+        return _processor_for(profile, units).compile(
+            units.principal,
             static_parameters=static_parameters,
             schema=schema,
         )
     try:
-        digest = hashlib.sha256(stylesheet.read_bytes()).digest()
+        digest = _closure_digest(units)
     except (FileNotFoundError, PermissionError, IsADirectoryError):
-        # Let the compiler report a missing or unreadable stylesheet itself.
+        # Let the compiler report a missing or unreadable unit itself.
         # `TimeoutError` is deliberately absent: it subclasses `OSError`, and a
         # budget that expires during this read must keep its alarm instead of
         # being mistaken for an unreadable file.
-        return profile.processor.compile(stylesheet, schema=schema)
-    key = (profile.name, str(stylesheet), digest, environment)
+        return _processor_for(profile, units).compile(units.principal, schema=schema)
+    key = (profile.name, str(units.principal), digest, environment)
     compiled = _COMPILED.get(key)
     if compiled is None:
-        compiled = profile.processor.compile(stylesheet, schema=schema)
+        compiled = _processor_for(profile, units).compile(units.principal, schema=schema)
         if len(_COMPILED) >= _COMPILED_CACHE_SIZE:
             _COMPILED.pop(next(iter(_COMPILED)))
         _COMPILED[key] = compiled
@@ -530,7 +619,7 @@ def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
     output = case.invocation.output or case.environment.output
     if output is not None and output.result_var is not None:
         raise UnsupportedCase("result-variable output")
-    stylesheet = _stylesheet(case)
+    units = _compilation_units(case)
     invocation = case.invocation
     xpath_version = profile.processor.xpath
     declared_parameters = (*case.environment.params, *invocation.params)
@@ -590,7 +679,7 @@ def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
                 options["validation"] = source.validation
         compiled = _compile_stylesheet(
             profile,
-            stylesheet,
+            units,
             static_parameters,
             schema=_case_schema_pool(profile, case),
             environment=environment_fingerprint(case),
