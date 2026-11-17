@@ -84,10 +84,10 @@ def _typed_items(values: Iterable[object], expected: type[_T], label: str) -> tu
 class ScalarAnnotation:
     """One typed scalar position on a lexical element.
 
-    ``kind="text"`` identifies the element's leading character data and uses
-    ``content_index``; ``kind="attribute"`` identifies one present attribute by
-    its expanded name.  ``value`` retains every surviving candidate; the
-    annotation never selects a preferred branch.
+    ``kind="text"`` identifies character data at a ``content_index`` in the
+    element's ordered content, including child tails; ``kind="attribute"``
+    identifies one present attribute by its expanded name.  ``value`` retains
+    every surviving candidate; the annotation never selects a preferred branch.
     """
 
     kind: Literal["text", "attribute"]
@@ -359,7 +359,7 @@ def _scalar_annotations(
     node: RelaxNGElement,
     *,
     evidence: EvidenceGraph,
-    text_sites: Mapping[RelaxNGElement, EvidenceOccurrence],
+    text_sites: Mapping[tuple[RelaxNGElement, int], EvidenceOccurrence],
     attribute_sites: Mapping[tuple[RelaxNGElement, str], EvidenceOccurrence],
     witnesses: Mapping[EvidenceOccurrence, tuple[ScalarWitness, ...]],
     grammar_fingerprint: str,
@@ -367,8 +367,10 @@ def _scalar_annotations(
 ) -> tuple[ScalarAnnotation, ...]:
     """Build the deterministic text-then-attributes scalar view of one node."""
     scalar: list[ScalarAnnotation] = []
-    text_site = text_sites.get(node)
-    if text_site is not None and node.text_value() is not None:
+    for index, _ in enumerate(node.iter_content()):
+        text_site = text_sites.get((node, index))
+        if text_site is None:
+            continue
         value = _alternative_value_at_site(
             witnesses.get(text_site, ()),
             evidence,
@@ -396,7 +398,7 @@ def _has_annotation_entries(
     node: RelaxNGElement,
     *,
     origins_by_element: Mapping[RelaxNGElement, set[SourceOrigin]],
-    text_sites: Mapping[RelaxNGElement, EvidenceOccurrence],
+    text_sites: Mapping[tuple[RelaxNGElement, int], EvidenceOccurrence],
     attribute_sites: Mapping[tuple[RelaxNGElement, str], EvidenceOccurrence],
     witnesses: Mapping[EvidenceOccurrence, tuple[ScalarWitness, ...]],
 ) -> bool:
@@ -408,9 +410,10 @@ def _has_annotation_entries(
     """
     if origins_by_element.get(node):
         return True
-    text_site = text_sites.get(node)
-    if text_site is not None and node.text_value() is not None and witnesses.get(text_site):
-        return True
+    for index, _ in enumerate(node.iter_content()):
+        text_site = text_sites.get((node, index))
+        if text_site is not None and witnesses.get(text_site):
+            return True
     for name in node.attributes:
         occurrence = attribute_sites.get((node, name))
         if occurrence is not None and witnesses.get(occurrence):
@@ -442,11 +445,11 @@ def build_annotation_table(
             evidence_node.origins
         )
 
-    text_sites: dict[RelaxNGElement, EvidenceOccurrence] = {}
+    text_sites: dict[tuple[RelaxNGElement, int], EvidenceOccurrence] = {}
     attribute_sites: dict[tuple[RelaxNGElement, str], EvidenceOccurrence] = {}
     for occurrence in evidence.occurrences:
-        if occurrence.kind == "text" and occurrence.content_index == 0:
-            text_sites.setdefault(occurrence.element, occurrence)
+        if occurrence.kind == "text" and occurrence.content_index is not None:
+            text_sites.setdefault((occurrence.element, occurrence.content_index), occurrence)
         elif occurrence.kind == "attribute" and occurrence.name is not None:
             attribute_sites.setdefault((occurrence.element, occurrence.name), occurrence)
 

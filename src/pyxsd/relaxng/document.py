@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from copy import copy
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
@@ -285,6 +286,8 @@ class RelaxNGDocument(Document):
     ) -> None:
         if not isinstance(typed, bool):
             raise TypeError("typed must be a bool")
+        if not isinstance(interpretations_current, bool):
+            raise TypeError("interpretations_current must be a bool")
         if not isinstance(capture, str) or capture not in ("none", "patterns"):
             raise ValueError("capture must be 'none' or 'patterns'")
         if not typed and capture != "none":
@@ -332,6 +335,29 @@ class RelaxNGDocument(Document):
                 raise ValueError(
                     "the RELAX NG revision already owns a different typed interpretation snapshot"
                 )
+        if binding_evidence is not None:
+            occurrences = set(binding_evidence.occurrences)
+            occurrences.update(node.occurrence for node in binding_evidence.retained_nodes)
+            occurrences.update(node.occurrence for node in binding_evidence.accepting_roots)
+            occurrences.update(binding_evidence._schema_patterns)
+            for edge in binding_evidence.retained_edges:
+                occurrences.update(
+                    node.occurrence for node in (*edge.predecessors, *edge.successors)
+                )
+                occurrences.update(witness.occurrence for witness in edge.witnesses)
+            pending = list(occurrences)
+            while pending:
+                parent = pending.pop().parent
+                if parent is not None and parent not in occurrences:
+                    occurrences.add(parent)
+                    pending.append(parent)
+            documents = [site for site in binding_evidence.occurrences if site.kind == "document"]
+            if (
+                len(documents) != 1
+                or documents[0].element is not root
+                or any(site.element.revision is not root.revision for site in occurrences)
+            ):
+                raise ValueError("binding evidence must belong to the supplied root and revision")
         super().__init__(
             schema=schema,  # type: ignore[arg-type]
             root=root,
@@ -353,20 +379,39 @@ class RelaxNGDocument(Document):
             if attribute_snapshot is None
             else attribute_snapshot
         )
-        if typed and existing is None:
-            if binding_evidence is None:
-                root.revision._attach_typed_snapshot(
-                    _InvalidTypedInterpretation(report=report, revision_id=revision_id)
+        if typed:
+            self._attach_typed_interpretation()
+
+    def _attach_typed_interpretation(self) -> None:
+        """Attach or share a snapshot, including internal stale transform history."""
+        revision = self.root.revision
+        existing = revision._typed_snapshot
+        if existing is not None:
+            state = cast(_TypedSnapshotState, existing)
+            if not state.owns(
+                evidence=self._binding_evidence, report=self._report, revision_id=self._revision_id
+            ):
+                raise ValueError(
+                    "the RELAX NG revision already owns a different typed interpretation snapshot"
+                )
+            if not self._interpretations_current:
+                state.mark_stale()
+        else:
+            if self._binding_evidence is None:
+                snapshot: _TypedSnapshotState = _InvalidTypedInterpretation(
+                    report=self._report,
+                    revision_id=self._revision_id,
+                    current=self._interpretations_current,
                 )
             else:
-                root.revision._attach_typed_snapshot(
-                    _TypedInterpretation(
-                        evidence=binding_evidence,
-                        report=report,
-                        grammar_fingerprint=schema._grammar_fingerprint,
-                        revision_id=revision_id,
-                    )
+                snapshot = _TypedInterpretation(
+                    evidence=self._binding_evidence,
+                    report=self._report,
+                    grammar_fingerprint=self.schema._grammar_fingerprint,
+                    revision_id=self._revision_id,
+                    current=self._interpretations_current,
                 )
+            revision._attach_typed_snapshot(snapshot)
 
     @property
     def binding_evidence(self) -> EvidenceGraph | None:
@@ -495,24 +540,21 @@ class RelaxNGDocument(Document):
         """
         if not isinstance(root, RelaxNGElement):
             return root
-        stale = RelaxNGDocument(
-            schema=self.schema,
-            root=root,
-            source=self.source,
-            report=self._report,
-            typed=self.typed,
-            capture=self._capture,
-            limits=self._limits,
-            namespace_context=self._namespace_context,
-            declarations=self._declarations,
-            xdm_capture=self._xdm_capture if root is self.root else None,
-            interpretations_current=False,
-            attribute_snapshot=self._attribute_snapshot,
-            binding_evidence=self._binding_evidence,
-            annotations=self._annotations,
-        )
+        # Historical evidence may belong to the pre-transform tree.  Only this
+        # internal path carries it across roots, with every typed read gated by
+        # a stale snapshot; the public constructor always requires ownership.
+        if not self.typed and root.revision._typed_snapshot is not None:
+            raise ValueError(
+                "a validation-only RELAX NG document cannot wrap a revision "
+                "that already owns typed evidence"
+            )
+        stale = copy(self)
+        stale.root = root
+        stale._revision_id = root.revision.revision_id
+        stale._interpretations_current = False
+        stale._xdm_capture = self._xdm_capture if root is self.root else None
         if self.typed:
-            cast(_TypedSnapshotState, root.revision._typed_snapshot).mark_stale()
+            stale._attach_typed_interpretation()
         return stale
 
     def revalidate(self) -> RelaxNGDocument:

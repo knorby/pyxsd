@@ -288,6 +288,69 @@ def test_text_and_multiple_attributes_are_separate_scalar_sites():
     assert annotations.schema_id
 
 
+@pytest.mark.parametrize("xml", ["<r>head<a/>tail</r>", "<r><a/>tail</r>"])
+def test_mixed_annotations_include_leading_and_tail_text_sites(xml):
+    compiled = compile_schema(element("r", "<mixed>" + element("a") + "</mixed>"))
+    without = typed(compiled, io.StringIO(xml), capture="none")
+    captured = typed(compiled, io.StringIO(xml), capture="patterns")
+    sites = captured.annotations.for_node(captured.root).scalar
+    expected = [(0, "head"), (2, "tail")] if "head" in xml else [(1, "tail")]
+    assert [(s.content_index, s.value.lexical) for s in sites] == expected
+    assert all(s.kind == "text" and s.name is None for s in sites)
+    assert captured.annotations.complete is True
+    assert captured.annotations.for_node(captured.root).complete is True
+    with pytest.raises(PyXSDError, match="capture='patterns'"):
+        _ = without.annotations
+    if "head" in xml:
+        assert str(without.root.scalar_value()) == str(captured.root.scalar_value()) == "head"
+        assert scalar_ids(without.root.scalar_value()) == scalar_ids(sites[0].value)
+    else:
+        assert without.root.scalar_value() is captured.root.scalar_value() is None
+    # Capture-off evidence has the identical alternatives at every text site.
+    reference = build_annotation_table(
+        without.root,
+        without.binding_evidence,
+        schema_id=compiled._grammar_fingerprint,
+        revision_id=without.root.revision.revision_id,
+        definition_origins={},
+        max_capture_entries=None,
+    ).for_node(without.root)
+    assert scalar_ids_from(reference) == scalar_ids_from(
+        captured.annotations.for_node(captured.root)
+    )
+    assert [s.value.lexical for s in reference.scalar] == [s.value.lexical for s in sites]
+
+
+@pytest.mark.parametrize("budget", [0, 1, 2])
+def test_mixed_tail_annotations_obey_partial_and_zero_capture_budgets(budget):
+    compiled = compile_schema(element("r", "<mixed>" + element("a") + "</mixed>"))
+    xml = "<r>head<a/>tail</r>"
+    full = typed(compiled, io.StringIO(xml), capture="patterns")
+    limited = typed(
+        compiled,
+        io.StringIO(xml),
+        capture="patterns",
+        limits=RelaxNGLimits(max_capture_entries=budget),
+    )
+    table = limited.annotations
+    assert table.complete is (budget == 2)
+    entry = table.for_node(limited.root)
+    assert entry.complete is (budget == 2)
+    if budget:
+        assert [(s.content_index, s.value.lexical) for s in entry.scalar] == [
+            (0, "head"),
+            (2, "tail"),
+        ]
+        assert scalar_ids_from(entry) == scalar_ids_from(full.annotations.for_node(full.root))
+    else:
+        assert entry.patterns == entry.scalar == ()
+    child_entry = table.for_node(limited.root.children[0])
+    assert child_entry.complete is (budget == 2)
+    assert bool(child_entry.patterns) is (budget == 2)
+    assert str(limited.root.scalar_value()) == str(full.root.scalar_value()) == "head"
+    assert scalar_ids(limited.root.scalar_value()) == scalar_ids(full.root.scalar_value())
+
+
 def test_annotations_skip_absent_text_unmatched_sites_and_untyped_attributes():
     empty_schema = compile_schema(element("doc", "<empty/>"))
     absent = typed(empty_schema, io.StringIO("<doc/>"), capture="patterns")

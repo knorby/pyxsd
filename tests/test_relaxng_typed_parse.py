@@ -11,6 +11,7 @@ validity and the current lexical revision.
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 from xml.etree import ElementTree as ET
 
 import pytest
@@ -34,7 +35,7 @@ from pyxsd.relaxng.datatypes import (
     DatatypeParameter,
     UnsupportedDatatypeOperation,
 )
-from pyxsd.relaxng.evidence import EvidenceGraph
+from pyxsd.relaxng.evidence import EvidenceGraph, EvidenceOccurrence, build_binding_evidence
 from pyxsd.relaxng.tree import RelaxNGElement
 from pyxsd.relaxng.xml_writer import clone_relaxng
 
@@ -676,6 +677,128 @@ def test_second_document_cannot_replace_or_hide_revision_evidence():
     assert document.report is report
     assert document.root.scalar_value() == 12
     assert document.interpretations_current is True
+
+
+def test_public_constructor_rejects_foreign_binding_evidence():
+    compiled = scalar_schema()
+    plain = validation_only(compiled, "<doc>12</doc>")
+    donor = typed(compiled, io.StringIO("<doc>12</doc>"))
+    graph = donor.binding_evidence
+    assert graph is not None
+    with pytest.raises(PyXSDError, match="typed=True"):
+        plain.root.scalar_value()
+
+    owned = build_binding_evidence(
+        plain.root, compiled.grammar.start, datatype_context=DatatypeContext(None, {}), limits=None
+    )
+    for evidence in (
+        graph,
+        replace(owned, occurrences=tuple(o for o in owned.occurrences if o.kind != "document")),
+        replace(owned, occurrences=(*owned.occurrences, EvidenceOccurrence(donor.root, "text"))),
+        replace(owned, retained_nodes=(*owned.retained_nodes, graph.retained_nodes[0])),
+        replace(owned, accepting_roots=graph.accepting_roots),
+        replace(owned, retained_edges=(*owned.retained_edges, *graph.retained_edges)),
+        replace(owned, _schema_patterns=graph._schema_patterns),
+        replace(
+            owned,
+            occurrences=(
+                *owned.occurrences,
+                EvidenceOccurrence(
+                    plain.root, "token", parent=EvidenceOccurrence(donor.root, "text")
+                ),
+            ),
+        ),
+    ):
+        for current in (True, False):
+            with pytest.raises(ValueError, match=r"evidence.*root.*revision"):
+                RelaxNGDocument(
+                    compiled,
+                    plain.root,
+                    plain.source,
+                    plain.report,
+                    typed=True,
+                    binding_evidence=evidence,
+                    interpretations_current=current,
+                )
+    with pytest.raises(PyXSDError, match="typed=True"):
+        plain.root.scalar_value()
+    with pytest.raises(ValueError, match="different typed"):
+        RelaxNGDocument(
+            compiled,
+            donor.root,
+            donor.source,
+            donor.report,
+            typed=True,
+            binding_evidence=owned,
+        )
+    with pytest.raises(ValueError, match="different typed"):
+        plain_typed = typed(compiled, io.StringIO("<doc>13</doc>"))
+        donor.transform(lambda root: plain_typed.root)
+    with pytest.raises(ValueError, match="typed evidence"):
+        plain.transform(lambda root: donor.root)
+    assert donor.root.scalar_value() == 12
+
+
+@pytest.mark.parametrize("valid", [True, False])
+@pytest.mark.parametrize("existing", [True, False])
+def test_public_constructor_false_current_flag_gates_node_reads(valid, existing):
+    compiled = scalar_schema()
+    parsed = compiled.parse(
+        io.StringIO("<doc>12</doc>" if valid else "<doc>bad</doc>"), typed=existing
+    )
+    evidence = parsed.binding_evidence
+    if valid and not existing:
+        evidence = build_binding_evidence(
+            parsed.root,
+            compiled.grammar.start,
+            datatype_context=DatatypeContext(None, {}),
+            limits=None,
+        )
+    stale = RelaxNGDocument(
+        compiled,
+        parsed.root,
+        parsed.source,
+        parsed.report,
+        typed=True,
+        binding_evidence=evidence,
+        interpretations_current=False,
+    )
+    assert stale.interpretations_current is False
+    for read in (stale.root.scalar_value, lambda: stale.root.attribute_value("missing")):
+        with pytest.raises(StaleInterpretationError):
+            read()
+    assert stale.revalidate().interpretations_current is True
+    transformed = stale.transform(lambda root: clone_relaxng(root))
+    for read in (
+        transformed.root.scalar_value,
+        lambda: transformed.root.attribute_value("missing"),
+    ):
+        with pytest.raises(StaleInterpretationError):
+            read()
+    with pytest.raises(TypeError, match=r"interpretations_current.*bool"):
+        RelaxNGDocument(
+            compiled,
+            stale.root,
+            stale.source,
+            stale.report,
+            typed=True,
+            binding_evidence=evidence,
+            interpretations_current=0,
+        )
+
+
+def test_public_constructor_accepts_evidence_owned_by_hand_built_root():
+    compiled = scalar_schema()
+    root = RelaxNGElement.from_etree(ET.fromstring("<doc>12</doc>"))
+    evidence = build_binding_evidence(
+        root, compiled.grammar.start, datatype_context=DatatypeContext(None, {}), limits=None
+    )
+    report = validation_only(compiled, "<doc>12</doc>").report
+    document = RelaxNGDocument(compiled, root, None, report, typed=True, binding_evidence=evidence)
+    shared = RelaxNGDocument(compiled, root, None, report, typed=True, binding_evidence=evidence)
+    assert document.binding_evidence is shared.binding_evidence is evidence
+    assert document.interpretations_current is shared.interpretations_current is True
+    assert root.scalar_value() == 12
 
 
 def test_same_root_transform_stales_the_shared_revision_and_original():
