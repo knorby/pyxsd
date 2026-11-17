@@ -16,13 +16,15 @@ from __future__ import annotations
 import hashlib
 import keyword
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from types import MappingProxyType
-from typing import Literal
+from dataclasses import dataclass, field, is_dataclass
+from dataclasses import fields as dataclass_fields
+from enum import Enum
+from types import BuiltinFunctionType, FunctionType, MappingProxyType, MethodType, ModuleType
+from typing import Any, Literal, cast
 from unicodedata import normalize
 
 from pyxsd.relaxng.contracts import ScalarContract, scalar_contract
-from pyxsd.relaxng.datatypes import UnsupportedDatatypeOperation
+from pyxsd.relaxng.datatypes import ScalarDatatype, UnsupportedDatatypeOperation
 from pyxsd.relaxng.limits import BudgetCounter, RelaxNGLimits
 from pyxsd.relaxng.names import AnyName, ExceptName, Name, NameChoice, NameClass
 from pyxsd.relaxng.origins import OriginTable
@@ -435,19 +437,253 @@ def _aliases(fields: tuple[tuple[Role, str], ...]) -> dict[tuple[Role, str], str
     return result
 
 
-def _stable_encoding_value(value: object) -> object:
-    """Reduce one datatype field to a deterministic, hashable encoding signature."""
-    if isinstance(value, (str, int, float, bool, bytes, type(None))):
-        return value
-    if isinstance(value, (tuple, list)):
-        return tuple(_stable_encoding_value(item) for item in value)
-    if isinstance(value, Mapping):
-        return tuple(
-            sorted((str(key), _stable_encoding_value(item)) for key, item in value.items())
-        )
+_MAX_ENCODING_STATE_DEPTH = 100
+
+
+def _encoding_type_name(value_type: type[object]) -> tuple[str, str]:
+    """Return a deterministic class identity without an object address."""
+    return value_type.__module__, value_type.__qualname__
+
+
+def _signature_sort_key(signature: object) -> str:
+    """Total-order key for deterministic mapping/set signature ordering."""
+    if isinstance(signature, tuple):
+        return "(" + ",".join(_signature_sort_key(item) for item in signature) + ")"
+    if isinstance(signature, str):
+        return "s" + repr(signature)
+    if isinstance(signature, bytes):
+        return "b" + signature.hex()
+    if isinstance(signature, (bool, int, float, type(None))):
+        return type(signature).__name__ + repr(signature)
+    raise ValueError("an encoding-state signature contains an unsupported value")
+
+
+def _slot_entries(value_type: type[object]) -> tuple[bool, dict[str, tuple[type[object], str]]]:
+    """Collect declared instance slots across the MRO, including string forms."""
+    has_slots = False
+    entries: dict[str, tuple[type[object], str]] = {}
+    for owner in value_type.__mro__:
+        if "__slots__" not in owner.__dict__:
+            continue
+        has_slots = True
+        raw = owner.__dict__["__slots__"]
+        if isinstance(raw, str):
+            names: tuple[object, ...] = (raw,)
+        else:
+            try:
+                names = tuple(raw)
+            except TypeError as error:
+                raise ValueError(
+                    f"cannot represent encoding state: {owner.__qualname__}.__slots__ "
+                    "is not iterable"
+                ) from error
+        for name in names:
+            if not isinstance(name, str):
+                raise ValueError(
+                    f"cannot represent encoding state: {owner.__qualname__}.__slots__ "
+                    "contains a non-string name"
+                )
+            if name in {"__dict__", "__weakref__"}:
+                continue
+            attribute = name
+            if name.startswith("__") and not name.endswith("__"):
+                attribute = f"_{owner.__name__.lstrip('_')}{name}"
+            entries.setdefault(attribute, (owner, name))
+    return has_slots, entries
+
+
+def _dict_encoding_state(
+    values: Mapping[Any, Any],
+    seen: set[int],
+    depth: int,
+    *,
+    skip: frozenset[str] = frozenset(),
+) -> tuple[tuple[str, object], ...]:
+    """Represent instance-mapping state with deterministic key ordering."""
+    entries = []
+    for key, item in values.items():
+        if not isinstance(key, str):
+            raise ValueError(
+                "cannot represent encoding state: an instance attribute name is not a string"
+            )
+        if key in skip:
+            continue
+        entries.append((key, _stable_encoding_value(item, seen, depth + 1)))
+    entries.sort(key=lambda entry: entry[0])
+    return tuple(entries)
+
+
+def _stable_encoding_value(
+    value: object,
+    _seen: set[int] | None = None,
+    _depth: int = 0,
+) -> object:
+    """Reduce one encoding-state value to a deterministic, hashable signature.
+
+    Dataclass fields, ordinary instance mappings, and slots across the MRO are
+    all inspectable state.  Unrepresentable opaque state fails closed instead of
+    collapsing to a type name, and cycles produce deterministic markers rather
+    than object addresses.
+    """
+    seen = set() if _seen is None else _seen
+    if _depth > _MAX_ENCODING_STATE_DEPTH:
+        raise ValueError("cannot represent encoding state: nesting is too deep")
+    if value is None:
+        return ("none",)
+    if isinstance(value, bool):
+        return ("bool", value)
+    if isinstance(value, int):
+        return ("int", value)
+    if isinstance(value, float):
+        return ("float", repr(value))
+    if isinstance(value, complex):
+        return ("complex", repr(value))
+    if isinstance(value, str):
+        return ("str", value)
+    if isinstance(value, bytes):
+        return ("bytes", value)
+    if isinstance(value, bytearray):
+        return ("bytes", bytes(value))
+    if isinstance(value, memoryview):
+        return ("bytes", value.tobytes())
     if isinstance(value, type):
-        return ("type", value.__module__, value.__qualname__)
-    return ("type", type(value).__module__, type(value).__qualname__)
+        return ("type", *_encoding_type_name(value))
+    if isinstance(value, Enum):
+        return ("enum", *_encoding_type_name(type(value)), value.name)
+    if isinstance(value, (FunctionType, BuiltinFunctionType, MethodType, ModuleType)):
+        raise ValueError("cannot represent encoding state for an opaque callable or module")
+
+    identifier = id(value)
+    if identifier in seen:
+        return ("cycle", *_encoding_type_name(type(value)))
+    if isinstance(value, tuple):
+        seen.add(identifier)
+        try:
+            return (
+                "tuple",
+                tuple(_stable_encoding_value(item, seen, _depth + 1) for item in value),
+            )
+        finally:
+            seen.discard(identifier)
+    if isinstance(value, list):
+        seen.add(identifier)
+        try:
+            return ("list", tuple(_stable_encoding_value(item, seen, _depth + 1) for item in value))
+        finally:
+            seen.discard(identifier)
+    if isinstance(value, (set, frozenset)):
+        seen.add(identifier)
+        try:
+            entries = [_stable_encoding_value(item, seen, _depth + 1) for item in value]
+        finally:
+            seen.discard(identifier)
+        return (
+            "set" if isinstance(value, set) else "frozenset",
+            tuple(sorted(entries, key=_signature_sort_key)),
+        )
+    if isinstance(value, Mapping):
+        seen.add(identifier)
+        try:
+            mapping_entries = [
+                (
+                    _stable_encoding_value(key, seen, _depth + 1),
+                    _stable_encoding_value(item, seen, _depth + 1),
+                )
+                for key, item in value.items()
+            ]
+        finally:
+            seen.discard(identifier)
+        mapping_entries.sort(
+            key=lambda entry: (
+                _signature_sort_key(entry[0]),
+                _signature_sort_key(entry[1]),
+            )
+        )
+        return (
+            "mapping",
+            *_encoding_type_name(type(value)),
+            tuple(mapping_entries),
+        )
+
+    value_type = type(value)
+    if is_dataclass(value):
+        seen.add(identifier)
+        try:
+            field_entries: list[tuple[str, object]] = []
+            field_names: set[str] = set()
+            for dataclass_field in dataclass_fields(value):
+                field_names.add(dataclass_field.name)
+                try:
+                    item = getattr(value, dataclass_field.name)
+                except AttributeError:
+                    field_entries.append((dataclass_field.name, ("missing",)))
+                else:
+                    field_entries.append(
+                        (
+                            dataclass_field.name,
+                            _stable_encoding_value(item, seen, _depth + 1),
+                        )
+                    )
+            try:
+                instance_values = vars(value)
+            except TypeError:
+                instance_values = {}
+            extra_state = _dict_encoding_state(
+                instance_values,
+                seen,
+                _depth,
+                skip=frozenset(field_names),
+            )
+        finally:
+            seen.discard(identifier)
+        return (
+            "dataclass",
+            *_encoding_type_name(value_type),
+            tuple(field_entries),
+            extra_state,
+        )
+
+    has_slots, slots = _slot_entries(value_type)
+    instance_mapping = getattr(value, "__dict__", None)
+    has_mapping = isinstance(instance_mapping, Mapping)
+    if not has_slots and not has_mapping:
+        if value_type is object:
+            return ("object", *_encoding_type_name(value_type), (), ())
+        raise ValueError(
+            f"cannot represent encoding state for {value_type.__module__}.{value_type.__qualname__}"
+        )
+
+    seen.add(identifier)
+    try:
+        slot_entries: list[tuple[str, str, str, object]] = []
+        for attribute, (owner, slot_name) in sorted(slots.items(), key=lambda entry: entry[0]):
+            try:
+                item = getattr(value, attribute)
+            except AttributeError:
+                state: object = ("missing",)
+            else:
+                state = _stable_encoding_value(item, seen, _depth + 1)
+            slot_entries.append(
+                (
+                    owner.__module__,
+                    owner.__qualname__,
+                    slot_name,
+                    state,
+                )
+            )
+        mapping_state = (
+            _dict_encoding_state(cast(Mapping[Any, Any], instance_mapping), seen, _depth)
+            if has_mapping
+            else ()
+        )
+    finally:
+        seen.discard(identifier)
+    return (
+        "object",
+        *_encoding_type_name(value_type),
+        tuple(slot_entries),
+        mapping_state,
+    )
 
 
 def _datatype_encoding_signature(datatype: object) -> tuple[object, ...]:
@@ -462,11 +698,11 @@ def _datatype_encoding_signature(datatype: object) -> tuple[object, ...]:
             "semantic_context",
         )
     )
-    state = getattr(datatype, "__dict__", None)
-    state_signature = (
-        ()
-        if not isinstance(state, Mapping)
-        else tuple(sorted((name, _stable_encoding_value(value)) for name, value in state.items()))
+    # Built-in/XSD encoder behavior is fixed by the compiled ScalarDatatype
+    # class and the schema metadata above; its regex/temporal cache fields are
+    # derived from those parameters, not independent behavior.
+    state_signature: object = (
+        () if type(datatype) is ScalarDatatype else _stable_encoding_value(datatype)
     )
     return (
         type(datatype).__module__,

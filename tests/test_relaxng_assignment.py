@@ -10,7 +10,9 @@ authority; a successful edit marks the whole revision stale until revalidation.
 from __future__ import annotations
 
 import io
-from dataclasses import replace
+import re
+from dataclasses import dataclass, replace
+from enum import Enum
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -38,10 +40,16 @@ from pyxsd.relaxng.patterns import (
     Choice,
     Data,
     Empty,
+    Group,
     List,
     NotAllowed,
     OneOrMore,
     Ref,
+)
+from pyxsd.relaxng.projection import (
+    _pattern_encoding_signature,
+    _signature_sort_key,
+    _stable_encoding_value,
 )
 from pyxsd.relaxng.schema import RelaxNGSchema
 from pyxsd.relaxng.tree import RelaxNGElement
@@ -57,6 +65,10 @@ XSD = "http://www.w3.org/2001/XMLSchema-datatypes"
 OPAQUE = "urn:pyxsd:test:opaque"
 ENCODING = "urn:pyxsd:test:encoding"
 CONFLICTING = "urn:pyxsd:test:conflicting"
+SLOTTED = "urn:pyxsd:test:slotted"
+NESTED = "urn:pyxsd:test:nested"
+CYCLIC = "urn:pyxsd:test:cyclic"
+UNREPRESENTABLE = "urn:pyxsd:test:unrepresentable"
 
 
 def data(type_name: str, library: str = XSD) -> str:
@@ -208,6 +220,177 @@ class VaryingEncoderFactory(DatatypeFactory):
         del type_name, parameters, context
         self.calls += 1
         return VaryingEncoderDatatype(str(self.calls))
+
+
+@dataclass(frozen=True, slots=True)
+class SlottedMarkerDatatype(Datatype):
+    """Frozen+slots dataclass whose encoder behavior is inspectable state."""
+
+    marker: str
+
+    library_uri = SLOTTED
+    type_name = "slotted"
+    parameters = ()
+
+    def allows(self, lexical, context):
+        del lexical, context
+        return True
+
+    def equal(self, left, left_context, right, right_context):
+        del left_context, right_context
+        return left == right
+
+    def encode(self, value, context):
+        del context
+        return f"slotted:{self.marker}:{value}"
+
+
+class SlottedMarkerFactory(DatatypeFactory):
+    def __init__(self, markers: tuple[str, ...]) -> None:
+        self._markers = iter(markers)
+
+    def create(self, type_name, parameters, context):
+        del type_name, parameters, context
+        return SlottedMarkerDatatype(next(self._markers))
+
+
+class NestedSlottedBase:
+    __slots__ = ("base_marker",)
+
+    def __init__(self, base_marker: str) -> None:
+        self.base_marker = base_marker
+
+
+class NestedSlottedState(NestedSlottedBase):
+    __slots__ = "marker"
+
+    def __init__(self, base_marker: str, marker: str) -> None:
+        super().__init__(base_marker)
+        self.marker = marker
+
+
+@dataclass(frozen=True, slots=True)
+class NestedSlottedDatatype(Datatype):
+    state: NestedSlottedState
+
+    library_uri = NESTED
+    type_name = "nested"
+    parameters = ()
+
+    def allows(self, lexical, context):
+        del lexical, context
+        return True
+
+    def equal(self, left, left_context, right, right_context):
+        del left_context, right_context
+        return left == right
+
+    def encode(self, value, context):
+        del context
+        return f"nested:{self.state.base_marker}:{self.state.marker}:{value}"
+
+
+class NestedSlottedFactory(DatatypeFactory):
+    def __init__(self, markers: tuple[str, ...]) -> None:
+        self._markers = iter(markers)
+
+    def create(self, type_name, parameters, context):
+        del type_name, parameters, context
+        return NestedSlottedDatatype(NestedSlottedState("base", next(self._markers)))
+
+
+class CyclicState:
+    __slots__ = ("marker", "self_ref")
+
+    def __init__(self, marker: str) -> None:
+        self.marker = marker
+        self.self_ref = self
+
+
+class CyclicStateDatatype(Datatype):
+    library_uri = CYCLIC
+    type_name = "cyclic"
+    parameters = ()
+
+    def __init__(self, marker: str) -> None:
+        self.state = CyclicState(marker)
+
+    def allows(self, lexical, context):
+        del lexical, context
+        return True
+
+    def equal(self, left, left_context, right, right_context):
+        del left_context, right_context
+        return left == right
+
+    def encode(self, value, context):
+        del context
+        return f"cyclic:{self.state.marker}:{value}"
+
+
+class CyclicStateFactory(DatatypeFactory):
+    def create(self, type_name, parameters, context):
+        del type_name, parameters, context
+        return CyclicStateDatatype("1")
+
+
+class UnrepresentableStateDatatype(Datatype):
+    library_uri = UNREPRESENTABLE
+    type_name = "unrepresentable"
+    parameters = ()
+
+    def __init__(self) -> None:
+        self.callback = lambda value: value
+
+    def allows(self, lexical, context):
+        del lexical, context
+        return True
+
+    def equal(self, left, left_context, right, right_context):
+        del left_context, right_context
+        return left == right
+
+    def encode(self, value, context):
+        del context
+        return str(self.callback(value))
+
+
+class UnrepresentableStateFactory(DatatypeFactory):
+    def create(self, type_name, parameters, context):
+        del type_name, parameters, context
+        return UnrepresentableStateDatatype()
+
+
+class MarkerEnum(Enum):
+    ONE = "1"
+
+
+class MissingSlotState:
+    __slots__ = ("marker",)
+
+
+class PrivateSlotState:
+    __slots__ = ("__marker",)
+
+    def __init__(self, marker: str) -> None:
+        self.__marker = marker
+
+
+class SkippedSlotState:
+    __slots__ = ("__dict__", "__weakref__", "marker")
+
+    def __init__(self, marker: str) -> None:
+        self.marker = marker
+
+
+@dataclass(frozen=True, slots=True)
+class PureSlotsState:
+    marker: str
+
+
+@dataclass
+class ExtraDictState:
+    marker: str
 
 
 class NonStringEncoderDatatype(Datatype):
@@ -1160,6 +1343,172 @@ def test_conflicting_encoding_patterns_fail_deterministically_at_compile_time():
             )
         messages.append(str(caught.value))
     assert messages[0] == messages[1]
+
+
+def encoded_two_child_schema(library: str, type_name: str) -> str:
+    encoded = data(type_name, library)
+    return (
+        "<choice>"
+        + element("first", '<attribute name="v">' + encoded + "</attribute>")
+        + element("second", '<attribute name="v">' + encoded + "</attribute>")
+        + "</choice>"
+    )
+
+
+def test_frozen_slots_dataclass_marker_conflicts_fail_at_compile_time():
+    messages = []
+    for _ in range(2):
+        with pytest.raises(ValueError, match="conflicting RELAX NG encoding patterns") as caught:
+            compile_body(
+                encoded_two_child_schema(SLOTTED, "slotted"),
+                datatype_libraries={
+                    SLOTTED: DatatypeLibraryRegistration(
+                        SlottedMarkerFactory(("1", "2")), "slotted/1"
+                    ),
+                },
+            )
+        messages.append(str(caught.value))
+    assert messages[0] == messages[1]
+
+
+def test_equal_frozen_slots_dataclass_markers_compile_and_assign_deterministically():
+    schema = compile_body(
+        encoded_two_child_schema(SLOTTED, "slotted"),
+        datatype_libraries={
+            SLOTTED: DatatypeLibraryRegistration(SlottedMarkerFactory(("1", "1")), "slotted/1"),
+        },
+    )
+    first = typed(schema, '<doc><first v="seed"/></doc>')
+    second = typed(schema, '<doc><second v="seed"/></doc>')
+
+    first.root.first.v = "value"
+    second.root.second.v = "value"
+
+    assert serialized(first) == '<doc><first v="slotted:1:value"/></doc>'
+    assert serialized(second) == '<doc><second v="slotted:1:value"/></doc>'
+
+
+def test_nested_slotted_state_conflicts_fail_at_compile_time():
+    with pytest.raises(ValueError, match="conflicting RELAX NG encoding patterns"):
+        compile_body(
+            encoded_two_child_schema(NESTED, "nested"),
+            datatype_libraries={
+                NESTED: DatatypeLibraryRegistration(NestedSlottedFactory(("1", "2")), "nested/1"),
+            },
+        )
+
+
+def test_cyclic_encoding_state_is_represented_without_addresses():
+    schema = compile_body(
+        '<attribute name="v">' + data("cyclic", CYCLIC) + "</attribute><empty/>",
+        datatype_libraries={
+            CYCLIC: DatatypeLibraryRegistration(CyclicStateFactory(), "cyclic/1"),
+        },
+    )
+    document = typed(schema, '<doc v="seed"/>')
+
+    document.root.v = "value"
+
+    assert serialized(document) == '<doc v="cyclic:1:value"/>'
+
+
+def test_unrepresentable_encoding_state_fails_closed_at_compile_time():
+    with pytest.raises(ValueError, match="cannot represent encoding state"):
+        compile_body(
+            '<attribute name="v">'
+            + data("unrepresentable", UNREPRESENTABLE)
+            + "</attribute><empty/>",
+            datatype_libraries={
+                UNREPRESENTABLE: DatatypeLibraryRegistration(
+                    UnrepresentableStateFactory(), "unrepresentable/1"
+                ),
+            },
+        )
+
+
+def test_encoding_state_signatures_cover_primitives_collections_and_slots():
+    values = [
+        None,
+        True,
+        3,
+        1.5,
+        2 + 3j,
+        "text",
+        b"bytes",
+        bytearray(b"bytes"),
+        memoryview(b"bytes"),
+        int,
+        MarkerEnum.ONE,
+        [1, "two"],
+        {"z": 1, 2: "two", b"k": b"v"},
+        {3, 1, 2},
+        frozenset({"a", "b"}),
+        PrivateSlotState("private"),
+        SkippedSlotState("skipped"),
+        MissingSlotState(),
+        PureSlotsState("pure"),
+        object.__new__(PureSlotsState),
+        object(),
+    ]
+    for value in values:
+        signature = _stable_encoding_value(value)
+        assert signature == _stable_encoding_value(value)
+
+    extra = ExtraDictState("field")
+    extra.other = "extra"
+    assert _stable_encoding_value(extra) == _stable_encoding_value(extra)
+
+    non_string_key = type("DictKeyHolder", (), {})()
+    non_string_key.__dict__[1] = "bad"
+    with pytest.raises(ValueError, match="attribute name is not a string"):
+        _stable_encoding_value(non_string_key)
+
+    with pytest.raises(ValueError, match="cannot represent encoding state"):
+        _stable_encoding_value(re.compile("pattern"))
+
+    deep: object = "leaf"
+    for _ in range(102):
+        deep = [deep]
+    with pytest.raises(ValueError, match="nesting is too deep"):
+        _stable_encoding_value(deep)
+
+
+def test_slot_declarations_fail_closed_when_malformed():
+    class NonIterableSlots:
+        __slots__ = ("marker",)
+
+    non_iterable = NonIterableSlots()
+    non_iterable.marker = "value"
+    NonIterableSlots.__slots__ = 1
+    with pytest.raises(ValueError, match="not iterable"):
+        _stable_encoding_value(non_iterable)
+
+    class NonStringSlots:
+        __slots__ = ("marker",)
+
+    non_string = NonStringSlots()
+    non_string.marker = "value"
+    NonStringSlots.__slots__ = ("ok", 1)
+    with pytest.raises(ValueError, match="non-string name"):
+        _stable_encoding_value(non_string)
+
+
+def test_signature_sorting_handles_scalar_keys_and_rejects_opaque_values():
+    assert _signature_sort_key(1) != _signature_sort_key(2)
+    assert _signature_sort_key(1.5) != _signature_sort_key(2.5)
+    assert _signature_sort_key(True) != _signature_sort_key(False)
+    assert _signature_sort_key(b"a") != _signature_sort_key(b"b")
+    assert _signature_sort_key(None) == _signature_sort_key(None)
+    with pytest.raises(ValueError, match="unsupported value"):
+        _signature_sort_key(object())
+
+
+def test_pattern_encoding_signature_handles_shared_children():
+    datatype = XsdDatatypeFactory().create("integer", (), DatatypeContext(None, {}))
+    shared = Data(datatype)
+    signature = _pattern_encoding_signature(Group(shared, shared))
+
+    assert len(signature) == 1
 
 
 def test_production_assignment_does_not_search_instance_schema_patterns():
