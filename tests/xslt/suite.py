@@ -270,20 +270,31 @@ def _snapshot_entry(entry: Any) -> ResultSnapshot:
     )
 
 
-def _snapshot(result: TransformationResult) -> ResultSnapshot:
-    entry = _snapshot_entry(result.principal_entry)
+def _snapshot(result: TransformationResult, output_uri: str | None = None) -> ResultSnapshot:
+    """The assertion view of one result, matching the ``fn:transform`` map.
+
+    The principal result and a result document may share the base output URI:
+    an empty principal delivers no final result tree, so one result document
+    occupies that key (F&O 3.1 section 16.3.2).  When *output_uri* names an
+    entry the secondary map already holds, the principal view comes from that
+    entry; the secondary map keeps it too, so a case may assert either way.
+    """
+    entry = result.principal_entry
+    if output_uri is not None and output_uri in result.secondary:
+        entry = result.secondary[output_uri]
+    view = _snapshot_entry(entry)
     messages = tuple(
         ResultSnapshot(raw=(message.text,), xml=message.text) for message in result.messages
     )
     return ResultSnapshot(
-        raw=entry.raw,
-        xml=entry.xml,
-        serialized=entry.serialized,
+        raw=view.raw,
+        xml=view.xml,
+        serialized=view.serialized,
         messages=messages,
         secondary={uri: _snapshot_entry(value) for uri, value in result.secondary.items()},
         warnings=(),
-        serialization_method=entry.serialization_method,
-        serialization_encoding=entry.serialization_encoding,
+        serialization_method=view.serialization_method,
+        serialization_encoding=view.serialization_encoding,
     )
 
 
@@ -1095,7 +1106,7 @@ def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
             resolver=resolver,
             resources=resources,
         )
-        return _snapshot(compiled.transform(**options))
+        return _snapshot(compiled.transform(**options), output_uri)
     except XsltError as exc:
         raise CaseExecutionError(exc.code or UNCODED_ERROR, str(exc)) from exc
 

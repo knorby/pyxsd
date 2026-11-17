@@ -583,6 +583,7 @@ def test_secondary_uri_errors_and_principal_collision() -> None:
         xsl(
             '<xsl:template name="main">'
             '<xsl:result-document href="http://example.com/out.xml"><one/></xsl:result-document>'
+            "<principal/>"
             "</xsl:template>"
         )
     )
@@ -886,6 +887,96 @@ def test_literal_result_avt_and_excluded_namespaces() -> None:
     assert element.attributes[0].string_value == "2"
     assert element.attributes[1].string_value == "plain"
     assert all(node.prefix != "unused" for node in element.namespace_nodes)
+
+
+def test_literal_result_does_not_copy_the_xslt_namespace() -> None:
+    source = (
+        f'<t:stylesheet xmlns:t="{XSLT_NS}" version="3.0">'
+        '<t:template name="main"><out>text</out></t:template>'
+        "</t:stylesheet>"
+    ).encode()
+
+    result = compile_bytes(source).transform(initial_template="main")
+    element = _element_children(result.principal_tree)[0]
+
+    assert all(node.string_value != XSLT_NS for node in element.namespace_nodes)
+    assert "xmlns:t" not in result.serialize()
+
+
+def test_literal_result_excludes_extension_namespaces() -> None:
+    compiled = compile_bytes(
+        xsl(
+            '<xsl:template name="main"><out/></xsl:template>',
+            attributes='xmlns:ext="urn:ext" extension-element-prefixes="ext"',
+        )
+    )
+
+    element = _element_children(compiled.transform(initial_template="main").principal_tree)[0]
+
+    assert all(node.string_value != "urn:ext" for node in element.namespace_nodes)
+
+
+def test_literal_result_excludes_every_prefix_of_a_designated_uri() -> None:
+    compiled = compile_bytes(
+        xsl(
+            '<xsl:template name="main"><out/></xsl:template>',
+            attributes='xmlns:a="a.uri" xmlns:a2="a.uri" exclude-result-prefixes="a"',
+        )
+    )
+
+    element = _element_children(compiled.transform(initial_template="main").principal_tree)[0]
+
+    assert all(node.prefix not in ("a", "a2") for node in element.namespace_nodes)
+
+
+def test_literal_result_keeps_an_xsl_prefix_bound_elsewhere() -> None:
+    source = (
+        f'<t:stylesheet xmlns:t="{XSLT_NS}" xmlns:xsl="urn:other" version="3.0">'
+        '<t:template name="main"><xsl:out/></t:template>'
+        "</t:stylesheet>"
+    ).encode()
+
+    element = _element_children(
+        compile_bytes(source).transform(initial_template="main").principal_tree
+    )[0]
+
+    assert element.name == "{urn:other}out"
+    assert any(
+        node.prefix == "xsl" and node.string_value == "urn:other"
+        for node in element.namespace_nodes
+    )
+
+
+def test_literal_result_keeps_an_unused_in_scope_namespace() -> None:
+    compiled = compile_bytes(
+        xsl(
+            '<xsl:template name="main"><out/></xsl:template>',
+            attributes='xmlns:keep="urn:keep"',
+        )
+    )
+
+    result = compiled.transform(initial_template="main")
+    element = _element_children(result.principal_tree)[0]
+
+    assert any(
+        node.prefix == "keep" and node.string_value == "urn:keep"
+        for node in element.namespace_nodes
+    )
+    assert 'xmlns:keep="urn:keep"' in result.serialize()
+
+    no_default = compile_bytes(
+        xsl(
+            '<xsl:template name="main"><out xmlns:keep="urn:keep"/></xsl:template>',
+            attributes='exclude-result-prefixes="#default"',
+        )
+    )
+    no_default_element = _element_children(
+        no_default.transform(initial_template="main").principal_tree
+    )[0]
+    assert any(
+        node.prefix == "keep" and node.string_value == "urn:keep"
+        for node in no_default_element.namespace_nodes
+    )
 
 
 def test_literal_result_exclude_all_and_default_namespaces() -> None:
@@ -1288,8 +1379,21 @@ def test_result_document_error_arms() -> None:
             "</xsl:template>"
         )
     )
+    result = empty_href.transform(initial_template="main", output_uri="http://example.com/out")
+    assert result.principal == ()
+    assert list(result.secondary) == ["http://example.com/out"]
+    assert result.secondary["http://example.com/out"].raw[0].local_name == "x"
+
+    occupied_href = compile_bytes(
+        xsl(
+            '<xsl:template name="main">'
+            "<principal/>"
+            "<xsl:result-document><x/></xsl:result-document>"
+            "</xsl:template>"
+        )
+    )
     with pytest.raises(XsltDynamicError) as error:
-        empty_href.transform(initial_template="main", output_uri="http://example.com/out")
+        occupied_href.transform(initial_template="main", output_uri="http://example.com/out")
     assert error.value.code == "XTDE1490"
 
 

@@ -1972,7 +1972,7 @@ def test_transformation_reads_output_attributes_and_output_uri() -> None:
         output_uri = "http://example.com/out.xml"
 
     transformation = Transformation(compiled, _Options())
-    assert transformation.final_uris == {"http://example.com/out.xml"}
+    assert transformation.final_uris == set()
     assert transformation.output_attributes["method"] == "text"
 
 

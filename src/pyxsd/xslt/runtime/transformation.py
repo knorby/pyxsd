@@ -128,11 +128,11 @@ class Transformation:
         self.globals: dict[tuple[str | None, str], XdmSequence] = {}
         self._evaluating: list[tuple[str | None, str]] = []
         self.secondary: dict[str, Any] = {}
+        # The URIs claimed by secondary results only.  The principal result does
+        # not occupy the base output URI until it has delivered one, which the
+        # invocation checks after evaluating the initial template.
         self.final_uris: set[str] = set()
         self._nested_diagnostics: tuple[FrameDiagnostic, ...] = ()
-        output_uri = None if options is None else getattr(options, "output_uri", None)
-        if output_uri is not None:
-            self.final_uris.add(output_uri)
         if shared is not None:
             # A nested fn:transform invocation continues the caller's ledger
             # and keeps the caller's stable context values.  Everything else

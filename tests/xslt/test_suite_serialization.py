@@ -259,6 +259,38 @@ def test_assert_result_document_passes_through_the_base_output_uri(tmp_path: Pat
     assert result.coverage == frozenset({"secondary", "xml"})
 
 
+def test_a_result_document_at_the_base_output_uri_is_the_principal_view(tmp_path: Path) -> None:
+    _sheet(
+        tmp_path,
+        "main.xsl",
+        '<xsl:output omit-xml-declaration="yes"/>'
+        '<xsl:template name="main">'
+        "<xsl:result-document><out>at the base</out></xsl:result-document>"
+        "</xsl:template>",
+    )
+    case = _case(
+        tmp_path,
+        "main.xsl",
+        output=Output(
+            serialize=True,
+            file="results/principal.xml",
+            path=PurePosixPath("results/principal.xml"),
+        ),
+        result_xml=(
+            "<result>"
+            '<assert-serialization method="xml">'
+            "&lt;out&gt;at the base&lt;/out&gt;"
+            "</assert-serialization>"
+            "</result>"
+        ),
+    )
+
+    result = suite.run_case(case, PROFILE)
+
+    assert result.outcome is Outcome.PASS
+    assert result.coverage == frozenset({"serialization"})
+
+
 def test_a_serialized_secondary_matches_its_pattern(tmp_path: Path) -> None:
     _sheet(
         tmp_path,

@@ -244,11 +244,40 @@ def test_duplicate_secondary_uris_are_rejected() -> None:
 def test_secondary_uri_colliding_with_the_principal_uri_is_rejected() -> None:
     source = stylesheet(
         '<xsl:template name="xsl:initial-template">'
-        '<xsl:result-document href="https://example.test/out.xml"><one/>'
+        f'<xsl:result-document href="{OUT_URI}"><one/>'
         "</xsl:result-document>"
         "</xsl:template>"
     )
     compiled = XsltProcessor().compile(io.BytesIO(source))
+
+    # An empty principal delivers no final result tree, so the result document
+    # occupies the base output URI and the invocation succeeds.
+    result = compiled.transform(output_uri=OUT_URI)
+    assert result.principal == ()
+    assert list(result.secondary) == [OUT_URI]
+
+    # Raw delivery constructs no final result tree either, so an empty raw
+    # principal leaves the URI free as well.
+    raw = compiled.transform(output_uri=OUT_URI, delivery="raw")
+    assert raw.principal == ()
+    assert list(raw.secondary) == [OUT_URI]
+
+    # Document delivery always constructs the principal tree, so the empty
+    # principal claims the URI and the same stylesheet is a collision.
     with pytest.raises(XsltDynamicError) as caught:
-        compiled.transform(output_uri="https://example.test/out.xml")
+        compiled.transform(output_uri=OUT_URI, delivery="document")
+    assert caught.value.code == "XTDE1490"
+
+    populated = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        f'<xsl:result-document href="{OUT_URI}"><one/>'
+        "</xsl:result-document>"
+        "<principal/></xsl:template>"
+    )
+    populated_compiled = XsltProcessor().compile(io.BytesIO(populated))
+    with pytest.raises(XsltDynamicError) as caught:
+        populated_compiled.transform(output_uri=OUT_URI)
+    assert caught.value.code == "XTDE1490"
+    with pytest.raises(XsltDynamicError) as caught:
+        populated_compiled.transform(output_uri=OUT_URI, delivery="raw")
     assert caught.value.code == "XTDE1490"

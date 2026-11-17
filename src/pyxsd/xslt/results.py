@@ -165,22 +165,33 @@ def delivered_entries(
     the delivered document node, or the serialized string.  A serialized
     principal honors *principal_parameters* on top of its retained effective
     output attributes; secondary results always serialize with their own.
+
+    F&O 3.1 section 16.3.2 gives the map one entry for the principal result and
+    one for each secondary result, so a result document that resolves to the
+    base output URI *is* the entry at that key.  XSLT 3.0 section 25.2 allows
+    that: an empty principal delivers no final result tree at its URI, so one
+    result document may occupy it.  The principal entry is therefore omitted
+    when the secondary map already holds its key, and the secondary loop emits
+    the value for that key.  The map never receives two entries for one key.
     """
     if delivery not in DELIVERY_FORMATS:
         raise ValueError(f"delivery must be one of {sorted(DELIVERY_FORMATS)}, got {delivery!r}")
     entries: list[tuple[str, XdmSequence]] = []
     principal = result.principal_entry
     key = principal.output_uri or "output"
-    if delivery == "raw":
-        entries.append((key, principal.raw))
-    elif delivery == "document":
-        # Document delivery always builds the principal tree; serialized
-        # delivery always populates the serialized string.
-        entries.append((key, cast(XdmSequence, (principal.tree,))))
-    else:
-        entries.append(
-            (key, cast(XdmSequence, (result.serialize(None, parameters=principal_parameters),)))
-        )
+    occupied = principal.output_uri is not None and principal.output_uri in result.secondary
+    if not occupied:
+        if delivery == "raw":
+            entries.append((key, principal.raw))
+        elif delivery == "document":
+            # Document delivery always builds the principal tree; serialized
+            # delivery always populates the serialized string.
+            entries.append((key, cast(XdmSequence, (principal.tree,))))
+        else:
+            entries.append(
+                (key, cast(XdmSequence, (result.serialize(None, parameters=principal_parameters),)))
+            )
+    if delivery == "serialized":
         for uri, entry in result.secondary.items():
             entries.append((uri, cast(XdmSequence, (entry.serialized,))))
         return entries

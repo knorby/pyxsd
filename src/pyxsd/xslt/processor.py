@@ -3888,6 +3888,7 @@ def _compile_literal_result(
         instruction,
         attributes,
         _exclusions(module),
+        _extension_instruction_namespaces(module),
     )
     validation, type_name = _compile_construction_validation(
         instruction,
@@ -5025,21 +5026,42 @@ def _literal_namespaces(
     instruction: Instruction,
     attributes: Sequence[tuple[str, str | CompiledValueTemplate]],
     exclusions: tuple[str, ...],
+    extension_namespaces: frozenset[str] = frozenset(),
 ) -> tuple[tuple[str, str], ...]:
-    excluded = set(exclusions)
-    exclude_all = "#all" in excluded
+    """The namespace nodes one literal result element copies (XSLT 3.0 11.1.3).
+
+    The created element node copies every in-scope stylesheet namespace except
+    an excluded one.  Exclusion designates a namespace *URI*, never a prefix:
+    the XSLT namespace, each of the module root's extension instruction
+    namespaces, and every URI named by an in-scope ``exclude-result-prefixes``
+    token (``#default`` names the default namespace and ``#all`` names every
+    in-scope namespace).  A URI used by the element's own name or one of its
+    attribute names is kept regardless, because namespace fixup requires a node
+    for it (XSLT 3.0 5.7.3); the ``xml`` prefix is always implicit and is never
+    copied.  Any other in-scope namespace, used or not, is copied and
+    serialized; pruning unused nodes is a serializer's freedom this engine does
+    not take.
+    """
+    designated = set(exclusions)
+    exclude_all = "#all" in designated
+    excluded: set[str] = {XSLT_NS}
+    excluded.update(extension_namespaces)
+    for token in designated:
+        if token == "#all":
+            continue
+        uri = instruction.namespaces.get("" if token == "#default" else token)
+        if uri is not None:
+            excluded.add(uri)
     used: set[str | None] = {_namespace(instruction.name)}
     used.update(_namespace(name) for name, _ in attributes)
     result: list[tuple[str, str]] = []
     for prefix, uri in instruction.namespaces.items():
-        if prefix in ("xml", "xsl"):
+        if prefix == "xml":
             continue
         if uri in used:
             result.append((prefix, uri))
             continue
-        if prefix == "" and "#default" in excluded:
-            continue
-        if exclude_all or prefix in excluded:
+        if exclude_all or uri in excluded:
             continue
         result.append((prefix, uri))
     return tuple(result)
@@ -5850,6 +5872,7 @@ class _Invocation(Transformation):
             policy.authorize(self.options.output_uri, principal=True)
         sequence = self._execute_entry()
         self._check_output_budget(sequence)
+        self._check_principal_result_uri(sequence)
         tree = None
         if self.options.delivery == "document" or (
             self.options.delivery == "stylesheet"
@@ -5894,6 +5917,34 @@ class _Invocation(Transformation):
             total += _result_node_count(entry.raw)
         if not self.budget.take_output_nodes(total):
             raise resource_error("the transformation exceeded its output budget")
+
+    def _check_principal_result_uri(self, sequence: XdmSequence) -> None:
+        """Reject a result document that shares the principal result's URI.
+
+        XSLT 3.0 section 25.2 makes it a dynamic error for a transformation to
+        produce two final result trees with the same URI (XTDE1490), and its
+        note covers the instruction that omits ``href``: ``href`` defaults to
+        the zero-length string, which resolves to the base output URI, so such
+        an instruction collides with the implicit initial final result tree.
+
+        The principal result occupies the base output URI only when it delivers
+        a final result tree there.  Document delivery always constructs one
+        (section 2.3.6.1), even from an empty raw sequence.  Raw and serialized
+        delivery construct none, so an empty raw principal transmits nothing
+        and leaves the URI free for one result document, which then becomes the
+        entry at that key in the ``fn:transform`` result map (F&O 3.1 section
+        16.3.2).  The check runs after the initial template has been evaluated:
+        only then is the principal sequence known, while duplicate detection
+        among secondary results stays eager in ``_result_document``.
+        """
+        output_uri = self.options.output_uri
+        if output_uri is None or output_uri not in self.final_uris:
+            return
+        if self.options.delivery == "document" or sequence:
+            raise XsltDynamicError(
+                f"the transformation produced two final result trees with URI {output_uri!r}",
+                code="XTDE1490",
+            )
 
     def _execute_entry(self) -> XdmSequence:
         options = self.options

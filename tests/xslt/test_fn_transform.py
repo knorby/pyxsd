@@ -170,6 +170,54 @@ def test_base_output_uri_keys_the_principal_by_its_absolute_uri() -> None:
     assert not result.contains(XdmAtomic.string("output"))
 
 
+def test_a_result_document_at_the_base_output_uri_is_the_output_entry() -> None:
+    nested = (
+        '<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" '
+        'version="3.0">'
+        '<xsl:output method="xml" omit-xml-declaration="yes"/>'
+        '<xsl:template name="xsl:initial-template">'
+        "<xsl:result-document><at-base/></xsl:result-document>"
+        "</xsl:template></xsl:stylesheet>"
+    )
+    base = "https://example.test/results/base.xml"
+
+    result = run_transform(
+        {
+            "stylesheet-text": nested,
+            "base-output-uri": base,
+            "delivery-format": "serialized",
+        }
+    )
+
+    assert len(result) == 1
+    assert map_get(result, base)[0].value == "<at-base/>"
+
+
+def test_two_result_documents_with_distinct_hrefs_do_not_collapse() -> None:
+    nested = (
+        '<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" '
+        'version="3.0">'
+        '<xsl:output method="xml" omit-xml-declaration="yes"/>'
+        '<xsl:template name="xsl:initial-template">'
+        "<xsl:result-document><at-base/></xsl:result-document>"
+        '<xsl:result-document href="other.xml"><other/></xsl:result-document>'
+        "</xsl:template></xsl:stylesheet>"
+    )
+    base = "https://example.test/results/base.xml"
+
+    result = run_transform(
+        {
+            "stylesheet-text": nested,
+            "base-output-uri": base,
+            "delivery-format": "serialized",
+        }
+    )
+
+    assert len(result) == 2
+    assert map_get(result, base)[0].value == "<at-base/>"
+    assert map_get(result, "https://example.test/results/other.xml")[0].value == "<other/>"
+
+
 # ---------------------------------------------------------------------------
 # Stylesheet and package sources
 
