@@ -135,13 +135,14 @@ class ChildSequence(MutableSequence[RelaxNGElement]):
     visible without rebuilding this view.  Views are cached weakly per node
     and expanded name, making repeated descriptor reads return one stable
     object without retaining detached nodes through the cache.
+    Slices return independent list snapshots containing the same lexical nodes.
 
     A position in this view maps to the matching child's position in the one
     child list.  Insertion before a matching child places the new child
     immediately before it; appending after the last matching child keeps the
     new child inside the matching run instead of jumping over unrelated
-    trailing children.  Every edit validates its whole child batch before the
-    first tree operation: nodes must be detached, from this revision, of
+    trailing children.  Every attachment validates its whole child batch before
+    the first tree operation: nodes must be detached, from this revision, of
     exactly this expanded name, and not an ancestor of the target.  A rejected
     edit leaves children, parent links, tails, and the revision dirty flag
     unchanged.
@@ -226,15 +227,15 @@ class ChildSequence(MutableSequence[RelaxNGElement]):
     def __len__(self) -> int:
         return sum(1 for child in self._node._children_ if child._name_ == self._expanded_name)
 
-    # A slice is an immutable snapshot, matching the lexical tuple contract;
-    # MutableSequence only requires the int overload to return the element.
-    @overload  # type: ignore[override]
+    @overload
     def __getitem__(self, index: int) -> RelaxNGElement: ...
 
     @overload
-    def __getitem__(self, index: slice) -> tuple[RelaxNGElement, ...]: ...
+    def __getitem__(self, index: slice) -> list[RelaxNGElement]: ...
 
-    def __getitem__(self, index: int | slice) -> RelaxNGElement | tuple[RelaxNGElement, ...]:
+    def __getitem__(self, index: int | slice) -> RelaxNGElement | list[RelaxNGElement]:
+        if isinstance(index, slice):
+            return list(self._matching()[index])
         return self._matching()[index]
 
     def __setitem__(self, index: int | slice, value: Any) -> None:
@@ -282,7 +283,7 @@ class ChildSequence(MutableSequence[RelaxNGElement]):
             targets = [
                 positions[view_index] for view_index in range(*index.indices(len(positions)))
             ]
-            for position in reversed(targets):
+            for position in sorted(targets, reverse=True):
                 self._node.remove_child(position)
             return
         position = self._normalize_index(index)
@@ -293,6 +294,26 @@ class ChildSequence(MutableSequence[RelaxNGElement]):
         position = self._normalize_index(index, allow_end=True)
         batch = self._validate_batch((value,))
         self._insert_batch(position, batch)
+
+    def extend(self, values: Iterable[RelaxNGElement]) -> None:
+        """Materialize and validate the complete batch before inserting it."""
+        batch = self._validate_batch(values)
+        self._insert_batch(len(self), batch)
+
+    def reverse(self) -> None:
+        """Reverse matching nodes within their lexical slots, tails included.
+
+        Existing siblings need no attachment validation.  Prepare the complete
+        permutation before writing the sole child store, then dirty once.
+        Empty and singleton views leave revision freshness unchanged.
+        """
+        positions = self._matching_positions()
+        if len(positions) <= 1:
+            return
+        children = [self._node._children_[position] for position in reversed(positions)]
+        for position, child in zip(positions, children, strict=True):
+            self._node._children_[position] = child
+        self._node._touch()
 
     def __iter__(self) -> Iterator[RelaxNGElement]:
         return iter(self._matching())
@@ -357,6 +378,12 @@ class ChildDescriptor:
     A singular field returns its first lexical node or ``None``.  A repeatable
     field always returns a :class:`ChildSequence`, including when empty.  Nodes
     are the existing lexical objects: descriptor reads never copy XML.
+
+    Assigning a node to a singular field replaces its sole matching child in
+    place, or appends at parent-end when absent.  Both nodes keep their own
+    tails: the old tail leaves with the detached node, and the new tail enters
+    with the replacement.  Unrelated siblings never move relative to each
+    other.  Scalar values still use the typed assignment transaction.
     """
 
     __slots__ = ("contract",)
@@ -381,6 +408,21 @@ class ChildDescriptor:
         return None
 
     def __set__(self, instance: RelaxNGElement, value: Any) -> None:
+        if self.contract.cardinality.repeatable:
+            # Augmented assignment writes the already-mutated live view back.
+            if value is ChildSequence.for_node(instance, self.expanded_name):
+                return
+        elif isinstance(value, RelaxNGElement):
+            view = ChildSequence.for_node(instance, self.expanded_name)
+            if len(view) > 1:
+                raise ValueError(
+                    f"child field {self.contract.alias!r} has multiple existing children"
+                )
+            if view:
+                view[0] = value
+            else:
+                view.insert(0, value)
+            return
         _assign_field_map(instance, {self.contract.alias: value})
 
 
@@ -804,14 +846,13 @@ def _prepare_descriptor(
         contract = descriptor.contract
         if contract.cardinality.repeatable:
             raise TypeError(
-                f"child field {contract.alias!r} is repeatable; Task 4 owns child "
-                "sequence assignment"
+                f"child field {contract.alias!r} is repeatable; edit its live child sequence"
             )
         matches = [child for child in node._children_ if child._name_ == contract.expanded_name]
         if len(matches) != 1:
             raise ValueError(
                 f"child field {contract.alias!r} requires exactly one existing "
-                "child for typed assignment; Task 4 owns insertion and removal"
+                "child for typed assignment; use the child descriptor to insert a detached node"
             )
         target = matches[0]
         attribute = None

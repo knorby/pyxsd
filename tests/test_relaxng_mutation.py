@@ -845,3 +845,340 @@ def test_structural_reads_stay_live_and_do_not_gate_on_typed_freshness() -> None
     assert fresh.to_string() == ('<doc a="2">head<item b="2">7</item>tail<other>y</other></doc>')
     assert fresh.root.scalar_value() is not None
     assert item.text_value() == "7"
+
+
+INTERLEAVED_XML = (
+    "<doc>head<item>0</item>zero<other>A</other>a"
+    "<item>1</item>one<other>B</other>b<item>2</item>two<other>C</other>c</doc>"
+)
+
+
+@pytest.mark.parametrize(
+    ("selection", "remaining"),
+    [
+        (slice(1, None, -1), (1, 3, 4, 5)),
+        (slice(None, None, -1), (1, 3, 5)),
+        (slice(None, None, -2), (1, 2, 3, 5)),
+        (slice(1, None, -2), (0, 1, 3, 4, 5)),
+        (slice(0, 1, -1), (0, 1, 2, 3, 4, 5)),
+    ],
+)
+def test_negative_step_deletion_preserves_unselected_lexical_children(
+    selection: slice, remaining: tuple[int, ...]
+) -> None:
+    document = _typed(INTERLEAVED_XML)
+    root = document.root
+    view = root.item
+    children = root.children
+    tails = tuple(child.tail_value() for child in children)
+    fragments = (
+        "<item>0</item>zero",
+        "<other>A</other>a",
+        "<item>1</item>one",
+        "<other>B</other>b",
+        "<item>2</item>two",
+        "<other>C</other>c",
+    )
+
+    del view[selection]
+
+    assert root.children == tuple(children[index] for index in remaining)
+    assert (
+        document.to_string()
+        == "<doc>head" + "".join(fragments[index] for index in remaining) + "</doc>"
+    )
+    assert tuple(child.tail_value() for child in children) == tails
+    for index, child in enumerate(children):
+        assert child.parent is (root if index in remaining else None)
+        assert child.revision is root.revision
+    assert root.item is view
+    assert root.revision.dirty is (len(remaining) != len(children))
+    assert document.interpretations_current is (len(remaining) == len(children))
+
+
+@pytest.mark.parametrize("operation", ["extend", "iadd", "descriptor-iadd"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "wrong-name",
+        "duplicate",
+        "duplicate-generator",
+        "attached",
+        "foreign",
+        "ancestor",
+        "iterator",
+    ],
+)
+def test_batch_extension_failure_is_atomic(operation: str, failure: str) -> None:
+    document = _typed(MATRIX_XML)
+    root = document.root
+    view = root.item
+    children = root.children
+    valid = _new("item", root, text="3", tail="new")
+    invalid = {
+        "wrong-name": _new("{urn:other}item", root),
+        "duplicate": valid,
+        "duplicate-generator": valid,
+        "attached": children[0],
+        "foreign": _new("item", _typed(MATRIX_XML).root),
+        "ancestor": root,
+        "iterator": valid,
+    }[failure]
+
+    def values():
+        yield valid
+        if failure == "iterator":
+            raise RuntimeError("iterator failed")
+        yield invalid
+
+    batch = values() if failure in ("iterator", "duplicate-generator") else [valid, invalid]
+    with pytest.raises(RuntimeError if failure == "iterator" else ValueError):
+        if operation == "extend":
+            view.extend(batch)
+        elif operation == "iadd":
+            view += batch
+        else:
+            root.item += batch
+
+    assert document.to_string() == MATRIX_XML
+    assert root.children == children
+    assert all(child.parent is root for child in children)
+    assert valid.parent is None
+    assert valid.tail_value() == "new"
+    assert root.item is view
+    assert root.revision.dirty is False
+    assert document.interpretations_current is True
+    assert document.annotations.for_node(children[0]) is not None
+    assert children[0].typed_value is not None
+
+
+def test_descriptor_iadd_accepts_only_its_canonical_view_writeback() -> None:
+    document, root, item, other, snapshot, interpretation, annotation = _matrix()
+    view = root.item
+    added = _new("item", root, text="3", tail="new")
+
+    root.item += [added]
+
+    assert root.item is view
+    assert root.children == (item, added, other)
+    assert added.parent is root
+    assert document.to_string() == (
+        '<doc a="1">head<item b="2">1 2</item>tail<item>3</item>new<other>y</other></doc>'
+    )
+    _assert_old_evidence_readable(document, root, item, snapshot, interpretation, annotation)
+    before = document.to_string()
+    for other_view in (root.other, ChildSequence(root, "item"), other["item"]):
+        with pytest.raises(TypeError, match="repeatable"):
+            root.item = other_view
+    assert document.to_string() == before
+    root.item += []
+    assert root.item is view
+    assert document.revalidate().interpretations_current is True
+
+
+@pytest.mark.parametrize("source", [INTERLEAVED_XML, "<doc/>", "<doc><item>0</item></doc>"])
+def test_reverse_keeps_matching_slots_and_each_nodes_tail(source: str, monkeypatch: Any) -> None:
+    document = _typed(source)
+    root = document.root
+    view = root.item
+    children = root.children
+    items = list(view)
+    tails = tuple(child.tail_value() for child in children)
+    dirty_calls = []
+    mark_dirty = type(root.revision).mark_dirty
+
+    def tracked(revision):
+        dirty_calls.append(revision.dirty)
+        mark_dirty(revision)
+
+    monkeypatch.setattr(type(root.revision), "mark_dirty", tracked)
+    assert view.reverse() is None
+
+    assert root.item is view
+    assert list(view) == list(reversed(items))
+    assert tuple(child.tail_value() for child in children) == tails
+    assert all(child.parent is root for child in children)
+    assert all(child.revision is root.revision for child in children)
+    assert dirty_calls == ([False] if len(items) > 1 else [])
+    assert document.interpretations_current is (len(items) <= 1)
+    if len(items) > 1:
+        assert root.children == (
+            children[4],
+            children[1],
+            children[2],
+            children[3],
+            children[0],
+            children[5],
+        )
+        assert document.to_string() == (
+            "<doc>head<item>2</item>two<other>A</other>a"
+            "<item>1</item>one<other>B</other>b<item>0</item>zero<other>C</other>c</doc>"
+        )
+        with pytest.raises(StaleInterpretationError):
+            _ = items[0].typed_value
+        with pytest.raises(StaleInterpretationError):
+            _ = document.annotations
+        assert document.revalidate().is_valid
+    else:
+        assert document.to_string() == source
+
+
+def test_sequence_slice_is_an_independent_list_snapshot() -> None:
+    document = _typed(INTERLEAVED_XML)
+    view = document.root.item
+    snapshot = view[::-1]
+    assert isinstance(snapshot, list)
+    assert snapshot == list(reversed(view))
+    snapshot.clear()
+    assert len(view) == 3
+    old = view[:]
+    del view[0]
+    assert len(old) == 3
+    assert old[0].parent is None
+
+
+def _singular_document(*, optional: bool = True, absent: bool = False) -> Any:
+    item = '<element name="item"><text/></element>'
+    if optional:
+        item = f"<optional>{item}</optional>"
+    schema = _compile(
+        f'<element xmlns="{NS}" name="doc"><mixed><group>'
+        '<element name="other"><text/></element>'
+        + item
+        + '<element name="end"><text/></element></group></mixed></element>'
+    )
+    xml = "<doc>head<other>A</other>a"
+    if not absent:
+        xml += "<item>old</item>old-tail"
+    xml += "<end>Z</end>z</doc>"
+    document = schema.parse(io.StringIO(xml), typed=True, capture="patterns")
+    assert document.is_valid
+    return document
+
+
+@pytest.mark.parametrize("optional", [True, False])
+@pytest.mark.parametrize("generated", [True, False])
+def test_singular_descriptor_node_replacement_preserves_lexical_slot_and_tails(
+    optional: bool, generated: bool
+) -> None:
+    document = _singular_document(optional=optional)
+    root = document.root
+    other, old, end = root.children
+    snapshot = old.typed_value
+    candidates = snapshot.candidates
+    factory = type(old) if generated else RelaxNGElement
+    replacement = factory._new("item", root.revision, text="new", tail="new-tail")
+
+    root.item = replacement
+
+    assert root.item is replacement
+    assert root.children == (other, replacement, end)
+    assert old.parent is None
+    assert old.tail_value() == "old-tail"
+    assert replacement.parent is root
+    assert replacement.tail_value() == "new-tail"
+    assert replacement.revision is root.revision
+    assert document.to_string() == (
+        "<doc>head<other>A</other>a<item>new</item>new-tail<end>Z</end>z</doc>"
+    )
+    assert root.revision.dirty is True
+    assert document.interpretations_current is False
+    assert snapshot.lexical == "old"
+    assert snapshot.candidates == candidates
+    for node in (old, replacement, other):
+        with pytest.raises(StaleInterpretationError):
+            node.scalar_value()
+    with pytest.raises(StaleInterpretationError):
+        _ = document.annotations
+    assert document.revalidate().is_valid
+
+
+def test_optional_descriptor_node_insertion_uses_empty_view_parent_end() -> None:
+    document = _singular_document(absent=True)
+    root = document.root
+    children = root.children
+    assert root.item is None
+    added = _new("item", root, text="new", tail="new-tail")
+
+    root.item = added
+
+    assert root.item is added
+    assert root.children == (*children, added)
+    assert added.parent is root
+    assert added.revision is root.revision
+    assert document.to_string() == (
+        "<doc>head<other>A</other>a<end>Z</end>z<item>new</item>new-tail</doc>"
+    )
+    assert root.revision.dirty is True
+    assert document.interpretations_current is False
+    with pytest.raises(StaleInterpretationError):
+        _ = document.annotations
+
+
+@pytest.mark.parametrize("failure", ["wrong-name", "attached", "foreign", "ancestor", "multiple"])
+def test_singular_descriptor_node_failure_is_atomic(failure: str) -> None:
+    document = _singular_document()
+    root = document.root
+    if failure == "multiple":
+        root.append_child(_new("item", root, text="second"))
+    replacement = {
+        "wrong-name": _new("{urn:other}item", root),
+        "attached": root.item,
+        "foreign": _new("item", _singular_document().root),
+        "ancestor": root,
+        "multiple": _new("item", root, text="new"),
+    }[failure]
+    before = document.to_string()
+    children = root.children
+    dirty = root.revision.dirty
+    parent = replacement.parent
+    with pytest.raises(ValueError):
+        root.item = replacement
+    assert document.to_string() == before
+    assert root.children == children
+    assert all(child.parent is root for child in children)
+    assert replacement.parent is parent
+    assert root.revision.dirty is dirty
+    assert document.interpretations_current is (not dirty)
+
+
+def test_same_named_ancestor_is_rejected_by_descriptor_and_extend() -> None:
+    schema = _compile(
+        f'<grammar xmlns="{NS}"><start><ref name="entry"/></start><define name="entry">'
+        '<element name="item"><element name="holder"><optional><ref name="entry"/>'
+        "</optional></element></element></define></grammar>"
+    )
+    document = schema.parse(io.StringIO("<item><holder/></item>"), typed=True)
+    assert document.is_valid
+    root = document.root
+    holder = root.holder
+    assert holder.item is None
+    with pytest.raises(ValueError, match="ancestor"):
+        holder.item = root
+    with pytest.raises(ValueError, match="ancestor"):
+        holder["item"].extend([_new("item", root), root])
+    assert document.to_string() == "<item><holder/></item>"
+    assert root.parent is None
+    assert holder.parent is root
+    assert holder.children == ()
+    assert root.revision.dirty is False
+    assert document.interpretations_current is True
+
+
+def test_extension_success_generator_empty_batch_and_unsupported_imul() -> None:
+    document = _typed(MATRIX_XML)
+    root = document.root
+    view = root.item
+    root.item += []
+    view.extend([])
+    with pytest.raises(TypeError):
+        view *= 2
+    assert root.revision.dirty is False
+    added = [_new("item", root, text=str(number)) for number in (3, 4)]
+    assert view.extend(child for child in added) is None
+    assert root.item is view
+    assert list(view)[1:] == added
+    assert all(child.parent is root for child in added)
+    assert document.to_string() == (
+        '<doc a="1">head<item b="2">1 2</item>tail<item>3</item><item>4</item><other>y</other></doc>'
+    )

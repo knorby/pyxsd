@@ -330,7 +330,7 @@ def test_child_descriptors_match_cardinality_and_return_lexical_nodes():
     assert root.many[0] is root.children[0]
     assert root.many[1] is root.children[1]
     assert root.many[-1] is root.children[1]
-    assert root.many[0:2] == (root.children[0], root.children[1])
+    assert root.many[0:2] == [root.children[0], root.children[1]]
     assert root.req is root.children[2]
     assert type(root.req) is schema.projection_classes.class_for(
         route.children["req"].child_route_id
