@@ -403,6 +403,12 @@ def test_external_dtd_keeps_the_verdict_and_emits_one_located_advisory(
 
     assert not document.report.has_errors
     assert document.is_valid
+    assert document.report.diagnostics_complete is True
+    payload = document.report.to_dict()
+    assert payload["diagnostics_complete"] is True
+    assert payload["counts"] == {"error": 0, "warning": 1}
+    assert payload["suppressed_count"] == 0
+    assert [issue["code"] for issue in payload["issues"]] == ["dtd-external-skipped"]
     advisories = [
         issue for issue in document.report.warnings if issue.code == "dtd-external-skipped"
     ]
@@ -414,6 +420,34 @@ def test_external_dtd_keeps_the_verdict_and_emits_one_located_advisory(
     # The external subset declares foo; the advisory and lexical fallback prove
     # neither declaration collection nor the instance parser retrieved it.
     assert str(external) not in opened
+
+
+def test_suppressed_external_dtd_advisory_marks_the_report_incomplete(
+    tmp_path: Path,
+) -> None:
+    compiled = _entity_schema(tmp_path)
+    instance = tmp_path / "external.xml"
+    instance.write_text(
+        '<!DOCTYPE doc SYSTEM "missing.dtd"><doc>foo</doc>',
+        encoding="utf-8",
+    )
+
+    document = compiled.parse(
+        instance,
+        typed=False,
+        limits=RelaxNGLimits(max_diagnostics=0),
+    )
+
+    assert not document.report.has_errors
+    assert document.report.warning_count == 1
+    assert document.report.issues == []
+    assert document.report.suppressed_count == 1
+    assert document.report.diagnostics_complete is False
+    payload = document.report.to_dict()
+    assert payload["diagnostics_complete"] is False
+    assert payload["counts"] == {"error": 0, "warning": 1}
+    assert payload["suppressed_count"] == 1
+    assert payload["issues"] == []
 
 
 def test_nonzero_stream_position_does_not_use_a_different_prolog(tmp_path: Path) -> None:

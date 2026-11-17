@@ -4,6 +4,7 @@
 # Any future entry here must name the feature its cases actually depend on.
 #
 # The RELAX NG XSD datatype adapter follows XSD 1.0, not the XSD compiler's
-# default XSD 1.1 loader profile.  XSD 1.1-only spellings (for example the
-# +INF float value) are outside this adapter's promise and are not instance
-# corpus assertions; this is a library-profile boundary, not an exclusion.
+# default XSD 1.1 loader profile.  The pinned catalog asserts the XSD 1.1-only
+# +INF float/double spellings are invalid (xsdtest-float-01/invalid-3 and
+# xsdtest-double-01/invalid-3); they are never asserted valid.  This is a
+# library-profile boundary, not an exclusion.

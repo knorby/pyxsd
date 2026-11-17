@@ -655,6 +655,11 @@ class RelaxNGSchema:
                 code="dtd-external-skipped",
                 location=root_location,
             )
+            # report_mismatches settled completeness before this advisory was
+            # retained.  Re-evaluate with the same retention rule so a
+            # suppressed advisory makes the report visibly incomplete, while a
+            # retained advisory leaves a complete report complete.
+            instance_report._set_diagnostics_complete(instance_report.suppressed_count == 0)
 
         merged = new_validation_report(self._resource_policy)
         # A RELAX NG merged report is deliberately initialized as complete,
