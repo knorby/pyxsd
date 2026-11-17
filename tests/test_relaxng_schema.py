@@ -835,7 +835,7 @@ def test_the_default_registry_has_a_pinned_identity():
     # order; changing either identity or the digest shape changes this pin.
     assert (
         compile_schema().datatype_fingerprint == "pyxsd.relaxng.datatypes/1:"
-        "d40fc3958ab2070f0eada5ffb3bb4aa100e7ad5527bb8e5f01df5953165d92d6"
+        "ddb2e934acbb1e10c8385be990a5b73b42cf18708d3ce93f082a0a2ca51d503d"
     )
     assert compile_schema(datatype_libraries={}).datatype_fingerprint == (
         compile_schema().datatype_fingerprint

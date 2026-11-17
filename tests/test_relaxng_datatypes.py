@@ -274,6 +274,7 @@ class TestSelectorsAndRegistry:
         assert registry.library_uris() == (BUILTIN_LIBRARY, XSD_LIBRARY)
         assert registry.registration(BUILTIN_LIBRARY).fingerprint == BUILTIN_FINGERPRINT
         assert registry.registration(XSD_LIBRARY).fingerprint == XSD_FINGERPRINT
+        assert XSD_FINGERPRINT == "pyxsd.relaxng.xsd-1.0/3"
         assert isinstance(registry.registration(BUILTIN_LIBRARY).factory, BuiltinDatatypeFactory)
         assert isinstance(registry.registration(XSD_LIBRARY).factory, XsdDatatypeFactory)
 

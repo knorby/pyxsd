@@ -15,7 +15,7 @@ import os
 import threading
 import weakref
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass, field, is_dataclass
+from dataclasses import dataclass, field
 from dataclasses import fields as dataclass_fields
 from io import BytesIO
 from pathlib import Path
@@ -263,8 +263,6 @@ def _grammar_uses_unparsed_entity_types(start: Pattern) -> bool:
         if isinstance(node, Ref):
             pending.append(node.target)
             continue
-        if not is_dataclass(node):
-            raise TypeError(f"unknown RELAX NG pattern {type(node).__name__}")
         for item in dataclass_fields(node):
             value = getattr(node, item.name)
             if isinstance(value, Pattern):
@@ -548,8 +546,13 @@ class RelaxNGSchema:
             if seekable is None or not seekable():
                 return None
             marker = source.tell()
+            if marker != 0:
+                # The parse consumes only the bytes after the caller's current
+                # position.  Evidence collected from position zero would
+                # describe a different prolog, including a possibly false
+                # external-subset advisory, so leave this parse lexical-only.
+                return None
             try:
-                source.seek(0)
                 return collect_document_declarations(source, policy=policy)
             finally:
                 source.seek(marker)
@@ -624,20 +627,34 @@ class RelaxNGSchema:
             except ET.ParseError as exc:
                 raise PyXSDError(f"the xml file is not well-formed XML: {exc}") from exc
 
+        root_location = IssueLocation(source_id, (PathStep(tree.tag, 1),))
         root = RelaxNGElement.from_etree(
             tree,
             namespaces=element_namespaces,
             base_uri=source_id,
-            source=IssueLocation(source_id, (PathStep(tree.tag, 1),)),
+            source=root_location,
         )
         instance_report = new_validation_report(self._resource_policy)
-        with declaration_context(declarations):
+        with declaration_context(declarations) as entity_evidence:
             outcome = validate_element_recovering(
                 root,
                 self.grammar.start,
                 limits=effective_limits,
             )
         report_mismatches(outcome, instance_report, limits=effective_limits)
+
+        # A skipped external subset can hide an ENTITY/ENTITIES declaration.
+        # Report that once per document at the root occurrence, exactly as the
+        # XSD path does; the values stay lexical-only and the report remains a
+        # valid verdict with an advisory rather than an error.
+        if entity_evidence is not None and entity_evidence.external_subset_skipped:
+            instance_report.add_warning(
+                "the document's external DTD declarations were not retrieved, so "
+                "ENTITY/ENTITIES values undeclared in the internal subset "
+                "could not be rejected",
+                code="dtd-external-skipped",
+                location=root_location,
+            )
 
         merged = new_validation_report(self._resource_policy)
         # A RELAX NG merged report is deliberately initialized as complete,

@@ -36,10 +36,11 @@ from tests.relaxng.model import (
     corpus_enabled,
 )
 
+from pyxsd.locations import PathStep
 from pyxsd.namespaces import parse_with_namespaces
 from pyxsd.relaxng.datatypes import DatatypeContext, XsdDatatypeFactory
 from pyxsd.relaxng.limits import RelaxNGLimits
-from pyxsd.relaxng.patterns import Data, Pattern
+from pyxsd.relaxng.patterns import Data, DataExcept, Empty, Group, Ref
 from pyxsd.relaxng.schema import (
     RelaxNGSchema,
     _grammar_uses_unparsed_entity_types,
@@ -181,6 +182,29 @@ def test_driver_classifies_an_incorrect_schema_as_a_schema_phase_gap(
     assert not result.satisfies_expectation
 
 
+def test_driver_omits_the_instance_parse_when_the_schema_did_not_compile(
+    tmp_path: Path,
+) -> None:
+    case = write_instance_case(
+        tmp_path,
+        "guard-omission",
+        "valid-instance",
+        schema_text=f'<element xmlns="{NS}"><empty/></element>',
+    )
+    parsed: list[Path] = []
+
+    def parser(schema, path, limits):
+        del schema, limits
+        parsed.append(path)
+        raise AssertionError("the instance parse must be omitted")
+
+    result = PyXSDDriver(timeout=None, parser=parser).run(case)
+
+    assert result.failure is CaseFailure.SCHEMA_REJECTED
+    assert result.phase == "schema"
+    assert parsed == []
+
+
 def test_driver_classifies_a_schema_limit_as_a_schema_phase_gap(tmp_path: Path) -> None:
     case = write_instance_case(tmp_path, "schema-limit", "valid-instance")
 
@@ -298,6 +322,11 @@ def test_float_types_reject_the_xsd_10_plus_inf_spelling(
     accepted.write_text("<doc>INF</doc>", encoding="utf-8")
     assert not compiled.parse(accepted, typed=False).report.has_errors
 
+    for spelling in ("-INF", "NaN"):
+        accepted = tmp_path / f"accepted-{spelling}.xml"
+        accepted.write_text(f"<doc>{spelling}</doc>", encoding="utf-8")
+        assert not compiled.parse(accepted, typed=False).report.has_errors
+
     rejected = tmp_path / "rejected.xml"
     rejected.write_text("<doc>+INF</doc>", encoding="utf-8")
     assert compiled.parse(rejected, typed=False).report.has_errors
@@ -335,6 +364,68 @@ def _entity_schema(tmp_path: Path) -> RelaxNGSchema:
     compiled = RelaxNGSchema.compile(schema)
     compiled.require_valid()
     return compiled
+
+
+def test_entity_type_rejects_a_declared_parsed_entity(tmp_path: Path) -> None:
+    compiled = _entity_schema(tmp_path)
+    instance = tmp_path / "parsed-entity.xml"
+    instance.write_text(
+        '<!DOCTYPE doc [<!ENTITY foo "bar">]>\n<doc>foo</doc>',
+        encoding="utf-8",
+    )
+
+    # A general parsed entity is not an unparsed entity value for xs:ENTITY.
+    assert compiled.parse(instance, typed=False).report.has_errors
+
+
+def test_external_dtd_keeps_the_verdict_and_emits_one_located_advisory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compiled = _entity_schema(tmp_path)
+    external = tmp_path / "external.dtd"
+    external.write_text("<!ENTITY foo SYSTEM 'whatever' NDATA jpeg>\n", encoding="utf-8")
+    instance = tmp_path / "external.xml"
+    instance.write_text(
+        f'<!DOCTYPE doc SYSTEM "{external.as_posix()}"><doc>foo</doc>',
+        encoding="utf-8",
+    )
+
+    opened: list[str] = []
+    original_open = open
+
+    def tracking_open(file, *args, **kwargs):
+        opened.append(str(file))
+        return original_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", tracking_open)
+    document = compiled.parse(instance, typed=False)
+
+    assert not document.report.has_errors
+    assert document.is_valid
+    advisories = [
+        issue for issue in document.report.warnings if issue.code == "dtd-external-skipped"
+    ]
+    assert len(advisories) == 1
+    assert advisories[0].location is not None
+    assert advisories[0].location.source == str(instance)
+    assert advisories[0].location.path == (PathStep("doc", 1),)
+    assert "external DTD declarations were not retrieved" in advisories[0].message
+    # The external subset declares foo; the advisory and lexical fallback prove
+    # neither declaration collection nor the instance parser retrieved it.
+    assert str(external) not in opened
+
+
+def test_nonzero_stream_position_does_not_use_a_different_prolog(tmp_path: Path) -> None:
+    compiled = _entity_schema(tmp_path)
+    text = '<!DOCTYPE doc SYSTEM "missing.dtd">\n<doc>bar</doc>'
+    stream = io.StringIO(text)
+    stream.seek(text.index("<doc>"))
+
+    document = compiled.parse(stream, typed=False)
+
+    assert not document.report.has_errors
+    assert [issue for issue in document.report.issues if issue.code == "dtd-external-skipped"] == []
 
 
 def test_entity_declarations_are_read_from_a_seekable_stream(tmp_path: Path) -> None:
@@ -407,15 +498,21 @@ def test_entity_declarations_stay_lexical_only_under_a_resource_policy(
     assert not compiled.parse(instance_path, typed=False).report.has_errors
 
 
-def test_entity_type_detection_covers_hand_built_patterns() -> None:
+def test_entity_type_detection_covers_real_nested_patterns() -> None:
     factory = XsdDatatypeFactory()
     context = DatatypeContext(None, {})
-    datatype = factory.create("ENTITY", (), context)
-    assert _grammar_uses_unparsed_entity_types(Data(datatype))
-    assert not _grammar_uses_unparsed_entity_types(Data(factory.create("string", (), context)))
+    entity = factory.create("ENTITY", (), context)
+    string = factory.create("string", (), context)
 
-    with pytest.raises(TypeError, match="unknown RELAX NG pattern"):
-        _grammar_uses_unparsed_entity_types(Pattern())
+    assert _grammar_uses_unparsed_entity_types(DataExcept(entity, Empty()))
+
+    recursive = Ref()
+    recursive.bind(Group(recursive, Data(entity)))
+    assert _grammar_uses_unparsed_entity_types(recursive)
+
+    string_ref = Ref()
+    string_ref.bind(Group(string_ref, Data(string)))
+    assert not _grammar_uses_unparsed_entity_types(string_ref)
 
 
 # ---------------------------------------------------------------------------
@@ -669,9 +766,17 @@ def test_pinned_instance_corpus_matches_the_checked_in_baseline() -> None:
 )
 def test_instance_corpus_counts_cover_both_catalogs() -> None:
     cases = report_relaxng.instance_cases(report_relaxng.load_cases())
+    spectest = [case for case in cases if case.id.startswith("spectest-")]
+    xsdtest = [case for case in cases if case.id.startswith("xsdtest-")]
 
     assert len(cases) == 1621
+    assert len(spectest) == 580
+    assert len(xsdtest) == 1041
     assert sum(case.profile == PROFILE_CORE for case in cases) == 538
     assert sum(case.profile == PROFILE_XSD_DATATYPE for case in cases) == 1083
     assert sum(case.kind == "valid-instance" for case in cases) == 593
     assert sum(case.kind == "invalid-instance" for case in cases) == 1028
+    assert sum(case.kind == "valid-instance" for case in spectest) == 289
+    assert sum(case.kind == "invalid-instance" for case in spectest) == 291
+    assert sum(case.kind == "valid-instance" for case in xsdtest) == 304
+    assert sum(case.kind == "invalid-instance" for case in xsdtest) == 737

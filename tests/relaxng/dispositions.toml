@@ -2,3 +2,8 @@
 # Core and XSD 1.0 datatype schema and instance assertions are release-required,
 # so every case keeps its catalog profile and needs no explicit exclusion entry.
 # Any future entry here must name the feature its cases actually depend on.
+#
+# The RELAX NG XSD datatype adapter follows XSD 1.0, not the XSD compiler's
+# default XSD 1.1 loader profile.  XSD 1.1-only spellings (for example the
+# +INF float value) are outside this adapter's promise and are not instance
+# corpus assertions; this is a library-profile boundary, not an exclusion.

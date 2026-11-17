@@ -146,7 +146,7 @@ XSD_LIBRARY = "http://www.w3.org/2001/XMLSchema-datatypes"
 #: Fixed identities of the built-in libraries.  Bump these when their
 #: observable behavior changes so retained candidate identities do not lie.
 BUILTIN_FINGERPRINT = "pyxsd.relaxng.builtin/1"
-XSD_FINGERPRINT = "pyxsd.relaxng.xsd-1.0/2"
+XSD_FINGERPRINT = "pyxsd.relaxng.xsd-1.0/3"
 
 _XSD_SHORTHAND = "xsd:"
 
