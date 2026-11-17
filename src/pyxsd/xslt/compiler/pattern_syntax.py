@@ -23,6 +23,7 @@ from types import MappingProxyType
 from typing import Literal, NoReturn, TypeAlias
 
 from pyxsd.locations import IssueLocation
+from pyxsd.xdm import type_tests
 from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xdm.values import XdmAtomic, XdmSequence
 from pyxsd.xpath.engine import CompiledExpression, XPathEngine
@@ -806,17 +807,7 @@ class _Parser:
         """
         pool = self.context.schema
         assert pool is not None
-        names = {name}
-        pending = {name}
-        while pending:
-            discovered: set[str] = set()
-            for current in pending:
-                for member in pool.get_substitution_group(current) or frozenset():
-                    assert member.name is not None
-                    discovered.add(member.name)
-            pending = discovered - names
-            names.update(pending)
-        return tuple(sorted(names))
+        return type_tests.element_declaration_names(pool, name)
 
     def _name_test(self, axis: str, raw: str) -> NameTest:
         if raw == "*":

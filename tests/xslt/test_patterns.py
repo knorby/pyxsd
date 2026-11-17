@@ -18,9 +18,20 @@ import pytest
 from tests.xslt.support import element_children as _element_children
 
 from pyxsd.binding import ParseModes
+from pyxsd.namespaces import local_name as _local_name
+from pyxsd.namespaces import namespace_of as _namespace_of
 from pyxsd.xdm.annotations import capture_schema_annotations
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
+from pyxsd.xdm.type_tests import (
+    builtin_class as _builtin_class,
+)
+from pyxsd.xdm.type_tests import (
+    builtin_derives as _builtin_derives,
+)
+from pyxsd.xdm.type_tests import (
+    declaration_key as _declaration_key,
+)
 from pyxsd.xdm.values import XdmAtomic, XdmMap
 from pyxsd.xpath.environment import ExpressionEnvironment
 from pyxsd.xslt.compiler.context import StaticContext, StaticVariable
@@ -37,13 +48,8 @@ from pyxsd.xslt.compiler.patterns import (
     PatternMatcher,
     PatternStatistics,
     _axis_nodes,
-    _builtin_class,
-    _builtin_derives,
-    _declaration_key,
     _effective_boolean_value,
     _is_descendant_or_self,
-    _local_name,
-    _namespace_of,
     _numeric_equals_position,
     compile_pattern,
     default_priority,

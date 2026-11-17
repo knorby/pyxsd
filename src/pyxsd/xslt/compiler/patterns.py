@@ -35,7 +35,7 @@ from urllib.parse import urljoin
 
 from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import local_name as _local_name
-from pyxsd.namespaces import namespace_of as _namespace_of
+from pyxsd.xdm import type_tests
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xdm.values import XdmAtomic, XdmItem, XdmSequence, as_xdm
@@ -70,8 +70,6 @@ from pyxsd.xslt.compiler.pattern_syntax import (
     parse_pattern,
 )
 from pyxsd.xslt.errors import is_budget_alarm
-
-XSD_NS = "http://www.w3.org/2001/XMLSchema"
 
 _ELEMENT_AXIS_KINDS = frozenset(
     {NodeKind.ELEMENT, NodeKind.TEXT, NodeKind.COMMENT, NodeKind.PROCESSING_INSTRUCTION}
@@ -732,89 +730,15 @@ def _kind_matches(item_type: ItemType, node: XdmNode, schema: SchemaPool | None)
     ):
         return False
     if kind in {"element", "attribute"} and item_type.type_name is not None:
-        return _type_matches(node, item_type.type_name, item_type.nillable, schema)
+        annotation = node.annotation
+        if annotation.nilled and not item_type.nillable:
+            return False
+        return type_tests.derives_from(annotation, item_type.type_name, schema)
     return True
 
 
 def _declaration_matches(node: XdmNode, declarations: tuple[str, ...], kind: str) -> bool:
-    declaration = node.annotation.governing_declaration
-    key = _declaration_key(declaration, require_global=kind == "schema-element")
-    if key is None or key not in declarations:
-        return False
-    if kind == "schema-attribute":
-        return node.kind is NodeKind.ATTRIBUTE and node.name in declarations
-    return node.kind is NodeKind.ELEMENT
-
-
-def _declaration_key(declaration: Any, *, require_global: bool) -> str | None:
-    if declaration is None:
-        return None
-    name = getattr(declaration, "name", None)
-    if not isinstance(name, str) or not name:
-        return None
-    if name.startswith("{"):
-        return name
-    if require_global:
-        is_global = getattr(declaration, "isGlobalDeclaration", None)
-        if callable(is_global) and not is_global():
-            return None
-    get_namespace = getattr(declaration, "getNamespace", None)
-    namespace = get_namespace() if callable(get_namespace) else None
-    if namespace is None:
-        parent = getattr(declaration, "parent", None)
-        namespace = getattr(parent, "target_namespace", None)
-    return f"{{{namespace}}}{name}" if namespace else name
-
-
-def _type_matches(node: XdmNode, type_name: str, nillable: bool, schema: SchemaPool | None) -> bool:
-    annotation = node.annotation
-    if annotation.nilled and not nillable:
-        return False
-    actual_name = annotation.type_name or node.type_name
-    if actual_name == type_name:
-        return True
-    actual_class = getattr(annotation, "actual_type", None)
-    declared_class = _declared_class(type_name, schema)
-    if isinstance(actual_class, type) and isinstance(declared_class, type):
-        return issubclass(actual_class, declared_class)
-    return _builtin_derives(actual_name, type_name)
-
-
-def _declared_class(type_name: str, schema: SchemaPool | None) -> type[Any] | None:
-    declared = schema.get_type(type_name) if schema is not None else None
-    if declared is not None:
-        return getattr(declared, "_type_class", None)
-    return _builtin_class(type_name)
-
-
-def _builtin_class(type_name: str) -> type[Any] | None:
-    namespace = _namespace_of(type_name)
-    local = _local_name(type_name)
-    if namespace != XSD_NS:
-        return None
-    from pyxsd.xdm.annotations import builtin_type_classes
-
-    return builtin_type_classes().get(local)
-
-
-def _builtin_derives(actual_name: str | None, declared_name: str) -> bool:
-    if actual_name is None:
-        return False
-    actual_local = _local_name(actual_name)
-    declared_local = _local_name(declared_name)
-    if declared_local == "anyType":
-        return True
-    if actual_local == declared_local:
-        return True
-    if declared_local == "anySimpleType":
-        return actual_local not in {"anyType", "untyped"}
-    if declared_local == "anyAtomicType":
-        return actual_local not in {"anyType", "untyped", "anySimpleType"}
-    actual_class = _builtin_class(actual_name)
-    declared_class = _builtin_class(declared_name)
-    if isinstance(actual_class, type) and isinstance(declared_class, type):
-        return issubclass(actual_class, declared_class)
-    return False
+    return type_tests.declaration_matches(node, declarations, kind)
 
 
 # ---------------------------------------------------------------------------
