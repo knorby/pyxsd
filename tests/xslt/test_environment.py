@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -26,6 +27,7 @@ from tests.xslt.environment import (
     environment_fingerprint,
 )
 from tests.xslt.model import (
+    CATALOG_NS,
     Collection,
     Environment,
     Invocation,
@@ -36,6 +38,7 @@ from tests.xslt.model import (
     Stylesheet,
 )
 from tests.xslt.model import TestCase as CatalogCase
+from tests.xslt.outcomes import Outcome
 from tests.xslt.runner import CaseExecutionError
 from tests.xslt.support import stylesheet
 
@@ -88,6 +91,7 @@ def _case(
     collections: tuple[Collection, ...] = (),
     sources: tuple[Source, ...] = (),
     params: tuple[Param, ...] = (),
+    result: str = "",
 ) -> CatalogCase:
     return CatalogCase(
         name="t/case",
@@ -106,6 +110,7 @@ def _case(
             params=params,
         ),
         document_root=root,
+        result_xml=result,
     )
 
 
@@ -626,3 +631,333 @@ def test_swapped_schema_roles_never_share_a_compiled_artifact(tmp_path: Path) ->
     # The failing case caches nothing, so one artifact exists: the one whose
     # pool names ``h:html``.
     assert len(suite._COMPILED) == 1
+
+
+# ---------------------------------------------------------------------------
+# Source validation
+
+
+#: A validated element and the same element reached through its name alone are
+#: both ``true`` for an element test, because the processor resolves the name
+#: through the in-scope schema.  The atomic type annotation is what separates a
+#: tree the source declaration validated from the untyped ``strip`` default.
+_TYPED_INTEGER = "data(/*) instance of xs:integer"
+
+#: The same probe with the root's name, so a lax accept still shows a document.
+_LAX_PROBE = f"concat(local-name(/*), ':', {_TYPED_INTEGER})"
+
+
+def _result(assertion: str) -> str:
+    return f'<result xmlns="{CATALOG_NS}">{assertion}</result>'
+
+
+def _assertion(xml: str) -> str:
+    return _result(f"<assert-xml><![CDATA[{xml}]]></assert-xml>")
+
+
+def _expected_error(code: str) -> str:
+    return _result(f'<error code="{code}"/>')
+
+
+def _source_case(
+    root: Path,
+    *,
+    sources: tuple[Source, ...],
+    schemas: tuple[Schema, ...],
+    body: str,
+    result: str,
+    namespaces: Mapping[str, str] | None = None,
+) -> CatalogCase:
+    """One catalog-shaped case whose assertion names its expected verdict."""
+    _write(root, "sheet.xsl", stylesheet(body, namespaces=namespaces or {}).decode("utf-8"))
+    return _case(root, sources=sources, schemas=schemas, result=result)
+
+
+def _typed_probe() -> str:
+    return (
+        '<xsl:template match="/"><out>'
+        f'<xsl:value-of select="{_TYPED_INTEGER}"/>'
+        "</out></xsl:template>"
+    )
+
+
+def _file_source(name: str, validation: str | None = None) -> Source:
+    return Source(
+        role=".",
+        file=name,
+        path=PurePosixPath(name),
+        validation=validation,
+    )
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [(None, None), ("skip", None), ("strict", "strict"), ("lax", "lax")],
+)
+def test_source_validation_names_only_declared_processor_modes(
+    declared: str | None,
+    expected: str | None,
+) -> None:
+    """``skip`` asks for no validation, so it names no processor mode."""
+    case = _case(None, sources=(Source(role=".", content="<a/>", validation=declared),))
+
+    assert suite.source_validation(case) == expected
+
+
+def test_source_validation_ignores_a_non_context_source() -> None:
+    """Only the ``.`` role reaches the processor as its context source."""
+    case = _case(None, sources=(Source(role="source", content="<a/>", validation="strict"),))
+
+    assert suite.source_validation(case) is None
+
+
+def test_a_context_source_without_a_corpus_root_is_an_adapter_gap() -> None:
+    case = _case(None, sources=(Source(role=".", content="<a/>"),))
+
+    result = suite.run_case(case, XSLT30)
+
+    assert result.outcome is Outcome.ADAPTER_GAP
+    assert result.message == "case without a corpus root"
+
+
+def test_a_context_source_without_a_file_or_content_is_an_adapter_gap(
+    tmp_path: Path,
+) -> None:
+    case = _case(tmp_path, sources=(Source(role="."),))
+
+    result = suite.run_case(case, XSLT30)
+
+    assert result.outcome is Outcome.ADAPTER_GAP
+    assert result.message == "context source without a file or inline content"
+
+
+def test_a_strict_source_is_validated_with_the_environment_pool(tmp_path: Path) -> None:
+    _write(tmp_path, "hat.xsd", HAT_SCHEMA)
+    case = _source_case(
+        tmp_path,
+        sources=(
+            Source(
+                role=".",
+                content=f'<t:head xmlns:t="{HAT_NS}">4</t:head>',
+                validation="strict",
+            ),
+        ),
+        schemas=(_schema("schema", "hat.xsd"),),
+        body=_typed_probe(),
+        result=_assertion("<out>true</out>"),
+    )
+
+    result = suite.run_case(case, XSLT30)
+
+    assert result.outcome is Outcome.PASS
+
+
+def test_an_invalid_strict_source_reports_the_engine_validation_code(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "hat.xsd", HAT_SCHEMA)
+    _write(tmp_path, "head.xml", f'<t:head xmlns:t="{HAT_NS}">12</t:head>')
+    case = _source_case(
+        tmp_path,
+        sources=(_file_source("head.xml", "strict"),),
+        schemas=(_schema("schema", "hat.xsd"),),
+        body=_typed_probe(),
+        result=_expected_error("XTTE1510"),
+    )
+
+    result = suite.run_case(case, XSLT30)
+
+    assert result.outcome is Outcome.PASS
+    assert result.expected_error_code == result.actual_error_code == "XTTE1510"
+
+
+def test_a_lax_source_without_a_declaration_is_accepted_untyped(tmp_path: Path) -> None:
+    """Lax validation uses the untyped type for an undeclared element."""
+    _write(tmp_path, "hat.xsd", HAT_SCHEMA)
+    case = _source_case(
+        tmp_path,
+        sources=(
+            Source(
+                role=".",
+                content=f'<t:other xmlns:t="{HAT_NS}"/>',
+                validation="lax",
+            ),
+        ),
+        schemas=(_schema("schema", "hat.xsd"),),
+        body=(
+            '<xsl:template match="/"><out>'
+            f'<xsl:value-of select="{_LAX_PROBE}"/>'
+            "</out></xsl:template>"
+        ),
+        result=_assertion("<out>other:false</out>"),
+    )
+
+    result = suite.run_case(case, XSLT30)
+
+    assert result.outcome is Outcome.PASS
+
+
+def test_a_lax_source_that_violates_a_declaration_is_rejected(tmp_path: Path) -> None:
+    """Lax tolerates no declaration, not invalid content under one."""
+    _write(tmp_path, "hat.xsd", HAT_SCHEMA)
+    case = _source_case(
+        tmp_path,
+        sources=(
+            Source(
+                role=".",
+                content=f'<t:head xmlns:t="{HAT_NS}">12</t:head>',
+                validation="lax",
+            ),
+        ),
+        schemas=(_schema("schema", "hat.xsd"),),
+        body=_typed_probe(),
+        result=_expected_error("XTTE1515"),
+    )
+
+    result = suite.run_case(case, XSLT30)
+
+    assert result.outcome is Outcome.PASS
+    assert result.actual_error_code == "XTTE1515"
+
+
+def _no_namespace_head(root: Path) -> None:
+    """Write a no-namespace schema whose ``head`` element carries two facets."""
+    _write(
+        root,
+        "head.xsd",
+        f"""<xs:schema xmlns:xs="{XSD_NS}" elementFormDefault="qualified">
+  <xs:simpleType name="headSize">
+    <xs:restriction base="xs:integer">
+      <xs:minInclusive value="4"/><xs:maxInclusive value="10"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="head" type="headSize"/>
+</xs:schema>""",
+    )
+
+
+def test_a_source_reference_schema_validates_a_no_namespace_instance(
+    tmp_path: Path,
+) -> None:
+    """The instance's ``xsi:noNamespaceSchemaLocation`` names a declared schema."""
+    _no_namespace_head(tmp_path)
+    _write(
+        tmp_path,
+        "head.xml",
+        '<head xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:noNamespaceSchemaLocation="head.xsd">4</head>',
+    )
+    case = _source_case(
+        tmp_path,
+        sources=(_file_source("head.xml", "strict"),),
+        schemas=(_schema("source-reference", "head.xsd"),),
+        body=_typed_probe(),
+        result=_assertion("<out>true</out>"),
+    )
+
+    result = suite.run_case(case, XSLT30)
+
+    assert result.outcome is Outcome.PASS
+
+
+def test_a_source_without_a_validation_attribute_keeps_the_strip_default(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "hat.xsd", HAT_SCHEMA)
+    case = _source_case(
+        tmp_path,
+        sources=(Source(role=".", content=f'<t:head xmlns:t="{HAT_NS}">4</t:head>'),),
+        schemas=(_schema("schema", "hat.xsd"),),
+        body=_typed_probe(),
+        result=_assertion("<out>false</out>"),
+    )
+
+    result = suite.run_case(case, XSLT30)
+
+    assert result.outcome is Outcome.PASS
+
+
+def test_a_selection_from_an_unvalidated_source_stays_untyped(tmp_path: Path) -> None:
+    """A selection is evaluated over the parsed source, not re-validated."""
+    case = _source_case(
+        tmp_path,
+        sources=(Source(role=".", content="<doc><head>4</head></doc>", select="doc/head"),),
+        schemas=(),
+        body=(
+            '<xsl:template match="head"><out>'
+            '<xsl:value-of select="data(.) instance of xs:integer"/>'
+            "</out></xsl:template>"
+        ),
+        result=_assertion("<out>false</out>"),
+    )
+
+    result = suite.run_case(case, XSLT30)
+
+    assert result.outcome is Outcome.PASS
+
+
+def test_a_validated_source_selection_sees_the_validated_tree(tmp_path: Path) -> None:
+    """A declared validation is assessed before the selection is made."""
+    _no_namespace_head(tmp_path)
+    case = _source_case(
+        tmp_path,
+        sources=(
+            Source(
+                role=".",
+                content="<head>4</head>",
+                validation="strict",
+                select="/*",
+            ),
+        ),
+        schemas=(_schema("schema", "head.xsd"),),
+        body=(
+            '<xsl:template match="head"><out>'
+            '<xsl:value-of select="data(.) instance of xs:integer"/>'
+            "</out></xsl:template>"
+        ),
+        result=_assertion("<out>true</out>"),
+    )
+
+    result = suite.run_case(case, XSLT30)
+
+    assert result.outcome is Outcome.PASS
+
+
+@pytest.mark.parametrize(
+    ("validation", "instance", "code"),
+    [
+        ("strict", "<other/>", "XTTE1512"),
+        ("strict", "<head>12</head>", "XTTE1510"),
+        ("lax", "<head>12</head>", "XTTE1515"),
+    ],
+)
+def test_a_validated_selection_reports_each_assessment_code(
+    tmp_path: Path,
+    validation: str,
+    instance: str,
+    code: str,
+) -> None:
+    """The harness reports the code the same assessment raises inside an invocation."""
+    _no_namespace_head(tmp_path)
+    case = _source_case(
+        tmp_path,
+        sources=(
+            Source(
+                role=".",
+                content=instance,
+                validation=validation,
+                select="/*",
+            ),
+        ),
+        schemas=(_schema("schema", "head.xsd"),),
+        body=(
+            '<xsl:template match="head"><out>typed</out></xsl:template>'
+            '<xsl:template match="*"><out>untyped</out></xsl:template>'
+        ),
+        result=_expected_error(code),
+    )
+
+    result = suite.run_case(case, XSLT30)
+
+    assert result.outcome is Outcome.PASS
+    assert result.actual_error_code == code

@@ -598,7 +598,6 @@ def test_executor_reports_unsupported_environment_shapes_as_adapter_gaps(
     catalog = load_catalog(root / "tests" / "xslt" / "corpus" / "catalog.xml")
     case = catalog.cases["gate/case-001"]
     profile = SUITE_PROFILES["xslt30"]
-    source = case.environment.sources[0]
     shapes = {
         "resources": replace(
             case,
@@ -619,20 +618,6 @@ def test_executor_reports_unsupported_environment_shapes_as_adapter_gaps(
             invocation=replace(
                 case.invocation,
                 packages=(Package(role="principal", path=PurePosixPath("pkg.xsl")),),
-            ),
-        ),
-        "source schema": replace(
-            case,
-            environment=replace(
-                case.environment,
-                schemas=(Schema(role="source-reference"),),
-            ),
-        ),
-        "schema-validated source": replace(
-            case,
-            environment=replace(
-                case.environment,
-                sources=(replace(source, validation="strict"),),
             ),
         ),
         "result-variable output": replace(

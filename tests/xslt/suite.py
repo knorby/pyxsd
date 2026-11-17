@@ -37,6 +37,7 @@ from tests.xslt.runner import CaseExecutionError, run_cases
 from tests.xslt.selection import XSLT30_NON_STREAMING, FeatureProfile
 
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmMap
+from pyxsd.xdm.document import DocumentValidationError, parse_typed_document
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath.engine import XPathEngine
@@ -309,51 +310,123 @@ def _parameter_values(
     return values
 
 
+#: Catalog ``source/@validation`` values that name a processor validation mode.
+#: The catalog's ``skip`` asks for no validation at all, which leaves exactly
+#: the untyped document the ``strip`` default produces, so it names no mode.
+_SOURCE_VALIDATION_MODES = frozenset({"strict", "lax"})
+
+#: The XSLT code one failed validated-source assessment reports, keyed by the
+#: document layer's reason.  A harness-evaluated selection validates its source
+#: outside the invocation, so the harness reports the code the invocation would
+#: have raised for the same assessment failure.
+_VALIDATION_CODES = {
+    "unknown": "XTTE1512",
+    "invalid": "XTTE1510",
+    "lax-invalid": "XTTE1515",
+}
+
+
+@dataclass(frozen=True)
+class _SourceInput:
+    """One invocation's source value and the validation it declares.
+
+    ``validation`` is set only when the raw source itself is handed to the
+    invocation: a selection is already evaluated over a document the harness
+    parsed from that source.
+    """
+
+    value: Any
+    validation: str | None = None
+
+
+def _declared_validation(source: Source | None) -> str | None:
+    """The processor validation mode *source* declares, or ``None``."""
+    validation = None if source is None else source.validation
+    return validation if validation in _SOURCE_VALIDATION_MODES else None
+
+
+def source_validation(case: TestCase) -> str | None:
+    """The context source's declared validation, or ``None`` for the default.
+
+    ``None`` covers a case that omits ``@validation`` and one the catalog marks
+    ``skip``: neither asks the processor to validate, so the source keeps the
+    untyped document the processor's ``strip`` default produces.
+    """
+    return _declared_validation(_context_source(case))
+
+
 def _context_source(case: TestCase) -> Source | None:
     sources = [source for source in case.environment.sources if source.role == "."]
     if not sources:
         return None
     if len(sources) > 1:
         raise UnsupportedCase("multiple context-item sources")
-    if any(source.validation == "strict" for source in case.environment.sources):
-        raise UnsupportedCase("schema-validated source")
-    for schema in case.environment.schemas:
-        if schema.role in ("schema", "source-reference"):
-            raise UnsupportedCase("source schema")
     return sources[0]
 
 
-def _parse_source(case: TestCase, source: Source) -> XdmDocument:
+def _raw_source(case: TestCase, source: Source) -> Path | bytes:
+    """One source in the form the invocation itself parses.
+
+    Inline content stays bytes and a file stays its absolute corpus path, so
+    the invocation parses — and, when the catalog declares it, validates — the
+    document instead of inheriting an already-parsed untyped tree.
+    """
     if case.document_root is None:
         raise UnsupportedCase("case without a corpus root")
     if source.content is not None:
-        return XdmDocument.parse(source.content.encode("utf-8"))
+        return source.content.encode("utf-8")
     if source.path is not None:
-        return XdmDocument.parse(case.document_root / Path(str(source.path)))
+        return case.document_root / Path(str(source.path))
     raise UnsupportedCase("context source without a file or inline content")
 
 
-def _source_input(
+def _parse_source(case: TestCase, source: Source) -> XdmDocument:
+    """One source parsed for a selection the harness evaluates itself."""
+    return XdmDocument.parse(_raw_source(case, source))
+
+
+def _selection_document(
     case: TestCase,
     profile: SuiteProfile,
-) -> tuple[Any, ...] | XdmDocument | XdmNode | None:
+    source: Source,
+    validation: str | None,
+) -> XdmDocument:
+    """The document a harness-evaluated selection reads in document order.
+
+    The invocation validates only a source it parses itself, so a declared
+    validation is assessed here through the engine's typed parse and the pool
+    the case declares before the selection is made.
+    """
+    if validation is None:
+        return _parse_source(case, source)
+    try:
+        return parse_typed_document(
+            _raw_source(case, source),
+            schema_pool=_case_schema_pool(profile, case),
+            validation=validation,
+        )
+    except DocumentValidationError as exc:
+        raise CaseExecutionError(_VALIDATION_CODES[exc.reason], str(exc)) from exc
+
+
+def _source_input(case: TestCase, profile: SuiteProfile) -> _SourceInput | None:
     """The initial context item or match selection the catalog declares."""
     xpath_version = profile.processor.xpath
     if case.environment.context_item is not None:
         select = case.environment.context_item.select
-        return () if select is None else _evaluate(select, xpath_version)
+        return _SourceInput(() if select is None else _evaluate(select, xpath_version))
     source = _context_source(case)
     mode = case.invocation.initial_mode
     if source is None:
         if mode is not None and mode.select:
-            return _evaluate(mode.select, xpath_version)
+            return _SourceInput(_evaluate(mode.select, xpath_version))
         return None
-    document = _parse_source(case, source)
-    if source.select:
-        return _evaluate(source.select, xpath_version, focus=document)
-    if mode is not None and mode.select:
-        return _evaluate(mode.select, xpath_version, focus=document)
-    return document
+    select = source.select or (None if mode is None else mode.select)
+    validation = _declared_validation(source)
+    if select is None:
+        return _SourceInput(_raw_source(case, source), validation)
+    document = _selection_document(case, profile, source, validation)
+    return _SourceInput(_evaluate(select, xpath_version, focus=document))
 
 
 def _delivery(case: TestCase) -> str:
@@ -512,7 +585,9 @@ def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
     try:
         source = _source_input(case, profile)
         if source is not None:
-            options["source"] = source
+            options["source"] = source.value
+            if source.validation is not None:
+                options["validation"] = source.validation
         compiled = _compile_stylesheet(
             profile,
             stylesheet,
