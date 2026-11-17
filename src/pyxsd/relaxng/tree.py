@@ -21,7 +21,7 @@ import weakref
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urljoin
 from xml.etree import ElementTree as ET
 
@@ -29,6 +29,9 @@ from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import XML_NS, NamespaceContext
 from pyxsd.relaxng.origins import SourceOrigin
+
+if TYPE_CHECKING:
+    from pyxsd.relaxng.evidence import CandidateSelection
 
 __all__ = ["LexicalRevision", "NodeContext", "RelaxNGElement"]
 
@@ -392,6 +395,27 @@ class RelaxNGElement:
         if snapshot is None:
             raise PyXSDError(_TYPED_ACCESS_CAPABILITY)
         return snapshot.attribute_value(self, expanded_name)
+
+    def assign(
+        self,
+        *,
+        selections: tuple[CandidateSelection, ...] = (),
+        **fields: Any,
+    ) -> None:
+        """Encode and apply one atomic transaction of projected field writes.
+
+        Keys are generated projection aliases or the route's scalar descriptor
+        name.  Every value is shape-checked, encoded, and context-checked before
+        any lexical store changes; ``selections`` name pre-commit
+        :class:`~pyxsd.relaxng.evidence.CandidateSelection` facts that must
+        coexist in one complete accepting derivation.  A successful write
+        dirties the whole revision but never certifies document validity or
+        refreshes typed evidence.  Lexical :meth:`set_text` and
+        :meth:`set_attribute` remain available and never choose a datatype.
+        """
+        from pyxsd.relaxng.binding import assign_fields
+
+        assign_fields(self, dict(fields), selections)
 
     def iter_content(self) -> Iterator[str | RelaxNGElement]:
         """Yield text, child elements, and child tails in document order.

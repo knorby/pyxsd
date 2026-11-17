@@ -17,12 +17,19 @@ from __future__ import annotations
 
 import keyword
 import threading
-from collections.abc import Iterator, Sequence
-from typing import Any, overload
+from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any, cast, overload
 from unicodedata import normalize
 
+from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import local_name, namespace_of
-from pyxsd.relaxng.evidence import EvidenceGraph
+from pyxsd.relaxng.contracts import ScalarContract, scalar_contract
+from pyxsd.relaxng.datatypes import Datatype, DatatypeContext
+from pyxsd.relaxng.errors import AmbiguousValueError, StaleInterpretationError
+from pyxsd.relaxng.evidence import CandidateSelection, EvidenceGraph, EvidenceOccurrence
+from pyxsd.relaxng.patterns import List, Pattern
 from pyxsd.relaxng.projection import (
     FieldContract,
     ProjectionPlan,
@@ -30,6 +37,7 @@ from pyxsd.relaxng.projection import (
     WildcardContract,
 )
 from pyxsd.relaxng.tree import RelaxNGElement
+from pyxsd.relaxng.values import AlternativeValue, encode_scalar
 
 __all__ = [
     "GENERATED_MODULE",
@@ -84,11 +92,7 @@ class ScalarDescriptor:
         return instance.scalar_value()
 
     def __set__(self, instance: RelaxNGElement, value: Any) -> None:
-        del instance, value
-        raise AttributeError(
-            "the RELAX NG typed_value descriptor is read-only until typed "
-            "assignment support is available"
-        )
+        instance.assign(**{self.field_name: value})
 
 
 class AttributeDescriptor:
@@ -116,6 +120,9 @@ class AttributeDescriptor:
         if instance is None:
             return self
         return instance.attribute_value(self.contract.expanded_name)
+
+    def __set__(self, instance: RelaxNGElement, value: Any) -> None:
+        instance.assign(**{self.contract.alias: value})
 
 
 class ChildSequence(Sequence[RelaxNGElement]):
@@ -233,6 +240,9 @@ class ChildDescriptor:
             if child._name_ == self.contract.expanded_name:
                 return child
         return None
+
+    def __set__(self, instance: RelaxNGElement, value: Any) -> None:
+        instance.assign(**{self.contract.alias: value})
 
 
 def _sanitize_identifier(value: str) -> str:
@@ -373,18 +383,26 @@ class ProjectionClassFactory:
             "_relaxng_route_id_": route.route_id,
             "_relaxng_wildcards_": wildcards,
         }
+        assignable: dict[str, Any] = {}
         for contract in route.attributes.values():
-            namespace[contract.alias] = AttributeDescriptor(contract)
+            attribute_descriptor = AttributeDescriptor(contract)
+            namespace[contract.alias] = attribute_descriptor
+            assignable[contract.alias] = attribute_descriptor
         for contract in route.children.values():
-            namespace[contract.alias] = ChildDescriptor(contract)
+            child_descriptor = ChildDescriptor(contract)
+            namespace[contract.alias] = child_descriptor
+            assignable[contract.alias] = child_descriptor
         scalar_field: str | None = None
         if route.content.scalar_contracts:
             scalar_field = _scalar_field_name(set(namespace))
-            namespace[scalar_field] = ScalarDescriptor(scalar_field)
+            scalar_descriptor = ScalarDescriptor(scalar_field)
+            namespace[scalar_field] = scalar_descriptor
+            assignable[scalar_field] = scalar_descriptor
         namespace["_relaxng_fields_"] = tuple(
             namespace[contract.alias]
             for contract in (*route.attributes.values(), *route.children.values())
         )
+        namespace["_relaxng_assignable_fields_"] = MappingProxyType(assignable)
         namespace["_relaxng_scalar_field_"] = scalar_field
         namespace["_relaxng_scalar_descriptor_"] = (
             None if scalar_field is None else namespace[scalar_field]
@@ -497,3 +515,350 @@ def bind_projection(
         for child in node._children_:
             stack.append((child, _child_route(plan, route, child._name_)))
     return root
+
+
+@dataclass(frozen=True)
+class _PreparedAssignment:
+    """One fully encoded lexical write, not yet applied to the tree."""
+
+    target: RelaxNGElement
+    attribute: str | None
+    lexical: str
+    site_kind: str
+    site_name: str | None
+
+    def apply(self) -> None:
+        """Commit the prepared lexical value through the public tree writers."""
+        if self.attribute is None:
+            self.target.set_text(self.lexical)
+        else:
+            self.target.set_attribute(self.attribute, self.lexical)
+
+
+def _position_context(node: RelaxNGElement) -> DatatypeContext:
+    """Return the exact datatype context of a lexical position."""
+    return DatatypeContext(node.base_uri, dict(node.namespaces or {}))
+
+
+def _site_occurrence(
+    evidence: EvidenceGraph,
+    target: RelaxNGElement,
+    kind: str,
+    name: str | None,
+) -> EvidenceOccurrence | None:
+    """Return the evidence site for one lexical assignment target."""
+    if kind == "attribute":
+        return next(
+            (
+                occurrence
+                for occurrence in evidence.occurrences
+                if occurrence.element is target
+                and occurrence.kind == "attribute"
+                and occurrence.name == name
+            ),
+            None,
+        )
+    return next(
+        (
+            occurrence
+            for occurrence in evidence.occurrences
+            if occurrence.element is target
+            and occurrence.kind == "text"
+            and occurrence.content_index == 0
+        ),
+        None,
+    )
+
+
+def _schema_patterns_for(
+    evidence: EvidenceGraph,
+    target: RelaxNGElement,
+    kind: str,
+    name: str | None,
+) -> tuple[Pattern, ...]:
+    """Return site patterns first, then every compiled pattern as a fallback.
+
+    A newly created optional attribute or an absent scalar has no parse
+    occurrence.  Its compiled pattern may still be present elsewhere in the
+    evidence graph because the pattern table is pre-pruning and grammar-owned.
+    The fallback never inspects instance values; it only finds the exact
+    schema-static pattern identity already stored in the document's evidence.
+    """
+    site = _site_occurrence(evidence, target, kind, name)
+    local = () if site is None else tuple(evidence._schema_patterns.get(site, ()))
+    return (
+        *local,
+        *(pattern for patterns in evidence._schema_patterns.values() for pattern in patterns),
+    )
+
+
+def _matching_patterns(
+    evidence: EvidenceGraph,
+    contract: ScalarContract,
+    target: RelaxNGElement,
+    kind: str,
+    name: str | None,
+) -> tuple[Pattern, ...]:
+    """Return compiled patterns whose scalar contract equals *contract*."""
+    matches = []
+    for pattern in _schema_patterns_for(evidence, target, kind, name):
+        if scalar_contract(pattern) == contract:
+            matches.append(pattern)
+    return tuple(matches)
+
+
+def _datatype_for(
+    evidence: EvidenceGraph,
+    contract: ScalarContract,
+    target: RelaxNGElement,
+    kind: str,
+    name: str | None,
+) -> Datatype | None:
+    """Return the compiled datatype encoder for one unique atomic contract."""
+    matches = _matching_patterns(evidence, contract, target, kind, name)
+    if not matches:
+        return None
+    return cast(Datatype, cast(Any, matches[0]).datatype)
+
+
+def _validate_snapshot(
+    snapshot: AlternativeValue,
+    grammar_fingerprint: str,
+    context: DatatypeContext,
+) -> None:
+    """Require an alternative snapshot to describe this document and context.
+
+    Only lexical text and context are reused.  Candidate values, decodability,
+    and validation authority are never imported into the edited revision.  An
+    exact context comparison prevents a QName or relative value from silently
+    changing meaning because the snapshot was resolved under another prefix
+    map or base URI.
+    """
+    if snapshot.grammar_fingerprint != grammar_fingerprint:
+        raise ValueError("the alternative snapshot was produced by a different compiled grammar")
+    if snapshot.context.base_uri != context.base_uri:
+        raise ValueError("the alternative snapshot's base URI does not match this position")
+    if dict(snapshot.context.namespaces) != dict(context.namespaces):
+        raise ValueError(
+            "the alternative snapshot's namespace context does not match this position"
+        )
+
+
+def _unique_contract(
+    contracts: tuple[ScalarContract, ...],
+    description: str,
+) -> ScalarContract:
+    """Require exactly one schema-static encoding at a bare-value position."""
+    unique = tuple(dict.fromkeys(contracts))
+    if not unique:
+        raise ValueError(f"{description} has no schema scalar contract to encode")
+    if len(unique) > 1:
+        raise AmbiguousValueError(
+            f"{description} has {len(unique)} schema scalar contracts; assign an "
+            "AlternativeValue snapshot or an explicit lexical value instead"
+        )
+    return unique[0]
+
+
+def _encode_bare_value(
+    contracts: tuple[ScalarContract, ...],
+    value: object,
+    context: DatatypeContext,
+    evidence: EvidenceGraph,
+    target: RelaxNGElement,
+    kind: str,
+    name: str | None,
+    description: str,
+) -> str:
+    """Encode one bare Python value using only its unique compiled contract."""
+    contract = _unique_contract(contracts, description)
+    if contract.kind == "list":
+        list_pattern = next(
+            (
+                pattern
+                for pattern in _matching_patterns(evidence, contract, target, kind, name)
+                if isinstance(pattern, List)
+            ),
+            None,
+        )
+        return encode_scalar(contract, value, context, list_pattern=list_pattern)
+    datatype = (
+        _datatype_for(evidence, contract, target, kind, name) if contract.kind == "atomic" else None
+    )
+    return encode_scalar(contract, value, context, datatype=datatype)
+
+
+def _prepare_descriptor(
+    node: RelaxNGElement,
+    descriptor: Any,
+    value: object,
+    evidence: EvidenceGraph,
+    grammar_fingerprint: str,
+) -> _PreparedAssignment:
+    """Prepare one descriptor write without touching the lexical tree."""
+    if isinstance(descriptor, AttributeDescriptor):
+        target = node
+        attribute = descriptor.contract.expanded_name
+        contracts = descriptor.contract.scalar_contracts
+        site_kind = "attribute"
+        site_name = attribute
+        description = f"attribute {attribute!r}"
+    elif isinstance(descriptor, ScalarDescriptor):
+        target = node
+        attribute = None
+        route = cast(RouteContract, cast(Any, type(node))._relaxng_route_)
+        contracts = route.content.scalar_contracts
+        site_kind = "text"
+        site_name = None
+        description = "the whole-element scalar position"
+    elif isinstance(descriptor, ChildDescriptor):
+        contract = descriptor.contract
+        if contract.cardinality.repeatable:
+            raise TypeError(
+                f"child field {contract.alias!r} is repeatable; Task 4 owns child "
+                "sequence assignment"
+            )
+        matches = [child for child in node._children_ if child._name_ == contract.expanded_name]
+        if len(matches) != 1:
+            raise ValueError(
+                f"child field {contract.alias!r} requires exactly one existing "
+                "child for typed assignment; Task 4 owns insertion and removal"
+            )
+        target = matches[0]
+        attribute = None
+        contracts = contract.scalar_contracts
+        site_kind = "text"
+        site_name = None
+        description = f"child field {contract.alias!r}"
+    else:  # pragma: no cover - guarded by the generated descriptor map
+        raise TypeError(f"unsupported projection descriptor {type(descriptor).__name__}")
+
+    context = _position_context(target)
+    if isinstance(value, AlternativeValue):
+        _validate_snapshot(value, grammar_fingerprint, context)
+        lexical = value.lexical
+    else:
+        lexical = _encode_bare_value(
+            contracts,
+            value,
+            context,
+            evidence,
+            target,
+            site_kind,
+            site_name,
+            description,
+        )
+    return _PreparedAssignment(target, attribute, lexical, site_kind, site_name)
+
+
+def _same_occurrence(
+    occurrence: EvidenceOccurrence, candidates: Iterable[EvidenceOccurrence]
+) -> bool:
+    """Compare evidence occurrences by identity, never by equal field values."""
+    return any(candidate is occurrence for candidate in candidates)
+
+
+def _assigned_occurrences(
+    evidence: EvidenceGraph,
+    prepared: tuple[_PreparedAssignment, ...],
+) -> tuple[EvidenceOccurrence, ...]:
+    """Return each assigned site and its token children, in evidence order."""
+    sites: list[EvidenceOccurrence] = []
+    for assignment in prepared:
+        site = _site_occurrence(
+            evidence, assignment.target, assignment.site_kind, assignment.site_name
+        )
+        if site is not None and not _same_occurrence(site, sites):
+            sites.append(site)
+    tokens = [
+        occurrence
+        for occurrence in evidence.occurrences
+        if occurrence.kind == "token"
+        and occurrence.parent is not None
+        and _same_occurrence(occurrence.parent, sites)
+    ]
+    return (*sites, *tokens)
+
+
+def _validated_selections(
+    selections: Iterable[CandidateSelection],
+    evidence: EvidenceGraph,
+    prepared: tuple[_PreparedAssignment, ...],
+    current: bool,
+) -> tuple[CandidateSelection, ...]:
+    """Validate selection scope and joint compatibility before mutation."""
+    if isinstance(selections, CandidateSelection):
+        raise TypeError("selections must be an iterable of CandidateSelection values")
+    requested = tuple(selections)
+    for selection in requested:
+        if not isinstance(selection, CandidateSelection):
+            raise TypeError("joint selections must be CandidateSelection values")
+    if not requested:
+        return requested
+    if not current:
+        raise StaleInterpretationError(
+            "joint selections require the current typed evidence; "
+            "revalidate() before assigning selections"
+        )
+    allowed = _assigned_occurrences(evidence, prepared)
+    for selection in requested:
+        occurrence = selection.occurrence
+        if not _same_occurrence(occurrence, evidence.occurrences):
+            raise ValueError("a joint selection does not belong to the current evidence")
+        if not _same_occurrence(occurrence, allowed):
+            raise ValueError("a joint selection does not belong to an assigned field occurrence")
+    if not evidence.compatible(requested):
+        raise ValueError(
+            "the requested joint selections are not jointly compatible with "
+            "one complete accepting derivation"
+        )
+    return requested
+
+
+def assign_fields(
+    node: RelaxNGElement,
+    fields: dict[str, object],
+    selections: Iterable[CandidateSelection],
+) -> None:
+    """Prepare every descriptor write, then commit one atomic transaction.
+
+    All Python shape checks, datatype encodings, snapshot context checks, and
+    joint-selection queries complete before the first lexical write.  A failure
+    leaves the tree byte-for-byte unchanged and does not dirty the revision.
+    A success dirties the whole revision under the existing mutation contract;
+    it never certifies document validity or refreshes typed evidence.
+    """
+    descriptor_map = getattr(type(node), "_relaxng_assignable_fields_", None)
+    if descriptor_map is None:
+        raise PyXSDError("RELAX NG typed assignment requires a projected typed element")
+    if not fields:
+        if isinstance(selections, CandidateSelection) or tuple(selections):
+            raise ValueError("selections require at least one assigned field")
+        return
+
+    descriptors = []
+    for key, value in fields.items():
+        descriptor = descriptor_map.get(key)
+        if descriptor is None:
+            raise TypeError(f"unknown assignable RELAX NG projection field {key!r}")
+        descriptors.append((descriptor, value))
+
+    snapshot = node.revision._typed_snapshot
+    evidence = getattr(snapshot, "_evidence", None)
+    grammar_fingerprint = getattr(snapshot, "_fingerprint", None)
+    if not isinstance(evidence, EvidenceGraph) or not isinstance(grammar_fingerprint, str):
+        raise PyXSDError(
+            "RELAX NG typed assignment requires a valid typed parse with binding evidence"
+        )
+    current = (
+        getattr(snapshot, "current", False) is True
+        and not node.revision.dirty
+        and evidence._grammar_fingerprint == grammar_fingerprint
+    )
+    prepared = tuple(
+        _prepare_descriptor(node, descriptor, value, evidence, grammar_fingerprint)
+        for descriptor, value in descriptors
+    )
+    _validated_selections(selections, evidence, prepared, current)
+    for assignment in prepared:
+        assignment.apply()

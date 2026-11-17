@@ -20,7 +20,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType, NotImplementedType
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from pyxsd.relaxng.contracts import (
     ListShape,
@@ -31,15 +31,31 @@ from pyxsd.relaxng.contracts import (
     scalar_contract,
 )
 from pyxsd.relaxng.datatypes import (
+    BUILTIN_LIBRARY,
+    XSD_LIBRARY,
+    BuiltinDatatypeFactory,
     Datatype,
     DatatypeContext,
     DatatypeSelector,
     UnsupportedDatatypeOperation,
+    XsdDatatypeFactory,
     datatype_supports_decode,
     resolve_datatype_selector,
 )
 from pyxsd.relaxng.errors import AmbiguousValueError
 from pyxsd.relaxng.evidence import EvidenceGraph, ScalarWitness, TokenConstraintGraph
+from pyxsd.relaxng.patterns import (
+    Choice,
+    Data,
+    DataExcept,
+    Empty,
+    Group,
+    List,
+    OneOrMore,
+    Pattern,
+    Ref,
+    Value,
+)
 from pyxsd.relaxng.validator import TokenSpan
 
 __all__ = [
@@ -48,6 +64,7 @@ __all__ = [
     "ListInterpretation",
     "alternative_value_from_witnesses",
     "candidate_for_witness",
+    "encode_scalar",
     "list_interpretation",
     "list_value",
 ]
@@ -517,6 +534,198 @@ def _decode_candidate(
     except UnsupportedDatatypeOperation:
         return Candidate(identifier, contract, None, False)
     return Candidate(identifier, contract, decoded, True)
+
+
+@dataclass(frozen=True)
+class _TokenContractPlan:
+    """The fixed or homogeneous scalar token plan of a plain list contract."""
+
+    kind: Literal["fixed", "list"]
+    patterns: tuple[Pattern, ...]
+
+
+def _standalone_datatype(contract: ScalarContract) -> Datatype | None:
+    """Build the datatype for a built-in/XSD contract without instance evidence.
+
+    Custom libraries remain unknown here: a custom encoder must be supplied by
+    the evidence graph that owns the compiled datatype.  Reconstructing an XSD
+    datatype is safe because the contract carries its normalized parameters and
+    the encoder receives the instance context explicitly.
+    """
+    if contract.library_uri == BUILTIN_LIBRARY:
+        factory: Any = BuiltinDatatypeFactory()
+    elif contract.library_uri == XSD_LIBRARY:
+        factory = XsdDatatypeFactory()
+    else:
+        return None
+    return cast(
+        Datatype,
+        factory.create(
+            contract.type_name,
+            contract.parameters,
+            DatatypeContext(None, {}),
+        ),
+    )
+
+
+def _list_token_children(pattern: Pattern) -> tuple[Pattern, ...]:
+    """Return the operands that decide a plain list token plan."""
+    if isinstance(pattern, Ref):
+        return (pattern.target,)
+    if isinstance(pattern, (Group, Choice)):
+        return (pattern.first, pattern.second)
+    if isinstance(pattern, OneOrMore):
+        return (pattern.pattern,)
+    return ()
+
+
+def _combine_list_tokens(
+    pattern: Pattern, results: dict[int, _TokenContractPlan | None]
+) -> _TokenContractPlan | None:
+    """Combine already-analysed list content into one token plan."""
+    if isinstance(pattern, Ref):
+        return results[id(pattern.target)]
+    if isinstance(pattern, Empty):
+        return _TokenContractPlan("fixed", ())
+    if isinstance(pattern, (Data, DataExcept, Value)):
+        return _TokenContractPlan("fixed", (pattern,))
+    if isinstance(pattern, Group):
+        first = results[id(pattern.first)]
+        second = results[id(pattern.second)]
+        if first is None or second is None:
+            return None
+        if first.kind == second.kind == "fixed":
+            return _TokenContractPlan("fixed", (*first.patterns, *second.patterns))
+        return None
+    if isinstance(pattern, OneOrMore):
+        item = results[id(pattern.pattern)]
+        if item is not None and item.kind == "fixed" and len(item.patterns) == 1:
+            return _TokenContractPlan("list", item.patterns)
+        return None
+    if isinstance(pattern, Choice):
+        first = results[id(pattern.first)]
+        second = results[id(pattern.second)]
+        if first is not None and second is not None:
+            if first.kind == "fixed" and not first.patterns and second.kind == "list":
+                return second
+            if second.kind == "fixed" and not second.patterns and first.kind == "list":
+                return first
+        return None
+    return None
+
+
+def _list_token_plan(pattern: List) -> _TokenContractPlan | None:
+    """Derive one plain token plan from a whole-list pattern, or fail closed.
+
+    Only the static ``tuple`` and homogeneous ``list`` shapes have a unique
+    token contract per position.  The pattern graph of those shapes is acyclic,
+    so this iterative post-order walk terminates on deep grammars as well.
+    """
+    content = pattern.pattern
+    results: dict[int, _TokenContractPlan | None] = {}
+    pending: list[tuple[Pattern, bool]] = [(content, False)]
+    while pending:
+        node, ready = pending.pop()
+        key = id(node)
+        if key in results:
+            continue
+        if not ready:
+            pending.append((node, True))
+            for child in reversed(_list_token_children(node)):
+                if id(child) not in results:
+                    pending.append((child, False))
+            continue
+        results[key] = _combine_list_tokens(node, results)
+    return results[id(content)]
+
+
+def _encode_list_token(
+    pattern: Pattern,
+    value: object,
+    context: DatatypeContext,
+) -> str:
+    """Encode one list item against its exact schema token contract."""
+    contract = scalar_contract(pattern)
+    datatype = cast(Datatype, cast(Any, pattern).datatype)
+    return encode_scalar(contract, value, context, datatype=datatype)
+
+
+def _encode_list_value(
+    contract: ScalarContract,
+    value: object,
+    context: DatatypeContext,
+    pattern: List,
+) -> str:
+    """Encode a declared tuple/list shape with XML whitespace separators."""
+    shape = list_shape(pattern)
+    if shape == "interpretation":
+        raise UnsupportedDatatypeOperation(
+            "the whole-list contract has no uniquely derivable token contract; "
+            "its optional, heterogeneous, or ambiguous content is a structural gap"
+        )
+    plan = cast(_TokenContractPlan, _list_token_plan(pattern))
+    if shape == "tuple":
+        if not isinstance(value, tuple):
+            raise TypeError("a fixed tuple-shaped RELAX NG list requires a tuple")
+        if len(value) != len(plan.patterns):
+            raise ValueError(
+                f"the fixed RELAX NG list requires {len(plan.patterns)} tokens, not {len(value)}"
+            )
+        item_patterns = plan.patterns
+    else:
+        if not isinstance(value, list):
+            raise TypeError("a homogeneous RELAX NG list requires a list")
+        item_patterns = tuple(plan.patterns[0] for _ in value)
+    return " ".join(
+        _encode_list_token(item_pattern, item, context)
+        for item_pattern, item in zip(item_patterns, value, strict=True)
+    )
+
+
+def encode_scalar(
+    contract: ScalarContract,
+    value: object,
+    context: DatatypeContext,
+    *,
+    datatype: Datatype | None = None,
+    list_pattern: List | None = None,
+) -> str:
+    """Encode one typed assignment using explicit schema contracts only.
+
+    Text contracts accept exactly a ``str``.  Atomic contracts invoke the
+    supplied compiled datatype encoder, or reconstruct the built-in/XSD encoder
+    from the contract's stable metadata.  A whole-list contract requires the
+    evidence-owned compiled list pattern so its token contracts come from the
+    schema rather than from Python value inspection.  There is deliberately no
+    ``str(value)`` fallback and no boolean-to-number coercion: those rules live
+    in the datatype encoders and are never bypassed here.
+    """
+    if not isinstance(contract, ScalarContract):
+        raise TypeError("encode_scalar requires a ScalarContract")
+    if not isinstance(context, DatatypeContext):
+        raise TypeError("encode_scalar requires a DatatypeContext")
+    if contract.kind == "text":
+        if not isinstance(value, str):
+            raise TypeError("a RELAX NG text scalar assignment requires a string")
+        return value
+    if contract.kind == "list":
+        if not isinstance(list_pattern, List):
+            raise UnsupportedDatatypeOperation(
+                "a whole-list scalar contract requires the evidence-derived "
+                "compiled list pattern before it can encode tokens"
+            )
+        return _encode_list_value(contract, value, context, list_pattern)
+    if datatype is None:
+        datatype = _standalone_datatype(contract)
+    if datatype is None:
+        raise UnsupportedDatatypeOperation(
+            f"no datatype encoder is available for atomic contract "
+            f"{contract.type_name!r} in library {contract.library_uri!r}"
+        )
+    lexical = datatype.encode(value, context)
+    if not isinstance(lexical, str):
+        raise TypeError("a datatype encoder must return a lexical string")
+    return lexical
 
 
 def candidate_for_witness(

@@ -447,8 +447,9 @@ def test_typed_value_descriptor_exposes_unique_scalar_values():
     assert type(root)._relaxng_scalar_field_ == "typed_value"
     assert isinstance(type(root).typed_value, ScalarDescriptor)
     assert root.typed_value == root.scalar_value() == 12
-    with pytest.raises(AttributeError, match="read-only"):
-        root.typed_value = 5
+    root.typed_value = 5
+    assert integer_document.to_string() == "<doc>5</doc>"
+    assert integer_document.interpretations_current is False
 
     string_schema = compile_body(data("string"))
     string_document = typed(string_schema, "<doc>hello</doc>")
@@ -483,8 +484,9 @@ def test_typed_value_descriptor_suffixes_past_generated_field_collisions():
     assert isinstance(type(root).typed_value, AttributeDescriptor)
     assert type(root).typed_value.expanded_name == "typed_value"
     assert isinstance(root.typed_value, AlternativeValue)
-    with pytest.raises(AttributeError, match="read-only"):
-        root.typed_value__ = 13
+    root.typed_value__ = 13
+    assert document.to_string() == '<doc typed_value="a" typed_value_="b">13</doc>'
+    assert document.interpretations_current is False
 
 
 def test_scalar_descriptor_is_absent_without_scalar_content_contracts():
