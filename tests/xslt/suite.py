@@ -433,12 +433,36 @@ def _source_input(case: TestCase, profile: SuiteProfile) -> _SourceInput | None:
 
 
 def _delivery(case: TestCase) -> str:
+    """The engine delivery that yields every view this case's output asks for.
+
+    ``<output serialize="yes">`` means serialization takes place, so it wins over
+    ``tree``: only stylesheet delivery serializes, and it retains the raw
+    sequence (and a tree when the stylesheet's build-tree allows one).  With no
+    serialization, ``tree="no"`` is raw and ``tree="yes"`` is document; an
+    unspecified tree keeps the existing stylesheet default.
+    """
     output = case.invocation.output or case.environment.output
-    if output is not None and output.tree is False:
+    if output is not None and output.serialize is not True and output.tree is False:
         return "raw"
-    if output is not None and output.tree is True:
+    if output is not None and output.serialize is not True and output.tree is True:
         return "document"
     return "stylesheet"
+
+
+def _base_output_uri(case: TestCase) -> str:
+    """The absolute base output URI every relative result-document href uses.
+
+    A declared output file is the base the catalog's own runner resolves
+    ``xsl:result-document`` hrefs against.  Without one, a synthetic
+    per-case principal output URI supplies the identity — the same convention
+    the corpus runner uses — so a relative href always resolves and nothing is
+    written.
+    """
+    output = case.invocation.output or case.environment.output
+    root = _corpus_root(case)
+    if output is not None and output.path is not None:
+        return (root / Path(str(output.path))).as_uri()
+    return (root / "__pyxsd_output__" / case.name / "principal-output.xml").as_uri()
 
 
 def _principal_candidates(case: TestCase) -> tuple[Stylesheet, ...]:
@@ -848,6 +872,7 @@ def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
         raise UnsupportedCase("result-variable output")
     units = _compilation_units(case)
     resolver = _collection_resolver(case, units)
+    output_uri = _base_output_uri(case)
     invocation = case.invocation
     xpath_version = profile.processor.xpath
     declared_parameters = (*case.environment.params, *invocation.params)
@@ -898,6 +923,7 @@ def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
         ),
         "initial_function_arguments": arguments,
         "delivery": _delivery(case),
+        "output_uri": output_uri,
     }
     try:
         source = _source_input(case, profile)

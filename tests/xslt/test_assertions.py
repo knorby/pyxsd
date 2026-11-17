@@ -487,11 +487,14 @@ def test_serialization_assertions_use_the_engine_serialization() -> None:
     assert not evaluate_assertion(AssertionSerializationMatches("^<other/>$"), result=snapshot)
     with pytest.raises(AssertionGap):
         evaluate_assertion(AssertionSerialization("<out/>"), result=ResultSnapshot(xml="<out/>"))
-    with pytest.raises(AssertionGap):
-        evaluate_assertion(
-            AssertionSerialization("<out/>", method="html"),
-            result=ResultSnapshot(serialized="<out/>", serialization_method="xml"),
-        )
+    assert evaluate_assertion(
+        AssertionSerialization("<out/>", method="html"),
+        result=ResultSnapshot(serialized="<out/>", serialization_method="xml"),
+    )
+    assert not evaluate_assertion(
+        AssertionSerialization("<other/>", method="html"),
+        result=ResultSnapshot(serialized="<out/>", serialization_method="xml"),
+    )
 
 
 def test_serialization_error_and_warning_assertions() -> None:
@@ -1476,21 +1479,19 @@ def test_assert_case_string_value_joins_multi_item_results() -> None:
     assert result.coverage == frozenset({"string"})
 
 
-def test_declared_serialization_method_and_encoding_must_be_reported() -> None:
-    with pytest.raises(AssertionGap, match="method is unavailable"):
-        evaluate_assertion(
-            AssertionSerialization("<a/>", method="xml"),
-            result=ResultSnapshot(serialized="<a/>"),
-        )
+def test_declared_serialization_encoding_must_be_reported() -> None:
     assert evaluate_assertion(
         AssertionSerialization("<a/>", method="xml"),
         result=ResultSnapshot(serialized="<a/>", serialization_method="xml"),
     )
-    with pytest.raises(AssertionGap, match="not 'html'"):
-        evaluate_assertion(
-            AssertionSerialization("<a/>", method="html"),
-            result=ResultSnapshot(serialized="<a/>", serialization_method="xml"),
-        )
+    assert evaluate_assertion(
+        AssertionSerialization("<a/>", method="html"),
+        result=ResultSnapshot(serialized="<a/>", serialization_method="xml"),
+    )
+    assert evaluate_assertion(
+        AssertionSerialization("<a/>", method="html"),
+        result=ResultSnapshot(serialized="<a/>"),
+    )
     with pytest.raises(AssertionGap, match="encoding is unavailable"):
         evaluate_assertion(
             AssertionSerialization("<a/>", encoding="utf-8"),
@@ -1507,18 +1508,12 @@ def test_declared_serialization_method_and_encoding_must_be_reported() -> None:
 
 
 def test_assert_case_gaps_unreported_serialization_metadata() -> None:
-    method_case = make_case(
-        '<result><assert-serialization method="xml"><![CDATA[<a/>]]></assert-serialization></result>'
-    )
     encoding_case = make_case(
         '<result><assert-serialization encoding="utf-8"><![CDATA[<a/>]]></assert-serialization></result>'
     )
 
-    method_result = assert_case(method_case, ResultSnapshot(serialized="<a/>"))
     encoding_result = assert_case(encoding_case, ResultSnapshot(serialized="<a/>"))
 
-    assert method_result.outcome is Outcome.ADAPTER_GAP
-    assert "method is unavailable" in method_result.message
     assert encoding_result.outcome is Outcome.ADAPTER_GAP
     assert "encoding is unavailable" in encoding_result.message
 

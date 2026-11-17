@@ -1243,6 +1243,8 @@ class AssertionResultDocument(Assertion):
     family: ClassVar[str] = SECONDARY_FAMILY
 
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
+        if context.error_mode:
+            return _unexpected_error(context)
         secondary = context.result.secondary
         if secondary is None:
             raise AssertionGap("the result does not provide secondary results")
@@ -1265,6 +1267,17 @@ class AssertionResultDocument(Assertion):
 
 @dataclass(frozen=True)
 class AssertionSerialization(Assertion):
+    """Compare the engine's serialized result with the expected text.
+
+    ``method`` is comparison metadata, not a requirement on the engine: the
+    catalog schema says it "identifies the output method used for serialization,
+    which affects the way in which the actual results can be compared", and the
+    reference corpus runner compares the serialized string alone.  The expected
+    file is already serialized text, so a declared method that differs from the
+    engine's own reported method is a diagnostic, never a gap.  ``bom``,
+    ``encoding``, ``ignore_prefixes``, and the text comparison stay strict.
+    """
+
     expected: str = ""
     file: str | None = None
     method: str | None = None
@@ -1288,14 +1301,6 @@ class AssertionSerialization(Assertion):
                 raise AssertionGap("serialization BOM state is unavailable")
             if context.result.serialization_bom != self.bom:
                 return _failed("serialization BOM differs")
-        if self.method is not None:
-            actual_method = context.result.serialization_method
-            if actual_method is None:
-                raise AssertionGap("the serialization method is unavailable")
-            if self.method != actual_method:
-                raise AssertionGap(
-                    f"the result was serialized with {actual_method!r}, not {self.method!r}"
-                )
         if self.encoding is not None:
             actual_encoding = context.result.serialization_encoding
             if actual_encoding is None:
