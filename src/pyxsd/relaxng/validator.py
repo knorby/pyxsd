@@ -113,6 +113,10 @@ RECOVERY_MISSING_CONTENT: Final = "missing-content"
 #: context on the compiled datatype (``ScalarDatatype.context``).
 _EMPTY_DATATYPE_CONTEXT = DatatypeContext(None, {})
 
+#: Deterministic rejections for an illegal derivative dependency cycle.
+_TEXT_CYCLE = "cyclic RELAX NG text derivative has no element boundary"
+_EVENT_CYCLE = "cyclic RELAX NG event derivative has no element boundary"
+
 
 class TokenSpan(NamedTuple):
     """One XML-whitespace-delimited list token and its exact source offsets.
@@ -238,6 +242,15 @@ class DerivationContext:
     _event_memo: dict[tuple[str, Pattern, str, str, DatatypeContext | None], Pattern] = field(
         init=False, repr=False, compare=False
     )
+    #: Text/list derivative keys currently being evaluated.  These span nested
+    #: public entries (for example ``text`` -> ``list`` -> ``text``), so a
+    #: reference cycle through a list pattern is rejected before recursion.
+    _active_text: set[tuple[Pattern, str, DatatypeContext]] = field(
+        init=False, repr=False, compare=False
+    )
+    _active_list: set[tuple[Pattern, tuple[str, ...], DatatypeContext]] = field(
+        init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.datatype_context, DatatypeContext):
@@ -251,6 +264,8 @@ class DerivationContext:
         self._text_memo = {}
         self._list_memo = {}
         self._event_memo = {}
+        self._active_text = set()
+        self._active_list = set()
 
     def canonical_residual(self, pattern: Pattern) -> Pattern:
         """Return the canonical parse-local node for *pattern*.
@@ -319,12 +334,18 @@ def text_derivative(pattern: Pattern, lexical: str, context: DerivationContext) 
     if not isinstance(lexical, str):
         raise TypeError("derivative lexical text must be a string")
     key = (pattern, lexical, context.datatype_context)
+    if key in context._active_text:
+        raise TypeError(_TEXT_CYCLE)
     cached = context._text_memo.get(key)
     if cached is not None:
         return cached
-    result = context.canonical_residual(_text_derivative(pattern, lexical, context))
-    context.remember_text(key, result)
-    return result
+    context._active_text.add(key)
+    try:
+        result = context.canonical_residual(_text_derivative(pattern, lexical, context))
+        context.remember_text(key, result)
+        return result
+    finally:
+        context._active_text.discard(key)
 
 
 def list_derivative(
@@ -349,15 +370,21 @@ def list_derivative(
     if not token_texts:
         return pattern
     key = (pattern, tuple(token_texts), context.datatype_context)
+    if key in context._active_list:
+        raise TypeError(_TEXT_CYCLE)
     cached = context._list_memo.get(key)
     if cached is not None:
         return cached
-    result: Pattern = pattern
-    for token_text in token_texts:
-        result = text_derivative(result, token_text, context)
-    result = context.canonical_residual(result)
-    context.remember_list(key, result)
-    return result
+    context._active_list.add(key)
+    try:
+        result: Pattern = pattern
+        for token_text in token_texts:
+            result = text_derivative(result, token_text, context)
+        result = context.canonical_residual(result)
+        context.remember_list(key, result)
+        return result
+    finally:
+        context._active_list.discard(key)
 
 
 def _text_derivative(
@@ -369,12 +396,19 @@ def _text_derivative(
     return _derive_text_iterative(pattern, lexical, context)
 
 
-def _text_derivation_children(pattern: Pattern) -> tuple[Pattern, ...]:
+def _text_derivation_children(
+    pattern: Pattern,
+    lexical: str,
+    context: DerivationContext,
+    decisions: dict[int, bool],
+) -> tuple[Pattern, ...]:
     """Return the operands whose text derivative this node needs.
 
     ``Group`` derives its second operand only when the first is nullable;
     scheduling it unconditionally would consume memo and residual budget for
-    work the recursive rule never performs.
+    work the recursive rule never performs.  Likewise, ``DataExcept`` derives
+    its excluded pattern only after the base datatype accepts the lexical
+    value, matching Clark's rule and keeping budgets order-independent.
     """
     if isinstance(pattern, _After):
         return (pattern.first,)
@@ -389,7 +423,10 @@ def _text_derivation_children(pattern: Pattern) -> tuple[Pattern, ...]:
     if isinstance(pattern, OneOrMore):
         return (pattern.pattern,)
     if isinstance(pattern, DataExcept):
-        return (pattern.excluded,)
+        datatype = cast(Datatype, pattern.datatype)
+        accepted = datatype.allows(lexical, context.datatype_context)
+        decisions[id(pattern)] = accepted
+        return (pattern.excluded,) if accepted else ()
     return ()
 
 
@@ -406,6 +443,7 @@ def _derive_text_iterative(
     RELAX NG graph and is rejected deterministically instead of recursing.
     """
     results: dict[int, Pattern] = {}
+    decisions: dict[int, bool] = {}
     active: set[int] = set()
     pending: list[tuple[Pattern, bool]] = [(pattern, False)]
     while pending:
@@ -422,16 +460,16 @@ def _derive_text_iterative(
                     continue
             active.add(key)
             pending.append((node, True))
-            for child in reversed(_text_derivation_children(node)):
+            for child in reversed(_text_derivation_children(node, lexical, context, decisions)):
                 child_key = id(child)
                 if child_key in results:
                     continue
                 if child_key in active:
-                    raise TypeError("cyclic RELAX NG text derivative has no element boundary")
+                    raise TypeError(_TEXT_CYCLE)
                 pending.append((child, False))
             continue
         active.discard(key)
-        raw = _text_derivative_node(node, lexical, context, results)
+        raw = _text_derivative_node(node, lexical, context, results, decisions)
         if node is pattern:
             results[key] = raw
             continue
@@ -446,6 +484,7 @@ def _text_derivative_node(
     lexical: str,
     context: DerivationContext,
     results: dict[int, Pattern],
+    decisions: dict[int, bool],
 ) -> Pattern:
     """Compute one node's text derivative from its already-derived operands."""
     if isinstance(pattern, _After):
@@ -485,8 +524,7 @@ def _text_derivative_node(
         datatype = cast(Datatype, pattern.datatype)
         return Empty() if datatype.allows(lexical, context.datatype_context) else NotAllowed()
     if isinstance(pattern, DataExcept):
-        datatype = cast(Datatype, pattern.datatype)
-        if not datatype.allows(lexical, context.datatype_context):
+        if not decisions[id(pattern)]:
             return NotAllowed()
         return NotAllowed() if _nullable(results[id(pattern.excluded)]) else Empty()
     if isinstance(pattern, Value):
@@ -679,7 +717,7 @@ def _derive_event_iterative(
                 if child_key in results:
                     continue
                 if child_key in active:
-                    raise TypeError("cyclic RELAX NG event derivative has no element boundary")
+                    raise TypeError(_EVENT_CYCLE)
                 pending.append((child, False))
             continue
         active.discard(key)

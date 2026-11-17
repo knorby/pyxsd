@@ -391,6 +391,23 @@ class TestDataExceptDerivative:
         assert text_derivative(pattern, "reject", make_context()) == NotAllowed()
         assert datatype.calls == []
 
+    def test_rejecting_base_does_not_spend_budget_on_the_excluded_pattern(self):
+        datatype = RecordingDatatype()
+        pattern = DataExcept(datatype, Text())
+        context = make_context(limits=RelaxNGLimits(max_derivative_states=1, max_memo_entries=1))
+
+        assert text_derivative(pattern, "reject", context) == NotAllowed()
+        assert datatype.calls == []
+
+    def test_accepting_base_still_derives_the_excluded_pattern(self):
+        datatype = RecordingDatatype()
+        pattern = DataExcept(datatype, Data(INTEGER))
+        context = make_context(limits=RelaxNGLimits(max_derivative_states=10, max_memo_entries=10))
+
+        assert text_derivative(pattern, "6", context) == NotAllowed()
+        assert text_derivative(pattern, "x", context) == Empty()
+        assert datatype.calls == []
+
     def test_exclusion_resolves_qnames_in_both_contexts(self):
         schema_context = DatatypeContext("urn:schema", {"p": "urn:one"})
         qname = xsd("QName", schema_context)

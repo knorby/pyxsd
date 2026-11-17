@@ -15,7 +15,7 @@ import os
 import threading
 import weakref
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Literal, cast
@@ -215,20 +215,14 @@ def _instance_limits(
     schema_limits: RelaxNGLimits,
     override: RelaxNGLimits | None,
 ) -> RelaxNGLimits:
-    """Merge one parse's explicit budgets over the schema's defaults.
+    """Return the effective instance-side limits for one parse.
 
-    An explicit value wins; an unspecified (``None``) override field keeps the
-    compiled schema's value.  The schema value is never modified, so repeated
-    parses with different overrides stay independent.
+    ``None`` means the compiled schema's defaults apply.  A supplied
+    :class:`RelaxNGLimits` is authoritative for this parse: every ``None``
+    field in it means unlimited, not "inherit the schema value".  The schema
+    value itself is never modified.
     """
-    if override is None:
-        return schema_limits
-    explicit = {
-        descriptor.name: getattr(override, descriptor.name)
-        for descriptor in fields(RelaxNGLimits)
-        if getattr(override, descriptor.name) is not None
-    }
-    return replace(schema_limits, **explicit)
+    return schema_limits if override is None else override
 
 
 class _BatchSchema:
@@ -430,10 +424,14 @@ class RelaxNGSchema:
         - ``capture_xdm`` retains the existing opt-in XDM meaning: the same
           source revision also becomes an unannotated XML-tree view.
 
-        - ``limits`` bounds this instance's derivative work.  An explicit
-          non-``None`` field overrides the compiled schema's matching budget,
-          while unspecified fields keep the schema default; the schema value is
-          never modified.  Exhaustion raises
+        - ``limits`` bounds this instance's derivative work.  ``None`` uses the
+          compiled schema's limits.  Supplying a
+          :class:`~pyxsd.relaxng.limits.RelaxNGLimits` replaces that declaration
+          for this parse, and each ``None`` field in it means unlimited rather
+          than inheriting the schema value; callers preserving selected schema
+          defaults can pass
+          ``dataclasses.replace(schema.limits, max_memo_entries=...)``.  The
+          schema value is never modified.  Exhaustion raises
           :class:`~pyxsd.relaxng.errors.RelaxNGLimitError` instead of
           reporting invalidity.  A configured ``max_diagnostics`` only bounds
           finding retention; suppressed findings stay counted, the report stays

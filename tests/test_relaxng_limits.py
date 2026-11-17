@@ -35,6 +35,7 @@ from pyxsd.relaxng.patterns import (
     Element,
     Empty,
     Group,
+    List,
     NotAllowed,
     PatternPool,
     Ref,
@@ -155,16 +156,39 @@ def test_compiled_instance_budgets_apply_when_parse_has_no_override() -> None:
         assert caught.value.configured == 0
 
 
-def test_parse_override_merges_with_compiled_defaults() -> None:
+def test_parse_override_replaces_compiled_defaults_and_none_is_unlimited() -> None:
     derivative_limited = compile_schema(limits=RelaxNGLimits(max_derivative_states=0))
-    with pytest.raises(RelaxNGLimitError) as caught:
-        parse(derivative_limited, VALID_XML, limits=RelaxNGLimits(max_memo_entries=100))
-    assert caught.value.budget == "max_derivative_states"
+    assert parse(
+        derivative_limited,
+        VALID_XML,
+        limits=RelaxNGLimits(max_memo_entries=10_000),
+    ).is_valid
 
     memo_limited = compile_schema(limits=RelaxNGLimits(max_memo_entries=0))
+    assert parse(
+        memo_limited,
+        VALID_XML,
+        limits=RelaxNGLimits(max_derivative_states=10_000),
+    ).is_valid
+
+
+def test_supplied_empty_limits_clears_bounded_memo_and_diagnostics() -> None:
+    memo_limited = compile_schema(limits=RelaxNGLimits(max_memo_entries=0))
     with pytest.raises(RelaxNGLimitError) as caught:
-        parse(memo_limited, VALID_XML, limits=RelaxNGLimits(max_derivative_states=100))
+        parse(memo_limited, VALID_XML)
     assert caught.value.budget == "max_memo_entries"
+    assert parse(memo_limited, VALID_XML, limits=RelaxNGLimits()).is_valid
+
+    diagnostic_limited = compile_schema(limits=RelaxNGLimits(max_diagnostics=0))
+    omitted = parse(diagnostic_limited, INVALID_XML)
+    assert omitted.is_valid is False
+    assert omitted.report.issues == []
+    assert omitted.report.diagnostics_complete is False
+
+    supplied = parse(diagnostic_limited, INVALID_XML, limits=RelaxNGLimits())
+    assert supplied.is_valid is False
+    assert supplied.report.issues
+    assert supplied.report.diagnostics_complete is True
 
 
 def test_parse_override_can_tighten_or_relax_compiled_defaults() -> None:
@@ -613,6 +637,44 @@ def test_cyclic_derivatives_are_rejected_instead_of_recursing() -> None:
     event_cycle.bind(Group(event_cycle, Element(Name(None, "a"), Empty())))
     with pytest.raises(TypeError, match="cyclic RELAX NG event derivative"):
         validator.start_tag_open_derivative(event_cycle, "a", derivation_context())
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [None, RelaxNGLimits(max_derivative_states=1, max_memo_entries=1)],
+)
+def test_list_mediated_reference_cycles_are_rejected_without_recursion(
+    limits: RelaxNGLimits | None,
+) -> None:
+    cycle = Ref()
+    cycle.bind(List(cycle))
+    context = derivation_context(limits)
+
+    with pytest.raises(TypeError, match="cyclic RELAX NG text derivative"):
+        validator.text_derivative(cycle, "a", context)
+    assert not context._active_text
+    assert not context._active_list
+
+    with pytest.raises(TypeError, match="cyclic RELAX NG text derivative"):
+        validator.list_derivative(
+            cycle,
+            validator.xml_whitespace_tokens("a b"),
+            context,
+        )
+    assert not context._active_text
+    assert not context._active_list
+
+    with pytest.raises(TypeError, match="cyclic RELAX NG text derivative"):
+        validator.list_derivative(
+            List(cycle),
+            validator.xml_whitespace_tokens("a"),
+            context,
+        )
+    assert not context._active_text
+    assert not context._active_list
+
+    assert validator.text_derivative(Text(), "a", context) == Text()
+    assert parse(recursive_schema(), nested_instance("n", 20)).is_valid
 
 
 def test_apply_after_shares_continuations_without_reworking_or_rejecting_empty_leaves() -> None:
