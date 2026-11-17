@@ -58,6 +58,7 @@ from pyxsd.relaxng.values import (
     AlternativeValue,
     Candidate,
     alternative_value_from_witnesses,
+    candidate_for_witness,
     list_interpretation,
     list_value,
 )
@@ -191,6 +192,16 @@ class UndeclaredCapabilityDatatype(DeclaredDecodingDatatype):
     """Same identity metadata as the declared datatype, without the claim."""
 
     supports_decode = False
+
+
+class DeclaredRaisingDecodeDatatype(NonDecodingDatatype):
+    """Declares support but still reports the operation as unsupported."""
+
+    type_name = "declared-raising"
+    supports_decode = True
+
+    def decode(self, lexical, context):
+        raise UnsupportedDatatypeOperation(f"{self.type_name} cannot decode {lexical!r}")
 
 
 ZERO_OR_MORE_IDS = ("empty-first", "empty-last", "ref-wrapped")
@@ -641,12 +652,23 @@ class TestZeroOrMoreDecoderCapability:
         with pytest.raises(UnsupportedDatatypeOperation):
             interpretation.as_python()
 
+        if xml == "<r/>":
+            assert interpretation.token_candidates == ()
+        else:
+            (token_candidate,) = interpretation.token_candidates[0]
+            assert token_candidate.decodable is False
+            assert token_candidate.decoded is None
+            with pytest.raises(UnsupportedDatatypeOperation):
+                interpretation.as_types((("urn:custom", "undeclared"),))
+
         contracts = (scalar_contract(start.pattern),)
         value = value_at(graph, occurrence, contracts)
         assert isinstance(value, AlternativeValue)
         (candidate,) = value.candidates
         assert candidate.decodable is False
         assert candidate.decoded is None
+        with pytest.raises(UnsupportedDatatypeOperation):
+            value.as_candidate(candidate.candidate_id)
 
     def test_builtin_homogeneous_zero_or_more_stays_plain(self):
         content = List(Choice(OneOrMore(Data(INTEGER)), Empty()))
@@ -668,6 +690,92 @@ class TestZeroOrMoreDecoderCapability:
         value = value_at(graph, occurrence, contracts)
         assert isinstance(value, AlternativeValue)
         assert value.candidates[0].decoded is None
+
+
+class TestUndeclaredDecoderEnforcement:
+    def test_nonplain_list_with_undeclared_decoder_stays_wrapped(self):
+        content = List(Choice(Empty(), Data(UndeclaredDecodingDatatype())))
+        graph, start, occurrence = build("<r>ok</r>", content)
+        interpretation = interpret(graph, occurrence)
+
+        assert interpretation.shape == "interpretation"
+        assert not interpretation.is_plain
+        (token_candidate,) = interpretation.token_candidates[0]
+        assert token_candidate.decodable is False
+        assert token_candidate.decoded is None
+        with pytest.raises(UnsupportedDatatypeOperation):
+            interpretation.as_types((("urn:custom", "undeclared"),))
+        with pytest.raises(UnsupportedDatatypeOperation):
+            interpretation.as_python()
+
+        contracts = (scalar_contract(start.pattern),)
+        value = value_at(graph, occurrence, contracts)
+        assert isinstance(value, AlternativeValue)
+        (candidate,) = value.candidates
+        assert candidate.decodable is False
+        assert candidate.decoded is None
+        with pytest.raises(UnsupportedDatatypeOperation):
+            value.as_python()
+        with pytest.raises(UnsupportedDatatypeOperation):
+            value.as_candidate(candidate.candidate_id)
+
+    def test_atomic_undeclared_decoder_is_not_decodable(self):
+        graph, _, occurrence = build("<r>ok</r>", Data(UndeclaredDecodingDatatype()))
+        (witness,) = graph.scalar_witnesses_at(occurrence)
+
+        candidate = candidate_for_witness(witness, grammar_fingerprint="grammar")
+        assert candidate.decodable is False
+        assert candidate.decoded is None
+
+        value = alternative_value_from_witnesses(
+            (witness,), grammar_fingerprint="grammar", revision=1
+        )
+        (whole,) = value.candidates
+        assert whole.decodable is False
+        assert whole.decoded is None
+        with pytest.raises(UnsupportedDatatypeOperation):
+            value.as_type(("urn:custom", "undeclared"))
+        with pytest.raises(UnsupportedDatatypeOperation):
+            value.as_python()
+        with pytest.raises(UnsupportedDatatypeOperation):
+            value.as_candidate(whole.candidate_id)
+
+        duplicate = alternative_value_from_witnesses(
+            (witness, witness), grammar_fingerprint="grammar", revision=1
+        )
+        (collapsed,) = duplicate.candidates
+        assert collapsed.decodable is False
+        assert collapsed.decoded is None
+
+    def test_atomic_declared_decoder_still_decodes(self):
+        graph, _, occurrence = build("<r>ok</r>", Data(DeclaredDecodingDatatype()))
+        (witness,) = graph.scalar_witnesses_at(occurrence)
+
+        candidate = candidate_for_witness(witness, grammar_fingerprint="grammar")
+        assert candidate.decodable is True
+        assert candidate.decoded == "OK"
+
+        value = alternative_value_from_witnesses(
+            (witness,), grammar_fingerprint="grammar", revision=1
+        )
+        assert value.as_type(("urn:custom", "decoded")) == "OK"
+        assert value.as_python() == "OK"
+
+    def test_declared_but_raising_unsupported_stays_nondecodable(self):
+        graph, _, occurrence = build("<r>ok</r>", Data(DeclaredRaisingDecodeDatatype()))
+        (witness,) = graph.scalar_witnesses_at(occurrence)
+
+        candidate = candidate_for_witness(witness, grammar_fingerprint="grammar")
+        assert candidate.decodable is False
+        assert candidate.decoded is None
+
+        value = alternative_value_from_witnesses(
+            (witness,), grammar_fingerprint="grammar", revision=1
+        )
+        with pytest.raises(UnsupportedDatatypeOperation):
+            value.as_python()
+        with pytest.raises(UnsupportedDatatypeOperation):
+            value.as_type(("urn:custom", "declared-raising"))
 
 
 class TestAmbiguousTokenAssignments:

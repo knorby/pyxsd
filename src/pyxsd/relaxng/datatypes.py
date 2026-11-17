@@ -137,6 +137,7 @@ __all__ = [
     "UnsupportedDatatypeError",
     "UnsupportedDatatypeOperation",
     "XsdDatatypeFactory",
+    "datatype_supports_decode",
     "resolve_datatype_selector",
 ]
 
@@ -803,6 +804,16 @@ class Datatype(ABC):
     def encode(self, value: Any, context: DatatypeContext) -> str:
         """Encode a Python value as a lexical form, when the datatype supports it."""
         raise UnsupportedDatatypeOperation(f"{type(self).__name__} does not provide an encoder")
+
+
+def datatype_supports_decode(datatype: object) -> bool:
+    """Return whether *datatype* explicitly declares decoder support.
+
+    This reads the class-level :attr:`Datatype.supports_decode` declaration.
+    It is not an inference from a ``decode`` override and does not call
+    ``decode``.  Instance state cannot turn capability on or off.
+    """
+    return getattr(type(datatype), "supports_decode", False) is True
 
 
 class DatatypeFactory(ABC):

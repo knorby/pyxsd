@@ -38,6 +38,7 @@ from pyxsd.relaxng.datatypes import (
     BUILTIN_LIBRARY,
     DatatypeParameter,
     UnsupportedDatatypeOperation,
+    datatype_supports_decode,
 )
 from pyxsd.relaxng.names import (
     AnyName,
@@ -675,17 +676,6 @@ class _ListShapePart:
 _ListAnalysis = _ListShapePart | None
 
 
-def _datatype_has_decoder(datatype: object) -> bool:
-    """Whether a compiled datatype explicitly declares decoder support.
-
-    This is a schema-static capability declaration, not an inference from a
-    ``decode`` override and not a runtime probe.  A datatype that overrides
-    ``decode`` only to raise ``UnsupportedDatatypeOperation`` remains
-    nondecodable until it declares ``supports_decode = True``.
-    """
-    return getattr(type(datatype), "supports_decode", False) is True
-
-
 def _list_analysis_children(pattern: Pattern) -> tuple[Pattern, ...]:
     """Return the operands whose shape decides this content node's shape."""
     if isinstance(pattern, Ref):
@@ -706,7 +696,7 @@ def _list_analysis(pattern: Pattern, results: dict[int, _ListAnalysis]) -> _List
     if isinstance(pattern, Empty):
         return _ListShapePart("fixed", 0, True)
     if isinstance(pattern, (Data, DataExcept, Value)):
-        return _ListShapePart("fixed", 1, _datatype_has_decoder(pattern.datatype))
+        return _ListShapePart("fixed", 1, datatype_supports_decode(pattern.datatype))
     if isinstance(pattern, Group):
         first = results[id(pattern.first)]
         second = results[id(pattern.second)]

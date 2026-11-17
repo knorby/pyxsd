@@ -35,6 +35,7 @@ from pyxsd.relaxng.datatypes import (
     DatatypeContext,
     DatatypeSelector,
     UnsupportedDatatypeOperation,
+    datatype_supports_decode,
     resolve_datatype_selector,
 )
 from pyxsd.relaxng.errors import AmbiguousValueError
@@ -495,6 +496,29 @@ class AlternativeValue:
         return item.decoded
 
 
+def _decode_candidate(
+    identifier: str,
+    contract: ScalarContract,
+    datatype: object,
+    lexical: str,
+    context: DatatypeContext,
+) -> Candidate:
+    """Build one candidate from a datatype witness, failing closed.
+
+    A datatype that does not explicitly declare ``supports_decode`` is never
+    invoked, regardless of whether it overrides ``decode``.  A declared decoder
+    that reports ``UnsupportedDatatypeOperation`` remains nondecodable; any
+    other declared-decoder failure propagates as before.
+    """
+    if not datatype_supports_decode(datatype):
+        return Candidate(identifier, contract, None, False)
+    try:
+        decoded = cast(Datatype, datatype).decode(lexical, context)
+    except UnsupportedDatatypeOperation:
+        return Candidate(identifier, contract, None, False)
+    return Candidate(identifier, contract, decoded, True)
+
+
 def candidate_for_witness(
     witness: ScalarWitness,
     *,
@@ -502,9 +526,10 @@ def candidate_for_witness(
 ) -> Candidate:
     """Build the candidate for one accepting scalar witness.
 
-    Decoding is optional.  A missing decoder (including every text and
-    whole-list contract in this phase) yields ``decodable=False`` with no
-    fabricated value.  Any other decoder failure propagates.
+    Decoding is optional.  A missing decoder declaration (including every text
+    and whole-list contract in this phase) yields ``decodable=False`` with no
+    fabricated value and no ``decode`` call.  A declared decoder that reports
+    unsupported remains lexical; any other declared-decoder failure propagates.
     """
     if not isinstance(witness, ScalarWitness):
         raise TypeError("candidate_for_witness requires a ScalarWitness")
@@ -512,12 +537,13 @@ def candidate_for_witness(
     identifier = candidate_id(grammar_fingerprint, contract)
     if contract.kind != "atomic":
         return Candidate(identifier, contract, None, False)
-    datatype = cast(Datatype, witness.datatype)
-    try:
-        decoded = datatype.decode(witness.lexical, witness.context)
-    except UnsupportedDatatypeOperation:
-        return Candidate(identifier, contract, None, False)
-    return Candidate(identifier, contract, decoded, True)
+    return _decode_candidate(
+        identifier,
+        contract,
+        witness.datatype,
+        witness.lexical,
+        witness.context,
+    )
 
 
 def alternative_value_from_witnesses(

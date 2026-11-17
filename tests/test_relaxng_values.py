@@ -225,6 +225,7 @@ class ExplodingDecodeDatatype(Datatype):
     library_uri = "urn:custom"
     type_name = "exploding"
     parameters = ()
+    supports_decode = True
 
     def __repr__(self):
         return f"{type(self).__name__}()"
