@@ -19,6 +19,7 @@ from pyxsd.relaxng.contracts import (
     candidate_id,
     list_items_decodable,
     list_shape,
+    pattern_identity,
     scalar_contract,
 )
 from pyxsd.relaxng.datatypes import (
@@ -156,6 +157,55 @@ class NonDecodingDatatype(Datatype):
         return left == right
 
 
+class RaisingDecodeDatatype(NonDecodingDatatype):
+    """Overrides decode only to report that no decoder exists.
+
+    It deliberately does not declare decoder support: an override alone is not
+    a capability claim.
+    """
+
+    type_name = "raising"
+
+    def decode(self, lexical, context):
+        raise UnsupportedDatatypeOperation(f"{self.type_name} has no decoder")
+
+
+class DeclaredDecodingDatatype(NonDecodingDatatype):
+    """A custom datatype that explicitly declares and provides a decoder."""
+
+    type_name = "decoded"
+    supports_decode = True
+
+    def decode(self, lexical, context):
+        return lexical.upper()
+
+
+class UndeclaredDecodingDatatype(DeclaredDecodingDatatype):
+    """Successfully decodes but does not declare the capability."""
+
+    type_name = "undeclared"
+    supports_decode = False
+
+
+class UndeclaredCapabilityDatatype(DeclaredDecodingDatatype):
+    """Same identity metadata as the declared datatype, without the claim."""
+
+    supports_decode = False
+
+
+ZERO_OR_MORE_IDS = ("empty-first", "empty-last", "ref-wrapped")
+
+
+def zero_or_more_contents(item):
+    wrapped = Ref()
+    wrapped.bind(Choice(Empty(), OneOrMore(item)))
+    return (
+        List(Choice(Empty(), OneOrMore(item))),
+        List(Choice(OneOrMore(item), Empty())),
+        List(wrapped),
+    )
+
+
 class TestListShape:
     @pytest.mark.parametrize(
         ("content", "expected"),
@@ -222,6 +272,22 @@ class TestListShape:
         assert not list_items_decodable(List(Choice(Data(INTEGER), Data(STRING))))
         with pytest.raises(TypeError, match="list"):
             list_items_decodable(Data(INTEGER))
+
+    def test_decoder_capability_declarations(self):
+        assert Datatype.supports_decode is False
+        assert type(INTEGER).supports_decode is True
+
+    def test_decoder_capability_is_not_semantic_identity(self):
+        declared = Data(DeclaredDecodingDatatype())
+        undeclared = Data(UndeclaredCapabilityDatatype())
+
+        assert pattern_identity(declared) == pattern_identity(undeclared)
+        assert scalar_contract(declared) == scalar_contract(undeclared)
+        assert candidate_id("grammar", scalar_contract(declared)) == candidate_id(
+            "grammar", scalar_contract(undeclared)
+        )
+        assert list_items_decodable(List(OneOrMore(declared)))
+        assert not list_items_decodable(List(OneOrMore(undeclared)))
 
     def test_only_list_patterns_have_a_list_shape(self):
         with pytest.raises(TypeError, match="list"):
@@ -505,6 +571,103 @@ class TestEmptyLists:
         with pytest.raises(UnsupportedDatatypeOperation):
             value.as_python()
         assert value.as_interpretation(candidate.candidate_id) == interpretation
+
+
+class TestZeroOrMoreDecoderCapability:
+    @pytest.mark.parametrize(
+        "content",
+        zero_or_more_contents(Data(RaisingDecodeDatatype())),
+        ids=ZERO_OR_MORE_IDS,
+    )
+    @pytest.mark.parametrize("xml", ["<r/>", "<r>ok</r>"])
+    def test_overridden_raising_decode_without_declaration_stays_wrapped(self, xml, content):
+        graph, start, occurrence = build(xml, content)
+        interpretation = interpret(graph, occurrence)
+
+        assert interpretation.shape == "list"
+        assert not interpretation.is_plain
+        with pytest.raises(UnsupportedDatatypeOperation):
+            interpretation.as_python()
+
+        contracts = (scalar_contract(start.pattern),)
+        value = value_at(graph, occurrence, contracts)
+        assert isinstance(value, AlternativeValue)
+        (candidate,) = value.candidates
+        assert candidate.decodable is False
+        assert candidate.decoded is None
+        with pytest.raises(UnsupportedDatatypeOperation):
+            value.as_python()
+
+        if xml == "<r/>":
+            assert interpretation.token_candidates == ()
+            assert value.candidates[0].decoded is None
+        else:
+            assert len(interpretation.token_candidates[0]) == 1
+
+    @pytest.mark.parametrize(
+        "content",
+        zero_or_more_contents(Data(DeclaredDecodingDatatype())),
+        ids=ZERO_OR_MORE_IDS,
+    )
+    @pytest.mark.parametrize(
+        ("xml", "expected"),
+        [("<r/>", []), ("<r>ok</r>", ["OK"])],
+    )
+    def test_declared_decoders_are_plain(self, xml, expected, content):
+        graph, start, occurrence = build(xml, content)
+        interpretation = interpret(graph, occurrence)
+
+        assert interpretation.shape == "list"
+        assert interpretation.is_plain
+        assert interpretation.as_python() == expected
+        selectors = () if not expected else (("urn:custom", "decoded"),)
+        assert interpretation.as_types(selectors) == tuple(expected)
+
+        contracts = (scalar_contract(start.pattern),)
+        assert value_at(graph, occurrence, contracts) == expected
+
+    @pytest.mark.parametrize(
+        "content",
+        zero_or_more_contents(Data(UndeclaredDecodingDatatype())),
+        ids=ZERO_OR_MORE_IDS,
+    )
+    @pytest.mark.parametrize("xml", ["<r/>", "<r>ok</r>"])
+    def test_successful_decode_without_declaration_stays_wrapped(self, xml, content):
+        graph, start, occurrence = build(xml, content)
+        interpretation = interpret(graph, occurrence)
+
+        assert interpretation.shape == "list"
+        assert not interpretation.is_plain
+        with pytest.raises(UnsupportedDatatypeOperation):
+            interpretation.as_python()
+
+        contracts = (scalar_contract(start.pattern),)
+        value = value_at(graph, occurrence, contracts)
+        assert isinstance(value, AlternativeValue)
+        (candidate,) = value.candidates
+        assert candidate.decodable is False
+        assert candidate.decoded is None
+
+    def test_builtin_homogeneous_zero_or_more_stays_plain(self):
+        content = List(Choice(OneOrMore(Data(INTEGER)), Empty()))
+        graph, start, occurrence = build("<r>1 2</r>", content)
+        interpretation = interpret(graph, occurrence)
+
+        assert interpretation.is_plain
+        assert interpretation.as_python() == [1, 2]
+        contracts = (scalar_contract(start.pattern),)
+        assert value_at(graph, occurrence, contracts) == [1, 2]
+
+    def test_builtin_nondecoding_fixed_item_stays_wrapped(self):
+        graph, start, occurrence = build("<r>ok</r>", List(Data(NonDecodingDatatype())))
+        interpretation = interpret(graph, occurrence)
+
+        assert interpretation.shape == "tuple"
+        assert not interpretation.is_plain
+        contracts = (scalar_contract(start.pattern),)
+        value = value_at(graph, occurrence, contracts)
+        assert isinstance(value, AlternativeValue)
+        assert value.candidates[0].decoded is None
 
 
 class TestAmbiguousTokenAssignments:

@@ -48,9 +48,12 @@ parameter error.
 ``allows``, ``equal``, ``decode`` and ``encode`` are independent operations.
 ``decode`` and ``encode`` are optional pyxsd capabilities, not RELAX NG
 conformance: a custom datatype may implement only validation, in which case
-the inherited methods raise :class:`UnsupportedDatatypeOperation`.  Value
-equality deliberately ignores facet parameters because RELAX NG's
-``datatypeEqual`` service has no parameters.
+the inherited methods raise :class:`UnsupportedDatatypeOperation`.  A datatype
+that genuinely provides decoding must declare ``supports_decode = True``;
+overriding :meth:`Datatype.decode` is not by itself a capability declaration,
+because an implementation may override it only to report the operation as
+unsupported.  Value equality deliberately ignores facet parameters because
+RELAX NG's ``datatypeEqual`` service has no parameters.
 
 A compiled datatype is frozen, hashable, and value-comparable.  Its ``repr``
 is deterministic because the canonical choice order of the pattern IR sorts
@@ -71,7 +74,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from types import MappingProxyType, NotImplementedType
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 from pyxsd import xsd_data_types as _xsd_types
 from pyxsd.exceptions import PyXSDError
@@ -764,10 +767,20 @@ def _xsd10_anyuri_value(text: str) -> AnyURI:
 class Datatype(ABC):
     """The compiled behavior of one RELAX NG datatype.
 
+    ``supports_decode`` is an explicit, schema-static capability declaration
+    for :meth:`decode`.  The base class does not infer capability from method
+    overrides: a subclass may override ``decode`` only to raise
+    :class:`UnsupportedDatatypeOperation`, and such a datatype remains
+    nondecodable for shape selection until it declares support.  The flag is
+    implementation behavior, not datatype semantic identity; it does not
+    participate in equality, hashing, or pattern identity.
+
     Implementations that serve as pattern payloads must also be immutable,
     hashable, value-comparable, and deterministically ``repr``-able, because
     the pattern IR interns and canonically orders them.
     """
+
+    supports_decode: ClassVar[bool] = False
 
     @abstractmethod
     def allows(self, lexical: str, context: DatatypeContext) -> bool:
@@ -784,7 +797,7 @@ class Datatype(ABC):
         """Return whether two lexical values denote the same datatype value."""
 
     def decode(self, lexical: str, context: DatatypeContext) -> Any:
-        """Decode *lexical* into a Python value, when the datatype supports it."""
+        """Decode *lexical* into a Python value when support is declared."""
         raise UnsupportedDatatypeOperation(f"{type(self).__name__} does not provide a decoder")
 
     def encode(self, value: Any, context: DatatypeContext) -> str:
@@ -817,6 +830,8 @@ class ScalarDatatype(Datatype):
     :attr:`semantic_context` carries the namespace bindings that actually
     affect QName/NOTATION identity.
     """
+
+    supports_decode: ClassVar[bool] = True
 
     library_uri: str
     type_name: str

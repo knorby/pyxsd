@@ -36,7 +36,6 @@ from typing import Literal, cast
 
 from pyxsd.relaxng.datatypes import (
     BUILTIN_LIBRARY,
-    Datatype,
     DatatypeParameter,
     UnsupportedDatatypeOperation,
 )
@@ -677,15 +676,14 @@ _ListAnalysis = _ListShapePart | None
 
 
 def _datatype_has_decoder(datatype: object) -> bool:
-    """Whether a compiled datatype provides any decoder at all.
+    """Whether a compiled datatype explicitly declares decoder support.
 
-    This is a schema-static capability check for empty homogeneous lists, where
-    no token witness exists to demonstrate decodability.  A datatype that
-    inherits :meth:`Datatype.decode` only to raise
-    ``UnsupportedDatatypeOperation`` has no decoder; one that overrides it does.
+    This is a schema-static capability declaration, not an inference from a
+    ``decode`` override and not a runtime probe.  A datatype that overrides
+    ``decode`` only to raise ``UnsupportedDatatypeOperation`` remains
+    nondecodable until it declares ``supports_decode = True``.
     """
-    decode = getattr(type(datatype), "decode", None)
-    return decode is not None and decode is not Datatype.decode
+    return getattr(type(datatype), "supports_decode", False) is True
 
 
 def _list_analysis_children(pattern: Pattern) -> tuple[Pattern, ...]:
