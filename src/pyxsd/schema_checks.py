@@ -1367,16 +1367,60 @@ def report_attribute_use_derivation(ctx: CompileContextProtocol, er: Any, py_xsd
             )
 
 
+def attribute_group_attribute_uses(
+    er: Any, py_xsd: Any, seen: set[int] | None = None
+) -> dict[str, Any]:
+    """The attribute uses a type's attributeGroup references contribute.
+
+    Mirrors ``XsdType._collectAttributeGroup``: a group's own declarations
+    win over the ones a nested group contributes, a ``use="prohibited"``
+    contribution is not an attribute use of the referring type (attZ015), and
+    the result is keyed like ``er.attributes`` so the caller can merge it with
+    ``setdefault``. Two registration paths exist and both must be read: the ER
+    walk appends reference sites to ``attributeGroupRefs`` (the only path for
+    a type whose class has not been built), and class building copies a
+    group's uses onto the type's ``attributes`` (``resolveAttributeGroupRefs``)
+    while leaving ``attributeGroupRefs`` as it was. Read-only: it does not
+    register anything on the type. Ref sites resolve through
+    ``refSite._resolve_group(parser=py_xsd, for_class_building=True)`` so the
+    result matches the group the generated class would use; an unresolvable
+    reference is skipped (its own ``unknown-attributeGroup``/``final``
+    diagnostics are reported elsewhere). ``seen`` holds ``id(group)`` and
+    guards circular attributeGroup references, which XSD 1.1 permits (bug
+    15795, attgC010/C020/C031/D015).
+    """
+    uses: dict[str, Any] = {}
+    if seen is None:
+        seen = set()
+    for refSite in getattr(er, "attributeGroupRefs", None) or ():
+        group = refSite._resolve_group(parser=py_xsd, for_class_building=True)
+        if group is None or id(group) in seen:
+            continue
+        seen.add(id(group))
+        collected = dict(getattr(group, "attributes", None) or {})
+        for name, attr in attribute_group_attribute_uses(group, py_xsd, seen).items():
+            collected.setdefault(name, attr)
+        for name, attr in collected.items():
+            if attr.getUse() == "prohibited":
+                continue
+            uses.setdefault(name, attr)
+    return uses
+
+
 def effective_attribute_uses(
     ctx: CompileContextProtocol, er: Any, py_xsd: Any, seen: set[int] | None = None
 ) -> tuple[dict[str, Any], bool]:
     """A type's effective attribute uses, walking its extension chain.
 
-    Returns ``(uses-by-name, has-inheritable)``. A restriction does
-    not inherit its base's uses; an extension does. ``seen`` guards
-    a derivation cycle (itself an invalid schema).
+    Returns ``(uses-by-name, has-inheritable)``. The type's own
+    declarations plus the uses its attribute groups contribute (a direct
+    declaration wins on a name conflict, as in class building); a
+    restriction does not inherit its base's uses, an extension does.
+    ``seen`` guards a derivation cycle (itself an invalid schema).
     """
     uses = dict(getattr(er, "attributes", None) or {})
+    for name, attr in attribute_group_attribute_uses(er, py_xsd).items():
+        uses.setdefault(name, attr)
     has_inheritable = any(attribute_use_is_inheritable(attr) for attr in uses.values())
     if complex_type_derivation(er) != "extension":
         return uses, has_inheritable
@@ -1511,8 +1555,10 @@ def declared_attribute_wildcard(er: Any, py_xsd: Any) -> WildcardSpec | None:
     ``effective_attribute_wildcard(attribute_group_wildcard_specs(er, py_xsd),
     er.getNamespace())`` — the intersection of the type's own ``anyAttribute``
     and every attribute group it references (XSD 1.1 errata E1-10). No
-    derivation chain is walked: this is the *derived* side of the restriction
-    check, where the base's wildcard must not leak in.
+    derivation chain is walked, so the answer is one type's declared
+    contributions. The restriction check reads it for the restricting type's
+    side, where the base's wildcard must not leak in; the chain walk reads it
+    for every step, including base types.
     """
     table = _wildcard_cache(er)["declared"]
     cached = table.get(id(er), _CACHE_MISS)
@@ -1553,15 +1599,16 @@ def _wildcard_cache(er: Any) -> dict[str, dict[int, Any]]:
     er.getSchema()``, following ``_substitution_cache`` (below): the cache
     dies with the compile, and every ER it keys is reachable from the schema
     tree for the whole compile, so no ``id()`` is recycled while the cache
-    lives. When ``getSchema()`` returns ``None`` (isolated ERs in unit tests),
-    return a throwaway dict rather than raising — correctness must not depend
-    on caching. A chain that crosses an import may put an entry into whichever
-    declaration's table the entry point holds; the entry is computed with the
-    same rules either way, so do not try to force a single table.
+    lives. When ``getSchema()`` returns ``None`` or is not callable (isolated
+    ERs in unit tests), return a throwaway dict rather than raising —
+    correctness must not depend on caching. A chain that crosses an import
+    may put an entry into whichever declaration's table the entry point
+    holds; the entry is computed with the same rules either way, so do not
+    try to force a single table.
     """
     try:
         schema = er.getSchema()
-    except AttributeError:
+    except (AttributeError, TypeError):
         schema = None
     if schema is None:
         return {"declared": {}, "effective": {}}

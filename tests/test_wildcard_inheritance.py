@@ -19,8 +19,14 @@ effective wildcard would intersect it with the base's and make every
 restriction trivially valid.
 
 The sibling ``attribute-restriction`` ("not admitted by the attribute
-wildcard") false positive on the same packaged schemas is a different
-defect (attribute-*use* visibility at check time) and stays out.
+wildcard") defect on the same packaged schemas was a different cause —
+attribute *uses* the base inherited through its restriction/extension
+chain — and stays out.  The *group* half of that sibling is fixed here:
+``effective_attribute_uses`` read only ``er.attributes``, so a base whose
+use arrives through an ``xs:attributeGroup`` looked use-less and a
+restriction that redeclared the very attribute the group contributes was
+reported.  It now folds in the transitive attributeGroup contributions,
+the same read path ``attribute_group_wildcard_specs`` uses for wildcards.
 """
 
 from __future__ import annotations
@@ -35,7 +41,9 @@ from pyxsd.schema import Schema
 from pyxsd.schema_checks import (
     _compute_effective_type_attribute_wildcard,
     _wildcard_cache,
+    attribute_group_attribute_uses,
     attribute_group_wildcard_specs,
+    effective_attribute_uses,
     effective_type_attribute_wildcard,
 )
 from pyxsd.validation import IssueSeverity
@@ -65,14 +73,24 @@ def particle_restriction_errors(report) -> list:
     ]
 
 
+def attribute_restriction_errors(report) -> list[tuple[str, str]]:
+    return [
+        (issue.code, issue.message)
+        for issue in report.for_phase("schema")
+        if issue.code == "attribute-restriction" and issue.severity is IssueSeverity.ERROR
+    ]
+
+
 @pytest.fixture
 def parse(tmp_path):
     """Compile a schema fragment and return its schema-phase report."""
     schema_path = tmp_path / "schema.xsd"
 
-    def _parse(schema_string: str, head: str = XSD_HEAD):
+    def _parse(schema_string: str, head: str = XSD_HEAD, xsd_version: str = "1.1"):
         schema_path.write_text(head + schema_string + XSD_TAIL, encoding="utf-8")
-        return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).report
+        return Schema.compile(
+            str(schema_path), mode=ParseModes.NAMESPACED, xsd_version=xsd_version
+        ).report
 
     return _parse
 
@@ -502,6 +520,92 @@ class TestAttributeWildcardInheritance:
         assert wildcard_errors(report) == []
 
 
+class TestAttributeGroupAttributeUses:
+    """The restriction-use check reads group-contributed uses on the base."""
+
+    GROUP_BASE = """
+<xs:attributeGroup name="std">
+  <xs:attribute name="a" type="xs:string"/>
+  <xs:anyAttribute namespace="##other" processContents="lax"/>
+</xs:attributeGroup>
+<xs:complexType name="base">
+  <xs:attributeGroup ref="t:std"/>
+</xs:complexType>
+<xs:complexType name="derived">
+  <xs:complexContent>
+    <xs:restriction base="t:base">
+      %s
+      <xs:anyAttribute namespace="##other" processContents="lax"/>
+    </xs:restriction>
+  </xs:complexContent>
+</xs:complexType>
+"""
+
+    @pytest.mark.parametrize("xsd_version", ("1.0", "1.1"))
+    def test_a_group_contributed_base_use_admits_a_redeclaration(self, parse, xsd_version):
+        """A restriction may redeclare the use its base gets from a group.
+
+        Regression: the base's wildcard is now effective, which runs the
+        attribute-use check that ``effective_attribute_uses`` used to starve
+        of the group's uses.  Read the two together and the redeclared use is
+        a base use, not a use the wildcard must admit.
+        """
+        report = parse(
+            self.GROUP_BASE % '<xs:attribute name="a" type="xs:string"/>',
+            head=NS_HEAD,
+            xsd_version=xsd_version,
+        )
+        assert attribute_restriction_errors(report) == []
+
+    @pytest.mark.parametrize("xsd_version", ("1.0", "1.1"))
+    def test_a_genuinely_new_attribute_is_still_not_admitted(self, parse, xsd_version):
+        """The group admits only its own use; a new use is still reported."""
+        report = parse(
+            self.GROUP_BASE
+            % (
+                '<xs:attribute name="a" type="xs:string"/>\n'
+                '      <xs:attribute name="b" type="xs:string"/>'
+            ),
+            head=NS_HEAD,
+            xsd_version=xsd_version,
+        )
+        errors = attribute_restriction_errors(report)
+        assert len(errors) == 1
+        assert "'b'" in errors[0][1]
+        assert "is not admitted by the attribute wildcard" in errors[0][1]
+
+    @pytest.mark.parametrize("xsd_version", ("1.0", "1.1"))
+    def test_an_extension_union_admits_a_restriction_to_the_added_namespace(
+        self, parse, xsd_version
+    ):
+        """``##local`` base plus an ``urn:extra`` extension admits ``urn:extra``."""
+        report = parse(
+            """
+<xs:complexType name="base">
+  <xs:anyAttribute namespace="##local" processContents="lax"/>
+</xs:complexType>
+<xs:complexType name="mid">
+  <xs:complexContent>
+    <xs:extension base="t:base">
+      <xs:anyAttribute namespace="urn:extra" processContents="lax"/>
+    </xs:extension>
+  </xs:complexContent>
+</xs:complexType>
+<xs:complexType name="derived">
+  <xs:complexContent>
+    <xs:restriction base="t:mid">
+      <xs:anyAttribute namespace="urn:extra" processContents="lax"/>
+    </xs:restriction>
+  </xs:complexContent>
+</xs:complexType>
+""",
+            head=NS_HEAD,
+            xsd_version=xsd_version,
+        )
+        assert wildcard_errors(report) == []
+        assert attribute_restriction_errors(report) == []
+
+
 class TestAttributeWildcardInheritanceAcrossImports:
     """Each spec keeps the target namespace of the document declaring it."""
 
@@ -574,6 +678,30 @@ class _StubType:
         return self.schema
 
 
+class _StubUse:
+    """Minimal attribute-use stand-in for the attributeGroup walk."""
+
+    def __init__(self, name: str, use: str = "optional", inheritable: bool = False) -> None:
+        self.name = name
+        self.use = use
+        self.tagAttributes = {"inheritable": "true"} if inheritable else {}
+
+    def getUse(self) -> str:
+        return self.use
+
+
+def _group_stub(name: str, uses=(), refs=()) -> SimpleNamespace:
+    return SimpleNamespace(
+        name=name,
+        attributes={use.name: use for use in uses},
+        attributeGroupRefs=list(refs),
+    )
+
+
+def _ref_stub(group: SimpleNamespace) -> SimpleNamespace:
+    return SimpleNamespace(_resolve_group=lambda **kwargs: group)
+
+
 class TestEffectiveWildcardChain:
     """Unit-level coverage of the ER walk's memo and guards."""
 
@@ -627,6 +755,12 @@ class TestEffectiveWildcardChain:
         }
         # An ER without ``getSchema`` at all (an isolated declaration).
         assert _wildcard_cache(SimpleNamespace()) == {"declared": {}, "effective": {}}
+        # A ``getSchema`` that exists but is not callable (annotation-only
+        # attributes on stubs) degrades the same way.
+        assert _wildcard_cache(SimpleNamespace(getSchema=None)) == {
+            "declared": {},
+            "effective": {},
+        }
 
     def test_attribute_group_specs_drop_a_spec_already_copied_onto_the_type(self):
         """Class building copies group specs onto the type; the walk dedups them."""
@@ -635,6 +769,62 @@ class TestEffectiveWildcardChain:
         ref = SimpleNamespace(_resolve_group=lambda **kwargs: group)
         er = SimpleNamespace(wildcardAttributeSpecs=[spec], attributeGroupRefs=[ref])
         assert attribute_group_wildcard_specs(er, None) == [spec]
+
+
+class TestAttributeGroupUseWalk:
+    """Unit-level coverage of the attributeGroup use walk."""
+
+    def test_a_groups_own_declaration_wins_over_a_nested_group(self):
+        inner_use = _StubUse("a")
+        outer_use = _StubUse("a", "required")
+        inner = _group_stub("inner", uses=[inner_use])
+        outer = _group_stub("outer", uses=[outer_use], refs=[_ref_stub(inner)])
+        er = SimpleNamespace(attributeGroupRefs=[_ref_stub(outer)])
+        assert attribute_group_attribute_uses(er, None) == {"a": outer_use}
+
+    def test_a_prohibited_group_contribution_is_not_a_use(self):
+        group = _group_stub("g", uses=[_StubUse("a"), _StubUse("b", "prohibited")])
+        er = SimpleNamespace(attributeGroupRefs=[_ref_stub(group)])
+        assert list(attribute_group_attribute_uses(er, None)) == ["a"]
+
+    def test_a_circular_group_terminates(self):
+        use = _StubUse("a")
+        first = _group_stub("a", uses=[use])
+        second = _group_stub("b", refs=[_ref_stub(first)])
+        first.attributeGroupRefs.append(_ref_stub(second))
+        er = SimpleNamespace(attributeGroupRefs=[_ref_stub(first)])
+        assert attribute_group_attribute_uses(er, None) == {"a": use}
+
+    def test_a_shared_group_is_walked_once(self):
+        use = _StubUse("a")
+        group = _group_stub("g", uses=[use])
+        er = SimpleNamespace(attributeGroupRefs=[_ref_stub(group), _ref_stub(group)])
+        assert attribute_group_attribute_uses(er, None) == {"a": use}
+
+    def test_a_direct_use_wins_over_a_group_contribution(self):
+        direct = _StubUse("a", "required")
+        group = _group_stub("g", uses=[_StubUse("a")])
+        er = SimpleNamespace(
+            attributes={"a": direct},
+            attributeGroupRefs=[_ref_stub(group)],
+            getDerivation=lambda: None,
+            _firstProcessedChild=lambda parent, name: None,
+        )
+        uses, inheritable = effective_attribute_uses(None, er, None)
+        assert uses == {"a": direct}
+        assert inheritable is False
+
+    def test_an_inheritable_group_use_reaches_the_caller(self):
+        group = _group_stub("g", uses=[_StubUse("a", inheritable=True)])
+        er = SimpleNamespace(
+            attributes={},
+            attributeGroupRefs=[_ref_stub(group)],
+            getDerivation=lambda: None,
+            _firstProcessedChild=lambda parent, name: None,
+        )
+        uses, inheritable = effective_attribute_uses(None, er, None)
+        assert set(uses) == {"a"}
+        assert inheritable is True
 
 
 class TestSharedBaseDiagnostics:
