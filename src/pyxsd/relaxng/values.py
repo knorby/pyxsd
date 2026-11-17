@@ -31,14 +31,10 @@ from pyxsd.relaxng.contracts import (
     scalar_contract,
 )
 from pyxsd.relaxng.datatypes import (
-    BUILTIN_LIBRARY,
-    XSD_LIBRARY,
-    BuiltinDatatypeFactory,
     Datatype,
     DatatypeContext,
     DatatypeSelector,
     UnsupportedDatatypeOperation,
-    XsdDatatypeFactory,
     datatype_supports_decode,
     resolve_datatype_selector,
 )
@@ -544,30 +540,6 @@ class _TokenContractPlan:
     patterns: tuple[Pattern, ...]
 
 
-def _standalone_datatype(contract: ScalarContract) -> Datatype | None:
-    """Build the datatype for a built-in/XSD contract without instance evidence.
-
-    Custom libraries remain unknown here: a custom encoder must be supplied by
-    the evidence graph that owns the compiled datatype.  Reconstructing an XSD
-    datatype is safe because the contract carries its normalized parameters and
-    the encoder receives the instance context explicitly.
-    """
-    if contract.library_uri == BUILTIN_LIBRARY:
-        factory: Any = BuiltinDatatypeFactory()
-    elif contract.library_uri == XSD_LIBRARY:
-        factory = XsdDatatypeFactory()
-    else:
-        return None
-    return cast(
-        Datatype,
-        factory.create(
-            contract.type_name,
-            contract.parameters,
-            DatatypeContext(None, {}),
-        ),
-    )
-
-
 def _list_token_children(pattern: Pattern) -> tuple[Pattern, ...]:
     """Return the operands that decide a plain list token plan."""
     if isinstance(pattern, Ref):
@@ -643,11 +615,16 @@ def _encode_list_token(
     pattern: Pattern,
     value: object,
     context: DatatypeContext,
+    index: int,
 ) -> str:
-    """Encode one list item against its exact schema token contract."""
+    """Encode and boundary-check one list item against its token contract."""
     contract = scalar_contract(pattern)
-    datatype = cast(Datatype, cast(Any, pattern).datatype)
-    return encode_scalar(contract, value, context, datatype=datatype)
+    lexical = encode_scalar(contract, value, context, pattern=pattern)
+    if not lexical:
+        raise ValueError(f"list token {index} encodes to an empty string")
+    if any(character in " \t\n\r" for character in lexical):
+        raise ValueError(f"list token {index} encodes with XML whitespace")
+    return lexical
 
 
 def _encode_list_value(
@@ -677,8 +654,8 @@ def _encode_list_value(
             raise TypeError("a homogeneous RELAX NG list requires a list")
         item_patterns = tuple(plan.patterns[0] for _ in value)
     return " ".join(
-        _encode_list_token(item_pattern, item, context)
-        for item_pattern, item in zip(item_patterns, value, strict=True)
+        _encode_list_token(item_pattern, item, context, index)
+        for index, (item_pattern, item) in enumerate(zip(item_patterns, value, strict=True))
     )
 
 
@@ -687,41 +664,36 @@ def encode_scalar(
     value: object,
     context: DatatypeContext,
     *,
-    datatype: Datatype | None = None,
-    list_pattern: List | None = None,
+    pattern: Pattern,
 ) -> str:
-    """Encode one typed assignment using explicit schema contracts only.
+    """Encode one typed assignment with its compile-time encoding pattern.
 
     Text contracts accept exactly a ``str``.  Atomic contracts invoke the
-    supplied compiled datatype encoder, or reconstruct the built-in/XSD encoder
-    from the contract's stable metadata.  A whole-list contract requires the
-    evidence-owned compiled list pattern so its token contracts come from the
-    schema rather than from Python value inspection.  There is deliberately no
-    ``str(value)`` fallback and no boolean-to-number coercion: those rules live
-    in the datatype encoders and are never bypassed here.
+    datatype encoder compiled into *pattern*.  A whole-list contract derives
+    token contracts only from the compiled list pattern.  The pattern must
+    implement *contract*; there is deliberately no ``str(value)`` fallback, no
+    instance lookup, and no boolean-to-number coercion.  Encoders that lack
+    ``encode`` raise :class:`UnsupportedDatatypeOperation`.
     """
     if not isinstance(contract, ScalarContract):
         raise TypeError("encode_scalar requires a ScalarContract")
     if not isinstance(context, DatatypeContext):
         raise TypeError("encode_scalar requires a DatatypeContext")
+    if not isinstance(pattern, Pattern):
+        raise TypeError("encode_scalar requires a compiled pattern")
+    try:
+        observed = scalar_contract(pattern)
+    except (TypeError, UnsupportedDatatypeOperation) as error:
+        raise TypeError("the supplied pattern is not a RELAX NG scalar pattern") from error
+    if observed != contract:
+        raise ValueError("the supplied pattern does not implement the scalar contract")
     if contract.kind == "text":
         if not isinstance(value, str):
             raise TypeError("a RELAX NG text scalar assignment requires a string")
         return value
     if contract.kind == "list":
-        if not isinstance(list_pattern, List):
-            raise UnsupportedDatatypeOperation(
-                "a whole-list scalar contract requires the evidence-derived "
-                "compiled list pattern before it can encode tokens"
-            )
-        return _encode_list_value(contract, value, context, list_pattern)
-    if datatype is None:
-        datatype = _standalone_datatype(contract)
-    if datatype is None:
-        raise UnsupportedDatatypeOperation(
-            f"no datatype encoder is available for atomic contract "
-            f"{contract.type_name!r} in library {contract.library_uri!r}"
-        )
+        return _encode_list_value(contract, value, context, cast(List, pattern))
+    datatype = cast(Datatype, cast(Any, pattern).datatype)
     lexical = datatype.encode(value, context)
     if not isinstance(lexical, str):
         raise TypeError("a datatype encoder must return a lexical string")

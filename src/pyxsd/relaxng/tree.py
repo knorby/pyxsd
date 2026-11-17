@@ -396,26 +396,41 @@ class RelaxNGElement:
             raise PyXSDError(_TYPED_ACCESS_CAPABILITY)
         return snapshot.attribute_value(self, expanded_name)
 
+    def assign_fields(
+        self,
+        fields: Mapping[str, object],
+        *,
+        selections: tuple[CandidateSelection, ...] = (),
+    ) -> None:
+        """Encode and apply one atomic transaction from a field mapping.
+
+        This is the collision-safe entry point: every key is resolved as a
+        generated projection alias or the route's scalar descriptor name, so an
+        XML field named ``assign``, ``assign_fields``, or ``selections`` cannot
+        shadow the transaction API.  Every value is shape-checked, encoded from
+        the plan's compile-time patterns, and context-checked before any lexical
+        store changes.  A successful write dirties the whole revision but never
+        certifies document validity or refreshes typed evidence.
+        """
+        if not isinstance(fields, Mapping):
+            raise TypeError("assign_fields requires a mapping of generated field names")
+        from pyxsd.relaxng.binding import _assign_field_map
+
+        _assign_field_map(self, dict(fields), selections)
+
     def assign(
         self,
         *,
         selections: tuple[CandidateSelection, ...] = (),
         **fields: Any,
     ) -> None:
-        """Encode and apply one atomic transaction of projected field writes.
+        """Convenience keyword form of :meth:`assign_fields`.
 
-        Keys are generated projection aliases or the route's scalar descriptor
-        name.  Every value is shape-checked, encoded, and context-checked before
-        any lexical store changes; ``selections`` name pre-commit
-        :class:`~pyxsd.relaxng.evidence.CandidateSelection` facts that must
-        coexist in one complete accepting derivation.  A successful write
-        dirties the whole revision but never certifies document validity or
-        refreshes typed evidence.  Lexical :meth:`set_text` and
-        :meth:`set_attribute` remain available and never choose a datatype.
+        Field aliases are reserved away from ``assign`` and ``assign_fields``;
+        use :meth:`assign_fields` for a field whose alias is literally
+        ``selections`` so the mapping key is not confused with this keyword.
         """
-        from pyxsd.relaxng.binding import assign_fields
-
-        assign_fields(self, dict(fields), selections)
+        self.assign_fields(fields, selections=selections)
 
     def iter_content(self) -> Iterator[str | RelaxNGElement]:
         """Yield text, child elements, and child tails in document order.

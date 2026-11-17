@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import keyword
 import threading
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, cast, overload
@@ -25,11 +25,11 @@ from unicodedata import normalize
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import local_name, namespace_of
-from pyxsd.relaxng.contracts import ScalarContract, scalar_contract
-from pyxsd.relaxng.datatypes import Datatype, DatatypeContext
+from pyxsd.relaxng.contracts import ScalarContract
+from pyxsd.relaxng.datatypes import DatatypeContext
 from pyxsd.relaxng.errors import AmbiguousValueError, StaleInterpretationError
 from pyxsd.relaxng.evidence import CandidateSelection, EvidenceGraph, EvidenceOccurrence
-from pyxsd.relaxng.patterns import List, Pattern
+from pyxsd.relaxng.patterns import Pattern
 from pyxsd.relaxng.projection import (
     FieldContract,
     ProjectionPlan,
@@ -77,7 +77,8 @@ class ScalarDescriptor:
     ``typed_value`` delegates to the inherited :meth:`RelaxNGElement.scalar_value`
     so it keeps the same schema-static wrapper, stale gate, invalid-document
     error, and evidence decoding.  It never stringifies or decodes a value on
-    its own.  Assignment belongs to Task 3; this phase exposes a read-only seam.
+    its own.  Assignment dispatches to the mapping-based transaction, which
+    encodes from the plan's compile-time patterns before touching the tree.
     """
 
     __slots__ = ("field_name",)
@@ -92,7 +93,7 @@ class ScalarDescriptor:
         return instance.scalar_value()
 
     def __set__(self, instance: RelaxNGElement, value: Any) -> None:
-        instance.assign(**{self.field_name: value})
+        _assign_field_map(instance, {self.field_name: value})
 
 
 class AttributeDescriptor:
@@ -122,7 +123,7 @@ class AttributeDescriptor:
         return instance.attribute_value(self.contract.expanded_name)
 
     def __set__(self, instance: RelaxNGElement, value: Any) -> None:
-        instance.assign(**{self.contract.alias: value})
+        _assign_field_map(instance, {self.contract.alias: value})
 
 
 class ChildSequence(Sequence[RelaxNGElement]):
@@ -242,7 +243,7 @@ class ChildDescriptor:
         return None
 
     def __set__(self, instance: RelaxNGElement, value: Any) -> None:
-        instance.assign(**{self.contract.alias: value})
+        _assign_field_map(instance, {self.contract.alias: value})
 
 
 def _sanitize_identifier(value: str) -> str:
@@ -379,6 +380,7 @@ class ProjectionClassFactory:
             ),
             "__getitem__": lookup,
             "_relaxng_plan_fingerprint_": self._plan.grammar_fingerprint,
+            "_relaxng_encoding_patterns_": self._plan.encoding_patterns,
             "_relaxng_route_": route,
             "_relaxng_route_id_": route.route_id,
             "_relaxng_wildcards_": wildcards,
@@ -570,55 +572,19 @@ def _site_occurrence(
     )
 
 
-def _schema_patterns_for(
-    evidence: EvidenceGraph,
-    target: RelaxNGElement,
-    kind: str,
-    name: str | None,
-) -> tuple[Pattern, ...]:
-    """Return site patterns first, then every compiled pattern as a fallback.
-
-    A newly created optional attribute or an absent scalar has no parse
-    occurrence.  Its compiled pattern may still be present elsewhere in the
-    evidence graph because the pattern table is pre-pruning and grammar-owned.
-    The fallback never inspects instance values; it only finds the exact
-    schema-static pattern identity already stored in the document's evidence.
-    """
-    site = _site_occurrence(evidence, target, kind, name)
-    local = () if site is None else tuple(evidence._schema_patterns.get(site, ()))
-    return (
-        *local,
-        *(pattern for patterns in evidence._schema_patterns.values() for pattern in patterns),
-    )
-
-
-def _matching_patterns(
-    evidence: EvidenceGraph,
+def _encoding_pattern(
+    encoding_patterns: Mapping[str, Pattern],
     contract: ScalarContract,
-    target: RelaxNGElement,
-    kind: str,
-    name: str | None,
-) -> tuple[Pattern, ...]:
-    """Return compiled patterns whose scalar contract equals *contract*."""
-    matches = []
-    for pattern in _schema_patterns_for(evidence, target, kind, name):
-        if scalar_contract(pattern) == contract:
-            matches.append(pattern)
-    return tuple(matches)
-
-
-def _datatype_for(
-    evidence: EvidenceGraph,
-    contract: ScalarContract,
-    target: RelaxNGElement,
-    kind: str,
-    name: str | None,
-) -> Datatype | None:
-    """Return the compiled datatype encoder for one unique atomic contract."""
-    matches = _matching_patterns(evidence, contract, target, kind, name)
-    if not matches:
-        return None
-    return cast(Datatype, cast(Any, matches[0]).datatype)
+    description: str,
+) -> Pattern:
+    """Return the compile-time pattern that owns one contract's encoder."""
+    pattern = encoding_patterns.get(contract.pattern_identity)
+    if pattern is None:
+        raise ValueError(
+            f"{description} has no compile-time encoding pattern for scalar "
+            f"contract {contract.pattern_identity!r}"
+        )
+    return pattern
 
 
 def _validate_snapshot(
@@ -664,35 +630,20 @@ def _encode_bare_value(
     contracts: tuple[ScalarContract, ...],
     value: object,
     context: DatatypeContext,
-    evidence: EvidenceGraph,
-    target: RelaxNGElement,
-    kind: str,
-    name: str | None,
+    encoding_patterns: Mapping[str, Pattern],
     description: str,
 ) -> str:
     """Encode one bare Python value using only its unique compiled contract."""
     contract = _unique_contract(contracts, description)
-    if contract.kind == "list":
-        list_pattern = next(
-            (
-                pattern
-                for pattern in _matching_patterns(evidence, contract, target, kind, name)
-                if isinstance(pattern, List)
-            ),
-            None,
-        )
-        return encode_scalar(contract, value, context, list_pattern=list_pattern)
-    datatype = (
-        _datatype_for(evidence, contract, target, kind, name) if contract.kind == "atomic" else None
-    )
-    return encode_scalar(contract, value, context, datatype=datatype)
+    pattern = _encoding_pattern(encoding_patterns, contract, description)
+    return encode_scalar(contract, value, context, pattern=pattern)
 
 
 def _prepare_descriptor(
     node: RelaxNGElement,
     descriptor: Any,
     value: object,
-    evidence: EvidenceGraph,
+    encoding_patterns: Mapping[str, Pattern],
     grammar_fingerprint: str,
 ) -> _PreparedAssignment:
     """Prepare one descriptor write without touching the lexical tree."""
@@ -742,10 +693,7 @@ def _prepare_descriptor(
             contracts,
             value,
             context,
-            evidence,
-            target,
-            site_kind,
-            site_name,
+            encoding_patterns,
             description,
         )
     return _PreparedAssignment(target, attribute, lexical, site_kind, site_name)
@@ -815,15 +763,17 @@ def _validated_selections(
     return requested
 
 
-def assign_fields(
+def _assign_field_map(
     node: RelaxNGElement,
-    fields: dict[str, object],
-    selections: Iterable[CandidateSelection],
+    fields: Mapping[str, object],
+    selections: Iterable[CandidateSelection] = (),
 ) -> None:
     """Prepare every descriptor write, then commit one atomic transaction.
 
     All Python shape checks, datatype encodings, snapshot context checks, and
-    joint-selection queries complete before the first lexical write.  A failure
+    joint-selection queries complete before the first lexical write.  Encoding
+    uses only the plan's compile-time patterns, never instance occurrences, so
+    absent optional positions behave exactly like present ones.  A failure
     leaves the tree byte-for-byte unchanged and does not dirty the revision.
     A success dirties the whole revision under the existing mutation contract;
     it never certifies document validity or refreshes typed evidence.
@@ -831,6 +781,9 @@ def assign_fields(
     descriptor_map = getattr(type(node), "_relaxng_assignable_fields_", None)
     if descriptor_map is None:
         raise PyXSDError("RELAX NG typed assignment requires a projected typed element")
+    encoding_patterns = getattr(type(node), "_relaxng_encoding_patterns_", None)
+    if not isinstance(encoding_patterns, Mapping):
+        raise PyXSDError("RELAX NG typed assignment requires a compiled projection plan")
     if not fields:
         if isinstance(selections, CandidateSelection) or tuple(selections):
             raise ValueError("selections require at least one assigned field")
@@ -838,6 +791,8 @@ def assign_fields(
 
     descriptors = []
     for key, value in fields.items():
+        if not isinstance(key, str):
+            raise TypeError("assign_fields requires string field names")
         descriptor = descriptor_map.get(key)
         if descriptor is None:
             raise TypeError(f"unknown assignable RELAX NG projection field {key!r}")
@@ -856,7 +811,7 @@ def assign_fields(
         and evidence._grammar_fingerprint == grammar_fingerprint
     )
     prepared = tuple(
-        _prepare_descriptor(node, descriptor, value, evidence, grammar_fingerprint)
+        _prepare_descriptor(node, descriptor, value, encoding_patterns, grammar_fingerprint)
         for descriptor, value in descriptors
     )
     _validated_selections(selections, evidence, prepared, current)

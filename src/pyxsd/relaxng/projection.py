@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import keyword
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal
 from unicodedata import normalize
@@ -95,6 +95,8 @@ _RESERVED = frozenset(
         "clear_children",
         "to_etree",
         "from_etree",
+        "assign",
+        "assign_fields",
     ]
 )
 
@@ -237,9 +239,15 @@ class ProjectionPlan:
     roots: tuple[str, ...]
     routes: Mapping[str, RouteContract]
     grammar_fingerprint: str
+    encoding_patterns: Mapping[str, Pattern] = field(
+        default_factory=dict, compare=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "routes", MappingProxyType(dict(self.routes)))
+        object.__setattr__(
+            self, "encoding_patterns", MappingProxyType(dict(self.encoding_patterns))
+        )
 
     def route_for_occurrence(self, occurrence: ProjectionOccurrence) -> str:
         """Resolve only a planner-generated schema key, never runtime evidence."""
@@ -427,6 +435,65 @@ def _aliases(fields: tuple[tuple[Role, str], ...]) -> dict[tuple[Role, str], str
     return result
 
 
+def _stable_encoding_value(value: object) -> object:
+    """Reduce one datatype field to a deterministic, hashable encoding signature."""
+    if isinstance(value, (str, int, float, bool, bytes, type(None))):
+        return value
+    if isinstance(value, (tuple, list)):
+        return tuple(_stable_encoding_value(item) for item in value)
+    if isinstance(value, Mapping):
+        return tuple(
+            sorted((str(key), _stable_encoding_value(item)) for key, item in value.items())
+        )
+    if isinstance(value, type):
+        return ("type", value.__module__, value.__qualname__)
+    return ("type", type(value).__module__, type(value).__qualname__)
+
+
+def _datatype_encoding_signature(datatype: object) -> tuple[object, ...]:
+    """Identify encoding behavior without using an object address or instance value."""
+    stable = tuple(
+        (name, _stable_encoding_value(getattr(datatype, name, None)))
+        for name in (
+            "library_uri",
+            "type_name",
+            "parameters",
+            "white_space",
+            "semantic_context",
+        )
+    )
+    state = getattr(datatype, "__dict__", None)
+    state_signature = (
+        ()
+        if not isinstance(state, Mapping)
+        else tuple(sorted((name, _stable_encoding_value(value)) for name, value in state.items()))
+    )
+    return (
+        type(datatype).__module__,
+        type(datatype).__qualname__,
+        stable,
+        state_signature,
+    )
+
+
+def _pattern_encoding_signature(pattern: Pattern) -> tuple[object, ...]:
+    """Collect the compiled datatype encoders used anywhere in one scalar pattern."""
+    signatures: list[object] = []
+    seen: set[int] = set()
+    pending = [pattern]
+    while pending:
+        node = pending.pop()
+        key = id(node)
+        if key in seen:
+            continue
+        seen.add(key)
+        datatype = getattr(node, "datatype", None)
+        if datatype is not None:
+            signatures.append(_datatype_encoding_signature(datatype))
+        pending.extend(reversed(_operands(node)))
+    return tuple(signatures)
+
+
 class _Planner:
     def __init__(self, grammar: CompiledGrammar, limits: RelaxNGLimits | None) -> None:
         self.grammar = grammar
@@ -451,10 +518,45 @@ class _Planner:
                     # stable type metadata. They still compile, but a typed
                     # projection cannot invent the missing scalar contract.
                     self.losses[id(node)] = str(error)
+        self.encoding_patterns = self._encoding_registry()
         self.fingerprint = self._fingerprint()
         self.pending: list[tuple[ProjectionOccurrence, tuple[Element, ...]]] = []
         self.registered: dict[ProjectionOccurrence, str] = {}
         self.routes: dict[str, RouteContract] = {}
+
+    def _encoding_registry(self) -> dict[str, Pattern]:
+        """Map each schema scalar contract identity to one encoding pattern.
+
+        The walk covers every content position reachable from the compiled
+        start pattern, including absent optional attributes, children, and
+        unselected choice branches.  ``data except`` exclusions restrict a
+        datatype and are not independent scalar positions, so they are not
+        encoding sites.
+        """
+        result: dict[str, Pattern] = {}
+        signatures: dict[str, tuple[object, ...]] = {}
+        seen: set[int] = set()
+        pending = [self.grammar.start]
+        while pending:
+            node = pending.pop()
+            key = id(node)
+            if key in seen:
+                continue
+            seen.add(key)
+            contract = self.scalars.get(key)
+            if contract is not None:
+                identity = contract.pattern_identity
+                existing = result.get(identity)
+                if existing is None:
+                    result[identity] = node
+                    signatures[identity] = _pattern_encoding_signature(node)
+                elif _pattern_encoding_signature(node) != signatures[identity]:
+                    raise ValueError(
+                        "conflicting RELAX NG encoding patterns for scalar contract "
+                        f"identity {identity}"
+                    )
+            pending.extend(reversed(() if isinstance(node, DataExcept) else _operands(node)))
+        return result
 
     def _fingerprint(self) -> str:
         """Identity of the structural plan, not the datatype registry.
@@ -663,7 +765,7 @@ class _Planner:
             occurrence, assignments = self.pending[index]
             self.build(occurrence, assignments)
             index += 1
-        return ProjectionPlan(roots, self.routes, self.fingerprint)
+        return ProjectionPlan(roots, self.routes, self.fingerprint, self.encoding_patterns)
 
 
 def plan_projections(

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import replace
+from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pytest
@@ -18,7 +19,11 @@ import pytest
 import pyxsd.relaxng as relaxng
 from pyxsd.exceptions import PyXSDError
 from pyxsd.relaxng import AlternativeValue, StaleInterpretationError
-from pyxsd.relaxng.binding import bind_projection
+from pyxsd.relaxng.binding import (
+    AttributeDescriptor,
+    _encoding_pattern,
+    bind_projection,
+)
 from pyxsd.relaxng.contracts import candidate_id, scalar_contract
 from pyxsd.relaxng.datatypes import (
     Datatype,
@@ -50,6 +55,8 @@ from pyxsd.relaxng.values import (
 NS = "http://relaxng.org/ns/structure/1.0"
 XSD = "http://www.w3.org/2001/XMLSchema-datatypes"
 OPAQUE = "urn:pyxsd:test:opaque"
+ENCODING = "urn:pyxsd:test:encoding"
+CONFLICTING = "urn:pyxsd:test:conflicting"
 
 
 def data(type_name: str, library: str = XSD) -> str:
@@ -118,6 +125,10 @@ def root_list_pattern(schema, document) -> List:
     return next(pattern for pattern in graph._schema_patterns[site] if isinstance(pattern, List))
 
 
+def encoding_pattern(schema, contract):
+    return schema.projection.encoding_patterns[contract.pattern_identity]
+
+
 class OpaqueDatatype(Datatype):
     """A validation-only datatype with no encoder capability."""
 
@@ -138,6 +149,65 @@ class OpaqueFactory(DatatypeFactory):
     def create(self, type_name, parameters, context):
         del type_name, parameters, context
         return OpaqueDatatype()
+
+
+class EncodingCustomDatatype(Datatype):
+    """A custom datatype whose encoder is available only from its pattern."""
+
+    library_uri = ENCODING
+    type_name = "custom"
+    parameters = ()
+
+    def allows(self, lexical, context):
+        del lexical, context
+        return True
+
+    def equal(self, left, left_context, right, right_context):
+        del left_context, right_context
+        return left == right
+
+    def encode(self, value, context):
+        del context
+        return f"custom:{value}"
+
+
+class EncodingCustomFactory(DatatypeFactory):
+    def create(self, type_name, parameters, context):
+        del type_name, parameters, context
+        return EncodingCustomDatatype()
+
+
+class VaryingEncoderDatatype(Datatype):
+    """Same stable metadata, different encoder behavior per compiled instance."""
+
+    library_uri = CONFLICTING
+    type_name = "varying"
+    parameters = ()
+
+    def __init__(self, marker: str) -> None:
+        self.state = {"marker": marker}
+
+    def allows(self, lexical, context):
+        del lexical, context
+        return True
+
+    def equal(self, left, left_context, right, right_context):
+        del left_context, right_context
+        return left == right
+
+    def encode(self, value, context):
+        del context
+        return f"{self.state['marker']}:{value}"
+
+
+class VaryingEncoderFactory(DatatypeFactory):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def create(self, type_name, parameters, context):
+        del type_name, parameters, context
+        self.calls += 1
+        return VaryingEncoderDatatype(str(self.calls))
 
 
 class NonStringEncoderDatatype(Datatype):
@@ -235,7 +305,12 @@ def test_bool_is_rejected_as_a_numeric_datatype_value(type_name):
 
     contract = root_route(schema).attributes["n"].scalar_contracts[0]
     with pytest.raises(TypeError, match="expected"):
-        encode_scalar(contract, True, DatatypeContext(None, {}))
+        encode_scalar(
+            contract,
+            True,
+            DatatypeContext(None, {}),
+            pattern=encoding_pattern(schema, contract),
+        )
 
 
 def test_encode_scalar_uses_explicit_contracts_without_str_fallback():
@@ -245,10 +320,11 @@ def test_encode_scalar_uses_explicit_contracts_without_str_fallback():
     context = DatatypeContext(None, {})
 
     assert contract.kind == "text"
-    assert encode_scalar(contract, "value", context) == "value"
+    pattern = encoding_pattern(schema, contract)
+    assert encode_scalar(contract, "value", context, pattern=pattern) == "value"
     for value in (1, True, object()):
         with pytest.raises(TypeError):
-            encode_scalar(contract, value, context)
+            encode_scalar(contract, value, context, pattern=pattern)
 
 
 def test_missing_atomic_encoder_is_a_specific_capability_error_and_atomic():
@@ -269,7 +345,12 @@ def test_missing_atomic_encoder_is_a_specific_capability_error_and_atomic():
     assert root.revision.dirty is False
     contract = root_route(schema).attributes["value"].scalar_contracts[0]
     with pytest.raises(UnsupportedDatatypeOperation, match="encoder"):
-        encode_scalar(contract, "replacement", DatatypeContext(None, {}))
+        encode_scalar(
+            contract,
+            "replacement",
+            DatatypeContext(None, {}),
+            pattern=encoding_pattern(schema, contract),
+        )
 
 
 def test_ambiguous_bare_values_are_rejected_but_snapshots_are_lexical_edits():
@@ -386,6 +467,50 @@ def test_homogeneous_list_shape_rejects_tuple_and_arbitrary_objects():
     assert serialized(document) == "<doc>3 4 5</doc>"
 
 
+@pytest.mark.parametrize(
+    "item",
+    ["a b", "", "a\tb", "a\rb", "a\nb"],
+    ids=["space", "empty", "tab", "carriage-return", "line-feed"],
+)
+def test_homogeneous_list_items_cannot_contain_encoded_xml_whitespace(item):
+    schema = compile_body("<list><oneOrMore>" + data("string") + "</oneOrMore></list>")
+    document = typed(schema, "<doc>seed</doc>")
+    root = document.root
+    before = serialized(document)
+
+    with pytest.raises(ValueError, match=r"empty|XML whitespace"):
+        root.typed_value = [item]
+
+    assert serialized(document) == before
+    assert document.interpretations_current is True
+
+
+@pytest.mark.parametrize("item", ["a b", "", "a\tb"])
+def test_fixed_tuple_items_cannot_contain_encoded_xml_whitespace(item):
+    schema = compile_body("<list><group>" + data("string") + data("integer") + "</group></list>")
+    document = typed(schema, "<doc>seed 1</doc>")
+    root = document.root
+    before = serialized(document)
+
+    with pytest.raises(ValueError, match=r"empty|XML whitespace"):
+        root.typed_value = (item, 2)
+
+    assert serialized(document) == before
+    assert document.interpretations_current is True
+
+
+def test_nbsp_is_a_legal_list_token_character_and_empty_sequences_are_allowed():
+    string_schema = compile_body("<list><oneOrMore>" + data("string") + "</oneOrMore></list>")
+    string_document = typed(string_schema, "<doc>seed</doc>")
+    string_document.root.typed_value = ["a\u00a0b"]
+    assert serialized(string_document) == "<doc>a\u00a0b</doc>"
+
+    empty_schema = compile_body("<list><zeroOrMore>" + data("integer") + "</zeroOrMore></list>")
+    empty_document = typed(empty_schema, "<doc>1 2</doc>")
+    empty_document.root.typed_value = []
+    assert serialized(empty_document) == "<doc></doc>"
+
+
 def test_ambiguous_list_item_contracts_report_the_structural_gap():
     schema = compile_body(
         "<list><oneOrMore><choice>"
@@ -405,7 +530,12 @@ def test_ambiguous_list_item_contracts_report_the_structural_gap():
     assert document.interpretations_current is True
     contract = root_route(schema).content.scalar_contracts[0]
     with pytest.raises(UnsupportedDatatypeOperation, match=r"token|structural"):
-        encode_scalar(contract, [1, 2], DatatypeContext(None, {}))
+        encode_scalar(
+            contract,
+            [1, 2],
+            DatatypeContext(None, {}),
+            pattern=encoding_pattern(schema, contract),
+        )
 
 
 def test_all_encodings_are_prepared_before_any_mutation():
@@ -473,6 +603,108 @@ def test_descriptor_suffix_and_typed_value_collision_path_assigns_both_positions
     assert serialized(document) == '<doc typed_value="A" typed_value_="b">13</doc>'
     with pytest.raises(StaleInterpretationError):
         _ = root.typed_value__
+
+
+def collision_schema() -> RelaxNGSchema:
+    return compile_body(
+        '<attribute name="assign"><text/></attribute>'
+        '<attribute name="assign_fields"><text/></attribute>'
+        '<attribute name="selections"><text/></attribute>' + data("integer")
+    )
+
+
+def test_transaction_names_are_reserved_and_descriptor_writes_are_collision_safe():
+    schema = collision_schema()
+    document = typed(
+        schema,
+        '<doc assign="a" assign_fields="b" selections="c">1</doc>',
+    )
+    root = document.root
+
+    assert callable(type(root).assign)
+    assert callable(type(root).assign_fields)
+    assert isinstance(type(root).assign_2, AttributeDescriptor)
+    assert isinstance(type(root).assign_fields_2, AttributeDescriptor)
+    assert isinstance(type(root).selections, AttributeDescriptor)
+
+    root.assign_2 = "A"
+    root.assign_fields_2 = "B"
+    root.selections = ""
+    root.typed_value = 5
+
+    assert serialized(document) == ('<doc assign="A" assign_fields="B" selections="">5</doc>')
+    assert root.attribute_lexical("selections") == ""
+    assert root.revision.dirty is True
+
+
+def test_mapping_transaction_writes_reserved_and_selection_field_names():
+    schema = collision_schema()
+    document = typed(
+        schema,
+        '<doc assign="a" assign_fields="b" selections="c">1</doc>',
+    )
+    root = document.root
+
+    root.assign_fields(
+        {
+            "assign_2": "A",
+            "assign_fields_2": "B",
+            "selections": "",
+            "typed_value": 7,
+        }
+    )
+
+    assert serialized(document) == ('<doc assign="A" assign_fields="B" selections="">7</doc>')
+    assert root.attribute_lexical("selections") == ""
+    assert document.interpretations_current is False
+
+
+def test_convenience_assign_still_works_when_a_sibling_field_is_named_assign():
+    schema = collision_schema()
+    document = typed(
+        schema,
+        '<doc assign="a" assign_fields="b" selections="c">1</doc>',
+    )
+
+    document.root.assign(assign_2="renamed", typed_value=8)
+
+    assert serialized(document) == (
+        '<doc assign="renamed" assign_fields="b" selections="c">8</doc>'
+    )
+
+
+def test_mapping_and_convenience_assignment_reject_unknown_keys():
+    document = typed(collision_schema(), '<doc assign="a" assign_fields="b" selections="c">1</doc>')
+    root = document.root
+    before = serialized(document)
+
+    with pytest.raises(TypeError, match="unknown"):
+        root.assign_fields({"missing": 1})
+    with pytest.raises(TypeError, match="unknown"):
+        root.assign(missing=1)
+    with pytest.raises(TypeError, match="string field names"):
+        root.assign_fields({1: 1})  # type: ignore[dict-item]
+    with pytest.raises(TypeError, match="mapping"):
+        root.assign_fields(["typed_value"])  # type: ignore[arg-type]
+
+    assert serialized(document) == before
+    assert document.interpretations_current is True
+
+
+def test_generated_class_without_a_compiled_encoding_plan_cannot_assign():
+    document = typed(compile_body("<text/>"), "<doc>value</doc>")
+    root = document.root
+    generated = type(root)
+    saved = generated._relaxng_encoding_patterns_
+    del generated._relaxng_encoding_patterns_
+    try:
+        with pytest.raises(PyXSDError, match="compiled projection plan"):
+            root.typed_value = "next"
+    finally:
+        generated._relaxng_encoding_patterns_ = saved
+
+    assert serialized(document) == "<doc>value</doc>"
+    assert document.interpretations_current is True
 
 
 def test_descriptor_writes_share_the_transaction_path():
@@ -633,14 +865,15 @@ def test_typed_assignment_marks_annotations_stale_when_captured():
     assert serialized(document) == "<doc>new</doc>"
 
 
-def test_builtin_atomic_contract_uses_its_own_encoder_without_evidence():
+def test_builtin_atomic_contract_uses_its_compiled_encoder():
     schema = compile_body('<attribute name="v">' + data("token", "") + "</attribute><empty/>")
     typed(schema, '<doc v="a"/>')
     contract = root_route(schema).attributes["v"].scalar_contracts[0]
     context = DatatypeContext(None, {})
+    pattern = encoding_pattern(schema, contract)
 
-    assert encode_scalar(contract, " a\tb ", context) == "a b"
-    assert encode_scalar(contract, "plain", context) == "plain"
+    assert encode_scalar(contract, " a\tb ", context, pattern=pattern) == "a b"
+    assert encode_scalar(contract, "plain", context, pattern=pattern) == "plain"
 
 
 def test_encode_scalar_rejects_wrong_contract_and_context_types():
@@ -648,10 +881,21 @@ def test_encode_scalar_rejects_wrong_contract_and_context_types():
     contract = root_route(schema).content.scalar_contracts[0]
     context = DatatypeContext(None, {})
 
+    pattern = encoding_pattern(schema, contract)
     with pytest.raises(TypeError, match="ScalarContract"):
-        encode_scalar(object(), "x", context)  # type: ignore[arg-type]
+        encode_scalar(object(), "x", context, pattern=pattern)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="DatatypeContext"):
-        encode_scalar(contract, "x", object())  # type: ignore[arg-type]
+        encode_scalar(contract, "x", object(), pattern=pattern)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="compiled pattern"):
+        encode_scalar(contract, "x", context, pattern=object())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="scalar pattern"):
+        encode_scalar(contract, "x", context, pattern=schema.grammar.start)
+    integer_schema = compile_body(data("integer"))
+    integer_contract = root_route(integer_schema).content.scalar_contracts[0]
+    with pytest.raises(ValueError, match="does not implement"):
+        encode_scalar(integer_contract, 1, context, pattern=pattern)
+    with pytest.raises(ValueError, match="compile-time encoding pattern"):
+        _encoding_pattern({}, contract, "test position")
 
 
 def test_a_datatype_encoder_must_return_lexical_text():
@@ -789,6 +1033,143 @@ def test_optional_absent_custom_attribute_reports_no_encoder():
         root.v = "value"
 
     assert serialized(document) == "<doc/>"
+
+
+def test_plan_encoding_registry_covers_absent_optional_positions():
+    schema = compile_body(
+        '<optional><attribute name="n"><list><oneOrMore>'
+        + data("integer")
+        + "</oneOrMore></list></attribute></optional>"
+        + '<optional><attribute name="v">'
+        + data("custom", ENCODING)
+        + "</attribute></optional><empty/>",
+        datatype_libraries={
+            ENCODING: DatatypeLibraryRegistration(EncodingCustomFactory(), "encoding/1"),
+        },
+    )
+    plan = schema.projection
+    contracts = tuple(
+        contract
+        for field in root_route(schema).attributes.values()
+        for contract in field.scalar_contracts
+    )
+
+    assert contracts
+    assert {contract.pattern_identity for contract in contracts} <= set(plan.encoding_patterns)
+    assert all(
+        scalar_contract(plan.encoding_patterns[contract.pattern_identity]) == contract
+        for contract in contracts
+    )
+
+
+def test_absent_optional_list_uses_the_compile_time_registry():
+    schema = compile_body(
+        '<optional><attribute name="n"><list><oneOrMore>'
+        + data("integer")
+        + "</oneOrMore></list></attribute></optional><empty/>"
+    )
+    document = typed(schema, "<doc/>")
+
+    assert document.root.attribute_lexical("n") is None
+    document.root.n = [2, 3]
+
+    assert serialized(document) == '<doc n="2 3"/>'
+
+
+def test_absent_custom_encoder_uses_its_compile_time_pattern():
+    schema = compile_body(
+        '<optional><attribute name="v">'
+        + data("custom", ENCODING)
+        + "</attribute></optional><empty/>",
+        datatype_libraries={
+            ENCODING: DatatypeLibraryRegistration(EncodingCustomFactory(), "encoding/1"),
+        },
+    )
+    document = typed(schema, "<doc/>")
+
+    document.root.v = "value"
+
+    assert serialized(document) == '<doc v="custom:value"/>'
+
+
+def test_unrelated_present_occurrence_does_not_change_encoded_target_bytes():
+    schema = compile_body(
+        element("target", data("integer"))
+        + "<optional>"
+        + element("probe", data("integer"))
+        + "</optional>"
+    )
+    absent = typed(schema, "<doc><target>0</target></doc>")
+    present = typed(schema, "<doc><target>0</target><probe>9</probe></doc>")
+
+    absent.root.target.typed_value = 5
+    present.root.target.typed_value = 5
+
+    from pyxsd.relaxng.xml_writer import serialize_relaxng
+
+    assert (
+        serialize_relaxng(absent.root.target)
+        == serialize_relaxng(present.root.target)
+        == "<target>5</target>"
+    )
+
+
+def test_encoding_registry_is_stable_across_repeated_compiles_and_parses():
+    body = (
+        '<optional><attribute name="n"><list><oneOrMore>'
+        + data("integer")
+        + "</oneOrMore></list></attribute></optional><empty/>"
+    )
+    first = compile_body(body)
+    second = compile_body(body)
+
+    first_patterns = {
+        identity: scalar_contract(pattern)
+        for identity, pattern in first.projection.encoding_patterns.items()
+    }
+    second_patterns = {
+        identity: scalar_contract(pattern)
+        for identity, pattern in second.projection.encoding_patterns.items()
+    }
+    assert first_patterns == second_patterns
+
+    first_document = typed(first, "<doc/>")
+    second_document = typed(second, "<doc/>")
+    first_document.root.assign(n=[4, 5])
+    second_document.root.assign(n=[4, 5])
+    assert serialized(first_document) == serialized(second_document) == '<doc n="4 5"/>'
+
+
+def test_conflicting_encoding_patterns_fail_deterministically_at_compile_time():
+    body = (
+        "<choice>"
+        + element("first", '<attribute name="v">' + data("varying", CONFLICTING) + "</attribute>")
+        + element("second", '<attribute name="v">' + data("varying", CONFLICTING) + "</attribute>")
+        + "</choice>"
+    )
+    messages = []
+    for _ in range(2):
+        with pytest.raises(ValueError, match="conflicting RELAX NG encoding patterns") as caught:
+            compile_body(
+                body,
+                datatype_libraries={
+                    CONFLICTING: DatatypeLibraryRegistration(
+                        VaryingEncoderFactory(), "conflicting/1"
+                    ),
+                },
+            )
+        messages.append(str(caught.value))
+    assert messages[0] == messages[1]
+
+
+def test_production_assignment_does_not_search_instance_schema_patterns():
+    import pyxsd.relaxng.binding as binding_module
+    import pyxsd.relaxng.values as values_module
+
+    for module in (binding_module, values_module):
+        assert module.__file__ is not None
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        assert "_schema_patterns" not in source
 
 
 def test_empty_and_zero_or_more_lists_use_schema_static_empty_plans():
