@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import hashlib
 import os
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+import threading
+import weakref
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass, field, fields, replace
 from io import BytesIO
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, TYPE_CHECKING, Any, Literal, cast
 from xml.etree import ElementTree as ET
 
 from pyxsd.exceptions import PyXSDError
@@ -56,7 +58,24 @@ from pyxsd.validation import (
 )
 from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
+if TYPE_CHECKING:
+    from pyxsd.batch import DocumentSource, ParseOutcome
+
 __all__ = ["RelaxNGSchema", "compile"]
+
+#: The deterministic rejection for a same-schema concurrent or reentrant parse.
+_PARSE_BUSY = (
+    "one RELAX NG schema cannot parse concurrently or reentrantly; "
+    "use a separate RelaxNGSchema for each concurrent parse"
+)
+
+#: One non-reentrant guard per live schema.  The weak mapping is shared only
+#: to create guards; no parse-local state is stored here, and an unreferenced
+#: schema takes its idle guard with it.
+_PARSE_GUARDS: weakref.WeakKeyDictionary[RelaxNGSchema, threading.Lock] = (
+    weakref.WeakKeyDictionary()
+)
+_PARSE_GUARDS_LOCK = threading.Lock()
 
 #: The versioned shape of the registry identity.  Bump it when the digest
 #: input or the built-in library identities change meaning.
@@ -182,6 +201,55 @@ def _datatype_fingerprint(registry: DatatypeLibraryRegistry) -> str:
     return f"{_DATATYPE_FINGERPRINT_PREFIX}:{digest}"
 
 
+def _parse_guard(schema: RelaxNGSchema) -> threading.Lock:
+    """Return the one idle guard for *schema*, creating it on first use."""
+    with _PARSE_GUARDS_LOCK:
+        guard = _PARSE_GUARDS.get(schema)
+        if guard is None:
+            guard = threading.Lock()
+            _PARSE_GUARDS[schema] = guard
+        return guard
+
+
+def _instance_limits(
+    schema_limits: RelaxNGLimits,
+    override: RelaxNGLimits | None,
+) -> RelaxNGLimits:
+    """Merge one parse's explicit budgets over the schema's defaults.
+
+    An explicit value wins; an unspecified (``None``) override field keeps the
+    compiled schema's value.  The schema value is never modified, so repeated
+    parses with different overrides stay independent.
+    """
+    if override is None:
+        return schema_limits
+    explicit = {
+        descriptor.name: getattr(override, descriptor.name)
+        for descriptor in fields(RelaxNGLimits)
+        if getattr(override, descriptor.name) is not None
+    }
+    return replace(schema_limits, **explicit)
+
+
+class _BatchSchema:
+    """The narrow schema protocol consumed by :func:`pyxsd.batch.iter_parse`.
+
+    RELAX NG's public parse is validation-only, so the adapter supplies the
+    implemented ``typed=False`` mode without changing the XSD batch contract.
+    Every item still goes through :meth:`RelaxNGSchema.parse`, including its
+    reentrancy guard and instance budgets.
+    """
+
+    def __init__(self, schema: RelaxNGSchema) -> None:
+        self._schema = schema
+
+    def require_valid(self) -> None:
+        self._schema.require_valid()
+
+    def parse(self, path: str | os.PathLike[str]) -> RelaxNGDocument:
+        return self._schema.parse(path, typed=False)
+
+
 @dataclass(frozen=True, eq=False)
 class RelaxNGSchema:
     """An immutable compiled RELAX NG 1.0 schema.
@@ -296,6 +364,35 @@ class RelaxNGSchema:
         """Raise :class:`~pyxsd.exceptions.ValidationError` when compilation failed."""
         require_valid_report(self.report)
 
+    def iter_parse(
+        self,
+        sources: Iterable[DocumentSource],
+        *,
+        errors: Literal["raise", "report"] = "raise",
+    ) -> Iterator[ParseOutcome]:
+        """Lazily parse explicit local sources with this compiled schema.
+
+        This is the same sequential batch orchestration as
+        :meth:`pyxsd.Schema.iter_parse`: the schema is checked before the
+        first input is pulled, each input is parsed only when requested,
+        expected I/O and malformed-XML failures are isolated in report mode
+        and stop the batch with :class:`pyxsd.batch.BatchParseError` in raise
+        mode, duplicate source IDs are rejected, and files are closed before
+        an outcome is yielded.  Documents are validation-only RELAX NG
+        documents, so each item is parsed with ``typed=False``.
+
+        Parsing one schema remains non-reentrant, but the guard covers each
+        item parse rather than the yield boundary: a yielded document may
+        revalidate while the batch stays open.
+        """
+        from pyxsd.batch import iter_parse as batch_iter_parse
+
+        return batch_iter_parse(
+            cast(Any, _BatchSchema(self)),
+            sources,
+            errors=errors,
+        )
+
     def parse(
         self,
         xml: str | Path | os.PathLike[str] | IO[str] | IO[bytes] | ET.Element,
@@ -333,12 +430,20 @@ class RelaxNGSchema:
         - ``capture_xdm`` retains the existing opt-in XDM meaning: the same
           source revision also becomes an unannotated XML-tree view.
 
-        - ``limits`` bounds this instance's derivative work.  ``None`` leaves
-          it unlimited and value exhaustion raises
+        - ``limits`` bounds this instance's derivative work.  An explicit
+          non-``None`` field overrides the compiled schema's matching budget,
+          while unspecified fields keep the schema default; the schema value is
+          never modified.  Exhaustion raises
           :class:`~pyxsd.relaxng.errors.RelaxNGLimitError` instead of
           reporting invalidity.  A configured ``max_diagnostics`` only bounds
           finding retention; suppressed findings stay counted, the report stays
           invalid, and ``diagnostics_complete`` becomes false.
+
+        One schema must not parse concurrently or reentrantly.  A parse sets a
+        non-blocking guard before input is consumed and clears it on every exit
+        path, including malformed input, limit exhaustion, and generator close.
+        A competing parse raises ``RuntimeError`` immediately instead of
+        waiting; separate schema objects remain independent.
 
         The schema report's errors are rejected before instance input is
         consumed.  Every successful call returns a fresh document report:
@@ -360,7 +465,34 @@ class RelaxNGSchema:
         if limits is not None and not isinstance(limits, RelaxNGLimits):
             raise TypeError("limits must be a RelaxNGLimits value or None")
         reject_parser_override(self._resource_policy, xml_policy, xml_limits)
+        guard = _parse_guard(self)
+        if not guard.acquire(blocking=False):
+            raise RuntimeError(_PARSE_BUSY)
+        try:
+            return self._parse_instance(
+                xml,
+                xml_policy=xml_policy,
+                xml_limits=xml_limits,
+                capture=capture,
+                capture_xdm=capture_xdm,
+                limits=limits,
+            )
+        finally:
+            guard.release()
+
+    def _parse_instance(
+        self,
+        xml: str | Path | os.PathLike[str] | IO[str] | IO[bytes] | ET.Element,
+        *,
+        xml_policy: XmlParserPolicy | None,
+        xml_limits: XmlLimits | None,
+        capture: str,
+        capture_xdm: bool,
+        limits: RelaxNGLimits | None,
+    ) -> RelaxNGDocument:
+        """Read, validate, and wrap one instance while the parse guard is held."""
         self.require_valid()
+        effective_limits = _instance_limits(self.limits, limits)
 
         source = xml
         source_id = source_identifier(source)
@@ -416,8 +548,12 @@ class RelaxNGSchema:
             source=IssueLocation(source_id, (PathStep(tree.tag, 1),)),
         )
         instance_report = new_validation_report(self._resource_policy)
-        outcome = validate_element_recovering(root, self.grammar.start, limits=limits)
-        report_mismatches(outcome, instance_report, limits=limits)
+        outcome = validate_element_recovering(
+            root,
+            self.grammar.start,
+            limits=effective_limits,
+        )
+        report_mismatches(outcome, instance_report, limits=effective_limits)
 
         merged = new_validation_report(self._resource_policy)
         # A RELAX NG merged report is deliberately initialized as complete,

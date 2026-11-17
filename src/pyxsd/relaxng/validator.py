@@ -14,8 +14,11 @@ Those results therefore live in parse-local tables supplied by
 :class:`DerivationContext`, never in the schema's immutable interning pool.
 ``DerivationContext.pool`` is retained as the schema-side graph reference; all
 event derivatives deliberately leave it untouched. Start-tag transitions keep
-``After`` outside group, interleave, and repetition operands. An iterative
-lexical-tree walk drives these transitions without recursing on document depth.
+``After`` outside group, interleave, and repetition operands. Event, text, and
+recovery projections run on explicit postorder stacks, so pattern depth never
+consumes Python call depth; a dependency cycle without an element boundary is
+rejected deterministically instead of recursing. An iterative lexical-tree walk
+drives document events without recursing on document depth.
 
 RELAX NG whitespace is exactly space, tab, carriage return, and line feed.
 :func:`xml_whitespace_tokens` scans those four characters directly and keeps
@@ -362,30 +365,109 @@ def _text_derivative(
     lexical: str,
     context: DerivationContext,
 ) -> Pattern:
-    """Dispatch one text derivative; callers memoize the result."""
+    """Dispatch text derivatives iteratively over pattern depth."""
+    return _derive_text_iterative(pattern, lexical, context)
+
+
+def _text_derivation_children(pattern: Pattern) -> tuple[Pattern, ...]:
+    """Return the operands whose text derivative this node needs.
+
+    ``Group`` derives its second operand only when the first is nullable;
+    scheduling it unconditionally would consume memo and residual budget for
+    work the recursive rule never performs.
+    """
     if isinstance(pattern, _After):
-        return _after(text_derivative(pattern.first, lexical, context), pattern.second)
+        return (pattern.first,)
     if isinstance(pattern, Ref):
-        return text_derivative(pattern.target, lexical, context)
+        return (pattern.target,)
     if isinstance(pattern, Choice):
-        return choice(
-            text_derivative(pattern.first, lexical, context),
-            text_derivative(pattern.second, lexical, context),
-        )
+        return (pattern.first, pattern.second)
+    if isinstance(pattern, Interleave):
+        return (pattern.first, pattern.second)
+    if isinstance(pattern, Group):
+        return (pattern.first, pattern.second) if _nullable(pattern.first) else (pattern.first,)
+    if isinstance(pattern, OneOrMore):
+        return (pattern.pattern,)
+    if isinstance(pattern, DataExcept):
+        return (pattern.excluded,)
+    return ()
+
+
+def _derive_text_iterative(
+    pattern: Pattern,
+    lexical: str,
+    context: DerivationContext,
+) -> Pattern:
+    """Compute the text derivative without a Python frame per pattern node.
+
+    Children are evaluated before their parents, so memo entries and semantic
+    residuals are recorded in the same order as the recursive Clark rules.
+    A dependency cycle with no element boundary is not a legal simplified
+    RELAX NG graph and is rejected deterministically instead of recursing.
+    """
+    results: dict[int, Pattern] = {}
+    active: set[int] = set()
+    pending: list[tuple[Pattern, bool]] = [(pattern, False)]
+    while pending:
+        node, ready = pending.pop()
+        key = id(node)
+        if not ready:
+            if key in results:
+                continue
+            if node is not pattern:
+                memo_key = (node, lexical, context.datatype_context)
+                cached = context._text_memo.get(memo_key)
+                if cached is not None:
+                    results[key] = cached
+                    continue
+            active.add(key)
+            pending.append((node, True))
+            for child in reversed(_text_derivation_children(node)):
+                child_key = id(child)
+                if child_key in results:
+                    continue
+                if child_key in active:
+                    raise TypeError("cyclic RELAX NG text derivative has no element boundary")
+                pending.append((child, False))
+            continue
+        active.discard(key)
+        raw = _text_derivative_node(node, lexical, context, results)
+        if node is pattern:
+            results[key] = raw
+            continue
+        result = context.canonical_residual(raw)
+        context.remember_text((node, lexical, context.datatype_context), result)
+        results[key] = result
+    return results[id(pattern)]
+
+
+def _text_derivative_node(
+    pattern: Pattern,
+    lexical: str,
+    context: DerivationContext,
+    results: dict[int, Pattern],
+) -> Pattern:
+    """Compute one node's text derivative from its already-derived operands."""
+    if isinstance(pattern, _After):
+        return _after(results[id(pattern.first)], pattern.second)
+    if isinstance(pattern, Ref):
+        return results[id(pattern.target)]
+    if isinstance(pattern, Choice):
+        return choice(results[id(pattern.first)], results[id(pattern.second)])
     if isinstance(pattern, Interleave):
         return choice(
-            interleave(text_derivative(pattern.first, lexical, context), pattern.second),
-            interleave(pattern.first, text_derivative(pattern.second, lexical, context)),
+            interleave(results[id(pattern.first)], pattern.second),
+            interleave(pattern.first, results[id(pattern.second)]),
         )
     if isinstance(pattern, Group):
-        first = text_derivative(pattern.first, lexical, context)
+        first = results[id(pattern.first)]
         result = group(first, pattern.second)
         if _nullable(pattern.first):
-            return choice(result, text_derivative(pattern.second, lexical, context))
+            return choice(result, results[id(pattern.second)])
         return result
     if isinstance(pattern, OneOrMore):
         return group(
-            text_derivative(pattern.pattern, lexical, context),
+            results[id(pattern.pattern)],
             choice(one_or_more(pattern.pattern), Empty()),
         )
     if isinstance(pattern, Text):
@@ -406,8 +488,7 @@ def _text_derivative(
         datatype = cast(Datatype, pattern.datatype)
         if not datatype.allows(lexical, context.datatype_context):
             return NotAllowed()
-        excluded = text_derivative(pattern.excluded, lexical, context)
-        return NotAllowed() if _nullable(excluded) else Empty()
+        return NotAllowed() if _nullable(results[id(pattern.excluded)]) else Empty()
     if isinstance(pattern, Value):
         datatype = cast(Datatype, pattern.datatype)
         schema_context = _schema_datatype_context(datatype)
@@ -437,14 +518,43 @@ def _schema_datatype_context(datatype: Datatype) -> DatatypeContext:
 
 
 def _apply_after(function: Callable[[Pattern], Pattern], pattern: Pattern) -> Pattern:
-    """Push a continuation operation into each top-level ``After`` leaf."""
-    if isinstance(pattern, _After):
-        return _after(pattern.first, function(pattern.second))
-    if isinstance(pattern, Choice):
-        return choice(_apply_after(function, pattern.first), _apply_after(function, pattern.second))
-    if isinstance(pattern, NotAllowed):
-        return pattern
-    raise TypeError("start-tag derivative violated the After placement invariant")
+    """Push a continuation operation into each top-level ``After`` leaf.
+
+    The traversal is iterative so a deeply nested continuation tree cannot
+    exhaust Python's call stack.  ``After`` and ``Choice`` are the only
+    admitted constructors; anything else violates the start-tag placement
+    invariant and is rejected exactly as before.
+    """
+    results: dict[int, Pattern] = {}
+    pending: list[tuple[Pattern, bool]] = [(pattern, False)]
+    while pending:
+        node, ready = pending.pop()
+        key = id(node)
+        if key in results:
+            continue
+        if not ready:
+            if isinstance(node, _After):
+                children: tuple[Pattern, ...] = ()
+            elif isinstance(node, Choice):
+                children = (node.first, node.second)
+            elif isinstance(node, NotAllowed):
+                children = ()
+            else:
+                raise TypeError("start-tag derivative violated the After placement invariant")
+            pending.append((node, True))
+            for child in reversed(children):
+                pending.append((child, False))
+            continue
+        if isinstance(node, _After):
+            results[key] = _after(node.first, function(node.second))
+        elif isinstance(node, Choice):
+            results[key] = choice(
+                results[id(node.first)],
+                results[id(node.second)],
+            )
+        else:
+            results[key] = NotAllowed()
+    return results[id(pattern)]
 
 
 def start_tag_open_derivative(
@@ -480,67 +590,168 @@ def _event_derivative(
     lexical: str,
     context: DerivationContext | None,
 ) -> Pattern:
-    """Memoize event work using the text/list context's existing two budgets."""
-    if context is None:
-        return _derive_event(event, pattern, name, lexical, context)
-    key = (
+    """Memoize event work using the text/list context's two budgets.
+
+    The traversal is iterative: an authored or simplified pattern may be much
+    deeper than Python's call stack allows.  Children are finalised before
+    their parent, preserving the recursive rule's residual and memo order.
+    """
+    if context is not None:
+        key = _event_memo_key(event, pattern, name, lexical, context)
+        cached = context._event_memo.get(key)
+        if cached is not None:
+            return cached
+    return _derive_event_iterative(event, pattern, name, lexical, context)
+
+
+def _event_memo_key(
+    event: str,
+    pattern: Pattern,
+    name: str,
+    lexical: str,
+    context: DerivationContext,
+) -> tuple[str, Pattern, str, str, DatatypeContext | None]:
+    """Return the complete parse-local memo key for one event derivative."""
+    return (
         event,
         pattern,
         name,
         lexical,
         context.datatype_context if event == "attribute" else None,
     )
-    cached = context._event_memo.get(key)
-    if cached is not None:
-        return cached
-    result = context.canonical_residual(_derive_event(event, pattern, name, lexical, context))
-    context._counter.consume("max_memo_entries")
-    context._event_memo[key] = result
-    return result
 
 
-def _derive_event(
+def _event_derivation_children(event: str, pattern: Pattern) -> tuple[Pattern, ...]:
+    """Return event operands in the order the Clark rules derive them."""
+    if isinstance(pattern, Ref):
+        return (pattern.target,)
+    if isinstance(pattern, Choice):
+        return (pattern.first, pattern.second)
+    if event == "end":
+        return ()
+    if isinstance(pattern, _After):
+        return (pattern.first,)
+    if event == "close":
+        if isinstance(pattern, (Group, Interleave)):
+            return (pattern.first, pattern.second)
+        if isinstance(pattern, OneOrMore):
+            return (pattern.pattern,)
+        return ()
+    if isinstance(pattern, (Group, Interleave)):
+        if event == "attribute":
+            return (pattern.first, pattern.second)
+        if isinstance(pattern, Interleave):
+            return (pattern.first, pattern.second)
+        return (pattern.first, pattern.second) if _nullable(pattern.first) else (pattern.first,)
+    if isinstance(pattern, OneOrMore):
+        return (pattern.pattern,)
+    return ()
+
+
+def _derive_event_iterative(
     event: str,
     pattern: Pattern,
     name: str,
     lexical: str,
     context: DerivationContext | None,
 ) -> Pattern:
-    def derive(operand: Pattern) -> Pattern:
-        return _event_derivative(event, operand, name, lexical, context)
+    """Compute one event derivative over an explicit postorder stack."""
+    results: dict[int, Pattern] = {}
+    active: set[int] = set()
+    pending: list[tuple[Pattern, bool]] = [(pattern, False)]
+    while pending:
+        node, ready = pending.pop()
+        key = id(node)
+        if not ready:
+            if key in results:
+                continue
+            if context is not None:
+                cached = context._event_memo.get(
+                    _event_memo_key(event, node, name, lexical, context)
+                )
+                if cached is not None:
+                    results[key] = cached
+                    continue
+            active.add(key)
+            pending.append((node, True))
+            for child in reversed(_event_derivation_children(event, node)):
+                child_key = id(child)
+                if child_key in results:
+                    continue
+                if child_key in active:
+                    raise TypeError("cyclic RELAX NG event derivative has no element boundary")
+                pending.append((child, False))
+            continue
+        active.discard(key)
+        raw = _event_derivative_node(event, node, name, lexical, context, results)
+        if context is None:
+            results[key] = raw
+            continue
+        result = context.canonical_residual(raw)
+        context._counter.consume("max_memo_entries")
+        context._event_memo[_event_memo_key(event, node, name, lexical, context)] = result
+        results[key] = result
+    return results[id(pattern)]
 
+
+def _event_derivative_node(
+    event: str,
+    pattern: Pattern,
+    name: str,
+    lexical: str,
+    context: DerivationContext | None,
+    results: dict[int, Pattern],
+) -> Pattern:
+    """Compute one event derivative from its already-derived operands."""
     if isinstance(pattern, Ref):
-        return derive(pattern.target)
+        return results[id(pattern.target)]
     if isinstance(pattern, Choice):
-        return choice(derive(pattern.first), derive(pattern.second))
+        return choice(results[id(pattern.first)], results[id(pattern.second)])
     if event == "end":
         if isinstance(pattern, _After) and _nullable(pattern.first):
             return pattern.second
         return NotAllowed()
     if isinstance(pattern, _After):
         if event == "open":
-            return _apply_after(lambda rest: _after(rest, pattern.second), derive(pattern.first))
-        return _after(derive(pattern.first), pattern.second)
+            return _apply_after(
+                lambda rest: _after(rest, pattern.second),
+                results[id(pattern.first)],
+            )
+        return _after(results[id(pattern.first)], pattern.second)
     if event == "close":
         if isinstance(pattern, Group):
-            return group(derive(pattern.first), derive(pattern.second))
+            return group(results[id(pattern.first)], results[id(pattern.second)])
         if isinstance(pattern, Interleave):
-            return interleave(derive(pattern.first), derive(pattern.second))
+            return interleave(results[id(pattern.first)], results[id(pattern.second)])
         if isinstance(pattern, OneOrMore):
-            return one_or_more(derive(pattern.pattern))
+            return one_or_more(results[id(pattern.pattern)])
         return NotAllowed() if isinstance(pattern, Attribute) else pattern
     if isinstance(pattern, (Group, Interleave)):
         first, second = pattern.first, pattern.second
         constructor = group if isinstance(pattern, Group) else interleave
         if event == "attribute":
-            return choice(constructor(derive(first), second), constructor(first, derive(second)))
-        left = _apply_after(lambda rest: constructor(rest, second), derive(first))
+            return choice(
+                constructor(results[id(first)], second),
+                constructor(first, results[id(second)]),
+            )
+        left = _apply_after(
+            lambda rest: constructor(rest, second),
+            results[id(first)],
+        )
         if isinstance(pattern, Interleave):
-            return choice(left, _apply_after(lambda rest: interleave(first, rest), derive(second)))
-        return choice(left, derive(second)) if _nullable(first) else left
+            return choice(
+                left,
+                _apply_after(
+                    lambda rest: interleave(first, rest),
+                    results[id(second)],
+                ),
+            )
+        if _nullable(first):
+            return choice(left, results[id(second)])
+        return left
     if isinstance(pattern, OneOrMore):
         rest = choice(one_or_more(pattern.pattern), Empty())
-        derived = derive(pattern.pattern)
+        derived = results[id(pattern.pattern)]
         if event == "open":
             return _apply_after(lambda tail: group(tail, rest), derived)
         return group(derived, rest)
@@ -770,6 +981,104 @@ def children_derivative(
     return result
 
 
+def _current_position_children(pattern: Pattern) -> tuple[Pattern, ...]:
+    """Operands a current-position projection must transform first."""
+    if isinstance(pattern, _After):
+        return (pattern.first,)
+    if isinstance(pattern, (Choice, Group, Interleave)):
+        return (pattern.first, pattern.second)
+    if isinstance(pattern, OneOrMore):
+        return (pattern.pattern,)
+    if isinstance(pattern, Ref):
+        return (pattern.target,)
+    return ()
+
+
+def _pop_continuation_children(pattern: Pattern) -> tuple[Pattern, ...]:
+    """Operands whose continuations an end-tag recovery must retain."""
+    if isinstance(pattern, _After):
+        return ()
+    if isinstance(pattern, Choice):
+        return (pattern.first, pattern.second)
+    if isinstance(pattern, Ref):
+        return (pattern.target,)
+    return ()
+
+
+def _project_current_position(
+    pattern: Pattern,
+    children_of: Callable[[Pattern], tuple[Pattern, ...]],
+    combine: Callable[[Pattern, Callable[[Pattern], Pattern]], Pattern],
+    memo: dict[int, Pattern] | None = None,
+) -> Pattern:
+    """Project one recovery state without recursing on pattern depth.
+
+    ``combine`` receives a node and a child lookup.  Reference cycles are
+    pre-seeded with ``empty`` exactly as the recursive projections did, so a
+    back edge contributes the empty current-position requirement and recovery
+    never selects a branch.
+    """
+    memo = {} if memo is None else memo
+    results: dict[int, Pattern] = {}
+    in_progress: set[int] = set()
+    pending: list[tuple[Pattern, bool]] = [(pattern, False)]
+
+    def child(operand: Pattern) -> Pattern:
+        key = id(operand)
+        if key in results:
+            return results[key]
+        return memo[key]
+
+    while pending:
+        node, ready = pending.pop()
+        key = id(node)
+        if not ready:
+            if key in results:
+                continue
+            cached = memo.get(key)
+            if cached is not None:
+                results[key] = cached
+                continue
+            if isinstance(node, Ref):
+                memo[key] = Empty()
+            in_progress.add(key)
+            pending.append((node, True))
+            for operand in reversed(children_of(node)):
+                operand_key = id(operand)
+                if operand_key in results or operand_key in in_progress:
+                    continue
+                pending.append((operand, False))
+            continue
+        result = combine(node, child)
+        results[key] = result
+        in_progress.discard(key)
+        if isinstance(node, Ref):
+            memo[key] = result
+    return results[id(pattern)]
+
+
+def _without_attributes_node(pattern: Pattern, child: Callable[[Pattern], Pattern]) -> Pattern:
+    if isinstance(pattern, Attribute):
+        return Empty()
+    if isinstance(pattern, _After):
+        return _after(child(pattern.first), pattern.second)
+    if isinstance(pattern, Choice):
+        return choice(child(pattern.first), child(pattern.second))
+    if isinstance(pattern, Group):
+        return group(child(pattern.first), child(pattern.second))
+    if isinstance(pattern, Interleave):
+        return interleave(child(pattern.first), child(pattern.second))
+    if isinstance(pattern, OneOrMore):
+        return one_or_more(child(pattern.pattern))
+    if isinstance(pattern, Ref):
+        return child(pattern.target)
+    if isinstance(pattern, Element):
+        return pattern
+    if isinstance(pattern, (Data, DataExcept, Empty, List, NotAllowed, Text, Value)):
+        return pattern
+    raise TypeError(f"unknown RELAX NG pattern {type(pattern).__name__}")
+
+
 def _without_attributes(pattern: Pattern, _memo: dict[int, Pattern] | None = None) -> Pattern:
     """Remove current-position attribute requirements from *pattern*.
 
@@ -777,36 +1086,34 @@ def _without_attributes(pattern: Pattern, _memo: dict[int, Pattern] | None = Non
     attribute expectations.  Reference cycles are treated as empty current
     position requirements, so recovery terminates without selecting a branch.
     """
-    memo = {} if _memo is None else _memo
-    cached = memo.get(id(pattern))
-    if cached is not None:
-        return cached
+    return _project_current_position(
+        pattern,
+        _current_position_children,
+        _without_attributes_node,
+        _memo,
+    )
+
+
+def _consume_attribute_node(
+    pattern: Pattern,
+    child: Callable[[Pattern], Pattern],
+    uri: str | None,
+    local: str,
+) -> Pattern:
     if isinstance(pattern, Attribute):
-        return Empty()
+        return Empty() if pattern.name_class.contains(uri, local) else pattern
     if isinstance(pattern, _After):
-        return _after(_without_attributes(pattern.first, memo), pattern.second)
+        return _after(child(pattern.first), pattern.second)
     if isinstance(pattern, Choice):
-        return choice(
-            _without_attributes(pattern.first, memo),
-            _without_attributes(pattern.second, memo),
-        )
+        return choice(child(pattern.first), child(pattern.second))
     if isinstance(pattern, Group):
-        return group(
-            _without_attributes(pattern.first, memo),
-            _without_attributes(pattern.second, memo),
-        )
+        return group(child(pattern.first), child(pattern.second))
     if isinstance(pattern, Interleave):
-        return interleave(
-            _without_attributes(pattern.first, memo),
-            _without_attributes(pattern.second, memo),
-        )
+        return interleave(child(pattern.first), child(pattern.second))
     if isinstance(pattern, OneOrMore):
-        return one_or_more(_without_attributes(pattern.pattern, memo))
+        return one_or_more(child(pattern.pattern))
     if isinstance(pattern, Ref):
-        memo[id(pattern)] = Empty()
-        result = _without_attributes(pattern.target, memo)
-        memo[id(pattern)] = result
-        return result
+        return child(pattern.target)
     if isinstance(pattern, Element):
         return pattern
     if isinstance(pattern, (Data, DataExcept, Empty, List, NotAllowed, Text, Value)):
@@ -822,39 +1129,30 @@ def _consume_attribute(
     Matching required attributes become empty; other names remain required so a
     later missing-attribute finding is not suppressed.
     """
-    memo = {} if _memo is None else _memo
-    cached = memo.get(id(pattern))
-    if cached is not None:
-        return cached
-    if isinstance(pattern, Attribute):
-        return Empty() if pattern.name_class.contains(uri, local) else pattern
+    return _project_current_position(
+        pattern,
+        _current_position_children,
+        lambda node, child: _consume_attribute_node(node, child, uri, local),
+        _memo,
+    )
+
+
+def _relax_scalars_node(pattern: Pattern, child: Callable[[Pattern], Pattern]) -> Pattern:
     if isinstance(pattern, _After):
-        return _after(_consume_attribute(pattern.first, uri, local, memo), pattern.second)
+        return _after(child(pattern.first), pattern.second)
     if isinstance(pattern, Choice):
-        return choice(
-            _consume_attribute(pattern.first, uri, local, memo),
-            _consume_attribute(pattern.second, uri, local, memo),
-        )
+        return choice(child(pattern.first), child(pattern.second))
     if isinstance(pattern, Group):
-        return group(
-            _consume_attribute(pattern.first, uri, local, memo),
-            _consume_attribute(pattern.second, uri, local, memo),
-        )
+        return group(child(pattern.first), child(pattern.second))
     if isinstance(pattern, Interleave):
-        return interleave(
-            _consume_attribute(pattern.first, uri, local, memo),
-            _consume_attribute(pattern.second, uri, local, memo),
-        )
+        return interleave(child(pattern.first), child(pattern.second))
     if isinstance(pattern, OneOrMore):
-        return one_or_more(_consume_attribute(pattern.pattern, uri, local, memo))
+        return one_or_more(child(pattern.pattern))
     if isinstance(pattern, Ref):
-        memo[id(pattern)] = Empty()
-        result = _consume_attribute(pattern.target, uri, local, memo)
-        memo[id(pattern)] = result
-        return result
-    if isinstance(pattern, Element):
-        return pattern
-    if isinstance(pattern, (Data, DataExcept, Empty, List, NotAllowed, Text, Value)):
+        return child(pattern.target)
+    if isinstance(pattern, (Data, DataExcept, List, Value)):
+        return Text()
+    if isinstance(pattern, (Attribute, Element, Empty, NotAllowed, Text)):
         return pattern
     raise TypeError(f"unknown RELAX NG pattern {type(pattern).__name__}")
 
@@ -865,30 +1163,22 @@ def _relax_scalars(pattern: Pattern, _memo: dict[int, Pattern] | None = None) ->
     Only current-position scalar content is relaxed; child element contents,
     attributes, and post-end-tag continuations keep their expectations.
     """
-    memo = {} if _memo is None else _memo
-    cached = memo.get(id(pattern))
-    if cached is not None:
-        return cached
+    return _project_current_position(
+        pattern,
+        _current_position_children,
+        _relax_scalars_node,
+        _memo,
+    )
+
+
+def _pop_continuations_node(pattern: Pattern, child: Callable[[Pattern], Pattern]) -> Pattern:
     if isinstance(pattern, _After):
-        return _after(_relax_scalars(pattern.first, memo), pattern.second)
+        return pattern.second
     if isinstance(pattern, Choice):
-        return choice(_relax_scalars(pattern.first, memo), _relax_scalars(pattern.second, memo))
-    if isinstance(pattern, Group):
-        return group(_relax_scalars(pattern.first, memo), _relax_scalars(pattern.second, memo))
-    if isinstance(pattern, Interleave):
-        return interleave(_relax_scalars(pattern.first, memo), _relax_scalars(pattern.second, memo))
-    if isinstance(pattern, OneOrMore):
-        return one_or_more(_relax_scalars(pattern.pattern, memo))
+        return choice(child(pattern.first), child(pattern.second))
     if isinstance(pattern, Ref):
-        memo[id(pattern)] = Empty()
-        result = _relax_scalars(pattern.target, memo)
-        memo[id(pattern)] = result
-        return result
-    if isinstance(pattern, (Data, DataExcept, List, Value)):
-        return Text()
-    if isinstance(pattern, (Attribute, Element, Empty, NotAllowed, Text)):
-        return pattern
-    raise TypeError(f"unknown RELAX NG pattern {type(pattern).__name__}")
+        return child(pattern.target)
+    return Empty()
 
 
 def _pop_continuations(pattern: Pattern, _memo: dict[int, Pattern] | None = None) -> Pattern:
@@ -898,23 +1188,12 @@ def _pop_continuations(pattern: Pattern, _memo: dict[int, Pattern] | None = None
     yields the empty state so the parent's content can still be diagnosed.
     Recovery states are nonaccepting regardless of this projection.
     """
-    memo = {} if _memo is None else _memo
-    cached = memo.get(id(pattern))
-    if cached is not None:
-        return cached
-    if isinstance(pattern, _After):
-        return pattern.second
-    if isinstance(pattern, Choice):
-        return choice(
-            _pop_continuations(pattern.first, memo),
-            _pop_continuations(pattern.second, memo),
-        )
-    if isinstance(pattern, Ref):
-        memo[id(pattern)] = Empty()
-        result = _pop_continuations(pattern.target, memo)
-        memo[id(pattern)] = result
-        return result
-    return Empty()
+    return _project_current_position(
+        pattern,
+        _pop_continuation_children,
+        _pop_continuations_node,
+        _memo,
+    )
 
 
 def _expects_attribute_name(pattern: Pattern, uri: str | None, local: str) -> bool:
