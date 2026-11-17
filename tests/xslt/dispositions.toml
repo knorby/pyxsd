@@ -16,19 +16,23 @@
 # - Seeds arrive with each profile's census. xslt20 and xslt30 stay unseeded
 #   until their censuses are adjudicated; do not invent case IDs.
 
-# Adjudication: docs/superpowers/sdd/2026-11-08-xslt-engine/census-xslt10.json
-# (signature "resources", outcome adapter-gap for both cases). execute_case in
-# tests/xslt/suite.py refuses any case whose environment declares external
-# resources, so neither case reaches the engine. bug/bug-0901 declares a DTD
-# resource (xteixlite.dtd); document/document-2002 references the document-20
-# environment, which declares HTTP text resources.
+# Adjudication: docs/superpowers/sdd/2026-11-15-xslt-adapter-gap-closure/task-7-brief.md
+# The harness executes local resource declarations; it refuses only a text
+# read of a remote URI with no local fixture. The unparsed-text-20 environment
+# declares two HTTP resources by @file URL, so the corpus ships no local file,
+# and document-20's identical declarations are never read by its cases. The
+# xslt10 cases the previous entry claimed now execute and pass.
 [[dispositions]]
-id = "xslt10-environment-resources"
-title = "Cases whose environment declares external resources stop in the harness"
-category = "adapter-limit"
-profiles = ["xslt10"]
+id = "remote-text-resources-without-fixtures"
+title = "unparsed-text cases read HTTP resources the corpus does not ship"
+category = "declared-non-goal"
+profiles = ["xslt30", "xslt20"]
 cases = [
-  "bug/bug-0901",
-  "document/document-2002",
+  "unparsed-text/unparsed-text-2002",
+  "unparsed-text/unparsed-text-2003",
 ]
-reason = "resources"
+reason = "No network I/O: the unparsed-text-20 environment declares https://www.w3.org/Consortium/mission.html and https://www.w3.org/TR/1999/WD-font-19990902 with no local file, and these stylesheets read them."
+links = [
+  "https://www.w3.org/TR/xslt-30/#func-unparsed-text",
+  "https://www.w3.org/TR/xpath-functions-31/#func-unparsed-text-available",
+]

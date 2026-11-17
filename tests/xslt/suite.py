@@ -27,17 +27,19 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
+from urllib.request import url2pathname
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
 from elementpath.regex import unicode_version
 from tests.xslt.assertions import ResultSnapshot
 from tests.xslt.environment import build_schema_pool, environment_fingerprint
-from tests.xslt.model import XML_NS, Param, Source, Stylesheet, TestCase
+from tests.xslt.model import XML_NS, Param, Resource, Source, Stylesheet, TestCase
 from tests.xslt.outcomes import CaseResult
 from tests.xslt.runner import CaseExecutionError, run_cases
 from tests.xslt.selection import XSLT30_NON_STREAMING, FeatureProfile
 
+from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmMap
 from pyxsd.xdm.document import DocumentValidationError, parse_typed_document
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
@@ -749,31 +751,177 @@ def _member_node(case: TestCase, root: Path, member: _Member) -> XdmNode:
     )
 
 
+# ---------------------------------------------------------------------------
+# Declared resources
+
+
+def _local_path(source: str) -> Path | None:
+    """The local file *source* names, or ``None`` when it is not one.
+
+    A canonical absolute ``file`` URI — scheme ``file``, no authority, no
+    query, an absolute path — and an absolute filesystem path are local; every
+    other scheme and every relative reference is not.  Compilation hands the
+    policy its units as absolute paths or ``file`` URIs, and the engine
+    resolves a text read against the calling module's base before the policy
+    sees it, so this only ever decides between reading a local path and
+    refusing.
+    """
+    parts = urlsplit(source)
+    if parts.scheme == "file":
+        if parts.netloc or parts.query or not parts.path.startswith("/"):
+            return None
+        return Path(url2pathname(parts.path))
+    if parts.scheme:
+        return None
+    candidate = Path(source)
+    return candidate if candidate.is_absolute() else None
+
+
+class _CorpusResourcePolicy:
+    """The read-only policy one case's ``<resource>`` declarations build.
+
+    The engine consults ``resource_policy`` for local and ``urn`` reads and
+    ``remote_resource_policy`` for every other scheme, so one object fills both
+    fields: a declared ``http:`` URI is then served from its declared local
+    fixture without any network I/O.  A read of something the declarations do
+    not name keeps the engine's own local-file behaviour, and only ``Path``
+    reads ever touch the filesystem.
+    """
+
+    def __init__(self, root: Path, resources: Mapping[str, Resource]) -> None:
+        self.root = root
+        self.resources = dict(resources)
+
+    def read(self, source: str, *, base: str | None, purpose: str) -> ResourceData:
+        if purpose == "text":
+            resource = self.resources.get(source)
+            if resource is not None:
+                return ResourceData(source, self._declared_text(resource, source))
+        path = _local_path(source)
+        if path is None:
+            raise ResourcePolicyError(f"the resource {source!r} is not available")
+        return ResourceData(source, path.read_bytes())
+
+    def _declared_text(self, resource: Resource, source: str) -> bytes:
+        """The fixture bytes of one declaration, transcoded to UTF-8.
+
+        The policy API carries no encoding channel, so the declaration is the
+        corpus's statement of the bytes' encoding: decoding with it and serving
+        UTF-8 makes the engine's UTF-8 default yield the declared characters.
+        A declared path is clamped inside the corpus root before it is read.
+        """
+        if resource.path is None:
+            # The corpus ships no local file for this URI; nothing is fetched,
+            # so the harness cannot serve the read.
+            raise UnsupportedCase(f"remote text resource {source!r} without a local fixture")
+        target = (self.root / Path(str(resource.path))).resolve()
+        if not target.is_relative_to(self.root):
+            raise UnsupportedCase("resource path outside the corpus root")
+        encoding = resource.encoding or "utf-8"
+        try:
+            return target.read_bytes().decode(encoding).encode("utf-8")
+        except (LookupError, UnicodeDecodeError) as exc:
+            raise UnsupportedCase(
+                f"text resource {source!r} is not decodable as {encoding}"
+            ) from exc
+
+
+def _resource_bases(case: TestCase, units: _Units, root: Path) -> tuple[str, ...]:
+    """Every base a declared relative resource URI is resolved against.
+
+    The engine resolves a text read against the canonical base of the module
+    that calls it, so the test-set directory — where the declaration was
+    written — the principal's directory, and every library's directory are all
+    bases; each is canonical, so a symlinked checkout still matches.
+    """
+    bases: list[str] = []
+    for base in (
+        (root / Path(str(case.source.parent))).resolve(),
+        units.principal.parent.resolve(),
+        *(library.parent.resolve() for library in units.libraries),
+    ):
+        candidate = base.as_uri() + "/"
+        if candidate not in bases:
+            bases.append(candidate)
+    return tuple(bases)
+
+
+def _resource_policies(case: TestCase, units: _Units) -> _CorpusResourcePolicy | None:
+    """A policy serving the resources one case declares, or ``None``.
+
+    Declarations are keyed by the absolute URI the engine can ask for: a URI
+    with a scheme stays verbatim, a relative one is registered under every
+    module directory, and a declared fixture is additionally keyed by its own
+    absolute ``file`` URI, so a stylesheet that reads the fixture by its
+    location still gets the declared encoding.  Building the mapping reads no
+    file: a declaration the case never requests cannot fail, so a remote, DTD,
+    or XQuery-module declaration never blocks a case that does not read it.
+    Two declarations for one URI with different bytes or encodings cannot both
+    be true.
+    """
+    declarations = case.environment.resources
+    if not declarations:
+        return None
+    root = _corpus_root(case).resolve()
+    bases = _resource_bases(case, units, root)
+    mapping: dict[str, Resource] = {}
+    for resource in declarations:
+        keys: list[str] = []
+        if resource.uri is not None:
+            if urlsplit(resource.uri).scheme:
+                keys.append(resource.uri)
+            else:
+                keys.extend(dict.fromkeys(urljoin(base, resource.uri) for base in bases))
+        if resource.path is not None:
+            fixture = (root / Path(str(resource.path))).resolve().as_uri()
+            if fixture not in keys:
+                keys.append(fixture)
+        if not keys:
+            raise UnsupportedCase("resource without a file or URI")
+        for key in keys:
+            existing = mapping.get(key)
+            if existing is not None and (existing.path, existing.encoding) != (
+                resource.path,
+                resource.encoding,
+            ):
+                raise UnsupportedCase(f"ambiguous resource {key!r}")
+            mapping[key] = resource
+    return _CorpusResourcePolicy(root, mapping)
+
+
 def _processor_for(
     profile: SuiteProfile,
     units: _Units,
     *,
     resolver: CollectionResolver | None = None,
+    resources: _CorpusResourcePolicy | None = None,
 ) -> XsltProcessor:
-    """The profile's processor with this case's libraries and collections.
+    """The profile's processor with this case's libraries, collections, resources.
 
-    A case without libraries and without a collection resolver keeps the
-    profile processor itself, so an ordinary stylesheet compiles exactly as
-    before.  ``from_sources`` reads the local corpus files only: a package name
-    is never dereferenced, so a lookup can never reach the network.
+    A case without libraries, without a collection resolver, and without a
+    resource policy keeps the profile processor itself, so an ordinary
+    stylesheet compiles exactly as before.  ``from_sources`` reads the local
+    corpus files only: a package name is never dereferenced, so a lookup can
+    never reach the network.
     """
-    if not units.libraries and resolver is None:
+    if not units.libraries and resolver is None and resources is None:
         return profile.processor
     package_resolver = (
         PackageResolver.from_sources(*(str(path) for path in units.libraries))
         if units.libraries
         else profile.processor.resolver
     )
-    return replace(
-        profile.processor,
-        resolver=package_resolver,
-        collection_resolver=resolver,
-    )
+    updates: dict[str, Any] = {
+        "resolver": package_resolver,
+        "collection_resolver": resolver,
+    }
+    if resources is not None:
+        # The engine consults the application policy only for local and urn
+        # reads and refuses a remote scheme outright when only that policy is
+        # set, so one object fills both fields.
+        updates["resource_policy"] = resources
+        updates["remote_resource_policy"] = resources
+    return replace(profile.processor, **updates)
 
 
 #: How many compiled stylesheets one worker keeps for reuse.  The bulk
@@ -815,17 +963,20 @@ def _compile_stylesheet(
     schema: SchemaPool | None = None,
     environment: str = "",
     resolver: CollectionResolver | None = None,
+    resources: _CorpusResourcePolicy | None = None,
 ) -> CompiledStylesheet:
     """Compile one case's compilation units, reusing an invariant artifact.
 
     *schema* is the case's compile-time schema pool and *environment* its
     fingerprint; both are part of the cache identity, so an artifact is never
-    shared between cases whose declared schemas differ.  A case that declares a
-    collection resolver compiles fresh: the artifact carries the resolver, and a
-    cached one would bind a later case's members to this case's declarations.
+    shared between cases whose declared schemas differ.  A case that declares
+    a collection resolver or a resource policy compiles fresh: the artifact
+    carries the resolver and the policy, and a cached one would bind a later
+    case's members — or its fixture bytes — to this case's declarations, since
+    the environment fingerprint knows collections but not resources.
     """
-    if static_parameters or resolver is not None:
-        return _processor_for(profile, units, resolver=resolver).compile(
+    if static_parameters or resolver is not None or resources is not None:
+        return _processor_for(profile, units, resolver=resolver, resources=resources).compile(
             units.principal,
             static_parameters=static_parameters,
             schema=schema,
@@ -865,13 +1016,12 @@ def _case_schema_pool(profile: SuiteProfile, case: TestCase) -> SchemaPool | Non
 
 def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
     """Compile and run one case, returning its result for independent assertion."""
-    if case.environment.resources:
-        raise UnsupportedCase("resources")
     output = case.invocation.output or case.environment.output
     if output is not None and output.result_var is not None:
         raise UnsupportedCase("result-variable output")
     units = _compilation_units(case)
     resolver = _collection_resolver(case, units)
+    resources = _resource_policies(case, units)
     output_uri = _base_output_uri(case)
     invocation = case.invocation
     xpath_version = profile.processor.xpath
@@ -938,6 +1088,7 @@ def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
             schema=_case_schema_pool(profile, case),
             environment=environment_fingerprint(case),
             resolver=resolver,
+            resources=resources,
         )
         return _snapshot(compiled.transform(**options))
     except XsltError as exc:

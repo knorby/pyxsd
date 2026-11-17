@@ -482,21 +482,24 @@ def test_categories_are_the_documented_closed_vocabulary() -> None:
     assert documented == CATEGORIES
 
 
-def test_checked_in_dispositions_match_the_xslt10_census() -> None:
-    baseline = load_baseline("xslt10")
+def test_checked_in_dispositions_declare_the_remote_text_non_goal() -> None:
     entries = load_dispositions(DISPOSITIONS)
 
     assert len(entries) == 1
     (entry,) = entries
-    assert entry.id == "xslt10-environment-resources"
-    assert entry.category == "adapter-limit"
-    assert entry.profiles == ("xslt10",)
-    assert entry.cases == ("bug/bug-0901", "document/document-2002")
-    assert entry.reason == "resources"
-    for case_id in entry.cases:
-        assert baseline.outcome(case_id) == Outcome.ADAPTER_GAP.value
-    assert not set(entry.cases) & set(unclassified(baseline, entries, "xslt10"))
-    assert active_entries("xslt10", baseline.as_mapping(), entries) == entries
+    assert entry.id == "remote-text-resources-without-fixtures"
+    assert entry.category == "declared-non-goal"
+    assert entry.profiles == ("xslt30", "xslt20")
+    assert entry.cases == (
+        "unparsed-text/unparsed-text-2002",
+        "unparsed-text/unparsed-text-2003",
+    )
+    assert "no local file" in entry.reason
+    for profile in entry.profiles:
+        baseline = load_baseline(profile)
+        for case_id in entry.cases:
+            assert case_id in baseline.cases
+        assert not set(entry.cases) & set(unclassified(baseline, entries, profile))
 
 
 def test_loading_the_checked_in_file_is_deterministic() -> None:

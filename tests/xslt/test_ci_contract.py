@@ -598,11 +598,11 @@ def test_executor_reports_unsupported_environment_shapes_as_adapter_gaps(
     case = catalog.cases["gate/case-001"]
     profile = SUITE_PROFILES["xslt30"]
     shapes = {
-        "resources": replace(
+        "resource without a file or URI": replace(
             case,
             environment=replace(
                 case.environment,
-                resources=(Resource(role="resource", file="r.txt"),),
+                resources=(Resource(role="resource"),),
             ),
         ),
         "named collection without sources": replace(
