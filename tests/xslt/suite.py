@@ -451,17 +451,22 @@ def _delivery(case: TestCase) -> str:
     return "stylesheet"
 
 
-def _base_output_uri(case: TestCase) -> str:
+def _base_output_uri(case: TestCase) -> str | None:
     """The absolute base output URI every relative result-document href uses.
 
     A declared output file is the base the catalog's own runner resolves
-    ``xsl:result-document`` hrefs against.  Without one, a synthetic
-    per-case principal output URI supplies the identity — the same convention
-    the corpus runner uses — so a relative href always resolves and nothing is
-    written.
+    ``xsl:result-document`` hrefs against.  An output declared ``#absent``
+    asks for no base output URI at all, so ``None`` comes back and the
+    invocation runs without one — a relative href then reports ``XTDE1480``,
+    which is exactly what such a case exists to observe.  Any other case
+    without a declared path takes a synthetic per-case principal output URI
+    — the same convention the corpus runner uses — so a relative href always
+    resolves and nothing is written.
     """
     output = case.invocation.output or case.environment.output
     root = _corpus_root(case)
+    if output is not None and output.file == "#absent":
+        return None
     if output is not None and output.path is not None:
         return (root / Path(str(output.path))).as_uri()
     return (root / "__pyxsd_output__" / case.name / "principal-output.xml").as_uri()
