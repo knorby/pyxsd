@@ -281,6 +281,15 @@ def _snapshot(result: TransformationResult, output_uri: str | None = None) -> Re
     """
     entry = result.principal_entry
     if output_uri is not None and output_uri in result.secondary:
+        # The preference is safe because it only ever displaces an empty
+        # principal.  ``_Invocation._check_principal_result_uri`` raises
+        # XTDE1490 whenever a result document claims the base output URI and
+        # the principal is delivered as a document tree or its raw sequence is
+        # non-empty, so the entry selected here is the one result the
+        # invocation actually delivered at that URI.
+        assert not entry.raw, (
+            "a principal that delivered a sequence cannot yield its base output URI"
+        )
         entry = result.secondary[output_uri]
     view = _snapshot_entry(entry)
     messages = tuple(

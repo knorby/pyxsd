@@ -875,10 +875,8 @@ def test_static_compile_rejects_invalid_constructs(body: str, code: str) -> None
 def test_literal_result_avt_and_excluded_namespaces() -> None:
     compiled = compile_bytes(
         xsl(
-            '<xsl:template name="main">'
-            '<out xmlns:unused="urn:unused" a="{1 + 1}" b="plain">text</out>'
-            "</xsl:template>",
-            attributes='exclude-result-prefixes="unused"',
+            '<xsl:template name="main"><out a="{1 + 1}" b="plain">text</out></xsl:template>',
+            attributes='xmlns:unused="urn:unused" exclude-result-prefixes="unused"',
         )
     )
 
@@ -977,6 +975,52 @@ def test_literal_result_keeps_an_unused_in_scope_namespace() -> None:
         node.prefix == "keep" and node.string_value == "urn:keep"
         for node in no_default_element.namespace_nodes
     )
+
+
+def test_literal_result_resolves_an_excluded_prefix_at_the_module_root() -> None:
+    # The reviewed probe: the root designates ``a`` (a.uri) while the literal
+    # element rebinds ``a`` to other.uri and binds ``a.uri`` to ``b``.  XSLT
+    # 3.0 11.1.3 resolves the token against the bindings in scope on the
+    # element that carries the attribute, so ``b`` goes and the rebinding stays.
+    compiled = compile_bytes(
+        xsl(
+            '<xsl:template name="main"><out xmlns:a="other.uri" xmlns:b="a.uri"/></xsl:template>',
+            attributes='xmlns:a="a.uri" exclude-result-prefixes="a"',
+        )
+    )
+
+    result = compiled.transform(initial_template="main")
+    element = _element_children(result.principal_tree)[0]
+    namespaces = {node.prefix: node.string_value for node in element.namespace_nodes}
+
+    assert namespaces["a"] == "other.uri"
+    assert "b" not in namespaces
+    assert 'xmlns:a="other.uri"' in result.serialize()
+    assert "xmlns:b" not in result.serialize()
+
+
+def test_literal_result_resolves_the_default_token_at_the_module_root() -> None:
+    # ``#default`` (XTSE0809) names the root's default namespace, not the
+    # literal element's rebinding of the default namespace.
+    compiled = compile_bytes(
+        xsl(
+            '<xsl:template name="main">'
+            '<out xmlns="http://other.uri" xmlns:p="http://root.uri"/>'
+            "</xsl:template>",
+            attributes='xmlns="http://root.uri" exclude-result-prefixes="#default"',
+        )
+    )
+
+    result = compiled.transform(initial_template="main")
+    element = _element_children(result.principal_tree)[0]
+    namespaces = {node.prefix: node.string_value for node in element.namespace_nodes}
+
+    # The designated URI is the root's default; the element's own default is
+    # used by its name, so namespace fixup keeps it.
+    assert "p" not in namespaces
+    assert namespaces[""] == "http://other.uri"
+    assert element.name == "{http://other.uri}out"
+    assert 'xmlns:p="http://root.uri"' not in result.serialize()
 
 
 def test_literal_result_exclude_all_and_default_namespaces() -> None:
@@ -2110,7 +2154,13 @@ def test_literal_namespaces_skip_unused_default_even_when_excluded() -> None:
         },
     )
 
-    assert _literal_namespaces(instruction, (), ("#default",)) == (("p", "urn:p"),)
+    assert _literal_namespaces(
+        instruction,
+        (),
+        ("#default",),
+        frozenset(),
+        {"": "urn:unused"},
+    ) == (("p", "urn:p"),)
 
 
 def test_mode_rule_context_item_constraints() -> None:

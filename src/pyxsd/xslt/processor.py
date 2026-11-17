@@ -20,6 +20,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import urljoin, urlsplit
@@ -3802,6 +3803,7 @@ def _compile_native_10_forwards_compatible(
 _EXTENSION_ELEMENT_PREFIXES = "extension-element-prefixes"
 
 
+@lru_cache(maxsize=64)
 def _extension_instruction_namespaces(module: EffectiveModule) -> frozenset[str]:
     """Resolve the module root's ``extension-element-prefixes`` declaration.
 
@@ -3809,6 +3811,12 @@ def _extension_instruction_namespaces(module: EffectiveModule) -> frozenset[str]
     instruction candidates for this compilation; ``#default`` names the
     default namespace.  The declaration is read at the stylesheet root, the
     position stylesheets use for processor-wide extension families.
+
+    The result depends only on the immutable effective module, so it is cached
+    per module: every literal result element and every unrecognized extension
+    element in that module shares the one resolution instead of re-splitting
+    the declaration.  The bound keeps at most a few compilations' modules
+    reachable after they are dropped.
     """
     declared = module.root.attribute(_EXTENSION_ELEMENT_PREFIXES)
     if declared is None:
@@ -3889,6 +3897,7 @@ def _compile_literal_result(
         attributes,
         _exclusions(module),
         _extension_instruction_namespaces(module),
+        module.root.in_scope_namespaces,
     )
     validation, type_name = _compile_construction_validation(
         instruction,
@@ -5026,21 +5035,30 @@ def _literal_namespaces(
     instruction: Instruction,
     attributes: Sequence[tuple[str, str | CompiledValueTemplate]],
     exclusions: tuple[str, ...],
-    extension_namespaces: frozenset[str] = frozenset(),
+    extension_namespaces: frozenset[str],
+    root_namespaces: Mapping[str, str],
 ) -> tuple[tuple[str, str], ...]:
     """The namespace nodes one literal result element copies (XSLT 3.0 11.1.3).
 
     The created element node copies every in-scope stylesheet namespace except
     an excluded one.  Exclusion designates a namespace *URI*, never a prefix:
     the XSLT namespace, each of the module root's extension instruction
-    namespaces, and every URI named by an in-scope ``exclude-result-prefixes``
-    token (``#default`` names the default namespace and ``#all`` names every
-    in-scope namespace).  A URI used by the element's own name or one of its
-    attribute names is kept regardless, because namespace fixup requires a node
-    for it (XSLT 3.0 5.7.3); the ``xml`` prefix is always implicit and is never
-    copied.  Any other in-scope namespace, used or not, is copied and
-    serialized; pruning unused nodes is a serializer's freedom this engine does
-    not take.
+    namespaces, and every URI named by an ``exclude-result-prefixes`` token
+    declared on the module root (``#default`` names the root's default
+    namespace, XTSE0809, and ``#all`` names every in-scope namespace).
+
+    A token resolves against the bindings in scope on the element that carries
+    the attribute — the module root, where this compiler reads the declaration
+    — not against *instruction*'s own bindings, so a prefix the literal element
+    rebinds still designates the URI it named at the root.  A token bound
+    nowhere is not designated (this compiler reads that permissively rather
+    than raising XTSE0808).
+
+    A URI used by the element's own name or one of its attribute names is kept
+    regardless, because namespace fixup requires a node for it (XSLT 3.0
+    5.7.3); the ``xml`` prefix is always implicit and is never copied.  Any
+    other in-scope namespace, used or not, is copied and serialized; pruning
+    unused nodes is a serializer's freedom this engine does not take.
     """
     designated = set(exclusions)
     exclude_all = "#all" in designated
@@ -5049,7 +5067,7 @@ def _literal_namespaces(
     for token in designated:
         if token == "#all":
             continue
-        uri = instruction.namespaces.get("" if token == "#default" else token)
+        uri = root_namespaces.get("" if token == "#default" else token)
         if uri is not None:
             excluded.add(uri)
     used: set[str | None] = {_namespace(instruction.name)}
