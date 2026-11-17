@@ -349,7 +349,7 @@ def test_repeatable_descriptor_is_a_live_view_of_the_authoritative_children():
     assert len(view) == 2
     assert view[-1] is added
     assert list(view) == [root.children[0], added]
-    assert root.many is not view
+    assert root.many is view
 
 
 def test_repeated_same_name_children_keep_order_and_merged_contracts():

@@ -16,8 +16,10 @@ remain expanded-name views rather than invented Python aliases.
 from __future__ import annotations
 
 import keyword
+import operator
 import threading
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+import weakref
+from collections.abc import Iterable, Iterator, Mapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, cast, overload
@@ -126,34 +128,107 @@ class AttributeDescriptor:
         _assign_field_map(instance, {self.contract.alias: value})
 
 
-class ChildSequence(Sequence[RelaxNGElement]):
-    """A live ordered view of one expanded-name child field.
+class ChildSequence(MutableSequence[RelaxNGElement]):
+    """A live, mutation-aware view of one expanded-name child field.
 
-    Reads always consult the authoritative child list, so a mutation through
-    the tree is visible without rebuilding this view.  Task 4 extends this
-    seam with insertion, replacement, and deletion; Task 2 needs reads only.
+    Reads always consult the authoritative child list, so a tree mutation is
+    visible without rebuilding this view.  Views are cached weakly per node
+    and expanded name, making repeated descriptor reads return one stable
+    object without retaining detached nodes through the cache.
+
+    A position in this view maps to the matching child's position in the one
+    child list.  Insertion before a matching child places the new child
+    immediately before it; appending after the last matching child keeps the
+    new child inside the matching run instead of jumping over unrelated
+    trailing children.  Every edit validates its whole child batch before the
+    first tree operation: nodes must be detached, from this revision, of
+    exactly this expanded name, and not an ancestor of the target.  A rejected
+    edit leaves children, parent links, tails, and the revision dirty flag
+    unchanged.
     """
 
-    __slots__ = ("_expanded_name", "_node")
+    __slots__ = ("__weakref__", "_expanded_name", "_node")
 
     def __init__(self, node: RelaxNGElement, expanded_name: str) -> None:
         self._node = node
         self._expanded_name = expanded_name
+
+    @classmethod
+    def for_node(cls, node: RelaxNGElement, expanded_name: str) -> ChildSequence:
+        """Return the stable view object for one node and expanded name."""
+        with _SEQUENCE_VIEWS_LOCK:
+            views = _SEQUENCE_VIEWS.get(node)
+            if views is None:
+                views = {}
+                _SEQUENCE_VIEWS[node] = views
+            reference = views.get(expanded_name)
+            if reference is not None:
+                view = reference()
+                if view is not None:
+                    return view
+            view = cls(node, expanded_name)
+            views[expanded_name] = weakref.ref(view)
+            return view
 
     @property
     def expanded_name(self) -> str:
         """The exact expanded child name selected by this view."""
         return self._expanded_name
 
+    def _matching_positions(self) -> list[int]:
+        return [
+            index
+            for index, child in enumerate(self._node._children_)
+            if child._name_ == self._expanded_name
+        ]
+
     def _matching(self) -> tuple[RelaxNGElement, ...]:
         return tuple(
             child for child in self._node._children_ if child._name_ == self._expanded_name
         )
 
-    def __len__(self) -> int:
-        return len(self._matching())
+    def _normalize_index(self, index: int, *, allow_end: bool = False) -> int:
+        position = operator.index(index)
+        length = len(self)
+        if position < 0:
+            position += length
+        limit = length if allow_end else length - 1
+        if position < 0 or position > limit:
+            raise IndexError("child sequence index out of range")
+        return position
 
-    @overload
+    def _validate_batch(self, children: Iterable[RelaxNGElement]) -> list[RelaxNGElement]:
+        """Validate every child of one edit before any tree operation."""
+        batch = list(children)
+        seen: set[RelaxNGElement] = set()
+        for child in batch:
+            self._node._validate_child(child, expanded_name=self._expanded_name)
+            if child in seen:
+                raise ValueError("a child cannot occur twice in one sequence edit")
+            seen.add(child)
+        return batch
+
+    def _insertion_position(self, view_index: int, positions: list[int]) -> int:
+        if view_index < len(positions):
+            return positions[view_index]
+        if positions:
+            return positions[-1] + 1
+        return len(self._node._children_)
+
+    def _insert_batch(self, view_index: int, batch: list[RelaxNGElement]) -> None:
+        if not batch:
+            return
+        lexical = self._insertion_position(view_index, self._matching_positions())
+        for child in batch:
+            self._node.insert_child(lexical, child)
+            lexical += 1
+
+    def __len__(self) -> int:
+        return sum(1 for child in self._node._children_ if child._name_ == self._expanded_name)
+
+    # A slice is an immutable snapshot, matching the lexical tuple contract;
+    # MutableSequence only requires the int overload to return the element.
+    @overload  # type: ignore[override]
     def __getitem__(self, index: int) -> RelaxNGElement: ...
 
     @overload
@@ -162,11 +237,74 @@ class ChildSequence(Sequence[RelaxNGElement]):
     def __getitem__(self, index: int | slice) -> RelaxNGElement | tuple[RelaxNGElement, ...]:
         return self._matching()[index]
 
+    def __setitem__(self, index: int | slice, value: Any) -> None:
+        if isinstance(index, slice):
+            batch = self._validate_batch(value)
+            self._assign_slice(index, batch)
+            return
+        position = self._normalize_index(index)
+        batch = self._validate_batch((value,))
+        self._node.replace_child(self._matching_positions()[position], batch[0])
+
+    def _assign_slice(self, index: slice, batch: list[RelaxNGElement]) -> None:
+        start, stop, step = index.indices(len(self))
+        view_indexes = list(range(start, stop, step))
+        positions = self._matching_positions()
+        if step != 1:
+            if len(batch) != len(view_indexes):
+                raise ValueError(
+                    f"attempt to assign sequence of size {len(batch)} to extended "
+                    f"slice of size {len(view_indexes)}"
+                )
+            for view_index, child in zip(view_indexes, batch, strict=True):
+                self._node.replace_child(positions[view_index], child)
+            return
+        target_positions = [positions[view_index] for view_index in view_indexes]
+        if not target_positions:
+            self._insert_batch(start, batch)
+            return
+        if len(batch) >= len(target_positions):
+            for position, child in zip(target_positions, batch, strict=False):
+                self._node.replace_child(position, child)
+            lexical = target_positions[-1] + 1
+            for child in batch[len(target_positions) :]:
+                self._node.insert_child(lexical, child)
+                lexical += 1
+            return
+        for position, child in zip(target_positions, batch, strict=False):
+            self._node.replace_child(position, child)
+        for position in reversed(target_positions[len(batch) :]):
+            self._node.remove_child(position)
+
+    def __delitem__(self, index: int | slice) -> None:
+        positions = self._matching_positions()
+        if isinstance(index, slice):
+            targets = [
+                positions[view_index] for view_index in range(*index.indices(len(positions)))
+            ]
+            for position in reversed(targets):
+                self._node.remove_child(position)
+            return
+        position = self._normalize_index(index)
+        self._node.remove_child(positions[position])
+
+    def insert(self, index: int, value: RelaxNGElement) -> None:
+        """Insert *value* before the view position, or append at ``len``."""
+        position = self._normalize_index(index, allow_end=True)
+        batch = self._validate_batch((value,))
+        self._insert_batch(position, batch)
+
     def __iter__(self) -> Iterator[RelaxNGElement]:
         return iter(self._matching())
 
     def __repr__(self) -> str:
         return f"ChildSequence(expanded_name={self._expanded_name!r}, count={len(self)})"
+
+
+_SEQUENCE_VIEWS: weakref.WeakKeyDictionary[
+    RelaxNGElement, dict[str, weakref.ReferenceType[ChildSequence]]
+] = weakref.WeakKeyDictionary()
+_SEQUENCE_VIEWS_LOCK = threading.Lock()
 
 
 class WildcardChildren(Sequence[RelaxNGElement]):
@@ -236,7 +374,7 @@ class ChildDescriptor:
         if instance is None:
             return self
         if self.contract.cardinality.repeatable:
-            return ChildSequence(instance, self.contract.expanded_name)
+            return ChildSequence.for_node(instance, self.contract.expanded_name)
         for child in instance._children_:
             if child._name_ == self.contract.expanded_name:
                 return child
@@ -365,7 +503,7 @@ class ProjectionClassFactory:
             if key is WILDCARD_CHILDREN:
                 return WildcardChildren(instance, wildcards)
             if isinstance(key, str):
-                return ChildSequence(instance, key)
+                return ChildSequence.for_node(instance, key)
             raise TypeError(
                 "projection element lookup requires an expanded name or WILDCARD_CHILDREN"
             )

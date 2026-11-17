@@ -582,13 +582,23 @@ class RelaxNGElement:
                 stack.append((child, target_child))
         return root
 
-    def _validate_child(self, child: RelaxNGElement) -> None:
+    def _validate_child(self, child: RelaxNGElement, *, expanded_name: str | None = None) -> None:
+        """Require one detached same-revision node, optionally of one name.
+
+        Structural field views validate their whole batch through this method
+        before any tree operation, so a rejected member cannot leave a partial
+        edit behind.  Name validation belongs here rather than in the child
+        list: the list stays a general ordered lexical store, while a named
+        field accepts only its exact expanded name.
+        """
         if not isinstance(child, RelaxNGElement):
             raise TypeError("child must be a RelaxNGElement")
         if child._revision is not self._revision:
             raise ValueError("a child must belong to the same revision")
         if child._parent_ is not None:
             raise ValueError("the child is already attached")
+        if expanded_name is not None and child._name_ != expanded_name:
+            raise ValueError(f"a child of the {expanded_name!r} field must have that expanded name")
         ancestor: RelaxNGElement | None = self
         while ancestor is not None:
             if ancestor is child:
