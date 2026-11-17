@@ -711,6 +711,20 @@ def test_source_validation_ignores_a_non_context_source() -> None:
     assert suite.source_validation(case) is None
 
 
+def test_multiple_context_item_sources_remain_an_unsupported_shape() -> None:
+    """Two ``.`` sources cannot both be the invocation's context item."""
+    case = _case(
+        None,
+        sources=(
+            Source(role=".", content="<a/>"),
+            Source(role=".", content="<b/>"),
+        ),
+    )
+
+    with pytest.raises(suite.UnsupportedCase, match="multiple context-item sources"):
+        suite.source_validation(case)
+
+
 def test_a_context_source_without_a_corpus_root_is_an_adapter_gap() -> None:
     case = _case(None, sources=(Source(role=".", content="<a/>"),))
 
@@ -718,6 +732,18 @@ def test_a_context_source_without_a_corpus_root_is_an_adapter_gap() -> None:
 
     assert result.outcome is Outcome.ADAPTER_GAP
     assert result.message == "case without a corpus root"
+
+
+def test_raw_source_has_its_own_corpus_root_guard() -> None:
+    """``_raw_source`` resolves a file against the root, so it checks it itself.
+
+    ``execute_case`` reaches ``_stylesheet``'s guard first, so this one is only
+    reachable through the source helper; it must not rely on the caller.
+    """
+    source = Source(role=".", content="<a/>")
+
+    with pytest.raises(suite.UnsupportedCase, match="case without a corpus root"):
+        suite._raw_source(_case(None, sources=(source,)), source)
 
 
 def test_a_context_source_without_a_file_or_content_is_an_adapter_gap(
@@ -836,10 +862,16 @@ def _no_namespace_head(root: Path) -> None:
     )
 
 
-def test_a_source_reference_schema_validates_a_no_namespace_instance(
+def test_a_no_namespace_instance_validates_by_the_pool_root_name(
     tmp_path: Path,
 ) -> None:
-    """The instance's ``xsi:noNamespaceSchemaLocation`` names a declared schema."""
+    """The declared no-namespace root validates by name in the merged pool.
+
+    The engine looks the root's expanded name up in the case's pool; it never
+    reads ``xsi:noNamespaceSchemaLocation``.  The instance names the same
+    schema the pool holds, so this case proves the pool path works, not that
+    an instance hint was fetched.
+    """
     _no_namespace_head(tmp_path)
     _write(
         tmp_path,
@@ -858,6 +890,36 @@ def test_a_source_reference_schema_validates_a_no_namespace_instance(
     result = suite.run_case(case, XSLT30)
 
     assert result.outcome is Outcome.PASS
+
+
+def test_an_instance_hint_outside_the_pool_is_not_fetched(tmp_path: Path) -> None:
+    """A hinted schema the case did not declare stays unused.
+
+    ``head.xsd`` declares the instance's no-namespace root, but only
+    ``hat.xsd`` is in the case's pool.  If the engine fetched the hint the
+    strict assessment would succeed; because it validates by pool lookup the
+    root has no declaration and the strict code is ``XTTE1512``.
+    """
+    _no_namespace_head(tmp_path)
+    _write(tmp_path, "hat.xsd", HAT_SCHEMA)
+    _write(
+        tmp_path,
+        "head.xml",
+        '<head xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:noNamespaceSchemaLocation="head.xsd">4</head>',
+    )
+    case = _source_case(
+        tmp_path,
+        sources=(_file_source("head.xml", "strict"),),
+        schemas=(_schema("schema", "hat.xsd"),),
+        body=_typed_probe(),
+        result=_expected_error("XTTE1512"),
+    )
+
+    result = suite.run_case(case, XSLT30)
+
+    assert result.outcome is Outcome.PASS
+    assert result.actual_error_code == "XTTE1512"
 
 
 def test_a_source_without_a_validation_attribute_keeps_the_strip_default(
