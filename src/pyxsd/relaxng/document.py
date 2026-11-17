@@ -25,7 +25,7 @@ from collections.abc import Mapping
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
-from typing import IO, TYPE_CHECKING, Any, NoReturn
+from typing import IO, TYPE_CHECKING, Any, NoReturn, cast
 
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError, ValidationError
@@ -74,13 +74,12 @@ class _RevalidationSource(StringIO):
         self.name = name
 
 
-def _require_current_revision(node: RelaxNGElement, revision_id: int) -> None:
+def _require_current_revision(node: RelaxNGElement, revision_id: int, current: bool) -> None:
     """Reject a node whose revision is edited or no longer the snapshot's."""
     revision = node.revision
-    if revision.revision_id != revision_id or revision.dirty:
+    if not current or revision.revision_id != revision_id or revision.dirty:
         raise StaleInterpretationError(
-            "the RELAX NG revision changed since this typed interpretation; "
-            "call revalidate() before typed reads"
+            "the RELAX NG typed interpretation is stale; call revalidate() before typed reads"
         )
 
 
@@ -92,44 +91,90 @@ def _raise_invalid_document(report: ValidationReport) -> NoReturn:
     )
 
 
-class _InvalidTypedInterpretation:
-    """Typed access for a parsed document whose instance report has errors."""
+class _TypedSnapshotState:
+    """Revision-owned typed snapshot state, freshness, and conflict identity.
 
-    __slots__ = ("_report", "_revision_id")
+    One lexical revision owns at most one snapshot.  A snapshot records the
+    evidence graph and report it was built from so a second document can be
+    accepted only when it carries the identical objects, as the stale
+    transform path does.  A transform marks the shared snapshot stale; a
+    replacement snapshot is never installed over existing evidence.
+    """
 
-    def __init__(self, *, report: ValidationReport, revision_id: int) -> None:
+    __slots__ = ("_current", "_evidence", "_report", "_revision_id")
+
+    def __init__(
+        self,
+        *,
+        evidence: EvidenceGraph | None,
+        report: ValidationReport,
+        revision_id: int,
+        current: bool = True,
+    ) -> None:
+        self._evidence = evidence
         self._report = report
         self._revision_id = revision_id
+        self._current = current
+
+    @property
+    def current(self) -> bool:
+        """Whether typed reads through this snapshot are still authoritative."""
+        return self._current
+
+    def mark_stale(self) -> None:
+        """Conservatively make every read through this snapshot stale."""
+        self._current = False
+
+    def owns(
+        self,
+        *,
+        evidence: EvidenceGraph | None,
+        report: ValidationReport,
+        revision_id: int,
+    ) -> bool:
+        """Whether this is the identical snapshot a document carries."""
+        return (
+            self._evidence is evidence
+            and self._report is report
+            and self._revision_id == revision_id
+        )
+
+
+class _InvalidTypedInterpretation(_TypedSnapshotState):
+    """Typed access for a parsed document whose instance report has errors."""
+
+    __slots__ = ()
+
+    def __init__(self, *, report: ValidationReport, revision_id: int, current: bool = True) -> None:
+        super().__init__(evidence=None, report=report, revision_id=revision_id, current=current)
 
     def scalar_value(self, node: RelaxNGElement) -> Any:
         """Reject invalid-document scalar access after the freshness gate."""
-        _require_current_revision(node, self._revision_id)
+        _require_current_revision(node, self._revision_id, self._current)
         _raise_invalid_document(self._report)
 
     def attribute_value(self, node: RelaxNGElement, expanded_name: str) -> Any:
         """Reject invalid-document attribute access after the freshness gate."""
         del expanded_name
-        _require_current_revision(node, self._revision_id)
+        _require_current_revision(node, self._revision_id, self._current)
         _raise_invalid_document(self._report)
 
 
-class _TypedInterpretation:
+class _TypedInterpretation(_TypedSnapshotState):
     """Typed scalar access over one immutable, valid evidence snapshot.
 
     The snapshot is attached to its lexical revision.  Freshness is measured
-    against that revision: any successful lexical edit dirties the whole
-    revision and makes this snapshot stale.  A document transform may share
-    the revision and this snapshot, while its own ``interpretations_current``
-    flag records that the transform result is not a freshly validated
-    document.
+    against that revision: any successful lexical edit dirtying the whole
+    revision or a transform marking the snapshot stale makes reads fail.  A
+    document transform may share the revision and this snapshot, while its
+    own ``interpretations_current`` flag records that the transform result is
+    not a freshly validated document.
     """
 
     __slots__ = (
         "_attribute_sites",
         "_contracts",
-        "_evidence",
         "_fingerprint",
-        "_revision_id",
         "_text_sites",
     )
 
@@ -137,12 +182,13 @@ class _TypedInterpretation:
         self,
         *,
         evidence: EvidenceGraph,
+        report: ValidationReport,
         grammar_fingerprint: str,
         revision_id: int,
+        current: bool = True,
     ) -> None:
-        self._evidence = evidence
+        super().__init__(evidence=evidence, report=report, revision_id=revision_id, current=current)
         self._fingerprint = grammar_fingerprint
-        self._revision_id = revision_id
         text_sites: dict[RelaxNGElement, EvidenceOccurrence] = {}
         attribute_sites: dict[tuple[RelaxNGElement, str], EvidenceOccurrence] = {}
         for occurrence in evidence.occurrences:
@@ -156,7 +202,7 @@ class _TypedInterpretation:
 
     def scalar_value(self, node: RelaxNGElement) -> Any:
         """Interpret the element's leading character data, or return ``None``."""
-        _require_current_revision(node, self._revision_id)
+        _require_current_revision(node, self._revision_id, self._current)
         if node.text_value() is None:
             return None
         occurrence = self._text_sites.get(node)
@@ -166,20 +212,23 @@ class _TypedInterpretation:
 
     def attribute_value(self, node: RelaxNGElement, expanded_name: str) -> Any:
         """Interpret one present attribute, or return ``None`` when absent."""
-        _require_current_revision(node, self._revision_id)
+        _require_current_revision(node, self._revision_id, self._current)
         if node.attribute_lexical(expanded_name) is None:
             return None
-        return self._value_at(self._attribute_sites[(node, expanded_name)])
+        return self._value_at(self._attribute_sites.get((node, expanded_name)))
 
     def _contracts_at(self, occurrence: EvidenceOccurrence) -> tuple[ScalarContract, ...]:
         cached = self._contracts.get(occurrence)
         if cached is None:
-            cached = self._evidence.schema_contracts_at(occurrence)
+            cached = cast(EvidenceGraph, self._evidence).schema_contracts_at(occurrence)
             self._contracts[occurrence] = cached
         return cached
 
-    def _value_at(self, occurrence: EvidenceOccurrence) -> Any:
-        witnesses = self._evidence.scalar_witnesses_at(occurrence)
+    def _value_at(self, occurrence: EvidenceOccurrence | None) -> Any:
+        if occurrence is None:
+            return None
+        evidence = cast(EvidenceGraph, self._evidence)
+        witnesses = evidence.scalar_witnesses_at(occurrence)
         if not witnesses:
             return None
         contracts = self._contracts_at(occurrence)
@@ -188,7 +237,7 @@ class _TypedInterpretation:
             if contract.kind == "list":
                 return list_value(
                     witnesses,
-                    self._evidence,
+                    evidence,
                     schema_contracts=contracts,
                     grammar_fingerprint=self._fingerprint,
                     revision=self._revision_id,
@@ -216,7 +265,7 @@ class _TypedInterpretation:
                 continue
             interpretation = list_interpretation(
                 witness,
-                self._evidence,
+                evidence,
                 grammar_fingerprint=self._fingerprint,
                 revision=self._revision_id,
             )
@@ -276,6 +325,23 @@ class RelaxNGDocument(Document):
             raise ValueError("an invalid RELAX NG document cannot carry binding evidence")
         if typed and binding_evidence is None and not report.has_errors:
             raise PyXSDError(_TYPED_EVIDENCE_CAPABILITY)
+        revision_id = root.revision.revision_id
+        existing = root.revision._typed_snapshot
+        if not typed and existing is not None:
+            raise ValueError(
+                "a validation-only RELAX NG document cannot wrap a revision "
+                "that already owns typed evidence"
+            )
+        if typed and existing is not None:
+            state = cast(_TypedSnapshotState, existing)
+            if not state.owns(
+                evidence=binding_evidence,
+                report=report,
+                revision_id=revision_id,
+            ):
+                raise ValueError(
+                    "the RELAX NG revision already owns a different typed interpretation snapshot"
+                )
         super().__init__(
             schema=schema,  # type: ignore[arg-type]
             root=root,
@@ -289,40 +355,54 @@ class RelaxNGDocument(Document):
         self._capture = capture
         self._limits = limits
         self._namespace_context = namespace_context
-        self._revision_id = root.revision.revision_id
+        self._revision_id = revision_id
         self._interpretations_current = interpretations_current
         self._attribute_snapshot = (
             _snapshot_original_attributes(root)
             if attribute_snapshot is None
             else attribute_snapshot
         )
-        if typed:
+        if typed and existing is None:
             if binding_evidence is None:
                 root.revision._attach_typed_snapshot(
-                    _InvalidTypedInterpretation(report=report, revision_id=self._revision_id)
+                    _InvalidTypedInterpretation(report=report, revision_id=revision_id)
                 )
             else:
                 root.revision._attach_typed_snapshot(
                     _TypedInterpretation(
                         evidence=binding_evidence,
+                        report=report,
                         grammar_fingerprint=schema._grammar_fingerprint,
-                        revision_id=self._revision_id,
+                        revision_id=revision_id,
                     )
                 )
 
     @property
     def binding_evidence(self) -> EvidenceGraph | None:
-        """The immutable evidence snapshot, or ``None`` when none is authoritative."""
+        """Internal read-only evidence snapshot for later Phase 3 tasks.
+
+        This is not a stable public API.  It is the immutable graph for a
+        valid typed document and ``None`` for validation-only and invalid
+        typed documents.
+        """
         return self._binding_evidence
 
     @property
     def interpretations_current(self) -> bool:
-        """Whether the validation snapshot still describes the current revision."""
+        """Whether the validation snapshot still describes the current revision.
+
+        A dirty revision is not current.  A current typed snapshot can also be
+        conservatively marked stale by a transform sharing its revision; both
+        documents then report stale until revalidation.
+        """
         revision = self.root.revision
+        snapshot = revision._typed_snapshot
+        snapshot_current = snapshot is None or cast(_TypedSnapshotState, snapshot).current
         return (
             self._interpretations_current
             and revision.revision_id == self._revision_id
             and not revision.dirty
+            and snapshot_current
         )
 
     @property
@@ -387,12 +467,16 @@ class RelaxNGDocument(Document):
         document keeps this revision's typed/capture, instance-limit, and
         namespace settings plus the old report snapshot.  Its
         ``interpretations_current`` is false until :meth:`revalidate`.
+        A typed transform conservatively marks the revision's snapshot stale,
+        including the revision shared with this document; a clone receives a
+        stale marker snapshot so node reads fail instead of returning
+        uninterpreted lexical content.  No evidence is refreshed here.
         An unchanged root keeps the coherent XDM capture; any other root
         starts without one.  Non-lexical results pass through unchanged.
         """
         if not isinstance(root, RelaxNGElement):
             return root
-        return RelaxNGDocument(
+        stale = RelaxNGDocument(
             schema=self.schema,
             root=root,
             source=self.source,
@@ -407,6 +491,9 @@ class RelaxNGDocument(Document):
             attribute_snapshot=self._attribute_snapshot,
             binding_evidence=self._binding_evidence,
         )
+        if self.typed:
+            cast(_TypedSnapshotState, root.revision._typed_snapshot).mark_stale()
+        return stale
 
     def revalidate(self) -> RelaxNGDocument:
         """Validate an independent clone of the current tree.

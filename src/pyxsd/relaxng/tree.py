@@ -145,7 +145,15 @@ class LexicalRevision:
         self._root = root
 
     def _attach_typed_snapshot(self, snapshot: _TypedSnapshot) -> None:
-        """Attach the one typed interpretation that describes this revision."""
+        """Attach the one typed interpretation that describes this revision.
+
+        A revision never replaces typed evidence in place: a second, different
+        snapshot is a construction error, and revalidation works on a fresh
+        revision.  Idempotent reattachment of the same snapshot is allowed so a
+        stale-transform document can share the revision.
+        """
+        if self._typed_snapshot is not None and self._typed_snapshot is not snapshot:
+            raise ValueError("this revision already owns typed interpretation evidence")
         self._typed_snapshot = snapshot
 
     def _register_context(self, node: RelaxNGElement, context: NodeContext) -> None:

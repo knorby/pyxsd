@@ -20,6 +20,7 @@ from pyxsd.exceptions import PyXSDError, ValidationError
 from pyxsd.relaxng import (
     AlternativeValue,
     ListInterpretation,
+    RelaxNGDocument,
     RelaxNGLimitError,
     RelaxNGLimits,
     RelaxNGSchema,
@@ -35,6 +36,7 @@ from pyxsd.relaxng.datatypes import (
 )
 from pyxsd.relaxng.evidence import EvidenceGraph
 from pyxsd.relaxng.tree import RelaxNGElement
+from pyxsd.relaxng.xml_writer import clone_relaxng
 
 NS = "http://relaxng.org/ns/structure/1.0"
 XSD = "http://www.w3.org/2001/XMLSchema-datatypes"
@@ -92,6 +94,20 @@ def text_occurrence(document, node: RelaxNGElement):
         if occurrence.element is node
         and occurrence.kind == "text"
         and occurrence.content_index == 0
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def attribute_occurrence(document, node: RelaxNGElement, expanded_name: str):
+    evidence = document.binding_evidence
+    assert isinstance(evidence, EvidenceGraph)
+    matches = [
+        occurrence
+        for occurrence in evidence.occurrences
+        if occurrence.element is node
+        and occurrence.kind == "attribute"
+        and occurrence.name == expanded_name
     ]
     assert len(matches) == 1
     return matches[0]
@@ -380,6 +396,17 @@ def test_ambiguous_attribute_contract_wraps_by_expanded_name():
     assert value.as_type("xsd:string") == "12"
 
 
+def test_trusted_xmlns_attribute_has_no_typed_attribute_site():
+    compiled = compile_schema(element("doc"))
+    trusted = ET.Element("doc", {"xmlns:p": "urn:values"})
+
+    document = typed(compiled, trusted)
+
+    assert document.is_valid
+    assert document.root.attribute_lexical("xmlns:p") == "urn:values"
+    assert document.root.attribute_value("xmlns:p") is None
+
+
 def test_list_attribute_values_use_the_attribute_scalar_site():
     compiled = compile_schema(
         '<element name="doc"><attribute name="pair"><list>'
@@ -391,6 +418,54 @@ def test_list_attribute_values_use_the_attribute_scalar_site():
 
     assert value == (12, "abc")
     assert type(value) is tuple
+
+
+@pytest.mark.parametrize(
+    ("xml", "expected"),
+    [
+        ('<doc a="12"><x/></doc>', 12),
+        ('<doc a="12"><y/></doc>', "12"),
+    ],
+)
+def test_late_pruned_attribute_still_uses_the_schema_static_wrapper(xml, expected):
+    compiled = compile_schema(
+        '<element name="doc"><choice>'
+        f'<group><attribute name="a">{data("integer")}</attribute>'
+        '<element name="x"><empty/></element></group>'
+        f'<group><attribute name="a">{data("string")}</attribute>'
+        '<element name="y"><empty/></element></group>'
+        "</choice></element>"
+    )
+    document = typed(compiled, io.StringIO(xml))
+
+    value = document.root.attribute_value("a")
+
+    assert isinstance(value, AlternativeValue)
+    assert len(value.candidates) == 1
+    assert value.as_python() == expected
+    contracts = document.binding_evidence.schema_contracts_at(
+        attribute_occurrence(document, document.root, "a")
+    )
+    assert {(contract.kind, contract.type_name) for contract in contracts} == {
+        ("atomic", "integer"),
+        ("atomic", "string"),
+    }
+
+
+def test_empty_atomic_attribute_is_a_real_value_not_absent():
+    compiled = compile_schema(
+        '<element name="doc"><optional><attribute name="a">'
+        f"{data('string')}</attribute></optional><empty/></element>"
+    )
+
+    absent = typed(compiled, io.StringIO("<doc/>"))
+    assert absent.root.attribute_value("a") is None
+
+    explicit = typed(compiled, io.StringIO('<doc a=""/>'))
+    value = explicit.root.attribute_value("a")
+    assert value == ""
+    assert value is not None
+    assert isinstance(value, str)
 
 
 def test_fixed_and_homogeneous_list_positions_return_ordinary_sequences():
@@ -559,6 +634,114 @@ def test_typed_transform_carries_stale_evidence_without_refreshing_it():
 
     with pytest.raises(AttributeError):
         document.binding_evidence = None  # type: ignore[misc]
+
+
+def test_second_document_cannot_replace_or_hide_revision_evidence():
+    compiled = scalar_schema()
+    document = typed(compiled, io.StringIO("<doc>12</doc>"))
+    evidence = document.binding_evidence
+    report = document.report
+
+    invalid = compiled.parse(io.StringIO("<doc>words</doc>"), typed=True)
+    with pytest.raises(ValueError, match="different typed"):
+        RelaxNGDocument(
+            schema=document.schema,
+            root=document.root,
+            source=document.source,
+            report=invalid.report,
+            typed=True,
+        )
+
+    other = typed(compiled, io.StringIO("<doc>12</doc>"))
+    with pytest.raises(ValueError, match="different typed"):
+        RelaxNGDocument(
+            schema=document.schema,
+            root=document.root,
+            source=document.source,
+            report=other.report,
+            typed=True,
+            binding_evidence=other.binding_evidence,
+        )
+
+    with pytest.raises(ValueError, match="typed evidence"):
+        RelaxNGDocument(
+            schema=document.schema,
+            root=document.root,
+            source=document.source,
+            report=report,
+            typed=False,
+        )
+
+    assert document.binding_evidence is evidence
+    assert document.report is report
+    assert document.root.scalar_value() == 12
+    assert document.interpretations_current is True
+
+
+def test_same_root_transform_stales_the_shared_revision_and_original():
+    document = typed(text_schema(), io.StringIO("<doc>hello</doc>"))
+    evidence = document.binding_evidence
+    report = document.report
+
+    stale = document.transform(lambda root: root)
+
+    assert isinstance(stale, RelaxNGDocument)
+    assert stale.typed is True
+    assert stale.interpretations_current is False
+    assert document.interpretations_current is False
+    for target in (stale.root, document.root):
+        with pytest.raises(StaleInterpretationError):
+            target.scalar_value()
+        with pytest.raises(StaleInterpretationError):
+            target.attribute_value("missing")
+    assert document.binding_evidence is evidence
+    assert document.report is report
+
+    fresh = stale.revalidate()
+
+    assert fresh.interpretations_current is True
+    assert fresh.typed is True
+    assert fresh.binding_evidence is not evidence
+    assert str(fresh.root.scalar_value()) == "hello"
+    assert document.interpretations_current is False
+
+
+def test_clone_transform_attaches_a_stale_marker_to_the_clone_revision():
+    document = typed(text_schema(), io.StringIO("<doc>hello</doc>"))
+    evidence = document.binding_evidence
+
+    stale = document.transform(lambda root: clone_relaxng(root))
+
+    assert isinstance(stale, RelaxNGDocument)
+    assert stale.root is not document.root
+    assert stale.root.revision is not document.root.revision
+    assert stale.typed is True
+    assert stale.interpretations_current is False
+    assert stale.binding_evidence is evidence
+    with pytest.raises(StaleInterpretationError):
+        stale.root.scalar_value()
+    with pytest.raises(StaleInterpretationError):
+        stale.root.attribute_value("missing")
+
+    assert document.interpretations_current is True
+    assert str(document.root.scalar_value()) == "hello"
+
+    fresh = stale.revalidate()
+
+    assert fresh.interpretations_current is True
+    assert str(fresh.root.scalar_value()) == "hello"
+
+
+def test_a_revision_rejects_replacing_its_typed_snapshot():
+    document = typed(scalar_schema(), io.StringIO("<doc>12</doc>"))
+    revision = document.root.revision
+    snapshot = revision._typed_snapshot
+    assert snapshot is not None
+
+    revision._attach_typed_snapshot(snapshot)
+    with pytest.raises(ValueError, match="already owns"):
+        revision._attach_typed_snapshot(object())  # type: ignore[arg-type]
+    assert revision._typed_snapshot is snapshot
 
 
 def test_validation_only_documents_are_evidence_free_and_reject_typed_access():

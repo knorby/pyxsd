@@ -206,7 +206,7 @@ class EvidenceGraph:
     retained_edges: tuple[EvidenceEdge, ...]
     occurrences: tuple[EvidenceOccurrence, ...]
     _schema_patterns: Mapping[EvidenceOccurrence, tuple[Pattern, ...]] = field(
-        default_factory=dict, repr=False, hash=False
+        default_factory=dict, repr=False, hash=False, compare=False
     )
 
     def __post_init__(self) -> None:

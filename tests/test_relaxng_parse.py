@@ -594,7 +594,7 @@ def test_direct_document_construction_enforces_typed_evidence_invariants():
     with pytest.raises(TypeError, match="binding_evidence"):
         RelaxNGDocument(**common, typed=True, binding_evidence=object())  # type: ignore[arg-type]
 
-    typed_parsed = schema.parse(io.StringIO(VALID_XML), typed=True)
+    typed_parsed = schema.parse(io.StringIO("<doc><item>x</item></doc>"), typed=True)
     typed_common = {
         "schema": typed_parsed.schema,
         "root": typed_parsed.root,
@@ -608,7 +608,9 @@ def test_direct_document_construction_enforces_typed_evidence_invariants():
     )
     assert rebuilt.typed is True
     assert rebuilt.binding_evidence is typed_parsed.binding_evidence
-    assert rebuilt.root.scalar_value() is None
+    item_value = rebuilt.root.children[0].scalar_value()
+    assert item_value is not None
+    assert str(item_value) == "x"
 
     invalid = schema.parse(io.StringIO(INVALID_CHILD_XML), typed=True)
     assert not invalid.is_valid
