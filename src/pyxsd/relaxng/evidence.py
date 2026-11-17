@@ -56,6 +56,7 @@ from pyxsd.relaxng.validator import (
     _schema_datatype_context,
     _whitespace,
     expanded_name,
+    start_tag_close_derivative,
     validate_element,
     xml_whitespace_tokens,
 )
@@ -310,6 +311,14 @@ class _Builder:
         cx: DatatypeContext,
     ) -> _Results:
         """Evaluate local rules iteratively; never recurse on pattern depth."""
+        if event == "close":
+            # Close only filters still-required attributes. It does not choose
+            # a content branch or produce scalar witnesses. Keep independent
+            # choices factored in the semantic residual; consuming events will
+            # introduce their OR proofs beneath the run's prefix conjunctions.
+            # Distributing here also incorrectly turns (a|b)+ into a+|b+.
+            residual = start_tag_close_derivative(pattern)
+            return {} if isinstance(residual, NotAllowed) else {residual: self.node(site, residual)}
         results: dict[Pattern, _Results] = {}
         active: set[Pattern] = set()
         pending = [(pattern, False)]
@@ -399,16 +408,6 @@ class _Builder:
                     else _after(residual, pattern.second)
                 ),
             )
-        elif event == "close":
-            if isinstance(pattern, (Group, Interleave)):
-                constructor = group if isinstance(pattern, Group) else interleave
-                for left, lp in results[pattern.first].items():
-                    for right, rp in results[pattern.second].items():
-                        add(constructor(left, right), (lp, rp))
-            elif isinstance(pattern, OneOrMore):
-                transform(pattern.pattern, one_or_more)
-            elif not isinstance(pattern, Attribute):
-                add(pattern)
         elif isinstance(pattern, (Group, Interleave)):
             first, second = pattern.first, pattern.second
             constructor = group if isinstance(pattern, Group) else interleave
@@ -504,8 +503,18 @@ def build_binding_evidence(
     Call only after a valid Phase 2 verdict. The precondition is rechecked
     without recovery; invalid trees cannot produce authoritative empty graphs.
     The optional origin lookup is consulted only for provenance materialization.
-    Root fallback context never overrides any child's recorded context.
+    Every site uses the same recorded context as Phase 2. Present root
+    metadata overrides ``datatype_context``. If a root namespace frame or base
+    URI is absent, a nonempty fallback for that component raises ValueError:
+    Phase 2 cannot receive that fallback, so applying it only here could
+    manufacture witnesses the validation pass rejected. Empty fallbacks are
+    harmless; no fallback is inherited by children. The caller tree is not
+    mutated.
     """
+    if (root.namespaces is None and datatype_context.namespaces) or (
+        root.base_uri is None and datatype_context.base_uri is not None
+    ):
+        raise ValueError("nonempty datatype_context fallback is inconsistent with Phase 2 context")
     if not validate_element(root, start, limits=limits).valid:
         raise RuntimeError("binding evidence requires a complete accepting derivation")
     builder = _Builder(limits, origins)
@@ -516,11 +525,6 @@ def build_binding_evidence(
     for event in _instance_events([root]):
         owner = cast(RelaxNGElement, event.element)
         cx = DatatypeContext(owner.base_uri, owner.namespaces or {})
-        if owner is root:
-            cx = DatatypeContext(
-                owner.base_uri if owner.base_uri is not None else datatype_context.base_uri,
-                owner.namespaces if owner.namespaces is not None else datatype_context.namespaces,
-            )
         site = EvidenceOccurrence(
             owner,
             "text" if event.kind == "weak_text" else event.kind,

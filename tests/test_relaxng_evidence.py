@@ -6,7 +6,6 @@ import pytest
 
 from pyxsd.relaxng.datatypes import (
     BuiltinDatatypeFactory,
-    Datatype,
     DatatypeContext,
     XsdDatatypeFactory,
 )
@@ -147,7 +146,8 @@ def test_valid_ambiguity_keeps_every_semantic_witness_in_deterministic_order():
     graph = evidence(root, start)
     occurrence = site(graph, root)
     witnesses = graph.scalar_witnesses_at(occurrence)
-    assert [w.datatype for w in witnesses] == [INTEGER, STRING]
+    # Witness-free close retains the validator's canonical semantic choice order.
+    assert [w.datatype for w in witnesses] == [STRING, INTEGER]
     assert witnesses == graph.scalar_witnesses_at(occurrence)
     assert any(edge.kind == "or" for edge in graph.retained_edges)
 
@@ -447,25 +447,19 @@ def test_local_proof_engine_rejects_an_ungrounded_dependency_cycle():
         )
 
 
-class NoBaseDatatype(Datatype):
-    def allows(self, lexical, context):
-        return context.base_uri is None
-
-    def equal(self, left, left_context, right, right_context):
-        return left == right
-
-
-def test_root_fallback_never_turns_a_missing_complete_proof_into_an_empty_graph():
-    from pyxsd.relaxng.evidence import build_binding_evidence
+def test_missing_complete_proof_is_an_internal_error_not_an_empty_graph(monkeypatch):
+    from pyxsd.relaxng.evidence import _Builder, build_binding_evidence
 
     root = tree("<r>12</r>")
-    start = element("r", Data(NoBaseDatatype()))
+    start = element("r", Data(INTEGER))
     assert validate_element(root, start).valid
+    # Inject a lost transition into the proof engine, not the boolean verdict.
+    monkeypatch.setattr(_Builder, "sequence", lambda *args: {})
     with pytest.raises(RuntimeError, match="complete accepting derivation"):
         build_binding_evidence(
             root,
             start,
-            datatype_context=DatatypeContext("https://fallback.example/", {}),
+            datatype_context=CX,
             limits=None,
         )
 
@@ -502,10 +496,17 @@ def test_root_fallback_context_is_never_inherited_by_contextless_children():
 
     root = tree('<r a="root"><x>child</x></r>')
     fallback = DatatypeContext("https://fallback.example/", {"p": "urn:fallback"})
+    start = element(
+        "r", Group(Attribute(Name(None, "a"), Data(STRING)), element("x", Data(STRING)))
+    )
+    with pytest.raises(ValueError, match=r"fallback.*Phase 2"):
+        build_binding_evidence(root, start, datatype_context=fallback, limits=None)
+    root.set_namespace_bindings(fallback.namespaces)
+    root.set_base_uri(fallback.base_uri)
     graph = build_binding_evidence(
         root,
-        element("r", Group(Attribute(Name(None, "a"), Data(STRING)), element("x", Data(STRING)))),
-        datatype_context=fallback,
+        start,
+        datatype_context=DatatypeContext("https://ignored.example/", {"p": "urn:ignored"}),
         limits=None,
     )
     (attribute,) = graph.scalar_witnesses_at(site(graph, root, kind="attribute"))
@@ -533,3 +534,138 @@ def test_pruned_local_witnesses_still_consume_mandatory_work_budget():
         )
     assert error.value.budget == "max_scalar_witnesses"
     assert error.value.observed == 2
+
+
+@pytest.mark.parametrize("count", [4, 6, 8])
+def test_independent_child_choices_stay_factored_through_start_tag_close(count):
+    from pyxsd.relaxng.evidence import build_binding_evidence
+    from pyxsd.relaxng.limits import RelaxNGLimits
+
+    factor = Choice(element("x", Data(INTEGER)), element("x", Data(STRING)))
+    content: Pattern = factor
+    for _ in range(count - 1):
+        content = Group(content, factor)
+    root = tree("<r>" + "<x>12</x>" * count + "</r>")
+    graph = build_binding_evidence(
+        root,
+        element("r", content),
+        datatype_context=CX,
+        limits=RelaxNGLimits(max_evidence_states=100 * count, max_evidence_edges=100 * count),
+    )
+    assert len(graph.retained_nodes) < 100 * count
+    for child in root.children:
+        assert {witness.datatype for witness in graph.scalar_witnesses_at(site(graph, child))} == {
+            INTEGER,
+            STRING,
+        }
+
+
+def test_late_failure_in_one_factor_does_not_select_unrelated_child_choices():
+    from pyxsd.relaxng.evidence import build_binding_evidence
+    from pyxsd.relaxng.limits import RelaxNGLimits
+
+    content: Pattern = Choice(
+        Group(element("x", Data(INTEGER)), element("a")),
+        Group(element("x", Data(STRING)), element("b")),
+    )
+    for _ in range(7):
+        content = Group(content, Choice(element("x", Data(INTEGER)), element("x", Data(STRING))))
+    root = tree("<r><x>12</x><b/>" + "<x>12</x>" * 7 + "</r>")
+    graph = build_binding_evidence(
+        root,
+        element("r", content),
+        datatype_context=CX,
+        limits=RelaxNGLimits(max_evidence_states=1500, max_evidence_edges=1500),
+    )
+    assert [w.datatype for w in graph.scalar_witnesses_at(site(graph, root.children[0]))] == [
+        STRING
+    ]
+    for child in root.children[2:]:
+        assert {witness.datatype for witness in graph.scalar_witnesses_at(site(graph, child))} == {
+            INTEGER,
+            STRING,
+        }
+
+
+def test_witness_free_close_does_not_select_one_branch_for_all_repetitions():
+    start = element(
+        "r",
+        OneOrMore(Choice(element("x", Value(INTEGER, "12")), element("x", Value(STRING, "bad")))),
+    )
+    root = tree("<r><x>12</x><x>bad</x></r>")
+    graph = evidence(root, start)
+    for child, datatype in zip(root.children, (INTEGER, STRING), strict=True):
+        assert [w.datatype for w in graph.scalar_witnesses_at(site(graph, child))] == [datatype]
+
+
+def test_qname_fallback_cannot_manufacture_a_witness_rejected_by_phase_two():
+    from pyxsd.relaxng.evidence import build_binding_evidence
+
+    qname = XsdDatatypeFactory().create("QName", (), CX)
+    root = tree("<r>p:x</r>")
+    start = element("r", Choice(Data(qname), Data(STRING)))
+    graph = evidence(root, start)
+    assert [w.datatype for w in graph.scalar_witnesses_at(site(graph, root))] == [STRING]
+    with pytest.raises(ValueError, match=r"fallback.*Phase 2"):
+        build_binding_evidence(
+            root,
+            start,
+            datatype_context=DatatypeContext(None, {"p": "urn:fallback"}),
+            limits=None,
+        )
+
+
+@pytest.mark.parametrize(
+    "fallback",
+    [
+        DatatypeContext("https://fallback.example/", {}),
+        DatatypeContext(None, {"p": "urn:fallback"}),
+    ],
+)
+def test_absent_root_context_rejects_each_nonempty_fallback_component(fallback):
+    from pyxsd.relaxng.evidence import build_binding_evidence
+
+    with pytest.raises(ValueError, match=r"fallback.*Phase 2"):
+        build_binding_evidence(
+            tree("<r>12</r>"),
+            element("r", Data(STRING)),
+            datatype_context=fallback,
+            limits=None,
+        )
+
+
+def test_known_empty_root_namespace_frame_does_not_take_a_nonempty_fallback():
+    from pyxsd.relaxng.evidence import build_binding_evidence
+
+    qname = XsdDatatypeFactory().create("QName", (), CX)
+    root = tree("<r>p:x</r>")
+    root.set_namespace_bindings({})
+    graph = build_binding_evidence(
+        root,
+        element("r", Choice(Data(qname), Data(STRING))),
+        datatype_context=DatatypeContext(None, {"p": "urn:ignored"}),
+        limits=None,
+    )
+    (witness,) = graph.scalar_witnesses_at(site(graph, root))
+    assert witness.datatype == STRING
+    assert witness.context == CX
+
+
+def test_witness_free_close_filters_a_branch_with_an_unmet_attribute():
+    root = tree("<r>12</r>")
+    start = Choice(
+        element("r", Group(Attribute(Name(None, "a"), Text()), Data(INTEGER))),
+        element("r", Data(STRING)),
+    )
+    graph = evidence(root, start)
+    assert [w.datatype for w in graph.scalar_witnesses_at(site(graph, root))] == [STRING]
+
+
+def test_dead_list_continuation_cannot_leak_a_locally_successful_integer():
+    root = tree("<r>12</r>")
+    start = element("r", List(Choice(Group(Data(INTEGER), NotAllowed()), Data(STRING))))
+    graph = evidence(root, start)
+    assert [
+        w.datatype
+        for w in graph.scalar_witnesses_at(site(graph, root, kind="token", token_index=0))
+    ] == [STRING]
