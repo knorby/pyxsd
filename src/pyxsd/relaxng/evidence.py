@@ -11,15 +11,19 @@ Edges point from a conclusion (``predecessors``, one node) to its premises
 zero-premise AND is a successful local fact. Only viable premises reachable
 from final accepting conclusions survive. Origins are optional provenance
 views of matched semantic patterns, never premises of an acceptance proof.
+The graph also retains the scalar patterns each site reached before pruning,
+so schema-static wrapper selection never depends on a surviving witness.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Literal, cast
 
+from pyxsd.relaxng.contracts import ScalarContract, scalar_contract
 from pyxsd.relaxng.datatypes import Datatype, DatatypeContext
 from pyxsd.relaxng.limits import BudgetCounter, RelaxNGLimits
 from pyxsd.relaxng.origins import OriginTable
@@ -172,14 +176,61 @@ class TokenConstraintGraph:
         return any(root in viable for root in self.roots)
 
 
+def _contract_order(contract: ScalarContract) -> tuple[object, ...]:
+    """Return a deterministic presentation order for schema scalar contracts."""
+    return (
+        contract.kind,
+        contract.type_name or "",
+        contract.library_uri or "",
+        contract.pattern_identity,
+        tuple((parameter.name, parameter.value) for parameter in contract.parameters),
+        tuple(
+            (restriction.kind, restriction.pattern_identity)
+            for restriction in contract.restrictions
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class EvidenceGraph:
-    """Immutable accepting proof snapshot and deterministic marginal views."""
+    """Immutable accepting proof snapshot and deterministic marginal views.
+
+    The private pre-pruning pattern table retains the scalar patterns each
+    recorded occurrence could reach, so consumers can choose a schema-static
+    wrapper shape without probing the instance lexical value.  It is
+    deliberately independent of the retained witnesses.
+    """
 
     accepting_roots: tuple[EvidenceNode, ...]
     retained_nodes: tuple[EvidenceNode, ...]
     retained_edges: tuple[EvidenceEdge, ...]
     occurrences: tuple[EvidenceOccurrence, ...]
+    _schema_patterns: Mapping[EvidenceOccurrence, tuple[Pattern, ...]] = field(
+        default_factory=dict, repr=False, hash=False
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_schema_patterns", MappingProxyType(dict(self._schema_patterns)))
+
+    def schema_contracts_at(self, occurrence: EvidenceOccurrence) -> tuple[ScalarContract, ...]:
+        """Return the complete schema-possible scalar contracts at one site.
+
+        Contracts are derived only from pre-pruning pattern reachability and
+        deduplicated by their normalized semantic identity.  The table is
+        recorded before accepting-viability pruning, so a pattern from a
+        branch that later fails is still listed; it never depends on whether
+        the instance lexical value satisfied a datatype.  These contracts are
+        the stable input to schema-static wrapper selection.
+        """
+        return tuple(
+            sorted(
+                dict.fromkeys(
+                    scalar_contract(pattern)
+                    for pattern in self._schema_patterns.get(occurrence, ())
+                ),
+                key=_contract_order,
+            )
+        )
 
     def token_constraints(self, witness: ScalarWitness) -> TokenConstraintGraph:
         """Return the token subgraph belonging to one whole-list witness.
@@ -338,6 +389,7 @@ class _Builder:
         self.residuals: dict[Pattern, int] = {}
         self.witnesses: dict[ScalarWitness, ScalarWitness] = {}
         self.tokens: dict[tuple[EvidenceOccurrence, int], EvidenceOccurrence] = {}
+        self.schema_patterns: dict[EvidenceOccurrence, dict[int, Pattern]] = {}
 
     def node(
         self,
@@ -388,6 +440,18 @@ class _Builder:
             self.witnesses[witness] = witness
         return self.witnesses[witness]
 
+    def record_schema_scalar(self, site: EvidenceOccurrence, pattern: Pattern) -> None:
+        """Record one scalar pattern reachable at *site* before pruning.
+
+        The record is grammar-side reachability, not a local datatype success:
+        a ``data`` branch that rejects this lexical value is retained exactly
+        like one that accepts it, so wrapper shape cannot depend on the value.
+        Patterns nested in a ``data except`` exclusion are not scalar
+        alternatives of the position and are skipped by the caller.
+        """
+        if isinstance(pattern, (Text, List, Data, DataExcept, Value)):
+            self.schema_patterns.setdefault(site, {}).setdefault(id(pattern), pattern)
+
     def sequence(
         self,
         states: _Results,
@@ -425,22 +489,26 @@ class _Builder:
             return {} if isinstance(residual, NotAllowed) else {residual: self.node(site, residual)}
         results: dict[Pattern, _Results] = {}
         active: set[Pattern] = set()
-        pending = [(pattern, False)]
+        pending = [(pattern, False, False)]
         while pending:
-            current, ready = pending.pop()
+            current, ready, excluded = pending.pop()
+            if not excluded:
+                self.record_schema_scalar(site, current)
             if current in results:
                 continue
             if not ready:
                 active.add(current)
-                pending.append((current, True))
+                pending.append((current, True, excluded))
                 if event in ("text", "weak_text"):
                     children = self.text_children(current, lexical, cx)
+                    child_excluded = excluded or isinstance(current, DataExcept)
                 else:
                     children = _event_derivation_children(event, current)
+                    child_excluded = excluded
                 for child in reversed(children):
                     if child in active:
                         raise RuntimeError("cyclic RELAX NG evidence has no event boundary")
-                    pending.append((child, False))
+                    pending.append((child, False, child_excluded))
                 continue
             active.remove(current)
             results[current] = self.combine(current, results, site, event, name, lexical, cx)
@@ -649,9 +717,15 @@ def build_binding_evidence(
         raise RuntimeError("binding evidence requires a complete accepting derivation")
     nodes, edges = _prune(builder.nodes, builder.edges, roots)
     retained_sites = {node.occurrence for node in nodes}
+    schema_patterns = {
+        site: tuple(patterns.values())
+        for site, patterns in builder.schema_patterns.items()
+        if site in retained_sites
+    }
     return EvidenceGraph(
         roots,
         nodes,
         edges,
         tuple(site for site in builder.occurrences if site in retained_sites),
+        _schema_patterns=schema_patterns,
     )

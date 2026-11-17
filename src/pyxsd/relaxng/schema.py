@@ -18,6 +18,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from dataclasses import fields as dataclass_fields
 from enum import Enum
+from functools import cached_property
 from io import BytesIO
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Literal, cast
@@ -32,9 +33,11 @@ from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
 from pyxsd.relaxng.checks import check_compiled_grammar
+from pyxsd.relaxng.contracts import grammar_fingerprint
 from pyxsd.relaxng.datatypes import (
     BUILTIN_LIBRARY,
     XSD_LIBRARY,
+    DatatypeContext,
     DatatypeLibraryRegistration,
     DatatypeLibraryRegistry,
     DatatypeRegistrationError,
@@ -42,6 +45,7 @@ from pyxsd.relaxng.datatypes import (
 )
 from pyxsd.relaxng.diagnostics import report_mismatches
 from pyxsd.relaxng.document import RelaxNGDocument
+from pyxsd.relaxng.evidence import EvidenceGraph, build_binding_evidence
 from pyxsd.relaxng.limits import BudgetCounter, RelaxNGLimits
 from pyxsd.relaxng.patterns import Data, DataExcept, Pattern, PatternPool, Ref
 from pyxsd.relaxng.resources import ResourceDependency, ResourceLoader, ResourceSource
@@ -407,6 +411,11 @@ class RelaxNGSchema:
         """The complete canonical resource closure of the compilation."""
         return self.grammar.dependencies
 
+    @cached_property
+    def _grammar_fingerprint(self) -> str:
+        """The stable identity of this compiled grammar and datatype registry."""
+        return grammar_fingerprint(self.grammar, self.datatype_fingerprint)
+
     def require_valid(self) -> None:
         """Raise :class:`~pyxsd.exceptions.ValidationError` when compilation failed."""
         require_valid_report(self.report)
@@ -451,7 +460,7 @@ class RelaxNGSchema:
         capture_xdm: bool = False,
         limits: RelaxNGLimits | None = None,
     ) -> RelaxNGDocument:
-        """Parse one instance document with validation-only semantics.
+        """Parse one instance document into the generic RELAX NG tree.
 
         - ``xml`` accepts a path, a readable text/binary stream, or a
           pre-parsed ``Element`` at the caller-trusted boundary, matching
@@ -466,19 +475,24 @@ class RelaxNGSchema:
           instances through that policy instead; combining the two is
           rejected before input is read.
 
-        - ``typed`` must be ``False`` in this phase.  The approved default
-          remains ``True`` for the eventual typed contract, but requesting
-          typed parsing raises before any input is read.
+        - ``typed`` defaults to ``True``.  A valid typed document receives
+          complete binding evidence and exposes ``scalar_value()`` and
+          ``attribute_value()`` on the generic tree; no generated class is
+          required.  ``typed=False`` remains evidence-free validation-only
+          parsing and rejects typed access explicitly.  Typed parsing never
+          changes the boolean verdict.
 
-        - ``capture`` is ``"none"``.  ``"patterns"`` requires typed parsing
-          and is rejected with ``ValueError`` before any input is read; other
-          values are rejected the same way.
+        - ``capture`` is ``"none"`` by default.  ``"patterns"`` is accepted
+          with ``typed=True`` as the setting for optional pattern provenance;
+          ``capture="patterns", typed=False`` is rejected with ``ValueError``
+          before any input is read.  Other values are rejected the same way.
+          Capture settings never truncate mandatory scalar evidence.
 
         - ``capture_xdm`` retains the existing opt-in XDM meaning: the same
           source revision also becomes an unannotated XML-tree view.
 
-        - ``limits`` bounds this instance's derivative work.  ``None`` uses the
-          compiled schema's limits.  Supplying a
+        - ``limits`` bounds this instance's derivative and evidence work.
+          ``None`` uses the compiled schema's limits.  Supplying a
           :class:`~pyxsd.relaxng.limits.RelaxNGLimits` replaces that declaration
           for this parse, and each ``None`` field in it means unlimited rather
           than inheriting the schema value; callers preserving selected schema
@@ -502,17 +516,12 @@ class RelaxNGSchema:
         findings.  Instance findings cover every independent recovery case in
         source order; recovered states never make the document valid.
         """
-        if typed is not False:
-            raise PyXSDError(
-                "RELAX NG instance parsing is not supported with typed=True in this "
-                "release; pass typed=False for validation-only parsing"
-            )
+        if not isinstance(typed, bool):
+            raise TypeError("typed must be a bool")
         if not isinstance(capture, str) or capture not in ("none", "patterns"):
             raise ValueError("capture must be 'none' or 'patterns'")
-        if capture == "patterns":
-            raise ValueError(
-                "capture='patterns' requires typed=True, which is not supported in this release"
-            )
+        if capture == "patterns" and not typed:
+            raise ValueError("capture='patterns' requires typed=True")
         if limits is not None and not isinstance(limits, RelaxNGLimits):
             raise TypeError("limits must be a RelaxNGLimits value or None")
         reject_parser_override(self._resource_policy, xml_policy, xml_limits)
@@ -520,6 +529,7 @@ class RelaxNGSchema:
             xml,
             xml_policy=xml_policy,
             xml_limits=xml_limits,
+            typed=typed,
             capture=capture,
             capture_xdm=capture_xdm,
             limits=limits,
@@ -531,6 +541,7 @@ class RelaxNGSchema:
         *,
         xml_policy: XmlParserPolicy | None,
         xml_limits: XmlLimits | None,
+        typed: bool,
         capture: str,
         capture_xdm: bool,
         limits: RelaxNGLimits | None,
@@ -547,6 +558,7 @@ class RelaxNGSchema:
                 xml,
                 xml_policy=xml_policy,
                 xml_limits=xml_limits,
+                typed=typed,
                 capture=capture,
                 capture_xdm=capture_xdm,
                 limits=limits,
@@ -600,6 +612,7 @@ class RelaxNGSchema:
         *,
         xml_policy: XmlParserPolicy | None,
         xml_limits: XmlLimits | None,
+        typed: bool,
         capture: str,
         capture_xdm: bool,
         limits: RelaxNGLimits | None,
@@ -677,6 +690,14 @@ class RelaxNGSchema:
                 self.grammar.start,
                 limits=effective_limits,
             )
+            binding_evidence: EvidenceGraph | None = None
+            if typed and outcome.valid:
+                binding_evidence = build_binding_evidence(
+                    root,
+                    self.grammar.start,
+                    datatype_context=DatatypeContext(root.base_uri, root.namespaces or {}),
+                    limits=effective_limits,
+                )
         report_mismatches(outcome, instance_report, limits=effective_limits)
 
         # A skipped external subset can hide an ENTITY/ENTITIES declaration.
@@ -721,12 +742,13 @@ class RelaxNGSchema:
             root=root,
             source=source,
             report=merged,
-            typed=False,
+            typed=typed,
             capture=capture,
             limits=limits,
             namespace_context=namespace_context,
             declarations=declarations,
             xdm_capture=xdm_capture,
+            binding_evidence=binding_evidence,
         )
 
 

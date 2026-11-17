@@ -930,14 +930,20 @@ def test_the_datatype_library_mapping_is_validated_before_reading():
 # Phase boundary and XSD compatibility
 
 
-def test_typed_parse_is_rejected_before_consuming_input():
+def test_typed_parse_is_available_and_validation_only_remains_explicit():
     schema = compile_schema()
 
-    for options in ({}, {"typed": True}):
-        stream = CountingStream("<doc/>")
-        with pytest.raises(PyXSDError, match="typed=False"):
-            schema.parse(stream, **options)  # type: ignore[arg-type]
-        assert stream.reads == 0
+    stream = CountingStream('<doc id="x"/>')
+    typed_document = schema.parse(stream)
+    assert stream.reads > 0
+    assert typed_document.typed is True
+    assert typed_document.is_valid
+
+    validation_stream = CountingStream('<doc id="x"/>')
+    validation_document = schema.parse(validation_stream, typed=False)
+    assert validation_stream.reads > 0
+    assert validation_document.typed is False
+    assert validation_document.is_valid
 
 
 def test_pattern_capture_is_rejected_before_consuming_input():
@@ -966,7 +972,9 @@ def test_a_broken_schema_is_rejected_before_instance_input():
 
 def test_the_relaxng_package_exposes_the_real_compile_entry_point():
     assert set(relaxng.__all__) == {
+        "AlternativeValue",
         "AmbiguousValueError",
+        "ListInterpretation",
         "RelaxNGDocument",
         "RelaxNGElement",
         "RelaxNGLimitError",

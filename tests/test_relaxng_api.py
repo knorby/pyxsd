@@ -27,6 +27,7 @@ from pyxsd.relaxng.errors import (
 from pyxsd.relaxng.limits import BudgetCounter, RelaxNGLimits
 from pyxsd.relaxng.origins import OriginTable, SourceOrigin
 from pyxsd.relaxng.schema import RelaxNGSchema
+from pyxsd.relaxng.values import AlternativeValue, ListInterpretation
 
 LIMIT_FIELDS = tuple(field.name for field in fields(RelaxNGLimits))
 
@@ -40,7 +41,9 @@ OTHER_LOCATION = IssueLocation("included.rng", (PathStep("define", 1),))
 
 def test_the_package_exposes_only_the_settled_public_contracts():
     assert set(relaxng.__all__) == {
+        "AlternativeValue",
         "AmbiguousValueError",
+        "ListInterpretation",
         "RelaxNGDocument",
         "RelaxNGElement",
         "RelaxNGLimitError",
@@ -54,6 +57,8 @@ def test_the_package_exposes_only_the_settled_public_contracts():
     assert relaxng.StaleInterpretationError is StaleInterpretationError
     assert relaxng.RelaxNGLimits is RelaxNGLimits
     assert relaxng.RelaxNGSchema is RelaxNGSchema
+    assert relaxng.AlternativeValue is AlternativeValue
+    assert relaxng.ListInterpretation is ListInterpretation
 
 
 def test_the_package_exposes_the_real_compiler_entry_point():

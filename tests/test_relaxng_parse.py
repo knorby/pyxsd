@@ -384,14 +384,17 @@ def test_public_relaxng_exports_include_documents_and_elements():
     assert relaxng.RelaxNGSchema is RelaxNGSchema
 
 
-def test_typed_parsing_is_rejected_before_input_is_consumed():
+def test_typed_parsing_is_available_and_validation_only_stays_supported():
     schema = compile_schema()
 
-    for options in ({}, {"typed": True}):
-        stream = UnreadableStream()
-        with pytest.raises(PyXSDError, match="typed=False"):
-            schema.parse(stream, **options)
-        assert stream.reads == 0
+    typed_document = schema.parse(io.StringIO(VALID_XML))
+    assert typed_document.typed is True
+    assert isinstance(typed_document.root, RelaxNGElement)
+    assert typed_document.is_valid
+
+    validation_document = schema.parse(io.StringIO(VALID_XML), typed=False)
+    assert validation_document.typed is False
+    assert validation_document.is_valid
 
 
 def test_invalid_capture_options_are_rejected_before_input_is_consumed():
@@ -572,7 +575,7 @@ def test_data_conversion_methods_fail_explicitly_without_xsd_dispatch(monkeypatc
     assert document.report is report
 
 
-def test_direct_document_construction_rejects_phase2_invariant_violations():
+def test_direct_document_construction_enforces_typed_evidence_invariants():
     schema = compile_schema()
     parsed = schema.parse(io.StringIO(VALID_XML), typed=False)
     common = {
@@ -582,8 +585,49 @@ def test_direct_document_construction_rejects_phase2_invariant_violations():
         "report": parsed.report,
     }
 
-    with pytest.raises(PyXSDError, match="typed=False"):
+    with pytest.raises(PyXSDError, match="binding evidence"):
         RelaxNGDocument(**common, typed=True)
+
+    with pytest.raises(TypeError, match="bool"):
+        RelaxNGDocument(**common, typed=1)  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match="binding_evidence"):
+        RelaxNGDocument(**common, typed=True, binding_evidence=object())  # type: ignore[arg-type]
+
+    typed_parsed = schema.parse(io.StringIO(VALID_XML), typed=True)
+    typed_common = {
+        "schema": typed_parsed.schema,
+        "root": typed_parsed.root,
+        "source": typed_parsed.source,
+        "report": typed_parsed.report,
+    }
+    rebuilt = RelaxNGDocument(
+        **typed_common,
+        typed=True,
+        binding_evidence=typed_parsed.binding_evidence,
+    )
+    assert rebuilt.typed is True
+    assert rebuilt.binding_evidence is typed_parsed.binding_evidence
+    assert rebuilt.root.scalar_value() is None
+
+    invalid = schema.parse(io.StringIO(INVALID_CHILD_XML), typed=True)
+    assert not invalid.is_valid
+    with pytest.raises(ValueError, match="invalid"):
+        RelaxNGDocument(
+            schema=invalid.schema,
+            root=invalid.root,
+            source=invalid.source,
+            report=invalid.report,
+            typed=True,
+            binding_evidence=typed_parsed.binding_evidence,
+        )
+
+    with pytest.raises(ValueError, match="binding evidence"):
+        RelaxNGDocument(
+            **common,
+            typed=False,
+            binding_evidence=typed_parsed.binding_evidence,
+        )
 
     for capture in ("patterns", "bogus", None):
         with pytest.raises(ValueError, match="capture"):

@@ -21,10 +21,11 @@ import weakref
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import cast
+from typing import Any, Protocol, cast
 from urllib.parse import urljoin
 from xml.etree import ElementTree as ET
 
+from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import XML_NS, NamespaceContext
 from pyxsd.relaxng.origins import SourceOrigin
@@ -32,6 +33,21 @@ from pyxsd.relaxng.origins import SourceOrigin
 __all__ = ["LexicalRevision", "NodeContext", "RelaxNGElement"]
 
 _XML_BASE = f"{{{XML_NS}}}base"
+
+_TYPED_ACCESS_CAPABILITY = (
+    "RELAX NG typed scalar access requires a typed parse; pass typed=True when parsing"
+)
+
+
+class _TypedSnapshot(Protocol):
+    """One document's typed access over a valid, current lexical revision."""
+
+    def scalar_value(self, node: RelaxNGElement) -> Any:
+        """Interpret the element's leading character data."""
+
+    def attribute_value(self, node: RelaxNGElement, expanded_name: str) -> Any:
+        """Interpret one present attribute value by expanded name."""
+
 
 _revision_ids = itertools.count(1)
 _revision_lock = threading.Lock()
@@ -74,15 +90,17 @@ class LexicalRevision:
     after the first successful mutation and stays true: writers and traversal
     read the current tree, while prior interpretations are no longer current
     evidence.  Contexts are held weakly so removing a subtree does not keep it
-    alive.
+    alive.  A typed parse attaches one immutable interpretation snapshot to
+    the revision; mutations make that snapshot stale rather than refreshing it.
     """
 
-    __slots__ = ("_contexts", "_dirty", "_root", "revision_id")
+    __slots__ = ("_contexts", "_dirty", "_root", "_typed_snapshot", "revision_id")
 
     revision_id: int
     _dirty: bool
     _root: RelaxNGElement | None
     _contexts: weakref.WeakKeyDictionary[RelaxNGElement, NodeContext]
+    _typed_snapshot: _TypedSnapshot | None
 
     def __init__(self) -> None:
         self.revision_id = _next_revision_id()
@@ -91,6 +109,7 @@ class LexicalRevision:
         self._contexts: weakref.WeakKeyDictionary[RelaxNGElement, NodeContext] = (
             weakref.WeakKeyDictionary()
         )
+        self._typed_snapshot = None
 
     @property
     def root(self) -> RelaxNGElement:
@@ -124,6 +143,10 @@ class LexicalRevision:
 
     def _adopt_root(self, root: RelaxNGElement) -> None:
         self._root = root
+
+    def _attach_typed_snapshot(self, snapshot: _TypedSnapshot) -> None:
+        """Attach the one typed interpretation that describes this revision."""
+        self._typed_snapshot = snapshot
 
     def _register_context(self, node: RelaxNGElement, context: NodeContext) -> None:
         self._contexts[node] = context
@@ -332,6 +355,35 @@ class RelaxNGElement:
     def attribute_lexical(self, expanded_name: str) -> str | None:
         """Return one attribute's lexical value, or ``None`` when absent."""
         return self._attribs_.get(expanded_name)
+
+    def scalar_value(self) -> Any:
+        """Return this element's typed leading-character-data interpretation.
+
+        ``None`` means the element has no leading character data, or its
+        accepted derivation assigned no scalar interpretation there.  An
+        explicitly present empty lexical value is a real scalar position and
+        differs from absence.  A validation-only document and a document with
+        no typed evidence fail with the unsupported-capability
+        :class:`~pyxsd.exceptions.PyXSDError`; an invalid typed document raises
+        :class:`~pyxsd.exceptions.ValidationError`, and an edited revision
+        raises :class:`~pyxsd.relaxng.errors.StaleInterpretationError`.
+        """
+        snapshot = self._revision._typed_snapshot
+        if snapshot is None:
+            raise PyXSDError(_TYPED_ACCESS_CAPABILITY)
+        return snapshot.scalar_value(self)
+
+    def attribute_value(self, expanded_name: str) -> Any:
+        """Return one present attribute's typed interpretation.
+
+        ``None`` means the attribute is absent or the accepted derivation
+        assigned no scalar interpretation to it.  Freshness and validity gates
+        match :meth:`scalar_value`.
+        """
+        snapshot = self._revision._typed_snapshot
+        if snapshot is None:
+            raise PyXSDError(_TYPED_ACCESS_CAPABILITY)
+        return snapshot.attribute_value(self, expanded_name)
 
     def iter_content(self) -> Iterator[str | RelaxNGElement]:
         """Yield text, child elements, and child tails in document order.

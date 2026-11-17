@@ -1,19 +1,21 @@
-"""Validation-only RELAX NG documents over one authoritative lexical tree.
+"""RELAX NG documents over one authoritative lexical tree.
 
 A :class:`RelaxNGDocument` pairs a compiled :class:`RelaxNGSchema` with the
 lexical occurrence tree a parse produced and one fresh report: frozen
-schema-phase findings followed by this parse's instance findings.  Phase 2
-exposes validation-only parsing, so the document records ``typed=False`` and
-has no pattern annotations or typed projections.  Methods that would require
-those Phase 3 capabilities fail explicitly instead of reaching an XSD
-converter or binder.
+schema-phase findings followed by this parse's instance findings.  A typed,
+valid document also owns one immutable
+:class:`~pyxsd.relaxng.evidence.EvidenceGraph`; the generic nodes expose
+``scalar_value()`` and ``attribute_value()`` through it.  Validation-only
+documents compute no evidence and reject typed access explicitly.  Invalid
+typed documents carry no authoritative evidence and reject typed access with
+their report.
 
 The document shares the generic traversal, XPath, writer, XDM, and transform
 behavior with XSD documents.  Schema-specific behavior is narrow: a
 root-callable transform returning a lexical node yields a new document with a
-stale report snapshot, and :meth:`revalidate` parses an independent clone of
-the current tree into fresh nodes and evidence while keeping the recorded
-namespace and base-URI frames.
+stale report snapshot and the same evidence, and :meth:`revalidate` parses an
+independent clone of the current tree into fresh nodes and evidence while
+keeping the recorded namespace and base-URI frames.
 """
 
 from __future__ import annotations
@@ -26,9 +28,18 @@ from types import MappingProxyType
 from typing import IO, TYPE_CHECKING, Any, NoReturn
 
 from pyxsd.document import Document
-from pyxsd.exceptions import PyXSDError
+from pyxsd.exceptions import PyXSDError, ValidationError
 from pyxsd.locations import IssueLocation, NodeLookup, PathStep
+from pyxsd.relaxng.contracts import ScalarContract, scalar_contract
+from pyxsd.relaxng.errors import StaleInterpretationError
+from pyxsd.relaxng.evidence import EvidenceGraph, EvidenceOccurrence
 from pyxsd.relaxng.tree import NodeContext, RelaxNGElement
+from pyxsd.relaxng.values import (
+    ListInterpretation,
+    alternative_value_from_witnesses,
+    list_interpretation,
+    list_value,
+)
 from pyxsd.relaxng.xml_writer import clone_relaxng, serialize_relaxng
 from pyxsd.resource_policy import source_identifier
 
@@ -42,18 +53,14 @@ if TYPE_CHECKING:
 __all__ = ["RelaxNGDocument"]
 
 _ANNOTATION_CAPABILITY = (
-    "RELAX NG pattern capture is unavailable in this release; "
-    "validation-only documents expose no pattern annotations"
+    "RELAX NG pattern capture is unavailable in this release; no annotation view is implemented yet"
 )
 _DATA_CONVERSION_CAPABILITY = (
     "RELAX NG data conversion is unavailable in this release; "
     "Phase 5 owns to_dict, to_data, and to_json export"
 )
-_TYPED_DOCUMENT_CAPABILITY = (
-    "RELAX NG typed documents are not supported in this release; "
-    "pass typed=False for validation-only parsing"
-)
-_CAPTURE_CAPABILITY = "capture must be 'none' for validation-only RELAX NG documents"
+_TYPED_EVIDENCE_CAPABILITY = "a valid typed RELAX NG document requires complete binding evidence"
+_CAPTURE_CAPABILITY = "capture='patterns' requires a typed RELAX NG document"
 
 _AttributeAddress = tuple[str | None, tuple[PathStep, ...]]
 _AttributeSnapshot = Mapping[_AttributeAddress, Mapping[str, str]]
@@ -67,15 +74,171 @@ class _RevalidationSource(StringIO):
         self.name = name
 
 
+def _require_current_revision(node: RelaxNGElement, revision_id: int) -> None:
+    """Reject a node whose revision is edited or no longer the snapshot's."""
+    revision = node.revision
+    if revision.revision_id != revision_id or revision.dirty:
+        raise StaleInterpretationError(
+            "the RELAX NG revision changed since this typed interpretation; "
+            "call revalidate() before typed reads"
+        )
+
+
+def _raise_invalid_document(report: ValidationReport) -> NoReturn:
+    """Reject typed reads from an invalid document with its report."""
+    raise ValidationError(
+        "the RELAX NG document is invalid; typed scalar access requires a valid document",
+        report,
+    )
+
+
+class _InvalidTypedInterpretation:
+    """Typed access for a parsed document whose instance report has errors."""
+
+    __slots__ = ("_report", "_revision_id")
+
+    def __init__(self, *, report: ValidationReport, revision_id: int) -> None:
+        self._report = report
+        self._revision_id = revision_id
+
+    def scalar_value(self, node: RelaxNGElement) -> Any:
+        """Reject invalid-document scalar access after the freshness gate."""
+        _require_current_revision(node, self._revision_id)
+        _raise_invalid_document(self._report)
+
+    def attribute_value(self, node: RelaxNGElement, expanded_name: str) -> Any:
+        """Reject invalid-document attribute access after the freshness gate."""
+        del expanded_name
+        _require_current_revision(node, self._revision_id)
+        _raise_invalid_document(self._report)
+
+
+class _TypedInterpretation:
+    """Typed scalar access over one immutable, valid evidence snapshot.
+
+    The snapshot is attached to its lexical revision.  Freshness is measured
+    against that revision: any successful lexical edit dirties the whole
+    revision and makes this snapshot stale.  A document transform may share
+    the revision and this snapshot, while its own ``interpretations_current``
+    flag records that the transform result is not a freshly validated
+    document.
+    """
+
+    __slots__ = (
+        "_attribute_sites",
+        "_contracts",
+        "_evidence",
+        "_fingerprint",
+        "_revision_id",
+        "_text_sites",
+    )
+
+    def __init__(
+        self,
+        *,
+        evidence: EvidenceGraph,
+        grammar_fingerprint: str,
+        revision_id: int,
+    ) -> None:
+        self._evidence = evidence
+        self._fingerprint = grammar_fingerprint
+        self._revision_id = revision_id
+        text_sites: dict[RelaxNGElement, EvidenceOccurrence] = {}
+        attribute_sites: dict[tuple[RelaxNGElement, str], EvidenceOccurrence] = {}
+        for occurrence in evidence.occurrences:
+            if occurrence.kind == "text" and occurrence.content_index == 0:
+                text_sites.setdefault(occurrence.element, occurrence)
+            elif occurrence.kind == "attribute" and occurrence.name is not None:
+                attribute_sites.setdefault((occurrence.element, occurrence.name), occurrence)
+        self._text_sites = MappingProxyType(text_sites)
+        self._attribute_sites = MappingProxyType(attribute_sites)
+        self._contracts: dict[EvidenceOccurrence, tuple[ScalarContract, ...]] = {}
+
+    def scalar_value(self, node: RelaxNGElement) -> Any:
+        """Interpret the element's leading character data, or return ``None``."""
+        _require_current_revision(node, self._revision_id)
+        if node.text_value() is None:
+            return None
+        occurrence = self._text_sites.get(node)
+        if occurrence is None:
+            return None
+        return self._value_at(occurrence)
+
+    def attribute_value(self, node: RelaxNGElement, expanded_name: str) -> Any:
+        """Interpret one present attribute, or return ``None`` when absent."""
+        _require_current_revision(node, self._revision_id)
+        if node.attribute_lexical(expanded_name) is None:
+            return None
+        return self._value_at(self._attribute_sites[(node, expanded_name)])
+
+    def _contracts_at(self, occurrence: EvidenceOccurrence) -> tuple[ScalarContract, ...]:
+        cached = self._contracts.get(occurrence)
+        if cached is None:
+            cached = self._evidence.schema_contracts_at(occurrence)
+            self._contracts[occurrence] = cached
+        return cached
+
+    def _value_at(self, occurrence: EvidenceOccurrence) -> Any:
+        witnesses = self._evidence.scalar_witnesses_at(occurrence)
+        if not witnesses:
+            return None
+        contracts = self._contracts_at(occurrence)
+        if len(contracts) == 1:
+            contract = contracts[0]
+            if contract.kind == "list":
+                return list_value(
+                    witnesses,
+                    self._evidence,
+                    schema_contracts=contracts,
+                    grammar_fingerprint=self._fingerprint,
+                    revision=self._revision_id,
+                )
+            value = alternative_value_from_witnesses(
+                witnesses,
+                grammar_fingerprint=self._fingerprint,
+                revision=self._revision_id,
+            )
+            if (
+                contract.kind == "atomic"
+                and len(value.candidates) == 1
+                and value.candidates[0].decodable
+            ):
+                return value.candidates[0].decoded
+            return value
+        # A multi-contract site may have non-list survivors, so build the
+        # wrapper directly instead of calling list_value, which requires an
+        # all-list witness set.  Each list witness keeps its correlated
+        # interpretation, and the static contract table still decided the
+        # wrapper shape.
+        interpretations: dict[str, ListInterpretation] = {}
+        for witness in witnesses:
+            if scalar_contract(witness.pattern).kind != "list":
+                continue
+            interpretation = list_interpretation(
+                witness,
+                self._evidence,
+                grammar_fingerprint=self._fingerprint,
+                revision=self._revision_id,
+            )
+            interpretations.setdefault(interpretation.candidate_id, interpretation)
+        return alternative_value_from_witnesses(
+            witnesses,
+            grammar_fingerprint=self._fingerprint,
+            revision=self._revision_id,
+            list_interpretations=tuple(interpretations.values()),
+        )
+
+
 class RelaxNGDocument(Document):
     """One RELAX NG parse revision with its fresh merged report.
 
-    ``typed`` is false for every Phase 2 document.  ``interpretations_current``
-    reports whether the recorded validation snapshot still belongs to the
-    current, unedited lexical revision.  ``root``, ``report``, and ``source``
-    keep the lexical tree, the merged schema/instance report, and the original
-    caller source respectively.  Direct construction preserves the Phase 2
-    invariants instead of accepting a typed or capture-bearing document.
+    ``typed`` records whether this parse requested typed access.
+    ``interpretations_current`` reports whether the recorded validation and
+    evidence snapshot still belongs to the current, unedited lexical revision.
+    ``binding_evidence`` is the immutable evidence graph for a valid typed
+    document, or ``None`` for validation-only and invalid typed documents.
+    ``root``, ``report``, and ``source`` keep the lexical tree, the merged
+    schema/instance report, and the original caller source respectively.
     """
 
     schema: RelaxNGSchema  # type: ignore[assignment]
@@ -97,11 +260,22 @@ class RelaxNGDocument(Document):
         xdm_capture: Any = None,
         interpretations_current: bool = True,
         attribute_snapshot: _AttributeSnapshot | None = None,
+        binding_evidence: EvidenceGraph | None = None,
     ) -> None:
-        if typed is not False:
-            raise PyXSDError(_TYPED_DOCUMENT_CAPABILITY)
-        if capture != "none":
+        if not isinstance(typed, bool):
+            raise TypeError("typed must be a bool")
+        if not isinstance(capture, str) or capture not in ("none", "patterns"):
+            raise ValueError("capture must be 'none' or 'patterns'")
+        if not typed and capture != "none":
             raise ValueError(_CAPTURE_CAPABILITY)
+        if binding_evidence is not None and not isinstance(binding_evidence, EvidenceGraph):
+            raise TypeError("binding_evidence must be an EvidenceGraph or None")
+        if not typed and binding_evidence is not None:
+            raise ValueError("a validation-only RELAX NG document carries no binding evidence")
+        if typed and binding_evidence is not None and report.has_errors:
+            raise ValueError("an invalid RELAX NG document cannot carry binding evidence")
+        if typed and binding_evidence is None and not report.has_errors:
+            raise PyXSDError(_TYPED_EVIDENCE_CAPABILITY)
         super().__init__(
             schema=schema,  # type: ignore[arg-type]
             root=root,
@@ -111,6 +285,7 @@ class RelaxNGDocument(Document):
             xdm_capture=xdm_capture,
         )
         self.typed = typed
+        self._binding_evidence = binding_evidence
         self._capture = capture
         self._limits = limits
         self._namespace_context = namespace_context
@@ -121,6 +296,24 @@ class RelaxNGDocument(Document):
             if attribute_snapshot is None
             else attribute_snapshot
         )
+        if typed:
+            if binding_evidence is None:
+                root.revision._attach_typed_snapshot(
+                    _InvalidTypedInterpretation(report=report, revision_id=self._revision_id)
+                )
+            else:
+                root.revision._attach_typed_snapshot(
+                    _TypedInterpretation(
+                        evidence=binding_evidence,
+                        grammar_fingerprint=schema._grammar_fingerprint,
+                        revision_id=self._revision_id,
+                    )
+                )
+
+    @property
+    def binding_evidence(self) -> EvidenceGraph | None:
+        """The immutable evidence snapshot, or ``None`` when none is authoritative."""
+        return self._binding_evidence
 
     @property
     def interpretations_current(self) -> bool:
@@ -212,6 +405,7 @@ class RelaxNGDocument(Document):
             xdm_capture=self._xdm_capture if root is self.root else None,
             interpretations_current=False,
             attribute_snapshot=self._attribute_snapshot,
+            binding_evidence=self._binding_evidence,
         )
 
     def revalidate(self) -> RelaxNGDocument:
@@ -244,6 +438,7 @@ class RelaxNGDocument(Document):
             _RevalidationSource(serialize_relaxng(cloned), source_identifier(self.source)),
             xml_policy=None,
             xml_limits=None,
+            typed=self.typed,
             capture=self._capture,
             capture_xdm=self._xdm_capture is not None,
             limits=self._limits,

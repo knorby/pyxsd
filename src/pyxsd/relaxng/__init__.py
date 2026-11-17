@@ -14,9 +14,12 @@ from pyxsd.relaxng.errors import (
 from pyxsd.relaxng.limits import RelaxNGLimits
 from pyxsd.relaxng.schema import RelaxNGSchema, compile
 from pyxsd.relaxng.tree import RelaxNGElement
+from pyxsd.relaxng.values import AlternativeValue, ListInterpretation
 
 __all__ = [
+    "AlternativeValue",
     "AmbiguousValueError",
+    "ListInterpretation",
     "RelaxNGDocument",
     "RelaxNGElement",
     "RelaxNGLimitError",

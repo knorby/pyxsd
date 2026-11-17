@@ -4,6 +4,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
+from pyxsd.relaxng.contracts import scalar_contract
 from pyxsd.relaxng.datatypes import (
     BuiltinDatatypeFactory,
     DatatypeContext,
@@ -90,6 +91,79 @@ def test_late_failure_removes_integer_witness_even_with_interned_residuals(inter
     assert graph.origins_at(site(graph, root.children[0])) == accepted
     assert graph.accepting_roots
     assert all(root in graph.retained_nodes for root in graph.accepting_roots)
+
+
+def test_schema_contracts_keep_fully_pruned_alternatives():
+    integer = Data(INTEGER)
+    string = Data(STRING)
+    start = element(
+        "r",
+        Choice(
+            Group(element("x", integer), element("a")),
+            Group(element("x", string), element("b")),
+        ),
+    )
+    root = tree("<r><x>12</x><b/></r>")
+
+    graph = evidence(root, start)
+    occurrence = site(graph, root.children[0])
+
+    assert [witness.datatype for witness in graph.scalar_witnesses_at(occurrence)] == [STRING]
+    assert {
+        (contract.kind, contract.type_name) for contract in graph.schema_contracts_at(occurrence)
+    } == {
+        ("atomic", "integer"),
+        ("atomic", "string"),
+    }
+    assert graph.schema_contracts_at(occurrence) == (
+        scalar_contract(integer),
+        scalar_contract(string),
+    )
+
+
+def test_schema_contracts_do_not_depend_on_the_instance_lexical_value():
+    start = element(
+        "r",
+        Choice(
+            Group(element("x", Data(INTEGER)), element("a")),
+            Group(element("x", Data(STRING)), element("b")),
+        ),
+    )
+    integer_root = tree("<r><x>12</x><b/></r>")
+    text_root = tree("<r><x>words</x><b/></r>")
+
+    integer_graph = evidence(integer_root, start)
+    text_graph = evidence(text_root, start)
+
+    first = integer_graph.schema_contracts_at(site(integer_graph, integer_root.children[0]))
+    second = text_graph.schema_contracts_at(site(text_graph, text_root.children[0]))
+    assert first == second
+    assert {(contract.kind, contract.type_name) for contract in second} == {
+        ("atomic", "integer"),
+        ("atomic", "string"),
+    }
+    assert [
+        witness.datatype
+        for witness in integer_graph.scalar_witnesses_at(
+            site(integer_graph, integer_root.children[0])
+        )
+    ] == [STRING]
+    assert [
+        witness.datatype
+        for witness in text_graph.scalar_witnesses_at(site(text_graph, text_root.children[0]))
+    ] == [STRING]
+
+
+def test_schema_contracts_exclude_datatype_except_operands():
+    content = DataExcept(STRING, Value(STRING, "12"))
+    root = tree("<r>13</r>")
+
+    graph = evidence(root, element("r", content))
+    occurrence = site(graph, root)
+
+    (witness,) = graph.scalar_witnesses_at(occurrence)
+    assert witness.pattern is content
+    assert graph.schema_contracts_at(occurrence) == (scalar_contract(content),)
 
 
 def test_identical_semantic_sites_expose_origin_union_not_branch_selection():
