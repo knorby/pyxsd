@@ -705,6 +705,7 @@ class RelaxNGSchema:
                     datatype_context=DatatypeContext(root.base_uri, root.namespaces or {}),
                     limits=effective_limits,
                     origins=self.grammar.graph.origins if capture == "patterns" else None,
+                    grammar_fingerprint=self._grammar_fingerprint,
                 )
                 if capture == "patterns":
                     annotations = AnnotationCapture(

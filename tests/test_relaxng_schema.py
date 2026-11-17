@@ -972,6 +972,7 @@ def test_a_broken_schema_is_rejected_before_instance_input():
 
 def test_the_relaxng_package_exposes_the_real_compile_entry_point():
     assert set(relaxng.__all__) == {
+        "CandidateSelection",
         "AlternativeValue",
         "AmbiguousValueError",
         "ListInterpretation",

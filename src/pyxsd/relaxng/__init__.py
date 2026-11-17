@@ -12,6 +12,7 @@ from pyxsd.relaxng.errors import (
     RelaxNGLimitError,
     StaleInterpretationError,
 )
+from pyxsd.relaxng.evidence import CandidateSelection
 from pyxsd.relaxng.limits import RelaxNGLimits
 from pyxsd.relaxng.schema import RelaxNGSchema, compile
 from pyxsd.relaxng.tree import RelaxNGElement
@@ -20,6 +21,7 @@ from pyxsd.relaxng.values import AlternativeValue, ListInterpretation
 __all__ = [
     "AlternativeValue",
     "AmbiguousValueError",
+    "CandidateSelection",
     "ListInterpretation",
     "NodeAnnotations",
     "RelaxNGDocument",

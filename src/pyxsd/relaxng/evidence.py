@@ -18,12 +18,12 @@ so schema-static wrapper selection never depends on a surviving witness.
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal, cast
 
-from pyxsd.relaxng.contracts import ScalarContract, scalar_contract
+from pyxsd.relaxng.contracts import ScalarContract, candidate_id, scalar_contract
 from pyxsd.relaxng.datatypes import Datatype, DatatypeContext
 from pyxsd.relaxng.limits import BudgetCounter, RelaxNGLimits
 from pyxsd.relaxng.origins import OriginTable
@@ -66,6 +66,7 @@ from pyxsd.relaxng.validator import (
 )
 
 __all__ = [
+    "CandidateSelection",
     "EvidenceEdge",
     "EvidenceGraph",
     "EvidenceNode",
@@ -91,6 +92,26 @@ class EvidenceOccurrence:
     token_index: int | None = None
     parent: EvidenceOccurrence | None = None
     span: TokenSpan | None = None
+
+
+@dataclass(frozen=True)
+class CandidateSelection:
+    """Require one contract candidate at one exact parse occurrence.
+
+    Candidate identity is grammar-scoped; occurrence identity remains parse-local.
+    Equal candidate IDs at distinct sites never collapse these requirements.
+    """
+
+    occurrence: EvidenceOccurrence
+    candidate_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.occurrence, EvidenceOccurrence):
+            raise TypeError("a selection occurrence must be an EvidenceOccurrence")
+        if not isinstance(self.candidate_id, str):
+            raise TypeError("a selection candidate ID must be a string")
+        if not self.candidate_id:
+            raise ValueError("a selection candidate ID must be nonempty")
 
 
 @dataclass(frozen=True)
@@ -208,9 +229,91 @@ class EvidenceGraph:
     _schema_patterns: Mapping[EvidenceOccurrence, tuple[Pattern, ...]] = field(
         default_factory=dict, repr=False, hash=False, compare=False
     )
+    _grammar_fingerprint: str | None = field(default=None, repr=False, hash=False, compare=False)
 
     def __post_init__(self) -> None:
+        if self._grammar_fingerprint is not None:
+            if not isinstance(self._grammar_fingerprint, str):
+                raise TypeError("the evidence grammar fingerprint must be a string")
+            if not self._grammar_fingerprint:
+                raise ValueError("the evidence grammar fingerprint must be nonempty")
         object.__setattr__(self, "_schema_patterns", MappingProxyType(dict(self._schema_patterns)))
+
+    def compatible(self, selections: Iterable[CandidateSelection]) -> bool:
+        """Whether all selections coexist in one complete accepting proof.
+
+        Tokens require a whole-list proof at their parent scalar site. Each
+        parent's compact token graph determines its allowed list candidates
+        before filtering the whole-document graph. Selecting a whole list alone
+        leaves its tokens free. All queries reuse least-fixed-point AND/OR
+        viability; no candidate products or token assignments are enumerated.
+
+        IDs are derived from contracts only: this query never invokes datatype
+        decoders. Anonymous graphs still expose marginal views but cannot
+        interpret grammar-scoped selections.
+        """
+        fingerprint = self._grammar_fingerprint
+        if fingerprint is None:
+            raise ValueError("joint compatibility requires an evidence grammar fingerprint")
+        requested: dict[EvidenceOccurrence, str] = {}
+        conflict = False
+        for selection in selections:
+            if not isinstance(selection, CandidateSelection):
+                raise TypeError("joint selections must be CandidateSelection values")
+            previous = requested.setdefault(selection.occurrence, selection.candidate_id)
+            conflict |= previous != selection.candidate_id
+        if conflict:
+            return False
+
+        identifiers: dict[Pattern, str] = {}
+
+        def identifier(witness: ScalarWitness) -> str:
+            pattern = witness.pattern
+            if pattern not in identifiers:
+                identifiers[pattern] = candidate_id(fingerprint, scalar_contract(pattern))
+            return identifiers[pattern]
+
+        witnesses: dict[EvidenceOccurrence, set[ScalarWitness]] = defaultdict(set)
+        for edge in self.retained_edges:
+            for witness in edge.witnesses:
+                witnesses[witness.occurrence].add(witness)
+        parents: set[EvidenceOccurrence] = set()
+        for occurrence, selected in requested.items():
+            if not any(identifier(witness) == selected for witness in witnesses[occurrence]):
+                return False
+            if occurrence.kind == "token":
+                if occurrence.parent is None:
+                    return False
+                parents.add(occurrence.parent)
+
+        allowed = {occurrence: {selected} for occurrence, selected in requested.items()}
+
+        def matches(witness: ScalarWitness) -> bool:
+            selected = allowed.get(witness.occurrence)
+            return selected is None or identifier(witness) in selected
+
+        # Parent scopes stay distinct even when their contract IDs coincide.
+        # A selected token cannot escape through an atomic alternative at its
+        # parent: only compatible whole-list candidates are allowed there.
+        for parent in parents:
+            lists = {
+                identifier(witness)
+                for witness in witnesses[parent]
+                if isinstance(witness.pattern, List)
+                and self.token_constraints(witness).accepts(matches)
+            }
+            if parent in allowed:
+                lists &= allowed[parent]
+            if not lists:
+                return False
+            allowed[parent] = lists
+        filtered = tuple(
+            edge
+            for edge in self.retained_edges
+            if all(matches(witness) for witness in edge.witnesses)
+        )
+        viable = _viability(filtered)
+        return any(root in viable for root in self.accepting_roots)
 
     def schema_contracts_at(self, occurrence: EvidenceOccurrence) -> tuple[ScalarContract, ...]:
         """Return the complete schema-possible scalar contracts at one site.
@@ -669,12 +772,15 @@ def build_binding_evidence(
     datatype_context: DatatypeContext,
     limits: RelaxNGLimits | None,
     origins: Callable[[Pattern], OriginTable] | None = None,
+    grammar_fingerprint: str | None = None,
 ) -> EvidenceGraph:
     """Build a complete proof for a valid lexical tree, or raise an internal error.
 
     Call only after a valid Phase 2 verdict. The precondition is rechecked
     without recovery; invalid trees cannot produce authoritative empty graphs.
     The optional origin lookup is consulted only for provenance materialization.
+    ``grammar_fingerprint`` enables grammar-scoped joint candidate queries;
+    omitting it preserves marginal views but disables ``compatible``.
     Every site uses the same recorded context as Phase 2. Present root
     metadata overrides ``datatype_context``. If a root namespace frame or base
     URI is absent, a nonempty fallback for that component raises ValueError:
@@ -728,4 +834,5 @@ def build_binding_evidence(
         edges,
         tuple(site for site in builder.occurrences if site in retained_sites),
         _schema_patterns=schema_patterns,
+        _grammar_fingerprint=grammar_fingerprint,
     )
