@@ -5,7 +5,10 @@ lexical occurrence tree a parse produced and one fresh report: frozen
 schema-phase findings followed by this parse's instance findings.  A typed,
 valid document also owns one immutable
 :class:`~pyxsd.relaxng.evidence.EvidenceGraph`; the generic nodes expose
-``scalar_value()`` and ``attribute_value()`` through it.  Validation-only
+``scalar_value()`` and ``attribute_value()`` through it.  A parse requested
+with ``capture="patterns"`` additionally owns one immutable, parse-scoped
+:class:`~pyxsd.relaxng.annotations.AnnotationTable`; its records may be a sound
+subset when the independent capture budget is exhausted.  Validation-only
 documents compute no evidence and reject typed access explicitly.  Invalid
 typed documents carry no authoritative evidence and reject typed access with
 their report.
@@ -30,16 +33,11 @@ from typing import IO, TYPE_CHECKING, Any, NoReturn, cast
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError, ValidationError
 from pyxsd.locations import IssueLocation, NodeLookup, PathStep
-from pyxsd.relaxng.contracts import ScalarContract, scalar_contract
+from pyxsd.relaxng.annotations import AnnotationTable, typed_value_at_site
+from pyxsd.relaxng.contracts import ScalarContract
 from pyxsd.relaxng.errors import StaleInterpretationError
 from pyxsd.relaxng.evidence import EvidenceGraph, EvidenceOccurrence
 from pyxsd.relaxng.tree import NodeContext, RelaxNGElement
-from pyxsd.relaxng.values import (
-    ListInterpretation,
-    alternative_value_from_witnesses,
-    list_interpretation,
-    list_value,
-)
 from pyxsd.relaxng.xml_writer import clone_relaxng, serialize_relaxng
 from pyxsd.resource_policy import source_identifier
 
@@ -52,14 +50,22 @@ if TYPE_CHECKING:
 
 __all__ = ["RelaxNGDocument"]
 
-_ANNOTATION_CAPABILITY = (
-    "RELAX NG pattern capture is unavailable in this release; no annotation view is implemented yet"
+_ANNOTATION_VALIDATION_ONLY = (
+    "RELAX NG pattern capture is unavailable for a validation-only document; "
+    "reparse with typed=True, capture='patterns'"
+)
+_ANNOTATION_NOT_CAPTURED = (
+    "RELAX NG pattern annotations were not captured for this parse; reparse with capture='patterns'"
 )
 _DATA_CONVERSION_CAPABILITY = (
     "RELAX NG data conversion is unavailable in this release; "
     "Phase 5 owns to_dict, to_data, and to_json export"
 )
 _TYPED_EVIDENCE_CAPABILITY = "a valid typed RELAX NG document requires complete binding evidence"
+_TYPED_ANNOTATION_CAPABILITY = (
+    "a valid typed RELAX NG document parsed with capture='patterns' requires "
+    "a pattern annotation table"
+)
 _CAPTURE_CAPABILITY = "capture='patterns' requires a typed RELAX NG document"
 
 _AttributeAddress = tuple[str | None, tuple[PathStep, ...]]
@@ -227,54 +233,12 @@ class _TypedInterpretation(_TypedSnapshotState):
     def _value_at(self, occurrence: EvidenceOccurrence | None) -> Any:
         if occurrence is None:
             return None
-        evidence = cast(EvidenceGraph, self._evidence)
-        witnesses = evidence.scalar_witnesses_at(occurrence)
-        if not witnesses:
-            return None
-        contracts = self._contracts_at(occurrence)
-        if len(contracts) == 1:
-            contract = contracts[0]
-            if contract.kind == "list":
-                return list_value(
-                    witnesses,
-                    evidence,
-                    schema_contracts=contracts,
-                    grammar_fingerprint=self._fingerprint,
-                    revision=self._revision_id,
-                )
-            value = alternative_value_from_witnesses(
-                witnesses,
-                grammar_fingerprint=self._fingerprint,
-                revision=self._revision_id,
-            )
-            if (
-                contract.kind == "atomic"
-                and len(value.candidates) == 1
-                and value.candidates[0].decodable
-            ):
-                return value.candidates[0].decoded
-            return value
-        # A multi-contract site may have non-list survivors, so build the
-        # wrapper directly instead of calling list_value, which requires an
-        # all-list witness set.  Each list witness keeps its correlated
-        # interpretation, and the static contract table still decided the
-        # wrapper shape.
-        interpretations: dict[str, ListInterpretation] = {}
-        for witness in witnesses:
-            if scalar_contract(witness.pattern).kind != "list":
-                continue
-            interpretation = list_interpretation(
-                witness,
-                evidence,
-                grammar_fingerprint=self._fingerprint,
-                revision=self._revision_id,
-            )
-            interpretations.setdefault(interpretation.candidate_id, interpretation)
-        return alternative_value_from_witnesses(
-            witnesses,
+        return typed_value_at_site(
+            cast(EvidenceGraph, self._evidence),
+            occurrence,
             grammar_fingerprint=self._fingerprint,
             revision=self._revision_id,
-            list_interpretations=tuple(interpretations.values()),
+            contracts=self._contracts_at(occurrence),
         )
 
 
@@ -286,8 +250,11 @@ class RelaxNGDocument(Document):
     evidence snapshot still belongs to the current, unedited lexical revision.
     ``binding_evidence`` is the immutable evidence graph for a valid typed
     document, or ``None`` for validation-only and invalid typed documents.
-    ``root``, ``report``, and ``source`` keep the lexical tree, the merged
-    schema/instance report, and the original caller source respectively.
+    ``annotations`` is the immutable pattern-annotation table for a valid typed
+    parse requested with ``capture="patterns"``, and raises an explicit
+    capability error when capture did not run.  ``root``, ``report``, and
+    ``source`` keep the lexical tree, the merged schema/instance report, and the
+    original caller source respectively.
     """
 
     schema: RelaxNGSchema  # type: ignore[assignment]
@@ -310,6 +277,7 @@ class RelaxNGDocument(Document):
         interpretations_current: bool = True,
         attribute_snapshot: _AttributeSnapshot | None = None,
         binding_evidence: EvidenceGraph | None = None,
+        annotations: AnnotationTable | None = None,
     ) -> None:
         if not isinstance(typed, bool):
             raise TypeError("typed must be a bool")
@@ -319,13 +287,29 @@ class RelaxNGDocument(Document):
             raise ValueError(_CAPTURE_CAPABILITY)
         if binding_evidence is not None and not isinstance(binding_evidence, EvidenceGraph):
             raise TypeError("binding_evidence must be an EvidenceGraph or None")
+        if annotations is not None and not isinstance(annotations, AnnotationTable):
+            raise TypeError("annotations must be an AnnotationTable or None")
         if not typed and binding_evidence is not None:
             raise ValueError("a validation-only RELAX NG document carries no binding evidence")
+        if not typed and annotations is not None:
+            raise ValueError("a validation-only RELAX NG document carries no annotations")
         if typed and binding_evidence is not None and report.has_errors:
             raise ValueError("an invalid RELAX NG document cannot carry binding evidence")
+        if typed and annotations is not None and report.has_errors:
+            raise ValueError("an invalid RELAX NG document cannot carry annotations")
+        if annotations is not None and capture != "patterns":
+            raise ValueError("pattern annotations require capture='patterns'")
         if typed and binding_evidence is None and not report.has_errors:
             raise PyXSDError(_TYPED_EVIDENCE_CAPABILITY)
         revision_id = root.revision.revision_id
+        if (
+            annotations is not None
+            and interpretations_current
+            and annotations.revision_id != revision_id
+        ):
+            raise ValueError("the annotation table belongs to a different RELAX NG parse revision")
+        if typed and capture == "patterns" and not report.has_errors and annotations is None:
+            raise PyXSDError(_TYPED_ANNOTATION_CAPABILITY)
         existing = root.revision._typed_snapshot
         if not typed and existing is not None:
             raise ValueError(
@@ -352,6 +336,7 @@ class RelaxNGDocument(Document):
         )
         self.typed = typed
         self._binding_evidence = binding_evidence
+        self._annotations = annotations
         self._capture = capture
         self._limits = limits
         self._namespace_context = namespace_context
@@ -406,9 +391,28 @@ class RelaxNGDocument(Document):
         )
 
     @property
-    def annotations(self) -> NoReturn:
-        """Reject annotation access; pattern capture is absent in this release."""
-        raise PyXSDError(_ANNOTATION_CAPABILITY)
+    def annotations(self) -> AnnotationTable:
+        """Return this parse revision's immutable pattern annotations.
+
+        Validation-only documents raise an explicit capability error instead
+        of pretending capture ran.  A valid typed parse that did not request
+        ``capture="patterns"`` raises the same capability family.  An invalid
+        typed document raises :class:`~pyxsd.exceptions.ValidationError` with
+        its report, and an edited or transformed revision raises
+        :class:`~pyxsd.relaxng.errors.StaleInterpretationError` before either
+        validity or capture is considered.
+        """
+        if not self.typed:
+            raise PyXSDError(_ANNOTATION_VALIDATION_ONLY)
+        if not self.interpretations_current:
+            raise StaleInterpretationError(
+                "the RELAX NG annotation view is stale; call revalidate() before typed reads"
+            )
+        if self._binding_evidence is None:
+            _raise_invalid_document(self._report)
+        if self._annotations is None:
+            raise PyXSDError(_ANNOTATION_NOT_CAPTURED)
+        return self._annotations
 
     def to_dict(self, *, typed: bool = True, always_list: bool = False) -> NoReturn:
         """Reject data conversion; Phase 5 owns the RELAX NG adapter."""
@@ -490,6 +494,7 @@ class RelaxNGDocument(Document):
             interpretations_current=False,
             attribute_snapshot=self._attribute_snapshot,
             binding_evidence=self._binding_evidence,
+            annotations=self._annotations,
         )
         if self.typed:
             cast(_TypedSnapshotState, root.revision._typed_snapshot).mark_stale()

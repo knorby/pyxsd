@@ -1,0 +1,706 @@
+"""Optional RELAX NG pattern annotations and independent capture budgets.
+
+Pattern annotations are a separate, optional view over the same accepting
+evidence that supports typed scalar access.  They identify surviving authored
+patterns and the named grammar definitions those origins belong to, and they
+retain scalar alternatives without choosing a branch.  Capture is parse-scoped:
+truncation returns sound subsets marked incomplete, never exceptions, and it
+never changes typed values or candidate identities.
+"""
+
+from __future__ import annotations
+
+import io
+from dataclasses import FrozenInstanceError
+from xml.etree import ElementTree as ET
+
+import pytest
+
+import pyxsd.relaxng as relaxng
+from pyxsd.exceptions import PyXSDError, ValidationError
+from pyxsd.locations import IssueLocation, PathStep
+from pyxsd.relaxng import (
+    AlternativeValue,
+    NodeAnnotations,
+    RelaxNGLimits,
+    RelaxNGSchema,
+    ScalarAnnotation,
+    StaleInterpretationError,
+)
+from pyxsd.relaxng.annotations import AnnotationTable, build_annotation_table
+from pyxsd.relaxng.origins import SourceOrigin
+from pyxsd.relaxng.tree import RelaxNGElement
+
+NS = "http://relaxng.org/ns/structure/1.0"
+XSD = "http://www.w3.org/2001/XMLSchema-datatypes"
+
+
+def data(type_name: str) -> str:
+    return f'<data type="{type_name}" datatypeLibrary="{XSD}"/>'
+
+
+def element(name: str, content: str = "<empty/>") -> str:
+    return f'<element name="{name}">{content}</element>'
+
+
+def attribute(name: str, content: str) -> str:
+    return f'<attribute name="{name}">{content}</attribute>'
+
+
+def compile_schema(body: str) -> RelaxNGSchema:
+    source = f'<grammar xmlns="{NS}"><start>{body}</start></grammar>'
+    compiled = RelaxNGSchema.compile(io.StringIO(source))  # type: ignore[arg-type]
+    assert not compiled.report.has_errors, [issue.message for issue in compiled.report.issues]
+    return compiled
+
+
+def typed(compiled: RelaxNGSchema, xml: str | ET.Element, **kwargs: object):
+    return compiled.parse(xml, typed=True, **kwargs)  # type: ignore[arg-type]
+
+
+def validation_only(compiled: RelaxNGSchema, xml: str, **kwargs: object):
+    return compiled.parse(io.StringIO(xml), typed=False, **kwargs)
+
+
+def scalar_schema() -> RelaxNGSchema:
+    return compile_schema(element("doc", data("integer")))
+
+
+def ambiguous_schema() -> RelaxNGSchema:
+    return compile_schema(element("doc", f"<choice>{data('integer')}{data('string')}</choice>"))
+
+
+def attribute_schema() -> RelaxNGSchema:
+    return compile_schema(
+        element(
+            "doc",
+            attribute("a", data("integer"))
+            + attribute("b", f"<choice>{data('integer')}{data('string')}</choice>")
+            + f"<optional>{attribute('c', '<text/>')}</optional>"
+            + f"<optional>{attribute('flag', '<empty/>')}</optional>"
+            + data("integer"),
+        )
+    )
+
+
+def list_schema() -> RelaxNGSchema:
+    return compile_schema(
+        element("doc", f"<list><zeroOrMore>{data('integer')}</zeroOrMore></list>")
+    )
+
+
+def nested_schema() -> RelaxNGSchema:
+    return compile_schema(
+        element(
+            "doc",
+            element("item", data("integer")) + element("name", "<text/>"),
+        )
+    )
+
+
+def preorder(root: RelaxNGElement) -> list[RelaxNGElement]:
+    """Return lexical preorder, the order capture budgets must follow."""
+    nodes: list[RelaxNGElement] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        nodes.append(node)
+        stack.extend(reversed(node.children))
+    return nodes
+
+
+def origin_key(origin: SourceOrigin) -> tuple[object, ...]:
+    """The documented process-independent ordering key for authored origins."""
+    location = origin.location
+    if location is None:
+        location_key: tuple[object, ...] = (1, "", (), "")
+    else:
+        location_key = (
+            0,
+            location.source or "",
+            tuple((step.name, step.index) for step in location.path),
+            location.attribute or "",
+        )
+    return (origin.source_id, location_key)
+
+
+def scalar_ids(value: AlternativeValue) -> tuple[str, ...]:
+    assert isinstance(value, AlternativeValue)
+    return tuple(candidate.candidate_id for candidate in value.candidates)
+
+
+def scalar_ids_from(annotation: NodeAnnotations) -> tuple[tuple[str, ...], ...]:
+    return tuple(
+        tuple(candidate.candidate_id for candidate in item.value.candidates)
+        for item in annotation.scalar
+    )
+
+
+def test_node_annotations_and_scalar_annotations_are_public_immutable_values():
+    compiled = scalar_schema()
+    document = typed(compiled, io.StringIO("<doc>12</doc>"), capture="patterns")
+
+    assert relaxng.NodeAnnotations is NodeAnnotations
+    assert relaxng.ScalarAnnotation is ScalarAnnotation
+    assert {"NodeAnnotations", "ScalarAnnotation"} <= set(relaxng.__all__)
+
+    annotations = document.annotations
+    assert isinstance(annotations, AnnotationTable)
+    node = annotations.for_node(document.root)
+    assert isinstance(node, NodeAnnotations)
+    assert isinstance(node.scalar, tuple)
+    assert all(isinstance(item, ScalarAnnotation) for item in node.scalar)
+    assert not hasattr(node, "matched_pattern")
+    assert not hasattr(node, "matched_type")
+
+    with pytest.raises(FrozenInstanceError):
+        node.complete = False  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        node.scalar[0].name = "changed"  # type: ignore[misc]
+
+
+def test_text_and_multiple_attributes_are_separate_scalar_sites():
+    compiled = attribute_schema()
+    document = typed(
+        compiled,
+        io.StringIO('<doc a="1" b="2" c="x" flag="">12</doc>'),
+        capture="patterns",
+    )
+    annotations = document.annotations.for_node(document.root)
+
+    assert [item.kind for item in annotations.scalar] == [
+        "text",
+        "attribute",
+        "attribute",
+        "attribute",
+    ]
+    text, first, second, third = annotations.scalar
+    assert (text.name, text.content_index) == (None, 0)
+    assert (first.name, first.content_index) == ("a", None)
+    assert (second.name, second.content_index) == ("b", None)
+    assert (third.name, third.content_index) == ("c", None)
+
+    assert text.value.candidates[0].decoded == 12
+    assert first.value.candidates[0].decoded == 1
+    assert {candidate.decoded for candidate in second.value.candidates} == {2, "2"}
+    assert third.value.candidates[0].contract.kind == "text"
+    assert third.value.candidates[0].decodable is False
+    assert third.value.candidates[0].contract.library_uri is None
+    assert third.value.candidates[0].contract.type_name is None
+
+    assert document.root.scalar_value() == 12
+    assert document.root.attribute_value("a") == 1
+    second_typed = document.root.attribute_value("b")
+    assert isinstance(second_typed, AlternativeValue)
+    assert scalar_ids(second_typed) == scalar_ids(second.value)
+    third_typed = document.root.attribute_value("c")
+    assert isinstance(third_typed, AlternativeValue)
+    assert scalar_ids(third_typed) == scalar_ids(third.value)
+    assert annotations.revision_id == document.root.revision.revision_id
+    assert annotations.schema_id
+
+
+def test_annotations_skip_absent_text_unmatched_sites_and_untyped_attributes():
+    empty_schema = compile_schema(element("doc", "<empty/>"))
+    absent = typed(empty_schema, io.StringIO("<doc/>"), capture="patterns")
+    absent_entry = absent.annotations.for_node(absent.root)
+    assert absent_entry.patterns
+    assert absent_entry.scalar == ()
+
+    whitespace_schema = compile_schema(
+        '<element name="doc"><mixed><zeroOrMore>'
+        '<element name="item"><empty/></element>'
+        "</zeroOrMore></mixed></element>"
+    )
+    whitespace = typed(
+        whitespace_schema,
+        io.StringIO("<doc> <item/> </doc>"),
+        capture="patterns",
+    )
+    assert whitespace.root.text_value() == " "
+    assert whitespace.root.scalar_value() is None
+    assert whitespace.annotations.for_node(whitespace.root).scalar == ()
+
+    empty_content = typed(
+        empty_schema,
+        io.StringIO("<doc> </doc>"),
+        capture="patterns",
+    )
+    assert empty_content.root.text_value() == " "
+    assert empty_content.root.scalar_value() is None
+    assert empty_content.annotations.for_node(empty_content.root).scalar == ()
+
+    value_schema = compile_schema(element("doc", data("integer")))
+    trusted = ET.Element("doc", {"xmlns:p": "urn:values"})
+    trusted.text = "12"
+    trusted_document = typed(value_schema, trusted, capture="patterns")
+    trusted_entry = trusted_document.annotations.for_node(trusted_document.root)
+    assert [item.kind for item in trusted_entry.scalar] == ["text"]
+    assert trusted_document.root.attribute_value("xmlns:p") is None
+
+
+def test_list_scalar_annotations_keep_the_typed_interpretation_and_candidate_id():
+    compiled = list_schema()
+    document = typed(compiled, io.StringIO("<doc>1 2</doc>"), capture="patterns")
+
+    annotations = document.annotations.for_node(document.root)
+    assert len(annotations.scalar) == 1
+    annotation = annotations.scalar[0]
+    assert annotation.kind == "text"
+    candidate = annotation.value.candidates[0]
+    assert candidate.contract.kind == "list"
+    assert candidate.decoded == [1, 2]
+    assert annotation.value.interpretations[0].candidate_id == candidate.candidate_id
+
+    assert document.root.scalar_value() == [1, 2]
+    without = typed(compiled, io.StringIO("<doc>1 2</doc>"), capture="none")
+    assert without.root.scalar_value() == [1, 2]
+    again = typed(compiled, io.StringIO("<doc>1 2</doc>"), capture="patterns")
+    assert scalar_ids(again.annotations.for_node(again.root).scalar[0].value) == scalar_ids(
+        annotation.value
+    )
+
+
+def test_annotations_match_mixed_list_and_atomic_typed_selection():
+    compiled = compile_schema(
+        element("doc", f"<choice><list>{data('integer')}</list>{data('string')}</choice>")
+    )
+    document = typed(compiled, io.StringIO("<doc>12</doc>"), capture="patterns")
+
+    typed_value = document.root.scalar_value()
+    annotation = document.annotations.for_node(document.root).scalar[0].value
+
+    assert isinstance(typed_value, AlternativeValue)
+    assert scalar_ids(typed_value) == scalar_ids(annotation)
+    list_id = next(
+        candidate.candidate_id
+        for candidate in annotation.candidates
+        if candidate.contract.kind == "list"
+    )
+    assert annotation.as_candidate(list_id) == (12,)
+    assert annotation.as_interpretation(list_id).as_python() == (12,)
+
+
+def test_capture_off_and_on_produce_identical_typed_values_and_candidate_ids():
+    compiled = ambiguous_schema()
+
+    without = typed(compiled, io.StringIO("<doc>12</doc>"), capture="none")
+    with_capture = typed(compiled, io.StringIO("<doc>12</doc>"), capture="patterns")
+
+    without_value = without.root.scalar_value()
+    with_value = with_capture.root.scalar_value()
+    assert isinstance(without_value, AlternativeValue)
+    assert isinstance(with_value, AlternativeValue)
+    assert scalar_ids(without_value) == scalar_ids(with_value)
+
+    annotations = with_capture.annotations.for_node(with_capture.root)
+    assert scalar_ids(annotations.scalar[0].value) == scalar_ids(without_value)
+    assert annotations.schema_id == with_capture.schema._grammar_fingerprint
+
+    with pytest.raises(PyXSDError, match="capture='patterns'"):
+        _ = without.annotations
+
+
+def test_validation_only_documents_reject_annotation_capture():
+    compiled = scalar_schema()
+    document = validation_only(compiled, "<doc>12</doc>")
+
+    with pytest.raises(PyXSDError) as excinfo:
+        _ = document.annotations
+    assert type(excinfo.value) is PyXSDError
+    message = str(excinfo.value)
+    assert "pattern capture is unavailable" in message
+    assert "typed=True, capture='patterns'" in message
+
+    with pytest.raises(ValueError, match="typed=True"):
+        compiled.parse(io.StringIO("<doc>12</doc>"), typed=False, capture="patterns")
+
+
+def test_invalid_typed_documents_expose_no_annotation_view():
+    compiled = scalar_schema()
+    invalid = typed(compiled, io.StringIO("<doc>words</doc>"), capture="patterns")
+
+    assert invalid.is_valid is False
+    assert invalid.binding_evidence is None
+    with pytest.raises(ValidationError) as excinfo:
+        _ = invalid.annotations
+    assert excinfo.value.report is invalid.report
+
+    invalid_without_capture = typed(compiled, io.StringIO("<doc>words</doc>"), capture="none")
+    with pytest.raises(ValidationError) as excinfo:
+        _ = invalid_without_capture.annotations
+    assert excinfo.value.report is invalid_without_capture.report
+
+
+def test_dirty_and_transform_stale_revisions_reject_annotation_views():
+    compiled = scalar_schema()
+    document = typed(compiled, io.StringIO("<doc>12</doc>"), capture="patterns")
+    annotations = document.annotations
+    before = annotations.for_node(document.root)
+
+    document.root.set_text("13")
+
+    assert document.interpretations_current is False
+    with pytest.raises(StaleInterpretationError):
+        _ = document.annotations
+    with pytest.raises(StaleInterpretationError):
+        document.root.scalar_value()
+    assert before.scalar[0].value.candidates[0].decoded == 12
+    assert before.revision_id == annotations.revision_id
+
+    fresh = document.revalidate()
+
+    assert fresh is not document
+    assert fresh._capture == "patterns"
+    assert fresh.interpretations_current is True
+    assert isinstance(fresh.annotations, AnnotationTable)
+    assert fresh.annotations is not annotations
+    assert fresh.annotations.revision_id != annotations.revision_id
+    assert fresh.annotations.for_node(fresh.root).scalar[0].value.candidates[0].decoded == 13
+    with pytest.raises(StaleInterpretationError):
+        _ = document.annotations
+
+
+def test_transform_results_are_stale_until_revalidated_with_capture():
+    compiled = scalar_schema()
+    document = typed(compiled, io.StringIO("<doc>12</doc>"), capture="patterns")
+
+    stale = document.transform(lambda root: root)
+
+    assert stale.interpretations_current is False
+    with pytest.raises(StaleInterpretationError):
+        _ = stale.annotations
+
+    fresh = stale.revalidate()
+
+    assert fresh.interpretations_current is True
+    assert fresh.annotations.for_node(fresh.root).scalar[0].value.candidates[0].decoded == 12
+
+
+def test_capture_none_stays_stale_before_its_capability_error():
+    compiled = scalar_schema()
+    document = typed(compiled, io.StringIO("<doc>12</doc>"), capture="none")
+
+    document.root.set_text("13")
+
+    with pytest.raises(StaleInterpretationError):
+        _ = document.annotations
+
+    fresh = document.revalidate()
+
+    assert fresh._capture == "none"
+    with pytest.raises(PyXSDError, match="capture='patterns'"):
+        _ = fresh.annotations
+
+
+def test_patterns_and_definitions_are_stable_sorted_and_origin_sound():
+    compiled = nested_schema()
+    first = typed(
+        compiled, io.StringIO("<doc><item>1</item><name>x</name></doc>"), capture="patterns"
+    )
+    second = typed(
+        compiled, io.StringIO("<doc><item>1</item><name>x</name></doc>"), capture="patterns"
+    )
+    recompiled = typed(
+        nested_schema(),
+        io.StringIO("<doc><item>1</item><name>x</name></doc>"),
+        capture="patterns",
+    )
+
+    root = first.annotations.for_node(first.root)
+    root_again = second.annotations.for_node(second.root)
+    root_recompiled = recompiled.annotations.for_node(recompiled.root)
+
+    assert root.patterns == root_again.patterns == root_recompiled.patterns
+    assert root.definitions == root_again.definitions == root_recompiled.definitions
+    assert root.schema_id == root_again.schema_id == root_recompiled.schema_id
+    assert root.patterns == tuple(sorted(set(root.patterns), key=origin_key))
+    assert root.definitions == tuple(sorted(set(root.definitions)))
+    for name in root.definitions:
+        assert name in compiled.grammar.definitions
+        assert set(root.patterns) & set(compiled.grammar.definitions[name].origins)
+
+    root_definition = next(
+        name
+        for name, definition in compiled.grammar.definitions.items()
+        if definition.pattern.name_class.contains(None, "doc")
+    )
+    item = first.root.children[0]
+    name_node = first.root.children[1]
+    item_definition = next(
+        definition_name
+        for definition_name, definition in compiled.grammar.definitions.items()
+        if definition.pattern.name_class.contains(None, "item")
+    )
+    name_definition = next(
+        definition_name
+        for definition_name, definition in compiled.grammar.definitions.items()
+        if definition.pattern.name_class.contains(None, "name")
+    )
+    assert root_definition in root.definitions
+    assert item_definition in first.annotations.for_node(item).definitions
+    assert name_definition in first.annotations.for_node(name_node).definitions
+
+
+def test_a_partial_capture_budget_retains_a_sound_preorder_subset():
+    compiled = nested_schema()
+    document = typed(
+        compiled,
+        io.StringIO("<doc><item>1</item><name>x</name></doc>"),
+        capture="patterns",
+    )
+    full = document.annotations
+    nodes = preorder(document.root)
+    annotated = [
+        node for node in nodes if full.for_node(node).patterns or full.for_node(node).scalar
+    ]
+    assert len(annotated) >= 3
+
+    partial = typed(
+        compiled,
+        io.StringIO("<doc><item>1</item><name>x</name></doc>"),
+        capture="patterns",
+        limits=RelaxNGLimits(max_capture_entries=len(annotated) - 1),
+    )
+    table = partial.annotations
+    partial_nodes = preorder(partial.root)
+
+    assert table.complete is False
+    for index in range(len(annotated) - 1):
+        entry = table.for_node(partial_nodes[index])
+        reference = full.for_node(nodes[index])
+        assert entry.complete is False
+        assert entry.patterns == reference.patterns
+        assert entry.definitions == reference.definitions
+        assert scalar_ids_from(entry) == scalar_ids_from(reference)
+    dropped = table.for_node(partial_nodes[len(annotated) - 1])
+    assert dropped.patterns == ()
+    assert dropped.definitions == ()
+    assert dropped.scalar == ()
+    assert dropped.complete is False
+
+    exact = typed(
+        compiled,
+        io.StringIO("<doc><item>1</item><name>x</name></doc>"),
+        capture="patterns",
+        limits=RelaxNGLimits(max_capture_entries=len(annotated)),
+    )
+    exact_nodes = preorder(exact.root)
+    assert exact.annotations.complete is True
+    for index in range(len(annotated)):
+        entry = exact.annotations.for_node(exact_nodes[index])
+        assert entry.complete is True
+        assert entry.patterns == full.for_node(nodes[index]).patterns
+        assert entry.definitions == full.for_node(nodes[index]).definitions
+
+
+def test_zero_capture_budget_marks_annotations_incomplete_without_truncating_typed_values():
+    compiled = ambiguous_schema()
+    without = typed(compiled, io.StringIO("<doc>12</doc>"), capture="none")
+    truncated = typed(
+        compiled,
+        io.StringIO("<doc>12</doc>"),
+        capture="patterns",
+        limits=RelaxNGLimits(max_capture_entries=0),
+    )
+
+    assert truncated.annotations.complete is False
+    annotation = truncated.annotations.for_node(truncated.root)
+    assert annotation.patterns == ()
+    assert annotation.definitions == ()
+    assert annotation.scalar == ()
+    assert annotation.complete is False
+
+    assert scalar_ids(truncated.root.scalar_value()) == scalar_ids(without.root.scalar_value())
+    assert [candidate.decoded for candidate in truncated.root.scalar_value().candidates] == [
+        candidate.decoded for candidate in without.root.scalar_value().candidates
+    ]
+
+
+def test_annotations_reject_unknown_elements_and_foreign_revisions():
+    compiled = scalar_schema()
+    document = typed(compiled, io.StringIO("<doc>12</doc>"), capture="patterns")
+    other = typed(compiled, io.StringIO("<doc>12</doc>"), capture="patterns")
+
+    with pytest.raises(ValueError):
+        document.annotations.for_node(other.root)
+    with pytest.raises(ValueError):
+        document.annotations.for_node(object())  # type: ignore[arg-type]
+    foreign = RelaxNGElement.from_etree(ET.Element("doc"))
+    with pytest.raises(ValueError):
+        document.annotations.for_node(foreign)
+
+
+def test_recovered_findings_never_become_accepting_annotation_origins():
+    compiled = compile_schema(
+        element("doc", element("item", "<text/>") + element("extra", "<empty/>"))
+    )
+    document = typed(compiled, io.StringIO("<doc><wrong/></doc>"), capture="patterns")
+
+    assert document.is_valid is False
+    assert document.binding_evidence is None
+    with pytest.raises(ValidationError):
+        _ = document.annotations
+
+
+def test_node_annotations_normalize_and_validate_public_values():
+    compiled = scalar_schema()
+    document = typed(compiled, io.StringIO("<doc>12</doc>"), capture="patterns")
+    text = document.annotations.for_node(document.root).scalar[0]
+    attribute_value = text.value
+
+    first = SourceOrigin("b", IssueLocation("b.rng", (PathStep("element", 1),)))
+    second = SourceOrigin("a", IssueLocation("a.rng", (PathStep("element", 1),)))
+    sourceless = SourceOrigin("c", None)
+    attribute_annotation = ScalarAnnotation("attribute", "a", None, attribute_value)
+
+    normalized = NodeAnnotations(
+        "schema",
+        7,
+        (sourceless, first, second, first),
+        ("z", "a", "z"),
+        (attribute_annotation, text),
+        True,
+    )
+
+    assert normalized.patterns == (second, first, sourceless)
+    assert normalized.definitions == ("a", "z")
+    assert [item.kind for item in normalized.scalar] == ["text", "attribute"]
+
+    kwargs = {
+        "schema_id": "schema",
+        "revision_id": 7,
+        "patterns": (),
+        "definitions": (),
+        "scalar": (),
+        "complete": True,
+    }
+    with pytest.raises(ValueError, match="schema_id"):
+        NodeAnnotations(**{**kwargs, "schema_id": ""})
+    with pytest.raises(ValueError, match="revision_id"):
+        NodeAnnotations(**{**kwargs, "revision_id": True})
+    with pytest.raises(TypeError, match="complete"):
+        NodeAnnotations(**{**kwargs, "complete": 1})
+    with pytest.raises(TypeError, match="patterns"):
+        NodeAnnotations(**{**kwargs, "patterns": (object(),)})
+    with pytest.raises(TypeError, match="definitions"):
+        NodeAnnotations(**{**kwargs, "definitions": (object(),)})
+    with pytest.raises(TypeError, match="scalar"):
+        NodeAnnotations(**{**kwargs, "scalar": (object(),)})
+
+
+def test_scalar_annotations_validate_their_site_shape():
+    compiled = scalar_schema()
+    document = typed(compiled, io.StringIO("<doc>12</doc>"), capture="patterns")
+    value = document.annotations.for_node(document.root).scalar[0].value
+
+    text = ScalarAnnotation("text", None, 0, value)
+    attribute_annotation = ScalarAnnotation("attribute", "a", None, value)
+    assert (text.kind, text.name, text.content_index) == ("text", None, 0)
+    assert (attribute_annotation.kind, attribute_annotation.name) == ("attribute", "a")
+
+    with pytest.raises(ValueError, match="name"):
+        ScalarAnnotation("text", "a", 0, value)
+    with pytest.raises(ValueError, match="content_index"):
+        ScalarAnnotation("text", None, None, value)
+    with pytest.raises(ValueError, match="name"):
+        ScalarAnnotation("attribute", None, None, value)
+    with pytest.raises(ValueError, match="content_index"):
+        ScalarAnnotation("attribute", "a", 0, value)
+    with pytest.raises(ValueError, match="kind"):
+        ScalarAnnotation("other", None, None, value)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="value"):
+        ScalarAnnotation("text", None, 0, object())  # type: ignore[arg-type]
+
+
+def test_builder_ignores_nodes_with_no_surviving_annotation_entries():
+    compiled = compile_schema(element("doc", "<empty/>"))
+    document = typed(compiled, io.StringIO("<doc/>"), capture="none")
+    evidence = document.binding_evidence
+    assert evidence is not None
+
+    table = build_annotation_table(
+        document.root,
+        evidence,
+        schema_id="schema",
+        revision_id=document.root.revision.revision_id,
+        definition_origins={},
+        max_capture_entries=0,
+    )
+
+    assert table.complete is True
+    entry = table.for_node(document.root)
+    assert entry.patterns == ()
+    assert entry.definitions == ()
+    assert entry.scalar == ()
+    assert entry.complete is True
+
+
+def test_direct_document_construction_keeps_annotations_parse_scoped():
+    compiled = scalar_schema()
+    document = typed(compiled, io.StringIO("<doc>12</doc>"), capture="patterns")
+    other = typed(compiled, io.StringIO("<doc>12</doc>"), capture="patterns")
+    common = {
+        "schema": document.schema,
+        "root": document.root,
+        "source": document.source,
+        "report": document.report,
+    }
+
+    rebuilt = relaxng.RelaxNGDocument(
+        **common,
+        typed=True,
+        capture="patterns",
+        binding_evidence=document.binding_evidence,
+        annotations=document.annotations,
+    )
+    assert rebuilt.annotations.for_node(rebuilt.root).patterns
+
+    with pytest.raises(TypeError, match="annotations"):
+        relaxng.RelaxNGDocument(
+            **common,
+            typed=True,
+            capture="patterns",
+            binding_evidence=document.binding_evidence,
+            annotations=object(),  # type: ignore[arg-type]
+        )
+    with pytest.raises(PyXSDError, match="annotation"):
+        relaxng.RelaxNGDocument(
+            **common,
+            typed=True,
+            capture="patterns",
+            binding_evidence=document.binding_evidence,
+        )
+    with pytest.raises(ValueError, match="capture"):
+        relaxng.RelaxNGDocument(
+            **common,
+            typed=True,
+            capture="none",
+            binding_evidence=document.binding_evidence,
+            annotations=document.annotations,
+        )
+    with pytest.raises(ValueError, match="annotations"):
+        relaxng.RelaxNGDocument(
+            **common,
+            typed=False,
+            annotations=document.annotations,
+        )
+    invalid = typed(compiled, io.StringIO("<doc>words</doc>"), capture="patterns")
+    with pytest.raises(ValueError, match="invalid"):
+        relaxng.RelaxNGDocument(
+            schema=invalid.schema,
+            root=invalid.root,
+            source=invalid.source,
+            report=invalid.report,
+            typed=True,
+            capture="patterns",
+            annotations=document.annotations,
+        )
+    with pytest.raises(ValueError, match="revision"):
+        relaxng.RelaxNGDocument(
+            **common,
+            typed=True,
+            capture="patterns",
+            binding_evidence=document.binding_evidence,
+            annotations=other.annotations,
+        )

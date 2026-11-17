@@ -975,11 +975,13 @@ def test_the_relaxng_package_exposes_the_real_compile_entry_point():
         "AlternativeValue",
         "AmbiguousValueError",
         "ListInterpretation",
+        "NodeAnnotations",
         "RelaxNGDocument",
         "RelaxNGElement",
         "RelaxNGLimitError",
         "RelaxNGLimits",
         "RelaxNGSchema",
+        "ScalarAnnotation",
         "StaleInterpretationError",
         "compile",
     }

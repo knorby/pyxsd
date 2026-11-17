@@ -5,6 +5,7 @@ re-export RELAX NG names from :mod:`pyxsd`, and it never routes RELAX NG work
 through the XSD compiler.
 """
 
+from pyxsd.relaxng.annotations import NodeAnnotations, ScalarAnnotation
 from pyxsd.relaxng.document import RelaxNGDocument
 from pyxsd.relaxng.errors import (
     AmbiguousValueError,
@@ -20,11 +21,13 @@ __all__ = [
     "AlternativeValue",
     "AmbiguousValueError",
     "ListInterpretation",
+    "NodeAnnotations",
     "RelaxNGDocument",
     "RelaxNGElement",
     "RelaxNGLimitError",
     "RelaxNGLimits",
     "RelaxNGSchema",
+    "ScalarAnnotation",
     "StaleInterpretationError",
     "compile",
 ]

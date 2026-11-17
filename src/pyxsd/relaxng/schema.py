@@ -32,6 +32,7 @@ from pyxsd.dtd_declarations import (
 from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
+from pyxsd.relaxng.annotations import AnnotationTable, build_annotation_table
 from pyxsd.relaxng.checks import check_compiled_grammar
 from pyxsd.relaxng.contracts import grammar_fingerprint
 from pyxsd.relaxng.datatypes import (
@@ -483,10 +484,12 @@ class RelaxNGSchema:
           changes the boolean verdict.
 
         - ``capture`` is ``"none"`` by default.  ``"patterns"`` is accepted
-          with ``typed=True`` as the setting for optional pattern provenance;
-          ``capture="patterns", typed=False`` is rejected with ``ValueError``
-          before any input is read.  Other values are rejected the same way.
-          Capture settings never truncate mandatory scalar evidence.
+          with ``typed=True`` as the setting for an optional, parse-scoped
+          annotation table; ``capture="patterns", typed=False`` is rejected
+          with ``ValueError`` before any input is read.  Other values are
+          rejected the same way.  The independent ``max_capture_entries``
+          budget truncates only that table, visibly and without raising;
+          capture settings never truncate mandatory scalar evidence.
 
         - ``capture_xdm`` retains the existing opt-in XDM meaning: the same
           source revision also becomes an unannotated XML-tree view.
@@ -691,13 +694,27 @@ class RelaxNGSchema:
                 limits=effective_limits,
             )
             binding_evidence: EvidenceGraph | None = None
+            annotations: AnnotationTable | None = None
             if typed and outcome.valid:
                 binding_evidence = build_binding_evidence(
                     root,
                     self.grammar.start,
                     datatype_context=DatatypeContext(root.base_uri, root.namespaces or {}),
                     limits=effective_limits,
+                    origins=self.grammar.graph.origins if capture == "patterns" else None,
                 )
+                if capture == "patterns":
+                    annotations = build_annotation_table(
+                        root,
+                        binding_evidence,
+                        schema_id=self._grammar_fingerprint,
+                        revision_id=root.revision.revision_id,
+                        definition_origins={
+                            name: definition.origins
+                            for name, definition in self.grammar.definitions.items()
+                        },
+                        max_capture_entries=effective_limits.max_capture_entries,
+                    )
         report_mismatches(outcome, instance_report, limits=effective_limits)
 
         # A skipped external subset can hide an ENTITY/ENTITIES declaration.
@@ -749,6 +766,7 @@ class RelaxNGSchema:
             declarations=declarations,
             xdm_capture=xdm_capture,
             binding_evidence=binding_evidence,
+            annotations=annotations,
         )
 
 

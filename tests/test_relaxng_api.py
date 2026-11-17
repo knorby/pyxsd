@@ -19,6 +19,7 @@ import pyxsd
 import pyxsd.relaxng as relaxng
 from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, PathStep
+from pyxsd.relaxng.annotations import NodeAnnotations, ScalarAnnotation
 from pyxsd.relaxng.errors import (
     AmbiguousValueError,
     RelaxNGLimitError,
@@ -44,11 +45,13 @@ def test_the_package_exposes_only_the_settled_public_contracts():
         "AlternativeValue",
         "AmbiguousValueError",
         "ListInterpretation",
+        "NodeAnnotations",
         "RelaxNGDocument",
         "RelaxNGElement",
         "RelaxNGLimitError",
         "RelaxNGLimits",
         "RelaxNGSchema",
+        "ScalarAnnotation",
         "StaleInterpretationError",
         "compile",
     }
@@ -59,6 +62,8 @@ def test_the_package_exposes_only_the_settled_public_contracts():
     assert relaxng.RelaxNGSchema is RelaxNGSchema
     assert relaxng.AlternativeValue is AlternativeValue
     assert relaxng.ListInterpretation is ListInterpretation
+    assert relaxng.NodeAnnotations is NodeAnnotations
+    assert relaxng.ScalarAnnotation is ScalarAnnotation
 
 
 def test_the_package_exposes_the_real_compiler_entry_point():
