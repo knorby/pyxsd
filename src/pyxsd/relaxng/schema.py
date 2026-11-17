@@ -49,6 +49,7 @@ from pyxsd.relaxng.document import RelaxNGDocument
 from pyxsd.relaxng.evidence import EvidenceGraph, build_binding_evidence
 from pyxsd.relaxng.limits import BudgetCounter, RelaxNGLimits
 from pyxsd.relaxng.patterns import Data, DataExcept, Pattern, PatternPool, Ref
+from pyxsd.relaxng.projection import ProjectionPlan, plan_projections
 from pyxsd.relaxng.resources import ResourceDependency, ResourceLoader, ResourceSource
 from pyxsd.relaxng.simplify import CompiledGrammar, Simplifier, compose_grammars
 from pyxsd.relaxng.syntax import SchemaFinding, read_full_syntax
@@ -398,7 +399,7 @@ class RelaxNGSchema:
             compiled = compose_grammars(bundle, loader)
             check_compiled_grammar(compiled, compiler_report)
         report._set_diagnostics_complete(report.suppressed_count == 0)
-        return cls(
+        schema = cls(
             report=report,
             grammar=compiled,
             namespace_context=bundle.resource.namespaces,
@@ -406,6 +407,23 @@ class RelaxNGSchema:
             datatype_fingerprint=_datatype_fingerprint(registry),
             _resource_policy=resource_policy,
         )
+        if not report.has_errors:
+            # Correctness checks always precede the projection budget. Do not
+            # traverse malformed/unbound graphs or weaken a valid plan on limit
+            # exhaustion. Materialize now, not on the first instance parse.
+            _ = schema.projection
+        return schema
+
+    @cached_property
+    def projection(self) -> ProjectionPlan:
+        """The immutable schema-static route graph shared by typed adapters.
+
+        Compilation materializes this plan after successful correctness checks.
+        The cached property preserves the existing schema constructor signature;
+        directly constructed schemas use the same checked entry condition.
+        """
+        self.require_valid()
+        return plan_projections(self.grammar, limits=self.limits)
 
     @property
     def dependencies(self) -> tuple[ResourceDependency, ...]:
