@@ -59,20 +59,21 @@ UPSTREAM = {
     ),
 }
 
+#: The findings below are pyxsd's, not the official schemas' (see
+#: ``test_independent_xsd_oracle_accepts_the_packaged_schemas``). Earlier
+#: versions of these lists recorded ``wildcard-invalid`` findings that pyxsd
+#: produced by reading only the direct base type's attribute wildcard: the
+#: packaged schemas inherit theirs through an ``xs:extension`` chain, so
+#: those reports were the compiler's defect recorded as expected output.
 EXPECTED_XSLT20 = [
     ("unknown-elementRef", "pyxsd-profile-gap"),
     ("attribute-restriction", "pyxsd-validation-defect"),
-    ("wildcard-invalid", "pyxsd-validation-defect"),
-    ("wildcard-invalid", "pyxsd-validation-defect"),
 ]
 
 EXPECTED_XSLT30 = [
     ("unknown-elementRef", "pyxsd-profile-gap"),
     ("attribute-restriction", "pyxsd-validation-defect"),
     ("attribute-restriction", "pyxsd-validation-defect"),
-    ("wildcard-invalid", "pyxsd-validation-defect"),
-    ("wildcard-invalid", "pyxsd-validation-defect"),
-    ("wildcard-invalid", "pyxsd-validation-defect"),
 ]
 
 
@@ -168,12 +169,11 @@ def test_notice_records_provenance_hashes_and_license():
 def test_probe_xslt20_schema_and_findings():
     observation = _probe_observation("2.0")
     assert observation["classes"] == 177
-    assert observation["error_count"] == 4
+    assert observation["error_count"] == 2
     assert observation["codes"] == Counter(
         {
             "unknown-elementRef": 1,
             "attribute-restriction": 1,
-            "wildcard-invalid": 2,
         }
     )
     assert observation["capability"] == "unsupported"
@@ -185,12 +185,11 @@ def test_probe_xslt20_schema_and_findings():
 def test_probe_xslt30_schema_and_findings():
     observation = _probe_observation("3.0")
     assert observation["classes"] == 267
-    assert observation["error_count"] == 6
+    assert observation["error_count"] == 3
     assert observation["codes"] == Counter(
         {
             "unknown-elementRef": 1,
             "attribute-restriction": 2,
-            "wildcard-invalid": 3,
         }
     )
     assert observation["capability"] == "unsupported"
@@ -204,7 +203,7 @@ def test_xslt30_support_is_not_inferred_from_xslt20():
     xslt30 = _probe_observation("3.0")
     assert xslt30["error_count"] > xslt20["error_count"]
     assert Counter(xslt30["report_codes"]) - Counter(xslt20["report_codes"]) == Counter(
-        {"attribute-restriction": 1, "wildcard-invalid": 1}
+        {"attribute-restriction": 1}
     )
     xslt20_messages = {
         diagnostic.message
@@ -219,16 +218,15 @@ def test_xslt30_support_is_not_inferred_from_xslt20():
         ).diagnostics
     }
     extra = xslt30_messages - xslt20_messages
-    assert len(extra) == 2
+    assert len(extra) == 1
     assert any("_version" in message for message in extra)
-    assert any("sequence-constructor-or-select" in message for message in extra)
 
 
 @pytest.mark.parametrize("language", ["2.0", "3.0"])
 def test_closure_compiles_offline(language: str):
     policy = OfflinePolicy()
     schema = inspection_module._compile_stylesheet_schema(language, resource_policy=policy)
-    assert schema.report.error_count in {4, 6}
+    assert schema.report.error_count in {2, 3}
     result = inspect_stylesheet(
         FIXTURES / "literal-result.xsl", language=language, resource_policy=policy
     )

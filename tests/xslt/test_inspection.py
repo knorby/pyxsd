@@ -162,11 +162,8 @@ def test_inspection_classifies_the_known_xslt30_findings():
         ("unknown-elementRef", "pyxsd-profile-gap"),
         ("attribute-restriction", "pyxsd-validation-defect"),
         ("attribute-restriction", "pyxsd-validation-defect"),
-        ("wildcard-invalid", "pyxsd-validation-defect"),
-        ("wildcard-invalid", "pyxsd-validation-defect"),
-        ("wildcard-invalid", "pyxsd-validation-defect"),
     ]
-    assert result.report.error_count == 6
+    assert result.report.error_count == 3
     assert all(item.rationale for item in result.diagnostics)
 
 
@@ -178,10 +175,8 @@ def test_inspection_classifies_the_known_xslt20_findings():
     assert [(item.code, item.classification) for item in result.diagnostics] == [
         ("unknown-elementRef", "pyxsd-profile-gap"),
         ("attribute-restriction", "pyxsd-validation-defect"),
-        ("wildcard-invalid", "pyxsd-validation-defect"),
-        ("wildcard-invalid", "pyxsd-validation-defect"),
     ]
-    assert result.report.error_count == 4
+    assert result.report.error_count == 2
 
 
 @pytest.mark.parametrize("language", ["3.1", "1.0", "", "XSLT 3.0"])

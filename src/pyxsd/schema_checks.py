@@ -62,8 +62,11 @@ from pyxsd.validation import CompileContextProtocol
 from pyxsd.versioning import VC_NS
 from pyxsd.wildcards import (
     PROCESS_SEVERITY,
+    WildcardSpec,
     effective_attribute_wildcard,
+    intersect_wildcard_specs,
     invalid_namespace_constraint,
+    union_wildcard_specs,
     wildcard_specs_overlap,
 )
 from pyxsd.xpath_subset import XPathError
@@ -1461,23 +1464,175 @@ def global_element_lookup(er: Any) -> Any:
     return lookup
 
 
+def attribute_group_wildcard_specs(
+    er: Any, py_xsd: Any, seen: set[int] | None = None
+) -> list[WildcardSpec]:
+    """The wildcard specs a type's attributeGroup references contribute.
+
+    Direct ``wildcardAttributeSpecs`` plus the transitive contributions of
+    ``attributeGroupRefs``. Two registration paths exist and both must be
+    read: the ER walk appends reference sites to ``attributeGroupRefs`` (the
+    only path for a type whose class has not been built), and class building
+    copies a group's specs onto the type's ``wildcardAttributeSpecs``
+    (``resolveAttributeGroupRefs``) while leaving ``attributeGroupRefs`` as it
+    was. Do not read ``defaultAttributeGroup``: ``apply_default_attributes``
+    runs after this walk (``schema.py:1480`` vs ``:1468``), so the attribute is
+    always unset here and an arm for it would be unreachable. Read-only: it
+    does not register anything on the type. Ref sites resolve through
+    ``refSite._resolve_group(parser=py_xsd, for_class_building=True)`` so the
+    result matches the group the generated class would use; an unresolvable
+    reference is skipped (its own ``unknown-attributeGroup``/``final``
+    diagnostics are reported elsewhere). ``seen`` holds ``id(group)`` and
+    guards circular attributeGroup references, which XSD 1.1 permits (bug
+    15795, attgC010/C020/C031/D015). Deduplicate specs by ``id(spec)``: class
+    building may already have copied the same group spec onto the type, and
+    intersecting a spec with itself is harmless but pointless.
+    """
+    specs: list[WildcardSpec] = list(getattr(er, "wildcardAttributeSpecs", None) or ())
+    known = {id(spec) for spec in specs}
+    if seen is None:
+        seen = set()
+    for refSite in getattr(er, "attributeGroupRefs", None) or ():
+        group = refSite._resolve_group(parser=py_xsd, for_class_building=True)
+        if group is None or id(group) in seen:
+            continue
+        seen.add(id(group))
+        for spec in attribute_group_wildcard_specs(group, py_xsd, seen):
+            if id(spec) in known:
+                continue
+            known.add(id(spec))
+            specs.append(spec)
+    return specs
+
+
+def declared_attribute_wildcard(er: Any, py_xsd: Any) -> WildcardSpec | None:
+    """A type's own attribute wildcard: declared contributions only.
+
+    ``effective_attribute_wildcard(attribute_group_wildcard_specs(er, py_xsd),
+    er.getNamespace())`` — the intersection of the type's own ``anyAttribute``
+    and every attribute group it references (XSD 1.1 errata E1-10). No
+    derivation chain is walked: this is the *derived* side of the restriction
+    check, where the base's wildcard must not leak in.
+    """
+    table = _wildcard_cache(er)["declared"]
+    cached = table.get(id(er), _CACHE_MISS)
+    if cached is not _CACHE_MISS:
+        return cached
+    specs = attribute_group_wildcard_specs(er, py_xsd)
+    result = effective_attribute_wildcard(specs, er.getNamespace()) if specs else None
+    table[id(er)] = result
+    return result
+
+
+def effective_type_attribute_wildcard(
+    ctx: CompileContextProtocol, er: Any, py_xsd: Any
+) -> WildcardSpec | None:
+    """A type's effective attribute wildcard, walking its derivation chain.
+
+    Mirrors ``XsdType._effectiveAttributeWildcard`` (xsd_type.py:720-761)
+    exactly, at ER level: extension unions the base's effective wildcard with
+    the extension's declared one (``union_wildcard_specs``); a restriction
+    keeps only its own declared wildcard (``None`` when it declares none — a
+    restriction never inherits a base wildcard); a type with no derivation has
+    just its declared wildcard. Cycles (invalid schemas still reaching the
+    tree) are cut by ``seen: set[int]``; an unresolvable base contributes
+    nothing. Memoized per compile in ``_wildcard_cache(er)["effective"]``
+    keyed by ``id(er)``.
+    """
+    cache = _wildcard_cache(er)
+    cached = cache["effective"].get(id(er), _CACHE_MISS)
+    if cached is not _CACHE_MISS:
+        return cached
+    return _compute_effective_type_attribute_wildcard(ctx, er, py_xsd, set(), cache)
+
+
+def _wildcard_cache(er: Any) -> dict[str, dict[int, Any]]:
+    """``{"declared": {...}, "effective": {...}}`` on the schema declaration.
+
+    Stored as ``schema._attribute_wildcard_cache`` where ``schema =
+    er.getSchema()``, following ``_substitution_cache`` (below): the cache
+    dies with the compile, and every ER it keys is reachable from the schema
+    tree for the whole compile, so no ``id()`` is recycled while the cache
+    lives. When ``getSchema()`` returns ``None`` (isolated ERs in unit tests),
+    return a throwaway dict rather than raising — correctness must not depend
+    on caching. A chain that crosses an import may put an entry into whichever
+    declaration's table the entry point holds; the entry is computed with the
+    same rules either way, so do not try to force a single table.
+    """
+    try:
+        schema = er.getSchema()
+    except AttributeError:
+        schema = None
+    if schema is None:
+        return {"declared": {}, "effective": {}}
+    cache = getattr(schema, "_attribute_wildcard_cache", None)
+    if cache is None:
+        cache = {"declared": {}, "effective": {}}
+        schema._attribute_wildcard_cache = cache
+    return cache
+
+
+def _compute_effective_type_attribute_wildcard(
+    ctx: CompileContextProtocol,
+    er: Any,
+    py_xsd: Any,
+    seen: set[int],
+    cache: dict[str, dict[int, Any]],
+) -> WildcardSpec | None:
+    """One uncached chain walk (the body of the memoized entry point)."""
+    if id(er) in seen:
+        return None
+    seen.add(id(er))
+    table = cache["effective"]
+    own = declared_attribute_wildcard(er, py_xsd)
+    derivation = complex_type_derivation(er)
+    if derivation is None:
+        table[id(er)] = own
+        return own
+    base_er = base_type_er(ctx, er, py_xsd)
+    if base_er is None:
+        table[id(er)] = own
+        return own
+    base = table.get(id(base_er), _CACHE_MISS)
+    if base is _CACHE_MISS:
+        base = _compute_effective_type_attribute_wildcard(ctx, base_er, py_xsd, seen, cache)
+    if derivation == "extension":
+        if own is None:
+            result = base
+        elif base is None:
+            result = own
+        else:
+            result = union_wildcard_specs(base, own, er.getNamespace())
+    elif own is None:
+        # A restriction that states no wildcard drops the base's: an
+        # attribute wildcard is never inherited across a restriction (XSD
+        # 1.1 §3.4.6.3, SUN test008).
+        result = None
+    elif base is None:
+        result = own
+    else:
+        result = intersect_wildcard_specs(base, own, er.getNamespace())
+    table[id(er)] = result
+    return result
+
+
 def report_attribute_wildcard_restriction(
     ctx: CompileContextProtocol, er: Any, py_xsd: Any
 ) -> None:
     """Reports a restriction that does not narrow the base wildcard.
 
-    The derived type's effective attribute wildcard (its local
+    The derived type's declared attribute wildcard (its local
     ``anyAttribute`` plus the ones its attribute groups contribute,
     intersected) must be a valid restriction of the base type's
-    effective wildcard: the namespace constraint may only narrow and
-    ``processContents`` must not weaken. A derived type that declares
-    no attribute wildcard of its own accepts fewer attributes and is
-    always a valid restriction, so only a type whose complete
-    wildcard is non-absent is checked. Skips — never errors — when
-    the base type cannot be resolved or carries no attribute
-    wildcard of its own (an empty derived wildcard admits nothing,
-    making the semantic rule depend on more than the constraint
-    shape).
+    effective wildcard (inherited through extensions): the namespace
+    constraint may only narrow and ``processContents`` must not weaken.
+    A derived type that declares no attribute wildcard of its own
+    accepts fewer attributes and is always a valid restriction, so
+    only a type whose complete wildcard is non-absent is checked.
+    Skips — never errors — when the base type cannot be resolved or
+    carries no effective wildcard in the whole chain (an empty derived
+    wildcard admits nothing, making the semantic rule depend on more
+    than the constraint shape).
     """
     if er.getDerivation() != "restriction":
         return
@@ -1489,12 +1644,10 @@ def report_attribute_wildcard_restriction(
             getattr(er, "name", "?"),
         )
         return
-    ownSpecs = getattr(er, "wildcardAttributeSpecs", None)
-    baseSpecs = getattr(baseER, "wildcardAttributeSpecs", None)
     target = er.getNamespace()
     baseNS = baseER.getNamespace()
-    own = effective_attribute_wildcard(ownSpecs, target) if ownSpecs else None
-    base = effective_attribute_wildcard(baseSpecs, baseNS) if baseSpecs else None
+    own = declared_attribute_wildcard(er, py_xsd)
+    base = effective_type_attribute_wildcard(ctx, baseER, py_xsd)
     # A derived wildcard over a base with no attribute wildcard is
     # never a valid restriction (ctO005): the base admits nothing
     # beyond its own uses.
