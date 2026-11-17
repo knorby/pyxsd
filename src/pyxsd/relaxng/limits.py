@@ -33,11 +33,16 @@ class RelaxNGLimits:
     """Optional budgets for pattern-graph, evidence, capture, and diagnostics.
 
     A pattern-node budget counts distinct semantic graph nodes. Derivative,
-    memo-entry, evidence-state, evidence-edge, scalar-witness, binding-summary,
-    capture-entry, and projection-route budgets bound their named work.
-    ``max_diagnostics`` is a truncatable retention budget, not a work budget.
-    The compiler's graph and semantic correctness checks run regardless
-    of these values; a projection budget never skips a correctness check.
+    memo-entry, evidence-state, evidence-edge, scalar-witness, and
+    projection-route budgets bound their named work. An evidence binding
+    summary is one retained ``(occurrence, scalar pattern)`` record in the
+    schema-static table used for wrapper selection; it is not a proof node,
+    edge, surviving witness, or capture record. ``max_capture_entries`` bounds
+    the independent optional annotation table and truncates it visibly instead
+    of raising. A ``max_diagnostics`` budget is a truncatable retention budget,
+    not a work budget. The compiler's graph and semantic correctness checks run
+    regardless of these values; a projection budget never skips a correctness
+    check.
     """
 
     max_pattern_nodes: int | None = None

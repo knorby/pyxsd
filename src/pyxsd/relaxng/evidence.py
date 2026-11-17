@@ -12,7 +12,10 @@ zero-premise AND is a successful local fact. Only viable premises reachable
 from final accepting conclusions survive. Origins are optional provenance
 views of matched semantic patterns, never premises of an acceptance proof.
 The graph also retains the scalar patterns each site reached before pruning,
-so schema-static wrapper selection never depends on a surviving witness.
+so schema-static wrapper selection never depends on a surviving witness. Each
+retained ``(occurrence, scalar pattern)`` record is one binding summary;
+``max_binding_summaries`` bounds those records independently of proof nodes,
+edges, surviving witnesses, and optional capture records.
 """
 
 from __future__ import annotations
@@ -225,7 +228,9 @@ class EvidenceGraph:
     The private pre-pruning pattern table retains the scalar patterns each
     recorded occurrence could reach, so consumers can choose a schema-static
     wrapper shape without probing the instance lexical value.  It is
-    deliberately independent of the retained witnesses.
+    deliberately independent of the retained witnesses.  Each retained
+    occurrence/pattern record is one binding summary for the independent
+    ``max_binding_summaries`` budget.
     """
 
     accepting_roots: tuple[EvidenceNode, ...]
@@ -850,6 +855,14 @@ def build_binding_evidence(
         for site, patterns in builder.schema_patterns.items()
         if site in retained_sites
     }
+    # Binding summaries are the retained schema-static scalar-pattern records
+    # used by wrapper selection.  Count them only after pruning so the budget
+    # names exactly the table that EvidenceGraph keeps; proof nodes, edges,
+    # witnesses, and optional capture records are separate units.
+    builder.counter.consume(
+        "max_binding_summaries",
+        sum(len(patterns) for patterns in schema_patterns.values()),
+    )
     return EvidenceGraph(
         roots,
         nodes,
