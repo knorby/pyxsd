@@ -7153,6 +7153,8 @@ class _Invocation(Transformation):
                 if not str(getattr(exc, "code", "")).endswith("XPST0008"):
                     raise
                 name = _unknown_variable_name(exc)
+                if name is None:
+                    raise
                 component = self._global_component(context.package_name, name)
                 if component is None or name in attempted:
                     raise
@@ -7501,9 +7503,17 @@ class _Invocation(Transformation):
         return _item_string(item)
 
 
-def _unknown_variable_name(error: BaseException) -> str:
+def _unknown_variable_name(error: BaseException) -> str | None:
+    """Return the variable an ``XPST0008`` message names, or ``None``.
+
+    elementpath raises ``XPST0008`` for names generally — variables, schema
+    element/attribute lookups, loop-variable misuse — so only the message
+    shapes that actually identify a variable may drive the on-demand global
+    lookup; everything else must surface its original error.
+    """
     match = re.search(r"unknown variable ['\"]?\$?([^'\"\s]+)", str(error))
-    assert match is not None
+    if match is None:
+        return None
     return match.group(1)
 
 
