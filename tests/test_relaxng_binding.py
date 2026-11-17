@@ -9,6 +9,9 @@ interface without taking stable parents or siblings with them.
 from __future__ import annotations
 
 import io
+import os
+import subprocess
+import sys
 from dataclasses import replace
 from xml.etree import ElementTree as ET
 
@@ -158,6 +161,31 @@ def test_class_name_collisions_and_equivalent_plans_are_deterministic():
     ]
     assert names_first == names_second
     assert len(set(names_first)) == len(names_first)
+
+
+def test_hash_seed_does_not_change_generated_class_identity():
+    script = f"""import io
+from pyxsd.relaxng.schema import RelaxNGSchema
+s = RelaxNGSchema.compile(io.StringIO('''<choice xmlns="{NS}">
+<element name="class"><empty/></element>
+<element name="a-b"><empty/></element>
+<element><anyName><except><name>class</name></except></anyName><empty/></element>
+</choice>'''))
+print([
+    (s.projection_classes.class_for(route_id).__module__,
+     s.projection_classes.class_for(route_id).__qualname__)
+    for route_id in s.projection.roots
+])
+"""
+    results = [
+        subprocess.check_output(
+            [sys.executable, "-c", script],
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            text=True,
+        )
+        for seed in ("1", "981")
+    ]
+    assert results[0] == results[1]
 
 
 def test_recursive_routes_reuse_the_same_class_at_each_instance_depth():
