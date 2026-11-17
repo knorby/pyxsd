@@ -13,6 +13,14 @@ from pyxsd.relaxng.errors import (
     StaleInterpretationError,
 )
 from pyxsd.relaxng.evidence import CandidateSelection
+from pyxsd.relaxng.introspection import (
+    RelaxNGComponentDescription,
+    RelaxNGSchemaDescription,
+    describe_component,
+    describe_schema,
+    find_components,
+    related_components,
+)
 from pyxsd.relaxng.limits import RelaxNGLimits
 from pyxsd.relaxng.schema import RelaxNGSchema, compile
 from pyxsd.relaxng.tree import RelaxNGElement
@@ -24,12 +32,18 @@ __all__ = [
     "CandidateSelection",
     "ListInterpretation",
     "NodeAnnotations",
+    "RelaxNGComponentDescription",
     "RelaxNGDocument",
     "RelaxNGElement",
     "RelaxNGLimitError",
     "RelaxNGLimits",
     "RelaxNGSchema",
+    "RelaxNGSchemaDescription",
     "ScalarAnnotation",
     "StaleInterpretationError",
     "compile",
+    "describe_component",
+    "describe_schema",
+    "find_components",
+    "related_components",
 ]

@@ -47,14 +47,20 @@ def test_the_package_exposes_only_the_settled_public_contracts():
         "AmbiguousValueError",
         "ListInterpretation",
         "NodeAnnotations",
+        "RelaxNGComponentDescription",
         "RelaxNGDocument",
         "RelaxNGElement",
         "RelaxNGLimitError",
         "RelaxNGLimits",
         "RelaxNGSchema",
+        "RelaxNGSchemaDescription",
         "ScalarAnnotation",
         "StaleInterpretationError",
         "compile",
+        "describe_component",
+        "describe_schema",
+        "find_components",
+        "related_components",
     }
     assert relaxng.RelaxNGLimitError is RelaxNGLimitError
     assert relaxng.AmbiguousValueError is AmbiguousValueError

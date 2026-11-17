@@ -977,14 +977,20 @@ def test_the_relaxng_package_exposes_the_real_compile_entry_point():
         "AmbiguousValueError",
         "ListInterpretation",
         "NodeAnnotations",
+        "RelaxNGComponentDescription",
         "RelaxNGDocument",
         "RelaxNGElement",
         "RelaxNGLimitError",
         "RelaxNGLimits",
         "RelaxNGSchema",
+        "RelaxNGSchemaDescription",
         "ScalarAnnotation",
         "StaleInterpretationError",
         "compile",
+        "describe_component",
+        "describe_schema",
+        "find_components",
+        "related_components",
     }
     assert relaxng.RelaxNGSchema is RelaxNGSchema
     assert relaxng.compile.__func__ is RelaxNGSchema.compile.__func__
