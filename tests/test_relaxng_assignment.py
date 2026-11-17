@@ -10,8 +10,11 @@ authority; a successful edit marks the whole revision stale until revalidation.
 from __future__ import annotations
 
 import io
+import os
+import subprocess
+import sys
 from dataclasses import dataclass, replace
-from enum import Enum
+from enum import Enum, IntEnum, StrEnum
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -75,6 +78,7 @@ ITERATOR = "urn:pyxsd:test:iterator"
 CYCLE_SHAPES = "urn:pyxsd:test:cycle-shapes"
 MAPPING_MARKER = "urn:pyxsd:test:mapping-marker"
 NESTED_CONTAINER = "urn:pyxsd:test:nested-container"
+PRIMITIVE = "urn:pyxsd:test:primitive"
 
 
 def data(type_name: str, library: str = XSD) -> str:
@@ -608,6 +612,71 @@ class UnrepresentableStateFactory(DatatypeFactory):
 
 class MarkerEnum(Enum):
     ONE = "1"
+
+
+class MarkerString(str):
+    def __new__(cls, marker):
+        value = super().__new__(cls, "payload")
+        value.marker = marker
+        return value
+
+
+class SlottedStringBase(str):
+    __slots__ = ("marker",)
+
+
+class SlottedMarkerString(SlottedStringBase):
+    __slots__ = ("extra",)
+
+    def __new__(cls, marker):
+        value = super().__new__(cls, "payload")
+        value.marker = marker
+        value.extra = "fixed"
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class PrimitivePayloadDatatype(Datatype):
+    state: object
+
+    library_uri = PRIMITIVE
+    type_name = "primitive"
+    parameters = ()
+
+    def __eq__(self, other):
+        return (
+            type(other) is type(self)
+            and self.state == other.state
+            and self.state.marker == other.state.marker
+        )
+
+    def allows(self, lexical, context):
+        return True
+
+    def equal(self, left, left_context, right, right_context):
+        return left == right
+
+    def encode(self, value, context):
+        return f"{self.state.marker}:{value}"
+
+
+class PrimitivePayloadFactory(DatatypeFactory):
+    def __init__(self, payloads):
+        self.payloads = iter(payloads)
+
+    def create(self, type_name, parameters, context):
+        return PrimitivePayloadDatatype(next(self.payloads))
+
+
+def compile_primitive_payloads(payloads):
+    return compile_body(
+        encoded_two_child_schema(PRIMITIVE, "primitive"),
+        datatype_libraries={
+            PRIMITIVE: DatatypeLibraryRegistration(
+                PrimitivePayloadFactory(payloads), "primitive/1"
+            ),
+        },
+    )
 
 
 class MissingSlotState:
@@ -1598,6 +1667,164 @@ def encoded_two_child_schema(library: str, type_name: str) -> str:
         + element("second", '<attribute name="v">' + encoded + "</attribute>")
         + "</choice>"
     )
+
+
+@pytest.mark.parametrize("payload_type", [MarkerString, SlottedMarkerString])
+def test_primitive_subclass_marker_conflicts_fail_before_assignment(payload_type):
+    first, second = payload_type("1"), payload_type("2")
+    assert str(first) == str(second) == "payload"
+    assert PrimitivePayloadDatatype(first) != PrimitivePayloadDatatype(second)
+    with pytest.raises(ValueError, match="conflicting RELAX NG encoding patterns"):
+        compile_primitive_payloads((first, second))
+
+
+@pytest.mark.parametrize("payload_type", [MarkerString, SlottedMarkerString])
+def test_equal_primitive_subclass_markers_compile_and_assign(payload_type):
+    schema = compile_primitive_payloads((payload_type("1"), payload_type("1")))
+    for field in ("first", "second"):
+        document = typed(schema, f'<doc><{field} v="seed"/></doc>')
+        getattr(document.root, field).v = "value"
+        assert serialized(document) == f'<doc><{field} v="1:value"/></doc>'
+
+
+def test_primitive_subclass_opaque_state_fails_closed_with_contract_context():
+    payload = MarkerString("1")
+    payload.callback = lambda value: value
+    with pytest.raises(
+        ValueError, match="cannot represent RELAX NG encoding state for scalar contract identity"
+    ):
+        compile_primitive_payloads((payload, MarkerString("1")))
+
+
+@pytest.mark.parametrize(
+    "base, first, second",
+    [
+        (str, "a", "b"),
+        (int, 1, 2),
+        (float, 1.5, 2.5),
+        (complex, 1j, 2j),
+        (bytes, b"a", b"b"),
+        (bytearray, b"a", b"b"),
+    ],
+)
+def test_primitive_subclass_signatures_preserve_type_payload_and_state(base, first, second):
+    subclass = type("Payload", (base,), {})
+    other_subclass = type("OtherPayload", (base,), {})
+    left, equal, different = subclass(first), subclass(first), subclass(second)
+    other = other_subclass(first)
+    left.marker = equal.marker = different.marker = "1"
+    other.marker = "1"
+    signature = _stable_encoding_value(left)
+    assert signature == _stable_encoding_value(equal)
+    assert signature != _stable_encoding_value(different)
+    assert signature != _stable_encoding_value(base(first))
+    assert signature != _stable_encoding_value(other)
+    equal.marker = "2"
+    assert signature != _stable_encoding_value(equal)
+
+
+@pytest.mark.parametrize(
+    "base, method, first, second, hidden",
+    [
+        (str, "__str__", "a", "b", "hidden"),
+        (int, "__int__", 1, 2, 0),
+        (float, "__float__", 1.5, 2.5, 0.0),
+        (complex, "__complex__", 1j, 2j, 0j),
+        (bytes, "__bytes__", b"a", b"b", b"hidden"),
+        (bytearray, "__bytes__", b"a", b"b", b"hidden"),
+    ],
+)
+def test_primitive_subclass_overridden_conversions_cannot_hide_payload(
+    base, method, first, second, hidden
+):
+    subclass = type("HiddenPayload", (base,), {method: lambda self: hidden})
+    assert _stable_encoding_value(subclass(first)) != _stable_encoding_value(subclass(second))
+
+
+def test_stateless_primitive_subclass_preserves_payload_and_exact_primitives_keep_signatures():
+    class StatelessString(str):
+        __slots__ = ()
+
+    assert _stable_encoding_value(StatelessString("a")) != _stable_encoding_value(
+        StatelessString("b")
+    )
+    assert _stable_encoding_value(StatelessString("a")) != _stable_encoding_value("a")
+    for value, expected in [
+        (None, ("none",)),
+        (True, ("bool", True)),
+        (1, ("int", 1)),
+        (1.5, ("float", "1.5")),
+        (1j, ("complex", "1j")),
+        ("a", ("str", "a")),
+        (b"a", ("bytes", b"a")),
+        (bytearray(b"a"), ("bytes", b"a")),
+        (memoryview(b"a"), ("bytes", b"a")),
+    ]:
+        assert _stable_encoding_value(value) == expected
+
+
+def test_primitive_subclass_cycles_slots_and_enums_remain_distinct():
+    first, second = MarkerString("1"), MarkerString("1")
+    first.link, second.link = first, second
+    assert _stable_encoding_value(first) == _stable_encoding_value(second)
+    slotted = SlottedMarkerString("1")
+    original = _stable_encoding_value(slotted)
+    slotted.extra = "different"
+    assert original != _stable_encoding_value(slotted)
+
+    class Number(IntEnum):
+        ONE = 1
+
+    assert _stable_encoding_value(Number.ONE) != _stable_encoding_value(1)
+    assert _stable_encoding_value(True) != _stable_encoding_value(1)
+
+
+def test_primitive_enum_signatures_include_inspectable_state():
+    class Number(IntEnum):
+        ONE = 1
+        TWO = 2
+
+    class Text(StrEnum):
+        ONE = "one"
+
+    assert _stable_encoding_value(Number.ONE) != _stable_encoding_value(Number.TWO)
+    for member in (Number.ONE, Text.ONE):
+        original = _stable_encoding_value(member)
+        member.marker = "extra"
+        assert original != _stable_encoding_value(member)
+
+
+def test_primitive_subclass_compilation_and_assignment_are_hash_seed_independent():
+    script = """
+from tests.test_relaxng_assignment import (
+    MarkerString, SlottedMarkerString, compile_primitive_payloads, serialized, typed,
+)
+from pyxsd.relaxng.projection import _stable_encoding_value
+for payload_type in (MarkerString, SlottedMarkerString):
+    print(_stable_encoding_value(payload_type("1")))
+    try:
+        compile_primitive_payloads((payload_type("1"), payload_type("2")))
+    except ValueError as error:
+        print(error)
+    else:
+        raise AssertionError("conflicting primitive subclass state compiled")
+    schema = compile_primitive_payloads((payload_type("1"), payload_type("1")))
+    for field in ("first", "second"):
+        document = typed(schema, f'<doc><{field} v="seed"/></doc>')
+        getattr(document.root, field).v = "value"
+        print(serialized(document))
+"""
+    results = [
+        subprocess.check_output(
+            [sys.executable, "-c", script],
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            text=True,
+        )
+        for seed in ("1", "981")
+    ]
+    assert results[0] == results[1]
+    assert '<doc><first v="1:value"/></doc>' in results[0]
+    assert '<doc><second v="1:value"/></doc>' in results[0]
 
 
 def test_frozen_slots_dataclass_marker_conflicts_fail_at_compile_time():

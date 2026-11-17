@@ -600,26 +600,24 @@ def _stable_encoding_value(
         raise ValueError("cannot represent encoding state: nesting is too deep")
     if value is None:
         return ("none",)
-    if isinstance(value, bool):
+    if type(value) is bool:
         return ("bool", value)
-    if isinstance(value, int):
+    if type(value) is int:
         return ("int", value)
-    if isinstance(value, float):
+    if type(value) is float:
         return ("float", repr(value))
-    if isinstance(value, complex):
+    if type(value) is complex:
         return ("complex", repr(value))
-    if isinstance(value, str):
+    if type(value) is str:
         return ("str", value)
-    if isinstance(value, bytes):
+    if type(value) is bytes:
         return ("bytes", value)
-    if isinstance(value, bytearray):
+    if type(value) is bytearray:
         return ("bytes", bytes(value))
-    if isinstance(value, memoryview):
+    if type(value) is memoryview:
         return ("bytes", value.tobytes())
     if isinstance(value, type):
         return ("type", *_encoding_type_name(value))
-    if isinstance(value, Enum):
-        return ("enum", *_encoding_type_name(type(value)), value.name)
     if isinstance(value, (FunctionType, BuiltinFunctionType, MethodType, ModuleType)):
         raise ValueError("cannot represent encoding state for an opaque callable or module")
 
@@ -627,6 +625,31 @@ def _stable_encoding_value(
     if identifier in _ancestors:
         return ("backref", _ancestors.index(identifier))
     descendants = (*_ancestors, identifier)
+    # Primitive subclasses carry both an intrinsic payload and instance state.
+    # Read through the built-in implementation so overridden conversions cannot
+    # hide the payload or insert a live subclass instance into the signature.
+    primitive: object
+    if isinstance(value, str):
+        primitive = str.__str__(value)
+    elif isinstance(value, int):
+        primitive = int.__int__(value)
+    elif isinstance(value, float):
+        primitive = float.__float__(value)
+    elif isinstance(value, complex):
+        primitive = complex.__complex__(value)
+    elif isinstance(value, (bytes, bytearray)):
+        primitive = memoryview(value).tobytes()
+    else:
+        primitive = None
+    if primitive is not None:
+        return (
+            "primitive",
+            *_encoding_type_name(type(value)),
+            _stable_encoding_value(primitive, descendants, _depth + 1),
+            _object_encoding_state(value, descendants, _depth, allow_empty=True),
+        )
+    if isinstance(value, Enum):
+        return ("enum", *_encoding_type_name(type(value)), value.name)
     if isinstance(value, tuple):
         return (
             "tuple",
