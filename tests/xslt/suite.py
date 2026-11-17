@@ -7,11 +7,11 @@ themselves — the 2.0 one schema-aware, the 1.0 one not — so their verdicts n
 describe a ``version`` attribute on a 3.0 processor.
 
 The executor covers the invocation shapes the catalog declares in
-``<environment>`` and ``<test>`` (context items, sources, packages, parameters,
-entry points, and delivery).  A shape the harness cannot drive is reported as
-``adapter-gap``; an engine exception is a ``fail`` with its message, never a
-silent pass.  Every executed case is bounded by a per-case budget, so one
-pathological stylesheet cannot stall a profile run.
+``<environment>`` and ``<test>`` (context items, sources, principal selection,
+packages, parameters, entry points, and delivery).  A shape the harness cannot
+drive is reported as ``adapter-gap``; an engine exception is a ``fail`` with its
+message, never a silent pass.  Every executed case is bounded by a per-case
+budget, so one pathological stylesheet cannot stall a profile run.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from xml.sax.saxutils import escape
 from elementpath.regex import unicode_version
 from tests.xslt.assertions import ResultSnapshot
 from tests.xslt.environment import build_schema_pool, environment_fingerprint
-from tests.xslt.model import Param, Source, TestCase
+from tests.xslt.model import Param, Source, Stylesheet, TestCase
 from tests.xslt.outcomes import CaseResult
 from tests.xslt.runner import CaseExecutionError, run_cases
 from tests.xslt.selection import XSLT30_NON_STREAMING, FeatureProfile
@@ -439,15 +439,79 @@ def _delivery(case: TestCase) -> str:
     return "stylesheet"
 
 
-def _stylesheet(case: TestCase) -> Path:
-    stylesheets = [sheet for sheet in case.stylesheets if sheet.role != "secondary"]
-    if len(stylesheets) != 1:
-        raise UnsupportedCase(f"{len(stylesheets)} principal stylesheets")
-    if stylesheets[0].path is None:
+def _principal_candidates(case: TestCase) -> tuple[Stylesheet, ...]:
+    """The distinct non-secondary stylesheet declarations of one case.
+
+    A catalog case may repeat one declaration — the environment and the test can
+    both name the same file — and repeating one compilation unit must not look
+    like two.  Declaration order is preserved.  A declaration without a file
+    stays its own candidate: nothing says it is the same unit as another.
+    """
+    candidates: list[Stylesheet] = []
+    seen: set[str] = set()
+    for sheet in case.stylesheets:
+        if sheet.role == "secondary":
+            continue
+        if sheet.path is not None:
+            key = str(sheet.path)
+            if key in seen:
+                continue
+            seen.add(key)
+        candidates.append(sheet)
+    return tuple(candidates)
+
+
+def _declared_only_as_module(case: TestCase, selected: Stylesheet) -> bool:
+    """Whether the environment declares the selected file as a module only.
+
+    A test that names a file the environment declares ``secondary`` asks the
+    harness to compile a module as the principal.  Only an environment
+    declaration that also names the file non-secondary promotes it back, so a
+    test can never promote a module by naming it.
+    """
+    if selected.path is None:
+        return False
+    path = str(selected.path)
+    declared = [
+        sheet
+        for sheet in case.environment.stylesheets
+        if sheet.path is not None and str(sheet.path) == path
+    ]
+    return bool(declared) and all(sheet.role == "secondary" for sheet in declared)
+
+
+def _principal_declaration(case: TestCase) -> Stylesheet:
+    """The stylesheet declaration one case compiles as its principal.
+
+    A test may name the stylesheet it executes among several the environment
+    offers, and an invocation stylesheet is a file reference rather than a
+    selection: it may name a file the environment never declares.  With no
+    named stylesheet a lone non-secondary declaration is the principal; several
+    are never guessed.
+    """
+    named = [sheet for sheet in case.invocation.stylesheets if sheet.role != "secondary"]
+    named_paths = {str(sheet.path) for sheet in named if sheet.path is not None}
+    if len(named_paths) > 1:
+        raise UnsupportedCase(f"{len(named_paths)} selected stylesheets")
+    principals = _principal_candidates(case)
+    if named:
+        selected = named[0]
+        if _declared_only_as_module(case, selected):
+            raise UnsupportedCase("selected stylesheet is a secondary module")
+    elif len(principals) != 1:
+        raise UnsupportedCase(f"{len(principals)} principal stylesheets")
+    else:
+        selected = principals[0]
+    if selected.path is None:
         raise UnsupportedCase("principal stylesheet without a file")
+    return selected
+
+
+def _stylesheet(case: TestCase) -> Path:
+    declaration = _principal_declaration(case)
     if case.document_root is None:
         raise UnsupportedCase("case without a corpus root")
-    return case.document_root / Path(str(stylesheets[0].path))
+    return case.document_root / Path(str(declaration.path))
 
 
 @dataclass(frozen=True)
