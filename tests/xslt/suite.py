@@ -7,11 +7,12 @@ themselves — the 2.0 one schema-aware, the 1.0 one not — so their verdicts n
 describe a ``version`` attribute on a 3.0 processor.
 
 The executor covers the invocation shapes the catalog declares in
-``<environment>`` and ``<test>`` (context items, sources, principal selection,
-packages, parameters, entry points, and delivery).  A shape the harness cannot
-drive is reported as ``adapter-gap``; an engine exception is a ``fail`` with its
-message, never a silent pass.  Every executed case is bounded by a per-case
-budget, so one pathological stylesheet cannot stall a profile run.
+``<environment>`` and ``<test>`` (context items, sources, collections, principal
+selection, packages, parameters, entry points, and delivery).  A shape the
+harness cannot drive is reported as ``adapter-gap``; an engine exception is a
+``fail`` with its message, never a silent pass.  Every executed case is bounded
+by a per-case budget, so one pathological stylesheet cannot stall a profile
+run.
 """
 
 from __future__ import annotations
@@ -20,18 +21,19 @@ import hashlib
 import multiprocessing
 import os
 import signal
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
 from elementpath.regex import unicode_version
 from tests.xslt.assertions import ResultSnapshot
 from tests.xslt.environment import build_schema_pool, environment_fingerprint
-from tests.xslt.model import Param, Source, Stylesheet, TestCase
+from tests.xslt.model import XML_NS, Param, Source, Stylesheet, TestCase
 from tests.xslt.outcomes import CaseResult
 from tests.xslt.runner import CaseExecutionError, run_cases
 from tests.xslt.selection import XSLT30_NON_STREAMING, FeatureProfile
@@ -44,7 +46,7 @@ from pyxsd.xpath.engine import XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
 from pyxsd.xslt import CompiledStylesheet, TransformationResult, XsltProcessor
 from pyxsd.xslt.compiler.packages import PackageResolver
-from pyxsd.xslt.errors import XsltError
+from pyxsd.xslt.errors import XsltDynamicError, XsltError
 
 #: Capabilities a native XSLT 2.0 processor implements in addition to its
 #: language versions.  Streaming, higher-order functions, dynamic evaluation,
@@ -507,11 +509,16 @@ def _principal_declaration(case: TestCase) -> Stylesheet:
     return selected
 
 
-def _stylesheet(case: TestCase) -> Path:
-    declaration = _principal_declaration(case)
+def _corpus_root(case: TestCase) -> Path:
+    """The corpus root every declared reference of one case is relative to."""
     if case.document_root is None:
         raise UnsupportedCase("case without a corpus root")
-    return case.document_root / Path(str(declaration.path))
+    return case.document_root
+
+
+def _stylesheet(case: TestCase) -> Path:
+    declaration = _principal_declaration(case)
+    return _corpus_root(case) / Path(str(declaration.path))
 
 
 @dataclass(frozen=True)
@@ -561,9 +568,8 @@ def _compilation_units(case: TestCase) -> _Units:
     """
     if not case.packages:
         return _Units(principal=_stylesheet(case))
-    if case.document_root is None:
-        raise UnsupportedCase("case without a corpus root")
-    principals = _package_paths(case, case.document_root, secondary=False)
+    root = _corpus_root(case)
+    principals = _package_paths(case, root, secondary=False)
     if len(principals) > 1:
         raise UnsupportedCase(f"{len(principals)} principal packages")
     if principals:
@@ -572,22 +578,178 @@ def _compilation_units(case: TestCase) -> _Units:
         raise UnsupportedCase("packages without a principal")
     else:
         principal = _stylesheet(case)
-    libraries = _package_paths(case, case.document_root, secondary=True)
+    libraries = _package_paths(case, root, secondary=True)
     return _Units(principal=principal, libraries=libraries)
 
 
-def _processor_for(profile: SuiteProfile, units: _Units) -> XsltProcessor:
-    """The profile's processor with this case's libraries registered.
+# ---------------------------------------------------------------------------
+# Declared collections
 
-    A case without libraries keeps the profile processor itself, so an ordinary
-    stylesheet compiles exactly as before.  ``from_sources`` reads the local
-    corpus files only: a package name is never dereferenced, so a lookup can
-    never reach the network.
+
+#: One application collection as the engine asks for it: an absolute URI, or
+#: ``None`` for the default collection.
+CollectionResolver = Callable[[str | None], Sequence[XdmNode]]
+
+
+@dataclass(frozen=True)
+class _Member:
+    """One declared collection member: where its bytes are and its identity."""
+
+    source: Source
+    uri: str | None
+
+
+def _collection_bases(case: TestCase, units: _Units) -> tuple[Path, ...]:
+    """Every base a declared relative collection URI is resolved against.
+
+    The engine resolves a collection URI against the canonical base URI of the
+    module that calls it, so the principal's directory and every library's
+    directory are bases; the test-set directory is where the declaration was
+    written.  Each is canonical, so a symlinked checkout still matches.
     """
-    if not units.libraries:
+    bases: list[Path] = []
+    for base in (
+        units.principal.parent,
+        *(library.parent for library in units.libraries),
+        _corpus_root(case) / Path(str(case.source.parent)),
+    ):
+        resolved = base.resolve()
+        if resolved not in bases:
+            bases.append(resolved)
+    return tuple(bases)
+
+
+def _member_uri(root: Path, test_set: Path, source: Source) -> str | None:
+    """The document URI one declared member is served under.
+
+    A member's own ``uri`` is kept verbatim when absolute and resolved against
+    the test-set directory otherwise.  A member that declares no URI still has
+    the identity of the corpus file it names; inline content without a URI has
+    none.
+    """
+    if source.uri is not None:
+        if urlsplit(source.uri).scheme:
+            return source.uri
+        return urljoin(test_set.as_uri() + "/", source.uri)
+    if source.path is not None:
+        return (root / Path(str(source.path))).resolve().as_uri()
+    return None
+
+
+def _collection_resolver(case: TestCase, units: _Units) -> CollectionResolver | None:
+    """A resolver serving the collections one case declares, or ``None``.
+
+    Members are the local documents the declaration names, keyed by the
+    absolute URI the engine resolves a call to; a relative declaration is
+    registered under every module directory, because the caller's module is the
+    base the engine uses.  Building the mapping reads no member: parsing is
+    deferred to the first request, so a declaration a case never uses costs
+    nothing and cannot fail.  A collection the case never declared stays
+    unknown, and the engine reports its own ``FODC0002``.
+    """
+    declarations = case.environment.collections
+    if not declarations:
+        return None
+    root = _corpus_root(case)
+    test_set = (root / Path(str(case.source.parent))).resolve()
+    bases = _collection_bases(case, units)
+    mapping: dict[str | None, tuple[_Member, ...]] = {}
+    for declaration in declarations:
+        members = tuple(
+            _Member(source=source, uri=_member_uri(root, test_set, source))
+            for source in declaration.sources
+        )
+        if declaration.uri is None:
+            keys: tuple[str | None, ...] = (None,)
+        elif not members:
+            # The engine reports an empty named collection as unavailable, so
+            # the harness cannot serve the declaration it reads.
+            raise UnsupportedCase("named collection without sources")
+        elif urlsplit(declaration.uri).scheme:
+            keys = (declaration.uri,)
+        else:
+            keys = tuple(
+                dict.fromkeys(urljoin(base.as_uri() + "/", declaration.uri) for base in bases)
+            )
+        for key in keys:
+            existing = mapping.get(key)
+            if existing is not None and existing != members:
+                raise UnsupportedCase(f"ambiguous collection {key!r}")
+            mapping[key] = members
+    parsed: dict[str | None, tuple[XdmNode, ...]] = {}
+
+    def resolve(uri: str | None) -> tuple[XdmNode, ...]:
+        members = mapping.get(uri)
+        if members is None:
+            return ()
+        cached = parsed.get(uri)
+        if cached is None:
+            cached = tuple(_member_node(case, root, member) for member in members)
+            parsed[uri] = cached
+        return cached
+
+    return resolve
+
+
+def _member_node(case: TestCase, root: Path, member: _Member) -> XdmNode:
+    """Parse one collection member, in the form its declaration describes.
+
+    Only a local corpus file or inline content is ever read.  A member naming an
+    ``xml:id`` fragment serves that element rather than its document.
+    """
+    source = member.source
+    if source.content is None:
+        if source.path is None:
+            # A remote member with no local file lands here: it is never
+            # fetched, so the harness cannot serve it.
+            raise UnsupportedCase("collection source without a file or inline content")
+        relative = Path(str(source.path))
+        target = (root / relative).resolve()
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or not target.is_relative_to(root.resolve())
+        ):
+            raise UnsupportedCase("collection source outside the corpus root")
+    document = XdmDocument.parse(_raw_source(case, source), document_uri=member.uri)
+    if source.uri is None or "#" not in source.uri:
+        return document
+    fragment = source.uri.split("#", 1)[1]
+    for candidate in (document.root_element, *document.root_element.descendants):
+        identifier = candidate.attribute(f"{{{XML_NS}}}id")
+        if identifier is not None and identifier.string_value == fragment:
+            return candidate
+    raise XsltDynamicError(
+        f"the collection member {source.uri!r} does not exist",
+        code="FODC0002",
+    )
+
+
+def _processor_for(
+    profile: SuiteProfile,
+    units: _Units,
+    *,
+    resolver: CollectionResolver | None = None,
+) -> XsltProcessor:
+    """The profile's processor with this case's libraries and collections.
+
+    A case without libraries and without a collection resolver keeps the
+    profile processor itself, so an ordinary stylesheet compiles exactly as
+    before.  ``from_sources`` reads the local corpus files only: a package name
+    is never dereferenced, so a lookup can never reach the network.
+    """
+    if not units.libraries and resolver is None:
         return profile.processor
-    resolver = PackageResolver.from_sources(*(str(path) for path in units.libraries))
-    return replace(profile.processor, resolver=resolver)
+    package_resolver = (
+        PackageResolver.from_sources(*(str(path) for path in units.libraries))
+        if units.libraries
+        else profile.processor.resolver
+    )
+    return replace(
+        profile.processor,
+        resolver=package_resolver,
+        collection_resolver=resolver,
+    )
 
 
 #: How many compiled stylesheets one worker keeps for reuse.  The bulk
@@ -628,15 +790,18 @@ def _compile_stylesheet(
     *,
     schema: SchemaPool | None = None,
     environment: str = "",
+    resolver: CollectionResolver | None = None,
 ) -> CompiledStylesheet:
     """Compile one case's compilation units, reusing an invariant artifact.
 
     *schema* is the case's compile-time schema pool and *environment* its
     fingerprint; both are part of the cache identity, so an artifact is never
-    shared between cases whose declared schemas differ.
+    shared between cases whose declared schemas differ.  A case that declares a
+    collection resolver compiles fresh: the artifact carries the resolver, and a
+    cached one would bind a later case's members to this case's declarations.
     """
-    if static_parameters:
-        return _processor_for(profile, units).compile(
+    if static_parameters or resolver is not None:
+        return _processor_for(profile, units, resolver=resolver).compile(
             units.principal,
             static_parameters=static_parameters,
             schema=schema,
@@ -678,12 +843,11 @@ def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
     """Compile and run one case, returning its result for independent assertion."""
     if case.environment.resources:
         raise UnsupportedCase("resources")
-    if case.environment.collections:
-        raise UnsupportedCase("collections")
     output = case.invocation.output or case.environment.output
     if output is not None and output.result_var is not None:
         raise UnsupportedCase("result-variable output")
     units = _compilation_units(case)
+    resolver = _collection_resolver(case, units)
     invocation = case.invocation
     xpath_version = profile.processor.xpath
     declared_parameters = (*case.environment.params, *invocation.params)
@@ -747,6 +911,7 @@ def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
             static_parameters,
             schema=_case_schema_pool(profile, case),
             environment=environment_fingerprint(case),
+            resolver=resolver,
         )
         return _snapshot(compiled.transform(**options))
     except XsltError as exc:

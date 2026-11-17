@@ -605,7 +605,7 @@ def test_executor_reports_unsupported_environment_shapes_as_adapter_gaps(
                 resources=(Resource(role="resource", file="r.txt"),),
             ),
         ),
-        "collections": replace(
+        "named collection without sources": replace(
             case,
             environment=replace(
                 case.environment,
