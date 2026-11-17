@@ -4,6 +4,7 @@
 # This file is a typing surface for the classes a compiled RELAX NG
 # schema creates at runtime; the classes live in
 # ``schema.projection_classes``. Save this stub next to your code and
+#
 # import it for type checking:
 #     if TYPE_CHECKING:
 #         from schema_stubs import Doc
@@ -17,27 +18,34 @@
 # reads as RelaxNGElement. Constructs this stub cannot type
 # truthfully are Any with a comment.
 
-from collections.abc import MutableSequence as _MutableSequence
+from __future__ import annotations
+
+import builtins as _builtins
+from collections.abc import MutableSequence as _mutable
 
 from pyxsd import xsd_data_types as _xsd
-from pyxsd.relaxng.tree import RelaxNGElement
-from pyxsd.relaxng.values import AlternativeValue as _AlternativeValue
+from pyxsd.relaxng import AlternativeValue as _alt
+from pyxsd.relaxng import RelaxNGElement as _rng
 
-class Doc(RelaxNGElement):
+class Doc(_rng):
     # route: pyxsd.relaxng.route/1:eb32abe3f295af0cbbfacac3aec00d464a322ff9a29281be50bdb553217e5781
     count: _xsd.Integer
     label: _xsd.String
-    item: _MutableSequence[Item]
-    note: Note | None
+    item: _mutable[_t1]
+    note: _t2 | None
 
-class Item(RelaxNGElement):
+class Item(_rng):
     # route: pyxsd.relaxng.route/1:cb84c2b68698c76a074c4f2f5bb258dde78ac7ec3ae80c1a2c3f703b1709f790
     id: _xsd.Int
 
-class Note(RelaxNGElement):
+class Note(_rng):
     # route: pyxsd.relaxng.route/1:c3ac42cc87a1a013f3e7dbcd79a4edc2122580977e1de64dd6e2aea0a05d36c3
     # text is a lexical contract with no decoder; runtime reads return AlternativeValue
-    typed_value: _AlternativeValue | None
+    typed_value: _alt | None
+
+_t0 = Doc
+_t1 = Item
+_t2 = Note
 
 # Starts:
-doc: type[Doc]
+doc: _builtins.type[_t0]

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import ast
+import decimal
 import io
 import os
+import re
 import subprocess
 import sys
 from collections.abc import MutableSequence
@@ -88,14 +90,58 @@ def test_exact_golden(name, compact, suffix):
     assert emit_relaxng_stub(schema, compact=compact) == expected
 
 
+def _assert_full_annotation_spelling(text: str) -> None:
+    tree = ast.parse(text)
+    assert any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "__future__"
+        and any(alias.name == "annotations" for alias in node.names)
+        for node in tree.body
+    )
+    module_names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            module_names.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, ast.Import):
+            module_names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name):
+                module_names.add(target.id)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            fields = {
+                item.target.id
+                for item in node.body
+                if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
+            }
+            for item in node.body:
+                if not isinstance(item, ast.AnnAssign):
+                    continue
+                names = {
+                    child.id for child in ast.walk(item.annotation) if isinstance(child, ast.Name)
+                }
+                assert not (names & fields)
+                assert all(name.startswith("_") for name in names)
+                assert names <= module_names
+        elif isinstance(node, ast.AnnAssign):
+            names = {child.id for child in ast.walk(node.annotation) if isinstance(child, ast.Name)}
+            assert all(name.startswith("_") for name in names)
+            assert names <= module_names
+
+
 @pytest.mark.parametrize("name", NAMES)
 def test_full_stub_is_structurally_valid_python(name):
     text = emit_relaxng_stub(compile_fixture(name))
     tree = ast.parse(text)
     assert any(isinstance(node, ast.ClassDef) for node in tree.body)
+    _assert_full_annotation_spelling(text)
     namespace: dict[str, object] = {}
-    exec(compile(text, f"<relaxng-stub:{name}>", "exec"), namespace)
-    assert "RelaxNGElement" in namespace
+    exec(
+        compile(text, f"<relaxng-stub:{name}>", "exec", dont_inherit=True),
+        namespace,
+    )
+    assert any(value is RelaxNGElement for value in namespace.values())
 
 
 # ---------------------------------------------------------------------------
@@ -119,42 +165,77 @@ def _split_annotation(annotation: str) -> list[str]:
     return arms
 
 
+def _private(annotation: str, stem: str) -> bool:
+    return annotation == stem or annotation.startswith(f"{stem}_")
+
+
 def _matches(value: Any, annotation: str, generated: dict[str, type[Any]]) -> bool:
     arms = _split_annotation(annotation)
     if len(arms) > 1:
         return any(_matches(value, arm, generated) for arm in arms)
-    if annotation in ("Any", "_Any"):
-        return True
     if annotation == "None":
         return value is None
-    if annotation == "_AlternativeValue":
+    if _private(annotation, "_any"):
+        return True
+    if _private(annotation, "_alt"):
         return isinstance(value, AlternativeValue)
-    if annotation == "RelaxNGElement":
+    if _private(annotation, "_rng"):
         return isinstance(value, RelaxNGElement)
-    if annotation == "bool":
-        return isinstance(value, bool)
-    if annotation == "str":
+    builtin_match = re_match_builtin(annotation, "str")
+    if builtin_match:
         return isinstance(value, str)
-    if annotation == "bytes":
+    builtin_match = re_match_builtin(annotation, "bool")
+    if builtin_match:
+        return isinstance(value, bool)
+    builtin_match = re_match_builtin(annotation, "bytes")
+    if builtin_match:
         return isinstance(value, bytes)
+    builtin_match = re_match_builtin(annotation, "int")
+    if builtin_match:
+        return isinstance(value, int)
+    builtin_match = re_match_builtin(annotation, "float")
+    if builtin_match:
+        return isinstance(value, float)
+    if re_match_private_module(annotation, "decimal") == "Decimal":
+        return isinstance(value, decimal.Decimal)
     if annotation.startswith("_xsd."):
         xsd_class = getattr(xsd_data_types, annotation.removeprefix("_xsd."))
         return isinstance(value, xsd_class)
-    item_annotation = _sequence_inner(annotation, "_MutableSequence")
+    item_annotation = _private_sequence_inner(annotation, "_mutable")
     if item_annotation is not None:
         return isinstance(value, MutableSequence) and all(
             _matches(item, item_annotation, generated) for item in value
         )
-    item_annotation = _sequence_inner(annotation, "list")
+    item_annotation = _builtin_sequence_inner(annotation, "list")
     if item_annotation is not None:
         return isinstance(value, list) and all(
             _matches(item, item_annotation, generated) for item in value
         )
-    if annotation.startswith("tuple["):
-        return _matches_tuple(value, annotation[6:-1].strip(), generated)
+    tuple_inner = _builtin_sequence_inner(annotation, "tuple")
+    if tuple_inner is not None:
+        return _matches_tuple(value, tuple_inner, generated)
     if annotation in generated:
         return isinstance(value, generated[annotation])
     raise AssertionError(f"unhandled stub annotation {annotation!r}")
+
+
+def re_match_builtin(annotation: str, name: str) -> bool:
+    return re.fullmatch(rf"_builtins(?:_\d+)?\.{re.escape(name)}", annotation) is not None
+
+
+def re_match_private_module(annotation: str, module: str) -> str | None:
+    match = re.fullmatch(rf"_{re.escape(module)}(?:_\d+)?\.([A-Za-z_][A-Za-z0-9_]*)", annotation)
+    return match.group(1) if match is not None else None
+
+
+def _private_sequence_inner(annotation: str, stem: str) -> str | None:
+    match = re.fullmatch(rf"{re.escape(stem)}(?:_\d+)?\[(.*)\]", annotation)
+    return match.group(1) if match is not None else None
+
+
+def _builtin_sequence_inner(annotation: str, name: str) -> str | None:
+    match = re.fullmatch(rf"_builtins(?:_\d+)?\.{re.escape(name)}\[(.*)\]", annotation)
+    return match.group(1) if match is not None else None
 
 
 def _sequence_inner(annotation: str, name: str) -> str | None:
@@ -204,6 +285,19 @@ def _members_from_stub(text: str) -> dict[str, dict[str, str]]:
     return result
 
 
+def _type_aliases_from_stub(text: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for node in ast.parse(text).body:
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Name)
+        ):
+            result[node.targets[0].id] = node.value.id
+    return result
+
+
 def _walk(root: RelaxNGElement):
     stack = [root]
     while stack:
@@ -237,6 +331,8 @@ def test_emitted_surface_matches_runtime_descriptors(name):
     document = schema.parse(io.StringIO(INSTANCES[name]))
     assert not document.report.has_errors
     generated = {cls.__name__: cls for cls in (item[1] for item in actual.values())}
+    for alias, class_name in _type_aliases_from_stub(text).items():
+        generated[alias] = actual[class_name][1]
     for node in _walk(document.root):
         for class_name, members in emitted.items():
             if type(node).__name__ != class_name:
@@ -337,7 +433,7 @@ def test_recursive_class_is_finite_and_depth_independent():
     assert len(plan.routes) == 1
     text = emit_relaxng_stub(schema)
     assert text.count("class ") == 1
-    assert "node: _MutableSequence[Node]" in text
+    assert "node: _mutable[_t0]" in text
     shallow = schema.parse(io.StringIO("<node/>"))
     deep = schema.parse(io.StringIO("<node><node><node/></node></node>"))
     assert type(shallow.root) is type(deep.root)
@@ -369,16 +465,16 @@ def test_generic_route_is_a_comment_not_a_class():
     assert f"class {generic_route.expanded_name}" not in text
     assert generic_route.generic_reason in text
     assert generic_route.route_id in text
-    assert "bad: RelaxNGElement" in text
+    assert "bad: _rng" in text
 
 
 def test_scalar_and_list_annotations_follow_runtime_shapes():
     schema = compile_fixture("alternatives")
     text = emit_relaxng_stub(schema)
-    assert "maybe: _AlternativeValue | None" in text
-    assert "value: _AlternativeValue" in text
-    assert "typed_value: list[_xsd.Int] | None" in text
-    assert "typed_value: tuple[_xsd.Int, _xsd.String]" in text
+    assert "maybe: _alt | None" in text
+    assert "value: _alt" in text
+    assert "typed_value: _builtins.list[_xsd.Int] | None" in text
+    assert "typed_value: _builtins.tuple[_xsd.Int, _xsd.String]" in text
     loose = next(
         route for route in schema.projection.routes.values() if route.expanded_name == "loose"
     )
@@ -401,7 +497,7 @@ def test_attribute_without_scalar_content_is_none():
 def test_empty_plain_list_is_an_empty_tuple():
     schema = compile_body("<element name='items'><list><empty/></list></element>")
     text = emit_relaxng_stub(schema)
-    assert "typed_value: tuple[()]" in text
+    assert "typed_value: _builtins.tuple[()]" in text
 
 
 def test_scalar_descriptor_includes_none_only_when_absent_text_is_valid():
@@ -414,7 +510,7 @@ def test_scalar_descriptor_includes_none_only_when_absent_text_is_valid():
     optional = compile_body(f'<optional><data type="integer" datatypeLibrary="{XSD}"/></optional>')
     assert "typed_value: _xsd.Integer | None" in emit_relaxng_stub(optional)
     text = compile_body("<text/>")
-    assert "typed_value: _AlternativeValue | None" in emit_relaxng_stub(text)
+    assert "typed_value: _alt | None" in emit_relaxng_stub(text)
 
 
 def test_scalar_optionality_helpers_cover_model_and_list_shapes():
@@ -464,7 +560,7 @@ def test_route_filter_depth_zero_excludes_child_classes_truthfully():
     assert note_id is not None
     text = emit_relaxng_stub(schema, component_ids=(root_id,), depth=0)
     assert "class Doc(" in text and "class Note(" not in text
-    assert "note: _Any" in text
+    assert "note: _any" in text
     reason = next(line for line in text.splitlines() if note_id in line and "depth=0" in line)
     assert "component selection" in reason
 
@@ -539,7 +635,7 @@ def test_recursive_filter_terminates_and_keeps_one_class():
     for depth in (0, 1, None):
         text = emit_relaxng_stub(schema, component_ids=(route_id,), depth=depth)
         assert text.count("class ") == 1
-        assert "class Node(RelaxNGElement)" in text
+        assert "class Node(_rng)" in text
 
 
 def test_selected_generic_route_emits_only_a_comment():
@@ -564,7 +660,7 @@ def test_filtered_roots_are_commented_when_their_class_is_not_selected():
     assert "outside the component selection" in text
     assert schema.projection.roots[0] in text
     compact = emit_relaxng_stub(schema, compact=True, component_ids=(note_id,), depth=0)
-    assert "class Note(RelaxNGElement)" in compact
+    assert "class Note(RNG)" in compact
     assert schema.projection.roots[0] in compact and ": ?" in compact
 
 
@@ -643,7 +739,7 @@ def test_opaque_datatype_uses_any_with_a_reason():
         libraries={"urn:opaque": DatatypeLibraryRegistration(Factory(), "opaque/1")},
     )
     text = emit_relaxng_stub(schema)
-    assert "value: _Any" in text
+    assert "value: _any" in text
     assert "has no static Python value class" in text
     compact = emit_relaxng_stub(schema, compact=True)
     assert "value: Any" in compact
@@ -671,7 +767,7 @@ def test_nondecodable_datatype_reads_alternative_value():
         libraries={"urn:none": DatatypeLibraryRegistration(Factory(), "none/1")},
     )
     text = emit_relaxng_stub(schema)
-    assert "value: _AlternativeValue" in text
+    assert "value: _alt" in text
     assert "declares no decoder" in text
 
 
@@ -786,13 +882,13 @@ def test_start_aliases_are_sanitized_and_collisions_are_comments():
     )
     keyword.require_valid()
     keyword_text = emit_relaxng_stub(keyword)
-    assert "class_: type[Class]" in keyword_text
+    assert "class_: _builtins.type[_t0]" in keyword_text
 
     hyphen = RelaxNGSchema.compile(
         io.StringIO(f'<element xmlns="{NS}" name="doc-name"><empty/></element>')
     )
     hyphen.require_valid()
-    assert "doc_x2d_name: type[Doc_x2d_name]" in emit_relaxng_stub(hyphen)
+    assert "doc_x2d_name: _builtins.type[_t0]" in emit_relaxng_stub(hyphen)
 
     same_class = RelaxNGSchema.compile(
         io.StringIO(f'<element xmlns="{NS}" name="Doc"><empty/></element>')
@@ -814,7 +910,7 @@ def test_duplicate_start_alias_is_commented_once():
     )
     schema.require_valid()
     text = emit_relaxng_stub(schema)
-    assert text.count("doc: type[Doc]") == 1
+    assert text.count("doc: _builtins.type[_t0]") == 1
     assert "repeats an earlier start alias" in text
     compact = emit_relaxng_stub(schema, compact=True)
     assert compact.count("doc: type[Doc]") == 1
@@ -832,8 +928,8 @@ def test_same_local_name_across_namespaces_gets_distinct_classes():
     )
     schema.require_valid()
     text = emit_relaxng_stub(schema)
-    assert "class Item(RelaxNGElement)" in text
-    assert "class Item_2(RelaxNGElement)" in text
+    assert "class Item(_rng)" in text
+    assert "class Item_2(_rng)" in text
 
 
 def test_generic_root_has_a_start_comment_and_no_alias():
@@ -872,11 +968,15 @@ def test_open_start_name_class_has_a_comment():
 def test_empty_selection_has_no_imports_or_aliases():
     schema = compile_fixture("stable")
     full = emit_relaxng_stub(schema, component_ids=())
-    assert not any(line.startswith("from ") for line in full.splitlines())
+    assert "from __future__ import annotations" in full
+    assert not any(
+        line.startswith("from ") and "__future__" not in line for line in full.splitlines()
+    )
     assert "class " not in full
+    assert "This selection emits no projection classes" in full
     compact = emit_relaxng_stub(schema, compact=True, component_ids=())
     assert "aliases: none" in compact
-    assert not any(line.startswith("from ") for line in compact.splitlines())
+    assert "import " not in compact
 
 
 def test_invalid_schema_still_validates_unknown_component_ids():
@@ -897,8 +997,8 @@ def test_atomic_value_classes_cover_qname_temporal_binary_and_builtin_types():
     )
     text = emit_relaxng_stub(schema)
     assert "q: _xsd.QName" in text
-    assert "d: str" in text
-    assert "h: bytes" in text
+    assert "d: _builtins.str" in text
+    assert "h: _builtins.bytes" in text
     assert "raw: _xsd.Token" in text
 
 
@@ -908,14 +1008,14 @@ def test_list_item_shapes_degrade_when_they_are_not_plain():
         f'<data type="int" datatypeLibrary="{XSD}"/></oneOrMore>'
         f'<data type="string" datatypeLibrary="{XSD}"/></group></list></element>'
     )
-    assert "typed_value: _AlternativeValue" in emit_relaxng_stub(group_homogeneous)
+    assert "typed_value: _alt" in emit_relaxng_stub(group_homogeneous)
 
     one_or_more_group = compile_body(
         f'<element name="vals"><list><oneOrMore><group>'
         f'<data type="int" datatypeLibrary="{XSD}"/>'
         f'<data type="string" datatypeLibrary="{XSD}"/></group></oneOrMore></list></element>'
     )
-    assert "typed_value: _AlternativeValue" in emit_relaxng_stub(one_or_more_group)
+    assert "typed_value: _alt" in emit_relaxng_stub(one_or_more_group)
 
 
 def test_nondecodable_list_items_are_alternative_values():
@@ -939,7 +1039,10 @@ def test_nondecodable_list_items_are_alternative_values():
         "</oneOrMore></list></element>",
         libraries={"urn:none": DatatypeLibraryRegistration(Factory(), "none/1")},
     )
-    assert "typed_value: _AlternativeValue" in emit_relaxng_stub(schema)
+    text = emit_relaxng_stub(schema)
+    assert "typed_value: _alt" in text
+    assert "a list item datatype declares no decoder" in text
+    assert "not a statically plain token sequence" not in text
 
 
 def test_list_analysis_handles_refs_cycles_and_shared_nodes():
@@ -1017,7 +1120,8 @@ def test_empty_start_sections_and_no_route_notice_are_total():
         "No stable projection routes were planned; every route uses the "
         "generic RelaxNGElement view."
     )
-    text = stub_module._render_full(schema, (), [], (), None)
+    names = stub_module._full_names(plan, tuple(plan.routes), {}, {})
+    text = stub_module._render_full(schema, (), [], (), None, names, {})
     assert "# Starts: none" in text
 
 
@@ -1049,14 +1153,14 @@ def test_list_combiner_handles_refs_unproven_choices_and_reused_children():
     assert stub_module._list_items(stub_module.List(Group(Group(data, data), data))) is not None
 
 
-def test_start_alias_that_collides_with_the_base_import_is_commented():
+def test_start_alias_named_like_the_public_base_class_remains_usable():
     schema = RelaxNGSchema.compile(
         io.StringIO(f'<element xmlns="{NS}" name="RelaxNGElement"><empty/></element>')
     )
     schema.require_valid()
     text = emit_relaxng_stub(schema)
-    assert "collides with an import" in text
-    assert "type[" not in text.split("# Starts:")[1]
+    assert "RelaxNGElement: _builtins.type[_t0]" in text
+    _assert_full_annotation_spelling(text)
 
 
 def test_scalar_descriptor_uses_the_runtime_collision_suffixed_name():
@@ -1068,8 +1172,8 @@ def test_scalar_descriptor_uses_the_runtime_collision_suffixed_name():
     root_class = schema.projection_classes.class_for(schema.projection.roots[0])
     assert root_class.__dict__["_relaxng_scalar_field_"] == "typed_value__"
     text = emit_relaxng_stub(schema)
-    assert "typed_value: _AlternativeValue" in text
-    assert "typed_value_: _AlternativeValue" in text
+    assert "typed_value: _alt" in text
+    assert "typed_value_: _alt" in text
     assert "typed_value__: _xsd.Integer" in text
 
 
@@ -1099,8 +1203,8 @@ def test_scalar_emptiness_handles_values_lists_custom_datatypes_and_models():
         libraries={"urn:boom": DatatypeLibraryRegistration(Factory(), "boom/1")},
     )
     text = emit_relaxng_stub(custom)
-    assert "typed_value: _Any | None" in text
-    assert "typed_value: _Any" not in text.replace("typed_value: _Any | None", "")
+    assert "typed_value: _any | None" in text
+    assert "typed_value: _any" not in text.replace("typed_value: _any | None", "")
 
     empty_value = compile_body("<value></value>")
     assert "typed_value: _xsd.Token | None" in emit_relaxng_stub(empty_value)
@@ -1108,7 +1212,7 @@ def test_scalar_emptiness_handles_values_lists_custom_datatypes_and_models():
     assert "typed_value: _xsd.Token" in emit_relaxng_stub(nonempty_value)
 
     repeated = compile_body("<oneOrMore><text/></oneOrMore>")
-    assert "typed_value: _AlternativeValue | None" in emit_relaxng_stub(repeated)
+    assert "typed_value: _alt | None" in emit_relaxng_stub(repeated)
 
     assert stub_module._list_allows_empty(Interleave(stub_module.Empty(), stub_module.Empty()))
     schema = compile_fixture("alternatives")
@@ -1151,12 +1255,94 @@ def test_custom_scalar_value_classes_are_annotated_only_when_importable():
         '<attribute name="value"><data type="thing" datatypeLibrary="urn:builtin"/></attribute>',
         libraries={"urn:builtin": DatatypeLibraryRegistration(factory_for(int), "builtin/1")},
     )
-    assert "value: int" in emit_relaxng_stub(builtin_value)
+    assert "value: _builtins.int" in emit_relaxng_stub(builtin_value)
 
     opaque_value = compile_body(
         '<attribute name="value"><data type="thing" datatypeLibrary="urn:value"/></attribute>',
         libraries={"urn:value": DatatypeLibraryRegistration(factory_for(CustomValue), "value/1")},
     )
     text = emit_relaxng_stub(opaque_value)
-    assert "value: _Any" in text
+    assert "value: _any" in text
     assert "has no stable import" in text
+
+
+def _compile_root(root_name: str, body: str) -> RelaxNGSchema:
+    schema = RelaxNGSchema.compile(
+        io.StringIO(f'<element xmlns="{NS}" name="{root_name}">{body}</element>')
+    )
+    schema.require_valid()
+    return schema
+
+
+def test_full_annotations_use_private_names_for_colliding_xml_names(tmp_path):
+    scalar_root = RelaxNGSchema.compile(FIXTURES / "collisions-scalars.rng")
+    child_root = RelaxNGSchema.compile(FIXTURES / "collisions-elements.rng")
+    scalar_root.require_valid()
+    child_root.require_valid()
+    private_root = _compile_root("_builtins", "<empty/>")
+    alias_root = _compile_root("_t0", "<empty/>")
+
+    texts = [
+        emit_relaxng_stub(scalar_root),
+        emit_relaxng_stub(child_root),
+        emit_relaxng_stub(private_root),
+        emit_relaxng_stub(alias_root),
+    ]
+    for text in texts:
+        _assert_full_annotation_spelling(text)
+        compile(text, "<collision-stub>", "exec", dont_inherit=True)
+    assert "list: _alt" in texts[0]
+    assert "typed_value: _builtins.list[_xsd.Int]" in texts[0]
+    assert "type: _builtins.type[_t0]" in texts[0]
+    assert "Item: _t1" in texts[1]
+    assert "RelaxNGElement: _t2" in texts[1]
+    assert "generic: _rng" in texts[1]
+    assert "_builtins: _builtins_2.type[_t0]" in texts[2]
+    assert "_t0: _builtins.type[_t0_2]" in texts[3]
+
+    paths = []
+    for index, text in enumerate(texts):
+        path = tmp_path / f"collision_{index}.pyi"
+        path.write_text(text, encoding="utf-8")
+        paths.append(str(path))
+    result = subprocess.run(
+        [sys.executable, "-m", "mypy", "--no-incremental", *paths],
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_decimal_imports_and_private_alias_collision_binding():
+    schema = compile_body(
+        f'<attribute name="value"><data type="decimal" datatypeLibrary="{XSD}"/></attribute>'
+    )
+    text = emit_relaxng_stub(schema)
+    assert "value: _decimal.Decimal" in text
+    assert "import decimal as _decimal" in text
+    assert (
+        stub_module._collision_binding("_builtins", {}, frozenset({"_builtins"}))
+        == "a private stub alias"
+    )
+
+
+def test_compact_start_note_keeps_the_sanitized_xml_name():
+    schema = _compile_root("doc-name", "<empty/>")
+    compact = emit_relaxng_stub(schema, compact=True)
+    assert "doc_x2d_name: type[Doc_x2d_name]" in compact
+    assert "start element doc-name" in compact
+
+
+def test_header_marks_an_empty_or_generic_selection():
+    schema = compile_fixture("stable")
+    empty = emit_relaxng_stub(schema, component_ids=())
+    assert "#\n# import it for type checking:" in empty
+    assert "This selection emits no projection classes" in empty
+    generic_schema = compile_fixture("generic")
+    route = next(
+        route
+        for route in generic_schema.projection.routes.values()
+        if route.generic_reason is not None
+    )
+    generic_selection = emit_relaxng_stub(generic_schema, component_ids=(route.route_id,), depth=0)
+    assert "This selection emits no projection classes" in generic_selection

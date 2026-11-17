@@ -4,6 +4,7 @@
 # This file is a typing surface for the classes a compiled RELAX NG
 # schema creates at runtime; the classes live in
 # ``schema.projection_classes``. Save this stub next to your code and
+#
 # import it for type checking:
 #     if TYPE_CHECKING:
 #         from schema_stubs import Doc
@@ -17,28 +18,36 @@
 # reads as RelaxNGElement. Constructs this stub cannot type
 # truthfully are Any with a comment.
 
-from collections.abc import MutableSequence as _MutableSequence
+from __future__ import annotations
 
-from pyxsd.relaxng.tree import RelaxNGElement
+import builtins as _builtins
+from collections.abc import MutableSequence as _mutable
 
-class Doc(RelaxNGElement):
+from pyxsd.relaxng import RelaxNGElement as _rng
+
+class Doc(_rng):
     # route: pyxsd.relaxng.route/1:d53837bf58d0f39b128ada0f4af08a00a69fea78bb21ba66c2a00b643d9069f6
-    maybe: bool | None
-    many: _MutableSequence[Many]
-    requiredMany: _MutableSequence[RequiredMany]
-    single: Single | None
+    maybe: _builtins.bool | None
+    many: _mutable[_t1]
+    requiredMany: _mutable[_t2]
+    single: _t3 | None
 
-class Many(RelaxNGElement):
+class Many(_rng):
     # route: pyxsd.relaxng.route/1:fa49bb4688094b3c86407af4c3754775c94eed64b06bd8b95542c66b1712cdff
     ...
 
-class RequiredMany(RelaxNGElement):
+class RequiredMany(_rng):
     # route: pyxsd.relaxng.route/1:710d2a2638f8067e90ae3cc028c2bc05a5b1479ef1373ab3b3fb87b832e6d75d
     ...
 
-class Single(RelaxNGElement):
+class Single(_rng):
     # route: pyxsd.relaxng.route/1:b2f4242c50e0f688176ee9d85a0e997e5913bdff480d8c7c3d9ac530410219f2
     ...
 
+_t0 = Doc
+_t1 = Many
+_t2 = RequiredMany
+_t3 = Single
+
 # Starts:
-doc: type[Doc]
+doc: _builtins.type[_t0]

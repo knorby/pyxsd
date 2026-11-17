@@ -4,6 +4,7 @@
 # This file is a typing surface for the classes a compiled RELAX NG
 # schema creates at runtime; the classes live in
 # ``schema.projection_classes``. Save this stub next to your code and
+#
 # import it for type checking:
 #     if TYPE_CHECKING:
 #         from schema_stubs import Doc
@@ -17,32 +18,41 @@
 # reads as RelaxNGElement. Constructs this stub cannot type
 # truthfully are Any with a comment.
 
-from pyxsd import xsd_data_types as _xsd
-from pyxsd.relaxng.tree import RelaxNGElement
-from pyxsd.relaxng.values import AlternativeValue as _AlternativeValue
+from __future__ import annotations
 
-class Doc(RelaxNGElement):
+import builtins as _builtins
+
+from pyxsd import xsd_data_types as _xsd
+from pyxsd.relaxng import AlternativeValue as _alt
+from pyxsd.relaxng import RelaxNGElement as _rng
+
+class Doc(_rng):
     # route: pyxsd.relaxng.route/1:ad9e3f3299654f28a59a5f1215b0fa289a26d989ee5da1bc77f684bb72a4f3b8
     # text is a lexical contract with no decoder; runtime reads return AlternativeValue
-    maybe: _AlternativeValue | None
+    maybe: _alt | None
     # 2 schema scalar alternatives survive; runtime reads return AlternativeValue
-    value: _AlternativeValue
-    fixed: Fixed
-    loose: Loose
-    numbers: Numbers
+    value: _alt
+    fixed: _t1
+    loose: _t2
+    numbers: _t3
 
-class Fixed(RelaxNGElement):
+class Fixed(_rng):
     # route: pyxsd.relaxng.route/1:0502c9eaa004c64ea50f2b534a175bb4435ea30dc73cde968c90e4307d014bd7
-    typed_value: tuple[_xsd.Int, _xsd.String]
+    typed_value: _builtins.tuple[_xsd.Int, _xsd.String]
 
-class Loose(RelaxNGElement):
+class Loose(_rng):
     # route: pyxsd.relaxng.route/1:a431103f0ca91cefe8975394b8bbf99af41f3765ad76cdd9973ba83e8f6d8e9d
     # the whole-list shape is not a statically plain token sequence; runtime reads return AlternativeValue
-    typed_value: _AlternativeValue
+    typed_value: _alt
 
-class Numbers(RelaxNGElement):
+class Numbers(_rng):
     # route: pyxsd.relaxng.route/1:251d64cd487cc714422af32f0a16508dde0fbf307caf2b9cef8d5602fa30194f
-    typed_value: list[_xsd.Int] | None
+    typed_value: _builtins.list[_xsd.Int] | None
+
+_t0 = Doc
+_t1 = Fixed
+_t2 = Loose
+_t3 = Numbers
 
 # Starts:
-doc: type[Doc]
+doc: _builtins.type[_t0]

@@ -4,6 +4,7 @@
 # This file is a typing surface for the classes a compiled RELAX NG
 # schema creates at runtime; the classes live in
 # ``schema.projection_classes``. Save this stub next to your code and
+#
 # import it for type checking:
 #     if TYPE_CHECKING:
 #         from schema_stubs import Doc
@@ -17,26 +18,34 @@
 # reads as RelaxNGElement. Constructs this stub cannot type
 # truthfully are Any with a comment.
 
-from pyxsd.relaxng.tree import RelaxNGElement
-from pyxsd.relaxng.values import AlternativeValue as _AlternativeValue
+from __future__ import annotations
 
-class Doc(RelaxNGElement):
+import builtins as _builtins
+
+from pyxsd.relaxng import AlternativeValue as _alt
+from pyxsd.relaxng import RelaxNGElement as _rng
+
+class Doc(_rng):
     # route: pyxsd.relaxng.route/1:c8c227ac7714f27f9470dbaeb394dc26f2e7bf8b7a8d08b3654a486bb013e8f1
     # generic route pyxsd.relaxng.route/1:90a0111fceef92b5e6d9dda69d2c0dfaff2e15c5767fcad476e01c484c5e9a1e: whole-element scalar and child-element assignments cannot share a whole-element scalar descriptor
-    bad: RelaxNGElement
-    good: Good
+    bad: _rng
+    good: _t1
 
-class Good(RelaxNGElement):
+class Good(_rng):
     # route: pyxsd.relaxng.route/1:f2b21659f191ceaf5ed45f281ba7a78169ca2a13c8bac9ecabddef9232cca7c9
     # text is a lexical contract with no decoder; runtime reads return AlternativeValue
-    typed_value: _AlternativeValue | None
+    typed_value: _alt | None
 
-class Nested(RelaxNGElement):
+class Nested(_rng):
     # route: pyxsd.relaxng.route/1:e029fca622f2e9c5ead4d1a5cb1fcfd41ccb3a28c63a6ad57ba071368438297b
     ...
+
+_t0 = Doc
+_t1 = Good
+_t2 = Nested
 
 # Generic routes (no generated class; runtime type RelaxNGElement):
 #   pyxsd.relaxng.route/1:90a0111fceef92b5e6d9dda69d2c0dfaff2e15c5767fcad476e01c484c5e9a1e (bad): whole-element scalar and child-element assignments cannot share a whole-element scalar descriptor
 
 # Starts:
-doc: type[Doc]
+doc: _builtins.type[_t0]

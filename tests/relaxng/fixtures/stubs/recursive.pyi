@@ -4,6 +4,7 @@
 # This file is a typing surface for the classes a compiled RELAX NG
 # schema creates at runtime; the classes live in
 # ``schema.projection_classes``. Save this stub next to your code and
+#
 # import it for type checking:
 #     if TYPE_CHECKING:
 #         from schema_stubs import Node
@@ -17,15 +18,20 @@
 # reads as RelaxNGElement. Constructs this stub cannot type
 # truthfully are Any with a comment.
 
-from collections.abc import MutableSequence as _MutableSequence
+from __future__ import annotations
+
+import builtins as _builtins
+from collections.abc import MutableSequence as _mutable
 
 from pyxsd import xsd_data_types as _xsd
-from pyxsd.relaxng.tree import RelaxNGElement
+from pyxsd.relaxng import RelaxNGElement as _rng
 
-class Node(RelaxNGElement):
+class Node(_rng):
     # route: pyxsd.relaxng.route/1:fafde31dbb4a910aeb463a00dc3019d282a5ec5722f15be9c1aa84c07f07ce7f
     name: _xsd.String | None
-    node: _MutableSequence[Node]
+    node: _mutable[_t0]
+
+_t0 = Node
 
 # Starts:
-node: type[Node]
+node: _builtins.type[_t0]

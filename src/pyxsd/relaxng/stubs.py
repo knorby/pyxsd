@@ -9,8 +9,11 @@ name as a class, and never asks an invalid schema for its projection.
 
 Full mode is importable-quality ``.pyi`` source: a deterministic provenance and
 consumption header, imports used by the rendered body, one class block per
-selected stable route, generic-route comments, and start aliases.  Compact
-mode is the agent-oriented description: a two-line header with an alias
+selected stable route, generic-route comments, and start aliases.  Every full
+annotation is routed through private module aliases and post-class type aliases,
+so legal XML member and start names such as ``list``, ``str``, or
+``RelaxNGElement`` cannot shadow the types a class body names.  Compact mode is
+the agent-oriented description: a two-line header with an alias
 legend, one line per class and member, generic-route comments, and a trailing
 start line.  Neither mode calls :meth:`RelaxNGSchema.require_valid`; a schema
 whose report has errors emits a deterministic explanatory comment instead.
@@ -98,18 +101,24 @@ _BUILTIN_TYPES: dict[str, type[Any]] = {
     "token": xsd_data_types.Token,
 }
 
-#: The identifiers a full stub's import section binds.  A start alias may not
-#: duplicate one, because that would be a second module-level definition.
-_IMPORTED_NAMES = frozenset(
-    {"RelaxNGElement", "_AlternativeValue", "_Any", "_MutableSequence", "_xsd"}
-)
-
 #: Fixed compact alias spellings, in legend order.
 _COMPACT_FIXED = (
     ("any", "Any", "typing.Any"),
-    ("alternative", "AlternativeValue", "pyxsd.relaxng.values.AlternativeValue"),
-    ("mutable", "MutableSequence", "collections.abc.MutableSequence"),
-    ("element", "RelaxNGElement", "pyxsd.relaxng.tree.RelaxNGElement"),
+    ("alternative", "Alt", "pyxsd.relaxng.values.AlternativeValue"),
+    ("mutable", "Seq", "collections.abc.MutableSequence"),
+    ("element", "RNG", "pyxsd.relaxng.tree.RelaxNGElement"),
+)
+
+#: Private full-mode alias stems.  Each is suffixed until it is absent from the
+#: complete set of generated class names, member aliases, and start candidates.
+_FULL_ALIAS_BASES = (
+    ("builtins", "_builtins"),
+    ("decimal", "_decimal"),
+    ("mutable", "_mutable"),
+    ("any", "_any"),
+    ("alternative", "_alt"),
+    ("element", "_rng"),
+    ("xsd", "_xsd"),
 )
 
 
@@ -157,6 +166,38 @@ class _Start:
     alias: str | None
     type_name: str | None
     comment: str | None
+    type_alias: str | None = None
+
+
+@dataclass(frozen=True)
+class _FullNames:
+    """Private full-mode names chosen against the whole emitted namespace."""
+
+    builtins: str
+    decimal: str
+    mutable: str
+    any: str
+    alternative: str
+    element: str
+    xsd: str
+    class_aliases: dict[str, str]
+    class_order: tuple[str, ...]
+
+    @property
+    def private_names(self) -> frozenset[str]:
+        """Every module-level private alias a root name must not duplicate."""
+        return frozenset(
+            {
+                self.builtins,
+                self.decimal,
+                self.mutable,
+                self.any,
+                self.alternative,
+                self.element,
+                self.xsd,
+                *self.class_aliases.values(),
+            }
+        )
 
 
 def emit_relaxng_stub(
@@ -203,22 +244,26 @@ def emit_relaxng_stub(
 
     factory = schema.projection_classes
     class_names: dict[str, str] = {}
+    classes: dict[str, type[Any]] = {}
     generic_routes: list[_GenericRoute] = []
     for route_id in selected_routes:
         route = plan.routes[route_id]
         if route.generic_reason is None:
-            class_names[route_id] = factory.class_for(route_id).__name__
+            cls = factory.class_for(route_id)
+            classes[route_id] = cls
+            class_names[route_id] = cls.__name__
         else:
             generic_routes.append(
                 _GenericRoute(route_id, _route_label(route), _comment_text(route.generic_reason))
             )
 
+    full_names = _full_names(plan, selected_routes, class_names, classes)
     used: set[str] = set()
     blocks = tuple(
         _class_block(
             plan,
             plan.routes[route_id],
-            factory.class_for(route_id),
+            classes[route_id],
             class_names,
             depth,
             used,
@@ -226,12 +271,77 @@ def emit_relaxng_stub(
         for route_id in selected_routes
         if route_id in class_names
     )
-    starts = _starts(plan, class_names, selected_routes, filtered)
+    starts = _starts(
+        plan,
+        class_names,
+        selected_routes,
+        filtered,
+        full_names.private_names,
+        full_names.class_aliases,
+    )
     notice = _empty_notice(plan, class_names, selected_routes, filtered)
 
     if compact:
         return _render_compact(schema, blocks, generic_routes, starts, notice, used)
-    return _render_full(schema, blocks, generic_routes, starts, notice)
+    return _render_full(schema, blocks, generic_routes, starts, notice, full_names, class_names)
+
+
+def _suffixed_name(base: str, taken: set[str]) -> str:
+    """Return *base* or its first free numeric suffix, and reserve it."""
+    candidate = base
+    index = 2
+    while candidate in taken:
+        candidate = f"{base}_{index}"
+        index += 1
+    taken.add(candidate)
+    return candidate
+
+
+def _full_names(
+    plan: ProjectionPlan,
+    selected_routes: tuple[str, ...],
+    class_names: dict[str, str],
+    classes: dict[str, type[Any]],
+) -> _FullNames:
+    """Choose private aliases absent from every emitted class and member name."""
+    taken = set(class_names.values())
+    for route_id in selected_routes:
+        if route_id not in class_names:
+            continue
+        route = plan.routes[route_id]
+        taken.update(field.alias for field in route.attributes.values())
+        taken.update(field.alias for field in route.children.values())
+        scalar_field = classes[route_id].__dict__.get("_relaxng_scalar_field_")
+        if isinstance(scalar_field, str):
+            taken.add(scalar_field)
+    for route_id in plan.roots:
+        expanded_name = plan.routes[route_id].expanded_name
+        if expanded_name is not None:
+            taken.add(_alias_name(expanded_name))
+
+    fixed = {key: _suffixed_name(base, taken) for key, base in _FULL_ALIAS_BASES}
+
+    class_aliases: dict[str, str] = {}
+    class_order: list[str] = []
+    index = 0
+    for route_id in selected_routes:
+        if route_id not in class_names:
+            continue
+        class_aliases[route_id] = _suffixed_name(f"_t{index}", taken)
+        class_order.append(route_id)
+        index += 1
+
+    return _FullNames(
+        builtins=fixed["builtins"],
+        decimal=fixed["decimal"],
+        mutable=fixed["mutable"],
+        any=fixed["any"],
+        alternative=fixed["alternative"],
+        element=fixed["element"],
+        xsd=fixed["xsd"],
+        class_aliases=class_aliases,
+        class_order=tuple(class_order),
+    )
 
 
 def _selection(
@@ -338,10 +448,11 @@ def _atomic_ref(plan: ProjectionPlan, contract: ScalarContract, used: set[str]) 
 
 @dataclass(frozen=True)
 class _ListItems:
-    """One statically plain list item shape."""
+    """One statically plain list item shape and its decoder eligibility."""
 
     homogeneous: bool
     items: tuple[ScalarContract, ...]
+    decodable: bool = True
 
 
 def _list_children(pattern: Pattern) -> tuple[Pattern, ...]:
@@ -364,20 +475,26 @@ def _combine_list(pattern: Pattern, results: dict[int, _ListItems | None]) -> _L
     if isinstance(pattern, Empty):
         return _ListItems(False, ())
     if isinstance(pattern, (Data, DataExcept, Value)):
-        if not datatype_supports_decode(pattern.datatype):
-            return None
-        return _ListItems(False, (scalar_contract(pattern),))
+        return _ListItems(
+            False,
+            (scalar_contract(pattern),),
+            datatype_supports_decode(pattern.datatype),
+        )
     if isinstance(pattern, Group):
         first = results.get(id(pattern.first))
         second = results.get(id(pattern.second))
         if first is None or second is None or first.homogeneous or second.homogeneous:
             return None
-        return _ListItems(False, first.items + second.items)
+        return _ListItems(
+            False,
+            first.items + second.items,
+            first.decodable and second.decodable,
+        )
     if isinstance(pattern, OneOrMore):
         item = results.get(id(pattern.pattern))
         if item is None or item.homogeneous or len(item.items) != 1:
             return None
-        return _ListItems(True, item.items)
+        return _ListItems(True, item.items, item.decodable)
     if isinstance(pattern, Choice):
         first = results.get(id(pattern.first))
         second = results.get(id(pattern.second))
@@ -432,6 +549,12 @@ def _list_ref(plan: ProjectionPlan, pattern: Pattern, used: set[str]) -> _TypeRe
             "_AlternativeValue",
             "the whole-list shape is not a statically plain token sequence; "
             "runtime reads return AlternativeValue",
+        )
+    if not items.decodable:
+        used.add("alternative")
+        return _TypeRef(
+            "_AlternativeValue",
+            "a list item datatype declares no decoder; runtime reads return AlternativeValue",
         )
     refs = tuple(_atomic_ref(plan, item, used) for item in items.items)
     reason = next((ref.reason for ref in refs if ref.reason is not None), None)
@@ -670,12 +793,14 @@ def _alias_name(expanded_name: str) -> str:
     return candidate
 
 
-def _collision_binding(candidate: str, class_names: dict[str, str]) -> str | None:
+def _collision_binding(
+    candidate: str, class_names: dict[str, str], private_names: frozenset[str]
+) -> str | None:
     """Return what a start alias would duplicate, or ``None`` when free."""
     if candidate in class_names.values():
         return f"class {candidate!r}"
-    if candidate in _IMPORTED_NAMES:
-        return "an import"
+    if candidate in private_names:
+        return "a private stub alias"
     return None
 
 
@@ -684,6 +809,8 @@ def _starts(
     class_names: dict[str, str],
     selected_routes: tuple[str, ...],
     filtered: bool,
+    private_names: frozenset[str],
+    type_aliases: dict[str, str],
 ) -> tuple[_Start, ...]:
     """Resolve starts only to selected stable classes, commenting every other."""
     selected = set(selected_routes)
@@ -730,7 +857,7 @@ def _starts(
             )
             continue
         candidate = _alias_name(route.expanded_name)
-        binding = _collision_binding(candidate, class_names)
+        binding = _collision_binding(candidate, class_names, private_names)
         if binding is not None:
             starts.append(
                 _Start(
@@ -761,7 +888,16 @@ def _starts(
             if candidate != route.expanded_name.rsplit("}", 1)[-1]
             else None
         )
-        starts.append(_Start(route_id, label, candidate, class_names[route_id], note))
+        starts.append(
+            _Start(
+                route_id,
+                label,
+                candidate,
+                class_names[route_id],
+                note,
+                type_aliases[route_id],
+            )
+        )
     return tuple(starts)
 
 
@@ -806,6 +942,7 @@ def _full_header(schema: RelaxNGSchema, example: str | None, *, classes: bool) -
         "# This file is a typing surface for the classes a compiled RELAX NG",
         "# schema creates at runtime; the classes live in",
         "# ``schema.projection_classes``. Save this stub next to your code and",
+        "#",
         "# import it for type checking:",
     ]
     if example is not None:
@@ -826,7 +963,7 @@ def _full_header(schema: RelaxNGSchema, example: str | None, *, classes: bool) -
     else:
         lines.extend(
             [
-                "# This schema emits no projection classes; the comments below",
+                "# This selection emits no projection classes; the comments below",
                 "# describe its generic routes and start patterns instead.",
             ]
         )
@@ -845,21 +982,61 @@ def _full_header(schema: RelaxNGSchema, example: str | None, *, classes: bool) -
     return lines
 
 
-def _full_imports(blocks: tuple[_ClassBlock, ...]) -> list[str]:
-    """Return the import block the rendered annotations actually need."""
-    joined = "\n".join(member.annotation.text for block in blocks for member in block.members)
+def _uses_token(name: str, text: str) -> bool:
+    """Return whether *text* uses *name* as a whole identifier."""
+    return re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text) is not None
+
+
+def _full_annotation(text: str, names: _FullNames, class_names: dict[str, str]) -> str:
+    """Rewrite one canonical annotation into collision-proof full spellings."""
+    text = re.sub(
+        r"\b(bool|bytes|float|int|list|str|tuple|type)\b",
+        lambda match: f"{names.builtins}.{match.group(1)}",
+        text,
+    )
+    text = re.sub(r"_xsd\.Decimal\b", f"{names.decimal}.Decimal", text)
+    text = re.sub(
+        r"_xsd\.([A-Za-z_][A-Za-z0-9_]*)",
+        lambda match: f"{names.xsd}.{match.group(1)}",
+        text,
+    )
+    for full, private in (
+        ("_Any", names.any),
+        ("_AlternativeValue", names.alternative),
+        ("_MutableSequence", names.mutable),
+        ("RelaxNGElement", names.element),
+    ):
+        text = re.sub(rf"\b{re.escape(full)}\b", private, text)
+    class_aliases = {
+        class_names[route_id]: names.class_aliases[route_id] for route_id in names.class_order
+    }
+    for class_name in sorted(class_aliases, key=len, reverse=True):
+        text = re.sub(
+            rf"(?<!\w){re.escape(class_name)}(?!\w)",
+            class_aliases[class_name],
+            text,
+        )
+    return text
+
+
+def _full_imports(body: str, names: _FullNames, *, classes: bool) -> list[str]:
+    """Return the import block the rendered full body actually needs."""
     stdlib: list[str] = []
-    if re.search(r"\b_MutableSequence\b", joined):
-        stdlib.append("from collections.abc import MutableSequence as _MutableSequence")
-    if re.search(r"\b_Any\b", joined):
-        stdlib.append("from typing import Any as _Any")
+    if re.search(rf"{re.escape(names.builtins)}\.", body):
+        stdlib.append(f"import builtins as {names.builtins}")
+    if re.search(rf"{re.escape(names.decimal)}\.", body):
+        stdlib.append(f"import decimal as {names.decimal}")
+    if _uses_token(names.mutable, body):
+        stdlib.append(f"from collections.abc import MutableSequence as {names.mutable}")
+    if _uses_token(names.any, body):
+        stdlib.append(f"from typing import Any as {names.any}")
     modules: list[str] = []
-    if "_xsd." in joined:
-        modules.append("from pyxsd import xsd_data_types as _xsd")
-    if blocks:
-        modules.append("from pyxsd.relaxng.tree import RelaxNGElement")
-    if re.search(r"\b_AlternativeValue\b", joined):
-        modules.append("from pyxsd.relaxng.values import AlternativeValue as _AlternativeValue")
+    if re.search(rf"{re.escape(names.xsd)}\.", body):
+        modules.append(f"from pyxsd import xsd_data_types as {names.xsd}")
+    if _uses_token(names.alternative, body):
+        modules.append(f"from pyxsd.relaxng import AlternativeValue as {names.alternative}")
+    if classes:
+        modules.append(f"from pyxsd.relaxng import RelaxNGElement as {names.element}")
     lines = [*stdlib]
     if stdlib and modules:
         lines.append("")
@@ -873,6 +1050,8 @@ def _render_full(
     generic_routes: list[_GenericRoute],
     starts: tuple[_Start, ...],
     notice: str | None,
+    names: _FullNames,
+    class_names: dict[str, str],
 ) -> str:
     """Assemble the full ``.pyi`` document."""
     example = None
@@ -886,35 +1065,48 @@ def _render_full(
         for member in block.members:
             if member.annotation.reason is not None:
                 lines.append(f"    # {member.annotation.reason}")
-            lines.append(f"    {member.name}: {member.annotation.text}")
+            annotation = _full_annotation(member.annotation.text, names, class_names)
+            lines.append(f"    {member.name}: {annotation}")
         if not block.members:
             lines.append("    ...")
-        class_blocks.append(f"class {block.name}(RelaxNGElement):\n" + "\n".join(lines))
+        class_blocks.append(f"class {block.name}({names.element}):\n" + "\n".join(lines))
+    start_lines: list[str] = []
+    if starts:
+        start_lines.append("# Starts:")
+        for start in starts:
+            if start.alias is None:
+                start_lines.append(f"# {start.comment}")
+            else:
+                if start.comment is not None:
+                    start_lines.append(f"# {start.comment}")
+                assert start.type_alias is not None
+                start_lines.append(f"{start.alias}: {names.builtins}.type[{start.type_alias}]")
+    else:
+        start_lines.append("# Starts: none (the compiled start pattern declares no element route)")
+    type_aliases = [
+        f"{names.class_aliases[route_id]} = {class_names[route_id]}"
+        for route_id in names.class_order
+    ]
+    body = "\n".join([*class_blocks, *type_aliases, *start_lines])
     sections = ["\n".join(_full_header(schema, example, classes=bool(blocks)))]
-    imports = _full_imports(blocks)
+    import_lines = ["from __future__ import annotations"]
+    imports = _full_imports(body, names, classes=bool(blocks))
     if imports:
-        sections.append("\n".join(imports))
+        import_lines.append("")
+        import_lines.extend(imports)
+    sections.append("\n".join(import_lines))
     if notice is not None:
         sections.append(f"# {notice}")
     if class_blocks:
         sections.append("\n\n".join(class_blocks))
+    if type_aliases:
+        sections.append("\n".join(type_aliases))
     if generic_routes:
         lines = ["# Generic routes (no generated class; runtime type RelaxNGElement):"]
         for route in generic_routes:
             lines.append(f"#   {route.route_id} ({route.label}): {route.reason}")
         sections.append("\n".join(lines))
-    if starts:
-        lines = ["# Starts:"]
-        for start in starts:
-            if start.alias is None:
-                lines.append(f"# {start.comment}")
-            else:
-                if start.comment is not None:
-                    lines.append(f"# {start.comment}")
-                lines.append(f"{start.alias}: type[{start.type_name}]")
-        sections.append("\n".join(lines))
-    else:
-        sections.append("# Starts: none (the compiled start pattern declares no element route)")
+    sections.append("\n".join(start_lines))
     return "\n\n".join(sections) + "\n"
 
 
@@ -966,9 +1158,9 @@ def _compact_annotation(text: str, symbols: dict[tuple[str, str], str]) -> str:
     )
     for key, base, full in (
         ("any", "Any", "_Any"),
-        ("alternative", "AlternativeValue", "_AlternativeValue"),
-        ("mutable", "MutableSequence", "_MutableSequence"),
-        ("element", "RelaxNGElement", "RelaxNGElement"),
+        ("alternative", "Alt", "_AlternativeValue"),
+        ("mutable", "Seq", "_MutableSequence"),
+        ("element", "RNG", "RelaxNGElement"),
     ):
         text = re.sub(rf"\b{re.escape(full)}\b", symbols.get((key, base), full), text)
     return text
@@ -981,7 +1173,10 @@ def _compact_starts(starts: tuple[_Start, ...]) -> str:
     parts: list[str] = []
     for start in starts:
         if start.alias is not None:
-            parts.append(f"{start.alias}: type[{start.type_name}]")
+            text = f"{start.alias}: type[{start.type_name}]"
+            if start.comment is not None:
+                text += f" ({start.comment})"
+            parts.append(text)
             continue
         reason = f" ({start.comment})" if start.comment is not None else ""
         parts.append(f"{start.route_id}: ?{reason}")
@@ -1014,7 +1209,7 @@ def _render_compact(
         sections.append(f"# {notice}")
     class_blocks: list[str] = []
     for block in blocks:
-        lines = [f"class {block.name}({symbols[('element', 'RelaxNGElement')]}):"]
+        lines = [f"class {block.name}({symbols[('element', 'RNG')]}):"]
         lines.extend(f"  # {comment}" for comment in block.comments)
         for member in block.members:
             annotation = _compact_annotation(member.annotation.text, symbols)
@@ -1060,6 +1255,8 @@ def _render_unavailable(schema: RelaxNGSchema, *, compact: bool) -> str:
                 "#",
                 "# The schema report has errors; no projection classes, descriptors,",
                 "# or start aliases are emitted. Fix the schema report and recompile.",
+                "",
+                "from __future__ import annotations",
             ]
         )
         + "\n"
