@@ -21,6 +21,7 @@ from pathlib import Path
 from .baseline import Baseline
 from .model import (
     EXCLUDED_PROFILES,
+    INSTANCE_KINDS,
     PROFILES,
     CorpusCase,
     Outcome,
@@ -191,6 +192,12 @@ def release_violations(
     blocker.  Excluded cases are not executed by the release gate, so an
     absent result, ``pass``, or ``profile-excluded`` is acceptable.  Baseline
     keys that no longer name a catalog case are also blockers.
+
+    Instance assertions read :attr:`Baseline.instances`; schema assertions
+    read :attr:`Baseline.results`.  A schema-only case map ignores instance
+    baseline entries, so the Phase 1 schema gate remains independent of the
+    Phase 2 instance corpus.  For compatibility, an instance case may still
+    record its outcome in ``results`` when no ``instances`` entry exists.
     """
     validate_dispositions(dispositions, cases)
     violations: list[ReleaseViolation] = []
@@ -204,11 +211,24 @@ def release_violations(
                 category="",
             )
         )
+    if any(case.kind in INSTANCE_KINDS for case in cases.values()):
+        for case_id in sorted(set(baseline.instances) - set(cases)):
+            violations.append(
+                ReleaseViolation(
+                    case_id=case_id,
+                    reason="baseline records an unknown instance case",
+                    outcome=baseline.instances[case_id],
+                    category="",
+                )
+            )
     for case_id in sorted(cases):
         case = cases[case_id]
         if case.profile in EXCLUDED_PROFILES:
             continue
-        outcome = baseline.results.get(case.id)
+        if case.kind in INSTANCE_KINDS:
+            outcome = baseline.instances.get(case.id, baseline.results.get(case.id))
+        else:
+            outcome = baseline.results.get(case.id)
         if outcome is None:
             violations.append(
                 ReleaseViolation(

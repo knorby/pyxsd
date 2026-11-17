@@ -8,10 +8,14 @@ The baseline is diffable TOML::
     [results]
     "spectest-0001" = "pass"
 
-Results are always written in sorted key order, and the loader rejects
-duplicate keys, unknown sections, malformed values, and non-scalar metadata.
-A missing baseline file yields an empty baseline, matching the XSTS harness
-convention without importing its XSD-specific runner.
+    [instances]
+    "spectest-0001/valid-1" = "pass"
+
+``[results]`` records schema assertions and ``[instances]`` records instance
+assertions.  Results are always written in sorted key order, and the loader
+rejects duplicate keys, unknown sections, malformed values, and non-scalar
+metadata.  A missing baseline file yields an empty baseline, matching the XSTS
+harness convention without importing its XSD-specific runner.
 """
 
 from __future__ import annotations
@@ -36,14 +40,21 @@ class BaselineError(Exception):
 
 @dataclass(frozen=True)
 class Baseline:
-    """Recorded outcomes plus provenance metadata."""
+    """Recorded outcomes plus provenance metadata.
+
+    ``results`` holds schema assertions; ``instances`` holds instance
+    assertions.  Keeping them separate preserves the Phase 1 schema gate's
+    exact key set while extending the same baseline discipline to Phase 2.
+    """
 
     meta: Mapping[str, object] = field(default_factory=dict)
     results: Mapping[str, str] = field(default_factory=dict)
+    instances: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _validate_meta(self.meta)
         _validate_results(self.results)
+        _validate_results(self.instances)
 
 
 @dataclass(frozen=True)
@@ -113,25 +124,41 @@ def load(path: Path) -> Baseline:
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise BaselineError(f"{path}: malformed baseline: {exc}") from exc
 
-    unknown = set(data) - {"meta", "results"}
+    unknown = set(data) - {"meta", "results", "instances"}
     if unknown:
         raise BaselineError(f"{path}: unknown sections {sorted(unknown)}")
     meta = data.get("meta", {})
     results = data.get("results", {})
-    if not isinstance(meta, dict) or not isinstance(results, dict):
-        raise BaselineError(f"{path}: meta and results must be tables")
+    instances = data.get("instances", {})
+    if (
+        not isinstance(meta, dict)
+        or not isinstance(results, dict)
+        or not isinstance(instances, dict)
+    ):
+        raise BaselineError(f"{path}: meta, results, and instances must be tables")
     try:
-        return Baseline(meta=dict(meta), results={str(k): str(v) for k, v in results.items()})
+        return Baseline(
+            meta=dict(meta),
+            results={str(k): str(v) for k, v in results.items()},
+            instances={str(k): str(v) for k, v in instances.items()},
+        )
     except BaselineError as exc:
         raise BaselineError(f"{path}: {exc}") from exc
 
 
-def dump(results: Mapping[str, str], meta: Mapping[str, object] | None = None) -> str:
+def dump(
+    results: Mapping[str, str],
+    meta: Mapping[str, object] | None = None,
+    *,
+    instances: Mapping[str, str] | None = None,
+) -> str:
     """Render a baseline as deterministic TOML."""
     metadata = dict(meta or {})
+    instance_results = dict(instances or {})
     try:
         _validate_meta(metadata)
         _validate_results(results)
+        _validate_results(instance_results)
     except BaselineError as exc:
         raise BaselineError(f"cannot write baseline: {exc}") from exc
     lines: list[str] = ["[meta]"]
@@ -141,22 +168,42 @@ def dump(results: Mapping[str, str], meta: Mapping[str, object] | None = None) -
     lines.append("[results]")
     for key in sorted(results):
         lines.append(f"{json.dumps(key)} = {json.dumps(results[key])}")
+    if instance_results:
+        lines.append("")
+        lines.append("[instances]")
+        for key in sorted(instance_results):
+            lines.append(f"{json.dumps(key)} = {json.dumps(instance_results[key])}")
     lines.append("")
     return "\n".join(lines)
 
 
-def save(path: Path, results: Mapping[str, str], meta: Mapping[str, object] | None = None) -> None:
+def save(
+    path: Path,
+    results: Mapping[str, str],
+    meta: Mapping[str, object] | None = None,
+    *,
+    instances: Mapping[str, str] | None = None,
+) -> None:
     """Write a baseline to *path*."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(dump(results, meta), encoding="utf-8")
+    path.write_text(dump(results, meta, instances=instances), encoding="utf-8")
+
+
+def _diff(previous: Mapping[str, str], current: Mapping[str, str]) -> BaselineDiff:
+    changes: list[Change] = []
+    for key in sorted(set(previous) | set(current)):
+        before = previous.get(key)
+        now = current.get(key)
+        if before != now:
+            changes.append(Change(key=key, previous=before, current=now))
+    return BaselineDiff(changes=tuple(changes))
 
 
 def diff(baseline: Baseline, current: Mapping[str, str]) -> BaselineDiff:
-    """Every key whose outcome changed, appeared, or disappeared."""
-    changes: list[Change] = []
-    for key in sorted(set(baseline.results) | set(current)):
-        previous = baseline.results.get(key)
-        now = current.get(key)
-        if previous != now:
-            changes.append(Change(key=key, previous=previous, current=now))
-    return BaselineDiff(changes=tuple(changes))
+    """Every schema-case key whose outcome changed, appeared, or disappeared."""
+    return _diff(baseline.results, current)
+
+
+def diff_instances(baseline: Baseline, current: Mapping[str, str]) -> BaselineDiff:
+    """Every instance-case key whose outcome changed, appeared, or disappeared."""
+    return _diff(baseline.instances, current)

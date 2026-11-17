@@ -15,12 +15,18 @@ import os
 import threading
 import weakref
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass
+from dataclasses import fields as dataclass_fields
 from io import BytesIO
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Literal, cast
 from xml.etree import ElementTree as ET
 
+from pyxsd.dtd_declarations import (
+    DocumentDeclarations,
+    collect_document_declarations,
+    declaration_context,
+)
 from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
@@ -31,11 +37,12 @@ from pyxsd.relaxng.datatypes import (
     DatatypeLibraryRegistration,
     DatatypeLibraryRegistry,
     DatatypeRegistrationError,
+    ScalarDatatype,
 )
 from pyxsd.relaxng.diagnostics import report_mismatches
 from pyxsd.relaxng.document import RelaxNGDocument
 from pyxsd.relaxng.limits import BudgetCounter, RelaxNGLimits
-from pyxsd.relaxng.patterns import PatternPool
+from pyxsd.relaxng.patterns import Data, DataExcept, Pattern, PatternPool, Ref
 from pyxsd.relaxng.resources import ResourceDependency, ResourceLoader, ResourceSource
 from pyxsd.relaxng.simplify import CompiledGrammar, Simplifier, compose_grammars
 from pyxsd.relaxng.syntax import SchemaFinding, read_full_syntax
@@ -223,6 +230,46 @@ def _instance_limits(
     value itself is never modified.
     """
     return schema_limits if override is None else override
+
+
+#: XSD 1.0 datatypes whose values must be unparsed entities declared by the
+#: instance document's DTD.
+_ENTITY_DATATYPE_NAMES = frozenset({"ENTITY", "ENTITIES"})
+
+
+def _grammar_uses_unparsed_entity_types(start: Pattern) -> bool:
+    """Whether *start* can validate an XSD ``ENTITY``/``ENTITIES`` value.
+
+    The walk is iterative and identity-keyed, so legal recursive element
+    definitions terminate.  Only ``data``/``dataExcept`` declarations need
+    instance DTD evidence; a ``value`` pattern compares a schema-side lexical
+    value and is not an instance entity declaration.
+    """
+    pending: list[Pattern] = [start]
+    seen: set[int] = set()
+    while pending:
+        node = pending.pop()
+        key = id(node)
+        if key in seen:
+            continue
+        seen.add(key)
+        if isinstance(node, (Data, DataExcept)):
+            datatype = node.datatype
+            if (
+                isinstance(datatype, ScalarDatatype)
+                and datatype.type_name in _ENTITY_DATATYPE_NAMES
+            ):
+                return True
+        if isinstance(node, Ref):
+            pending.append(node.target)
+            continue
+        if not is_dataclass(node):
+            raise TypeError(f"unknown RELAX NG pattern {type(node).__name__}")
+        for item in dataclass_fields(node):
+            value = getattr(node, item.name)
+            if isinstance(value, Pattern):
+                pending.append(value)
+    return False
 
 
 class _BatchSchema:
@@ -478,6 +525,40 @@ class RelaxNGSchema:
         finally:
             guard.release()
 
+    def _instance_declarations(
+        self,
+        source: str | Path | os.PathLike[str] | IO[str] | IO[bytes] | ET.Element,
+        xml_policy: XmlParserPolicy | None,
+    ) -> DocumentDeclarations | None:
+        """Collect instance DTD declarations for ENTITY/ENTITIES values.
+
+        Paths and seekable streams can be read for their prolog and then
+        restored.  A trusted resource policy, a pre-parsed ``Element``, or a
+        non-seekable stream has no re-readable core-admitted evidence and
+        stays lexical-only, matching the existing parser boundaries.
+        """
+        if self._resource_policy is not None or isinstance(source, ET.Element):
+            return None
+        policy = xml_policy if xml_policy is not None else XmlParserPolicy.default()
+        try:
+            if isinstance(source, (str, os.PathLike)):
+                with open(source, "rb") as stream:
+                    return collect_document_declarations(stream, policy=policy)
+            seekable = getattr(source, "seekable", None)
+            if seekable is None or not seekable():
+                return None
+            marker = source.tell()
+            try:
+                source.seek(0)
+                return collect_document_declarations(source, policy=policy)
+            finally:
+                source.seek(marker)
+        except Exception:
+            # Declaration evidence is best effort: an unreadable prolog or a
+            # rewind failure leaves datatype validation lexical-only, and the
+            # ordinary parse reports input failures in its own vocabulary.
+            return None
+
     def _parse_instance(
         self,
         xml: str | Path | os.PathLike[str] | IO[str] | IO[bytes] | ET.Element,
@@ -491,6 +572,10 @@ class RelaxNGSchema:
         """Read, validate, and wrap one instance while the parse guard is held."""
         self.require_valid()
         effective_limits = _instance_limits(self.limits, limits)
+
+        declarations: DocumentDeclarations | None = None
+        if _grammar_uses_unparsed_entity_types(self.grammar.start):
+            declarations = self._instance_declarations(xml, xml_policy)
 
         source = xml
         source_id = source_identifier(source)
@@ -546,11 +631,12 @@ class RelaxNGSchema:
             source=IssueLocation(source_id, (PathStep(tree.tag, 1),)),
         )
         instance_report = new_validation_report(self._resource_policy)
-        outcome = validate_element_recovering(
-            root,
-            self.grammar.start,
-            limits=effective_limits,
-        )
+        with declaration_context(declarations):
+            outcome = validate_element_recovering(
+                root,
+                self.grammar.start,
+                limits=effective_limits,
+            )
         report_mismatches(outcome, instance_report, limits=effective_limits)
 
         merged = new_validation_report(self._resource_policy)

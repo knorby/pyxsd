@@ -150,6 +150,11 @@ XSD_FINGERPRINT = "pyxsd.relaxng.xsd-1.0/2"
 
 _XSD_SHORTHAND = "xsd:"
 
+#: XSD 1.0's float/double lexical space spells only ``INF``/``-INF``/``NaN``;
+#: the shared XSD 1.1 classes also admit ``+INF``, which the pinned XSD 1.0
+#: datatype catalog rejects.
+_XSD10_PLUS_INF = "+INF"
+
 #: Every XSD 1.0 built-in simple datatype, in the XSD 1.0 inventory.  The
 #: class mapping is built from these names so a later XSD 1.1 class cannot
 #: silently join the XSD 1.0 adapter.
@@ -986,6 +991,10 @@ class ScalarDatatype(Datatype):
         return value
 
     def _build_value(self, text: str, context: DatatypeContext) -> Any:
+        if self.type_name in {"float", "double"} and text == _XSD10_PLUS_INF:
+            raise TypeError(
+                f"xs:{self.type_name} lexical {text!r} is not in the XSD 1.0 lexical space"
+            )
         if self.type_name in _XSD10_YEAR_TYPE_NAMES:
             return _xsd10_temporal_value(self.type_name, text)
         if self.type_name == "anyURI":

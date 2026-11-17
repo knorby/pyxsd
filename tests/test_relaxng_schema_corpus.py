@@ -300,17 +300,17 @@ def test_time_limit_is_skipped_off_the_main_thread(tmp_path):
     assert results == [Outcome.PASS]
 
 
-def test_driver_defers_instance_assertions(tmp_path):
+def test_driver_validates_instance_assertions(tmp_path):
     case = write_instance_case(tmp_path, "instance", "valid-instance")
 
     result = PyXSDDriver(timeout=None).run(case)
 
-    assert result.outcome is Outcome.ADAPTER_GAP
-    assert result.failure is CaseFailure.ADAPTER_GAP
-    assert result.expected_valid is None
-    assert result.actual_valid is None
-    assert "instance" in (result.detail or "")
-    assert not result.satisfies_expectation
+    assert result.outcome is Outcome.PASS
+    assert result.failure is CaseFailure.NONE
+    assert result.phase == "instance"
+    assert result.expected_valid is True
+    assert result.actual_valid is True
+    assert result.satisfies_expectation
 
 
 # ---------------------------------------------------------------------------
