@@ -563,11 +563,11 @@ class PyxsdGroup:
 
     def __init__(self, type_adapter: PyxsdType) -> None:
         self._type = type_adapter
+        pool = type_adapter._pool
         self._elements = tuple(
-            PyxsdElement(
-                type_adapter._pool,
-                descriptor,
+            pool._shared_element(
                 type_adapter.schema,
+                descriptor,
                 name=_instance_name(descriptor, type_adapter.schema),
             )
             for descriptor in _element_descriptors(type_adapter._type_class)
@@ -601,7 +601,15 @@ class PyxsdGroup:
 
 
 class PyxsdElement:
-    """One pyxsd element declaration under elementpath's element protocol."""
+    """One pyxsd element declaration under elementpath's element protocol.
+
+    The element graph is materialised lazily and memoised per
+    :class:`SchemaPool` (see :meth:`SchemaPool._shared_element`), so a
+    self-recursive or mutually recursive content model yields a finite graph
+    whose cycle is a real object cycle -- the declaration that references
+    itself is the same adapter -- rather than a tree cut at an arbitrary
+    depth.  One level of children is resolved on first use and cached.
+    """
 
     __slots__ = ("_attrib", "_children", "_er", "_name", "_pool", "_proxy", "_type")
 
@@ -618,17 +626,7 @@ class PyxsdElement:
         self._proxy = proxy
         self._name = name if name is not None else _instance_name(er, proxy)
         self._type = pool.type_for_declaration(er)
-        self._children = tuple(
-            PyxsdElement(
-                pool,
-                descriptor,
-                proxy,
-                name=_instance_name(descriptor, proxy),
-            )
-            for descriptor in (
-                _element_descriptors(self._type._type_class) if self._type is not None else ()
-            )
-        )
+        self._children: tuple[PyxsdElement, ...] | None = None
         self._attrib = self._type.attributes if self._type is not None else None
 
     @property
@@ -644,6 +642,30 @@ class PyxsdElement:
         if self._attrib is not None:
             return self._attrib
         return MappingProxyType({})
+
+    @property
+    def children(self) -> tuple[PyxsdElement, ...]:
+        """The element particles of this declaration's type.
+
+        Resolved on first access and cached. A recursive content model
+        reaches this declaration again through the pool's identity memo, so
+        the cycle is representable instead of truncated.
+        """
+        children = self._children
+        if children is None:
+            children = self._resolve_children()
+            self._children = children
+        return children
+
+    def _resolve_children(self) -> tuple[PyxsdElement, ...]:
+        if self._type is None:
+            return ()
+        pool = self._pool
+        proxy = self._proxy
+        return tuple(
+            pool._shared_element(proxy, descriptor, name=_instance_name(descriptor, proxy))
+            for descriptor in _element_descriptors(self._type._type_class)
+        )
 
     @property
     def text(self) -> None:
@@ -692,24 +714,40 @@ class PyxsdElement:
         return self.attrib.get(key, default)
 
     def __iter__(self) -> Iterator[PyxsdElement]:
-        return iter(self._children)
+        return iter(self.children)
 
     def iter(self, tag: str | None = None) -> Iterator[PyxsdElement]:
+        """Yield this declaration and its reachable descendants.
+
+        A recursive content model makes the graph cyclic; the walk follows a
+        declaration at most once per branch, so iteration terminates for
+        every schema. A declaration reached again through a different branch
+        (a shared reference, not a cycle) still appears under each branch.
+        """
+        yield from self._iter_branch(tag, ())
+
+    def _iter_branch(self, tag: str | None, ancestors: tuple[int, ...]) -> Iterator[PyxsdElement]:
         if tag is None or tag == "*" or tag == self._name:
             yield self
-        for child in self._children:
-            yield from child.iter(tag)
+        path = (*ancestors, id(self))
+        for child in self.children:
+            if id(child) in path:
+                # The child closes a cycle: it is already on this branch, so
+                # it was yielded when the branch entered it. Following it
+                # again would repeat the branch forever.
+                continue
+            yield from child._iter_branch(tag, path)
 
     def find(self, path: str, namespaces: Mapping[str, str] | None = None) -> PyxsdElement | None:
         del namespaces
         wanted = path[2:] if path.startswith("./") else path
-        for child in self._children:
+        for child in self.children:
             if child.is_matching(wanted):
                 return child
         return None
 
     def __len__(self) -> int:
-        return len(self._children)
+        return len(self.children)
 
     def __hash__(self) -> int:
         return id(self)
@@ -1118,6 +1156,7 @@ class SchemaPool:
         "_constructors",
         "_element_cache",
         "_elements",
+        "_graph_cache",
         "_schema_groups",
         "_schemas",
         "_substitution_groups",
@@ -1138,6 +1177,10 @@ class SchemaPool:
         self._xsd_version = xsd_version
         self._type_cache: dict[int, PyxsdType] = {}
         self._element_cache: dict[int, PyxsdElement] = {}
+        # Element adapters by (proxy identity, declaration identity): the
+        # memo that makes a recursive content model a finite graph. It stays
+        # writable after construction because children resolve lazily.
+        self._graph_cache: dict[tuple[int, int], PyxsdElement] = {}
         self._schemas: dict[str | None, PyxsdSchemaProxy | _MergedSchemaProxy] = {}
         self._schema_groups: dict[str | None, tuple[PyxsdSchemaProxy, ...]] = {}
         self._types: dict[str, PyxsdType] = {}
@@ -1471,8 +1514,31 @@ class SchemaPool:
         name = er.expandedName or er.name if global_declaration else _instance_name(er, proxy)
         if name is None:
             return None
-        adapter = PyxsdElement(self, er, proxy, name=name)
+        adapter = self._shared_element(proxy, er, name=name)
         self._element_cache[id(er)] = adapter
+        return adapter
+
+    def _shared_element(
+        self,
+        proxy: PyxsdSchemaProxy | None,
+        er: Any,
+        *,
+        name: str | None = None,
+    ) -> PyxsdElement:
+        """Return this pool's single element adapter for *er* under *proxy*.
+
+        Element identity is memoised for the pool's lifetime, so a content
+        model that references a declaration already on the build path
+        returns that adapter instead of descending forever; the resulting
+        cycle is the same object. The proxy is a package-local
+        ``PyxsdSchemaProxy`` here, so its identity is stable for as long as
+        the pool and the memo entry stays valid.
+        """
+        key = (id(proxy), id(er))
+        adapter = self._graph_cache.get(key)
+        if adapter is None:
+            adapter = PyxsdElement(self, er, proxy, name=name)
+            self._graph_cache[key] = adapter
         return adapter
 
     @staticmethod

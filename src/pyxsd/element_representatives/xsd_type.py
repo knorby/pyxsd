@@ -31,6 +31,12 @@ _CLASS_IN_PROGRESS = object()
 #: once that class exists.
 _SELF_CONTENT = object()
 
+#: Class-attribute keys stamped on a generated class after the class body no
+#: longer exists. An element declaration whose local name is one of these is
+#: bound under its alias (see ``clsFor``), because the stamp would otherwise
+#: replace the descriptor while ``_elementNames_`` still lists the key.
+_STAMPED_CLASS_KEYS = frozenset({"schema"})
+
 
 def _attribute_use_label(attr: Any, attrName: str | None) -> str:
     """The local name a duplicate-use diagnostic displays for *attr*.
@@ -1351,14 +1357,19 @@ class XsdType(ElementRepresentative):
                     counter += 1
                     key = f"{element.name}|{counter}"
                 namespace[key] = element
-            elif element.name in ownAttributeNames or element.name in inheritedAttributeNames:
+            elif (
+                element.name in ownAttributeNames
+                or element.name in inheritedAttributeNames
+                or element.name in _STAMPED_CLASS_KEYS
+            ):
                 # An element and an attribute share a name (legal in
-                # XSD). The attribute keeps the natural accessor; the
-                # element is re-keyed under ``<name>_element`` (with a
-                # numeric suffix when that is taken). Marking the
-                # descriptor aliased before class creation makes both
-                # its storage and its binding use the alias, so the
-                # two declarations never share an instance slot.
+                # XSD), or the element's name is a class key the compile
+                # stamps after creation (``schema``). The attribute or the
+                # stamp keeps the natural accessor; the element is re-keyed
+                # under ``<name>_element`` (with a numeric suffix when that
+                # is taken). Marking the descriptor aliased before class
+                # creation makes both its storage and its binding use the
+                # alias, so no declaration is silently replaced.
                 alias = allocateAlias(element.name)
                 namespace[alias] = element
                 element._aliased_ = True
