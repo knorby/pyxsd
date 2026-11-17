@@ -1,0 +1,37 @@
+<element xmlns="http://relaxng.org/ns/structure/1.0"
+         name="doc">
+  <group>
+    <attribute name="value">
+      <choice>
+        <data type="integer" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"/>
+        <data type="string" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"/>
+      </choice>
+    </attribute>
+    <optional>
+      <attribute name="maybe"><text/></attribute>
+    </optional>
+    <element name="numbers">
+      <list>
+        <zeroOrMore>
+          <data type="int" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"/>
+        </zeroOrMore>
+      </list>
+    </element>
+    <element name="fixed">
+      <list>
+        <group>
+          <data type="int" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"/>
+          <data type="string" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"/>
+        </group>
+      </list>
+    </element>
+    <element name="loose">
+      <list>
+        <choice>
+          <data type="int" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"/>
+          <data type="string" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"/>
+        </choice>
+      </list>
+    </element>
+  </group>
+</element>

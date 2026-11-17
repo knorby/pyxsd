@@ -1,0 +1,17 @@
+<element xmlns="http://relaxng.org/ns/structure/1.0"
+         name="doc">
+  <group>
+    <attribute name="id">
+      <data type="int" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"/>
+    </attribute>
+    <element name="known"><empty/></element>
+    <zeroOrMore>
+      <element>
+        <anyName>
+          <except><name>known</name></except>
+        </anyName>
+        <text/>
+      </element>
+    </zeroOrMore>
+  </group>
+</element>

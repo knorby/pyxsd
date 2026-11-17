@@ -445,6 +445,37 @@ class RelaxNGSchema:
         """The complete canonical resource closure of the compilation."""
         return self.grammar.dependencies
 
+    def stub(
+        self,
+        *,
+        compact: bool = False,
+        component_ids: tuple[str, ...] | None = None,
+        depth: int | None = None,
+    ) -> str:
+        """Return typing-stub text for this schema's runtime projection classes.
+
+        The full form is an importable-quality ``.pyi`` document containing one
+        class block per stable projection route, generic-route comments, and
+        start aliases.  ``compact=True`` selects the deterministic agent view:
+        a two-line header with an alias legend, one line per class and member,
+        and a trailing start line.
+
+        ``component_ids`` selects RELAX NG introspection component IDs; ``depth``
+        bounds their outgoing ``uses`` dependencies (``None`` follows every
+        reachable component).  Only selected ``route`` components can become
+        classes, so a definition or pattern ID is an inventory seed rather than
+        a class.  An empty selection emits no classes or aliases.  Unknown IDs
+        raise ``KeyError`` and negative depths raise ``ValueError``.
+
+        Emitting never requires a valid schema report and never calls
+        :meth:`require_valid`; a schema with compilation errors emits a
+        deterministic explanatory comment and its projection plan is not
+        consulted.  Selection does not mutate the schema.
+        """
+        from pyxsd.relaxng.stubs import emit_relaxng_stub
+
+        return emit_relaxng_stub(self, compact=compact, component_ids=component_ids, depth=depth)
+
     @cached_property
     def _grammar_fingerprint(self) -> str:
         """The stable identity of this compiled grammar and datatype registry."""
