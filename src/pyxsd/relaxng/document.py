@@ -17,8 +17,11 @@ The document shares the generic traversal, XPath, writer, XDM, and transform
 behavior with XSD documents.  Schema-specific behavior is narrow: a
 root-callable transform returning a lexical node yields a new document with a
 stale report snapshot and the same evidence, and :meth:`revalidate` parses an
-independent clone of the current tree into fresh nodes and evidence while
-keeping the recorded namespace and base-URI frames.
+independent clone of the current tree into fresh nodes, evidence, annotations,
+classes, and XDM capture while keeping the recorded namespace and base-URI
+frames.  The lexical writer and ``to_string``/``write`` stay available for
+dirty, stale, validation-only, and invalid documents; typed views require
+freshness, and Phase 5 owns data conversion.
 """
 
 from __future__ import annotations
@@ -372,6 +375,10 @@ class RelaxNGDocument(Document):
         self._capture = capture
         self._limits = limits
         self._namespace_context = namespace_context
+        # The parse's XDM request survives transform wrappers that deliberately
+        # drop the stale capture object, so revalidation can capture the
+        # transformed tree afresh.
+        self._xdm_requested = xdm_capture is not None
         self._revision_id = revision_id
         self._interpretations_current = interpretations_current
         self._attribute_snapshot = (
@@ -505,7 +512,13 @@ class RelaxNGDocument(Document):
         raise PyXSDError(_DATA_CONVERSION_CAPABILITY)
 
     def to_string(self) -> str:
-        """Serialize the lexical tree without XSD writer behavior or mutation."""
+        """Serialize the current lexical tree, even when typed views are stale.
+
+        The writer never consults typed evidence or the parse report, so a
+        dirty or transformed typed document, a validation-only document, and
+        an invalid document all retain this lexical escape path.  The root
+        tail is outside the document element and is not written.
+        """
         return serialize_relaxng(self.root)
 
     def write(self, dest: str | Path | os.PathLike[str] | IO[str]) -> None:
@@ -513,7 +526,8 @@ class RelaxNGDocument(Document):
 
         Paths are opened and closed here with UTF-8 encoding.  Caller file
         objects are written and flushed but left open, matching the existing
-        path-versus-file ownership convention.
+        path-versus-file ownership convention.  Like :meth:`to_string`, this
+        reads the current lexical tree without requiring fresh typed evidence.
         """
         text = self.to_string()
         if isinstance(dest, (str, os.PathLike)):
@@ -536,7 +550,9 @@ class RelaxNGDocument(Document):
         stale marker snapshot so node reads fail instead of returning
         uninterpreted lexical content.  No evidence is refreshed here.
         An unchanged root keeps the coherent XDM capture; any other root
-        starts without one.  Non-lexical results pass through unchanged.
+        starts without one but retains the parse's XDM request, so a later
+        :meth:`revalidate` can capture the transformed tree afresh.
+        Non-lexical results pass through unchanged.
         """
         if not isinstance(root, RelaxNGElement):
             return root
@@ -563,15 +579,30 @@ class RelaxNGDocument(Document):
         The lexical tree is cloned into a fresh revision, serialized with the
         schema-neutral writer, and parsed against the same schema with this
         document's typed, capture, XDM, and instance-limit settings.  The
-        result has fresh nodes, a fresh report, and a new revision ID; this
-        document, its nodes, and its report snapshot are never refreshed.
+        result has fresh nodes, a fresh report, fresh evidence or a fresh
+        invalid-document interpretation, fresh annotations when captured, and
+        a new revision ID.  Projection classes come from the schema's plan and
+        therefore keep their plan-fixed identity while the nodes are new;
+        candidate IDs stay schema-stable while candidate values are rebuilt.
+        This document, its nodes, report, evidence, and annotations are never
+        refreshed or replaced.
+
+        Validation-only documents stay validation-only: the result computes no
+        evidence and exposes no annotation view.  Typed documents keep capture
+        mode and its independent annotation budget.  The parse's XDM request is
+        replayed, including for a transformed root that started without a
+        coherent capture, so the returned document owns a fresh coherent XDM
+        view when capture was requested.
 
         Serialization emits the recorded namespace declarations so prefixed
         QName values keep their external namespace context.  The recorded
         namespace and effective base-URI frames are then restored onto the
         repared nodes, because a bare string round trip cannot carry a
         source-relative base URI.  A root tail is outside the document
-        element and is not carried into the new document.
+        element and is not carried into the new document.  The lexical writer
+        and ``to_string``/``write`` remain available on the old document and on
+        the result; ``to_dict``, ``to_data``, and ``to_json`` stay explicit
+        Phase 5 capability errors.
 
         The original DTD declaration evidence is reused without retrieving a
         DTD or serializing a DOCTYPE.  Absent evidence stays absent.  Source
@@ -589,7 +620,7 @@ class RelaxNGDocument(Document):
             xml_limits=None,
             typed=self.typed,
             capture=self._capture,
-            capture_xdm=self._xdm_capture is not None,
+            capture_xdm=self._xdm_requested,
             limits=self._limits,
             declarations=self._declarations,
         )

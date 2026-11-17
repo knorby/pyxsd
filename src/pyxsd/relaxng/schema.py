@@ -531,6 +531,10 @@ class RelaxNGSchema:
 
         - ``capture_xdm`` retains the existing opt-in XDM meaning: the same
           source revision also becomes an unannotated XML-tree view.
+          ``RelaxNGDocument.revalidate`` replays this request against its
+          reparsed clone, including after a transformed-root wrapper dropped
+          the stale capture object, so the fresh document captures its own
+          current revision.
 
         - ``limits`` bounds this instance's derivative and evidence work.
           ``None`` uses the compiled schema's limits.  Supplying a
@@ -590,7 +594,14 @@ class RelaxNGSchema:
         | _CollectDeclarations
         | None = _CollectDeclarations.COLLECT,
     ) -> RelaxNGDocument:
-        """Guard both public parsing and private revalidation with saved evidence."""
+        """Guard both public parsing and private revalidation with saved evidence.
+
+        Revalidation calls this same guarded path after serializing an
+        independent lexical clone, so it retains the schema's non-reentrant
+        parse guard, the document's typed/capture/instance-limit settings, and
+        its accepted instance DTD evidence.  The document replays its recorded
+        XDM request here, and a failure on any path releases the guard.
+        """
         guard = _parse_guard(self)
         if not guard.acquire(blocking=False):
             raise RuntimeError(_PARSE_BUSY)
