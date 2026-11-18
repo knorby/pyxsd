@@ -31,7 +31,11 @@ from pyxsd.xdm.validation import (
 )
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltError
-from pyxsd.xslt.runtime.builder import validate_constructed
+from pyxsd.xslt.runtime.builder import (
+    ResultBuilder,
+    validate_constructed,
+    validate_delivered,
+)
 from pyxsd.xslt.runtime.instructions import (
     AttributeInstruction,
     CopyInstruction,
@@ -1201,7 +1205,7 @@ def test_result_document_default_validation_keeps_raw_and_tree_separate() -> Non
     assert entry.document.root_element.type_name == f"{{{VAL}}}Order"
 
 
-def test_principal_tree_default_validation_is_applied_at_delivery() -> None:
+def test_principal_tree_default_validation_reflects_instruction_level_validation() -> None:
     body = '<xsl:template name="main"><xsl:copy-of select="/v:Order"/></xsl:template>'
     source = (
         b'<v:Order xmlns:v="urn:example:validation"><v:line code="1">'
@@ -1218,6 +1222,27 @@ def test_principal_tree_default_validation_is_applied_at_delivery() -> None:
         processor_options={"validation": "strict"},
     )
     assert preserved.principal_tree.root_element.type_name == f"{{{VAL}}}Order"
+
+
+def test_principal_delivery_keeps_construction_annotations() -> None:
+    """Bug 30211: the implicit final result tree preserves annotations.
+
+    default-validation (strip or preserve) governs instructions, never the
+    delivered principal tree; an LRE with xsl:validation="strict" stays
+    typed through document delivery.
+    """
+    body = (
+        '<xsl:template name="main">'
+        f'<v:Order xsl:validation="strict">{_line()}</v:Order>'
+        "</xsl:template>"
+    )
+    for attributes in (
+        "",
+        ' default-validation="strip"',
+        ' default-validation="preserve"',
+    ):
+        result = _transform(body, attributes=attributes)
+        assert result.principal_tree.root_element.type_name == f"{{{VAL}}}Order", attributes
 
 
 def test_construction_instruction_validation_boundaries() -> None:
@@ -1271,6 +1296,35 @@ def test_construction_instruction_validation_boundaries() -> None:
     )[0]
     assert isinstance(copied_document, XdmDocument)
     assert copied_document.root_element.type_name == f"{{{XSD_NS}}}untyped"
+
+
+def test_validate_delivered_preserve_keeps_and_strip_removes_annotations() -> None:
+    """The delivery seam: preserve is annotation-neutral; strip untypes.
+
+    Bug 30211 pins preserve semantics for the implicit final result tree.
+    The principal delivery site must therefore never request strip; this
+    pins the two arms of the seam it calls (validate_delivered had no
+    direct test).
+    """
+    pool = _schema_pool()
+    builder = ResultBuilder.document(schema_pool=pool)
+    with builder.transaction():
+        builder.element(f"{{{VAL}}}Order")
+        builder.element(f"{{{VAL}}}line", attributes=(("code", "1"),))
+        builder.element(f"{{{VAL}}}value")
+        builder.text("1.25")
+        builder.end_element()
+        builder.end_element()
+        order = builder.end_element()
+        validate_constructed(order, validation="strict", schema_pool=pool)
+    document = builder.to_tree()
+    assert document.root_element.type_name == f"{{{VAL}}}Order"
+
+    validate_delivered(document, validation="preserve", schema_pool=pool)
+    assert document.root_element.type_name == f"{{{VAL}}}Order"
+
+    validate_delivered(document, validation="strip", schema_pool=pool)
+    assert document.root_element.type_name == f"{{{XSD_NS}}}untyped"
 
 
 def test_element_type_unknown_runtime_guard_and_non_element_occurrence() -> None:

@@ -5861,9 +5861,18 @@ class _Invocation(Transformation):
             )
         ):
             tree = _build_result_tree(sequence, output_uri=self.options.output_uri)
+            # XSLT 3.0 section 25.4.2 and W3C bug 30211: the implicit final
+            # result tree's document node comes from sequence normalization
+            # (section 2.3.6.1), not from a validating instruction, so delivery
+            # never strips annotations that construction established.  Only an
+            # explicit xsl:result-document validates its delivered tree
+            # (section 25.1).  A node returned by reference keeps its
+            # annotations too, even under module-level default-validation
+            # "strip"; Saxon behaves the same, and the delivery seam cannot
+            # re-derive which annotations came from construction.
             tree = validate_delivered(
                 tree,
-                validation=self.package.default_validation or "strip",
+                validation="preserve",
                 schema_pool=self._package_schema_pool(self.package.name),
             )
         entry = ResultEntry(

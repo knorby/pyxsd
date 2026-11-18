@@ -249,6 +249,34 @@ def test_delivery_document_and_serialized_formats() -> None:
     assert map_get(overridden, "output")[0].value == "<out/>"
 
 
+def test_delivery_document_keeps_typed_result_for_the_caller() -> None:
+    """The principal tree a nested transform delivers keeps construction
+    annotations (bug 30211): delivery never re-validates the implicit tree."""
+    inner = (
+        '<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" '
+        'xmlns:v="urn:example:validation" xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+        'version="3.0">'
+        "<xsl:import-schema><xs:schema "
+        'xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+        'xmlns:v="urn:example:validation" targetNamespace="urn:example:validation" '
+        'elementFormDefault="qualified">'
+        '<xs:complexType name="Order"><xs:sequence>'
+        '<xs:element name="line"><xs:complexType>'
+        '<xs:attribute name="code" type="xs:int"/>'
+        "</xs:complexType></xs:element>"
+        "</xs:sequence></xs:complexType>"
+        '<xs:element name="Order" type="v:Order"/>'
+        "</xs:schema></xsl:import-schema>"
+        '<xsl:template name="xsl:initial-template">'
+        '<v:Order xsl:validation="strict"><v:line code="1"/></v:Order>'
+        "</xsl:template></xsl:stylesheet>"
+    )
+    result = run_transform({"stylesheet-text": inner, "delivery-format": "document"})
+    delivered = map_get(result, "output")[0]
+    assert isinstance(delivered, XdmDocument)
+    assert delivered.root_element.type_name == "{urn:example:validation}Order"
+
+
 def test_stylesheet_location_text_and_node_sources(tmp_path: Path) -> None:
     location = tmp_path / "nested.xsl"
     location.write_text(NESTED_SHEET, encoding="utf-8")
