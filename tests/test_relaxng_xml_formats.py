@@ -1783,3 +1783,338 @@ def test_native_attribute_object_does_not_invent_scalar_for_ignored_whitespace()
     assert document.root.scalar_value() is None
     assert document.to_dict() == {"@id": "x"}
     assert document.to_data() == {"@id": "x"}
+
+
+@pytest.mark.parametrize("choice", [False, True])
+@pytest.mark.parametrize("order", list(permutations(("z", "a", "b"))))
+def test_native_strict_nested_interleave_association_is_not_order_loss(choice, order):
+    z, a, b = (f'<element name="{name}"><empty/></element>' for name in ("z", "a", "b"))
+    left = f"<interleave><interleave>{z}{a}</interleave>{b}</interleave>"
+    right = f"<interleave>{z}<interleave>{a}{b}</interleave></interleave>"
+    content = f"<choice>{left}{right}</choice>" if choice else left
+    document = valid(content, "<r>" + "".join(f"<{name}/>" for name in order) + "</r>")
+    assert document.to_data(fidelity="strict") == dict.fromkeys(order)
+    plan = document.schema.projection
+    model = plan.routes[plan.roots[0]].content.model
+    assert xml_conversion._model_order(
+        model, (1, 1, 1), xml_conversion._OrderAnalysis(("a", "b", "z"), ())
+    ) == {("a", "b", "z")}
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_native_nested_interleave_preserves_group_and_repeat_constraints(reverse):
+    z, a, b, c = (f'<element name="{name}"><empty/></element>' for name in ("z", "a", "b", "c"))
+    group = f"<oneOrMore><group>{z}{a}</group></oneOrMore>"
+    left = f"<interleave><interleave>{group}{b}</interleave>{c}</interleave>"
+    right = f"<interleave>{group}<interleave>{b}{c}</interleave></interleave>"
+    xml = "<r><z/><b/><a/><z/><c/><a/></r>"
+    if reverse:
+        xml = "<r><a/><b/><z/><z/><c/><a/></r>"
+    document = parse(f"<choice>{left}{right}</choice>", xml, typed=not reverse)
+    if reverse:
+        assert not document.is_valid
+        conversion_error(
+            "order-ambiguous", "/a/1", lambda: document.to_data(typed=False, fidelity="strict")
+        )
+    else:
+        assert document.is_valid
+        assert document.to_data(fidelity="strict") == {
+            "z": [None, None],
+            "b": None,
+            "a": [None, None],
+            "c": None,
+        }
+
+
+@pytest.mark.parametrize("typed", [False, True])
+@pytest.mark.parametrize("attribute", [False, True])
+@pytest.mark.parametrize("listed", [False, True])
+@pytest.mark.parametrize("datatype", ["QName", "NOTATION"])
+@pytest.mark.parametrize("branch", ["s", "q"])
+def test_native_lexical_qname_audit_observes_whole_document_branch(
+    typed,
+    attribute,
+    listed,
+    datatype,
+    branch,
+):
+    def body(kind, datatype):
+        scalar = f'<data type="{datatype}"/>'
+        if listed:
+            scalar = f"<list>{scalar}{STRING}</list>"
+        position = f'<attribute name="x">{scalar}</attribute><empty/>' if attribute else scalar
+        return f'<group><attribute name="kind"><value>{kind}</value></attribute>{position}</group>'
+
+    content = f"<choice>{body('q', datatype)}{body('s', 'string')}</choice>"
+    text = "p:ordinary rest" if listed else "p:ordinary"
+    xml = (
+        f'<r xmlns:p="urn:p" kind="{branch}" x="{text}"/>'
+        if attribute
+        else (f'<r xmlns:p="urn:p" kind="{branch}">{text}</r>')
+    )
+    document = parse(content, xml, typed=typed)
+    assert document.is_valid
+    snapshot = document.root.revision._typed_snapshot
+    evidence = document.binding_evidence
+    if branch == "q":
+        conversion_error(
+            "namespace-lost",
+            "/@x" if attribute else "/$",
+            lambda: document.to_data(typed=False, fidelity="strict"),
+        )
+    else:
+        assert document.to_data(typed=False, fidelity="strict") == {
+            "@kind": "s",
+            "@x" if attribute else "$": text,
+        }
+    assert document.binding_evidence is evidence
+    assert document.root.revision._typed_snapshot is snapshot
+    assert not document.root.revision.dirty
+    assert document.typed is typed
+
+
+@pytest.mark.parametrize("typed", [False, True])
+@pytest.mark.parametrize("attribute", [False, True])
+@pytest.mark.parametrize("last_branch", ["s", "q"])
+def test_native_lexical_correlated_list_positions_are_not_matched_by_value(
+    typed,
+    attribute,
+    last_branch,
+):
+    def body(kind, datatype):
+        scalar = f'<list><data type="{datatype}"/>{STRING}</list>'
+        position = f'<attribute name="x">{scalar}</attribute><empty/>' if attribute else scalar
+        return f'<group><attribute name="kind"><value>{kind}</value></attribute>{position}</group>'
+
+    content = (
+        f'<oneOrMore><element name="item"><choice>'
+        f"{body('q', 'QName')}{body('s', 'string')}</choice></element></oneOrMore>"
+    )
+
+    def item(kind):
+        return (
+            f'<item kind="{kind}" x="p:ordinary rest"/>'
+            if attribute
+            else (f'<item kind="{kind}">p:ordinary rest</item>')
+        )
+
+    document = parse(content, f'<r xmlns:p="urn:p">{item("s")}{item(last_branch)}</r>', typed=typed)
+    assert document.is_valid
+    if last_branch == "q":
+        conversion_error(
+            "namespace-lost",
+            "/item/1/@x" if attribute else "/item/1/$",
+            lambda: document.to_data(typed=False, fidelity="strict"),
+        )
+    else:
+        assert document.to_data(typed=False, fidelity="strict") == {
+            "item": [{"@kind": "s", "@x" if attribute else "$": "p:ordinary rest"}] * 2
+        }
+
+
+@pytest.mark.parametrize("typed", [False, True])
+def test_lexical_qname_audit_uses_existing_or_one_guarded_whole_document_view(typed, monkeypatch):
+    content = (
+        '<choice><group><attribute name="kind"><value>q</value></attribute>'
+        '<attribute name="x"><data type="QName"/></attribute></group>'
+        '<group><attribute name="kind"><value>s</value></attribute>'
+        '<attribute name="x"><data type="string"/></attribute></group></choice>'
+    )
+    document = parse(content, '<r xmlns:p="urn:p" kind="s" x="p:ordinary"/>', typed=typed)
+    original = RelaxNGSchema._parse_guarded_instance
+    views = []
+
+    def guarded(schema, source, **kwargs):
+        assert kwargs["typed"] is True
+        assert kwargs["capture"] == "none"
+        assert kwargs["capture_xdm"] is False
+        assert kwargs["limits"] is document._limits
+        assert kwargs["declarations"] is document._declarations
+        view = original(schema, source, **kwargs)
+        views.append(view)
+        return view
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("valid lexical audit used an isolated scalar scheme or decoded a value")
+
+    from pyxsd.relaxng.datatypes import ScalarDatatype
+
+    monkeypatch.setattr(RelaxNGSchema, "_parse_guarded_instance", guarded)
+    monkeypatch.setattr(xml_conversion, "build_binding_evidence", forbidden)
+    monkeypatch.setattr(ScalarDatatype, "decode", forbidden)
+    report, snapshot = document.report, document.root.revision._typed_snapshot
+    assert document.to_data(typed=False, fidelity="strict") == {"@kind": "s", "@x": "p:ordinary"}
+    assert len(views) == (0 if typed else 1)
+    if views:
+        assert views[0].root is not document.root
+        assert views[0].root.revision is not document.root.revision
+        assert views[0].binding_evidence is not None
+    assert document.report is report
+    assert document.root.revision._typed_snapshot is snapshot
+    assert document.interpretations_current
+
+
+@pytest.mark.parametrize("branch", ["s", "q"])
+@pytest.mark.parametrize("state", ["dirty", "stale"])
+def test_lexical_correlated_audit_uses_current_tree_without_refreshing_user_view(branch, state):
+    content = (
+        '<choice><group><attribute name="kind"><value>q</value></attribute>'
+        '<data type="QName"/></group><group>'
+        '<attribute name="kind"><value>s</value></attribute><data type="string"/></group></choice>'
+    )
+    document = valid(content, f'<r xmlns:p="urn:p" kind="{"q" if branch == "s" else "s"}">p:v</r>')
+    document.root.set_attribute("kind", branch)
+    if state == "stale":
+        document = document.transform(lambda root: root)
+    report, snapshot, evidence = (
+        document.report,
+        document.root.revision._typed_snapshot,
+        document.binding_evidence,
+    )
+    if branch == "q":
+        conversion_error(
+            "namespace-lost", "/$", lambda: document.to_data(typed=False, fidelity="strict")
+        )
+    else:
+        assert document.to_data(typed=False, fidelity="strict") == {"@kind": "s", "$": "p:v"}
+    assert not document.interpretations_current
+    assert document.binding_evidence is evidence
+    assert document.report is report
+    assert document.root.revision._typed_snapshot is snapshot
+
+
+@pytest.mark.parametrize(
+    "text,loss",
+    [
+        ("p:v ordinary", True),
+        ("v p:ordinary", False),
+        ("p:v", False),
+    ],
+)
+def test_unavailable_whole_audit_fails_closed_only_for_local_token_potential(text, loss):
+    content = (
+        '<attribute name="kind"><value>ok</value></attribute>'
+        '<attribute name="x"><list><data type="QName"/><data type="string"/></list></attribute>'
+    )
+    document = parse(content, f'<r xmlns:p="urn:p" kind="invalid" x="{text}"/>', typed=False)
+    assert not document.is_valid
+    if loss:
+        with pytest.raises(PyXSDError) as caught:
+            document.to_data(typed=False, fidelity="strict")
+        assert str(caught.value).startswith("namespace-lost at '/@x': ")
+        assert "no accepting whole-document derivation" in str(caught.value)
+        with pytest.warns(PyXSDWarning, match="no accepting whole-document derivation"):
+            assert document.to_data(typed=False)["@x"] == text
+    else:
+        assert document.to_data(typed=False, fidelity="strict") == {"@kind": "invalid", "@x": text}
+
+
+@pytest.mark.parametrize("unavailable", ["busy", "limits", "missing"])
+def test_lexical_qname_audit_reports_guard_budget_and_missing_evidence(unavailable, monkeypatch):
+    from pyxsd.relaxng.limits import RelaxNGLimits
+    from pyxsd.relaxng.schema import _parse_guard
+
+    schema = schema_for('<data type="QName"/>')
+    limits = RelaxNGLimits(max_evidence_states=0) if unavailable == "limits" else None
+    document = schema.parse(io.StringIO('<r xmlns:p="urn:p">p:v</r>'), typed=False, limits=limits)
+    assert document.is_valid
+    guard = _parse_guard(schema)
+    if unavailable == "busy":
+        assert guard.acquire(blocking=False)
+    if unavailable == "missing":
+        original = RelaxNGSchema._parse_guarded_instance
+
+        def missing(self, source, **kwargs):
+            result = original(self, source, **kwargs)
+            result._binding_evidence = None
+            return result
+
+        monkeypatch.setattr(RelaxNGSchema, "_parse_guarded_instance", missing)
+    try:
+        with pytest.raises(PyXSDError) as caught:
+            document.to_data(typed=False, fidelity="strict")
+        message = str(caught.value)
+        assert message.startswith("namespace-lost at '/$': ")
+        assert {
+            "busy": "concurrently or reentrantly",
+            "limits": "max_evidence_states",
+            "missing": "accepting evidence is unavailable",
+        }[unavailable] in message
+    finally:
+        if unavailable == "busy":
+            guard.release()
+    assert document.binding_evidence is None
+    assert document.root.revision._typed_snapshot is None
+
+
+def test_whole_document_lexical_audit_preserves_declarations_and_scoped_namespaces(monkeypatch):
+    content = (
+        '<attribute name="entity"><data type="ENTITY"/></attribute>'
+        '<choice><group><attribute name="kind"><value>q</value></attribute>'
+        '<oneOrMore><element name="item"><data type="QName"/></element></oneOrMore></group>'
+        '<group><attribute name="kind"><value>s</value></attribute>'
+        '<oneOrMore><element name="item"><data type="string"/></element></oneOrMore></group></choice>'
+    )
+    document = parse(
+        content,
+        "<!DOCTYPE r [<!ENTITY foo SYSTEM 'foo.bin' NDATA data>]>"
+        '<r kind="s" entity="foo"><item xmlns:p="urn:a">p:v</item>'
+        '<item xmlns:p="urn:b">p:v</item></r>',
+        typed=False,
+    )
+    assert document.is_valid
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("audit attempted to recollect declarations or create an isolated scalar scheme")
+
+    monkeypatch.setattr("pyxsd.relaxng.schema.collect_document_declarations", forbidden)
+    monkeypatch.setattr(xml_conversion, "build_binding_evidence", forbidden)
+    frames = [dict(node.namespaces) for node in document.root.children]
+    assert document.to_data(typed=False, fidelity="strict") == {
+        "@kind": "s",
+        "@entity": "foo",
+        "item": ["p:v", "p:v"],
+    }
+    assert [dict(node.namespaces) for node in document.root.children] == frames
+    assert document.binding_evidence is None
+
+
+def test_invalid_document_with_atomic_alternatives_reports_potential_qname_loss():
+    content = (
+        '<attribute name="kind"><value>ok</value></attribute>'
+        '<attribute name="x"><choice><data type="QName"/><data type="string"/></choice></attribute>'
+    )
+    document = parse(content, '<r xmlns:p="urn:p" kind="invalid" x="p:v"/>', typed=False)
+    assert not document.is_valid
+    with pytest.raises(PyXSDError) as caught:
+        document.to_data(typed=False, fidelity="strict")
+    assert str(caught.value).startswith("namespace-lost at '/@x': ")
+    assert "no accepting whole-document derivation" in str(caught.value)
+
+
+@pytest.mark.parametrize("typed", [False, True])
+@pytest.mark.parametrize("listed", [False, True])
+@pytest.mark.parametrize("branch", ["s", "q"])
+def test_lexical_whole_document_audit_includes_scalar_branches_of_structural_routes(
+    typed,
+    listed,
+    branch,
+):
+    scalar = '<data type="QName"/>'
+    if listed:
+        scalar = f"<list>{scalar}{STRING}</list>"
+    content = (
+        '<choice><group><attribute name="kind"><value>q</value></attribute>'
+        f'{scalar}</group><group><attribute name="kind"><value>s</value></attribute>'
+        f'<element name="i">{STRING}</element></group></choice>'
+    )
+    text = "p:v rest" if listed else "p:v"
+    inner = text if branch == "q" else f"<i>{text}</i>"
+    document = parse(content, f'<r xmlns:p="urn:p" kind="{branch}">{inner}</r>', typed=typed)
+    assert document.is_valid
+    if branch == "q":
+        conversion_error(
+            "namespace-lost", "/$", lambda: document.to_data(typed=False, fidelity="strict")
+        )
+    else:
+        assert document.to_data(typed=False, fidelity="strict") == {"@kind": "s", "i": text}

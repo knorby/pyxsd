@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterator
+from copy import copy
 from dataclasses import dataclass, field
 from itertools import product
 from typing import TYPE_CHECKING, Any, NoReturn, cast
@@ -36,7 +37,7 @@ from pyxsd.namespaces import XML_NS
 from pyxsd.relaxng.contracts import ScalarContract, scalar_contract
 from pyxsd.relaxng.datatypes import DatatypeContext
 from pyxsd.relaxng.document import _whole_element_scalar_value
-from pyxsd.relaxng.evidence import EvidenceGraph, build_binding_evidence
+from pyxsd.relaxng.evidence import EvidenceGraph, EvidenceOccurrence, build_binding_evidence
 from pyxsd.relaxng.json_profile import _child_route, _layout, _root_route
 from pyxsd.relaxng.json_values import scalar_to_relaxng_json
 from pyxsd.relaxng.names import ExceptName, Name, NameChoice, NameClass, NsName
@@ -661,12 +662,29 @@ def _order_parts(
         rest = _order_parts(parts[1:], right, analysis, unordered=unordered)
         for a in first:
             for b in rest:
-                # Interleave defines no cross-operand order. Use one canonical
-                # ordering for its operands, while retaining choices within each.
-                result.add(a + b if not unordered else sum(sorted((a, b)), ()))
+                result.add(_interleave_sequence(a, b) if unordered else a + b)
                 if len(result) == 2:
                     return result
     return result
+
+
+def _interleave_sequence(first: _Sequence, second: _Sequence) -> _Sequence:
+    """Canonical shuffle, preserving each operand's group/repeat precedence.
+
+    Choosing the least available head is associative and commutative across
+    the disjoint name classes required of compiled interleave operands. Sorting
+    concatenated blocks instead would retain the arbitrary binary association.
+    """
+    merged: list[str] = []
+    left = right = 0
+    while left < len(first) and right < len(second):
+        if first[left] < second[right]:
+            merged.append(first[left])
+            left += 1
+        else:
+            merged.append(second[right])
+            right += 1
+    return (*merged, *first[left:], *second[right:])
 
 
 def _model_order(
@@ -881,33 +899,51 @@ def _lexical_bindings(node: RelaxNGElement, lexical: str) -> dict[str, str]:
 
 
 def _native_lexical_context(
-    document: RelaxNGDocument,
     node: RelaxNGElement,
     route: RouteContract | None,
     plan: ProjectionPlan,
     path: _Path,
     fidelity: Fidelity,
+    audit: _LexicalQNameAudit,
 ) -> None:
     if route is None:
         return
-    slots = [
-        (node.text_value() or "", route.content.scalar_contracts, _native_scalar_path(node, path))
+    slots: list[tuple[str, tuple[ScalarContract, ...], _Path, str | None]] = [
+        (
+            node.text_value() or "",
+            _position_scalar_contracts(route.content.model, None),
+            _native_scalar_path(node, path),
+            None,
+        )
     ]
     for name, lexical in _data_attributes(node):
-        contracts = _attribute_scalar_contracts(route.content.model, name)
-        slots.append((lexical, contracts, (*path, "@" + name)))
-    for lexical, contracts, pointer in slots:
-        if _slot_qname_loss(document, node, lexical, contracts, plan):
+        contracts = _position_scalar_contracts(route.content.model, name)
+        slots.append((lexical, contracts, (*path, "@" + name), name))
+    for lexical, contracts, pointer, slot_name in slots:
+        if not _lexical_bindings(node, lexical) or not any(
+            _contract_qname(contract, plan) for contract in contracts
+        ):
+            continue
+        message = audit.loss(node, slot_name, lexical, contracts, plan)
+        if message is not None:
             _loss(
                 "namespace-lost",
                 pointer,
-                "native lexical values cannot carry QName context",
+                message,
                 fidelity,
             )
 
 
-def _attribute_scalar_contracts(model: ContentContract, name: str) -> tuple[ScalarContract, ...]:
-    """Keep the name/contract correlation that merged wildcard views erase."""
+def _position_scalar_contracts(
+    model: ContentContract,
+    name: str | None,
+) -> tuple[ScalarContract, ...]:
+    """Potential contracts at one position, without flattening field roles.
+
+    ``None`` selects leading text, including scalar alternatives in structural
+    routes. Attributes retain the name/contract correlation of original leaves,
+    which merged wildcard views erase. These are not surviving candidates.
+    """
     pending = [model]
     seen: set[int] = set()
     contracts: dict[ScalarContract, None] = {}
@@ -916,30 +952,98 @@ def _attribute_scalar_contracts(model: ContentContract, name: str) -> tuple[Scal
         if id(part) in seen:
             continue
         seen.add(id(part))
-        if part.kind == "attribute":
-            if cast(NameClass, part.name_class).contains(*_split(name)):
+        if part.kind == ("scalar" if name is None else "attribute"):
+            if name is None or cast(NameClass, part.name_class).contains(*_split(name)):
                 contracts.update(dict.fromkeys(part.scalar_contracts))
         else:
             pending.extend(part.operands)
     return tuple(contracts)
 
 
-def _slot_qname_loss(
+@dataclass
+class _LexicalQNameAudit:
+    """Accepting whole-document witnesses, mapped back to exact caller nodes."""
+
+    document: RelaxNGDocument
+    losses: set[tuple[RelaxNGElement, str | None]] | None = None
+    unavailable: str | None = None
+
+    def _load(self) -> None:
+        self.losses = set()
+        try:
+            if _typed_available(self.document):
+                view = self.document
+            else:
+                # Revalidation already clones, preserves lexical frames/DTD
+                # evidence and instance limits, and enters the schema parse
+                # guard. Change only a disposable request, never the caller.
+                request = copy(self.document)
+                request.typed = True
+                request._capture = "none"
+                request._xdm_requested = False
+                view = request.revalidate()
+        except (PyXSDError, RuntimeError) as error:
+            self.unavailable = f"whole-document QName audit failed: {error}"
+            return
+        if view.report.has_errors:
+            self.unavailable = "current tree has no accepting whole-document derivation"
+            return
+        graph = view.binding_evidence
+        if graph is None:
+            self.unavailable = "whole-document accepting evidence is unavailable"
+            return
+        originals: dict[RelaxNGElement, RelaxNGElement] = {}
+        pending = [(self.document.root, view.root)]
+        while pending:
+            original, audited = pending.pop()
+            originals[audited] = original
+            pending.extend(zip(original.children, audited.children, strict=True))
+        for edge in graph.retained_edges:
+            for witness in edge.witnesses:
+                if not _atomic_qname(scalar_contract(witness.pattern)) or not _lexical_bindings(
+                    witness.occurrence.element, witness.lexical
+                ):
+                    continue
+                site = witness.occurrence
+                if site.kind == "token":
+                    site = cast(EvidenceOccurrence, site.parent)
+                name = site.name if site.kind == "attribute" else None
+                self.losses.add((originals[site.element], name))
+
+    def loss(
+        self,
+        node: RelaxNGElement,
+        name: str | None,
+        lexical: str,
+        contracts: tuple[ScalarContract, ...],
+        plan: ProjectionPlan,
+    ) -> str | None:
+        if self.losses is None:
+            self._load()
+        if self.unavailable is not None:
+            # Without an accepting document, local matching can only establish
+            # potential loss, never a surviving interpretation. Retain its
+            # name/token precision and make the unavailable proof explicit.
+            if _potential_qname_loss(self.document, node, lexical, contracts, plan):
+                return f"native lexical values may lose QName context; {self.unavailable}"
+            return None
+        if (node, name) in cast(set[tuple[RelaxNGElement, str | None]], self.losses):
+            return "native lexical values cannot carry QName context"
+        return None
+
+
+def _potential_qname_loss(
     document: RelaxNGDocument,
     node: RelaxNGElement,
     lexical: str,
     contracts: tuple[ScalarContract, ...],
     plan: ProjectionPlan,
 ) -> bool:
-    """Audit accepting scalar/token witnesses without typed reads or decoding.
+    """Bound local potential loss only when whole-document evidence is unavailable.
 
-    A validation-only or edited tree has no authoritative ListInterpretation.
-    Build an isolated scalar proof from the compiled contract and current frame;
-    its retained token spans are the same per-token evidence used by
-    ListInterpretation.token_candidates. Never attach this proof to the document.
+    This cannot prove branch survival. A positive result must be reported with
+    the whole-document audit failure, never as an accepting QName candidate.
     """
-    if not _lexical_bindings(node, lexical):
-        return False
     for contract in contracts:
         if not _contract_qname(contract, plan):
             continue
@@ -1014,6 +1118,7 @@ def export_native(
         mode=mode,
         fidelity=fidelity,
         always_list=always_list,
+        audit=_LexicalQNameAudit(document),
     )
     layout = _layout(route, False)
     if root.children or _data_attributes(root):
@@ -1040,6 +1145,7 @@ def _check_native_strict(
     *,
     typed: bool,
     mode: ExportMode,
+    audit: _LexicalQNameAudit,
     generic: bool = False,
     fidelity: Fidelity = "strict",
     always_list: bool = False,
@@ -1068,7 +1174,7 @@ def _check_native_strict(
         for name, _lexical in _data_attributes(node):
             _check_native_qnames(node.attribute_value(name), (*path, "@" + name), mode=mode)
     elif not typed:
-        _native_lexical_context(document, node, route, plan, path, fidelity)
+        _native_lexical_context(node, route, plan, path, fidelity, audit)
 
     for child, child_path in _child_paths(node, path, always_list):
         child_route, child_generic = _node_layout(route, child, plan)
@@ -1083,6 +1189,7 @@ def _check_native_strict(
             generic=child_generic,
             fidelity=fidelity,
             always_list=always_list,
+            audit=audit,
         )
 
 
