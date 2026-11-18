@@ -15,7 +15,7 @@ RELAX NG adapters land, each production registry entry raises
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 
 from pyxsd.data_conversion.contracts import (
     Fidelity,
@@ -32,9 +32,13 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ExportAdapter",
+    "ExportMode",
     "RelaxNGUnsupportedAdapterError",
     "export_relaxng",
 ]
+
+#: Closed export mode: raw Python values or JSON-safe/tagged values.
+ExportMode: TypeAlias = Literal["raw", "json-safe"]
 
 
 class RelaxNGUnsupportedAdapterError(PyXSDError):
@@ -52,9 +56,9 @@ class ExportAdapter(Protocol):
     materializes schema-directed values.  Dispatch checks it before
     :meth:`export`, so even an unfinished adapter never sees a stale or
     invalid typed document.  The export options are the XSD-compatible
-    ``fidelity``, ``typed``, and ``always_list`` contract; concrete adapters
-    may use them to keep native raw/Python values distinct from later
-    JSON-safe tagging.
+    ``fidelity``, ``typed``, and ``always_list`` contract; ``mode`` selects
+    raw Python/wrapper output for :meth:`RelaxNGDocument.to_dict` or
+    JSON-safe/tagged output for ``to_data`` and ``to_json``.
     """
 
     format: FormatName
@@ -67,6 +71,7 @@ class ExportAdapter(Protocol):
         fidelity: Fidelity,
         typed: bool,
         always_list: bool,
+        mode: ExportMode,
     ) -> JsonValue:
         """Return *document* under this adapter's format contract."""
         ...
@@ -93,8 +98,9 @@ class _UnimplementedAdapter:
         fidelity: Fidelity,
         typed: bool,
         always_list: bool,
+        mode: ExportMode,
     ) -> JsonValue:
-        del document, fidelity, typed, always_list
+        del document, fidelity, typed, always_list, mode
         raise RelaxNGUnsupportedAdapterError(self.format)
 
 
@@ -140,23 +146,16 @@ def _require_current_typed_evidence(document: RelaxNGDocument) -> None:
         )
 
 
-def export_relaxng(
+def _dispatch(
     document: RelaxNGDocument,
     *,
-    format: FormatName = "pyxsd",
-    fidelity: Fidelity = "best-effort",
-    typed: bool = True,
-    always_list: bool = False,
+    format: FormatName,
+    fidelity: Fidelity,
+    typed: bool,
+    always_list: bool,
+    mode: ExportMode,
 ) -> JsonValue:
-    """Export a RELAX NG document through its format's RELAX NG adapter.
-
-    Format and fidelity names are validated first, then non-default
-    ``typed``/``always_list`` values are rejected for every format except
-    native ``pyxsd``.  A typed export whose adapter materializes
-    schema-directed values requires a valid, current typed document; native
-    ``typed=False`` and JsonML skip that gate and read the current lexical
-    tree.  This function never imports or calls an XSD converter.
-    """
+    """Run the one validation, freshness, and adapter path for both modes."""
     requested_format = validate_format(format)
     requested_fidelity = validate_fidelity(fidelity)
     _validate_native_options(requested_format, typed=typed, always_list=always_list)
@@ -170,4 +169,51 @@ def export_relaxng(
         fidelity=requested_fidelity,
         typed=typed,
         always_list=always_list,
+        mode=mode,
+    )
+
+
+def _export_native_raw(
+    document: RelaxNGDocument,
+    *,
+    typed: bool,
+    always_list: bool,
+) -> JsonValue:
+    """Serve ``RelaxNGDocument.to_dict`` from the registry in raw mode."""
+    return _dispatch(
+        document,
+        format="pyxsd",
+        fidelity="best-effort",
+        typed=typed,
+        always_list=always_list,
+        mode="raw",
+    )
+
+
+def export_relaxng(
+    document: RelaxNGDocument,
+    *,
+    format: FormatName = "pyxsd",
+    fidelity: Fidelity = "best-effort",
+    typed: bool = True,
+    always_list: bool = False,
+) -> JsonValue:
+    """Export a RELAX NG document as JSON-safe or tagged data.
+
+    Format and fidelity names are validated first, then non-default
+    ``typed``/``always_list`` values are rejected for every format except
+    native ``pyxsd``.  A typed export whose adapter materializes
+    schema-directed values requires a valid, current typed document; native
+    ``typed=False`` and JsonML skip that gate and read the current lexical
+    tree.  This entry point always requests ``json-safe`` adapter output;
+    ``to_dict`` uses the same registry and freshness gate in raw mode.  It
+    never imports or calls an XSD converter.
+    """
+    return _dispatch(
+        document,
+        format=format,
+        fidelity=fidelity,
+        typed=typed,
+        always_list=always_list,
+        mode="json-safe",
     )

@@ -486,15 +486,15 @@ class RelaxNGDocument(Document):
         keeps Python wrappers and raw scalar values, while ``typed=False``
         reads lexical text.  Typed export requires a valid document whose
         evidence still describes this lexical revision.  ``typed=False``
-        remains a lexical escape path for dirty and invalid trees.
+        remains a lexical escape path for dirty and invalid trees.  The
+        adapter receives ``mode="raw"``; none of its values are JSON-encoded.
         """
-        from pyxsd.relaxng.conversion import export_relaxng
+        from pyxsd.relaxng.conversion import _export_native_raw
 
         return cast(
             dict,
-            export_relaxng(
+            _export_native_raw(
                 self,
-                format="pyxsd",
                 typed=typed,
                 always_list=always_list,
             ),
@@ -516,7 +516,8 @@ class RelaxNGDocument(Document):
         native-only options, rejected exactly as the XSD document rejects them
         on another format.  Typed schema-directed output requires a valid,
         current typed document; native ``typed=False`` and JsonML remain
-        lexical escapes over the current tree.
+        lexical escapes over the current tree.  The adapter receives
+        ``mode="json-safe"`` for JSON-safe scalar output and later tagging.
         """
         from pyxsd.relaxng.conversion import export_relaxng
 

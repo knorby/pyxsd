@@ -26,7 +26,11 @@ from pyxsd.data_conversion.contracts import FormatName
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError, ValidationError
 from pyxsd.relaxng import RelaxNGDocument, RelaxNGSchema, StaleInterpretationError, conversion
-from pyxsd.relaxng.conversion import RelaxNGUnsupportedAdapterError, export_relaxng
+from pyxsd.relaxng.conversion import (
+    ExportMode,
+    RelaxNGUnsupportedAdapterError,
+    export_relaxng,
+)
 
 NS = "http://relaxng.org/ns/structure/1.0"
 XSD_DATATYPES = "http://www.w3.org/2001/XMLSchema-datatypes"
@@ -69,12 +73,11 @@ XSD_SCHEMA = """\
 
 
 class _FakeAdapter:
-    """Recording adapter whose payload proves dispatch and option transport."""
+    """Recording adapter whose payloads prove dispatch, mode, and options."""
 
     def __init__(
         self,
         format: FormatName,
-        payload: Any = None,
         *,
         requires_current_typed_evidence: bool | None = None,
     ) -> None:
@@ -84,8 +87,10 @@ class _FakeAdapter:
             if requires_current_typed_evidence is None
             else requires_current_typed_evidence
         )
-        self.payload = {"format": format} if payload is None else payload
+        self.raw_payload: Any = {"format": format, "mode": "raw"}
+        self.json_safe_payload: Any = {"format": format, "mode": "json-safe"}
         self.calls: list[dict[str, object]] = []
+        self.seen: list[tuple[RelaxNGDocument, Any, Any]] = []
 
     def export(
         self,
@@ -94,9 +99,19 @@ class _FakeAdapter:
         fidelity: str,
         typed: bool,
         always_list: bool,
+        mode: ExportMode,
     ) -> Any:
-        self.calls.append({"fidelity": fidelity, "typed": typed, "always_list": always_list})
-        return self.payload(document) if callable(self.payload) else self.payload
+        self.calls.append(
+            {
+                "fidelity": fidelity,
+                "typed": typed,
+                "always_list": always_list,
+                "mode": mode,
+            }
+        )
+        self.seen.append((document, document.root, document.root.revision))
+        payload = self.raw_payload if mode == "raw" else self.json_safe_payload
+        return payload(document) if callable(payload) else payload
 
 
 def _schema() -> RelaxNGSchema:
@@ -129,10 +144,34 @@ def adapters(monkeypatch: pytest.MonkeyPatch) -> dict[FormatName, _FakeAdapter]:
 
 
 def test_production_registry_covers_every_format_with_relaxng_adapters() -> None:
+    expected_evidence = {
+        "pyxsd": True,
+        "pyxsd-json": True,
+        "parker": True,
+        "badgerfish": True,
+        "jsonml": False,
+    }
+
     assert set(conversion._ADAPTERS) == set(FORMATS)
     for format, adapter in conversion._ADAPTERS.items():
         assert adapter.format == format
         assert hasattr(adapter, "export")
+        assert adapter.requires_current_typed_evidence is expected_evidence[format]
+
+
+def test_invalid_and_dirty_jsonml_is_lexical_while_gated_formats_fail() -> None:
+    invalid = _invalid_typed_document()
+    with pytest.raises(ValidationError):
+        export_relaxng(invalid, format="badgerfish")
+    with pytest.raises(RelaxNGUnsupportedAdapterError):
+        export_relaxng(invalid, format="jsonml")
+
+    dirty = _typed_document()
+    dirty.root.set_text("13")
+    with pytest.raises(StaleInterpretationError):
+        export_relaxng(dirty, format="parker")
+    with pytest.raises(RelaxNGUnsupportedAdapterError):
+        export_relaxng(dirty, format="jsonml")
 
 
 @pytest.mark.parametrize("method", ["to_dict", "to_data", "to_json"])
@@ -158,8 +197,15 @@ def test_every_format_dispatches_to_its_relaxng_adapter(
     for format in FORMATS:
         adapter = adapters[format]
 
-        assert document.to_data(format=format) == {"format": format}
-        assert adapter.calls == [{"fidelity": "best-effort", "typed": True, "always_list": False}]
+        assert document.to_data(format=format) == {"format": format, "mode": "json-safe"}
+        assert adapter.calls == [
+            {
+                "fidelity": "best-effort",
+                "typed": True,
+                "always_list": False,
+                "mode": "json-safe",
+            }
+        ]
 
         adapter.calls.clear()
         assert export_relaxng(
@@ -168,8 +214,15 @@ def test_every_format_dispatches_to_its_relaxng_adapter(
             fidelity="strict",
             typed=True,
             always_list=False,
-        ) == {"format": format}
-        assert adapter.calls == [{"fidelity": "strict", "typed": True, "always_list": False}]
+        ) == {"format": format, "mode": "json-safe"}
+        assert adapter.calls == [
+            {
+                "fidelity": "strict",
+                "typed": True,
+                "always_list": False,
+                "mode": "json-safe",
+            }
+        ]
 
 
 def test_to_json_routes_each_adapter_and_encodes_its_value(
@@ -180,9 +233,14 @@ def test_to_json_routes_each_adapter_and_encodes_its_value(
     for format in FORMATS:
         encoded = document.to_json(format=format, indent=2)
 
-        assert encoded == json.dumps({"format": format}, indent=2)
+        assert encoded == json.dumps({"format": format, "mode": "json-safe"}, indent=2)
         assert adapters[format].calls == [
-            {"fidelity": "best-effort", "typed": True, "always_list": False}
+            {
+                "fidelity": "best-effort",
+                "typed": True,
+                "always_list": False,
+                "mode": "json-safe",
+            }
         ]
 
 
@@ -190,7 +248,8 @@ def test_to_dict_routes_native_and_preserves_raw_python_values(
     adapters: dict[FormatName, _FakeAdapter],
 ) -> None:
     sentinel = object()
-    adapters["pyxsd"].payload = {"value": sentinel}
+    adapters["pyxsd"].raw_payload = {"value": sentinel, "mode": "raw"}
+    adapters["pyxsd"].json_safe_payload = {"value": "json-safe", "mode": "json-safe"}
     document = _typed_document()
 
     exported = document.to_dict()
@@ -198,13 +257,25 @@ def test_to_dict_routes_native_and_preserves_raw_python_values(
     assert isinstance(exported, dict)
     assert exported["value"] is sentinel
     assert adapters["pyxsd"].calls == [
-        {"fidelity": "best-effort", "typed": True, "always_list": False}
+        {
+            "fidelity": "best-effort",
+            "typed": True,
+            "always_list": False,
+            "mode": "raw",
+        }
     ]
+    assert document.to_data(format="pyxsd")["value"] == "json-safe"
+    assert adapters["pyxsd"].calls[-1]["mode"] == "json-safe"
 
     adapters["pyxsd"].calls.clear()
     assert document.to_dict(typed=False, always_list=True)["value"] is sentinel
     assert adapters["pyxsd"].calls == [
-        {"fidelity": "best-effort", "typed": False, "always_list": True}
+        {
+            "fidelity": "best-effort",
+            "typed": False,
+            "always_list": True,
+            "mode": "raw",
+        }
     ]
 
 
@@ -213,9 +284,17 @@ def test_native_lexical_options_pass_through_the_adapter(
 ) -> None:
     document = _typed_document()
 
-    assert document.to_data(format="pyxsd", typed=False, always_list=True) == {"format": "pyxsd"}
+    assert document.to_data(format="pyxsd", typed=False, always_list=True) == {
+        "format": "pyxsd",
+        "mode": "json-safe",
+    }
     assert adapters["pyxsd"].calls == [
-        {"fidelity": "best-effort", "typed": False, "always_list": True}
+        {
+            "fidelity": "best-effort",
+            "typed": False,
+            "always_list": True,
+            "mode": "json-safe",
+        }
     ]
 
 
@@ -246,6 +325,33 @@ def test_nonnative_nondefault_options_raise_exactly_before_dispatch(
         assert str(raised.value) == message
 
     assert adapter.calls == []
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"typed": False}, "typed is a native-only data-export option"),
+        ({"always_list": True}, "always_list is a native-only data-export option"),
+    ],
+)
+def test_native_only_option_errors_match_xsd_exactly(
+    adapters: dict[FormatName, _FakeAdapter],
+    options: dict[str, bool],
+    message: str,
+) -> None:
+    relaxed = _typed_document()
+    xsd = pyxsd.Schema.compile(io.StringIO(XSD_SCHEMA)).parse(
+        io.StringIO('<root a="1"><item>2</item></root>')
+    )
+
+    with pytest.raises(ValueError) as relaxed_error:
+        relaxed.to_data(format="jsonml", **options)
+    with pytest.raises(ValueError) as xsd_error:
+        xsd.to_data(format="jsonml", **options)
+
+    assert type(relaxed_error.value) is type(xsd_error.value)
+    assert str(relaxed_error.value) == str(xsd_error.value) == message
+    assert adapters["jsonml"].calls == []
 
 
 def test_invalid_format_and_fidelity_are_rejected_before_dispatch(
@@ -318,56 +424,100 @@ def test_native_typed_false_exports_the_current_dirty_tree(
     adapters: dict[FormatName, _FakeAdapter],
 ) -> None:
     document = _typed_document()
-    adapters["pyxsd"].payload = lambda current: {"text": current.root.text_value()}
-    document.root.set_text("13")
+    adapter = adapters["pyxsd"]
+    root = document.root
+    revision = root.revision
+    adapter.json_safe_payload = lambda current: {"text": current.root.text_value()}
+    root.set_text("13")
 
     assert document.to_data(format="pyxsd", typed=False) == {"text": "13"}
-    assert adapters["pyxsd"].calls == [
-        {"fidelity": "best-effort", "typed": False, "always_list": False}
+    assert adapter.calls == [
+        {
+            "fidelity": "best-effort",
+            "typed": False,
+            "always_list": False,
+            "mode": "json-safe",
+        }
     ]
+    assert adapter.seen == [(document, root, revision)]
+    assert document.root is root
+    assert document.root.revision is revision
 
 
 def test_native_typed_false_and_jsonml_export_invalid_current_tree(
     adapters: dict[FormatName, _FakeAdapter],
 ) -> None:
     document = _invalid_typed_document()
-    adapters["pyxsd"].payload = lambda current: {"text": current.root.text_value()}
-    adapters["jsonml"].payload = lambda current: {"text": current.root.text_value()}
+    root = document.root
+    revision = root.revision
+    adapters["pyxsd"].json_safe_payload = lambda current: {"text": current.root.text_value()}
+    adapters["jsonml"].json_safe_payload = lambda current: {"text": current.root.text_value()}
 
     assert document.to_data(format="pyxsd", typed=False) == {"text": "oops"}
+    assert adapters["pyxsd"].seen == [(document, root, revision)]
+
     assert document.to_data(format="jsonml") == {"text": "oops"}
     assert adapters["jsonml"].calls == [
-        {"fidelity": "best-effort", "typed": True, "always_list": False}
+        {
+            "fidelity": "best-effort",
+            "typed": True,
+            "always_list": False,
+            "mode": "json-safe",
+        }
     ]
+    assert adapters["jsonml"].seen == [(document, root, revision)]
+    assert document.root is root
+    assert document.root.revision is revision
 
 
 def test_jsonml_stays_lexical_after_mutation(
     adapters: dict[FormatName, _FakeAdapter],
 ) -> None:
     document = _typed_document()
-    adapters["jsonml"].payload = lambda current: {"text": current.root.text_value()}
-    document.root.set_text("99")
+    adapter = adapters["jsonml"]
+    root = document.root
+    revision = root.revision
+    adapter.json_safe_payload = lambda current: {"text": current.root.text_value()}
+    root.set_text("99")
 
     assert document.to_data(format="jsonml") == {"text": "99"}
-    assert adapters["jsonml"].calls == [
-        {"fidelity": "best-effort", "typed": True, "always_list": False}
+    assert adapter.calls == [
+        {
+            "fidelity": "best-effort",
+            "typed": True,
+            "always_list": False,
+            "mode": "json-safe",
+        }
     ]
+    assert adapter.seen == [(document, root, revision)]
+    assert document.root is root
+    assert document.root.revision is revision
 
 
 def test_json_rejects_nonfinite_adapter_output_but_to_dict_stays_raw(
     adapters: dict[FormatName, _FakeAdapter],
 ) -> None:
-    adapters["pyxsd"].payload = {
+    nonfinite = {
         "positive": float("inf"),
         "negative": float("-inf"),
         "missing": float("nan"),
     }
+    adapters["pyxsd"].raw_payload = nonfinite
+    adapters["pyxsd"].json_safe_payload = nonfinite
     document = _typed_document()
 
     assert isinstance(document.to_dict(), dict)
+    raw = document.to_dict()
+    assert raw["positive"] == float("inf")
     assert document.to_data()["positive"] == float("inf")
     with pytest.raises(ValueError):
         document.to_json()
+    assert [call["mode"] for call in adapters["pyxsd"].calls] == [
+        "raw",
+        "raw",
+        "json-safe",
+        "json-safe",
+    ]
 
 
 @pytest.mark.parametrize("format", FORMATS)
