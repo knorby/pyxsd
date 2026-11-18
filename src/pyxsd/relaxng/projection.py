@@ -235,6 +235,7 @@ class RouteContract:
     occurrence: ProjectionOccurrence
     origins: OriginTable
     assignments: Mapping[int, ElementAssignment]
+    patterns: tuple[Element, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "attributes", MappingProxyType(dict(self.attributes)))
@@ -986,6 +987,7 @@ class _Planner:
                 "a whole-element scalar descriptor"
             )
         route_id = self.registered[occurrence]
+        element_patterns = tuple(assignments)
         self.routes[route_id] = RouteContract(
             route_id,
             _expanded(occurrence.name_class),
@@ -1007,6 +1009,7 @@ class _Planner:
                 self.ordinals[id(n)]: ElementAssignment(n.name_class, m)
                 for n, m in zip(assignments, models, strict=True)
             },
+            element_patterns,
         )
 
     def plan(self) -> ProjectionPlan:

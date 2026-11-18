@@ -351,7 +351,7 @@ def test_route_layout_metadata_matches_the_compiled_route(body, layout):
     assert description["x-pyxsd-input-order"] == "unordered"
 
 
-def test_choice_route_is_accepted_at_class_time_with_its_retained_constraint():
+def test_choice_route_rejects_jointly_impossible_data():
     schema = compile_element(
         '<choice><element name="a"><text/></element><element name="b"><text/></element></choice>'
     )
@@ -361,11 +361,11 @@ def test_choice_route_is_accepted_at_class_time_with_its_retained_constraint():
     assert Root.__relaxng_route__.constraints[0].kind == "choice"
     assert Root.model_validate({"a": "x"}).a.root == "x"
     assert Root.model_validate({"b": "y"}).b.root == "y"
-    # Task 1 keeps the unordered class permissive; Task 3 uses the retained
-    # route constraint to reject this jointly impossible populated combination.
-    both = Root.model_validate({"a": "x", "b": "y"})
-    assert both.a.root == "x"
-    assert both.b.root == "y"
+    # The retained route constraint reconstructs one deterministic lexical
+    # tree; the native patterns reject this jointly impossible combination.
+    with pytest.raises(pydantic.ValidationError) as error:
+        Root.model_validate({"a": "x", "b": "y"})
+    assert "different compiled alternatives" in error.value.errors()[0]["msg"]
 
 
 def test_child_resolved_before_parent_reuses_the_cached_child_class():

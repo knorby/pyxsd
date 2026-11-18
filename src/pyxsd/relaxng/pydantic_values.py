@@ -94,6 +94,7 @@ from pyxsd.relaxng.values import (
 __all__ = [
     "STANDALONE_REVISION",
     "ScalarCodec",
+    "context_from_mapping",
     "context_from_validation",
     "relaxng_scalar_annotation",
 ]
@@ -183,7 +184,11 @@ def _relaxng_context(info: ValidationInfo | None) -> DatatypeContext | None:
     outer context mapping nor the nested namespace mapping is mutated, and no
     object from the caller becomes part of the returned immutable context.
     """
-    context = getattr(info, "context", None)
+    return _context_from_mapping(getattr(info, "context", None))
+
+
+def _context_from_mapping(context: object) -> DatatypeContext | None:
+    """Read one caller-owned Pydantic-style context mapping without mutation."""
     if context is None:
         return None
     if not isinstance(context, Mapping):
@@ -213,6 +218,19 @@ def _relaxng_context(info: ValidationInfo | None) -> DatatypeContext | None:
     if "xml" in copied:
         raise ValueError("the xml namespace binding is implicit and cannot be supplied")
     return DatatypeContext(base_uri, copied)
+
+
+def context_from_mapping(context: object) -> DatatypeContext:
+    """Return the scoped datatype context represented by one mapping value.
+
+    Accepts a ``{"relaxng": {"namespaces": ..., "base_uri": ...}}`` mapping, a
+    :class:`DatatypeContext`, or ``None``.  Every returned value owns copies of
+    the supplied namespace bindings; caller mappings are never mutated.
+    """
+    if isinstance(context, DatatypeContext):
+        return DatatypeContext(context.base_uri, dict(context.namespaces))
+    supplied = _context_from_mapping(context)
+    return supplied if supplied is not None else DatatypeContext(None, {})
 
 
 def context_from_validation(info: ValidationInfo | None) -> DatatypeContext:
