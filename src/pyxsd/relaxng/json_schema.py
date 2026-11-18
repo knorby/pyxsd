@@ -1882,7 +1882,6 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 },
             },
             "additionalProperties": False,
-            "minProperties": 1,
         }
 
     def _badgerfish_generic_value(self) -> _Schema:
@@ -2219,7 +2218,6 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
             self.unvalidated.add("relaxng-attribute-name-class")
         body: _Schema = {
             "type": "object",
-            "minProperties": 1,
             "properties": properties,
             "patternProperties": patterns,
         }
@@ -2297,7 +2295,6 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         return (
             {
                 "type": "object",
-                "minProperties": 1,
                 "propertyNames": {
                     "anyOf": [
                         {"pattern": _JSONML_ATTRIBUTE_PATTERN},

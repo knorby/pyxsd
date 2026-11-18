@@ -1898,6 +1898,39 @@ def test_declaration_free_plans_accept_legal_declaration_envelopes(
 
 
 @pytest.mark.parametrize("format", ("badgerfish", "jsonml"))
+def test_empty_declaration_and_jsonml_attribute_maps_are_accepted(format: FormatName) -> None:
+    scalar_schema = schema_for(STRING)
+    empty_schema = schema_for(EMPTY)
+    child_schema = schema_for('<element name="child"><text/></element>')
+
+    if format == "badgerfish":
+        positives = [
+            (child_schema, {"r": {"@xmlns": {}, "child": "v"}}),
+            (child_schema, {"r": {"child": {"@xmlns": {}, "$": "v"}}}),
+            (scalar_schema, {"r": {"@xmlns": {}, "$": "v"}}),
+            (empty_schema, {"r": {"@xmlns": {}}}),
+        ]
+    else:
+        positives = [
+            (child_schema, ["r", {}, ["child", "v"]]),
+            (child_schema, ["r", ["child", {}, "v"]]),
+            (scalar_schema, ["r", {}, "v"]),
+            (empty_schema, ["r", {}]),
+        ]
+
+    for schema, data in positives:
+        imported = schema.from_data(data, format=format, fidelity="strict")
+        assert not imported.report.has_errors, (format, imported.report.issues)
+        validates(schema, data, format=format, fidelity="strict")
+
+    if format == "badgerfish":
+        unrelated = {"r": {"@xmlns": {}, "other": "v"}}
+    else:
+        unrelated = ["r", {"other": "v"}, ["child", "v"]]
+    rejects(child_schema, unrelated, format=format, fidelity="strict")
+
+
+@pytest.mark.parametrize("format", ("badgerfish", "jsonml"))
 def test_lexical_namespace_schema_matches_reserved_and_empty_rules(format: FormatName) -> None:
     document = valid(
         '<element name="child" ns="urn:a"><data type="string"/></element>',
