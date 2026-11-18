@@ -2025,6 +2025,8 @@ def test_sequence_type_conversion_and_matching_arms(tmp_path: Path) -> None:
         f'<xs:schema xmlns:xs="{XSD_NS}">'
         '<xs:element name="child" type="xs:string"/>'
         '<xs:attribute name="a" type="xs:string"/>'
+        '<xs:complexType name="holderType"><xs:attribute ref="a"/></xs:complexType>'
+        '<xs:element name="holder" type="holderType"/>'
         "</xs:schema>",
         encoding="utf-8",
     )
@@ -2041,9 +2043,32 @@ def test_sequence_type_conversion_and_matching_arms(tmp_path: Path) -> None:
     mapping = XdmMap.from_mapping({"k": 1})
     array = XdmArray([1])
 
-    def check(type_source: str, item: Any, expected: Any = None) -> None:
+    from pyxsd.xdm.document import parse_typed_document
+
+    typed_child = parse_typed_document(
+        b"<child>text</child>", schema_pool=pool, validation="strict"
+    ).root_element
+    typed_holder = parse_typed_document(
+        b"<holder a='1'/>", schema_pool=pool, validation="strict"
+    ).root_element
+    typed_attribute = typed_holder.attribute("a")
+    assert typed_attribute is not None
+
+    def check(
+        type_source: str,
+        item: Any,
+        expected: Any = None,
+        *,
+        schema_pool: SchemaPool | None = None,
+    ) -> None:
         sequence_type = compile_sequence_type(type_source, context)
-        result = _coerce_sequence((item,), sequence_type, code="XTTE0790", label="test")
+        result = _coerce_sequence(
+            (item,),
+            sequence_type,
+            code="XTTE0790",
+            label="test",
+            schema_pool=schema_pool,
+        )
         assert result == ((item,) if expected is None else (expected,))
 
     check("node()", root)
@@ -2052,8 +2077,18 @@ def test_sequence_type_conversion_and_matching_arms(tmp_path: Path) -> None:
     check("processing-instruction(pi)", instruction)
     check("attribute()", attribute)
     check("element()", child)
-    check("schema-element(child)", child)
-    check("schema-attribute(a)", attribute)
+    check("schema-element(child)", typed_child, schema_pool=pool)
+    check("schema-attribute(a)", typed_attribute, schema_pool=pool)
+    # Without a schema pool an unannotated node matches no schema declaration.
+    for type_source, item in (("schema-element(child)", child), ("schema-attribute(a)", attribute)):
+        with pytest.raises(XsltError) as error:
+            _coerce_sequence(
+                (item,),
+                compile_sequence_type(type_source, context),
+                code="XTTE0790",
+                label="test",
+            )
+        assert error.value.code == "XTTE0790"
     check("document-node()", source)
     check("namespace-node()", namespace)
     check("function(*)", mapping)

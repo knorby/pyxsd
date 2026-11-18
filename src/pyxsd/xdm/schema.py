@@ -695,6 +695,24 @@ class PyxsdElement:
     def maps(self) -> SchemaPool:
         return self._pool
 
+    @property
+    def nillable(self) -> bool:
+        """Whether the declaration admits ``xsi:nil="true"``."""
+        is_nillable = getattr(self._er, "isNillable", None)
+        return bool(is_nillable()) if callable(is_nillable) else False
+
+    @property
+    def abstract(self) -> bool:
+        """Whether the declaration may only appear through a substitute."""
+        is_abstract = getattr(self._er, "isAbstract", None)
+        return bool(is_abstract()) if callable(is_abstract) else False
+
+    @property
+    def block(self) -> str | None:
+        """The declaration's effective ``block`` attribute value."""
+        get_block = getattr(self._er, "getBlock", None)
+        return get_block() if callable(get_block) else None
+
     def is_matching(self, name: str | None, default_namespace: str | None = None) -> bool:
         if self._name is None or name is None:
             return False

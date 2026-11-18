@@ -41,6 +41,7 @@ from pyxsd.xdm import (
     XdmMap,
     XdmSequence,
     as_xdm,
+    type_tests,
 )
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
@@ -5717,35 +5718,32 @@ def _matches_item_type(
             and (item_type.target is None or item.target == item_type.target)
         )
     if kind in ("element", "schema-element"):
-        if not (isinstance(item, XdmNode) and item.kind is NodeKind.ELEMENT):
+        if not isinstance(item, XdmNode):
             return False
         if kind == "schema-element":
-            if item_type.name is None or item.name != item_type.name:
-                return False
-            return _node_matches_declaration(item, item_type.name, schema_pool, element=True)
-        if not (item_type.wildcard or item_type.name is None or item.name == item_type.name):
-            return False
-        if item_type.type_name is None:
-            return True
-        # XPath 3.1 section 2.5.5.3 applies the nilled rule only to a typed
-        # element test: ``element(*)`` and ``element(Name)`` match a nilled
-        # element, while ``element(Name, TypeName)`` matches it only when the
-        # test's TypeName carries the ``?`` (nillable) marker.
-        if item.nilled and not item_type.nillable:
-            return False
-        return _node_has_type(item, item_type.type_name, schema_pool)
+            name = item_type.name
+            assert name is not None
+            return type_tests.matches_schema_element(item, name, schema_pool)
+        return type_tests.matches_element_test(
+            item,
+            None if item_type.wildcard else item_type.name,
+            item_type.type_name,
+            item_type.nillable,
+            schema_pool,
+        )
     if kind in ("attribute", "schema-attribute"):
-        if not (isinstance(item, XdmNode) and item.kind is NodeKind.ATTRIBUTE):
+        if not isinstance(item, XdmNode):
             return False
         if kind == "schema-attribute":
-            if item_type.name is None or item.name != item_type.name:
-                return False
-            return _node_matches_declaration(item, item_type.name, schema_pool, element=False)
-        if not (item_type.wildcard or item_type.name is None or item.name == item_type.name):
-            return False
-        if item_type.type_name is None:
-            return True
-        return _node_has_type(item, item_type.type_name, schema_pool)
+            name = item_type.name
+            assert name is not None
+            return type_tests.matches_schema_attribute(item, name, schema_pool)
+        return type_tests.matches_attribute_test(
+            item,
+            None if item_type.wildcard else item_type.name,
+            item_type.type_name,
+            schema_pool,
+        )
     if kind == "document-node":
         return isinstance(item, XdmNode) and item.kind is NodeKind.DOCUMENT
     if kind == "function":
@@ -5755,43 +5753,6 @@ def _matches_item_type(
     if kind == "array":
         return isinstance(item, XdmArray)
     return False  # pragma: no cover - every ItemType kind is handled above
-
-
-def _node_has_type(item: XdmNode, required: str, schema_pool: SchemaPool | None) -> bool:
-    """Whether a node's type annotation is *required* or derived from it."""
-    if item.type_name == required:
-        return True
-    actual = getattr(item.annotation, "actual_type", None)
-    adapter = schema_pool.get_type(required) if schema_pool is not None else None
-    expected = getattr(adapter, "_type_class", None)
-    if not isinstance(actual, type) or not isinstance(expected, type):
-        return False
-    return issubclass(actual, expected)
-
-
-def _node_matches_declaration(
-    item: XdmNode,
-    name: str,
-    schema_pool: SchemaPool | None,
-    *,
-    element: bool,
-) -> bool:
-    """Whether a node's annotation matches one global element/attribute declaration."""
-    if schema_pool is None:
-        return True
-    declaration = schema_pool.get_element(name) if element else schema_pool.get_attribute(name)
-    if declaration is None:
-        return False
-    declared_type = getattr(declaration, "type", None)
-    if declared_type is not None and declared_type.name is not None:
-        return _node_has_type(item, declared_type.name, schema_pool)
-    # An anonymous declared type has no name to look up, so compare the
-    # generated type classes directly, as _node_has_type does.
-    declared_class = getattr(declared_type, "_type_class", None)
-    actual = getattr(item.annotation, "actual_type", None)
-    if isinstance(actual, type) and isinstance(declared_class, type):
-        return issubclass(actual, declared_class)
-    return False
 
 
 def _require_absolute(uri: str, label: str) -> str:

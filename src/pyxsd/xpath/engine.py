@@ -24,7 +24,7 @@ import copy
 import math
 import operator
 from abc import ABCMeta
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from types import MethodType
@@ -33,6 +33,7 @@ from typing import Any, cast
 from elementpath import XPathContext
 from elementpath.datatypes import AnyAtomicType, UntypedAtomic
 from elementpath.helpers import upper_camel_case
+from elementpath.namespaces import get_expanded_name
 from elementpath.tdop import Parser
 from elementpath.xpath1 import XPath1Parser
 from elementpath.xpath2 import XPath2Parser
@@ -53,7 +54,16 @@ from elementpath.xpath_tokens.functions import ExternalFunction, XPathFunction
 from elementpath.xpath_tokens.tokens import ContextItemToken, VariableToken
 
 from pyxsd import xsd_data_types as _xsd
-from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmItem, XdmMap, XdmSequence, as_xdm
+from pyxsd.xdm import (
+    XdmArray,
+    XdmAtomic,
+    XdmFunction,
+    XdmItem,
+    XdmMap,
+    XdmSequence,
+    as_xdm,
+    type_tests,
+)
 from pyxsd.xdm.annotations import schema_type_name
 from pyxsd.xdm.legacy import (
     LegacyNodeSetError,
@@ -476,6 +486,35 @@ class _PoolSchemaProxy:
 
     def get_substitution_group(self, qname: str) -> Any:
         return self._pool.get_substitution_group(self.expand(qname))
+
+    def has_element(self, name: str) -> bool:
+        return type_tests.declaration_exists(self._pool, "schema-element", name)
+
+    def has_attribute(self, name: str) -> bool:
+        return type_tests.declaration_exists(self._pool, "schema-attribute", name)
+
+    def matches_element_test(
+        self,
+        node: XdmNode,
+        name: str | None,
+        type_name: str | None,
+        nillable: bool,
+    ) -> bool:
+        return type_tests.matches_element_test(node, name, type_name, nillable, self._pool)
+
+    def matches_attribute_test(
+        self,
+        node: XdmNode,
+        name: str | None,
+        type_name: str | None,
+    ) -> bool:
+        return type_tests.matches_attribute_test(node, name, type_name, self._pool)
+
+    def matches_schema_element(self, node: XdmNode, name: str) -> bool:
+        return type_tests.matches_schema_element(node, name, self._pool)
+
+    def matches_schema_attribute(self, node: XdmNode, name: str) -> bool:
+        return type_tests.matches_schema_attribute(node, name, self._pool)
 
 
 # ---------------------------------------------------------------------------
@@ -985,6 +1024,7 @@ def _build_parser(
         _install_legacy_1_0_overrides(parser)
     else:
         _register_schema_constructors(parser, static_context)
+        _install_schema_kind_tests(parser)
         # A declared type may be a user-defined schema type the parser can only
         # resolve once its pool proxy is bound; pyxsd validated the declaration
         # already (XPST0051/XPST0008), so assign the full map here instead of
@@ -1118,6 +1158,175 @@ def _register_schema_constructors(parser: Any, static_context: XPathStaticContex
             continue
         if symbol not in parser.symbol_table:
             parser.schema_constructor(adapter.name)
+
+
+def _install_schema_kind_tests(parser: Any) -> None:
+    """Replace elementpath's kind tests with the XPath 3.1 annotation rules.
+
+    ``element(*, T)`` and ``attribute(*, T)`` are *type annotation* tests
+    (XPath 3.1 sections 2.5.5.3 and 2.5.5.5), not value-space tests, and
+    ``schema-element``/``schema-attribute`` are filters over the candidates of
+    their axis (sections 2.5.5.4 and 2.5.5.6): an empty match is the empty
+    sequence, never an error.  A declaration that is absent from the in-scope
+    schema components is a *static* error, raised while the token is parsed,
+    which is what ``XPathEngine.compile`` runs for every stylesheet expression.
+
+    The test is installed for every schema-aware evaluation, including a
+    parser with no bound pool: every node is then untyped and the untyped rule
+    fails closed for a named type.  XPath 1.0 has no kind tests.
+    """
+    element_base = parser.symbol_table.get("element")
+    attribute_base = parser.symbol_table.get("attribute")
+    schema_element_base = parser.symbol_table.get("schema-element")
+    schema_attribute_base = parser.symbol_table.get("schema-attribute")
+    if None in (element_base, attribute_base, schema_element_base, schema_attribute_base):
+        return  # pragma: no cover - every XPath 2.0+ parser has these tokens
+
+    def element_name(token: Any, namespaces: MutableMapping[str, str]) -> str | None:
+        return None if token.symbol == "*" else get_expanded_name(token.source, namespaces)
+
+    def attribute_name(token: Any, namespaces: MutableMapping[str, str]) -> str | None:
+        if token.symbol == "*":
+            return None
+        source = token.source
+        if ":" not in source and not source.startswith(("Q{", "{")):
+            # An unprefixed attribute name is in no namespace; the default
+            # element/type namespace never applies (section 2.5.5.5).
+            return source
+        return get_expanded_name(source, namespaces)
+
+    def select_element(self: Any, context: Any = None) -> Iterator[Any]:
+        if context is None:
+            raise self.missing_context()
+        schema = self.parser.schema
+        if not self:
+            for item in context.iter_children_or_self():
+                if isinstance(item, ElementNode):
+                    yield item
+            return
+        name = element_name(self[0], self.parser.namespaces)
+        type_name = self[1].name if len(self) == 2 else None
+        nillable = len(self) == 2 and self[1].occurrence in ("*", "?")
+        for item in context.iter_children_or_self():
+            node = getattr(item, "xdm", None)
+            if node is None:  # pragma: no cover - every bridged node has its XDM node
+                continue
+            matches = (
+                type_tests.matches_element_test(node, name, type_name, nillable, None)
+                if schema is None
+                else schema.matches_element_test(node, name, type_name, nillable)
+            )
+            if matches:
+                yield item
+
+    def select_attribute(self: Any, context: Any = None) -> Iterator[Any]:
+        if self.label == "axis":
+            yield from attribute_base.select(self, context)
+            return
+        if context is None:
+            raise self.missing_context()
+        schema = self.parser.schema
+        name = attribute_name(self[0], self.parser.namespaces) if self else None
+        type_name = self[1].name if len(self) == 2 else None
+        candidates = (
+            context.iter_attributes() if context.axis is None else context.iter_children_or_self()
+        )
+        for item in candidates:
+            node = getattr(item, "xdm", None)
+            if node is None:  # pragma: no cover - every bridged node has its XDM node
+                continue
+            matches = (
+                type_tests.matches_attribute_test(node, name, type_name, None)
+                if schema is None
+                else schema.matches_attribute_test(node, name, type_name)
+            )
+            if matches:
+                yield item
+
+    def check_declaration(self: Any, kind: str) -> None:
+        proxy = self.parser.schema
+        name = get_expanded_name(self[0].source, self.parser.namespaces)
+        exists = proxy is not None and (
+            proxy.has_element(name) if kind == "schema-element" else proxy.has_attribute(name)
+        )
+        if not exists:
+            raise self.error(
+                "XPST0008",
+                f"no {kind} declaration {self[0].source!r} is in the in-scope schema definitions",
+            )
+
+    def nud_schema_element(self: Any) -> Any:
+        schema_element_base.nud(self)
+        check_declaration(self, "schema-element")
+        return self
+
+    def nud_schema_attribute(self: Any) -> Any:
+        schema_attribute_base.nud(self)
+        check_declaration(self, "schema-attribute")
+        return self
+
+    def declaration_name(self: Any) -> str:
+        return get_expanded_name(self[0].source, self.parser.namespaces)
+
+    def select_schema_element(self: Any, context: Any = None) -> Iterator[Any]:
+        if context is None:
+            raise self.missing_context()
+        proxy = self.parser.schema
+        assert proxy is not None  # nud rejected an absent pool
+        name = declaration_name(self)
+        for item in context.iter_children_or_self():
+            node = getattr(item, "xdm", None)
+            if node is None:  # pragma: no cover - every bridged node has its XDM node
+                continue
+            if proxy.matches_schema_element(node, name):
+                yield item
+
+    def select_schema_attribute(self: Any, context: Any = None) -> Iterator[Any]:
+        if context is None:
+            raise self.missing_context()
+        proxy = self.parser.schema
+        assert proxy is not None  # nud rejected an absent pool
+        name = declaration_name(self)
+        candidates = (
+            context.iter_attributes() if context.axis is None else context.iter_children_or_self()
+        )
+        for item in candidates:
+            node = getattr(item, "xdm", None)
+            if node is None:  # pragma: no cover - every bridged node has its XDM node
+                continue
+            if proxy.matches_schema_attribute(node, name):
+                yield item
+
+    parser._register(
+        "element",
+        "_PyxsdElementKindTest",
+        bases=(element_base,),
+        label=element_base.label,
+        select=select_element,
+    )
+    parser._register(
+        "attribute",
+        "_PyxsdAttributeKindTest",
+        bases=(attribute_base,),
+        label=attribute_base.label,
+        select=select_attribute,
+    )
+    parser._register(
+        "schema-element",
+        "_PyxsdSchemaElementKindTest",
+        bases=(schema_element_base,),
+        label=schema_element_base.label,
+        nud=nud_schema_element,
+        select=select_schema_element,
+    )
+    parser._register(
+        "schema-attribute",
+        "_PyxsdSchemaAttributeKindTest",
+        bases=(schema_attribute_base,),
+        label=schema_attribute_base.label,
+        nud=nud_schema_attribute,
+        select=select_schema_attribute,
+    )
 
 
 def _register_declared_function(

@@ -327,14 +327,17 @@ def test_copy_of_default_validation_comes_from_the_containing_element() -> None:
     assert _values(_transform(body, processor_options={"validation": "strict"})) == ("true", "4.0")
 
 
-def test_copy_of_preserve_does_not_annotate_the_root_any_type() -> None:
+def test_copy_of_preserve_keeps_the_declared_type() -> None:
+    # Every type annotation derives from the ur-type xs:anyType (XPath 3.1
+    # section 2.5.5.3 with XDM 3.1 section 2.7.2), so both the declared type
+    # and xs:anyType match the preserved root.
     body = (
         '<xsl:template name="main">'
         '<xsl:variable name="c">'
         '<xsl:copy-of select="/v:Order" validation="preserve"/>'
         "</xsl:variable>"
         '<xsl:sequence select="$c/v:Order instance of element(*, v:Order)"/>'
-        '<xsl:sequence select="not($c/v:Order instance of element(*, xs:anyType))"/>'
+        '<xsl:sequence select="$c/v:Order instance of element(*, xs:anyType)"/>'
         "</xsl:template>"
     )
 

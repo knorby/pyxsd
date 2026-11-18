@@ -9,9 +9,9 @@ import pytest
 from pyxsd.schema import Schema
 from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xdm.schema import SchemaPool
+from pyxsd.xdm.type_tests import matches_schema_element
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltError
-from pyxsd.xslt.processor import _node_matches_declaration
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
@@ -406,7 +406,7 @@ def test_untyped_element_tests_match_a_nilled_element(test: str) -> None:
 def test_a_declaration_absent_from_the_pool_does_not_match() -> None:
     element = XdmDocument.parse(b"<doc/>").root_element
 
-    assert not _node_matches_declaration(element, f"{{{SUP}}}missing", _pool(), element=True)
+    assert not matches_schema_element(element, f"{{{SUP}}}missing", _pool())
 
 
 # -- bare type QName in a kind test ---------------------------------------------

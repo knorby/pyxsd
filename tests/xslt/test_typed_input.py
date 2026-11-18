@@ -470,7 +470,10 @@ def test_xsi_type_selects_the_derived_type() -> None:
     assert result.principal == (XdmAtomic.decimal(Decimal("1.5")),)
     assert evaluate("self::schema-element(inv:Invoice)", compiled, source)
     assert evaluate("self::element(*, inv:SpecialInvoice)", compiled, source)
-    assert not evaluate("self::element(*, inv:InvoiceType)", compiled, source)
+    # ``inv:SpecialInvoice`` extends ``inv:InvoiceType``, and an extension type
+    # derives from its base (XPath 3.1 section 2.5.5.3 with XSD 1.1 section
+    # 3.4.2), so the declared type matches as well.
+    assert evaluate("self::element(*, inv:InvoiceType)", compiled, source)
 
 
 # ---------------------------------------------------------------------------
