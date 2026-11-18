@@ -50,7 +50,7 @@ if TYPE_CHECKING:
     from pyxsd.relaxng.pydantic_adapter import RelaxNGModelSet
     from pyxsd.relaxng.schema import RelaxNGSchema
 
-__all__ = ["ModelSet", "models"]
+__all__ = ["ModelSet", "clean_field_schema", "models"]
 
 
 def _scalar_input(cls: type, value: Any) -> Any:
@@ -274,9 +274,13 @@ def _before(shape: ElementShape, aliases: dict[str, str]) -> Any:
     return validate
 
 
-def _field_schema(schema: dict[str, Any]) -> None:
-    # A missing optional non-nillable field has an internal None placeholder,
-    # not a nullable input/default in the JSON Schema contract.
+def clean_field_schema(schema: dict[str, Any]) -> None:
+    """Remove the internal ``None`` placeholder from one field schema.
+
+    A missing optional non-nillable field has an internal ``None`` default in
+    the model, but that is not a nullable input/default in the JSON Schema
+    contract.  XSD and RELAX NG schema hooks share this exact cleanup.
+    """
     if schema.get("default", object()) is None:
         schema.pop("default")
 
@@ -410,7 +414,7 @@ class ModelSet:
             def model_schema(description: dict[str, Any]) -> None:
                 description.update(metadata)
                 for property_schema in description.get("properties", {}).values():
-                    _field_schema(property_schema)
+                    clean_field_schema(property_schema)
 
             validators = {"xml_contract": model_validator(mode="before")(_before(shape, aliases))}
             model = create_model(

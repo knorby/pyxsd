@@ -3,30 +3,48 @@
 Models are built from the compiled :class:`~pyxsd.relaxng.projection.RouteContract`
 graph before any instance XML exists.  A class belongs to one route, not to one
 document path, so recursive routes reuse finite model classes and repeated
-resolution returns the same class object.  Task 1 deliberately keeps scalar
-annotations as ``Any`` placeholders; scalar interpretation and standalone
-route validation are later phases.  The compiled route contract is retained on
-each model and field so those later hooks do not change route or class identity.
+resolution returns the same class object.
+
+Pydantic record input is an unordered data projection.  Every generated class
+retains its compiled ``RouteContract`` and a truthful layout value as class
+metadata through ``__relaxng_route__``, ``__relaxng_route_id__``,
+``__relaxng_layout__``, ``__relaxng_scope__``, ``__relaxng_start__``,
+``__relaxng_element__``, and ``__relaxng_input_order__``.  The model JSON
+Schema repeats the route ID, layout, scope, and unordered-input statement.
+Task 3 and Task 4 use that retained route, not field order or insertion order,
+to reconstruct canonical lexical XML.  Task 1 deliberately keeps scalar
+annotations as ``Any`` placeholders except for scalar presence: a nonempty
+content contract requires a supplied value, while an empty-capable scalar uses
+``None`` for real empty content and never invents an empty lexical string.
+Scalar interpretation and full standalone route validation are later phases.
 """
 
 from __future__ import annotations
 
 import re
 from types import GenericAlias
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from pyxsd.integrations import IntegrationError
 from pyxsd.integrations.pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     RootModel,
     _safe_name,
+    clean_field_schema,
     create_model,
+    model_validator,
 )
 from pyxsd.namespaces import clark, local_name
 from pyxsd.relaxng.contracts import ScalarContract
-from pyxsd.relaxng.projection import Cardinality, ProjectionPlan, RouteContract
+from pyxsd.relaxng.projection import (
+    Cardinality,
+    ContentContract,
+    ProjectionPlan,
+    RouteContract,
+)
 from pyxsd.relaxng.schema import RelaxNGSchema
 
 __all__ = ["RelaxNGModelSet"]
@@ -75,21 +93,26 @@ def _field_metadata(
     return metadata
 
 
-def _route_metadata(plan: ProjectionPlan, route: RouteContract) -> dict[str, Any]:
+def _route_metadata(plan: ProjectionPlan, route: RouteContract, layout: str) -> dict[str, Any]:
     start = route.route_id in plan.roots
     if start:
         validation = (
-            "projected data for this start route; use RelaxNGDocument validation for XML validity"
+            "unordered projected data for this start route; Task 3/4 reconstruct "
+            "canonical lexical XML from the retained compiled route; use "
+            "RelaxNGDocument validation for XML validity"
         )
     else:
         validation = (
-            "local route content only; ancestor and sibling constraints are not "
-            "validated; use RelaxNGDocument validation for XML validity"
+            "unordered local route content only; ancestor and sibling constraints "
+            "are not validated; Task 3/4 reconstruct canonical lexical XML from the "
+            "retained compiled route; use RelaxNGDocument validation for XML validity"
         )
     return {
         "x-pyxsd-route": route.route_id,
+        "x-pyxsd-layout": layout,
         "x-pyxsd-element": route.expanded_name,
         "x-pyxsd-scope": "start" if start else "local",
+        "x-pyxsd-input-order": "unordered",
         "x-pyxsd-validation": validation,
     }
 
@@ -97,6 +120,138 @@ def _route_metadata(plan: ProjectionPlan, route: RouteContract) -> dict[str, Any
 def _route_label(route: RouteContract) -> str:
     name = route.expanded_name if route.expanded_name is not None else "an open-name element"
     return f"{name} ({route.route_id})"
+
+
+def _child_content(model: ContentContract) -> ContentContract | None:
+    """Erase attribute-only content and collapse one-operand ordering nodes."""
+    results: dict[int, ContentContract | None] = {}
+    pending: list[tuple[ContentContract, bool]] = [(model, False)]
+    while pending:
+        node, ready = pending.pop()
+        if id(node) in results:
+            continue
+        if not ready:
+            pending.append((node, True))
+            for operand in node.operands:
+                if id(operand) not in results:
+                    pending.append((operand, False))
+            continue
+        if node.kind in ("attribute", "empty"):
+            results[id(node)] = None
+            continue
+        operands = tuple(
+            part for operand in node.operands if (part := results[id(operand)]) is not None
+        )
+        if node.kind in ("group", "interleave") and len(operands) == 1:
+            result = operands[0]
+        elif node.operands and not operands:
+            result = None
+        else:
+            result = ContentContract(node.kind, operands)
+        results[id(node)] = result
+    return results[id(model)]
+
+
+def _route_layout(route: RouteContract) -> str:
+    """Describe the retained child layout without reading instance content.
+
+    ``record`` is an interleave of singular children, whose relative order is
+    immaterial.  ``interleaved`` is an interleave containing a repeatable
+    child, where canonical reconstruction still needs the compiled order.
+    ``ordered`` is a group/sequence.  Input through Pydantic is always
+    unordered; this value only records what the retained route requires.
+    """
+    if route.content.scalar_contracts:
+        return "scalar"
+    if route.generic_reason is not None or route.wildcards or route.content.mixed:
+        return "generic"
+    model = _child_content(route.content.model)
+    if model is None:
+        return "empty"
+    children = tuple(route.children.values())
+    if len(children) == 1 and children[0].cardinality.repeatable:
+        return "repeated"
+    if model.kind == "choice":
+        return "choice"
+    if model.kind == "repeat":
+        return "repeated"
+    if model.kind == "interleave":
+        return (
+            "interleaved" if any(field.cardinality.repeatable for field in children) else "record"
+        )
+    return "ordered"
+
+
+def _content_may_be_empty(model: ContentContract) -> bool:
+    """Whether the compiled content admits no scalar occurrence.
+
+    Attributes never contribute element character content.  A text scalar is
+    nullable even though atomic and list scalars are not; this is the scalar
+    presence distinction Task 1 must preserve as ``None`` rather than ``""``.
+    """
+    results: dict[int, bool] = {}
+    pending: list[tuple[ContentContract, bool]] = [(model, False)]
+    while pending:
+        node, ready = pending.pop()
+        if id(node) in results:
+            continue
+        if not ready:
+            pending.append((node, True))
+            for operand in node.operands:
+                if id(operand) not in results:
+                    pending.append((operand, False))
+            continue
+        if node.kind in ("attribute", "child", "element", "empty"):
+            value = True
+        elif node.kind == "scalar":
+            value = any(contract.kind == "text" for contract in node.scalar_contracts)
+        elif node.kind == "notAllowed":
+            value = False
+        elif node.kind in ("group", "interleave"):
+            value = all(results[id(operand)] for operand in node.operands)
+        elif node.kind == "choice":
+            value = any(results[id(operand)] for operand in node.operands)
+        elif node.kind == "repeat":
+            value = all(results[id(operand)] for operand in node.operands)
+        else:
+            value = False
+        results[id(node)] = value
+    return results[id(model)]
+
+
+def _present_scalar(value: Any) -> Any:
+    """Reject ``None`` for a route whose content cannot be empty."""
+    if value is None:
+        raise ValueError("scalar content is required; None denotes empty content")
+    return value
+
+
+def _scalar_annotation(*, may_be_empty: bool) -> Any:
+    if may_be_empty:
+        return Any
+    return Annotated[Any, BeforeValidator(_present_scalar)]
+
+
+def _root_scalar_annotation(metadata: dict[str, Any], *, may_be_empty: bool) -> Any:
+    field = Field(json_schema_extra=metadata)
+    if may_be_empty:
+        return Annotated[Any, field]
+    return Annotated[Any, field, BeforeValidator(_present_scalar)]
+
+
+def _attach_route(
+    model: type[BaseModel], plan: ProjectionPlan, route: RouteContract, layout: str
+) -> None:
+    """Attach route identity and retained layout to the generated class."""
+    scope = "start" if route.route_id in plan.roots else "local"
+    target = cast(Any, model)
+    target.__relaxng_route__ = route
+    target.__relaxng_route_id__ = route.route_id
+    target.__relaxng_layout__ = layout
+    target.__relaxng_scope__ = scope
+    target.__relaxng_start__ = scope == "start"
+    target.__relaxng_element__ = route.expanded_name
+    target.__relaxng_input_order__ = "unordered"
 
 
 def _model_stem(route: RouteContract) -> str:
@@ -146,7 +301,6 @@ def _field_info(
     *,
     metadata: dict[str, Any],
     cardinality: Cardinality,
-    whole: bool = False,
 ) -> Any:
     repeatable = cardinality.repeatable
     options: dict[str, Any] = {
@@ -156,7 +310,7 @@ def _field_info(
     if repeatable:
         options["min_length"] = cardinality.minimum
         options["max_length"] = cardinality.maximum
-    if whole or cardinality.minimum > 0:
+    if cardinality.minimum > 0:
         options["default"] = ...
     elif repeatable:
         options["default_factory"] = list
@@ -212,9 +366,10 @@ class RelaxNGModelSet:
             if self._plan.routes[route_id].name_class.contains(uri, local)
         ]
         if not matches and uri is None:
-            # A local spelling may identify a uniquely named start route in a
-            # namespace.  It never resolves a wildcard route: those admit names,
-            # not local-name identities.
+            # A local spelling directly matches any start name class that
+            # admits (None, local), including an AnyName wildcard.  If no class
+            # admits it, a uniquely named start route in a namespace may still
+            # be selected by local name.
             matches = [
                 route_id
                 for route_id in self._plan.roots
@@ -307,22 +462,33 @@ class RelaxNGModelSet:
         return self._record_model(route)
 
     def _root_model(self, route: RouteContract) -> type[BaseModel]:
-        metadata = _route_metadata(self._plan, route)
+        layout = _route_layout(route)
+        may_be_empty = _content_may_be_empty(route.content.model)
+        metadata = _route_metadata(self._plan, route, layout)
         metadata["x-pyxsd-contracts"] = [
             _contract_metadata(contract) for contract in route.content.scalar_contracts
         ]
-        metadata["x-pyxsd-cardinality"] = {"minimum": 1, "maximum": 1}
-        annotation = Annotated[Any, Field(json_schema_extra=metadata)]
-        return create_model(
+        metadata["x-pyxsd-cardinality"] = {
+            "minimum": 0 if may_be_empty else 1,
+            "maximum": 1,
+        }
+        annotation = _root_scalar_annotation(metadata, may_be_empty=may_be_empty)
+        root_base: Any = RootModel
+        model = create_model(
             self._names[route.route_id],
-            __base__=RootModel[annotation],
+            __base__=root_base[annotation],
             __module__=__name__,
         )
+        _attach_route(model, self._plan, route, layout)
+        return model
 
     def _record_model(self, route: RouteContract) -> type[BaseModel]:
-        route_metadata = _route_metadata(self._plan, route)
+        layout = _route_layout(route)
+        may_be_empty = _content_may_be_empty(route.content.model)
+        route_metadata = _route_metadata(self._plan, route, layout)
         child_aliases = set(route.children)
         field_extras: dict[str, dict[str, Any]] = {}
+        child_fields: list[tuple[str, str, bool]] = []
         fields: dict[str, Any] = {}
         used: set[str] = {"xml_contract"}
 
@@ -333,7 +499,6 @@ class RelaxNGModelSet:
             cardinality: Cardinality,
             contracts: tuple[ScalarContract, ...],
             child_route_id: str | None = None,
-            whole: bool = False,
         ) -> None:
             field_name = _safe_name(alias, used | (child_aliases - {alias}))
             used.add(field_name)
@@ -343,23 +508,23 @@ class RelaxNGModelSet:
                 child_route_id=child_route_id,
             )
             field_extras[alias] = field_metadata
+            if child_route_id is not None:
+                child_fields.append((alias, field_name, cardinality.repeatable))
             fields[field_name] = (
                 annotation,
                 _field_info(
                     alias,
                     metadata=field_metadata,
                     cardinality=cardinality,
-                    whole=whole,
                 ),
             )
 
         if route.content.scalar_contracts:
             add(
                 "$",
-                Any,
-                cardinality=Cardinality(1, 1),
+                _scalar_annotation(may_be_empty=may_be_empty),
+                cardinality=Cardinality(0 if may_be_empty else 1, 1),
                 contracts=route.content.scalar_contracts,
-                whole=True,
             )
         for name in sorted(route.attributes):
             field = route.attributes[name]
@@ -389,8 +554,32 @@ class RelaxNGModelSet:
             properties = description.get("properties", {})
             for alias, extra in field_extras.items():
                 properties[alias].update(extra)
+            for property_schema in properties.values():
+                clean_field_schema(property_schema)
 
-        return create_model(
+        def validate_children(value: Any) -> Any:
+            if isinstance(value, dict):
+                for alias, field_name, repeatable in child_fields:
+                    for key in (alias, field_name):
+                        if key not in value:
+                            continue
+                        item = value[key]
+                        if item is None:
+                            raise ValueError(
+                                f"child content must be omitted, not None, when absent: {alias!r}"
+                            )
+                        if (
+                            repeatable
+                            and isinstance(item, list)
+                            and any(entry is None for entry in item)
+                        ):
+                            raise ValueError(f"child content items must not be None: {alias!r}")
+            return value
+
+        validators: dict[str, Any] = {
+            "relaxng_children": model_validator(mode="before")(validate_children)
+        }
+        model = create_model(
             self._names[route.route_id],
             __config__=ConfigDict(
                 extra="forbid",
@@ -398,6 +587,9 @@ class RelaxNGModelSet:
                 validate_by_name=True,
                 json_schema_extra=model_schema,
             ),
+            __validators__=validators,
             __module__=__name__,
             **fields,
         )
+        _attach_route(model, self._plan, route, layout)
+        return model

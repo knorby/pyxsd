@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import subprocess
+import sys
 from typing import get_args
 
 import pytest
@@ -13,7 +15,13 @@ from pydantic import BaseModel, RootModel  # noqa: E402
 from pyxsd.exceptions import ValidationError  # noqa: E402
 from pyxsd.integrations import IntegrationError  # noqa: E402
 from pyxsd.integrations.pydantic import ModelSet, models  # noqa: E402
-from pyxsd.relaxng.pydantic_adapter import RelaxNGModelSet  # noqa: E402
+from pyxsd.relaxng.projection import ContentContract  # noqa: E402
+from pyxsd.relaxng.pydantic_adapter import (  # noqa: E402
+    RelaxNGModelSet,
+    _child_content,
+    _content_may_be_empty,
+    _route_layout,
+)
 from pyxsd.relaxng.schema import RelaxNGSchema  # noqa: E402
 
 NS = "http://relaxng.org/ns/structure/1.0"
@@ -58,11 +66,18 @@ def test_models_before_instance_xml_and_pure_scalar_placeholder():
     # Task 1 deliberately uses an Any placeholder; it does not claim scalar validation.
     assert Root.model_validate("text").root == "text"
     assert Root.model_validate(42).root == 42
+    # Text content is nullable: None is real empty content, never an invented "".
+    assert Root.model_validate(None).root is None
     route = root_route(schema)
     description = Root.model_json_schema()
     assert description["x-pyxsd-route"] == route.route_id
     assert description["x-pyxsd-scope"] == "start"
     assert description["x-pyxsd-element"] == "doc"
+    assert description["x-pyxsd-layout"] == "scalar"
+    assert description["x-pyxsd-cardinality"] == {"minimum": 0, "maximum": 1}
+    assert Root.__relaxng_layout__ == "scalar"
+    assert Root.__relaxng_route_id__ == route.route_id
+    assert Root.__relaxng_route__ is route
     assert description["x-pyxsd-contracts"] == [
         {
             "kind": "text",
@@ -111,19 +126,23 @@ def test_record_fields_defaults_cardinality_and_strict_input():
         {"@version": "7", "single": "a", "need": []},
         {"@version": "7", "single": "a", "need": ["x"], "unknown": 1},
         {"@version": "7", "single": "a", "need": "x"},
+        {"@version": "7", "single": "a", "need": ["x", None]},
     ):
         with pytest.raises(pydantic.ValidationError):
             Root.model_validate(invalid)
+    assert Root.model_validate(model) == model
+    with pytest.raises(pydantic.ValidationError):
+        Root.model_validate("not a record")
 
     description = Root.model_json_schema()
     properties = description["properties"]
     assert description["x-pyxsd-scope"] == "start"
     assert properties["@version"]["x-pyxsd-cardinality"] == {"minimum": 1, "maximum": 1}
     assert properties["@version"]["x-pyxsd-contracts"][0]["kind"] == "text"
-    assert properties["@class"]["default"] is None
+    assert "default" not in properties["@class"]
     assert properties["@class"]["x-pyxsd-cardinality"] == {"minimum": 0, "maximum": 1}
     assert properties["single"]["x-pyxsd-cardinality"] == {"minimum": 1, "maximum": 1}
-    assert properties["maybe"]["default"] is None
+    assert "default" not in properties["maybe"]
     assert properties["many"]["minItems"] == 0
     assert properties["need"]["minItems"] == 1
     assert properties["many"]["x-pyxsd-cardinality"] == {"minimum": 0, "maximum": None}
@@ -133,20 +152,233 @@ def test_record_fields_defaults_cardinality_and_strict_input():
     assert Root.model_fields["need"].is_required()
     assert Root.model_fields["maybe"].is_required() is False
     assert Root.model_fields["maybe"].default is None
-
-
-def test_scalar_attributes_share_a_record_and_missing_scalar_is_required():
-    schema = compile_element('<text/><attribute name="lang"><text/></attribute>')
-    Root = models(schema).model_for(element="doc")
-    assert issubclass(Root, BaseModel) and not issubclass(Root, RootModel)
-    model = Root.model_validate({"$": "hello", "@lang": "en"})
-    assert model.xml_value == "hello"
-    assert model.attr_lang == "en"
+    # A record child rejects explicit None even though its default is None.
     with pytest.raises(pydantic.ValidationError):
-        Root.model_validate({"@lang": "en"})
+        Root.model_validate({"@version": "7", "single": "a", "maybe": None, "need": ["x"]})
+
+
+def test_scalar_presence_tracks_content_emptiness():
+    optional = models(
+        compile_element(
+            f'<optional><data type="integer" datatypeLibrary="{XSD}"/></optional>'
+            '<optional><attribute name="lang"><text/></attribute></optional>'
+        )
+    ).model_for(element="doc")
+    assert optional.__relaxng_layout__ == "scalar"
+    assert optional.model_validate({}).xml_value is None
+    empty = optional.model_validate({"@lang": "en"})
+    assert empty.xml_value is None
+    assert empty.attr_lang == "en"
+    assert optional.model_validate({"@lang": "en", "$": "7"}).xml_value == "7"
+    assert optional.model_validate({"@lang": "en", "$": None}).xml_value is None
+    optional_schema = optional.model_json_schema()
+    assert "$" not in optional_schema.get("required", [])
+    assert optional_schema["properties"]["$"]["x-pyxsd-cardinality"] == {
+        "minimum": 0,
+        "maximum": 1,
+    }
+    assert "default" not in optional_schema["properties"]["$"]
+    assert optional.model_fields["xml_value"].is_required() is False
+
+    text = models(compile_element("<text/>")).model_for(element="doc")
+    assert text.__relaxng_layout__ == "scalar"
+    assert text.model_validate(None).root is None
+    assert text.model_json_schema()["x-pyxsd-cardinality"] == {
+        "minimum": 0,
+        "maximum": 1,
+    }
+    text_attribute = models(
+        compile_element('<text/><attribute name="lang"><text/></attribute>')
+    ).model_for(element="doc")
+    assert text_attribute.model_validate({"@lang": "en"}).xml_value is None
+
+    required = models(compile_element(f'<data type="integer" datatypeLibrary="{XSD}"/>')).model_for(
+        element="doc"
+    )
+    assert required.__relaxng_layout__ == "scalar"
+    with pytest.raises(pydantic.ValidationError):
+        required.model_validate(None)
+    assert required.model_validate("7").root == "7"
+    assert required.model_json_schema()["x-pyxsd-cardinality"] == {
+        "minimum": 1,
+        "maximum": 1,
+    }
+
+    required_attribute = models(
+        compile_element(
+            f'<data type="integer" datatypeLibrary="{XSD}"/>'
+            '<attribute name="lang"><text/></attribute>'
+        )
+    ).model_for(element="doc")
+    with pytest.raises(pydantic.ValidationError):
+        required_attribute.model_validate({"@lang": "en"})
+    with pytest.raises(pydantic.ValidationError):
+        required_attribute.model_validate({"@lang": "en", "$": None})
+    required_schema = required_attribute.model_json_schema()
+    assert "$" in required_schema["required"]
+    assert required_schema["properties"]["$"]["x-pyxsd-cardinality"] == {
+        "minimum": 1,
+        "maximum": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("body", "layout"),
+    [
+        (
+            '<element name="a"><text/></element><element name="b"><text/></element>',
+            "ordered",
+        ),
+        (
+            '<zeroOrMore><element name="a"><text/></element></zeroOrMore>'
+            '<oneOrMore><element name="b"><text/></element></oneOrMore>',
+            "ordered",
+        ),
+        (
+            '<interleave><zeroOrMore><element name="a"><text/></element></zeroOrMore>'
+            '<element name="b"><text/></element></interleave>',
+            "interleaved",
+        ),
+        (
+            '<interleave><element name="a"><text/></element>'
+            '<element name="b"><text/></element></interleave>',
+            "record",
+        ),
+        (
+            '<choice><element name="a"><text/></element>'
+            '<element name="b"><text/></element></choice>',
+            "choice",
+        ),
+        ('<zeroOrMore><element name="a"><text/></element></zeroOrMore>', "repeated"),
+    ],
+)
+def test_route_layout_metadata_matches_the_compiled_route(body, layout):
+    schema = compile_element(body)
+    route = root_route(schema)
+    Root = models(schema).model_for(element="doc")
+    assert Root.__relaxng_route__ is route
+    assert Root.__relaxng_route_id__ == route.route_id
+    assert Root.__relaxng_layout__ == layout
+    assert Root.__relaxng_scope__ == "start"
+    assert Root.__relaxng_start__ is True
+    assert Root.__relaxng_element__ == "doc"
+    assert Root.__relaxng_input_order__ == "unordered"
     description = Root.model_json_schema()
-    assert description["properties"]["$"]["x-pyxsd-contracts"][0]["kind"] == "text"
-    assert "$" in description["required"]
+    assert description["x-pyxsd-layout"] == layout
+    assert description["x-pyxsd-route"] == route.route_id
+    assert description["x-pyxsd-input-order"] == "unordered"
+
+
+def test_choice_route_is_accepted_at_class_time_with_its_retained_constraint():
+    schema = compile_element(
+        '<choice><element name="a"><text/></element><element name="b"><text/></element></choice>'
+    )
+    Root = models(schema).model_for(element="doc")
+    assert Root.__relaxng_layout__ == "choice"
+    assert Root.__relaxng_route__.constraints
+    assert Root.__relaxng_route__.constraints[0].kind == "choice"
+    assert Root.model_validate({"a": "x"}).a.root == "x"
+    assert Root.model_validate({"b": "y"}).b.root == "y"
+    # Task 1 keeps the unordered class permissive; Task 3 uses the retained
+    # route constraint to reject this jointly impossible populated combination.
+    both = Root.model_validate({"a": "x", "b": "y"})
+    assert both.a.root == "x"
+    assert both.b.root == "y"
+
+
+def test_child_resolved_before_parent_reuses_the_cached_child_class():
+    schema = compile_element('<element name="item"><text/></element>')
+    registry = models(schema)
+    Item = registry.model_for(element="doc", path=("item",))
+    Root = registry.model_for(element="doc")
+    assert Root.model_fields["item"].annotation is Item
+    assert Item.__relaxng_scope__ == "local"
+    assert Item.__relaxng_start__ is False
+    assert Root.model_validate({"item": "value"}).item.root == "value"
+
+
+def test_repeated_child_minimum_above_one_preserves_bounds():
+    schema = compile_element(
+        '<element name="item"><text/></element>'
+        '<element name="item"><text/></element>'
+        '<optional><element name="item"><text/></element></optional>'
+    )
+    Root = models(schema).model_for(element="doc")
+    field = Root.model_fields["item"]
+    assert field.json_schema_extra["x-pyxsd-cardinality"] == {
+        "minimum": 2,
+        "maximum": 3,
+    }
+    description = Root.model_json_schema()
+    assert description["properties"]["item"]["minItems"] == 2
+    assert description["properties"]["item"]["maxItems"] == 3
+    assert len(Root.model_validate({"item": ["a", "b"]}).item) == 2
+    assert len(Root.model_validate({"item": ["a", "b", "c"]}).item) == 3
+    for values in (["a"], ["a", "b", "c", "d"]):
+        with pytest.raises(pydantic.ValidationError):
+            Root.model_validate({"item": values})
+
+
+def test_wildcard_starts_resolve_by_their_admitted_names():
+    any_name = compile_grammar("<start><element><anyName/><empty/></element></start>")
+    AnyRoot = models(any_name).model_for(element="foo")
+    assert AnyRoot.__relaxng_element__ is None
+    assert AnyRoot.__relaxng_layout__ == "empty"
+    assert AnyRoot.__relaxng_scope__ == "start"
+    assert AnyRoot.model_validate({}).model_dump() == {}
+
+    ns_name = compile_grammar('<start><element><nsName ns="urn:any"/><empty/></element></start>')
+    registry = models(ns_name)
+    with pytest.raises(IntegrationError, match="no admitted start route"):
+        registry.model_for(element="foo")
+    NsRoot = registry.model_for(element="{urn:any}foo")
+    assert NsRoot is registry.model_for(element="Q{urn:any}foo")
+    assert NsRoot.__relaxng_element__ is None
+    assert NsRoot.__relaxng_layout__ == "empty"
+
+
+def test_layout_and_empty_helpers_cover_condition_arms():
+    mixed = compile_element(
+        '<mixed><zeroOrMore><element name="em"><text/></element></zeroOrMore></mixed>'
+    )
+    assert _route_layout(root_route(mixed)) == "generic"
+
+    repeated_group = compile_element(
+        '<oneOrMore><element name="a"><text/></element>'
+        '<element name="b"><text/></element></oneOrMore>'
+    )
+    assert _route_layout(root_route(repeated_group)) == "repeated"
+
+    not_allowed = compile_element("<notAllowed/>")
+    assert _content_may_be_empty(root_route(not_allowed).content.model) is False
+
+    empty = ContentContract("empty")
+    child = ContentContract("child")
+    shared_group = ContentContract("group", (empty, empty))
+    assert _content_may_be_empty(shared_group) is True
+    assert _child_content(shared_group) is None
+    assert _content_may_be_empty(ContentContract("unknown-kind")) is False
+    for kind in ("attribute", "child", "element"):
+        assert _content_may_be_empty(ContentContract(kind)) is True
+    assert (
+        _content_may_be_empty(ContentContract("group", (empty, ContentContract("notAllowed"))))
+        is False
+    )
+    assert _content_may_be_empty(ContentContract("interleave", (empty, empty))) is True
+    assert (
+        _content_may_be_empty(ContentContract("choice", (empty, ContentContract("notAllowed"))))
+        is True
+    )
+    assert (
+        _content_may_be_empty(ContentContract("choice", (ContentContract("notAllowed"),))) is False
+    )
+    assert _content_may_be_empty(ContentContract("repeat", (empty,))) is True
+    assert (
+        _content_may_be_empty(ContentContract("repeat", (ContentContract("notAllowed"),))) is False
+    )
+    assert _child_content(ContentContract("attribute")) is None
+    assert _child_content(ContentContract("group", (child,))).kind == "child"
+    assert _child_content(ContentContract("group", (child, child))).kind == "group"
 
 
 def test_empty_route_is_a_strict_model_with_no_fields():
@@ -228,10 +460,19 @@ def test_route_resolution_reports_unknown_and_malformed_names():
         registry.model_for(element="doc", path=("missing",))
     with pytest.raises(IntegrationError, match="no admitted start route"):
         registry.model_for(element="{urn:other}doc")
-    for element in ("", "{urn:test", "p:doc", "doc}", 4):
+    for element in (
+        "",
+        "{urn:test",
+        "{urn:test}",
+        "{urn:test}a{b",
+        "{urn:test}a}b",
+        "p:doc",
+        "doc}",
+        4,
+    ):
         with pytest.raises(IntegrationError):
             registry.model_for(element=element)  # type: ignore[arg-type]
-    for path in (["a"], ("",)):
+    for path in (["a"], ("",), (4,)):
         with pytest.raises(IntegrationError):
             registry.model_for(element="doc", path=path)  # type: ignore[arg-type]
 
@@ -288,7 +529,11 @@ def test_recursive_route_uses_finite_forward_references():
     model = Node.model_validate({"@label": "root", "node": [{"node": []}]})
     assert model.attr_label == "root"
     assert model.node[0].node == []
+    assert Node.__relaxng_layout__ == "repeated"
+    assert Node.__relaxng_route_id__ == root_route(schema).route_id
+    assert Node.__relaxng_route__ is root_route(schema)
     assert model_schema(Node)["x-pyxsd-scope"] == "start"
+    assert model_schema(Node)["x-pyxsd-layout"] == "repeated"
     assert len(schema.projection.routes) == 1
 
 
@@ -313,8 +558,13 @@ def test_multiple_paths_reuse_finite_recursive_classes():
     B = registry.model_for(element="doc", path=("b",))
     Node = registry.model_for(element="doc", path=("a", "node"))
     assert A is not B
+    assert A.__relaxng_layout__ == "ordered"
+    assert B.__relaxng_layout__ == "ordered"
     assert Node is registry.model_for(element="doc", path=("b", "node"))
+    assert Node.__relaxng_layout__ == "choice"
     Next = registry.model_for(element="doc", path=("a", "node", "next"))
+    assert Next.__relaxng_layout__ == "ordered"
+    assert Node.__relaxng_route_id__ != Next.__relaxng_route_id__
     assert Doc.model_fields["a"].annotation is A
     assert get_args(Doc.model_fields["b"].annotation) == (B,)
     assert A.model_fields["node"].annotation is Node
@@ -338,10 +588,13 @@ def test_generic_route_reports_lost_information():
         '<element name="good"><text/></element>'
     )
     registry = models(schema)
-    with pytest.raises(IntegrationError, match=r"bad.*generic"):
+    bad = schema.projection.routes[root_route(schema).children["bad"].child_route_id]
+    with pytest.raises(IntegrationError, match=r"bad.*generic") as error:
         registry.model_for(element="doc", path=("bad",))
-    with pytest.raises(IntegrationError, match="whole-element scalar"):
+    assert bad.route_id in str(error.value)
+    with pytest.raises(IntegrationError, match="whole-element scalar") as error:
         registry.model_for(element="doc")
+    assert bad.route_id in str(error.value)
     Good = registry.model_for(element="doc", path=("good",))
     assert Good.model_json_schema()["x-pyxsd-scope"] == "local"
     assert Good.model_validate("ok").root == "ok"
@@ -351,8 +604,9 @@ def test_mixed_route_reports_lost_text_child_order():
     schema = compile_element(
         '<mixed><zeroOrMore><element name="em"><text/></element></zeroOrMore></mixed>'
     )
-    with pytest.raises(IntegrationError, match="mixed content"):
+    with pytest.raises(IntegrationError, match="mixed content") as error:
         models(schema).model_for(element="doc")
+    assert root_route(schema).route_id in str(error.value)
 
 
 def test_wildcard_roles_report_lost_arbitrary_names():
@@ -361,8 +615,9 @@ def test_wildcard_roles_report_lost_arbitrary_names():
         "<zeroOrMore><element><anyName><except><name>known</name></except></anyName>"
         "<text/></element></zeroOrMore>"
     )
-    with pytest.raises(IntegrationError, match="child wildcard"):
+    with pytest.raises(IntegrationError, match="child wildcard") as error:
         models(child_wildcard).model_for(element="doc")
+    assert root_route(child_wildcard).route_id in str(error.value)
 
     attribute_wildcard = compile_element(
         "<zeroOrMore><attribute><anyName/></attribute></zeroOrMore>"
@@ -397,6 +652,11 @@ def test_start_and_local_scope_metadata_never_claims_ancestor_validation():
     assert "ancestor" in item_description["x-pyxsd-validation"]
     assert "sibling" in item_description["x-pyxsd-validation"]
     assert "start route" in root_description["x-pyxsd-validation"]
+    assert Root.__relaxng_scope__ == "start"
+    assert Item.__relaxng_scope__ == "local"
+    assert Item.__relaxng_start__ is False
+    assert Item.__relaxng_route_id__ == item_route.route_id
+    assert Item.__relaxng_layout__ == "scalar"
 
 
 def test_equivalent_derivations_share_one_class():
@@ -437,6 +697,45 @@ def test_registry_requires_a_valid_relaxng_schema_and_exposes_only_models():
     assert not hasattr(RelaxNGModelSet, "from_document")
     assert not hasattr(RelaxNGModelSet, "from_node")
     assert not hasattr(RelaxNGModelSet, "to_document")
+
+
+def test_clean_field_schema_removes_only_the_internal_none_default():
+    from pyxsd.integrations.pydantic import clean_field_schema
+
+    real_default = {"type": "integer", "default": 0}
+    clean_field_schema(real_default)
+    assert real_default == {"type": "integer", "default": 0}
+
+    nullable_placeholder = {"type": "string", "default": None}
+    clean_field_schema(nullable_placeholder)
+    assert nullable_placeholder == {"type": "string"}
+
+
+def test_xsd_models_path_does_not_import_the_relaxng_adapter():
+    script = """
+import sys
+from io import StringIO
+import pyxsd
+from pyxsd.integrations.pydantic import ModelSet, models
+
+schema = pyxsd.compile(
+    StringIO(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:element name="r" type="xs:int"/></xs:schema>'
+    )
+)
+registry = models(schema)
+assert isinstance(registry, ModelSet)
+assert registry.model_for(element="r").model_validate(7).root == 7
+assert "pyxsd.relaxng.pydantic_adapter" not in sys.modules
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_xsd_models_dispatch_is_unchanged():
