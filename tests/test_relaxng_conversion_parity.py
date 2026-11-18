@@ -382,6 +382,8 @@ def test_xsd_rejects_relaxng_tags_and_profile_metadata() -> None:
     with pytest.raises(PyXSDError):
         xsd.schema.from_data(tagged, format="pyxsd-json")
     with pytest.raises(PyXSDError):
+        xsd.schema.from_json(json.dumps(tagged), format="pyxsd-json")
+    with pytest.raises(PyXSDError):
         xsd.schema.from_data({"a": 1, "#value": tagged["r"]}, format="pyxsd")
 
     # The XSD path itself remains exactly as before.
@@ -1256,6 +1258,53 @@ def test_sibling_tags_keep_their_own_namespace_and_base_context() -> None:
             isinstance(candidate.decoded, QName)
             and candidate.decoded.to_expanded_name()
             == f"{{{uri}}}" + ("x" if uri == "urn:a" else "y")
+            for candidate in value.candidates
+        )
+
+
+def test_sibling_tags_keep_separate_base_uri_contexts() -> None:
+    base = f'<optional><attribute name="base" ns="{XML_NS}"><text/></attribute></optional>'
+    content = (
+        base
+        + "<zeroOrMore><element name='q'>"
+        + base
+        + "<choice><data type='QName'/><data type='string'/></choice>"
+        + "</element></zeroOrMore>"
+    )
+    document = valid(
+        content,
+        '<r xmlns:p="urn:a" xml:base="http://example.com/base/">'
+        '<q xml:base="a/">p:x</q>'
+        '<q xmlns:p="urn:b" xml:base="b/">p:y</q></r>',
+    )
+    data = document.to_data(format="pyxsd-json", fidelity="strict")
+
+    first, second = data["r"]["q"]
+    assert first["#content"]["#value"]["context"] == {
+        "base_uri": "http://example.com/base/a/",
+        "namespaces": {"p": "urn:a"},
+    }
+    assert second["#content"]["#value"]["context"] == {
+        "base_uri": "http://example.com/base/b/",
+        "namespaces": {"p": "urn:b"},
+    }
+
+    imported = document.schema.from_data(data, format="pyxsd-json")
+    assert not imported.report.has_errors
+    for child, base_uri, uri, local in zip(
+        imported.root.children,
+        ("http://example.com/base/a/", "http://example.com/base/b/"),
+        ("urn:a", "urn:b"),
+        ("x", "y"),
+        strict=True,
+    ):
+        assert child.base_uri == base_uri
+        value = child.scalar_value()
+        assert value.context.base_uri == base_uri
+        assert value.context.namespaces["p"] == uri
+        assert any(
+            isinstance(candidate.decoded, QName)
+            and candidate.decoded.to_expanded_name() == f"{{{uri}}}{local}"
             for candidate in value.candidates
         )
 
