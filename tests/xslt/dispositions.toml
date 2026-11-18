@@ -36,3 +36,38 @@ links = [
   "https://www.w3.org/TR/xslt-30/#func-unparsed-text",
   "https://www.w3.org/TR/xpath-functions-31/#func-unparsed-text-available",
 ]
+
+# Adjudication: docs/superpowers/sdd/2026-11-15-xslt-adapter-gap-closure/task-1j-brief.md
+# A catalog <source select="..."> is a test-driver expression, not a source
+# document the harness can read.  id-043 also needs id302.xml, so only the
+# context-item declaration is a driver expression; keep the refusal.
+[[dispositions]]
+id = "catalog-driver-source-expression"
+title = "the harness reads a context source from a file or inline content, never a driver expression"
+category = "adapter-limit"
+profiles = ["xslt30", "xslt20"]
+cases = ["id/id-043"]
+reason = "id-043's environment declares <source select=\"parse-xml('<root/>')\" role=\".\"/>; evaluating a catalog driver expression needs the test driver's own XPath context, which the harness does not provide."
+links = ["https://www.w3.org/TR/xpath-functions-31/#func-parse-xml"]
+
+# key285 declares key101.xml as the context source and each case adds
+# key306.xml.  runner/run-tests.xsl applies get-source-documents to every
+# c:source in document order, so the last source wins; catalog._merge_environments
+# concatenates, _context_source sees two, and execute_case refuses.
+[[dispositions]]
+id = "test-case-sources-do-not-override-the-environment"
+title = "a test case's local context source is appended instead of replacing its environment's"
+category = "implementation-gap"
+profiles = ["xslt30", "xslt20"]
+cases = ["key/key-085a", "key/key-085b"]
+reason = "Two role='.' sources reach suite._context_source because _merge_environments concatenates sources; the catalog runner's get-source-documents mode applies them in document order and keeps the last, so merging sources by role/URI would close these."
+links = ["https://github.com/w3c/xslt30-test/blob/master/runner/run-tests.xsl"]
+
+[[dispositions]]
+id = "result-variable-output-refused"
+title = "the harness refuses a test-driver result variable"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = ["initial-template/initial-template-004"]
+reason = "<output tree=\"no\" result-var=\"result\"/> asks the driver to bind the raw principal sequence to $result (test-driver capability from bug 30196); suite.execute_case refuses that shape before running, and the refusal is a pinned contract (test_ci_contract's unsupported-shape test), so this task records it rather than changing the contract."
+links = ["https://github.com/w3c/xslt30-test/blob/master/tests/misc/initial-template/_initial-template-test-set.xml"]

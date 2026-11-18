@@ -810,6 +810,43 @@ def test_multi_item_xpath_context_is_an_explicit_adapter_gap() -> None:
             evaluate_assertion(AssertionXPath(expression), raw_result=(1, 2))
 
 
+def test_a_path_step_assertion_uses_the_principal_result_element() -> None:
+    # arrays-304 and maps-017 deliver one rootless element and no tree; its
+    # own serialization is the only node context available.
+    result = ResultSnapshot(raw=("x",), xml="<out>x</out>")
+    case = make_case("<result><assert>/out = 'x'</assert></result>")
+
+    assert evaluate_assertion(AssertionXPath("/out = 'x'"), result=result)
+    assert assert_case(case, result).outcome is Outcome.PASS
+
+
+def test_a_message_path_step_is_still_a_gap() -> None:
+    # An xsl:message keeps only its string value, so there is no node to
+    # supply.  Parsing that text as markup must not invent one.
+    assertion = AssertionMessage(AssertionXPath("/smart = 'x'"))
+    message = ResultSnapshot(raw=("Smart element",), xml="Smart element")
+
+    with pytest.raises(AssertionGap, match="node context item"):
+        evaluate_assertion(assertion, result=ResultSnapshot(messages=(message,)))
+
+
+def test_a_multi_item_result_has_no_context_item() -> None:
+    # The node fallback reads one delivered item; several items still pass no
+    # context item, so a serialization cannot be substituted for them.
+    result = ResultSnapshot(raw=("x", "y"), xml="<out>x</out>")
+
+    with pytest.raises(AssertionGap, match="multi-item"):
+        evaluate_assertion(AssertionXPath("/out = 'x'"), result=result)
+
+
+def test_a_path_step_without_a_serialization_stays_a_gap() -> None:
+    # One item, but nothing that describes it as a node: no markup exists to
+    # re-parse, so the gap stands instead of an invented context.
+    case = make_case("<result><assert>/out = 'x'</assert></result>")
+
+    assert assert_case(case, ResultSnapshot(raw=("x",))).outcome is Outcome.ADAPTER_GAP
+
+
 def test_multi_item_raw_results_gap_only_context_using_assertions() -> None:
     context_using = make_case("<result><assert>. = 1</assert></result>")
     empty_expression = make_case("<result><assert-empty>count($result) = 2</assert-empty></result>")

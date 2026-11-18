@@ -18,8 +18,16 @@ signals when the assertion cannot be decided:
     The actual result cannot be interpreted (for example malformed XML).  The
     runner reports ``fail``.
 
-XPath assertions use elementpath as a shared substrate.  No XSLT engine code
-participates in the verdict.
+XPath assertions use elementpath as a shared substrate.  One ruled exception:
+an expression containing a ``schema-element``/``schema-attribute`` kind test is
+evaluated by :mod:`pyxsd.xpath` with the case's declared schema pool, because a
+node's type annotation exists only in the XDM layer — the harness's elementpath
+trees are built from serialized XML, where every node is ``xs:untyped``.  The
+engine arm also builds the delivered final result tree from the raw item
+sequence, so the assertion's context item is the document node the reference
+runner's ``$result`` names.  No other engine code participates in a verdict,
+the catalog still supplies every expected value, and the engine never
+classifies a case.
 """
 
 from __future__ import annotations
@@ -29,10 +37,10 @@ import re
 import xml.etree.ElementTree as ET
 import xml.parsers.expat as expat
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, NoReturn
+from typing import TYPE_CHECKING, Any, ClassVar, NoReturn
 
 from elementpath import (
     DocumentNode,
@@ -47,6 +55,22 @@ from elementpath.xpath3 import XPath31Parser
 from elementpath.xpath_tokens import XPathArray, XPathMap
 from tests.xslt.model import XML_NS, TestCase
 from tests.xslt.outcomes import EXPECTED_ERROR_FAMILY, CaseResult
+
+from pyxsd.source_spans import SourceIndex
+from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
+from pyxsd.xpath import ExpressionEnvironment, Focus, XPathEngine, XPathStaticContext
+from pyxsd.xslt.results import build_result_tree
+
+if TYPE_CHECKING:  # pragma: no cover - import for type checking only
+    from pyxsd.xdm.schema import SchemaPool
+
+#: The XPath version every catalog assertion is evaluated with.
+ASSERTION_XPATH_VERSION = "3.1"
+
+#: Resolves the case's declared schema pool on demand (``None``: no
+#: declarations or a non-schema-aware profile).  Lazy so an ordinary assertion
+#: never pays for composing a pool.
+SchemaProvider = Callable[[], "SchemaPool | None"]
 
 #: Assertion-family names recorded as executed.  These name assertion
 #: capabilities, never catalog cases.
@@ -146,15 +170,25 @@ def _optional_bool(value: str | None, default: bool = False) -> bool:
 class ResultSnapshot:
     """Everything an assertion may inspect about one transformation result.
 
-    ``raw`` is the exact principal sequence.  ``xml`` is the principal document
-    serialization when the result is a document node; when ``raw`` is empty and
-    ``xml`` is present, the principal result is treated as one document node.
-    ``messages`` and ``secondary`` use ``None`` to mean "the executor did not
-    provide this data", which is an adapter gap rather than an empty result.
+    ``raw`` is the exact principal sequence.  ``xml`` is the principal
+    serialization when the principal result is one node; when ``raw`` is empty
+    and ``xml`` is present, the principal result is treated as one document
+    node.  ``messages`` and ``secondary`` use ``None`` to mean "the executor
+    did not provide this data", which is an adapter gap rather than an empty
+    result.
     """
 
     raw: tuple[Any, ...] = ()
     xml: str | None = None
+    #: The principal result as delivered (``$result`` in ``runner/assert.xsl``),
+    #: as engine XDM items: the raw item sequence when it has items, else —
+    #: only then — the delivered document tree.  A tree never displaces
+    #: available raw items; ``raw`` stays the comparison view and ``xml`` the
+    #: serialization.  Only the schema-aware route reads this field.  Items are
+    #: engine nodes compared by identity, so the field is excluded from
+    #: ``ResultSnapshot`` equality; two runs of one artifact agree on the
+    #: comparison view, not on object identity.
+    result_items: tuple[Any, ...] = field(default=(), compare=False)
     serialized: str | None = None
     messages: tuple[ResultSnapshot, ...] | None = None
     secondary: Mapping[str, ResultSnapshot] | None = None
@@ -169,6 +203,7 @@ class ResultSnapshot:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "raw", tuple(self.raw))
+        object.__setattr__(self, "result_items", tuple(self.result_items))
 
 
 @dataclass
@@ -179,12 +214,13 @@ class AssertionContext:
     case: TestCase | None = None
     error_mode: bool = False
     coverage: set[str] = field(default_factory=set)
+    schema: SchemaProvider | None = None
 
     def record(self, family: str) -> None:
         self.coverage.add(family)
 
     def for_result(self, result: ResultSnapshot) -> AssertionContext:
-        return AssertionContext(result, self.case, self.error_mode, self.coverage)
+        return AssertionContext(result, self.case, self.error_mode, self.coverage, self.schema)
 
 
 @dataclass(frozen=True)
@@ -487,18 +523,144 @@ def _translate_evaluation_error(exc: Exception, description: str) -> NoReturn:
     raise AssertionFailure(f"{description} failed: {exc}") from exc
 
 
+_SCHEMA_KIND_TESTS = frozenset({"schema-element", "schema-attribute"})
+
+
+def _uses_schema_kind_test(ast: Any) -> bool:
+    """Whether the parsed expression contains a schema kind test.
+
+    A structural gate on the token tree, never a substring test and never a
+    message test; ``ast.iter()`` yields every token, including the child of
+    ``document-node(...)`` and the SequenceType of ``instance of``.
+    """
+    return any(getattr(token, "symbol", None) in _SCHEMA_KIND_TESTS for token in ast.iter())
+
+
+def _empty_document() -> XdmDocument:
+    """An empty document node: the runner's ``$empty-doc`` counterpart.
+
+    ``XdmDocument.parse`` cannot produce one (an empty document is not
+    well-formed XML), so the node is built directly, with no children.
+    """
+    return XdmDocument(
+        source_name="<empty>",
+        source_index=SourceIndex("<empty>", b"<unused/>"),
+        document_uri=None,
+        base_uri=None,
+    )
+
+
+def _result_context_item(items: tuple[Any, ...]) -> Any:
+    """The context item for the engine arm: the delivered principal result.
+
+    The reference runner's ``$result`` is the principal result as delivered
+    (``runner/assert.xsl:180-195``), and the default delivery format builds a
+    final result tree, so a single parentless element is that tree's content,
+    not a tree of its own.  Focusing it directly would make ``/`` a
+    non-document root and wrongly decide ``document-node(...)`` false for a
+    valid result.  The engine's tree builder supplies the document node and
+    keeps the raw items' type annotations; re-validating that tree at the
+    delivery boundary is Task 1k and is not the assertion layer's concern.
+    """
+    if not items:
+        return _empty_document()
+    item = items[0]
+    if isinstance(item, XdmNode) and item.kind is NodeKind.ELEMENT and item.parent is None:
+        return build_result_tree(items)
+    return item
+
+
+def _evaluate_schema_aware(
+    expression: str,
+    declarations: Sequence[tuple[str, str]],
+    pool: SchemaPool,
+    items: tuple[Any, ...],
+) -> Any:
+    """Evaluate one assertion with the engine, over the delivered items.
+
+    Implements the runner's context-item rule (``runner/assert.xsl:180-195``)
+    over ``result_items`` — the ruled raw-sequence reading: one item is the
+    delivered principal, an empty result focuses an empty document node, and a
+    multi-item result has an absent context item (the runner passes ``()``),
+    which stays an explicit gap.  The pool is the case's in-scope schema
+    components.  Failures are not caught here: the caller's ``try`` maps them
+    through ``_translate_evaluation_error``.
+    """
+    if len(items) > 1:
+        raise AssertionGap("an XPath assertion context is absent for a multi-item result")
+    focus = Focus(item=_result_context_item(items))
+    static = XPathStaticContext(
+        namespaces=_namespace_map(declarations),
+        schema=pool,
+        xsd_version=pool.xsd_version,
+    )
+    engine = XPathEngine(ASSERTION_XPATH_VERSION)
+    compiled = engine.compile(expression, static)
+    values = engine.evaluate(
+        compiled,
+        ExpressionEnvironment(variables={"result": items}),
+        focus=focus,
+    )
+    if len(values) == 1:
+        return getattr(values[0], "value", values[0])
+    return tuple(getattr(value, "value", value) for value in values)
+
+
+def _node_context(result: ResultSnapshot) -> Any | None:
+    """The principal result's node, re-parsed from its own serialization.
+
+    Only markup a single node result actually produced is accepted: the
+    serialization must parse as one element (or document) on its own —
+    ``_node_xml`` output.  Text-shaped serializations — an xsl:message's string
+    value, or a document reduced to escaped text — are not a node's markup and
+    stay a gap.  Used only where the context item would otherwise be missing,
+    so no assertion that decides today can change verdict.
+    """
+    if len(_raw_items(result)) != 1 or result.xml is None:
+        return None
+    try:
+        parsed = ET.fromstring(result.xml)
+    except ET.ParseError:
+        return None
+    return build_node_tree(ET.ElementTree(parsed))
+
+
 def _evaluate(
     expression: str,
     *,
     declarations: Sequence[tuple[str, str]],
-    items: tuple[Any, ...] = (),
+    result: ResultSnapshot,
+    schema: SchemaProvider | None = None,
 ) -> Any:
-    """Compile and evaluate one XPath expression with ``$result`` bound."""
+    """Compile and evaluate one XPath expression with ``$result`` bound.
+
+    The schema-aware engine route is gated structurally, and the gate cannot
+    change a decided verdict:
+
+    1. gate false — no ``schema-element``/``schema-attribute`` token — runs the
+       exact elementpath path run before, and the provider is never resolved;
+    2. gate true — the harness parser carries no schema pool, so the
+       elementpath evaluation of such an expression is an ``XPST0008`` gap
+       today; the engine route therefore only ever replaces a gap;
+    3. gate true but the pool is ``None`` — the elementpath path runs and the
+       ``XPST0008`` gap stands;
+    4. ``_node_context`` fires only inside the arm that raises ``AssertionGap``
+       today, and declines everything that is not a node's own markup.
+    """
     try:
-        parser, variables = _binding(declarations, items)
+        parser, variables = _binding(declarations, _raw_items(result))
         ast = parser.parse(expression)
+        if schema is not None and _uses_schema_kind_test(ast):
+            pool = schema()
+            if pool is not None:
+                return _evaluate_schema_aware(expression, declarations, pool, result.result_items)
+        items = _raw_items(result)
         context_item = _context_item(items, parser)
         root = _context_root(context_item)
+        if root is None and _context_node_path(ast):
+            document = _node_context(result)
+            if document is not None:
+                context_item = root = document
         if root is None and _context_node_path(ast):
             raise AssertionGap(
                 "an XPath path step requires a node context item: "
@@ -987,7 +1149,8 @@ class AssertionXPath(Assertion):
         value = _evaluate(
             f"boolean(({self.expression}))",
             declarations=self.namespaces,
-            items=_raw_items(context.result),
+            result=context.result,
+            schema=context.schema,
         )
         context.record(XPATH_FAMILY)
         return (
@@ -1093,7 +1256,8 @@ class AssertionEmpty(Assertion):
         value = _evaluate(
             f"empty(({self.expression}))",
             declarations=self.namespaces,
-            items=_raw_items(context.result),
+            result=context.result,
+            schema=context.schema,
         )
         context.record(EMPTY_FAMILY)
         return _passed() if bool(value) else _failed(f"expression {self.expression!r} is not empty")
@@ -1647,18 +1811,25 @@ def evaluate_assertion(
     raw_result: Any = _MISSING,
     result: ResultSnapshot | None = None,
     case: TestCase | None = None,
+    schema: SchemaProvider | None = None,
 ) -> bool:
     """Evaluate one assertion against a raw value or a result snapshot.
 
     A raw value is one item unless it is a tuple/list, which is treated as a
     sequence.  ``AssertionGap`` and ``AssertionDispute`` propagate so callers
     can report the honest harness outcome; an unusable actual result is a
-    false assertion.
+    false assertion.  *schema* resolves the case's declared schema pool for
+    the schema-aware route, and is never called for an ordinary assertion.
     """
     if result is None:
         value = () if raw_result is _MISSING else _as_sequence(raw_result)
         result = ResultSnapshot(raw=value)
-    context = AssertionContext(result, case=case, error_mode=_actual_error_code(result) is not None)
+    context = AssertionContext(
+        result,
+        case=case,
+        error_mode=_actual_error_code(result) is not None,
+        schema=schema,
+    )
     try:
         return assertion.evaluate_verdict(context).passed
     except AssertionFailure:
@@ -1670,6 +1841,7 @@ def assert_case(
     result: ResultSnapshot | None = None,
     *,
     raw_result: Any = _MISSING,
+    schema: SchemaProvider | None = None,
 ) -> CaseResult:
     """Decide one catalog case from its actual result."""
     if result is None:
@@ -1682,7 +1854,12 @@ def assert_case(
     except AssertionDispute as exc:
         return CaseResult.corpus_dispute(case.name, detail=str(exc))
     actual_code = _actual_error_code(result)
-    context = AssertionContext(result, case=case, error_mode=actual_code is not None)
+    context = AssertionContext(
+        result,
+        case=case,
+        error_mode=actual_code is not None,
+        schema=schema,
+    )
     try:
         verdict = assertion.evaluate_verdict(context)
     except AssertionGap as exc:

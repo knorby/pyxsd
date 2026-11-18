@@ -202,31 +202,53 @@ SUITE_PROFILES: Mapping[str, SuiteProfile] = {
 # Result conversion
 
 
+def _xml_element(source: XdmNode) -> ET.Element:
+    """The element-tree copy of *source* and its whole subtree."""
+    element = ET.Element(source.name or source.local_name or "node")
+    for attribute in source.attributes:
+        element.set(attribute.name, attribute.string_value)
+    for child in source.children:
+        if child.kind is NodeKind.TEXT:
+            if len(element):
+                element[-1].tail = (element[-1].tail or "") + child.string_value
+            else:
+                element.text = (element.text or "") + child.string_value
+        elif child.kind is NodeKind.ELEMENT:
+            element.append(_xml_element(child))
+        elif child.kind is NodeKind.COMMENT:
+            element.append(ET.Comment(child.string_value))
+        elif child.kind is NodeKind.PROCESSING_INSTRUCTION:
+            element.append(ET.ProcessingInstruction(child.target or "", child.string_value))
+    return element
+
+
 def _document_xml(node: XdmNode) -> str:
-    """One XDM tree as a deterministic XML string for the assertion layer."""
+    """One XDM node's children as a deterministic XML string for the assertion layer.
 
-    def build(source: XdmNode) -> Any:
-        element = ET.Element(source.name or source.local_name or "node")
-        for attribute in source.attributes:
-            element.set(attribute.name, attribute.string_value)
-        for child in source.children:
-            if child.kind is NodeKind.TEXT:
-                if len(element):
-                    element[-1].tail = (element[-1].tail or "") + child.string_value
-                else:
-                    element.text = (element.text or "") + child.string_value
-            elif child.kind is NodeKind.ELEMENT:
-                element.append(build(child))
-            elif child.kind is NodeKind.COMMENT:
-                element.append(ET.Comment(child.string_value))
-            elif child.kind is NodeKind.PROCESSING_INSTRUCTION:
-                element.append(ET.ProcessingInstruction(child.target or "", child.string_value))
-        return element
-
+    A document (or any node) whose single child is an element yields that
+    element's markup — the principal result is one node, not necessarily a
+    document; every other shape is described by the concatenated string values
+    of its children.
+    """
     elements = [child for child in node.children if child.kind is NodeKind.ELEMENT]
     if len(elements) == 1 and len(node.children) == 1:
-        return ET.tostring(build(elements[0]), encoding="unicode")
+        return ET.tostring(_xml_element(elements[0]), encoding="unicode")
     return escape("".join(child.string_value for child in node.children))
+
+
+def _node_xml(node: XdmNode) -> str:
+    """One node as its own XML; the final result tree of a node result.
+
+    ``_document_xml`` describes a *document*; for a rootless element its
+    "concatenate child string values" branch returns text.  This is the
+    element's own markup, and a document node still goes through
+    ``_document_xml``.  ``assert-xml`` may now reach a principal result that
+    only arrives as a single node; no case exercises that today (no census gap
+    reports "assert-xml needs the principal XML result"), so nothing flips.
+    """
+    if node.kind is NodeKind.DOCUMENT:
+        return _document_xml(node)
+    return ET.tostring(_xml_element(node), encoding="unicode")
 
 
 def _value(item: Any) -> Any:
@@ -249,19 +271,32 @@ def _value_sequence(sequence: Any) -> Any:
 
 
 def _snapshot_entry(entry: Any) -> ResultSnapshot:
+    # Ruled precedence: the delivered items are the raw sequence; the tree
+    # enters only when that sequence is empty.  ``raw``/``xml`` stay the
+    # elementpath arm's comparison view, so no decided verdict moves.
+    items = tuple(entry.raw) if entry.raw else ((entry.tree,) if entry.tree is not None else ())
     method = entry.serialization.get("method")
     encoding = entry.serialization.get("encoding")
     if entry.tree is not None:
         return ResultSnapshot(
             xml=_document_xml(entry.tree),
+            result_items=items,
             serialized=entry.serialized,
             serialization_method=method,
             serialization_encoding=encoding,
             messages=(),
             warnings=(),
         )
+    single = entry.raw[0] if len(entry.raw) == 1 else None
+    node = (
+        single
+        if isinstance(single, XdmNode) and single.kind in (NodeKind.ELEMENT, NodeKind.DOCUMENT)
+        else None
+    )
     return ResultSnapshot(
         raw=tuple(_value(item) for item in entry.raw),
+        xml=None if node is None else _node_xml(node),
+        result_items=items,
         serialized=entry.serialized,
         serialization_method=method,
         serialization_encoding=encoding,
@@ -298,6 +333,7 @@ def _snapshot(result: TransformationResult, output_uri: str | None = None) -> Re
     return ResultSnapshot(
         raw=view.raw,
         xml=view.xml,
+        result_items=view.result_items,
         serialized=view.serialized,
         messages=messages,
         secondary={uri: _snapshot_entry(value) for uri, value in result.secondary.items()},
@@ -1164,6 +1200,7 @@ def run_case(
                 [case],
                 lambda item: execute_case(item, profile),
                 profile.feature_profile,
+                assertion_schema=lambda item: _case_schema_pool(profile, item),
             )[0]
     except UnsupportedCase as exc:
         return CaseResult.adapter_gap(case.name, detail=str(exc))

@@ -11,11 +11,16 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable
+from functools import partial
+from typing import TYPE_CHECKING
 
 from tests.xslt.assertions import ResultSnapshot, assert_case
 from tests.xslt.model import Dependency, TestCase
 from tests.xslt.outcomes import CaseResult, Outcome
 from tests.xslt.selection import FeatureProfile, inapplicability
+
+if TYPE_CHECKING:  # pragma: no cover - import for type checking only
+    from pyxsd.xdm.schema import SchemaPool
 
 #: ``XSLT10``, ``XSLT20``, ``XSLT30+`` style dependency tokens.
 _SPEC_TOKEN = re.compile(r"^XSLT(?P<major>\d)(?P<minor>\d)(?P<forward>\+)?$")
@@ -136,8 +141,15 @@ def run_cases(
     cases: Iterable[TestCase],
     executor: Callable[[TestCase], ResultSnapshot],
     profile: FeatureProfile,
+    *,
+    assertion_schema: Callable[[TestCase], SchemaPool | None] | None = None,
 ) -> tuple[CaseResult, ...]:
-    """Execute every applicable case and return one explicit outcome each."""
+    """Execute every applicable case and return one explicit outcome each.
+
+    *assertion_schema* resolves a case's declared schema pool for the
+    schema-aware assertion route.  It is called at most once per case, and
+    only when a catalog assertion actually contains a schema kind test.
+    """
     results: list[CaseResult] = []
     for case in cases:
         dispute = unsatisfiable_dependencies(case)
@@ -166,5 +178,6 @@ def run_cases(
         except TimeoutError as exc:
             results.append(CaseResult.timeout(case.name, detail=str(exc)))
             continue
-        results.append(assert_case(case, snapshot))
+        schema = None if assertion_schema is None else partial(assertion_schema, case)
+        results.append(assert_case(case, snapshot, schema=schema))
     return tuple(results)

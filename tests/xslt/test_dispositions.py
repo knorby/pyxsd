@@ -485,9 +485,7 @@ def test_categories_are_the_documented_closed_vocabulary() -> None:
 def test_checked_in_dispositions_declare_the_remote_text_non_goal() -> None:
     entries = load_dispositions(DISPOSITIONS)
 
-    assert len(entries) == 1
-    (entry,) = entries
-    assert entry.id == "remote-text-resources-without-fixtures"
+    (entry,) = [item for item in entries if item.id == "remote-text-resources-without-fixtures"]
     assert entry.category == "declared-non-goal"
     assert entry.profiles == ("xslt30", "xslt20")
     assert entry.cases == (

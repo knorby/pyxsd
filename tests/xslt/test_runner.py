@@ -117,6 +117,37 @@ def test_feature_contradictions_are_corpus_disputes() -> None:
     assert "higher_order_functions" in result.message
 
 
+def test_run_cases_passes_the_assertion_schema() -> None:
+    schema_case = make_case(
+        "set/schema",
+        "<result><assert>/x instance of schema-element(x)</assert></result>",
+    )
+    plain_case = make_case("set/plain")
+    calls: list[str] = []
+
+    def provider(case: XmlTestCase) -> None:
+        calls.append(case.name)
+        return None
+
+    results = run_cases(
+        (schema_case, plain_case),
+        lambda _: ResultSnapshot(raw=("x",)),
+        XSLT30_NON_STREAMING,
+        assertion_schema=provider,
+    )
+
+    assert [result.outcome for result in results] == [Outcome.ADAPTER_GAP, Outcome.PASS]
+    assert calls == ["set/schema"]
+
+
+def test_run_cases_without_a_schema_provider_is_unchanged() -> None:
+    plain = make_case("set/plain")
+
+    results = run_cases((plain,), lambda _: ResultSnapshot(xml="<out/>"), XSLT30_NON_STREAMING)
+
+    assert results[0].outcome is Outcome.PASS
+
+
 def test_unknown_spec_tokens_do_not_create_disputes() -> None:
     case = make_case(
         "set/a",
