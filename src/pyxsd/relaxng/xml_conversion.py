@@ -31,7 +31,6 @@ from pyxsd.data_conversion.contracts import (
     raise_conversion,
     warn_conversion,
 )
-from pyxsd.data_conversion.import_data import _repointed
 from pyxsd.data_conversion.names import eqname_to_expanded, expanded_to_eqname
 from pyxsd.data_conversion.values import scalar_to_json
 from pyxsd.dtd_declarations import declaration_context
@@ -49,12 +48,14 @@ from pyxsd.relaxng.json_profile import (
     _child_route,
     _child_target,
     _claim_node_context,
+    _contract_qname,
     _ImportState,
     _layout,
     _list_valued,
     _parse_node_tags,
     _plan_route,
     _position_scalar_contracts,
+    _repointed,
     _root_route,
     _select_expanded_root,
     _unique_admitted_root,
@@ -65,18 +66,14 @@ from pyxsd.relaxng.json_values import (
     scalar_to_relaxng_json,
 )
 from pyxsd.relaxng.names import ExceptName, Name, NameChoice, NameClass, NsName
-from pyxsd.relaxng.patterns import (
-    Choice,
-    Data,
-    DataExcept,
-    Element,
-    Group,
-    Interleave,
-    List,
-    OneOrMore,
-    Value,
+from pyxsd.relaxng.patterns import Element
+from pyxsd.relaxng.projection import (
+    ContentContract,
+    FieldContract,
+    ProjectionPlan,
+    RouteContract,
+    WildcardContract,
 )
-from pyxsd.relaxng.projection import ContentContract, ProjectionPlan, RouteContract
 from pyxsd.relaxng.tree import RelaxNGElement, _effective_base
 from pyxsd.relaxng.validator import validate_element
 from pyxsd.relaxng.values import AlternativeValue, ListInterpretation
@@ -890,26 +887,6 @@ def _native_order(
         json_pointer(path),
         "grouped properties do not determine one accepted compiled child order",
     )
-
-
-def _contract_qname(contract: ScalarContract, plan: ProjectionPlan) -> bool:
-    if contract.kind != "list":
-        return _atomic_qname(contract)
-    pending = [plan.encoding_patterns[contract.pattern_identity]]
-    seen: set[int] = set()
-    while pending:
-        pattern = pending.pop()
-        if id(pattern) in seen:
-            continue
-        seen.add(id(pattern))
-        if isinstance(pattern, (Data, DataExcept, Value)):
-            if _contract_qname(scalar_contract(pattern), plan):
-                return True
-        elif isinstance(pattern, (Choice, Group, Interleave)):
-            pending.extend((pattern.first, pattern.second))
-        elif isinstance(pattern, (List, OneOrMore)):
-            pending.append(pattern.pattern)
-    return False
 
 
 def _lexical_bindings(node: RelaxNGElement, lexical: str) -> dict[str, str]:
@@ -2119,12 +2096,64 @@ def _check_grouped_import_order(
     )
 
 
-def _is_list_scalar(route: RouteContract | None) -> bool:
-    """Whether a child route's scalar slot consumes a whole JSON array."""
-    if route is None or _layout(route, False) != "scalar":
-        return False
-    contracts = _position_scalar_contracts(route.content.model, None)
-    return bool(contracts) and all(_list_valued(contract) for contract in contracts)
+def _child_field(route: RouteContract, expanded: str) -> FieldContract | WildcardContract | None:
+    """The declared child slot for one expanded name, if any."""
+    field = route.children.get(expanded)
+    if field is not None:
+        return field
+    uri, local = _split(expanded)
+    for wildcard in route.wildcards:
+        if wildcard.role == "child" and wildcard.name_class.contains(uri, local):
+            return wildcard
+    return None
+
+
+def _child_contracts(
+    child_route: RouteContract,
+) -> tuple[ScalarContract, ...]:
+    """Scalar contracts possible at one grouped child position."""
+    return _position_scalar_contracts(child_route.content.model, None)
+
+
+def _grouped_values(
+    route: RouteContract | None,
+    expanded: str,
+    raw: Any,
+    child_route: RouteContract | None,
+    child_generic: bool,
+    path: _Path,
+) -> tuple[bool, list[Any]]:
+    """Interpret one grouped property as scalar content or child occurrences.
+
+    Repeated scalar fields use nested arrays for occurrences.  A flat array is
+    one list scalar unless the field cannot repeat and every scalar branch is a
+    non-list atomic value; a mixed list/atomic contract leaves a flat array
+    genuinely ambiguous and is rejected instead of silently splitting.
+    """
+    if not isinstance(raw, list):
+        return False, [raw]
+    if _layout(child_route, child_generic) != "scalar":
+        return True, list(raw)
+    assert route is not None and child_route is not None
+    field = _child_field(route, expanded)
+    repeatable = True if field is None else field.cardinality.repeatable
+    contracts = _child_contracts(child_route)
+    if not repeatable:
+        value = raw[0] if len(raw) == 1 and isinstance(raw[0], (list, dict)) else raw
+        return False, [value]
+    if any(isinstance(item, (list, dict)) for item in raw):
+        return True, list(raw)
+    list_contracts = tuple(contract for contract in contracts if _list_valued(contract))
+    if list_contracts:
+        if len(list_contracts) != len(contracts):
+            raise_conversion(
+                "scalar-type-ambiguous",
+                json_pointer(path),
+                "a flat array cannot distinguish one list-valued scalar from "
+                "repeated non-list children",
+            )
+        return False, [raw]
+    return True, list(raw)
 
 
 def _selected_root(plan: ProjectionPlan, element: str | None) -> str:
@@ -2172,13 +2201,35 @@ class _GroupedImporter:
             frame.clear()
             frame.update(claim_frame)
             base = claim_base
+        seen: dict[str, _Path] = {}
         for expanded, raw, error_path in attr_pairs:
+            if expanded in seen:
+                raise_conversion(
+                    "json-duplicate-key",
+                    json_pointer(error_path),
+                    f"the attributes at {json_pointer(seen[expanded])} and "
+                    f"{json_pointer(error_path)} denote the expanded name {expanded!r}",
+                )
+            seen[expanded] = error_path
             _bind_grouped_claim(self.state.claims, tags, raw, element_path, attribute=expanded)
+            contracts = _position_scalar_contracts(route.content.model, expanded) if route else ()
+            allow_list = allow_list_attrs
+            if isinstance(raw, list) and contracts:
+                list_contracts = tuple(contract for contract in contracts if _list_valued(contract))
+                if list_contracts and len(list_contracts) != len(contracts):
+                    raise_conversion(
+                        "scalar-type-ambiguous",
+                        json_pointer(error_path),
+                        "a JSON array cannot distinguish a list-valued attribute "
+                        "from another scalar branch",
+                    )
+                if list_contracts:
+                    allow_list = True
             lexical = _grouped_scalar(
                 raw,
                 tags=tags,
                 allow_null=False,
-                allow_list=allow_list_attrs,
+                allow_list=allow_list,
                 path=error_path,
             )
             element.attrib[expanded] = "" if lexical is None else lexical
@@ -2209,17 +2260,28 @@ class _GroupedImporter:
         path: _Path,
         layout: str,
     ) -> list[tuple[str, Any, str, _Path]]:
-        """Order grouped child entries by compiled slots, never by value shape."""
+        """Validate caller order, canonicalizing only order-insensitive records."""
         if not entries:
             return entries
-        if route is not None:
+        if layout != "record":
+            names: list[str] = []
+            for expanded, raw, _key, child_path in entries:
+                child_route, child_generic = self._child_target(route, expanded)
+                _repeated, values = _grouped_values(
+                    route,
+                    expanded,
+                    raw,
+                    child_route,
+                    child_generic,
+                    child_path,
+                )
+                names.extend([expanded] * len(values))
+            _check_grouped_import_order(route, names, path, self.fidelity)
+        if layout == "record" and route is not None:
             by_name = {entry[0]: entry for entry in entries}
             ordered = [by_name[name] for name in route.children if name in by_name]
             ordered.extend(entry for entry in entries if entry[0] not in route.children)
-            entries = ordered
-        names = [entry[0] for entry in entries]
-        if layout not in ("record",):
-            _check_grouped_import_order(route, names, path, self.fidelity)
+            return ordered
         return entries
 
     def _append_children(
@@ -2235,32 +2297,24 @@ class _GroupedImporter:
     ) -> None:
         for expanded, raw, _key, child_path in self._ordered(route, entries, path, layout):
             child_route, child_generic = self._child_target(route, expanded)
-            repeated = isinstance(raw, list) and (
-                not _is_list_scalar(child_route) or any(isinstance(item, list) for item in raw)
+            repeated, values = _grouped_values(
+                route,
+                expanded,
+                raw,
+                child_route,
+                child_generic,
+                child_path,
             )
-            if repeated:
-                for index, item in enumerate(raw):
-                    element.append(
-                        self._element(
-                            expanded,
-                            item,
-                            child_route,
-                            frame,
-                            base,
-                            (*child_path, index),
-                            (*element_path, len(element)),
-                            generic=child_generic,
-                        )
-                    )
-            else:
+            for index, value in enumerate(values):
+                value_path = (*child_path, index) if repeated else child_path
                 element.append(
                     self._element(
                         expanded,
-                        raw,
+                        value,
                         child_route,
                         frame,
                         base,
-                        child_path,
+                        value_path,
                         (*element_path, len(element)),
                         generic=child_generic,
                     )
@@ -2364,7 +2418,7 @@ class _NativeImporter(_GroupedImporter):
         base = self._apply_scalars(
             element,
             attr_pairs,
-            None if content is _MISSING else (content, path),
+            None if content is _MISSING else (content, (*path, _TEXT_KEY)),
             route,
             frame,
             parent_base,
@@ -2732,11 +2786,11 @@ class _JsonmlImporter(_GroupedImporter):
                         if route is not None
                         else ()
                     )
-                    if not contracts or not all(_list_valued(contract) for contract in contracts):
+                    if not contracts or not any(_list_valued(contract) for contract in contracts):
                         raise_conversion(
                             "container-invalid",
                             json_pointer(item_path),
-                            "a scalar that is not list-valued cannot carry a JSON array",
+                            "a scalar with no list-valued branch cannot carry a JSON array",
                         )
                     parts = [
                         _grouped_scalar(

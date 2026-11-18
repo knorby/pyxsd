@@ -685,7 +685,7 @@ class RelaxNGSchema:
             )
         except PyXSDError as exc:
             raise PyXSDError(f"{exc} (format={format!r})") from None
-        return self._parse_imported_tree(tree)
+        return self._parse_imported_tree(tree, format=format)
 
     def from_json(
         self,
@@ -721,13 +721,14 @@ class RelaxNGSchema:
             fidelity=fidelity,
         )
 
-    def _parse_imported_tree(self, tree: ImportedTree) -> RelaxNGDocument:
+    def _parse_imported_tree(self, tree: ImportedTree, *, format: FormatName) -> RelaxNGDocument:
         """Parse one imported tree, then verify its parsed tag claims.
 
         Contexts are adapted onto lexical nodes while the parse guard is held;
         the ElementTree and its identity-keyed table are never retained.  Claim
         verification runs only after reconstruction, and only a valid document
-        can produce authoritative candidate evidence.
+        can produce authoritative candidate evidence.  Verification failures
+        carry the public format name like pre-validation conversion failures.
         """
         from pyxsd.relaxng.json_values import verify_tag_claims
 
@@ -742,7 +743,10 @@ class RelaxNGSchema:
             contexts=tree.contexts,
         )
         if tree.claims:
-            verify_tag_claims(tree.claims, document)
+            try:
+                verify_tag_claims(tree.claims, document)
+            except PyXSDError as exc:
+                raise PyXSDError(f"{exc} (format={format!r})") from None
         return document
 
     def _parse_guarded_instance(

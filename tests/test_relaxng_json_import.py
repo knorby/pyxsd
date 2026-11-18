@@ -1161,6 +1161,13 @@ def test_profile_empty_attributes_and_duplicate_attribute_maps() -> None:
             {"r": [{"@z": 3}, {"@z": 4}, {"a": 1}, {"b": "x"}]}, format="pyxsd-json"
         ),
     )
+    conversion_error(
+        "json-duplicate-key",
+        "/r/0/@Q{}z",
+        lambda: sequence.from_data(
+            {"r": [{"@z": 3, "@Q{}z": 4}, {"a": 1}, {"b": "x"}]}, format="pyxsd-json"
+        ),
+    )
 
 
 def test_profile_wildcard_children_use_generic_routes() -> None:
@@ -1262,7 +1269,7 @@ def test_imported_tree_parse_accepts_sparse_contexts() -> None:
     root = ET.Element("r")
     ET.SubElement(root, "child")
     contexts = {id(root): DatatypeContext(None, {"p": "urn:example"})}
-    document = schema._parse_imported_tree(ImportedTree(root, contexts, ()))
+    document = schema._parse_imported_tree(ImportedTree(root, contexts, ()), format="pyxsd-json")
     assert not document.report.has_errors
     assert document.root.namespaces == {"p": "urn:example"}
     assert document.root.children[0].namespaces in (None, {})
@@ -1501,6 +1508,299 @@ def test_jsonml_declaration_validation_and_clark_tags() -> None:
         "/1/@xmlns",
         lambda: schema.from_data(["{urn:a}r", {"@xmlns": "urn:a"}, 12], format="jsonml"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Review regressions: grouped order, list ambiguity, attributes, and QName wire
+# ---------------------------------------------------------------------------
+
+
+def test_native_sequence_preserves_json_key_order_over_static_partitions() -> None:
+    cases = [
+        (
+            '<element name="z"><data type="integer"/></element>'
+            '<element name="a"><data type="string"/></element>',
+            "<r><z>1</z><a>x</a></r>",
+            ["z", "a"],
+        ),
+        (
+            '<element name="y"><data type="integer"/></element>'
+            "<zeroOrMore><element name='a'><data type='string'/></element></zeroOrMore>",
+            "<r><y>1</y><a>x</a><a>y</a></r>",
+            ["y", "a", "a"],
+        ),
+        (
+            '<element name="y"><data type="integer"/></element>'
+            "<zeroOrMore><element name='a'><data type='string'/></element></zeroOrMore>"
+            '<element name="z"><data type="string"/></element>',
+            "<r><y>1</y><a>x</a><a>y</a><z>end</z></r>",
+            ["y", "a", "a", "z"],
+        ),
+    ]
+    for content, xml, expected in cases:
+        document = valid(content, xml)
+        data = document.to_data(format="pyxsd", fidelity="strict")
+        imported = document.schema.from_data(data, format="pyxsd")
+        assert not imported.report.has_errors, imported.report.issues
+        assert [child._name_ for child in imported.root.children] == expected
+        assert imported.to_data(format="pyxsd", fidelity="strict") == data
+
+
+def test_native_mixed_children_preserve_json_key_order() -> None:
+    document = valid(f"<mixed>{B}{A}</mixed>", "<r><b>B</b><a>1</a></r>")
+    data = document.to_data(format="pyxsd", fidelity="strict")
+    imported = document.schema.from_data(data, format="pyxsd")
+    assert not imported.report.has_errors
+    assert [child._name_ for child in imported.root.children] == ["b", "a"]
+    assert imported.to_data(format="pyxsd", fidelity="strict") == data
+
+
+_LIST_OR_INTEGER = (
+    '<element name="a"><choice><list><zeroOrMore><data type="integer"/>'
+    '</zeroOrMore></list><data type="integer"/></choice></element>'
+)
+
+
+def test_single_list_or_atomic_child_stays_one_list_scalar() -> None:
+    document = valid(f"<optional>{_LIST_OR_INTEGER}</optional>", "<r><a>1 2</a></r>")
+    for format_name in ("parker", "badgerfish", "jsonml"):
+        data = document.to_data(format=format_name, fidelity="strict")
+        imported = document.schema.from_data(data, format=format_name)
+        assert not imported.report.has_errors, (format_name, imported.report.issues)
+        assert [child.text_value() for child in imported.root.children] == ["1 2"]
+        assert imported.to_data(format=format_name, fidelity="strict") == data, format_name
+
+
+def test_repeated_list_or_atomic_child_requires_unambiguous_nesting() -> None:
+    document = valid(f"<zeroOrMore>{_LIST_OR_INTEGER}</zeroOrMore>", "<r><a>1 2</a></r>")
+    parker_data = document.to_data(format="parker", fidelity="strict")
+    conversion_error(
+        "scalar-type-ambiguous",
+        "/a",
+        lambda: document.schema.from_data(parker_data, format="parker"),
+    )
+
+    for format_name in ("badgerfish", "jsonml"):
+        data = document.to_data(format=format_name, fidelity="strict")
+        imported = document.schema.from_data(data, format=format_name)
+        assert not imported.report.has_errors, (format_name, imported.report.issues)
+        assert [child.text_value() for child in imported.root.children] == ["1 2"]
+        assert imported.to_data(format=format_name, fidelity="strict") == data
+
+    one = document.schema.from_data({"a": [[1, 2]]}, format="parker")
+    assert not one.report.has_errors
+    assert [child.text_value() for child in one.root.children] == ["1 2"]
+    two = document.schema.from_data({"a": [[1, 2], [3, 4]]}, format="parker")
+    assert not two.report.has_errors
+    assert [child.text_value() for child in two.root.children] == ["1 2", "3 4"]
+
+    pure = valid(
+        "<zeroOrMore><element name='a'><list><zeroOrMore><data type='integer'/>"
+        "</zeroOrMore></list></element></zeroOrMore>",
+        "<r><a>1 2</a></r>",
+    )
+    flat = pure.to_data(format="parker", fidelity="strict")
+    assert flat == {"a": [1, 2]}
+    imported = pure.schema.from_data(flat, format="parker")
+    assert not imported.report.has_errors
+    assert [child.text_value() for child in imported.root.children] == ["1 2"]
+
+
+def test_native_tagged_list_or_atomic_child_keeps_its_assertions() -> None:
+    document = valid(
+        f"<zeroOrMore>{_LIST_OR_INTEGER}</zeroOrMore>",
+        "<r><a>1 2</a><a>3</a></r>",
+    )
+    data = document.to_data(format="pyxsd", fidelity="strict")
+    assert "#value" in json.dumps(data)
+    imported = document.schema.from_data(data, format="pyxsd")
+    assert not imported.report.has_errors
+    assert [child.text_value() for child in imported.root.children] == ["1 2", "3"]
+    assert imported.to_data(format="pyxsd", fidelity="strict") == data
+
+
+def test_grouped_wildcard_list_child_uses_one_scalar() -> None:
+    content = "<zeroOrMore><element><anyName/><data type='NMTOKENS'/></element></zeroOrMore>"
+    document = valid(content, "<r><item>a b</item></r>")
+    for format_name in ("pyxsd", "parker", "badgerfish"):
+        data = document.to_data(format=format_name, fidelity="strict")
+        imported = document.schema.from_data(data, format=format_name)
+        assert not imported.report.has_errors, (format_name, imported.report.issues)
+        assert [child.text_value() for child in imported.root.children] == ["a b"]
+        assert imported.to_data(format=format_name, fidelity="strict") == data
+
+
+def test_grouped_child_field_finds_child_wildcards_and_absent_slots() -> None:
+    from pyxsd.relaxng.xml_conversion import _child_field
+
+    mixed = schema_for(
+        "<zeroOrMore><attribute><anyName/><text/></attribute></zeroOrMore>"
+        "<zeroOrMore><element><anyName/><text/></element></zeroOrMore>"
+    )
+    route = mixed.projection.routes[mixed.projection.roots[0]]
+    field = _child_field(route, "item")
+    assert field is not None
+    assert field.role == "child"
+
+    empty = schema_for("<empty/>")
+    absent = empty.projection.routes[empty.projection.roots[0]]
+    assert _child_field(absent, "unknown") is None
+
+
+def test_grouped_list_attributes_join_tokens() -> None:
+    qname_content = (
+        '<optional><attribute name="z"><list><zeroOrMore><data type="QName"/>'
+        "</zeroOrMore></list></attribute></optional><empty/>"
+    )
+    cases = [
+        (
+            '<optional><attribute name="z"><data type="NMTOKENS"/></attribute></optional><empty/>',
+            '<r z="a b"/>',
+            "a b",
+            2,
+            None,
+        ),
+        (
+            '<optional><attribute name="z"><list><zeroOrMore><data type="integer"/>'
+            "</zeroOrMore></list></attribute></optional><empty/>",
+            '<r z="1 2"/>',
+            "1 2",
+            2,
+            None,
+        ),
+        (
+            qname_content,
+            '<r xmlns:p="urn:e" z="p:a p:b"/>',
+            None,
+            2,
+            ["{urn:e}a", "{urn:e}b"],
+        ),
+    ]
+    for content, xml, lexical, count, expanded in cases:
+        document = valid(content, xml)
+        for format_name in ("badgerfish", "jsonml"):
+            data = document.to_data(format=format_name, fidelity="strict")
+            imported = document.schema.from_data(data, format=format_name)
+            assert not imported.report.has_errors, (format_name, imported.report.issues)
+            if expanded is None:
+                assert imported.root.attribute_lexical("z") == lexical
+                assert imported.to_data(format=format_name, fidelity="strict") == data
+            else:
+                values = imported.root.attribute_value("z")
+                assert len(values) == count
+                assert [value.to_expanded_name() for value in values] == expanded
+
+
+def test_grouped_list_attribute_with_mixed_atomic_choice_is_ambiguous() -> None:
+    content = (
+        '<optional><attribute name="z"><choice><list><zeroOrMore>'
+        '<data type="integer"/></zeroOrMore></list><data type="integer"/>'
+        "</choice></attribute></optional><empty/>"
+    )
+    document = valid(content, '<r z="1 2"/>')
+    for format_name in ("badgerfish", "jsonml"):
+        data = document.to_data(format=format_name, fidelity="strict")
+        conversion_error(
+            "scalar-type-ambiguous",
+            "/r/@z" if format_name == "badgerfish" else "/1/z",
+            lambda format_name=format_name, data=data: document.schema.from_data(
+                data, format=format_name
+            ),
+        )
+
+
+def test_profile_list_qname_content_and_attribute_round_trip() -> None:
+    content = '<list><zeroOrMore><data type="QName"/></zeroOrMore></list>'
+    document = valid(content, '<r xmlns:p="urn:e" xmlns:q="urn:z">p:a q:b</r>')
+    data = document.to_data(format="pyxsd-json", fidelity="strict")
+    imported = document.schema.from_data(data, format="pyxsd-json")
+    assert not imported.report.has_errors
+    assert imported.root.text_value() == "ns0:a ns1:b"
+    assert imported.to_data(format="pyxsd-json", fidelity="strict") == data
+
+    attribute = (
+        '<optional><attribute name="z"><list><zeroOrMore><data type="QName"/>'
+        "</zeroOrMore></list></attribute></optional><empty/>"
+    )
+    attributed = valid(attribute, '<r xmlns:p="urn:e" z="p:a p:b"/>')
+    attr_data = attributed.to_data(format="pyxsd-json", fidelity="strict")
+    attr_imported = attributed.schema.from_data(attr_data, format="pyxsd-json")
+    assert not attr_imported.report.has_errors
+    assert attr_imported.to_data(format="pyxsd-json", fidelity="strict") == attr_data
+
+
+def test_profile_default_namespace_qname_uses_the_local_name_under_a_tag() -> None:
+    content = (
+        "<optional><attribute name='z'><choice><data type='integer'/>"
+        "<data type='string'/></choice></attribute></optional><data type='QName'/>"
+    )
+    schema = RelaxNGSchema.compile(
+        io.StringIO(
+            f'<element xmlns="{NS}" datatypeLibrary="{XSD}" name="r" ns="urn:d">{content}</element>'
+        )
+    )
+    document = schema.parse(io.StringIO('<r xmlns="urn:d" z="1">v</r>'), typed=True)
+    data = document.to_data(format="pyxsd-json", fidelity="strict")
+    imported = schema.from_data(data, format="pyxsd-json")
+    assert not imported.report.has_errors
+    assert imported.root.text_value() == "v"
+    assert imported.root.namespaces == {"": "urn:d"}
+    assert imported.to_data(format="pyxsd-json", fidelity="strict") == data
+
+
+def test_profile_xml_namespace_qname_needs_no_added_binding() -> None:
+    content = (
+        "<optional><attribute name='z'><choice><data type='integer'/>"
+        "<data type='string'/></choice></attribute></optional><data type='QName'/>"
+    )
+    document = valid(content, '<r z="1">xml:lang</r>')
+    data = document.to_data(format="pyxsd-json", fidelity="strict")
+    imported = document.schema.from_data(data, format="pyxsd-json")
+    assert not imported.report.has_errors
+    assert imported.root.text_value() == "xml:lang"
+    assert "xml" not in (imported.root.namespaces or {})
+    assert imported.to_data(format="pyxsd-json", fidelity="strict") == data
+
+
+def test_duplicate_attribute_spellings_are_rejected() -> None:
+    content = '<attribute name="z"><data type="string"/></attribute><empty/>'
+    cases = [
+        ("pyxsd-json", {"r": {"@z": "a", "@Q{}z": "b"}}, "/r/@Q{}z"),
+        ("pyxsd", {"@z": "a", "@Q{}z": "b"}, "/@Q{}z"),
+        ("badgerfish", {"r": {"@z": "a", "@Q{}z": "b"}}, "/r/@Q{}z"),
+        ("jsonml", ["r", {"z": "a", "@z": "b"}], "/1/@z"),
+    ]
+    for format_name, data, pointer in cases:
+        schema = schema_for(content)
+        conversion_error(
+            "json-duplicate-key",
+            pointer,
+            lambda format_name=format_name, data=data, schema=schema: schema.from_data(
+                data, format=format_name
+            ),
+        )
+
+
+def test_native_content_tag_errors_point_at_the_dollar_member() -> None:
+    document = valid(ALT, "<r>12</r>")
+    data = document.to_data(format="pyxsd", fidelity="strict")
+    data["$"]["#value"]["version"] = 2
+    conversion_error(
+        "scalar-tag-version",
+        "/$",
+        lambda: document.schema.from_data(data, format="pyxsd"),
+    )
+
+
+def test_post_parse_claim_mismatch_carries_the_format() -> None:
+    document = valid(ALT, "<r>12</r>")
+    data = alt_data(document)
+    data["r"]["#value"]["candidates"] = ["forged"]
+    with pytest.raises(
+        PyXSDError,
+        match=r"scalar-tag-candidates-mismatch at '/r'.*\(format='pyxsd-json'\)",
+    ):
+        document.schema.from_data(data, format="pyxsd-json")
 
 
 def test_xsd_import_surface_remains_available() -> None:

@@ -9,6 +9,7 @@ and binds parsed tag claims to constructed positions as assertions only.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
@@ -24,10 +25,10 @@ from pyxsd.data_conversion.contracts import (
     validate_fidelity,
     validate_format,
 )
-from pyxsd.data_conversion.import_data import _reject_nonfinite_data, _repointed
 from pyxsd.data_conversion.names import eqname_to_expanded, expanded_to_eqname
 from pyxsd.exceptions import PyXSDError
-from pyxsd.relaxng.contracts import ScalarContract
+from pyxsd.namespaces import XML_NS
+from pyxsd.relaxng.contracts import ScalarContract, scalar_contract
 from pyxsd.relaxng.datatypes import DatatypeContext
 from pyxsd.relaxng.document import _whole_element_scalar_value
 from pyxsd.relaxng.json_values import (
@@ -44,6 +45,16 @@ from pyxsd.relaxng.names import (
     NameClass,
     NsName,
 )
+from pyxsd.relaxng.patterns import (
+    Choice,
+    Data,
+    DataExcept,
+    Group,
+    Interleave,
+    List,
+    OneOrMore,
+    Value,
+)
 from pyxsd.relaxng.projection import ContentContract, ProjectionPlan, RouteContract
 from pyxsd.relaxng.tree import RelaxNGElement, _effective_base
 
@@ -57,6 +68,32 @@ _XSD_DATATYPES = "http://www.w3.org/2001/XMLSchema-datatypes"
 _LIST_VALUED_ATOMICS = frozenset({"IDREFS", "ENTITIES", "NMTOKENS"})
 #: Sentinel distinguishing an absent member from an explicit JSON null.
 _MISSING = object()
+
+
+def _reject_nonfinite_data(value: JsonValue, path: tuple[str | int, ...]) -> None:
+    """Apply the JSON finite-number boundary to direct Python input too."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise_conversion(
+            "json-invalid", json_pointer(path), "non-finite numbers require INF/-INF/NaN strings"
+        )
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _reject_nonfinite_data(item, (*path, key))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_nonfinite_data(item, (*path, index))
+
+
+def _repointed(exc: PyXSDError, path: str) -> PyXSDError:
+    """Rebuild a nested conversion error with the importer's JSON path.
+
+    Every shared helper used here raises with an empty pointer; this function is
+    only sound while that invariant holds.
+    """
+    text = str(exc)
+    code, _, rest = text.partition(" at ")
+    detail = rest.partition("': ")[2]
+    return PyXSDError(f"{code} at {path!r}: {detail}")
 
 
 def _split(name: str) -> tuple[str | None, str]:
@@ -341,6 +378,27 @@ def _atomic_qname(contract: ScalarContract) -> bool:
     )
 
 
+def _contract_qname(contract: ScalarContract, plan: ProjectionPlan) -> bool:
+    """Whether a scalar contract reads a QName, including a list of QNames."""
+    if contract.kind != "list":
+        return _atomic_qname(contract)
+    pending = [plan.encoding_patterns[contract.pattern_identity]]
+    seen: set[int] = set()
+    while pending:
+        pattern = pending.pop()
+        if id(pattern) in seen:
+            continue
+        seen.add(id(pattern))
+        if isinstance(pattern, (Data, DataExcept, Value)):
+            if _contract_qname(scalar_contract(pattern), plan):
+                return True
+        elif isinstance(pattern, (Choice, Group, Interleave)):
+            pending.extend((pattern.first, pattern.second))
+        elif isinstance(pattern, (List, OneOrMore)):
+            pending.append(pattern.pattern)
+    return False
+
+
 def _list_valued(contract: ScalarContract) -> bool:
     """Whether this contract's decoded JSON value is an array of tokens."""
     return contract.kind == "list" or (
@@ -438,9 +496,20 @@ def _eqname_or_string(
     state: _ImportState,
     frozen: bool,
     path: _Path,
+    plan: ProjectionPlan,
 ) -> str:
-    """Translate an EQName string only when every contract reads a QName."""
-    if not text.startswith("Q{") or not contracts or not all(_atomic_qname(c) for c in contracts):
+    """Translate an EQName string when every contract reads a QName.
+
+    A list-of-QName contract receives one token per call.  The default binding
+    is a representable prefix (the lexical local name), and the implicit ``xml``
+    prefix never needs a new assertion.  Only a tag-frozen frame with no
+    representable binding is a conflict.
+    """
+    if (
+        not text.startswith("Q{")
+        or not contracts
+        or not all(_contract_qname(c, plan) for c in contracts)
+    ):
         return text
     try:
         expanded = eqname_to_expanded(text)
@@ -449,9 +518,13 @@ def _eqname_or_string(
     uri, local = _split(expanded)
     if not uri:
         return local
+    if uri == XML_NS:
+        return f"xml:{local}"
     for prefix, bound in frame.items():
         if prefix and bound == uri:
             return f"{prefix}:{local}"
+    if frame.get("") == uri:
+        return local
     if frozen:
         raise_conversion(
             "namespace-conflict",
@@ -470,6 +543,7 @@ def _lexical_scalar(
     tags: Mapping[int, ScalarTagClaim],
     frozen: bool,
     path: _Path,
+    plan: ProjectionPlan,
 ) -> str:
     """Rebuild one scalar's lexical text without choosing a datatype."""
     claim = tags.get(id(raw))
@@ -495,6 +569,7 @@ def _lexical_scalar(
                 tags=tags,
                 frozen=frozen,
                 path=(*path, index),
+                plan=plan,
             )
             for index, item in enumerate(raw)
         )
@@ -502,7 +577,7 @@ def _lexical_scalar(
         return "true" if raw else "false"
     if isinstance(raw, (int, float)):
         return str(raw)
-    return _eqname_or_string(raw, contracts, frame, state, frozen, path)
+    return _eqname_or_string(raw, contracts, frame, state, frozen, path, plan)
 
 
 def _append_text(element: ET.Element, text: str) -> None:
@@ -673,7 +748,16 @@ class _ProfileImporter:
             frame.clear()
             frame.update(claim_frame)
             base = claim_base
+        seen: dict[str, _Path] = {}
         for expanded, raw, error_path in attr_pairs:
+            if expanded in seen:
+                raise_conversion(
+                    "json-duplicate-key",
+                    json_pointer(error_path),
+                    f"the attributes at {json_pointer(seen[expanded])} and "
+                    f"{json_pointer(error_path)} denote the expanded name {expanded!r}",
+                )
+            seen[expanded] = error_path
             self._bind_claim(tags, raw, element_path, attribute=expanded)
             contracts = _position_scalar_contracts(route.content.model, expanded) if route else ()
             element.attrib[expanded] = _lexical_scalar(
@@ -684,6 +768,7 @@ class _ProfileImporter:
                 tags=tags,
                 frozen=frozen,
                 path=error_path,
+                plan=self.plan,
             )
         if not tags:
             base = _effective_base(parent_base, element)
@@ -699,6 +784,7 @@ class _ProfileImporter:
                 tags=tags,
                 frozen=frozen,
                 path=error_path,
+                plan=self.plan,
             )
         return base
 
@@ -1019,8 +1105,17 @@ class _ProfileImporter:
         for index, item in enumerate(raw):
             if not (isinstance(item, dict) and item and all(k.startswith("@") for k in item)):
                 break
+            map_seen: dict[str, str] = {}
             for key, value in item.items():
                 expanded = _attribute_key(key, (*path, index, key))
+                if expanded in map_seen:
+                    raise_conversion(
+                        "json-duplicate-key",
+                        json_pointer((*path, index, key)),
+                        f"the members {map_seen[expanded]!r} and {key!r} denote "
+                        f"the expanded name {expanded!r}",
+                    )
+                map_seen[expanded] = key
                 if expanded in seen:
                     raise_conversion(
                         "marker-conflict",
