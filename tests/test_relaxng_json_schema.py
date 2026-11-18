@@ -27,7 +27,6 @@ from jsonschema import Draft202012Validator
 import pyxsd
 from pyxsd.exceptions import PyXSDError
 from pyxsd.relaxng import RelaxNGSchema
-from pyxsd.relaxng.conversion import RelaxNGUnsupportedAdapterError
 from pyxsd.relaxng.datatypes import Datatype, DatatypeFactory, DatatypeLibraryRegistration
 from pyxsd.relaxng.json_profile import export_profile
 from pyxsd.relaxng.json_schema import (
@@ -123,8 +122,16 @@ def exported(
     return export_profile(document.root, plan, element=element)
 
 
-def schema_from_plan(plan: ProjectionPlan, element: str | None = None) -> dict[str, Any]:
-    result = build_relaxng_json_schema(SimpleNamespace(projection=plan), element=element)
+def schema_from_plan(
+    plan: ProjectionPlan,
+    element: str | None = None,
+    *,
+    format: Any = "pyxsd-json",
+    **options: Any,
+) -> dict[str, Any]:
+    result = build_relaxng_json_schema(
+        SimpleNamespace(projection=plan), format=format, element=element, **options
+    )
     Draft202012Validator.check_schema(result)
     return result
 
@@ -267,33 +274,41 @@ def test_invalid_format_and_fidelity_names_raise() -> None:
         schema.json_schema(fidelity="loose")  # type: ignore[arg-type]
 
 
-def test_only_the_profile_format_is_available() -> None:
+def test_every_format_has_an_envelope() -> None:
     schema = schema_for(INTEGER)
 
     for format in ("pyxsd", "parker", "badgerfish", "jsonml"):
-        with pytest.raises(RelaxNGUnsupportedAdapterError):
-            schema.json_schema(format=format)  # type: ignore[arg-type]
-    assert RelaxNGUnsupportedAdapterError("parker").format == "parker"
+        result = schema.json_schema(format=format)  # type: ignore[arg-type]
+        Draft202012Validator.check_schema(result)
+        assert result["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+        assert result["x-pyxsd-format"] == format
+        assert result["x-pyxsd-profile"] == "relaxng"
+        assert result["x-pyxsd-profile-version"] == 1
+        assert result["x-pyxsd-validation"]["level"] == "structural"
+
+
+def test_native_options_are_allowed_for_the_native_format() -> None:
+    schema = schema_for(INTEGER)
+
+    untyped = schema.json_schema(format="pyxsd", typed=False)
+    listed = schema.json_schema(format="pyxsd", always_list=True)
+
+    assert untyped["x-pyxsd-format"] == "pyxsd"
+    assert listed["x-pyxsd-format"] == "pyxsd"
+    Draft202012Validator.check_schema(untyped)
+    Draft202012Validator.check_schema(listed)
 
 
 def test_profile_rejects_native_only_options() -> None:
     schema = schema_for(INTEGER)
 
-    with pytest.raises(ValueError, match="native-only"):
+    with pytest.raises(ValueError, match=r"^typed is a native-only JSON Schema option$"):
         schema.json_schema(typed=False)
-    with pytest.raises(ValueError, match="native-only"):
+    with pytest.raises(ValueError, match=r"^always_list is a native-only JSON Schema option$"):
         schema.json_schema(always_list=True)
-    with pytest.raises(ValueError, match="native-only"):
-        build_relaxng_json_schema(schema, format="parker", typed=False)
-
-
-def test_native_options_are_allowed_for_the_native_name_then_rejected() -> None:
-    schema = schema_for(INTEGER)
-
-    with pytest.raises(RelaxNGUnsupportedAdapterError):
-        schema.json_schema(format="pyxsd", typed=False)
-    with pytest.raises(RelaxNGUnsupportedAdapterError):
-        schema.json_schema(format="pyxsd", always_list=True)
+    for format in ("parker", "badgerfish", "jsonml"):
+        with pytest.raises(ValueError, match=r"^typed is a native-only JSON Schema option$"):
+            build_relaxng_json_schema(schema, format=format, typed=False)  # type: ignore[arg-type]
 
 
 def test_xsd_json_schema_output_is_unchanged() -> None:
@@ -1582,3 +1597,1242 @@ def test_cardinality_and_branch_deduplication_helpers() -> None:
     assert _any_of([{"type": "string"}, {"type": "integer"}]) == {
         "anyOf": [{"type": "string"}, {"type": "integer"}]
     }
+
+
+# ---------------------------------------------------------------------------
+# Native, Parker, BadgerFish, and JsonML envelopes
+# ---------------------------------------------------------------------------
+
+CONVENTIONAL_FORMATS = ("pyxsd", "parker", "badgerfish", "jsonml")
+MIXED_I = (
+    '<mixed><zeroOrMore><element name="i"><data type="string"/></element></zeroOrMore></mixed>'
+)
+WILDCARD_ATTR = "<zeroOrMore><attribute><anyName/><text/></attribute></zeroOrMore>"
+ATTR_PAIR = (
+    '<attribute name="q"><data type="integer"/></attribute>'
+    "<zeroOrMore><attribute><anyName><except><name>q</name></except></anyName>"
+    "<text/></attribute></zeroOrMore>"
+)
+
+
+def format_schema(
+    schema: RelaxNGSchema,
+    format: Any,
+    element: str | None = None,
+    **options: Any,
+) -> dict[str, Any]:
+    result = schema.json_schema(format=format, element=element, **options)
+    Draft202012Validator.check_schema(result)
+    return result
+
+
+def format_errors(
+    schema: RelaxNGSchema,
+    data: object,
+    format: Any,
+    element: str | None = None,
+    **options: Any,
+) -> list[Any]:
+    return list(
+        Draft202012Validator(format_schema(schema, format, element, **options)).iter_errors(data)
+    )
+
+
+def format_export(
+    schema: RelaxNGSchema,
+    xml: str,
+    format: Any,
+    *,
+    fidelity: Any = "strict",
+    **options: Any,
+) -> object:
+    document = parse(schema, xml)
+    return document.to_data(format=format, fidelity=fidelity, **options)
+
+
+def assert_export_valid(
+    schema: RelaxNGSchema,
+    xml: str,
+    format: Any,
+    element: str | None = None,
+    *,
+    fidelity: Any = "strict",
+    **options: Any,
+) -> object:
+    data = format_export(schema, xml, format, fidelity=fidelity, **options)
+    assert format_errors(schema, data, format, element, fidelity=fidelity, **options) == []
+    return data
+
+
+@pytest.mark.parametrize("format", CONVENTIONAL_FORMATS)
+def test_conventional_scalars_and_lists_validate(format: str) -> None:
+    fixtures: list[tuple[RelaxNGSchema, str]] = [
+        (schema_for("<empty/>"), "<r/>"),
+        (schema_for(STRING), "<r/>"),
+        (schema_for(INTEGER), "<r>12</r>"),
+        (schema_for('<data type="boolean"/>'), "<r>true</r>"),
+        (schema_for('<data type="decimal"/>'), "<r>1.20</r>"),
+        (schema_for('<data type="float"/>'), "<r>1.5</r>"),
+        (schema_for('<data type="float"/>'), "<r>INF</r>"),
+        (schema_for('<data type="date"/>'), "<r>2026-01-02</r>"),
+        (schema_for('<data type="QName"/>'), '<r xmlns:p="urn:x">p:a</r>'),
+        (schema_for('<data type="QName"/>'), "<r>a</r>"),
+        (schema_for('<data type="IDREFS"/>'), "<r>a b</r>"),
+        (schema_for('<data type="base64Binary"/>'), "<r>AQI=</r>"),
+    ]
+    options: list[dict[str, Any]] = [{}]
+    if format == "pyxsd":
+        options = [
+            {},
+            {"typed": False},
+            {"always_list": True},
+            {"typed": False, "always_list": True},
+        ]
+    for schema, xml in fixtures:
+        for option in options:
+            assert_export_valid(schema, xml, format, fidelity="best-effort", **option)
+
+
+@pytest.mark.parametrize("format", CONVENTIONAL_FORMATS)
+def test_conventional_routes_validate(format: str) -> None:
+    fixtures: list[tuple[RelaxNGSchema, str]] = [
+        (
+            schema_for('<attribute name="z"><data type="integer"/></attribute><empty/>'),
+            '<r z="3"/>',
+        ),
+        (schema_for(f"{ATTR}<empty/>"), "<r/>"),
+        (schema_for(f"{ATTR}<empty/>"), '<r z="3"/>'),
+        (schema_for(f"{ATTR}{INTEGER}"), "<r>12</r>"),
+        (schema_for(f"{ATTR}{INTEGER}"), '<r z="3">12</r>'),
+        (schema_for(f"<interleave>{A}{B}</interleave>"), "<r><b>B</b><a>A</a></r>"),
+        (schema_for(f"{A}{B}"), "<r><a>A</a><b>B</b></r>"),
+        (schema_for(f"<zeroOrMore>{A}</zeroOrMore>"), "<r/>"),
+        (schema_for(f"<zeroOrMore>{A}</zeroOrMore>"), "<r><a>A</a></r>"),
+        (schema_for(f"<zeroOrMore>{A}</zeroOrMore>"), "<r><a>A</a><a>B</a></r>"),
+        (
+            schema_for(f"<interleave><zeroOrMore>{A}</zeroOrMore>{B}</interleave>"),
+            "<r><a>A</a><b>B</b><a>C</a></r>",
+        ),
+        (schema_for(MIXED_I), "<r>a<i>x</i>b</r>"),
+        (schema_for(MIXED_I), "<r>text</r>"),
+        (schema_for(MIXED_I), "<r/>"),
+        (schema_for(f"<choice>{INTEGER}{A}</choice>"), "<r>12</r>"),
+        (schema_for(f"<choice>{INTEGER}{A}</choice>"), "<r><a>A</a></r>"),
+    ]
+    for schema, xml in fixtures:
+        for fidelity in ("strict", "best-effort"):
+            options: list[dict[str, Any]] = [{}]
+            if format == "pyxsd":
+                options = [
+                    {},
+                    {"typed": False},
+                    {"always_list": True},
+                    {"typed": False, "always_list": True},
+                ]
+            for option in options:
+                try:
+                    data = format_export(schema, xml, format, fidelity=fidelity, **option)
+                except PyXSDError:
+                    assert fidelity == "strict"
+                    continue
+                assert format_errors(schema, data, format, fidelity=fidelity, **option) == []
+
+
+@pytest.mark.parametrize("format", ("badgerfish", "jsonml"))
+def test_lexical_formats_keep_namespaces_symbolic(format: str) -> None:
+    schema = schema_for(
+        '<element name="child" ns="urn:a"><data type="string"/></element>'
+        '<attribute name="lang" ns="http://www.w3.org/XML/1998/namespace">'
+        '<data type="string"/></attribute>',
+        name='name="r" ns="urn:a"',
+    )
+
+    data = assert_export_valid(
+        schema, '<r xmlns="urn:a" xml:lang="en"><child>v</child></r>', format
+    )
+    result = format_schema(schema, format)
+    serialized = json.dumps(result)
+    assert "ns0" not in serialized
+    assert "xmlns:ns0" not in serialized
+    assert "relaxng-lexical-name-binding" in result["x-pyxsd-validation"]["unvalidated"]
+    assert "relaxng-prefix-scope" in result["x-pyxsd-validation"]["unvalidated"]
+    assert "child" in json.dumps(data)
+    wrong_prefix = copy.deepcopy(data)
+    if format == "badgerfish":
+        wrong_prefix["bad name"] = {}
+    else:
+        wrong_prefix[0] = "bad name"
+    assert format_errors(schema, wrong_prefix, format)
+
+
+@pytest.mark.parametrize("format", ("badgerfish", "jsonml"))
+def test_open_name_classes_stay_symbolic_without_generated_names(format: str) -> None:
+    schema = schema_for(f"<anyName/>{STRING}", name="")
+
+    result = format_schema(schema, format)
+    serialized = json.dumps(result)
+    assert "ns0" not in serialized
+    assert "Q{urn:a}r" not in serialized
+    assert_valid(schema, exported(schema, '<r xmlns="urn:a">x</r>'), element=None)
+    assert_export_valid(schema, '<r xmlns="urn:a">x</r>', format, "Q{urn:a}r")
+    if format == "badgerfish":
+        assert result["x-pyxsd-name-class"] == {"kind": "anyName"}
+        assert result["propertyNames"]["x-pyxsd-wildcard"] is True
+    else:
+        assert result["x-pyxsd-name-class"] == {"kind": "anyName"}
+        assert result["x-pyxsd-wildcard"] is True
+
+
+def test_finite_lexical_roots_require_a_prefix_and_use_any_of() -> None:
+    schema = grammar_for(
+        '<start><choice><element name="a" ns="urn:a"><empty/></element>'
+        '<element name="b" ns="urn:b"><empty/></element></choice></start>'
+    )
+
+    for format in ("badgerfish", "jsonml"):
+        result = format_schema(schema, format)
+        assert len(result["anyOf"]) == 2
+        roots = {json.dumps(branch["x-pyxsd-root"], sort_keys=True) for branch in result["anyOf"]}
+        assert len(roots) == 2
+        serialized = json.dumps(result)
+        assert "ns0" not in serialized
+        assert ':"' not in serialized
+        assert "^[^\\\\s:{}#@/$]+:a$" in serialized or "^[^\\\\s:{}#@/$]+:b$" in serialized
+        assert_valid(schema, exported(schema, '<a xmlns="urn:a"/>'), element=None)
+        assert_valid(schema, exported(schema, '<b xmlns="urn:b"/>'), element=None)
+
+
+@pytest.mark.parametrize("format", ("pyxsd", "parker"))
+def test_absorbed_root_selection_matches_import(format: str) -> None:
+    schema = schema_for(INTEGER)
+    expected = format_schema(schema, format, "r")
+
+    for selector in ("r", "{}r", "Q{}r"):
+        assert format_schema(schema, format, selector) == expected
+
+    with pytest.raises(PyXSDError, match="root-unresolved"):
+        format_schema(schema, format, "missing")
+    with pytest.raises(PyXSDError, match="name-invalid"):
+        format_schema(schema, format, "1bad")
+    with pytest.raises(PyXSDError, match="name-invalid"):
+        format_schema(schema, format, "{urn:a")
+
+
+@pytest.mark.parametrize("format", ("pyxsd", "parker"))
+def test_absorbed_root_requires_one_deterministic_name(format: str) -> None:
+    multiple = grammar_for(
+        '<start><choice><element name="a"><empty/></element>'
+        '<element name="b"><empty/></element></choice></start>'
+    )
+    opened = schema_for(f"<anyName/>{STRING}", name="")
+
+    with pytest.raises(PyXSDError, match="root-ambiguous"):
+        format_schema(multiple, format)
+    with pytest.raises(PyXSDError, match="root-ambiguous"):
+        format_schema(opened, format)
+    assert format_schema(multiple, format, "a")["x-pyxsd-root"]["local"] == "a"
+    assert format_schema(opened, format, "Q{urn:a}r")["x-pyxsd-root"] == {
+        "kind": "name",
+        "uri": "urn:a",
+        "local": "r",
+    }
+
+
+def test_root_wrapper_confusion_is_rejected() -> None:
+    record = schema_for(f"<interleave>{A}{B}</interleave>")
+    native_data = format_export(record, "<r><a>A</a><b>B</b></r>", "pyxsd")
+    parker_data = format_export(record, "<r><a>A</a><b>B</b></r>", "parker")
+    badgerfish_data = format_export(record, "<r><a>A</a><b>B</b></r>", "badgerfish")
+    jsonml_data = format_export(record, "<r><a>A</a><b>B</b></r>", "jsonml")
+
+    assert format_errors(record, {"r": native_data}, "pyxsd", "r")
+    assert format_errors(record, {"r": parker_data}, "parker", "r")
+    assert format_errors(record, native_data, "badgerfish")
+    assert format_errors(record, jsonml_data, "badgerfish")
+    assert format_errors(record, badgerfish_data, "jsonml")
+    assert format_errors(record, badgerfish_data, "pyxsd", "r")
+    assert format_errors(record, {"r": {}, "extra": {}}, "badgerfish")
+
+
+def test_native_required_extra_and_tag_negatives() -> None:
+    schema = schema_for(
+        f'<attribute name="q"><data type="integer"/></attribute><interleave>{A}{B}</interleave>'
+    )
+
+    assert format_errors(schema, {"@q": 1, "a": 2}, "pyxsd", "r")
+    assert format_errors(schema, {"@q": 1, "a": 2, "b": "x", "extra": 1}, "pyxsd", "r")
+    assert format_errors(schema, {"@q": True, "a": 2, "b": "x"}, "pyxsd", "r")
+    assert format_errors(schema, {"@q": 1, "a": {"#value": {}}, "b": "x"}, "pyxsd", "r")
+
+
+def test_native_repeated_and_always_list_shapes() -> None:
+    schema = schema_for(f"<oneOrMore>{A}</oneOrMore>")
+
+    assert_export_valid(schema, "<r><a>1</a></r>", "pyxsd", "r")
+    assert_export_valid(schema, "<r><a>1</a><a>2</a></r>", "pyxsd", "r")
+    assert format_errors(schema, {"a": []}, "pyxsd", "r")
+
+    listed = format_schema(schema, "pyxsd", "r", always_list=True)
+    validator = Draft202012Validator(listed)
+    assert list(validator.iter_errors({"a": ["1"]})) == []
+    assert list(validator.iter_errors({"a": ["1", "2"]})) == []
+    assert list(validator.iter_errors({"a": 1}))
+    assert list(validator.iter_errors({"a": []}))
+
+    route_id = schema.projection.roots[0]
+    field = next(iter(schema.projection.routes[route_id].children.values()))
+    bounded = plan_with(
+        schema,
+        children={"a": replace(field, cardinality=Cardinality(1, 2))},
+    )
+    bounded_result = schema_from_plan(bounded, "r", format="pyxsd")
+    bounded_validator = Draft202012Validator(bounded_result)
+    assert list(bounded_validator.iter_errors({"a": "1"})) == []
+    assert list(bounded_validator.iter_errors({"a": ["1", "2"]})) == []
+    assert list(bounded_validator.iter_errors({"a": ["1", "2", "3"]}))
+
+
+def test_native_typed_false_describes_lexical_strings_only() -> None:
+    schema = schema_for(
+        f'<attribute name="q"><data type="integer"/></attribute><interleave>{A}{B}</interleave>'
+    )
+    typed_false = format_schema(schema, "pyxsd", "r", typed=False)
+    validator = Draft202012Validator(typed_false)
+
+    assert list(validator.iter_errors({"@q": "1", "a": "2", "b": "x"})) == []
+    assert list(validator.iter_errors({"@q": 1, "a": "2", "b": "x"}))
+    assert list(validator.iter_errors({"@q": "1", "a": {"#value": {}}, "b": "x"}))
+    assert list(validator.iter_errors({"$": {"#value": {}}}))
+    assert_valid(schema, exported(schema, '<r q="1"><a>2</a><b>x</b></r>'))
+
+
+def test_parker_negatives_and_attribute_loss_disclosure() -> None:
+    schema = schema_for(
+        f'<attribute name="q"><data type="integer"/></attribute><interleave>{A}{B}</interleave>'
+    )
+
+    result = format_schema(schema, "parker", "r")
+    assert "relaxng-parker-attribute-loss" in result["x-pyxsd-validation"]["unvalidated"]
+    assert format_errors(schema, {"a": 2}, "parker", "r")
+    assert format_errors(schema, {"a": 2, "b": "x", "extra": 1}, "parker", "r")
+    assert format_errors(schema, {"a": 2, "b": "x", "@q": 1}, "parker", "r")
+    assert format_errors(schema, {"a": True, "b": "x"}, "parker", "r")
+    assert_export_valid(
+        schema, '<r q="1"><a>2</a><b>x</b></r>', "parker", "r", fidelity="best-effort"
+    )
+    with pytest.raises(PyXSDError):
+        format_export(schema, '<r q="1"><a>2</a><b>x</b></r>', "parker", fidelity="strict")
+
+
+def test_badgerfish_negatives_and_declaration_shape() -> None:
+    schema = schema_for(f"<interleave>{A}{B}</interleave>")
+
+    assert format_errors(schema, {"a": 1, "b": "x"}, "badgerfish")
+    assert format_errors(schema, {"r": {"a": 1}}, "badgerfish")
+    assert format_errors(schema, {"r": {"a": 1, "b": "x", "extra": 1}}, "badgerfish")
+    assert format_errors(schema, {"r": {"a": True, "b": "x"}}, "badgerfish")
+    assert format_errors(schema, {"r": {"a": {"#value": {}}, "b": "x"}}, "badgerfish")
+
+    declared = schema_for(
+        '<element name="c" ns="urn:a"><data type="string"/></element>',
+        name='name="r" ns="urn:a"',
+    )
+    assert_export_valid(declared, '<r xmlns="urn:a"><c>v</c></r>', "badgerfish")
+    assert format_errors(declared, {"ns0:r": {"@xmlns": "urn:a", "ns0:c": "v"}}, "badgerfish")
+    assert format_errors(
+        declared, {"ns0:r": {"@xmlns": {"xml": "urn:x"}, "ns0:c": "v"}}, "badgerfish"
+    )
+    assert format_errors(declared, {"ns0:r": {"@xmlns": {"ns0": 1}, "ns0:c": "v"}}, "badgerfish")
+    assert format_errors(
+        declared, {"ns0:r": {"@xmlns": {"bad prefix": "urn:a"}, "ns0:c": "v"}}, "badgerfish"
+    )
+
+
+def test_jsonml_negatives_order_attrs_and_declarations() -> None:
+    schema = schema_for(f"<interleave>{A}{B}</interleave>")
+
+    assert format_errors(schema, {"r": {"a": 1, "b": "x"}}, "jsonml")
+    assert format_errors(schema, [["a", 1], ["b", "x"]], "jsonml")
+    assert format_errors(schema, ["x", ["a", 1], ["b", "x"]], "jsonml")
+    assert format_errors(schema, ["r", ["a", 1]], "jsonml")
+    assert format_errors(schema, ["r", ["a", 1], ["b", "x"], ["c", 1]], "jsonml")
+    assert format_errors(schema, ["r", ["a", 1], {"b": "x"}], "jsonml")
+    assert format_errors(schema, ["r", ["a", True], ["b", "x"]], "jsonml")
+
+    scalar = schema_for(INTEGER)
+    assert format_errors(scalar, ["r", True], "jsonml")
+    assert format_errors(scalar, ["r", "12"], "jsonml")
+    assert format_errors(scalar, ["r"], "jsonml")
+    assert format_errors(scalar, ["r", 12, 13], "jsonml")
+
+    declared = schema_for(
+        '<element name="c" ns="urn:a"><data type="string"/></element>',
+        name='name="r" ns="urn:a"',
+    )
+    assert_export_valid(declared, '<r xmlns="urn:a"><c>v</c></r>', "jsonml")
+    assert format_errors(declared, ["ns0:r", {"xmlns:ns0": 1}, ["ns0:c", "v"]], "jsonml")
+    assert format_errors(declared, ["ns0:r", {"xmlns:xml": "urn:a"}, ["ns0:c", "v"]], "jsonml")
+    assert format_errors(declared, ["ns0:r", ["ns0:c", "v"], {"xmlns:ns0": "urn:a"}], "jsonml")
+
+
+@pytest.mark.parametrize("format", CONVENTIONAL_FORMATS)
+def test_required_repetition_and_optional_arrays_are_exact(format: str) -> None:
+    schema = schema_for(f"<oneOrMore>{A}</oneOrMore>")
+    element = "r" if format in ("pyxsd", "parker") else None
+
+    assert_export_valid(schema, "<r><a>1</a></r>", format, element)
+    assert format_errors(schema, {}, format, element)
+    empty_missing = {"r": {}} if format == "badgerfish" else {}
+    if format == "jsonml":
+        empty_missing = ["r"]
+    assert format_errors(schema, empty_missing, format, element)
+    if format == "pyxsd" or format == "parker":
+        assert format_errors(schema, {"a": []}, format, element)
+    elif format == "badgerfish":
+        assert format_errors(schema, {"r": {"a": []}}, format)
+
+    optional = schema_for(f"<zeroOrMore>{A}</zeroOrMore>")
+    optional_element = "r" if format in ("pyxsd", "parker") else None
+    assert_export_valid(optional, "<r/>", format, optional_element)
+    if format == "badgerfish":
+        assert format_errors(optional, {"r": {"a": []}}, format)
+        assert_export_valid(optional, "<r><a>1</a></r>", format)
+    elif format == "pyxsd" or format == "parker":
+        assert format_errors(optional, {"a": []}, format, "r")
+    else:
+        assert_export_valid(optional, "<r><a>1</a></r>", format)
+
+
+def test_format_fidelity_modes_describe_their_exports() -> None:
+    mixed = schema_for(MIXED_I)
+    for format in CONVENTIONAL_FORMATS:
+        strict = format_schema(mixed, format, "r" if format in ("pyxsd", "parker") else None)
+        best_effort = format_schema(
+            mixed,
+            format,
+            "r" if format in ("pyxsd", "parker") else None,
+            fidelity="best-effort",
+        )
+        assert strict == best_effort
+        data = format_export(mixed, "<r>a<i>x</i>b</r>", format, fidelity="best-effort")
+        element = "r" if format in ("pyxsd", "parker") else None
+        assert format_errors(mixed, data, format, element, fidelity="best-effort") == []
+
+
+def test_zero_cardinality_fields_are_not_described_by_any_format() -> None:
+    schema = schema_for(f"<optional>{A}</optional>")
+    route_id = schema.projection.roots[0]
+    field = next(iter(schema.projection.routes[route_id].children.values()))
+    plan = plan_with(schema, children={"a": replace(field, cardinality=Cardinality(0, 0))})
+
+    for format in CONVENTIONAL_FORMATS:
+        element = "r" if format in ("pyxsd", "parker") else None
+        result = schema_from_plan(plan, element, format=format)
+        assert '"a"' not in json.dumps(result)
+
+
+def test_format_schema_metadata_is_symbolic_and_sorted() -> None:
+    schema = schema_for(
+        '<element name="c" ns="urn:a"><data type="string"/></element>'
+        '<attribute name="q"><data type="integer"/></attribute>',
+        name='name="r" ns="urn:a"',
+    )
+
+    for format in CONVENTIONAL_FORMATS:
+        result = format_schema(schema, format, "r" if format in ("pyxsd", "parker") else None)
+        reasons = result["x-pyxsd-validation"]["unvalidated"]
+        assert reasons == sorted(reasons)
+        assert {
+            "relaxng-datatype-context",
+            "relaxng-grammar-validity",
+            "relaxng-name-class",
+            "relaxng-scalar-candidates",
+        } <= set(reasons)
+        assert "x-pyxsd-root" in result
+        assert "ns0" not in json.dumps(result)
+        if format in ("badgerfish", "jsonml"):
+            assert "relaxng-lexical-name-binding" in reasons
+            assert "relaxng-prefix-scope" in reasons
+
+
+def test_native_and_parker_wildcards_are_disclosed_and_enforced() -> None:
+    attribute = schema_for(WILDCARD_ATTR + INTEGER)
+    child = schema_for(f"<zeroOrMore><element><anyName/>{STRING}</element></zeroOrMore>")
+
+    for format in ("pyxsd", "parker"):
+        attribute_result = format_schema(attribute, format, "r")
+        attribute_data = format_export(
+            attribute,
+            '<r other="12" xml:lang="en" xmlns:p="urn:p">3</r>',
+            format,
+            fidelity="best-effort",
+        )
+        assert format_errors(attribute, attribute_data, format, "r") == []
+        reasons = attribute_result["x-pyxsd-validation"]["unvalidated"]
+        assert ("relaxng-attribute-name-class" in reasons) == (format == "pyxsd")
+        assert ("relaxng-parker-attribute-loss" in reasons) == (format == "parker")
+        assert format_errors(attribute, {"@xmlns": "urn:x", "$": 3}, format, "r")
+
+        child_result = format_schema(child, format, "r")
+        child_data = format_export(child, "<r><x>v</x></r>", format)
+        assert format_errors(child, child_data, format, "r") == []
+        assert "relaxng-wildcard-names" in child_result["x-pyxsd-validation"]["unvalidated"]
+        if format == "pyxsd":
+            listed = child.json_schema(format="pyxsd", element="r", always_list=True)
+            listed_data = format_export(child, "<r><x>v</x></r>", format, always_list=True)
+            assert list(Draft202012Validator(listed).iter_errors(listed_data)) == []
+
+
+def test_parker_same_local_names_merge_into_one_key() -> None:
+    schema = schema_for(
+        '<interleave><element name="item" ns="urn:a"><data type="string"/></element>'
+        '<element name="item" ns="urn:b"><data type="string"/></element></interleave>'
+    )
+    result = format_schema(schema, "parker", "r")
+    body = result
+    assert body["properties"]["item"]
+    assert "relaxng-local-name-mapping" in result["x-pyxsd-validation"]["unvalidated"]
+
+    single = schema_for('<element name="child" ns="urn:a"><data type="string"/></element>')
+    assert (
+        "relaxng-local-name-mapping"
+        in format_schema(single, "parker", "r")["x-pyxsd-validation"]["unvalidated"]
+    )
+
+    data = format_export(
+        schema,
+        '<r xmlns:a="urn:a" xmlns:b="urn:b"><b:item>B</b:item><a:item>A</a:item></r>',
+        "parker",
+        fidelity="best-effort",
+    )
+    assert format_errors(schema, data, "parker", "r", fidelity="best-effort") == []
+    with pytest.raises(PyXSDError):
+        format_export(
+            schema,
+            '<r xmlns:a="urn:a" xmlns:b="urn:b"><b:item>B</b:item><a:item>A</a:item></r>',
+            "parker",
+            fidelity="strict",
+        )
+
+
+def test_badgerfish_same_local_names_stay_separate_keys() -> None:
+    schema = schema_for(
+        '<interleave><element name="item" ns="urn:a"><data type="string"/></element>'
+        '<element name="item" ns="urn:b"><data type="string"/></element></interleave>'
+    )
+    data = format_export(
+        schema,
+        '<r xmlns:a="urn:a" xmlns:b="urn:b"><b:item>B</b:item><a:item>A</a:item></r>',
+        "badgerfish",
+        fidelity="best-effort",
+    )
+    assert data == {
+        "r": {"@xmlns": {"ns0": "urn:a", "ns1": "urn:b"}, "ns0:item": "A", "ns1:item": "B"}
+    }
+    assert format_errors(schema, data, "badgerfish") == []
+
+
+def test_jsonml_same_local_names_do_not_overcount_contains() -> None:
+    schema = schema_for(
+        '<interleave><element name="item" ns="urn:a"><data type="string"/></element>'
+        '<element name="item" ns="urn:b"><data type="string"/></element></interleave>'
+    )
+    data = format_export(
+        schema,
+        '<r xmlns:a="urn:a" xmlns:b="urn:b"><b:item>B</b:item><a:item>A</a:item></r>',
+        "jsonml",
+        fidelity="best-effort",
+    )
+    assert format_errors(schema, data, "jsonml", fidelity="best-effort") == []
+
+
+def test_jsonml_list_scalar_ambiguity_is_disclosed() -> None:
+    root_list = schema_for('<data type="IDREFS"/>')
+    child_list = schema_for('<element name="a"><data type="IDREFS"/></element>')
+
+    assert (
+        "relaxng-jsonml-scalar-array-ambiguity"
+        in format_schema(root_list, "jsonml")["x-pyxsd-validation"]["unvalidated"]
+    )
+    assert (
+        "relaxng-jsonml-scalar-array-ambiguity"
+        in format_schema(child_list, "jsonml", "r")["x-pyxsd-validation"]["unvalidated"]
+    )
+    assert_export_valid(root_list, "<r>a b</r>", "jsonml")
+    assert_export_valid(child_list, "<r><a>a b</a></r>", "jsonml")
+
+
+def test_generic_open_children_use_recursive_envelopes() -> None:
+    no_route = schema_for(f"<zeroOrMore><element><anyName/>{STRING}</element></zeroOrMore>")
+    route_id = no_route.projection.roots[0]
+    route = no_route.projection.routes[route_id]
+    wildcard = route.wildcards[0]
+    plan = replace(
+        no_route.projection,
+        routes={
+            **no_route.projection.routes,
+            route_id: replace(route, wildcards=(replace(wildcard, child_route_id=None),)),
+        },
+    )
+    for format in CONVENTIONAL_FORMATS:
+        element = "r" if format in ("pyxsd", "parker") else None
+        result = schema_from_plan(plan, element, format=format)
+        assert f"{format}-generic-route" in result["$defs"]
+        data = format_export(no_route, "<r><x>v</x></r>", format)
+        assert format_errors(no_route, data, format, element) == []
+
+
+def test_format_generic_variants_close_recursive_cycles() -> None:
+    recursive = grammar_for(
+        '<start><ref name="a"/></start>'
+        '<define name="a"><element name="a"><ref name="b"/></element></define>'
+        '<define name="b"><element name="b"><zeroOrMore><element><anyName/>'
+        '<ref name="a"/></element></zeroOrMore></element></define>'
+    )
+
+    for format in CONVENTIONAL_FORMATS:
+        result = format_schema(
+            recursive,
+            format,
+            "a" if format in ("pyxsd", "parker") else None,
+        )
+        assert any(key.endswith("-generic") for key in result.get("$defs", {}))
+        data = format_export(recursive, "<a><b><x><a><b/></a></x></b></a>", format)
+        assert (
+            format_errors(
+                recursive,
+                data,
+                format,
+                "a" if format in ("pyxsd", "parker") else None,
+            )
+            == []
+        )
+
+
+@pytest.mark.parametrize("format", CONVENTIONAL_FORMATS)
+def test_conventional_recursive_schemas_terminate_and_validate(format: str) -> None:
+    result = format_schema(
+        grammar_for(RECURSIVE), format, "node" if format in ("pyxsd", "parker") else None
+    )
+    assert result["$defs"]
+    assert any(
+        f"#/$defs/{format}-route-" in json.dumps(definition)
+        for definition in result["$defs"].values()
+    )
+    schema = grammar_for(RECURSIVE)
+    data = format_export(
+        schema, '<node id="1"><node id="2"/></node>', format, fidelity="best-effort"
+    )
+    assert (
+        format_errors(
+            schema,
+            data,
+            format,
+            "node" if format in ("pyxsd", "parker") else None,
+        )
+        == []
+    )
+
+
+def test_conventional_schema_generation_is_deterministic(tmp_path: Path) -> None:
+    source = (
+        f'<element xmlns="{NS}" datatypeLibrary="{XSD}" name="r">'
+        f"<interleave>{A}{B}</interleave></element>"
+    )
+    first = RelaxNGSchema.compile(io.StringIO(source))
+    second = RelaxNGSchema.compile(io.StringIO(source))
+    path = tmp_path / "schema.rng"
+    path.write_text(source, encoding="utf-8")
+    third = RelaxNGSchema.compile(path)
+
+    for format in CONVENTIONAL_FORMATS:
+        element = "r" if format in ("pyxsd", "parker") else None
+        expected = format_schema(first, format, element)
+        assert format_schema(second, format, element) == expected
+        assert format_schema(third, format, element) == expected
+
+
+def test_conventional_hash_seed_does_not_change_schemas() -> None:
+    script = f"""
+import io, json
+from pyxsd.relaxng import RelaxNGSchema
+
+schema = RelaxNGSchema.compile(io.StringIO('''\
+<element xmlns="{NS}" datatypeLibrary="{XSD}" name="r">
+  <interleave>{A}{B}</interleave>
+</element>'''))
+for format in ("pyxsd", "parker", "badgerfish", "jsonml"):
+    print(format, json.dumps(schema.json_schema(format=format, element="r"), sort_keys=True))
+"""
+    outputs = []
+    for seed in ("0", "1"):
+        environment = {**os.environ, "PYTHONHASHSEED": seed}
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        outputs.append(completed.stdout)
+    assert outputs[0] == outputs[1]
+
+
+def test_static_name_class_and_contract_helpers() -> None:
+    from pyxsd.relaxng.json_schema import (
+        _contracts_include_list,
+        _contracts_include_qname,
+        _name_class_namespaced,
+        _root_metadata,
+    )
+
+    assert _name_class_namespaced(AnyName())
+    assert _name_class_namespaced(Name("urn:a", "x"))
+    assert not _name_class_namespaced(Name(None, "x"))
+    assert _name_class_namespaced(NsName("urn:a"))
+    assert not _name_class_namespaced(NsName(""))
+    assert _name_class_namespaced(NameChoice((Name(None, "x"), Name("urn:a", "y"))))
+    assert _name_class_namespaced(ExceptName(AnyName(), Name(None, "x")))
+    assert not _name_class_namespaced(ExceptName(Name(None, "x"), Name(None, "y")))
+
+    class _Unknown(NameClass):
+        pass
+
+    assert not _name_class_namespaced(_Unknown())
+    assert _root_metadata("{urn:a}r") == {"kind": "name", "uri": "urn:a", "local": "r"}
+
+    qname = schema_for('<data type="QName"/>')
+    route = qname.projection.routes[qname.projection.roots[0]]
+    assert _contracts_include_qname(route.content.scalar_contracts[0], qname.projection)
+    listed = schema_for('<list><oneOrMore><data type="integer"/></oneOrMore></list>')
+    listed_route = listed.projection.routes[listed.projection.roots[0]]
+    assert _contracts_include_list(listed_route.content.scalar_contracts[0])
+    assert not _contracts_include_list(route.content.scalar_contracts[0])
+    assert not _contracts_include_qname(listed_route.content.scalar_contracts[0], listed.projection)
+    qname_list = schema_for('<list><oneOrMore><data type="QName"/></oneOrMore></list>')
+    qname_list_route = qname_list.projection.routes[qname_list.projection.roots[0]]
+    assert _contracts_include_qname(
+        qname_list_route.content.scalar_contracts[0], qname_list.projection
+    )
+    interpreted = schema_for(
+        '<list><choice><data type="QName"/><data type="string"/></choice></list>'
+    )
+    interpreted_route = interpreted.projection.routes[interpreted.projection.roots[0]]
+    assert _contracts_include_qname(
+        interpreted_route.content.scalar_contracts[0], interpreted.projection
+    )
+    plain_wildcard = schema_for(
+        '<zeroOrMore><attribute><nsName ns=""/><text/></attribute></zeroOrMore><empty/>'
+    )
+    from pyxsd.relaxng.json_schema import _plan_has_declarations
+
+    assert not _plan_has_declarations(plain_wildcard.projection)
+
+
+def test_conventional_ambiguous_and_text_scalars_validate() -> None:
+    for format in CONVENTIONAL_FORMATS:
+        for schema, xml in (
+            (schema_for(f"<choice>{INTEGER}{STRING}</choice>"), "<r>12</r>"),
+            (schema_for("<text/>"), "<r>abc</r>"),
+            (schema_for(f"<choice><text/>{INTEGER}</choice>"), "<r>abc</r>"),
+        ):
+            assert_export_valid(schema, xml, format, fidelity="best-effort")
+
+
+def test_native_untyped_wildcard_attributes_stay_lexical() -> None:
+    schema = schema_for(WILDCARD_ATTR + INTEGER)
+
+    data = assert_export_valid(
+        schema,
+        '<r other="12" xml:lang="en">3</r>',
+        "pyxsd",
+        "r",
+        fidelity="best-effort",
+        typed=False,
+    )
+    assert data == {
+        "@other": "12",
+        "@{http://www.w3.org/XML/1998/namespace}lang": "en",
+        "$": "3",
+    }
+    assert format_errors(schema, {"@other": 12, "$": "3"}, "pyxsd", "r", typed=False)
+
+
+def test_missing_child_routes_use_generic_definitions_for_every_format() -> None:
+    schema = schema_for(f"<interleave>{A}{B}</interleave>")
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    children = {name: replace(field, child_route_id=None) for name, field in route.children.items()}
+    plan = plan_with(schema, children=children)
+
+    for format in CONVENTIONAL_FORMATS:
+        element = "r" if format in ("pyxsd", "parker") else None
+        result = schema_from_plan(plan, element, format=format)
+        assert f"{format}-generic-route" in result["$defs"]
+        data = format_export(schema, "<r><a>A</a><b>B</b></r>", format)
+        assert list(Draft202012Validator(result).iter_errors(data)) == []
+
+
+def test_observed_group_with_static_minimum_two() -> None:
+    schema = schema_for(f"<zeroOrMore>{A}</zeroOrMore>")
+    route_id = schema.projection.roots[0]
+    field = next(iter(schema.projection.routes[route_id].children.values()))
+    plan = plan_with(
+        schema,
+        children={"a": replace(field, cardinality=Cardinality(2, None))},
+    )
+
+    for format in ("pyxsd", "parker", "jsonml", "badgerfish"):
+        element = "r" if format in ("pyxsd", "parker") else None
+        result = schema_from_plan(plan, element, format=format)
+        validator = Draft202012Validator(result)
+        if format == "pyxsd" or format == "parker":
+            assert list(validator.iter_errors({"a": "1"}))
+            assert list(validator.iter_errors({"a": ["1", "2"]})) == []
+        elif format == "badgerfish":
+            assert list(validator.iter_errors({"r": {"a": ["1"]}}))
+            assert list(validator.iter_errors({"r": {"a": ["1", "2"]}})) == []
+        else:
+            assert list(validator.iter_errors(["r", ["a", "1"]]))
+            assert list(validator.iter_errors(["r", ["a", "1"], ["a", "2"]])) == []
+
+
+def test_native_child_leaf_and_attribute_object_forms() -> None:
+    schema = schema_for(
+        '<element name="c"><optional><attribute name="z"><data type="integer"/></attribute>'
+        '</optional><data type="string"/></element>'
+    )
+    leaf = assert_export_valid(schema, "<r><c/></r>", "pyxsd", "r")
+    attributed = assert_export_valid(schema, '<r><c z="3"/></r>', "pyxsd", "r")
+
+    assert leaf == {"c": ""}
+    assert attributed["c"]["$"] == ""
+    assert "#value" in attributed["c"]["@z"]
+
+    record = schema_for(
+        '<element name="c"><interleave><element name="a"><data type="integer"/></element>'
+        '<element name="b"><data type="string"/></element></interleave></element>'
+    )
+    data = assert_export_valid(record, "<r><c><a>1</a><b>x</b></c></r>", "pyxsd", "r")
+    assert data == {"c": {"a": 1, "b": "x"}}
+
+
+def test_parker_optional_and_repeating_same_local_names() -> None:
+    optional = schema_for(
+        '<interleave><optional><element name="item" ns="urn:a"><data type="string"/></element>'
+        '</optional><optional><element name="item" ns="urn:b"><data type="string"/></element>'
+        "</optional></interleave>"
+    )
+    repeated = schema_for(
+        '<interleave><zeroOrMore><element name="item" ns="urn:a"><data type="string"/></element>'
+        '</zeroOrMore><element name="item" ns="urn:b"><data type="string"/></element>'
+        "</interleave>"
+    )
+
+    optional_data = assert_export_valid(
+        optional,
+        '<r xmlns:a="urn:a" xmlns:b="urn:b"><a:item>A</a:item></r>',
+        "parker",
+        "r",
+        fidelity="best-effort",
+    )
+    assert optional_data == {"item": "A"}
+
+    repeated_data = assert_export_valid(
+        repeated,
+        '<r xmlns:a="urn:a" xmlns:b="urn:b"><b:item>B</b:item><a:item>A</a:item></r>',
+        "parker",
+        "r",
+        fidelity="best-effort",
+    )
+    assert repeated_data == {"item": ["B", "A"]}
+
+
+def test_empty_plans_describe_nothing_for_retained_roots() -> None:
+    plan = ProjectionPlan((), {}, "pyxsd.relaxng.projection-grammar/1:empty")
+
+    for format in ("badgerfish", "jsonml"):
+        result = schema_from_plan(plan, format=format)
+        assert result["not"] == {}
+        assert "$defs" not in result
+    for format in ("pyxsd", "parker"):
+        with pytest.raises(PyXSDError, match="root-ambiguous"):
+            schema_from_plan(plan, format=format)
+
+
+def test_badgerfish_required_and_wildcard_namespace_attributes() -> None:
+    required = schema_for(
+        '<attribute name="q" ns="urn:a"><data type="integer"/></attribute><empty/>',
+        name='name="r" ns="urn:a"',
+    )
+    wildcard = schema_for(WILDCARD_ATTR + INTEGER)
+
+    required_data = assert_export_valid(
+        required,
+        '<r xmlns="urn:a" xmlns:a="urn:a" a:q="3"/>',
+        "badgerfish",
+        fidelity="best-effort",
+    )
+    assert required_data["ns0:r"]["@ns0:q"] == 3
+    assert format_errors(required, {"ns0:r": {"@xmlns": {"ns0": "urn:a"}}}, "badgerfish")
+
+    wildcard_data = assert_export_valid(
+        wildcard,
+        '<r other="12" xml:lang="en" xmlns:p="urn:p">3</r>',
+        "badgerfish",
+        fidelity="best-effort",
+    )
+    assert (
+        "relaxng-attribute-name-class"
+        in format_schema(wildcard, "badgerfish")["x-pyxsd-validation"]["unvalidated"]
+    )
+    assert wildcard_data["r"]["@other"] == "12"
+
+
+def test_jsonml_required_and_wildcard_namespace_attributes() -> None:
+    required = schema_for(
+        '<attribute name="q" ns="urn:a"><data type="integer"/></attribute><empty/>',
+        name='name="r" ns="urn:a"',
+    )
+    wildcard = schema_for(WILDCARD_ATTR + INTEGER)
+
+    required_data = assert_export_valid(
+        required,
+        '<r xmlns="urn:a" xmlns:a="urn:a" a:q="3"/>',
+        "jsonml",
+        fidelity="best-effort",
+    )
+    assert required_data[1]["ns0:q"] == 3
+    assert format_errors(required, ["ns0:r", {"xmlns:ns0": "urn:a"}], "jsonml")
+
+    wildcard_data = assert_export_valid(
+        wildcard,
+        '<r other="12" xml:lang="en" xmlns:p="urn:p">3</r>',
+        "jsonml",
+        fidelity="best-effort",
+    )
+    assert (
+        "relaxng-attribute-name-class"
+        in format_schema(wildcard, "jsonml")["x-pyxsd-validation"]["unvalidated"]
+    )
+    assert wildcard_data[1]["other"] == "12"
+
+
+def test_badgerfish_wildcard_children_are_occurrence_arrays() -> None:
+    schema = schema_for(f"<zeroOrMore><element><anyName/>{STRING}</element></zeroOrMore>")
+
+    data = assert_export_valid(schema, "<r><x>a</x><x>b</x></r>", "badgerfish")
+    assert data == {"r": {"x": ["a", "b"]}}
+    assert format_errors(schema, {"r": {"x": "a"}}, "badgerfish")
+
+
+def test_badgerfish_finite_maximum_arrays() -> None:
+    schema = schema_for(f"<zeroOrMore>{A}</zeroOrMore>")
+    route_id = schema.projection.roots[0]
+    field = next(iter(schema.projection.routes[route_id].children.values()))
+    plan = plan_with(schema, children={"a": replace(field, cardinality=Cardinality(1, 2))})
+    result = schema_from_plan(plan, format="badgerfish")
+    validator = Draft202012Validator(result)
+
+    assert list(validator.iter_errors({"r": {"a": ["A"]}})) == []
+    assert list(validator.iter_errors({"r": {"a": ["A", "B"]}})) == []
+    assert list(validator.iter_errors({"r": {"a": ["A", "B", "C"]}}))
+
+
+def test_qname_field_and_wildcard_contracts_need_declarations() -> None:
+    field = schema_for(
+        '<element name="c"><data type="QName"/></element>', name='name="r" ns="urn:a"'
+    )
+    wildcard = schema_for(
+        '<zeroOrMore><attribute><anyName/><data type="QName"/></attribute></zeroOrMore><empty/>'
+    )
+
+    field_data = assert_export_valid(
+        field,
+        '<r xmlns="urn:a" xmlns:p="urn:x"><c>p:v</c></r>',
+        "badgerfish",
+        fidelity="best-effort",
+    )
+    assert "@xmlns" in field_data["ns0:r"]
+    assert (
+        "relaxng-prefix-scope"
+        in format_schema(field, "badgerfish")["x-pyxsd-validation"]["unvalidated"]
+    )
+
+    wildcard_result = format_schema(wildcard, "badgerfish", "r")
+    assert wildcard_result["x-pyxsd-validation"]["unvalidated"]
+    wildcard_data = assert_export_valid(
+        wildcard, '<r xmlns:p="urn:x" p:q="p:v"/>', "badgerfish", "r"
+    )
+    assert wildcard_data
+
+
+def test_native_child_empty_and_generic_untyped_variants() -> None:
+    empty_child = schema_for('<element name="c"><empty/></element>')
+    assert_export_valid(empty_child, "<r><c/></r>", "pyxsd", "r")
+
+    wildcard = schema_for(
+        '<zeroOrMore><element><anyName/><data type="string"/></element></zeroOrMore>'
+    )
+    route_id = wildcard.projection.roots[0]
+    route = wildcard.projection.routes[route_id]
+    plan = replace(
+        wildcard.projection,
+        routes={
+            **wildcard.projection.routes,
+            route_id: replace(route, wildcards=(replace(route.wildcards[0], child_route_id=None),)),
+        },
+    )
+    untyped = schema_from_plan(plan, "r", format="pyxsd", typed=False)
+    serialized = json.dumps(untyped)
+    assert '"null"' not in serialized
+    assert "pyxsd-generic-route" in untyped["$defs"]
+    data = format_export(wildcard, "<r><x>v</x></r>", "pyxsd", typed=False)
+    assert list(Draft202012Validator(untyped).iter_errors(data)) == []
+
+
+def test_badgerfish_optional_namespaced_and_scalar_required_members() -> None:
+    scalar = schema_for(
+        '<attribute name="q"><data type="integer"/></attribute><data type="string"/>'
+    )
+    optional = schema_for(
+        '<optional><attribute name="q" ns="urn:a"><data type="integer"/></attribute></optional>'
+        '<optional><element name="c" ns="urn:a"><data type="string"/></element></optional><empty/>',
+        name='name="r" ns="urn:a"',
+    )
+
+    scalar_data = assert_export_valid(
+        scalar, '<r q="3">x</r>', "badgerfish", fidelity="best-effort"
+    )
+    assert scalar_data == {"r": {"@q": 3, "$": "x"}}
+
+    optional_data = assert_export_valid(
+        optional, '<r xmlns="urn:a"/>', "badgerfish", fidelity="best-effort"
+    )
+    assert optional_data == {"ns0:r": {"@xmlns": {"ns0": "urn:a"}}}
+    with_ns = assert_export_valid(
+        optional,
+        '<r xmlns="urn:a" xmlns:a="urn:a" a:q="3"><c>x</c></r>',
+        "badgerfish",
+        fidelity="best-effort",
+    )
+    assert "ns0:q" in json.dumps(with_ns)
+
+
+def test_badgerfish_optional_wildcard_child_is_a_single_value() -> None:
+    schema = schema_for('<optional><element><anyName/><data type="string"/></element></optional>')
+
+    data = assert_export_valid(schema, "<r><x>v</x></r>", "badgerfish")
+    assert data == {"r": {"x": "v"}}
+    assert format_errors(schema, {"r": {"x": ["v", "w"]}}, "badgerfish")
+
+
+def test_jsonml_generic_contains_optional_and_unbounded() -> None:
+    optional = schema_for(f"<zeroOrMore>{A}</zeroOrMore>")
+    required = schema_for(f"<oneOrMore>{A}</oneOrMore>")
+
+    for schema in (optional, required):
+        route_id = schema.projection.roots[0]
+        route = schema.projection.routes[route_id]
+        children = {
+            name: replace(field, child_route_id=None) for name, field in route.children.items()
+        }
+        plan = plan_with(schema, children=children)
+        result = schema_from_plan(plan, "r", format="jsonml")
+        if schema is optional:
+            assert "allOf" not in result
+        else:
+            assert result["allOf"][0]["minContains"] == 1
+            assert "maxContains" not in result["allOf"][0]
+
+
+def test_jsonml_optional_namespaced_attribute() -> None:
+    schema = schema_for(
+        '<optional><attribute name="q" ns="urn:a"><data type="integer"/></attribute></optional><empty/>',
+        name='name="r" ns="urn:a"',
+    )
+
+    data = assert_export_valid(schema, '<r xmlns="urn:a"/>', "jsonml", fidelity="best-effort")
+    assert data == ["ns0:r", {"xmlns:ns0": "urn:a"}]
+    with_attr = assert_export_valid(
+        schema,
+        '<r xmlns="urn:a" xmlns:a="urn:a" a:q="3"/>',
+        "jsonml",
+        fidelity="best-effort",
+    )
+    assert with_attr[1]["ns0:q"] == 3
+
+
+def test_qname_child_and_closed_wildcard_need_declarations() -> None:
+    child = schema_for('<element name="c"><data type="QName"/></element>')
+    wildcard = schema_for(
+        '<zeroOrMore><attribute><nsName ns=""/>'
+        '<data type="QName"/></attribute></zeroOrMore><empty/>'
+    )
+
+    child_result = format_schema(child, "badgerfish", "r")
+    assert "relaxng-prefix-scope" in child_result["x-pyxsd-validation"]["unvalidated"]
+    child_data = assert_export_valid(child, '<r xmlns:p="urn:x"><c>p:v</c></r>', "badgerfish", "r")
+    assert "@xmlns" in child_data["r"]
+
+    wildcard_result = format_schema(wildcard, "badgerfish", "r")
+    assert wildcard_result["x-pyxsd-validation"]["unvalidated"]
+    wildcard_data = assert_export_valid(wildcard, '<r xmlns:p="urn:x" q="p:v"/>', "badgerfish", "r")
+    assert wildcard_data
+
+
+def test_qname_attribute_can_need_a_root_declaration() -> None:
+    schema = schema_for('<attribute name="q"><data type="QName"/></attribute><empty/>')
+
+    result = format_schema(schema, "badgerfish", "r")
+    assert "relaxng-prefix-scope" in result["x-pyxsd-validation"]["unvalidated"]
+    data = assert_export_valid(schema, '<r xmlns:p="urn:x" q="p:v"/>', "badgerfish", "r")
+    assert "@xmlns" in data["r"]
+
+
+def test_qname_list_scalars_allow_root_declarations() -> None:
+    schema = schema_for('<list><oneOrMore><data type="QName"/></oneOrMore></list>')
+
+    for format in ("badgerfish", "jsonml"):
+        data = assert_export_valid(schema, '<r xmlns:p="urn:x">p:a p:b</r>', format, "r")
+        serialized = json.dumps(data)
+        if format == "badgerfish":
+            assert "@xmlns" in serialized
+        else:
+            assert "xmlns:ns" in serialized
+
+
+def test_interpreted_qname_list_exports_validate() -> None:
+    schema = schema_for('<list><choice><data type="QName"/><data type="string"/></choice></list>')
+
+    for format in ("badgerfish", "jsonml"):
+        data = assert_export_valid(schema, '<r xmlns:p="urn:x">p:a</r>', format, "r")
+        serialized = json.dumps(data)
+        if format == "badgerfish":
+            assert "@xmlns" in serialized
+        else:
+            assert "xmlns:p" in serialized
+
+
+def test_declared_and_wildcard_children_share_a_sound_pattern() -> None:
+    schema = schema_for(
+        '<element name="a"><data type="string"/></element>'
+        "<zeroOrMore><element><anyName><except><name>a</name></except></anyName>"
+        '<data type="string"/></element></zeroOrMore>'
+    )
+
+    for format in ("pyxsd", "badgerfish"):
+        element = "r" if format == "pyxsd" else None
+        data = assert_export_valid(
+            schema, "<r><a>1</a><x>2</x></r>", format, element, fidelity="best-effort"
+        )
+        assert "a" in json.dumps(data)
+        assert "x" in json.dumps(data)
+
+
+def test_required_wildcard_children_are_required_in_every_format() -> None:
+    schema = schema_for(f"<oneOrMore><element><anyName/>{STRING}</element></oneOrMore>")
+
+    for format in CONVENTIONAL_FORMATS:
+        element = "r" if format in ("pyxsd", "parker") else None
+        data = assert_export_valid(schema, "<r><x>v</x></r>", format, element)
+        assert "x" in json.dumps(data)
+        empty = ["r"] if format == "jsonml" else ({"r": {}} if format == "badgerfish" else {})
+        assert format_errors(schema, empty, format, element)
+
+
+def test_jsonml_wildcard_child_finite_maximum() -> None:
+    schema = schema_for(f"<oneOrMore><element><anyName/>{STRING}</element></oneOrMore>")
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    wildcard = route.wildcards[0]
+    plan = replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(route, wildcards=(replace(wildcard, cardinality=Cardinality(1, 2)),)),
+        },
+    )
+    result = schema_from_plan(plan, format="jsonml")
+    constraint = next(item for item in result["allOf"] if "contains" in item)
+    assert constraint["maxContains"] == 2
+    validator = Draft202012Validator(result)
+    assert list(validator.iter_errors(["r", ["x", "1"]])) == []
+    assert list(validator.iter_errors(["r", ["x", "1"], ["x", "2"]])) == []
+    assert list(validator.iter_errors(["r", ["x", "1"], ["x", "2"], ["x", "3"]]))
+
+
+def test_badgerfish_generic_nodes_accept_nested_declarations() -> None:
+    schema = schema_for(
+        "<zeroOrMore><element><anyName/>"
+        '<choice><data type="QName"/><data type="string"/></choice>'
+        "</element></zeroOrMore>"
+    )
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    wildcard = route.wildcards[0]
+    plan = replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(route, wildcards=(replace(wildcard, child_route_id=None),)),
+        },
+    )
+    result = schema_from_plan(plan, format="badgerfish")
+    data = format_export(schema, '<r><x xmlns:p="urn:x">p:v</x></r>', "badgerfish")
+    assert data == {"r": {"x": [{"@xmlns": {"p": "urn:x"}, "$": "p:v"}]}}
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+
+
+def test_declared_structured_and_wildcard_scalar_children_coexist() -> None:
+    schema = schema_for(
+        '<element name="a"><element name="b"><data type="string"/></element></element>'
+        "<zeroOrMore><element><anyName><except><name>a</name></except></anyName>"
+        '<data type="string"/></element></zeroOrMore>'
+    )
+
+    for format in ("pyxsd", "badgerfish"):
+        element = "r" if format == "pyxsd" else None
+        data = assert_export_valid(
+            schema, "<r><a><b>x</b></a><y>z</y></r>", format, element, fidelity="best-effort"
+        )
+        assert "a" in json.dumps(data)
+        assert "y" in json.dumps(data)
+        if format == "pyxsd":
+            listed = schema.json_schema(format="pyxsd", element="r", always_list=True)
+            listed_data = format_export(
+                schema,
+                "<r><a><b>x</b></a><y>z</y></r>",
+                "pyxsd",
+                always_list=True,
+                fidelity="best-effort",
+            )
+            assert list(Draft202012Validator(listed).iter_errors(listed_data)) == []
+
+
+def test_custom_nondecoding_scalar_across_every_format() -> None:
+    schema = custom_schema(
+        '<data type="value" datatypeLibrary="urn:custom"/>',
+        "urn:custom",
+        value="x",
+        decodable=False,
+        named=True,
+    )
+
+    for format in CONVENTIONAL_FORMATS:
+        element = "r" if format in ("pyxsd", "parker") else None
+        data = assert_export_valid(schema, "<r>x</r>", format, element)
+        if format == "pyxsd":
+            assert "#value" in json.dumps(data)
+            untyped = assert_export_valid(schema, "<r>x</r>", "pyxsd", "r", typed=False)
+            assert untyped == {"$": "x"}
+        else:
+            assert "x" in json.dumps(data)
+
+
+def test_conventional_tags_are_rejected_in_scalar_positions() -> None:
+    integer = schema_for(INTEGER)
+
+    assert format_errors(integer, {"r": {"#value": {}}}, "badgerfish")
+    assert format_errors(integer, ["r", {"#value": {}}], "jsonml")
+    assert format_errors(integer, {"$": {"#value": {}}}, "pyxsd", "r")
