@@ -135,8 +135,8 @@ _BOOLEAN_TOKEN = r"(?:true|false|1|0)"
 _FLOAT_TOKEN = r"(?:[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)|-?INF|NaN)"
 _DECIMAL_TOKEN = r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)"
 _QNAME_TOKEN = r"(?:[^\s:{}#@/$]+:)?[^\s:{}#@/$]+"
-_NO_XML_WS_PATTERN = r"^[^ \t\r\n]+$"
-_BASE64_TOKEN_PATTERN = r"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)?$"
+_NO_XML_WS_PATTERN = r"^[^ \t\r\n]+(?![\s\S])"
+_BASE64_TOKEN_PATTERN = r"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)?(?![\s\S])"
 _B64_CW = rf"[A-Za-z0-9+/]{_XML_WS}"
 _BASE64_PATTERN = (
     rf"^{_XML_WS}(?:{_B64_CW}{_B64_CW}{_B64_CW}{_B64_CW})*"
@@ -151,7 +151,7 @@ def _scalar_pattern(token: str) -> str:
 
 
 def _strict_pattern(token: str) -> str:
-    return rf"^(?:{token})$"
+    return rf"^(?:{token})(?![\s\S])"
 
 
 _INTEGER_PATTERN = _scalar_pattern(_INTEGER_TOKEN)
@@ -167,7 +167,7 @@ _QNAME_STRICT_PATTERN = _strict_pattern(_QNAME_TOKEN)
 _HEX_PATTERN = _scalar_pattern(_HEX_TOKEN)
 _HEX_TOKEN_PATTERN = _strict_pattern(_HEX_TOKEN)
 _EQNAME_TOKEN = r"(?:Q\{[^ \t\r\n{}]*\})?[^ \t\r\n:{}#@/]+"
-_EQNAME_PATTERN = r"^(?:Q\{[\s\S]*\})?[^\s:{}#@/]+$"
+_EQNAME_PATTERN = r"^(?:Q\{[\s\S]*\})?[^\s:{}#@/]+(?![\s\S])"
 _EQNAME_STRICT_PATTERN = _strict_pattern(_EQNAME_TOKEN)
 _TAG_KEY = "#value"
 

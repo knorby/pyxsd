@@ -1005,7 +1005,7 @@ def test_json_dump_and_schema_preserve_wrapper_and_input_distinctions():
     )
     assert list_schema["prefixItems"][1] == {
         "type": "string",
-        "pattern": r"^[^ \t\r\n]+$",
+        "pattern": r"^[^ \t\r\n]+(?![\s\S])",
         "x-pyxsd-type": "token",
     }
     assert list_schema["x-pyxsd-list-shape"] == "tuple"
@@ -2238,6 +2238,10 @@ def test_list_item_schemas_require_strict_no_whitespace_tokens():
             listed.model_validate_json(json.dumps([invalid]), context=context)
         with pytest.raises(JsonSchemaValidationError):
             Draft202012Validator(schema).validate([invalid])
+        with pytest.raises(ValidationError):
+            listed.model_validate_json(json.dumps([valid + "\n"]), context=context)
+        with pytest.raises(JsonSchemaValidationError):
+            Draft202012Validator(schema).validate([valid + "\n"])
 
     _, strings = model_for(
         '<list><zeroOrMore><data type="token" datatypeLibrary=""/></zeroOrMore></list>'
@@ -2250,6 +2254,9 @@ def test_list_item_schemas_require_strict_no_whitespace_tokens():
     with pytest.raises(ValidationError):
         strings.model_validate_json('[" x "]')
     assert not Draft202012Validator(string_schema).is_valid([" x "])
+    with pytest.raises(ValidationError):
+        strings.model_validate_json('["x\\n"]')
+    assert not Draft202012Validator(string_schema).is_valid(["x\n"])
 
     _, custom = model_for(
         '<list><zeroOrMore><data type="result" datatypeLibrary="urn:result"/></zeroOrMore></list>',
