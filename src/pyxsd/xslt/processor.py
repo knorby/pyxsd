@@ -5866,10 +5866,17 @@ class _Invocation(Transformation):
             # (section 2.3.6.1), not from a validating instruction, so delivery
             # never strips annotations that construction established.  Only an
             # explicit xsl:result-document validates its delivered tree
-            # (section 25.1).  A node returned by reference keeps its
-            # annotations too, even under module-level default-validation
-            # "strip"; Saxon behaves the same, and the delivery seam cannot
-            # re-derive which annotations came from construction.
+            # (section 25.1).  Section 25.4 also says default-validation
+            # determines the validation of the implicit final result tree;
+            # that sentence is the one this code declines to follow, because it
+            # contradicts 2.3.6.1 (no validation step exists in sequence
+            # normalization), 25.4.2's list of validating instructions, and the
+            # conformance catalog's typed delivered trees under module-level
+            # strip.  Bug 30211 proposes deleting it.  A node returned by
+            # reference keeps its annotations too, even under module-level
+            # default-validation "strip"; Saxon behaves the same, and the
+            # delivery seam cannot re-derive which annotations came from
+            # construction.
             tree = validate_delivered(
                 tree,
                 validation="preserve",
