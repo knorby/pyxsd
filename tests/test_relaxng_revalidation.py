@@ -6,8 +6,8 @@ parse settings, never updates the old document or its snapshots, and returns
 fresh nodes, classes, reports, evidence, and annotations.  A transformed root is
 a stale document until revalidation, including the shared-revision boundary for
 the original document.  Typed views require freshness; the lexical writer and
-``to_string``/``write`` remain available, while Phase 5 data conversion stays an
-explicit unsupported capability.
+``to_string``/``write`` remain available, while data conversion dispatches
+through the RELAX NG adapter registry and applies its freshness policy.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from pyxsd.relaxng import (
     RelaxNGSchema,
     StaleInterpretationError,
 )
+from pyxsd.relaxng.conversion import RelaxNGUnsupportedAdapterError
 from pyxsd.relaxng.xml_writer import clone_relaxng
 from pyxsd.xdm.errors import XdmInputError
 
@@ -524,7 +525,7 @@ def test_lexical_escape_paths_work_on_dirty_and_stale_documents(tmp_path):
         lambda: document.to_data(),
         lambda: document.to_json(),
     ):
-        with pytest.raises(PyXSDError, match="Phase 5"):
+        with pytest.raises(StaleInterpretationError):
             conversion()
 
     stale = document.transform(lambda root: root)
@@ -540,7 +541,7 @@ def test_lexical_escape_paths_work_on_dirty_and_stale_documents(tmp_path):
         lambda: validation.to_data(typed=False),
         lambda: validation.to_json(typed=False),
     ):
-        with pytest.raises(PyXSDError, match="Phase 5"):
+        with pytest.raises(RelaxNGUnsupportedAdapterError, match="not implemented"):
             conversion()
 
 

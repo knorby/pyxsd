@@ -21,11 +21,13 @@ independent clone of the current tree into fresh nodes, evidence, annotations,
 classes, and XDM capture while keeping the recorded namespace and base-URI
 frames.  The lexical writer and ``to_string``/``write`` stay available for
 dirty, stale, validation-only, and invalid documents; typed views require
-freshness, and Phase 5 owns data conversion.
+freshness, and data conversion dispatches through the RELAX NG adapter
+registry rather than an XSD converter.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from copy import copy
@@ -50,7 +52,7 @@ from pyxsd.relaxng.xml_writer import clone_relaxng, serialize_relaxng
 from pyxsd.resource_policy import source_identifier
 
 if TYPE_CHECKING:
-    from pyxsd.data_conversion.contracts import Fidelity, FormatName
+    from pyxsd.data_conversion.contracts import Fidelity, FormatName, JsonValue
     from pyxsd.dtd_declarations import DocumentDeclarations
     from pyxsd.relaxng.limits import RelaxNGLimits
     from pyxsd.relaxng.schema import RelaxNGSchema
@@ -64,10 +66,6 @@ _ANNOTATION_VALIDATION_ONLY = (
 )
 _ANNOTATION_NOT_CAPTURED = (
     "RELAX NG pattern annotations were not captured for this parse; reparse with capture='patterns'"
-)
-_DATA_CONVERSION_CAPABILITY = (
-    "RELAX NG data conversion is unavailable in this release; "
-    "Phase 5 owns to_dict, to_data, and to_json export"
 )
 _TYPED_EVIDENCE_CAPABILITY = "a valid typed RELAX NG document requires complete binding evidence"
 _TYPED_ANNOTATION_CAPABILITY = (
@@ -481,10 +479,26 @@ class RelaxNGDocument(Document):
             return self._annotations.materialize()
         return self._annotations
 
-    def to_dict(self, *, typed: bool = True, always_list: bool = False) -> NoReturn:
-        """Reject data conversion; Phase 5 owns the RELAX NG adapter."""
-        del typed, always_list
-        raise PyXSDError(_DATA_CONVERSION_CAPABILITY)
+    def to_dict(self, *, typed: bool = True, always_list: bool = False) -> dict:
+        """Returns the current tree as native ``pyxsd`` raw Python values.
+
+        The RELAX NG adapter owns the grouped representation; ``typed=True``
+        keeps Python wrappers and raw scalar values, while ``typed=False``
+        reads lexical text.  Typed export requires a valid document whose
+        evidence still describes this lexical revision.  ``typed=False``
+        remains a lexical escape path for dirty and invalid trees.
+        """
+        from pyxsd.relaxng.conversion import export_relaxng
+
+        return cast(
+            dict,
+            export_relaxng(
+                self,
+                format="pyxsd",
+                typed=typed,
+                always_list=always_list,
+            ),
+        )
 
     def to_data(
         self,
@@ -493,10 +507,26 @@ class RelaxNGDocument(Document):
         fidelity: Fidelity = "best-effort",
         typed: bool = True,
         always_list: bool = False,
-    ) -> NoReturn:
-        """Reject data conversion; Phase 5 owns the RELAX NG adapter."""
-        del format, fidelity, typed, always_list
-        raise PyXSDError(_DATA_CONVERSION_CAPABILITY)
+    ) -> JsonValue:
+        """Returns the current tree under a RELAX NG data-format contract.
+
+        ``format="pyxsd"`` keeps the native grouped representation and
+        converts its scalars to JSON-safe values.  The other four formats use
+        their RELAX NG-owned adapters.  ``typed`` and ``always_list`` are
+        native-only options, rejected exactly as the XSD document rejects them
+        on another format.  Typed schema-directed output requires a valid,
+        current typed document; native ``typed=False`` and JsonML remain
+        lexical escapes over the current tree.
+        """
+        from pyxsd.relaxng.conversion import export_relaxng
+
+        return export_relaxng(
+            self,
+            format=format,
+            fidelity=fidelity,
+            typed=typed,
+            always_list=always_list,
+        )
 
     def to_json(
         self,
@@ -506,10 +536,22 @@ class RelaxNGDocument(Document):
         fidelity: Fidelity = "best-effort",
         typed: bool = True,
         always_list: bool = False,
-    ) -> NoReturn:
-        """Reject JSON conversion; Phase 5 owns the RELAX NG adapter."""
-        del indent, format, fidelity, typed, always_list
-        raise PyXSDError(_DATA_CONVERSION_CAPABILITY)
+    ) -> str:
+        """Returns :meth:`to_data` as standards-compliant JSON text.
+
+        No fallback serializer is used: non-finite adapter output is rejected
+        by ``allow_nan=False`` instead of emitting a non-JSON token.
+        """
+        return json.dumps(
+            self.to_data(
+                format=format,
+                fidelity=fidelity,
+                typed=typed,
+                always_list=always_list,
+            ),
+            indent=indent,
+            allow_nan=False,
+        )
 
     def to_string(self) -> str:
         """Serialize the current lexical tree, even when typed views are stale.
@@ -601,8 +643,8 @@ class RelaxNGDocument(Document):
         source-relative base URI.  A root tail is outside the document
         element and is not carried into the new document.  The lexical writer
         and ``to_string``/``write`` remain available on the old document and on
-        the result; ``to_dict``, ``to_data``, and ``to_json`` stay explicit
-        Phase 5 capability errors.
+        the result; ``to_dict``, ``to_data``, and ``to_json`` dispatch through
+        the RELAX NG adapter registry and apply its freshness policy.
 
         The original DTD declaration evidence is reused without retrieving a
         DTD or serializing a DOCTYPE.  Absent evidence stays absent.  Source

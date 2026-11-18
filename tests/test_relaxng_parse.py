@@ -29,6 +29,7 @@ from pyxsd.relaxng import (
     RelaxNGLimits,
     RelaxNGSchema,
 )
+from pyxsd.relaxng.conversion import RelaxNGUnsupportedAdapterError
 from pyxsd.relaxng.diagnostics import MISSING_ATTRIBUTE, UNEXPECTED_ELEMENT
 from pyxsd.resource_policy import ResourceData
 from pyxsd.schema_base import SchemaBase
@@ -543,7 +544,7 @@ def test_validation_only_documents_reject_annotations_and_revalidate_freshly():
     assert fresh.root.text_value() == "changed"
 
 
-def test_data_conversion_methods_fail_explicitly_without_xsd_dispatch(monkeypatch):
+def test_data_conversion_methods_dispatch_without_xsd_paths(monkeypatch):
     schema = compile_schema()
     document = schema.parse(io.StringIO("<doc><item>x</item></doc>"), typed=False)
     attributes_before = dict(document.root.attributes)
@@ -558,15 +559,27 @@ def test_data_conversion_methods_fail_explicitly_without_xsd_dispatch(monkeypatc
     monkeypatch.setattr(Document, "to_json", fail)
 
     calls = (
-        lambda: document.to_dict(),
-        lambda: document.to_dict(typed=False),
-        lambda: document.to_data(),
-        lambda: document.to_data(format="jsonml", typed=False),
-        lambda: document.to_json(),
-        lambda: document.to_json(typed=False),
+        (lambda: document.to_dict(), PyXSDError, "requires a typed document"),
+        (
+            lambda: document.to_dict(typed=False),
+            RelaxNGUnsupportedAdapterError,
+            "not implemented",
+        ),
+        (lambda: document.to_data(), PyXSDError, "requires a typed document"),
+        (
+            lambda: document.to_data(format="jsonml", typed=False),
+            ValueError,
+            "native-only",
+        ),
+        (lambda: document.to_json(), PyXSDError, "requires a typed document"),
+        (
+            lambda: document.to_json(typed=False),
+            RelaxNGUnsupportedAdapterError,
+            "not implemented",
+        ),
     )
-    for call in calls:
-        with pytest.raises(PyXSDError, match="Phase 5"):
+    for call, error, message in calls:
+        with pytest.raises(error, match=message):
             call()
 
     assert dict(document.root.attributes) == attributes_before
