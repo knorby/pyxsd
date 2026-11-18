@@ -58,7 +58,7 @@ from pyxsd.relaxng.projection import ProjectionPlan, plan_projections
 from pyxsd.relaxng.resources import ResourceDependency, ResourceLoader, ResourceSource
 from pyxsd.relaxng.simplify import CompiledGrammar, Simplifier, compose_grammars
 from pyxsd.relaxng.syntax import SchemaFinding, read_full_syntax
-from pyxsd.relaxng.tree import RelaxNGElement
+from pyxsd.relaxng.tree import NodeContext, RelaxNGElement
 from pyxsd.relaxng.validator import validate_element_recovering
 from pyxsd.resource_policy import (
     ResourcePolicy,
@@ -79,6 +79,8 @@ from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 if TYPE_CHECKING:
     from pyxsd.batch import DocumentSource, ParseOutcome
+    from pyxsd.data_conversion.contracts import Fidelity, FormatName, JsonValue
+    from pyxsd.relaxng.json_profile import ImportedTree
 
 __all__ = ["RelaxNGSchema", "compile"]
 
@@ -235,6 +237,33 @@ def _parse_guard(schema: RelaxNGSchema) -> threading.Lock:
             guard = threading.Lock()
             _PARSE_GUARDS[schema] = guard
         return guard
+
+
+def _apply_imported_contexts(
+    source_root: ET.Element,
+    root: RelaxNGElement,
+    contexts: Mapping[int, DatatypeContext],
+) -> None:
+    """Adapt constructed-Element contexts onto their lexical nodes.
+
+    The table is keyed by the temporary ElementTree's object identities only.
+    Walking both trees in lockstep resolves each frame once, records it on the
+    lexical revision, and retains no source element afterwards.  No context
+    grants resource authority or changes the parse guard.
+    """
+    pending: list[tuple[ET.Element, RelaxNGElement]] = [(source_root, root)]
+    while pending:
+        source, node = pending.pop()
+        context = contexts.get(id(source))
+        if context is not None:
+            current = node.revision.context_for(node)
+            node.revision._replace_context(
+                node,
+                NodeContext(context.namespaces, context.base_uri, current.source),
+            )
+        source_children = list(source)
+        target_children = node.children
+        pending.extend(zip(source_children, target_children, strict=True))
 
 
 def _instance_limits(
@@ -611,6 +640,111 @@ class RelaxNGSchema:
             limits=limits,
         )
 
+    def from_data(
+        self,
+        data: JsonValue,
+        *,
+        format: FormatName = "pyxsd-json",
+        element: str | None = None,
+        namespaces: Mapping[str, str] | None = None,
+        fidelity: Fidelity = "strict",
+    ) -> RelaxNGDocument:
+        """Build and validate a document from JSON-compatible *data*.
+
+        The data is converted to a deterministic Clark-named ElementTree with
+        one recorded datatype context per constructed element, then parsed by
+        the ordinary guarded instance path with ``typed=True``, default
+        capture, and no XDM.  Conversion problems (malformed shape, wrong
+        containers, duplicate expanded names, bare null, malformed tags, or an
+        ambiguous root) raise :class:`~pyxsd.exceptions.PyXSDError` before
+        validation; lexically invalid content lands on the returned document's
+        report exactly as for XML input.
+
+        - ``format`` selects one of the five published data formats.
+
+        - ``element`` optionally names the root with a local, Clark, or EQName
+          spelling.  Root-absorbed formats require it when the start pattern
+          admits more than one name; otherwise it only narrows and confirms.
+
+        - ``namespaces`` seeds the root's inherited prefix frame.  In-band
+          declarations and scalar-tag contexts shadow it per element.
+
+        - ``fidelity`` selects strict loss rejection or the documented
+          best-effort fallbacks.  An unknown value raises ``ValueError``.
+        """
+        from pyxsd.relaxng.json_profile import data_to_relaxng_tree
+
+        try:
+            tree = data_to_relaxng_tree(
+                self,
+                data,
+                format=format,
+                element=element,
+                namespaces=namespaces,
+                fidelity=fidelity,
+            )
+        except PyXSDError as exc:
+            raise PyXSDError(f"{exc} (format={format!r})") from None
+        return self._parse_imported_tree(tree)
+
+    def from_json(
+        self,
+        source: str | bytes | bytearray,
+        *,
+        format: FormatName = "pyxsd-json",
+        element: str | None = None,
+        namespaces: Mapping[str, str] | None = None,
+        fidelity: Fidelity = "strict",
+    ) -> RelaxNGDocument:
+        """Parse JSON text or UTF-8 bytes and bind it like :meth:`from_data`.
+
+        *source* is JSON content, not a path.  The format and fidelity names
+        are validated before the JSON is parsed, and duplicate object keys and
+        the non-standard ``NaN``/``Infinity`` constants are rejected through
+        the shared JSON boundary.  The remaining options and error behavior
+        match :meth:`from_data`.
+        """
+        from pyxsd.data_conversion.contracts import validate_fidelity, validate_format
+        from pyxsd.data_conversion.import_data import json_to_data
+
+        requested_format = validate_format(format)
+        validate_fidelity(fidelity)
+        try:
+            data = json_to_data(source)
+        except PyXSDError as exc:
+            raise PyXSDError(f"{exc} (format={requested_format!r})") from None
+        return self.from_data(
+            data,
+            format=requested_format,
+            element=element,
+            namespaces=namespaces,
+            fidelity=fidelity,
+        )
+
+    def _parse_imported_tree(self, tree: ImportedTree) -> RelaxNGDocument:
+        """Parse one imported tree, then verify its parsed tag claims.
+
+        Contexts are adapted onto lexical nodes while the parse guard is held;
+        the ElementTree and its identity-keyed table are never retained.  Claim
+        verification runs only after reconstruction, and only a valid document
+        can produce authoritative candidate evidence.
+        """
+        from pyxsd.relaxng.json_values import verify_tag_claims
+
+        document = self._parse_guarded_instance(
+            tree.root,
+            xml_policy=None,
+            xml_limits=None,
+            typed=True,
+            capture="none",
+            capture_xdm=False,
+            limits=None,
+            contexts=tree.contexts,
+        )
+        if tree.claims:
+            verify_tag_claims(tree.claims, document)
+        return document
+
     def _parse_guarded_instance(
         self,
         xml: str | Path | os.PathLike[str] | IO[str] | IO[bytes] | ET.Element,
@@ -624,6 +758,7 @@ class RelaxNGSchema:
         declarations: DocumentDeclarations
         | _CollectDeclarations
         | None = _CollectDeclarations.COLLECT,
+        contexts: Mapping[int, DatatypeContext] | None = None,
     ) -> RelaxNGDocument:
         """Guard both public parsing and private revalidation with saved evidence.
 
@@ -646,6 +781,7 @@ class RelaxNGSchema:
                 capture_xdm=capture_xdm,
                 limits=limits,
                 declarations=declarations,
+                contexts=contexts,
             )
         finally:
             guard.release()
@@ -700,6 +836,7 @@ class RelaxNGSchema:
         capture_xdm: bool,
         limits: RelaxNGLimits | None,
         declarations: DocumentDeclarations | _CollectDeclarations | None,
+        contexts: Mapping[int, DatatypeContext] | None = None,
     ) -> RelaxNGDocument:
         """Read, validate, and wrap one instance while the parse guard is held."""
         self.require_valid()
@@ -766,6 +903,8 @@ class RelaxNGSchema:
             base_uri=source_id,
             source=root_location,
         )
+        if contexts:
+            _apply_imported_contexts(tree, root, contexts)
         instance_report = new_validation_report(self._resource_policy)
         with declaration_context(declarations) as entity_evidence:
             outcome = validate_element_recovering(

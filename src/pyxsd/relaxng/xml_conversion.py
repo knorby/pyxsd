@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterator
 from copy import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import product
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 from xml.etree import ElementTree as ET
@@ -31,6 +31,8 @@ from pyxsd.data_conversion.contracts import (
     raise_conversion,
     warn_conversion,
 )
+from pyxsd.data_conversion.import_data import _repointed
+from pyxsd.data_conversion.names import eqname_to_expanded, expanded_to_eqname
 from pyxsd.data_conversion.values import scalar_to_json
 from pyxsd.dtd_declarations import declaration_context
 from pyxsd.exceptions import PyXSDError
@@ -40,8 +42,28 @@ from pyxsd.relaxng.datatypes import DatatypeContext
 from pyxsd.relaxng.document import _whole_element_scalar_value
 from pyxsd.relaxng.errors import RelaxNGLimitError
 from pyxsd.relaxng.evidence import EvidenceGraph, EvidenceOccurrence, build_binding_evidence
-from pyxsd.relaxng.json_profile import _child_route, _layout, _root_route
-from pyxsd.relaxng.json_values import scalar_to_relaxng_json
+from pyxsd.relaxng.json_profile import (
+    ImportedTree,
+    _append_text,
+    _atomic_qname,
+    _child_route,
+    _child_target,
+    _claim_node_context,
+    _ImportState,
+    _layout,
+    _list_valued,
+    _parse_node_tags,
+    _plan_route,
+    _position_scalar_contracts,
+    _root_route,
+    _select_expanded_root,
+    _unique_admitted_root,
+)
+from pyxsd.relaxng.json_values import (
+    ScalarTagClaim,
+    ScalarTagLocation,
+    scalar_to_relaxng_json,
+)
 from pyxsd.relaxng.names import ExceptName, Name, NameChoice, NameClass, NsName
 from pyxsd.relaxng.patterns import (
     Choice,
@@ -55,16 +77,25 @@ from pyxsd.relaxng.patterns import (
     Value,
 )
 from pyxsd.relaxng.projection import ContentContract, ProjectionPlan, RouteContract
-from pyxsd.relaxng.tree import RelaxNGElement
+from pyxsd.relaxng.tree import RelaxNGElement, _effective_base
 from pyxsd.relaxng.validator import validate_element
 from pyxsd.relaxng.values import AlternativeValue, ListInterpretation
-from pyxsd.xsd_data_types import QName
+from pyxsd.xsd_data_types import NCName, QName
 
 if TYPE_CHECKING:
     from pyxsd.relaxng.conversion import ExportMode
     from pyxsd.relaxng.document import RelaxNGDocument
 
-__all__ = ["export_badgerfish", "export_jsonml", "export_native", "export_parker"]
+__all__ = [
+    "export_badgerfish",
+    "export_jsonml",
+    "export_native",
+    "export_parker",
+    "import_badgerfish",
+    "import_jsonml",
+    "import_native",
+    "import_parker",
+]
 
 _Path = tuple[str | int, ...]
 
@@ -861,14 +892,6 @@ def _native_order(
     )
 
 
-def _atomic_qname(contract: ScalarContract) -> bool:
-    return (
-        contract.kind == "atomic"
-        and contract.type_name in ("QName", "NOTATION")
-        and contract.library_uri == "http://www.w3.org/2001/XMLSchema-datatypes"
-    )
-
-
 def _contract_qname(contract: ScalarContract, plan: ProjectionPlan) -> bool:
     if contract.kind != "list":
         return _atomic_qname(contract)
@@ -934,32 +957,6 @@ def _native_lexical_context(
                 message,
                 fidelity,
             )
-
-
-def _position_scalar_contracts(
-    model: ContentContract,
-    name: str | None,
-) -> tuple[ScalarContract, ...]:
-    """Potential contracts at one position, without flattening field roles.
-
-    ``None`` selects leading text, including scalar alternatives in structural
-    routes. Attributes retain the name/contract correlation of original leaves,
-    which merged wildcard views erase. These are not surviving candidates.
-    """
-    pending = [model]
-    seen: set[int] = set()
-    contracts: dict[ScalarContract, None] = {}
-    while pending:
-        part = pending.pop()
-        if id(part) in seen:
-            continue
-        seen.add(id(part))
-        if part.kind == ("scalar" if name is None else "attribute"):
-            if name is None or cast(NameClass, part.name_class).contains(*_split(name)):
-                contracts.update(dict.fromkeys(part.scalar_contracts))
-        else:
-            pending.extend(part.operands)
-    return tuple(contracts)
 
 
 @dataclass
@@ -1780,7 +1777,13 @@ def _reserve_jsonml_names(
 
 
 def _reserve_value_names(value: Any, names: _LexicalNames) -> None:
-    if isinstance(value, (AlternativeValue, ListInterpretation)):
+    if isinstance(value, AlternativeValue):
+        candidate = value.candidates[0] if len(value.candidates) == 1 else None
+        if candidate is not None and candidate.decodable:
+            _reserve_value_names(candidate.decoded, names)
+            return
+        _declare_wrapper_qnames(value, names=names, path=())
+    elif isinstance(value, ListInterpretation):
         _declare_wrapper_qnames(value, names=names, path=())
     elif isinstance(value, (tuple, list)):
         for item in value:
@@ -1885,3 +1888,940 @@ def _jsonml_attributes(
             names=names,
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Deterministic conventional-format import
+# ---------------------------------------------------------------------------
+
+
+_MISSING = object()
+
+
+def _expand_native_name(key: str, path: _Path) -> str:
+    """Expand one native Clark, EQName, or local key and repoint failures."""
+    try:
+        if key.startswith("{"):
+            expanded_to_eqname(key)
+            return key
+        return eqname_to_expanded(key)
+    except PyXSDError as error:
+        raise _repointed(error, json_pointer(path)) from None
+
+
+def _resolve_lexical_name(
+    key: str,
+    frame: dict[str, str],
+    path: _Path,
+    *,
+    attribute: bool,
+    fidelity: Fidelity,
+) -> str:
+    """Resolve one BadgerFish/JsonML lexical name in its scoped frame."""
+    if key.startswith(("{", "Q{")):
+        return _expand_native_name(key, path)
+    if ":" in key:
+        prefix, local = key.split(":", 1)
+        if not prefix or NCName._pattern.fullmatch(prefix) is None:
+            raise_conversion("name-invalid", json_pointer(path), f"invalid QName {key!r}")
+        if NCName._pattern.fullmatch(local) is None:
+            raise_conversion("name-invalid", json_pointer(path), f"invalid QName {key!r}")
+        uri = XML_NS if prefix == "xml" else frame.get(prefix)
+        if uri is None:
+            _loss(
+                "namespace-unresolved",
+                path,
+                f"the prefix {prefix!r} is not bound in this element's scope",
+                fidelity,
+            )
+            return key
+        return f"{{{uri}}}{local}" if uri else local
+    if NCName._pattern.fullmatch(key) is None:
+        raise_conversion("name-invalid", json_pointer(path), f"invalid XML name {key!r}")
+    uri = "" if attribute else frame.get("", "")
+    return f"{{{uri}}}{key}" if uri else key
+
+
+def _merge_declarations(
+    frame: dict[str, str],
+    declarations: dict[str, str],
+    path: _Path,
+    *,
+    marker: str = _XMLNS_KEY,
+) -> dict[str, str]:
+    """Apply in-band declarations over the inherited frame."""
+    merged = dict(frame)
+    for prefix, uri in declarations.items():
+        if prefix == "xml" and uri != XML_NS:
+            raise_conversion(
+                "namespace-conflict",
+                json_pointer((*path, marker)),
+                "the implicit xml prefix cannot be rebound",
+            )
+        merged[prefix] = uri
+    return merged
+
+
+def _check_declaration(prefix: object, uri: object, path: _Path) -> tuple[str, str]:
+    if not isinstance(prefix, str) or (prefix and NCName._pattern.fullmatch(prefix) is None):
+        raise_conversion("name-invalid", json_pointer(path), f"invalid namespace prefix {prefix!r}")
+    if not isinstance(uri, str):
+        raise_conversion(
+            "container-invalid",
+            json_pointer(path),
+            "a namespace declaration value must be a string",
+        )
+    return prefix, uri
+
+
+def _badgerfish_declarations(raw: Any, path: _Path) -> dict[str, str]:
+    if not isinstance(raw, dict) or _XMLNS_KEY not in raw:
+        return {}
+    declarations = raw[_XMLNS_KEY]
+    if not isinstance(declarations, dict):
+        raise_conversion(
+            "container-invalid",
+            json_pointer((*path, _XMLNS_KEY)),
+            "BadgerFish @xmlns must be an object of prefix-to-URI strings",
+        )
+    result: dict[str, str] = {}
+    for prefix, uri in declarations.items():
+        checked_prefix, checked_uri = _check_declaration(prefix, uri, (*path, _XMLNS_KEY, prefix))
+        result[checked_prefix] = checked_uri
+    return result
+
+
+def _jsonml_declarations(attrs: dict[str, Any], path: _Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key, uri in attrs.items():
+        if key == "xmlns":
+            prefix = ""
+        elif isinstance(key, str) and key.startswith("xmlns:"):
+            prefix = key[len("xmlns:") :]
+        else:
+            continue
+        checked_prefix, checked_uri = _check_declaration(prefix, uri, (*path, key))
+        result[checked_prefix] = checked_uri
+    return result
+
+
+def _grouped_scalar(
+    raw: Any,
+    *,
+    tags: Any,
+    allow_null: bool,
+    allow_list: bool,
+    path: _Path,
+) -> str | None:
+    """Rebuild one conventional scalar's lexical text without choosing types."""
+    claim = tags.get(id(raw))
+    if claim is not None:
+        return claim.lexical
+    if raw is None:
+        if allow_null:
+            return None
+        raise_conversion(
+            "scalar-type-invalid", json_pointer(path), "bare null is not a RELAX NG scalar value"
+        )
+    if isinstance(raw, dict):
+        raise_conversion(
+            "scalar-type-invalid",
+            json_pointer(path),
+            "a scalar slot requires a scalar, not an object",
+        )
+    if isinstance(raw, list):
+        if not allow_list:
+            raise_conversion(
+                "scalar-type-invalid",
+                json_pointer(path),
+                "a scalar attribute cannot be a JSON array",
+            )
+        parts = [
+            _grouped_scalar(
+                item,
+                tags=tags,
+                allow_null=False,
+                allow_list=True,
+                path=(*path, index),
+            )
+            for index, item in enumerate(raw)
+        ]
+        return " ".join("" if part is None else part for part in parts)
+    if isinstance(raw, bool):
+        return "true" if raw else "false"
+    if isinstance(raw, (int, float)):
+        return str(raw)
+    return raw
+
+
+def _bind_grouped_claim(
+    claims: list[ScalarTagClaim],
+    tags: dict[int, ScalarTagClaim],
+    raw: Any,
+    element_path: tuple[int, ...],
+    *,
+    attribute: str | None = None,
+    content_index: int | None = None,
+) -> None:
+    claim = tags.get(id(raw))
+    if claim is not None:
+        claims.append(
+            replace(
+                claim,
+                location=ScalarTagLocation(
+                    element_path, attribute=attribute, content_index=content_index
+                ),
+            )
+        )
+
+
+def _check_grouped_import_order(
+    route: RouteContract | None,
+    names: list[str],
+    path: _Path,
+    fidelity: Fidelity,
+) -> None:
+    """Reject grouped child groups that do not determine one compiled order."""
+    if route is None:
+        _loss(
+            "order-ambiguous",
+            path,
+            "no compiled child order can reconstruct grouped properties",
+            fidelity,
+        )
+        return
+    admitted = set(route.children)
+    wildcards = [wildcard for wildcard in route.wildcards if wildcard.role == "child"]
+    for name in names:
+        if name in admitted:
+            continue
+        uri, local = _split(name)
+        if any(wildcard.name_class.contains(uri, local) for wildcard in wildcards):
+            continue
+        # An unknown child is a lexical mismatch for the ordinary validator to
+        # report, not evidence that a valid grouped export lost its order.
+        return
+    observed = tuple(names)
+    counts = Counter(observed)
+    analysis = _OrderAnalysis(tuple(sorted(counts)), path)
+    sequences = _model_order(
+        route.content.model, tuple(counts[n] for n in analysis.names), analysis
+    )
+    if len(sequences) == 1 and (
+        observed in sequences or _order_matches(route.content.model, observed, analysis)
+    ):
+        return
+    _loss(
+        "order-ambiguous",
+        path,
+        "grouped properties do not determine one accepted compiled child order",
+        fidelity,
+    )
+
+
+def _is_list_scalar(route: RouteContract | None) -> bool:
+    """Whether a child route's scalar slot consumes a whole JSON array."""
+    if route is None or _layout(route, False) != "scalar":
+        return False
+    contracts = _position_scalar_contracts(route.content.model, None)
+    return bool(contracts) and all(_list_valued(contract) for contract in contracts)
+
+
+def _selected_root(plan: ProjectionPlan, element: str | None) -> str:
+    """Resolve an absorbed root from the start name class."""
+    if element is None:
+        return _unique_admitted_root(plan)
+    name = _select_expanded_root(plan, element)
+    if _plan_route(plan, name) is None:
+        raise_conversion("root-unresolved", "", f"root {name!r} is outside the start name class")
+    return name
+
+
+class _GroupedImporter:
+    """Shared state and scalar handling for one conventional import."""
+
+    def __init__(
+        self, plan: ProjectionPlan, root_frame: dict[str, str], fidelity: Fidelity
+    ) -> None:
+        self.plan = plan
+        self.root_frame = dict(root_frame)
+        self.fidelity = fidelity
+        self.state = _ImportState()
+
+    def _apply_scalars(
+        self,
+        element: ET.Element,
+        attr_pairs: list[tuple[str, Any, _Path]],
+        content_pair: tuple[Any, _Path] | None,
+        route: RouteContract | None,
+        frame: dict[str, str],
+        parent_base: str | None,
+        path: _Path,
+        element_path: tuple[int, ...],
+        *,
+        allow_null_text: bool,
+        allow_list_attrs: bool = False,
+    ) -> str | None:
+        candidates = [(raw, error_path) for _, raw, error_path in attr_pairs]
+        if content_pair is not None:
+            candidates.append(content_pair)
+        tags = _parse_node_tags(candidates)
+        base = parent_base
+        if tags:
+            claim_frame, claim_base = _claim_node_context(list(tags.values()), path)
+            frame.clear()
+            frame.update(claim_frame)
+            base = claim_base
+        for expanded, raw, error_path in attr_pairs:
+            _bind_grouped_claim(self.state.claims, tags, raw, element_path, attribute=expanded)
+            lexical = _grouped_scalar(
+                raw,
+                tags=tags,
+                allow_null=False,
+                allow_list=allow_list_attrs,
+                path=error_path,
+            )
+            element.attrib[expanded] = "" if lexical is None else lexical
+        if not tags:
+            base = _effective_base(parent_base, element)
+        if content_pair is not None:
+            raw, error_path = content_pair
+            _bind_grouped_claim(self.state.claims, tags, raw, element_path, content_index=0)
+            element.text = _grouped_scalar(
+                raw,
+                tags=tags,
+                allow_null=allow_null_text,
+                allow_list=True,
+                path=error_path,
+            )
+        return base
+
+    def _context(self, element: ET.Element, base: str | None, frame: dict[str, str]) -> None:
+        self.state.contexts[id(element)] = DatatypeContext(base, dict(frame))
+
+    def _finish(self, root: ET.Element) -> ImportedTree:
+        return self.state.tree(root)
+
+    def _ordered(
+        self,
+        route: RouteContract | None,
+        entries: list[tuple[str, Any, str, _Path]],
+        path: _Path,
+        layout: str,
+    ) -> list[tuple[str, Any, str, _Path]]:
+        """Order grouped child entries by compiled slots, never by value shape."""
+        if not entries:
+            return entries
+        if route is not None:
+            by_name = {entry[0]: entry for entry in entries}
+            ordered = [by_name[name] for name in route.children if name in by_name]
+            ordered.extend(entry for entry in entries if entry[0] not in route.children)
+            entries = ordered
+        names = [entry[0] for entry in entries]
+        if layout not in ("record",):
+            _check_grouped_import_order(route, names, path, self.fidelity)
+        return entries
+
+    def _append_children(
+        self,
+        element: ET.Element,
+        route: RouteContract | None,
+        entries: list[tuple[str, Any, str, _Path]],
+        frame: dict[str, str],
+        base: str | None,
+        element_path: tuple[int, ...],
+        layout: str,
+        path: _Path,
+    ) -> None:
+        for expanded, raw, _key, child_path in self._ordered(route, entries, path, layout):
+            child_route, child_generic = self._child_target(route, expanded)
+            repeated = isinstance(raw, list) and (
+                not _is_list_scalar(child_route) or any(isinstance(item, list) for item in raw)
+            )
+            if repeated:
+                for index, item in enumerate(raw):
+                    element.append(
+                        self._element(
+                            expanded,
+                            item,
+                            child_route,
+                            frame,
+                            base,
+                            (*child_path, index),
+                            (*element_path, len(element)),
+                            generic=child_generic,
+                        )
+                    )
+            else:
+                element.append(
+                    self._element(
+                        expanded,
+                        raw,
+                        child_route,
+                        frame,
+                        base,
+                        child_path,
+                        (*element_path, len(element)),
+                        generic=child_generic,
+                    )
+                )
+
+    def _child_target(
+        self, route: RouteContract | None, expanded: str
+    ) -> tuple[RouteContract | None, bool]:
+        return _child_target(self.plan, route, expanded)
+
+    def _element(
+        self,
+        name: str,
+        raw: Any,
+        route: RouteContract | None,
+        parent_frame: dict[str, str],
+        parent_base: str | None,
+        path: _Path,
+        element_path: tuple[int, ...],
+        *,
+        generic: bool = False,
+    ) -> ET.Element:
+        raise NotImplementedError  # pragma: no cover - abstract builder
+
+
+class _NativeImporter(_GroupedImporter):
+    """Inverse of :func:`export_native` over grouped Clark-name objects."""
+
+    def build(self, data: Any, element: str | None) -> ImportedTree:
+        name = _selected_root(self.plan, element)
+        route = _plan_route(self.plan, name)
+        assert route is not None
+        if not isinstance(data, dict):
+            raise_conversion(
+                "container-invalid",
+                "",
+                f"the native pyxsd root must be one grouped object, not {type(data).__name__}",
+            )
+        root = self._element(name, data, route, self.root_frame, None, (), ())
+        return self._finish(root)
+
+    def _element(
+        self,
+        name: str,
+        raw: Any,
+        route: RouteContract | None,
+        parent_frame: dict[str, str],
+        parent_base: str | None,
+        path: _Path,
+        element_path: tuple[int, ...],
+        *,
+        generic: bool = False,
+    ) -> ET.Element:
+        layout = _layout(route, generic)
+        element = ET.Element(name)
+        frame = dict(parent_frame)
+        attr_pairs: list[tuple[str, Any, _Path]] = []
+        content: Any = _MISSING
+        entries: list[tuple[str, Any, str, _Path]] = []
+        seen: dict[str, str] = {}
+        if isinstance(raw, dict) and layout == "scalar" and raw.keys() == {"#value"}:
+            content = raw
+        elif isinstance(raw, dict):
+            for key, item in raw.items():
+                if key == _TEXT_KEY:
+                    content = item
+                    continue
+                if key.startswith("@"):
+                    expanded = _expand_native_name(key[1:], (*path, key))
+                    if expanded == "xmlns" or expanded.startswith(_XMLNS):
+                        raise_conversion(
+                            "name-invalid",
+                            json_pointer((*path, key)),
+                            "namespace declarations are not native attribute data",
+                        )
+                    attr_pairs.append((expanded, item, (*path, key)))
+                    continue
+                expanded = _expand_native_name(key, (*path, key))
+                if expanded in seen:
+                    raise_conversion(
+                        "json-duplicate-key",
+                        json_pointer((*path, key)),
+                        f"the members {seen[expanded]!r} and {key!r} denote {expanded!r}",
+                    )
+                seen[expanded] = key
+                entries.append((expanded, item, key, (*path, key)))
+        elif layout in ("scalar", "mixed", "empty"):
+            content = raw
+        else:
+            raise_conversion(
+                "container-invalid",
+                json_pointer(path),
+                f"content for {name!r} requires a grouped object",
+            )
+        if layout == "scalar" and entries and content is _MISSING:
+            raise_conversion(
+                "container-invalid",
+                json_pointer(path),
+                f"simple content for {name!r} cannot carry child elements",
+            )
+        base = self._apply_scalars(
+            element,
+            attr_pairs,
+            None if content is _MISSING else (content, path),
+            route,
+            frame,
+            parent_base,
+            path,
+            element_path,
+            allow_null_text=True,
+            allow_list_attrs=True,
+        )
+        if entries and content is not _MISSING and layout == "mixed":
+            _loss(
+                "mixed-content",
+                path,
+                "native pyxsd groups character data and loses its positions among children",
+                self.fidelity,
+            )
+        self._append_children(element, route, entries, frame, base, element_path, layout, path)
+        self._context(element, base, frame)
+        return element
+
+
+class _ParkerImporter(_GroupedImporter):
+    """Inverse of :func:`export_parker` over root-absorbed local groups."""
+
+    def build(self, data: Any, element: str | None) -> ImportedTree:
+        name = _selected_root(self.plan, element)
+        route = _plan_route(self.plan, name)
+        assert route is not None
+        root = self._element(name, data, route, self.root_frame, None, (), ())
+        return self._finish(root)
+
+    def _resolve_child(self, key: str, route: RouteContract | None, path: _Path) -> str:
+        if key.startswith(("{", "Q{")):
+            return _expand_native_name(key, path)
+        candidates = [
+            name
+            for name in (route.children if route is not None else ())
+            if _local_name(name) == key
+        ]
+        if len(candidates) > 1:
+            _loss(
+                "name-ambiguous",
+                path,
+                f"the local child name {key!r} matches more than one compiled name",
+                self.fidelity,
+            )
+            return key
+        if candidates:
+            return candidates[0]
+        return key
+
+    def _element(
+        self,
+        name: str,
+        raw: Any,
+        route: RouteContract | None,
+        parent_frame: dict[str, str],
+        parent_base: str | None,
+        path: _Path,
+        element_path: tuple[int, ...],
+        *,
+        generic: bool = False,
+    ) -> ET.Element:
+        layout = _layout(route, generic)
+        element = ET.Element(name)
+        frame = dict(parent_frame)
+        content: Any = _MISSING
+        entries: list[tuple[str, Any, str, _Path]] = []
+        seen: dict[str, str] = {}
+        if isinstance(raw, dict):
+            for key, item in raw.items():
+                if key == _TEXT_KEY:
+                    content = item
+                    continue
+                if key.startswith("@"):
+                    raise_conversion(
+                        "name-invalid",
+                        json_pointer((*path, key)),
+                        "Parker cannot carry attributes",
+                    )
+                expanded = self._resolve_child(key, route, (*path, key))
+                if expanded in seen:
+                    raise_conversion(
+                        "json-duplicate-key",
+                        json_pointer((*path, key)),
+                        f"the members {seen[expanded]!r} and {key!r} denote {expanded!r}",
+                    )
+                seen[expanded] = key
+                entries.append((expanded, item, key, (*path, key)))
+        elif layout in ("scalar", "mixed", "empty"):
+            content = raw
+        else:
+            raise_conversion(
+                "container-invalid",
+                json_pointer(path),
+                f"content for {name!r} requires a grouped object",
+            )
+        if layout == "scalar" and entries and content is _MISSING:
+            raise_conversion(
+                "container-invalid",
+                json_pointer(path),
+                f"simple content for {name!r} cannot carry child elements",
+            )
+        base = self._apply_scalars(
+            element,
+            [],
+            None if content is _MISSING else (content, path),
+            route,
+            frame,
+            parent_base,
+            path,
+            element_path,
+            allow_null_text=False,
+        )
+        if entries and content is not _MISSING:
+            _loss(
+                "mixed-content",
+                path,
+                "Parker groups character data and loses its positions among children",
+                self.fidelity,
+            )
+        self._append_children(element, route, entries, frame, base, element_path, layout, path)
+        self._context(element, base, frame)
+        return element
+
+
+class _BadgerfishImporter(_GroupedImporter):
+    """Inverse of :func:`export_badgerfish` over retained lexical roots."""
+
+    def build(self, data: Any, element: str | None) -> ImportedTree:
+        if not isinstance(data, dict):
+            raise_conversion(
+                "container-invalid",
+                "",
+                f"the BadgerFish root must be one object, not {type(data).__name__}",
+            )
+        if len(data) != 1:
+            raise_conversion(
+                "root-ambiguous",
+                "",
+                f"the BadgerFish root object must hold exactly one entry, not {len(data)}",
+            )
+        key, value = next(iter(data.items()))
+        declarations = _badgerfish_declarations(value, (key,))
+        frame = _merge_declarations(self.root_frame, declarations, (key,))
+        name = _resolve_lexical_name(key, frame, (key,), attribute=False, fidelity=self.fidelity)
+        if element is not None:
+            selected = _select_expanded_root(self.plan, element)
+            if selected != name:
+                raise_conversion(
+                    "root-mismatch",
+                    "",
+                    f"the carried root {name!r} does not match the selected root {selected!r}",
+                )
+        route = _plan_route(self.plan, name)
+        if route is None:
+            raise_conversion(
+                "root-unresolved", "", f"root {name!r} is outside the start name class"
+            )
+        root = self._element(name, value, route, frame, None, (key,), ())
+        return self._finish(root)
+
+    def _child_frame(self, raw: Any, frame: dict[str, str], path: _Path) -> dict[str, str]:
+        declarations = _badgerfish_declarations(raw, path)
+        return _merge_declarations(frame, declarations, path)
+
+    def _element(
+        self,
+        name: str,
+        raw: Any,
+        route: RouteContract | None,
+        frame: dict[str, str],
+        parent_base: str | None,
+        path: _Path,
+        element_path: tuple[int, ...],
+        *,
+        generic: bool = False,
+    ) -> ET.Element:
+        layout = _layout(route, generic)
+        element = ET.Element(name)
+        frame = self._child_frame(raw, frame, path)
+        attr_pairs: list[tuple[str, Any, _Path]] = []
+        content: Any = _MISSING
+        entries: list[tuple[str, Any, str, _Path]] = []
+        seen: dict[str, str] = {}
+        if isinstance(raw, dict):
+            for key, item in raw.items():
+                if key == _XMLNS_KEY:
+                    continue
+                if key == _TEXT_KEY:
+                    content = item
+                    continue
+                if key.startswith("@"):
+                    expanded = _resolve_lexical_name(
+                        key[1:],
+                        frame,
+                        (*path, key),
+                        attribute=True,
+                        fidelity=self.fidelity,
+                    )
+                    attr_pairs.append((expanded, item, (*path, key)))
+                    continue
+                child_frame = self._child_frame(item, frame, (*path, key))
+                expanded = _resolve_lexical_name(
+                    key, child_frame, (*path, key), attribute=False, fidelity=self.fidelity
+                )
+                if expanded in seen:
+                    raise_conversion(
+                        "json-duplicate-key",
+                        json_pointer((*path, key)),
+                        f"the members {seen[expanded]!r} and {key!r} denote {expanded!r}",
+                    )
+                seen[expanded] = key
+                entries.append((expanded, item, key, (*path, key)))
+        elif layout in ("scalar", "mixed", "empty"):
+            content = raw
+        else:
+            raise_conversion(
+                "container-invalid",
+                json_pointer(path),
+                f"BadgerFish content for {name!r} requires a grouped object",
+            )
+        if layout == "scalar" and entries and content is _MISSING:
+            raise_conversion(
+                "container-invalid",
+                json_pointer(path),
+                f"simple content for {name!r} cannot carry child elements",
+            )
+        base = self._apply_scalars(
+            element,
+            attr_pairs,
+            None if content is _MISSING else (content, path),
+            route,
+            frame,
+            parent_base,
+            path,
+            element_path,
+            allow_null_text=False,
+        )
+        if entries and content is not _MISSING and layout == "mixed":
+            _loss(
+                "mixed-content",
+                path,
+                "BadgerFish groups character data and loses its positions among children",
+                self.fidelity,
+            )
+        self._append_children(element, route, entries, frame, base, element_path, layout, path)
+        self._context(element, base, frame)
+        return element
+
+
+class _JsonmlImporter(_GroupedImporter):
+    """Inverse of :func:`export_jsonml` over ordered positional arrays."""
+
+    def build(self, data: Any, element: str | None) -> ImportedTree:
+        if not isinstance(data, list):
+            raise_conversion(
+                "container-invalid",
+                "",
+                f"the JsonML root must be an array, not {type(data).__name__}",
+            )
+        if not data:
+            raise_conversion("root-ambiguous", "", "the JsonML root array has no tag")
+        if not isinstance(data[0], str):
+            raise_conversion(
+                "container-invalid", "", "the JsonML root array must begin with a tag string"
+            )
+        _attrs, _declarations, frame = self._header(data, self.root_frame, ())
+        name = _resolve_lexical_name(data[0], frame, (0,), attribute=False, fidelity=self.fidelity)
+        if element is not None:
+            selected = _select_expanded_root(self.plan, element)
+            if selected != name:
+                raise_conversion(
+                    "root-mismatch",
+                    "",
+                    f"the carried root {name!r} does not match the selected root {selected!r}",
+                )
+        route = _plan_route(self.plan, name)
+        if route is None:
+            raise_conversion(
+                "root-unresolved", "", f"root {name!r} is outside the start name class"
+            )
+        root = self._element(name, data, route, frame, None, (), ())
+        return self._finish(root)
+
+    def _header(
+        self, data: list[Any], frame: dict[str, str], path: _Path
+    ) -> tuple[dict[str, Any], dict[str, str], dict[str, str]]:
+        attrs: dict[str, Any] = {}
+        if len(data) > 1 and isinstance(data[1], dict):
+            attrs = data[1]
+        declarations = _jsonml_declarations(attrs, (*path, 1))
+        return (
+            attrs,
+            declarations,
+            _merge_declarations(frame, declarations, (*path, 1), marker="xmlns"),
+        )
+
+    def _attributes(
+        self,
+        attrs: dict[str, Any],
+        frame: dict[str, str],
+        path: _Path,
+    ) -> list[tuple[str, Any, _Path]]:
+        pairs: list[tuple[str, Any, _Path]] = []
+        for key, value in attrs.items():
+            if key == "xmlns" or key.startswith("xmlns:"):
+                continue
+            lexical = key[1:] if key.startswith("@") else key
+            expanded = _resolve_lexical_name(
+                lexical, frame, (*path, key), attribute=True, fidelity=self.fidelity
+            )
+            if expanded == "xmlns" or expanded.startswith(_XMLNS):
+                raise_conversion(
+                    "name-invalid",
+                    json_pointer((*path, key)),
+                    "namespace declarations are not JsonML attribute data",
+                )
+            pairs.append((expanded, value, (*path, key)))
+        return pairs
+
+    def _element(
+        self,
+        name: str,
+        raw: Any,
+        route: RouteContract | None,
+        parent_frame: dict[str, str],
+        parent_base: str | None,
+        path: _Path,
+        element_path: tuple[int, ...],
+        *,
+        generic: bool = False,
+    ) -> ET.Element:
+        assert isinstance(raw, list)
+        attrs, _declarations, frame = self._header(raw, parent_frame, path)
+        layout = _layout(route, generic)
+        element = ET.Element(name)
+        base = self._apply_scalars(
+            element,
+            self._attributes(attrs, frame, (*path, 1)),
+            None,
+            route,
+            frame,
+            parent_base,
+            path,
+            element_path,
+            allow_null_text=False,
+        )
+        start = 2 if len(raw) > 1 and isinstance(raw[1], dict) else 1
+        for index in range(start, len(raw)):
+            item = raw[index]
+            item_path = (*path, index)
+            if isinstance(item, str):
+                _append_text(element, item)
+                continue
+            if isinstance(item, bool):
+                _append_text(element, "true" if item else "false")
+                continue
+            if isinstance(item, (int, float)):
+                _append_text(element, str(item))
+                continue
+            if isinstance(item, list):
+                if layout == "scalar":
+                    contracts = (
+                        _position_scalar_contracts(route.content.model, None)
+                        if route is not None
+                        else ()
+                    )
+                    if not contracts or not all(_list_valued(contract) for contract in contracts):
+                        raise_conversion(
+                            "container-invalid",
+                            json_pointer(item_path),
+                            "a scalar that is not list-valued cannot carry a JSON array",
+                        )
+                    parts = [
+                        _grouped_scalar(
+                            token,
+                            tags={},
+                            allow_null=False,
+                            allow_list=True,
+                            path=(*item_path, token_index),
+                        )
+                        for token_index, token in enumerate(item)
+                    ]
+                    _append_text(element, " ".join(part or "" for part in parts))
+                    continue
+                if not item or not isinstance(item[0], str):
+                    raise_conversion(
+                        "container-invalid",
+                        json_pointer(item_path),
+                        "a JsonML child array must begin with a tag string",
+                    )
+                _attrs, _decls, child_frame = self._header(item, frame, item_path)
+                expanded = _resolve_lexical_name(
+                    item[0], child_frame, (*item_path, 0), attribute=False, fidelity=self.fidelity
+                )
+                child_route, child_generic = self._child_target(route, expanded)
+                element.append(
+                    self._element(
+                        expanded,
+                        item,
+                        child_route,
+                        frame,
+                        base,
+                        item_path,
+                        (*element_path, len(element)),
+                        generic=child_generic,
+                    )
+                )
+                continue
+            raise_conversion(
+                "container-invalid",
+                json_pointer(item_path),
+                "JsonML content items must be strings, numbers, child arrays, or one attribute map",
+            )
+        self._context(element, base, frame)
+        return element
+
+
+def import_native(
+    plan: ProjectionPlan,
+    data: JsonValue,
+    *,
+    element: str | None,
+    root_frame: dict[str, str],
+    fidelity: Fidelity,
+) -> ImportedTree:
+    return _NativeImporter(plan, root_frame, fidelity).build(data, element)
+
+
+def import_parker(
+    plan: ProjectionPlan,
+    data: JsonValue,
+    *,
+    element: str | None,
+    root_frame: dict[str, str],
+    fidelity: Fidelity,
+) -> ImportedTree:
+    return _ParkerImporter(plan, root_frame, fidelity).build(data, element)
+
+
+def import_badgerfish(
+    plan: ProjectionPlan,
+    data: JsonValue,
+    *,
+    element: str | None,
+    root_frame: dict[str, str],
+    fidelity: Fidelity,
+) -> ImportedTree:
+    return _BadgerfishImporter(plan, root_frame, fidelity).build(data, element)
+
+
+def import_jsonml(
+    plan: ProjectionPlan,
+    data: JsonValue,
+    *,
+    element: str | None,
+    root_frame: dict[str, str],
+    fidelity: Fidelity,
+) -> ImportedTree:
+    return _JsonmlImporter(plan, root_frame, fidelity).build(data, element)
