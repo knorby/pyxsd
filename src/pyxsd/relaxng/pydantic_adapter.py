@@ -12,11 +12,13 @@ metadata through ``__relaxng_route__``, ``__relaxng_route_id__``,
 ``__relaxng_element__``, and ``__relaxng_input_order__``.  The model JSON
 Schema repeats the route ID, layout, scope, and unordered-input statement.
 Task 3 and Task 4 use that retained route, not field order or insertion order,
-to reconstruct canonical lexical XML.  Task 1 deliberately keeps scalar
-annotations as ``Any`` placeholders except for scalar presence: a nonempty
-content contract requires a supplied value, while an empty-capable scalar uses
-``None`` for real empty content and never invents an empty lexical string.
-Scalar interpretation and full standalone route validation are later phases.
+to reconstruct canonical lexical XML.  Root, ``$``, and attribute scalar
+annotations come from :mod:`pyxsd.relaxng.pydantic_values`: unique decodable
+contracts use ordinary Python values, while ambiguous or nondecodable
+positions use codec-checked alternatives and scoped datatype context.  A
+nonempty content contract still requires a supplied value, while an
+empty-capable scalar uses ``None`` for real empty content and never invents an
+empty lexical string.  Full standalone route validation is a later phase.
 """
 
 from __future__ import annotations
@@ -28,7 +30,6 @@ from typing import Annotated, Any, cast
 from pyxsd.integrations import IntegrationError
 from pyxsd.integrations.pydantic import (
     BaseModel,
-    BeforeValidator,
     ConfigDict,
     Field,
     RootModel,
@@ -45,6 +46,7 @@ from pyxsd.relaxng.projection import (
     ProjectionPlan,
     RouteContract,
 )
+from pyxsd.relaxng.pydantic_values import ScalarCodec, relaxng_scalar_annotation
 from pyxsd.relaxng.schema import RelaxNGSchema
 
 __all__ = ["RelaxNGModelSet"]
@@ -269,24 +271,33 @@ def _content_may_be_empty(model: ContentContract) -> bool:
     return results[id(model)]
 
 
-def _present_scalar(value: Any) -> Any:
-    """Reject ``None`` for a route whose content cannot be empty."""
-    if value is None:
-        raise ValueError("scalar content is required; None denotes empty content")
-    return value
+def _scalar_annotation(
+    contracts: tuple[ScalarContract, ...],
+    *,
+    codec: ScalarCodec,
+    may_be_empty: bool,
+) -> Any:
+    return relaxng_scalar_annotation(
+        contracts,
+        codec=codec,
+        may_be_empty=may_be_empty,
+    )
 
 
-def _scalar_annotation(*, may_be_empty: bool) -> Any:
-    if may_be_empty:
-        return Any
-    return Annotated[Any, BeforeValidator(_present_scalar)]
-
-
-def _root_scalar_annotation(metadata: dict[str, Any], *, may_be_empty: bool) -> Any:
+def _root_scalar_annotation(
+    metadata: dict[str, Any],
+    contracts: tuple[ScalarContract, ...],
+    *,
+    codec: ScalarCodec,
+    may_be_empty: bool,
+) -> Any:
     field = Field(json_schema_extra=metadata)
-    if may_be_empty:
-        return Annotated[Any, field]
-    return Annotated[Any, field, BeforeValidator(_present_scalar)]
+    annotation = relaxng_scalar_annotation(
+        contracts,
+        codec=codec,
+        may_be_empty=may_be_empty,
+    )
+    return Annotated[annotation, field]
 
 
 def _attach_route(
@@ -384,6 +395,7 @@ class RelaxNGModelSet:
         schema.require_valid()
         self.schema = schema
         self._plan = schema.projection
+        self._codec = ScalarCodec(schema, self._plan, schema._grammar_fingerprint)
         self._names = _model_names(self._plan)
         self._models: dict[str, type[BaseModel]] = {}
 
@@ -527,7 +539,12 @@ class RelaxNGModelSet:
             "minimum": 0 if may_be_empty else 1,
             "maximum": 1,
         }
-        annotation = _root_scalar_annotation(metadata, may_be_empty=may_be_empty)
+        annotation = _root_scalar_annotation(
+            metadata,
+            route.content.scalar_contracts,
+            codec=self._codec,
+            may_be_empty=may_be_empty,
+        )
         root_base: Any = RootModel
         model = create_model(
             self._names[route.route_id],
@@ -577,7 +594,11 @@ class RelaxNGModelSet:
         if route.content.scalar_contracts:
             add(
                 "$",
-                _scalar_annotation(may_be_empty=may_be_empty),
+                _scalar_annotation(
+                    route.content.scalar_contracts,
+                    codec=self._codec,
+                    may_be_empty=may_be_empty,
+                ),
                 cardinality=Cardinality(0 if may_be_empty else 1, 1),
                 contracts=route.content.scalar_contracts,
             )
@@ -585,7 +606,11 @@ class RelaxNGModelSet:
             field = route.attributes[name]
             add(
                 "@" + field.expanded_name,
-                Any,
+                _scalar_annotation(
+                    field.scalar_contracts,
+                    codec=self._codec,
+                    may_be_empty=False,
+                ),
                 cardinality=field.cardinality,
                 contracts=field.scalar_contracts,
             )

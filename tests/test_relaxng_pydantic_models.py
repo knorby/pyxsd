@@ -58,16 +58,17 @@ def model_schema(model) -> dict:
     return schema["$defs"][reference.rsplit("/", 1)[-1]]
 
 
-def test_models_before_instance_xml_and_pure_scalar_placeholder():
+def test_models_before_instance_xml_and_scalar_validation():
     schema = compile_element("<text/>")
     registry = models(schema)
     assert isinstance(registry, RelaxNGModelSet)
     Root = registry.model_for(element="doc")
     assert issubclass(Root, RootModel)
     assert Root is registry.model_for(element="doc")
-    # Task 1 deliberately uses an Any placeholder; it does not claim scalar validation.
+    # A unique text contract returns its lexical string and rejects other shapes.
     assert Root.model_validate("text").root == "text"
-    assert Root.model_validate(42).root == 42
+    with pytest.raises(pydantic.ValidationError):
+        Root.model_validate(42)
     # Text content is nullable: None is real empty content, never an invented "".
     assert Root.model_validate(None).root is None
     route = root_route(schema)
@@ -238,7 +239,7 @@ def test_scalar_presence_tracks_content_emptiness():
     empty = optional.model_validate({"@lang": "en"})
     assert empty.xml_value is None
     assert empty.attr_lang == "en"
-    assert optional.model_validate({"@lang": "en", "$": "7"}).xml_value == "7"
+    assert optional.model_validate({"@lang": "en", "$": "7"}).xml_value == 7
     assert optional.model_validate({"@lang": "en", "$": None}).xml_value is None
     optional_schema = optional.model_json_schema()
     assert "$" not in optional_schema.get("required", [])
@@ -267,7 +268,7 @@ def test_scalar_presence_tracks_content_emptiness():
     assert required.__relaxng_layout__ == "scalar"
     with pytest.raises(pydantic.ValidationError):
         required.model_validate(None)
-    assert required.model_validate("7").root == "7"
+    assert required.model_validate("7").root == 7
     assert required.model_json_schema()["x-pyxsd-cardinality"] == {
         "minimum": 1,
         "maximum": 1,
