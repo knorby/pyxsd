@@ -3322,7 +3322,7 @@ def test_parker_disjoint_finite_wildcard_minimum_is_enforced() -> None:
     assert list(Draft202012Validator(result).iter_errors({"x": 1})), (
         "the finite wildcard key must be present"
     )
-    assert "relaxng-wildcard-cardinality" not in result["x-pyxsd-validation"]["unvalidated"]
+    assert "relaxng-wildcard-cardinality" in result["x-pyxsd-validation"]["unvalidated"]
 
 
 def test_parker_exclusive_finite_wildcard_minimum_merges_into_local() -> None:
@@ -3358,7 +3358,7 @@ def test_parker_exclusive_finite_wildcard_minimum_merges_into_local() -> None:
     assert data == {"x": [1, 2]}
     assert list(Draft202012Validator(result).iter_errors(data)) == []
     assert list(Draft202012Validator(result).iter_errors({"x": 1}))
-    assert "relaxng-wildcard-cardinality" not in result["x-pyxsd-validation"]["unvalidated"]
+    assert "relaxng-wildcard-cardinality" in result["x-pyxsd-validation"]["unvalidated"]
 
 
 def test_parker_multiple_colliding_wildcard_locals_disclose() -> None:
@@ -3545,4 +3545,152 @@ def test_parker_empty_finite_wildcard_class_discloses() -> None:
     result = schema_from_plan(plan, "r", format="parker")
     data = format_export(schema, "<r><a>1</a></r>", "parker", fidelity="best-effort")
     assert list(Draft202012Validator(result).iter_errors(data)) == []
+    assert "relaxng-wildcard-cardinality" in result["x-pyxsd-validation"]["unvalidated"]
+
+
+def _wildcard_plan(
+    schema: RelaxNGSchema,
+    *,
+    name_class: NameClass,
+    cardinality: Cardinality,
+) -> ProjectionPlan:
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    return replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(
+                route,
+                wildcards=(
+                    replace(
+                        route.wildcards[0],
+                        name_class=name_class,
+                        cardinality=cardinality,
+                    ),
+                ),
+            ),
+        },
+    )
+
+
+def test_wildcard_total_maxima_are_disclosed_across_formats() -> None:
+    schema = schema_for(
+        '<zeroOrMore><element><anyName/><data type="integer"/></element></zeroOrMore>'
+    )
+    finite = _wildcard_plan(
+        schema,
+        name_class=NameChoice((Name(None, "b"), Name(None, "c"))),
+        cardinality=Cardinality(0, 1),
+    )
+    opened = _wildcard_plan(schema, name_class=AnyName(), cardinality=Cardinality(0, 1))
+    no_maximum = _wildcard_plan(schema, name_class=AnyName(), cardinality=Cardinality(0, None))
+    single_max_data = {
+        "pyxsd": {"b": 1, "c": 2},
+        "parker": {"b": 1, "c": 2},
+        "badgerfish": {"r": {"b": 1, "c": 2}},
+        "jsonml": ["r", ["b", 1], ["c", 2]],
+    }
+
+    for format, element in (("pyxsd", "r"), ("parker", "r"), ("badgerfish", None)):
+        for plan in (finite, opened):
+            result = schema_from_plan(plan, element, format=format)
+            assert list(Draft202012Validator(result).iter_errors(single_max_data[format])) == [], (
+                f"{format} must not falsely reject the unenforced maximum"
+            )
+            reasons = result["x-pyxsd-validation"]["unvalidated"]
+            assert reasons == sorted(reasons)
+            assert "relaxng-wildcard-cardinality" in reasons
+        unlimited = schema_from_plan(no_maximum, element, format=format)
+        assert "relaxng-wildcard-cardinality" not in unlimited["x-pyxsd-validation"]["unvalidated"]
+
+    jsonml = single_max_data["jsonml"]
+    for plan in (finite, opened):
+        result = schema_from_plan(plan, format="jsonml")
+        assert list(Draft202012Validator(result).iter_errors(jsonml))
+        assert "relaxng-wildcard-cardinality" not in result["x-pyxsd-validation"]["unvalidated"]
+
+
+def test_wildcard_single_name_max_discloses_where_keys_are_not_pinned() -> None:
+    schema = schema_for(
+        '<zeroOrMore><element><anyName/><data type="integer"/></element></zeroOrMore>'
+    )
+    plan = _wildcard_plan(
+        schema,
+        name_class=NameChoice((Name(None, "b"),)),
+        cardinality=Cardinality(0, 1),
+    )
+    single_name_data = {
+        "pyxsd": {"b": 1, "c": 2},
+        "parker": {"b": 1, "c": 2},
+        "badgerfish": {"r": {"b": 1, "c": 2}},
+        "jsonml": ["r", ["b", 1], ["b", 2]],
+    }
+    for format, element in (("pyxsd", "r"), ("parker", "r"), ("badgerfish", None)):
+        result = schema_from_plan(plan, element, format=format)
+        assert list(Draft202012Validator(result).iter_errors(single_name_data[format])) == []
+        assert "relaxng-wildcard-cardinality" in result["x-pyxsd-validation"]["unvalidated"]
+
+    result = schema_from_plan(plan, format="jsonml")
+    assert list(Draft202012Validator(result).iter_errors(single_name_data["jsonml"]))
+    assert "relaxng-wildcard-cardinality" not in result["x-pyxsd-validation"]["unvalidated"]
+
+
+def test_attribute_wildcard_total_maxima_are_disclosed() -> None:
+    schema = schema_for("<zeroOrMore><attribute><anyName/><text/></attribute></zeroOrMore><empty/>")
+    plan = _wildcard_plan(
+        schema,
+        name_class=NameChoice((Name(None, "b"), Name(None, "c"))),
+        cardinality=Cardinality(0, 1),
+    )
+    data = {
+        "pyxsd": {"@b": "1", "@c": "2"},
+        "badgerfish": {"r": {"@b": "1", "@c": "2"}},
+        "jsonml": ["r", {"b": "1", "c": "2"}],
+        "parker": {},
+    }
+    for format, element in (
+        ("pyxsd", "r"),
+        ("parker", "r"),
+        ("badgerfish", None),
+        ("jsonml", None),
+    ):
+        result = schema_from_plan(plan, element, format=format)
+        assert list(Draft202012Validator(result).iter_errors(data[format])) == []
+        reasons = result["x-pyxsd-validation"]["unvalidated"]
+        if format == "parker":
+            assert "relaxng-parker-attribute-loss" in reasons
+            assert "relaxng-wildcard-cardinality" not in reasons
+        else:
+            assert "relaxng-wildcard-cardinality" in reasons
+
+
+def test_jsonml_wildcard_maximum_with_generic_field_is_disclosed() -> None:
+    schema = schema_for(
+        '<element name="a"><data type="integer"/></element>'
+        '<zeroOrMore><element><anyName/><data type="integer"/></element></zeroOrMore>'
+    )
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    plan = replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(
+                route,
+                children={
+                    name: replace(field, child_route_id=None)
+                    for name, field in route.children.items()
+                },
+                wildcards=(
+                    replace(
+                        route.wildcards[0],
+                        name_class=NameChoice((Name(None, "b"),)),
+                        cardinality=Cardinality(0, 1),
+                    ),
+                ),
+            ),
+        },
+    )
+    result = schema_from_plan(plan, format="jsonml")
     assert "relaxng-wildcard-cardinality" in result["x-pyxsd-validation"]["unvalidated"]

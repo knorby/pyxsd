@@ -971,6 +971,8 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
             self.unvalidated.add("relaxng-prefix-scope")
         if format in ("badgerfish", "jsonml") and _plan_has_custom_scalars(plan):
             self.unvalidated.add("relaxng-custom-qname-declarations")
+        if _plan_has_unenforced_wildcard_maximum(plan, format):
+            self.unvalidated.add("relaxng-wildcard-cardinality")
 
     # ------------------------------------------------------------------
     # Entry point, definitions, and root selection
@@ -2399,6 +2401,36 @@ def _plan_has_namespaced_names(plan: ProjectionPlan) -> bool:
             return True
         if any(_name_class_namespaced(wildcard.name_class) for wildcard in route.wildcards):
             return True
+    return False
+
+
+def _plan_has_unenforced_wildcard_maximum(plan: ProjectionPlan, format: str) -> bool:
+    """Whether a finite wildcard maximum cannot be counted across its keys."""
+    for route in plan.routes.values():
+        declared_locals = {
+            _local_name(expanded)
+            for expanded, field in route.children.items()
+            if field.cardinality.maximum != 0
+        }
+        generic_fields = any(
+            field.child_route_id is None
+            for field in route.children.values()
+            if field.cardinality.maximum != 0
+        )
+        for wildcard in route.wildcards:
+            maximum = wildcard.cardinality.maximum
+            if maximum is None or maximum == 0:
+                continue
+            if format != "jsonml":
+                if format == "parker" and wildcard.role == "attribute":
+                    continue
+                return True
+            if wildcard.role == "attribute" or generic_fields:
+                return True
+            if any(
+                _name_class_admits_local(wildcard.name_class, local) for local in declared_locals
+            ):
+                return True
     return False
 
 
