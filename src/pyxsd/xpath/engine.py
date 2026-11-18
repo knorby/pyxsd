@@ -991,11 +991,16 @@ class XPathEngine:
         if compiled.version != self._version:
             raise ValueError("the compiled expression belongs to a different XPath version")
 
+        # A bad handle is a programming error even when this evaluation would
+        # not use it, so it is rejected before the empty-focus short circuit.
+        cache = environment.parser_cache
+        if cache is not None and not isinstance(cache, XPathParserCache):
+            raise TypeError("parser_cache must be an XPathParserCache or None")
+
         resolved = _resolve_focus(focus)
         if resolved.is_empty:
             return ()
 
-        cache = environment.parser_cache
         if cache is None:
             parser = _build_parser(
                 self._version,
@@ -1009,7 +1014,7 @@ class XPathEngine:
             _install_function_overrides(
                 parser, holder, _override_symbols(environment.function_overrides)
             )
-        elif isinstance(cache, XPathParserCache):
+        else:
             bucket = cache.bucket(
                 self._version,
                 compiled.static_context,
@@ -1017,8 +1022,6 @@ class XPathEngine:
                 xslt_functions=self._xslt_functions,
             )
             parser, holder = bucket.parser, bucket.holder
-        else:
-            raise TypeError("parser_cache must be an XPathParserCache or None")
 
         bridge = _ValueBridge(parser, compiled.static_context, environment, version=self._version)
         context = _build_context(compiled.static_context, environment, resolved, bridge)
@@ -2180,8 +2183,16 @@ def _install_function_overrides(
     static configuration.  Installing the override on this parser instance only
     avoids a process-global callback slot, so concurrent transformations stay
     independent.
+
+    Each symbol is installed once, in first-seen order.  Two lexical spellings
+    of one function (a Clark name and a prefixed name) both address the same
+    parser symbol, and installing the second would capture the first override
+    class as its plain base; a plain-callable override then re-enters itself
+    through ``ContextFunctionToken.__call__`` until the stack is exhausted.
+    One class per symbol also keeps the bucket key's ``frozenset`` honest: a
+    single-spelling evaluation shares the bucket a duplicate-spelling one built.
     """
-    for symbol in symbols:
+    for symbol in dict.fromkeys(symbols):
         base = parser.symbol_table.get(symbol)
         if base is None:
             # XPath 2.0 has no generate-id(); a stylesheet that calls it fails

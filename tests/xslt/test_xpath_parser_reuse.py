@@ -76,14 +76,23 @@ def test_repeated_evaluation_reuses_one_parser_and_returns_identical_results() -
     compiled = engine.compile("$n + .", static)
     cache = XPathParserCache()
 
-    cached_results = [
-        engine.evaluate(
-            compiled,
-            ExpressionEnvironment(variables={"n": XdmAtomic.integer(index)}, parser_cache=cache),
-            focus=XdmAtomic.integer(index * 10),
+    cached_results = []
+    parser = None
+    tokenizer = None
+    for index in range(1, 51):
+        cached_results.append(
+            engine.evaluate(
+                compiled,
+                ExpressionEnvironment(
+                    variables={"n": XdmAtomic.integer(index)}, parser_cache=cache
+                ),
+                focus=XdmAtomic.integer(index * 10),
+            )
         )
-        for index in range(1, 51)
-    ]
+        if index == 1:
+            parser = _only_bucket(cache).parser
+            tokenizer = parser.tokenizer
+            assert tokenizer is not None
     uncached_results = [
         engine.evaluate(
             compiled,
@@ -98,14 +107,24 @@ def test_repeated_evaluation_reuses_one_parser_and_returns_identical_results() -
     assert cache.buckets_built == 1
     assert cache.buckets_reused == 49
     assert cache.bucket_count == 1
-    tokenizer = _only_bucket(cache).parser.tokenizer
-    assert tokenizer is not None
-    assert _only_bucket(cache).parser.tokenizer is tokenizer
+    # Reuse neither rebuilds the parser nor re-registers a token: the parser
+    # captured after evaluation 1 is still the bucket's parser after the
+    # fiftieth.  Parser identity is the discriminator — ``Parser.tokenizer`` is
+    # a class-level compiled pattern shared through ``re``'s cache, so it stays
+    # the same object even across a rebuild; asserting it too keeps the brief's
+    # "no ``_register`` on the hot path" claim next to the identity that proves
+    # the parser was never replaced.
+    reused_parser = _only_bucket(cache).parser
+    assert reused_parser is parser
+    assert reused_parser.tokenizer is tokenizer
 
     # The cache-absent arm is today's behaviour, and a non-cache handle is a
-    # programming error rather than a silently ignored resource.
+    # programming error rather than a silently ignored resource — including
+    # when the focus is empty and the evaluation would return immediately.
     with pytest.raises(TypeError, match="parser_cache"):
         engine.evaluate(compiled, ExpressionEnvironment(parser_cache=object()))
+    with pytest.raises(TypeError, match="parser_cache"):
+        engine.evaluate(compiled, ExpressionEnvironment(parser_cache=object()), focus=Focus.empty())
 
 
 def test_parser_cache_separates_every_static_configuration() -> None:
@@ -837,6 +856,91 @@ def test_plain_override_function_item_keeps_its_dynamic_call() -> None:
     )
     assert result == (XdmAtomic.string("plain:a"),)
     assert cache.buckets_built == 1
+
+
+def test_duplicate_override_spellings_install_one_class_per_symbol() -> None:
+    """Two lexical spellings of one symbol must not chain override classes."""
+    engine = XPathEngine()
+    static = XPathStaticContext(functions={"fn:current": 0})
+
+    def current(item: Any, arguments: Any) -> Any:
+        del item, arguments
+        return (XdmAtomic.string("p"),)
+
+    overrides = {f"{{{FN_NS}}}current": current, "fn:current": current}
+    environments = [
+        engine.compile("string(current())", static),
+        engine.compile("string(current#0())", static),
+    ]
+    for compiled in environments:
+        assert engine.evaluate(
+            compiled,
+            ExpressionEnvironment(function_overrides=overrides),
+            focus=Focus.absent(),
+        ) == (XdmAtomic.string("p"),)
+
+
+def test_duplicate_spelling_bucket_is_not_poisoned() -> None:
+    """The key canonicalises both spellings to one bucket; neither poisons it.
+
+    A duplicate-spelling installation used to chain the second override class
+    onto the first, so the bucket a duplicate-spelling evaluation built raised
+    ``RecursionError`` for every later evaluation of that ``frozenset`` key.
+    """
+    engine = XPathEngine()
+    static = XPathStaticContext(functions={"fn:current": 0})
+    compiled = engine.compile("string(current#0())", static)
+
+    def first(item: Any, arguments: Any) -> Any:
+        del item, arguments
+        return (XdmAtomic.string("p"),)
+
+    def second(item: Any, arguments: Any) -> Any:
+        del item, arguments
+        return (XdmAtomic.string("q"),)
+
+    single: dict[str, Any] = {f"{{{FN_NS}}}current": first}
+    duplicate: dict[str, Any] = {f"{{{FN_NS}}}current": first, "fn:current": second}
+
+    for sequence in (
+        ((single, "p"), (duplicate, "q"), (single, "p")),
+        ((duplicate, "q"), (single, "p")),
+    ):
+        cache = XPathParserCache()
+        for overrides, expected in sequence:
+            assert engine.evaluate(
+                compiled,
+                ExpressionEnvironment(function_overrides=overrides, parser_cache=cache),
+                focus=Focus.absent(),
+            ) == (XdmAtomic.string(expected),)
+        assert cache.buckets_built == 1
+
+
+def test_plain_override_does_not_inherit_the_replaced_token_select() -> None:
+    """A base that defines ``select`` without ``evaluate`` cannot bypass the override.
+
+    ``fn:trace`` is such a base.  In argument position the token is read through
+    ``select``: before the override class stopped inheriting the replaced token,
+    that read ran the base's ``select`` and returned the traced value instead of
+    the override's result, while the ``trace#2(…)`` call form already reached the
+    override.
+    """
+    engine = XPathEngine()
+    calls: list[tuple[Any, tuple[Any, ...]]] = []
+
+    def replacement(item: Any, arguments: Any) -> Any:
+        calls.append((item, arguments))
+        return (XdmAtomic.string("t"),)
+
+    overrides = {f"{{{FN_NS}}}trace": replacement}
+    for source in ("string(trace(1, 'l'))", "string(trace#2(1, 'l'))"):
+        compiled = engine.compile(source)
+        assert engine.evaluate(
+            compiled,
+            ExpressionEnvironment(function_overrides=overrides),
+            focus=Focus.absent(),
+        ) == (XdmAtomic.string("t"),), source
+    assert len(calls) == 2
 
 
 def test_context_function_token_without_a_bridge_has_no_evaluation_context() -> None:
