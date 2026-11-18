@@ -2122,13 +2122,15 @@ def _grouped_values(
     child_route: RouteContract | None,
     child_generic: bool,
     path: _Path,
+    *,
+    flat_scalar_arrays: bool = False,
 ) -> tuple[bool, list[Any]]:
     """Interpret one grouped property as scalar content or child occurrences.
 
     Repeated scalar fields use nested arrays for occurrences.  A flat array is
     one list scalar unless the field cannot repeat and every scalar branch is a
-    non-list atomic value; a mixed list/atomic contract leaves a flat array
-    genuinely ambiguous and is rejected instead of silently splitting.
+    non-list atomic value.  BadgerFish additionally uses a flat array for
+    repeated scalar occurrences, so its flat arrays are always occurrences.
     """
     if not isinstance(raw, list):
         return False, [raw]
@@ -2142,6 +2144,10 @@ def _grouped_values(
         value = raw[0] if len(raw) == 1 and isinstance(raw[0], (list, dict)) else raw
         return False, [value]
     if any(isinstance(item, (list, dict)) for item in raw):
+        return True, list(raw)
+    if flat_scalar_arrays and isinstance(field, FieldContract):
+        # BadgerFish wraps a repeatable known field in an outer occurrence
+        # array, so its flat scalar array can only mean repeated children.
         return True, list(raw)
     list_contracts = tuple(contract for contract in contracts if _list_valued(contract))
     if list_contracts:
@@ -2168,6 +2174,9 @@ def _selected_root(plan: ProjectionPlan, element: str | None) -> str:
 
 class _GroupedImporter:
     """Shared state and scalar handling for one conventional import."""
+
+    #: BadgerFish uses flat arrays for repeated scalar occurrences.
+    _flat_scalar_arrays = False
 
     def __init__(
         self, plan: ProjectionPlan, root_frame: dict[str, str], fidelity: Fidelity
@@ -2216,14 +2225,10 @@ class _GroupedImporter:
             allow_list = allow_list_attrs
             if isinstance(raw, list) and contracts:
                 list_contracts = tuple(contract for contract in contracts if _list_valued(contract))
-                if list_contracts and len(list_contracts) != len(contracts):
-                    raise_conversion(
-                        "scalar-type-ambiguous",
-                        json_pointer(error_path),
-                        "a JSON array cannot distinguish a list-valued attribute "
-                        "from another scalar branch",
-                    )
                 if list_contracts:
+                    # Attributes cannot repeat.  An array is therefore one
+                    # list-valued attribute even when another atomic branch
+                    # exists; there is no occurrence boundary to distinguish.
                     allow_list = True
             lexical = _grouped_scalar(
                 raw,
@@ -2274,6 +2279,7 @@ class _GroupedImporter:
                     child_route,
                     child_generic,
                     child_path,
+                    flat_scalar_arrays=self._flat_scalar_arrays,
                 )
                 names.extend([expanded] * len(values))
             _check_grouped_import_order(route, names, path, self.fidelity)
@@ -2304,6 +2310,7 @@ class _GroupedImporter:
                 child_route,
                 child_generic,
                 child_path,
+                flat_scalar_arrays=self._flat_scalar_arrays,
             )
             for index, value in enumerate(values):
                 value_path = (*child_path, index) if repeated else child_path
@@ -2546,6 +2553,8 @@ class _ParkerImporter(_GroupedImporter):
 
 class _BadgerfishImporter(_GroupedImporter):
     """Inverse of :func:`export_badgerfish` over retained lexical roots."""
+
+    _flat_scalar_arrays = True
 
     def build(self, data: Any, element: str | None) -> ImportedTree:
         if not isinstance(data, dict):

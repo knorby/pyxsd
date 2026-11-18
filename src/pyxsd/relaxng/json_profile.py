@@ -49,10 +49,12 @@ from pyxsd.relaxng.patterns import (
     Choice,
     Data,
     DataExcept,
+    Empty,
     Group,
     Interleave,
     List,
     OneOrMore,
+    Ref,
     Value,
 )
 from pyxsd.relaxng.projection import ContentContract, ProjectionPlan, RouteContract
@@ -399,6 +401,109 @@ def _contract_qname(contract: ScalarContract, plan: ProjectionPlan) -> bool:
     return False
 
 
+def _fixed_token_count(pattern: Any, visiting: set[int]) -> int | None:
+    """The static token count of a list fragment, or ``None`` if variable."""
+    key = id(pattern)
+    if key in visiting:
+        return None
+    visiting.add(key)
+    try:
+        if isinstance(pattern, Ref):
+            result = _fixed_token_count(pattern.target, visiting)
+        elif isinstance(pattern, Empty):
+            result = 0
+        elif isinstance(pattern, (Data, DataExcept, Value)):
+            result = 1
+        elif isinstance(pattern, Group):
+            first = _fixed_token_count(pattern.first, visiting)
+            second = _fixed_token_count(pattern.second, visiting)
+            result = None if first is None or second is None else first + second
+        elif isinstance(pattern, Choice):
+            first = _fixed_token_count(pattern.first, visiting)
+            second = _fixed_token_count(pattern.second, visiting)
+            result = first if first is not None and first == second else None
+        elif isinstance(pattern, OneOrMore):
+            item = _fixed_token_count(pattern.pattern, visiting)
+            result = 0 if item == 0 else None
+        else:
+            result = None
+    finally:
+        visiting.remove(key)
+    return result
+
+
+def _token_contracts(
+    pattern: Any,
+    index: int,
+    visiting: set[tuple[int, int]],
+) -> frozenset[ScalarContract] | None:
+    """Contracts possible at one token index, or ``None`` if undecidable."""
+    key = (id(pattern), index)
+    if key in visiting:
+        return None
+    visiting.add(key)
+    try:
+        if isinstance(pattern, Ref):
+            result = _token_contracts(pattern.target, index, visiting)
+        elif isinstance(pattern, Empty):
+            result = frozenset()
+        elif isinstance(pattern, (Data, DataExcept, Value)):
+            result = frozenset({scalar_contract(pattern)}) if index == 0 else frozenset()
+        elif isinstance(pattern, Group):
+            count = _fixed_token_count(pattern.first, set())
+            if count is None:
+                result = None
+            elif index < count:
+                result = _token_contracts(pattern.first, index, visiting)
+            else:
+                result = _token_contracts(pattern.second, index - count, visiting)
+        elif isinstance(pattern, Choice):
+            first = _token_contracts(pattern.first, index, visiting)
+            second = _token_contracts(pattern.second, index, visiting)
+            result = None if first is None or second is None else first | second
+        elif isinstance(pattern, OneOrMore):
+            count = _fixed_token_count(pattern.pattern, set())
+            if count is None:
+                result = None
+            elif count == 0:
+                result = frozenset()
+            else:
+                result = _token_contracts(pattern.pattern, index % count, visiting)
+        else:
+            result = None
+    finally:
+        visiting.remove(key)
+    return result
+
+
+def _token_position_contracts(
+    contracts: tuple[ScalarContract, ...],
+    index: int,
+    plan: ProjectionPlan,
+) -> frozenset[ScalarContract] | None:
+    """Contracts possible at one token of a list-valued JSON array.
+
+    ``None`` means the position cannot be typed statically, so the token stays
+    lexical.  Non-list branches cannot describe a token inside an array and do
+    not veto a resolvable list position.
+    """
+    result: set[ScalarContract] = set()
+    found_list = False
+    for contract in contracts:
+        if contract.kind != "list":
+            continue
+        found_list = True
+        pattern = plan.encoding_patterns[contract.pattern_identity]
+        root = pattern.pattern if isinstance(pattern, List) else pattern
+        token = _token_contracts(root, index, set())
+        if token is None:
+            return None
+        result.update(token)
+    if not found_list:
+        return None
+    return frozenset(result)
+
+
 def _list_valued(contract: ScalarContract) -> bool:
     """Whether this contract's decoded JSON value is an array of tokens."""
     return contract.kind == "list" or (
@@ -496,20 +601,15 @@ def _eqname_or_string(
     state: _ImportState,
     frozen: bool,
     path: _Path,
-    plan: ProjectionPlan,
 ) -> str:
-    """Translate an EQName string when every contract reads a QName.
+    """Translate an EQName string when every contract here is QName/NOTATION.
 
-    A list-of-QName contract receives one token per call.  The default binding
-    is a representable prefix (the lexical local name), and the implicit ``xml``
-    prefix never needs a new assertion.  Only a tag-frozen frame with no
-    representable binding is a conflict.
+    List tokens arrive with their per-position contract sets.  Mixed or
+    undecidable token positions are passed with an empty contract tuple and stay
+    lexical.  The default binding is a representable prefix, and the implicit
+    ``xml`` prefix never needs a new assertion.
     """
-    if (
-        not text.startswith("Q{")
-        or not contracts
-        or not all(_contract_qname(c, plan) for c in contracts)
-    ):
+    if not text.startswith("Q{") or not contracts or not all(_atomic_qname(c) for c in contracts):
         return text
     try:
         expanded = eqname_to_expanded(text)
@@ -560,24 +660,27 @@ def _lexical_scalar(
             "a scalar slot requires a scalar, not an object",
         )
     if isinstance(raw, list):
-        return " ".join(
-            _lexical_scalar(
-                item,
-                contracts=contracts,
-                frame=frame,
-                state=state,
-                tags=tags,
-                frozen=frozen,
-                path=(*path, index),
-                plan=plan,
+        parts: list[str] = []
+        for index, item in enumerate(raw):
+            token_contracts = _token_position_contracts(contracts, index, plan)
+            parts.append(
+                _lexical_scalar(
+                    item,
+                    contracts=() if token_contracts is None else tuple(token_contracts),
+                    frame=frame,
+                    state=state,
+                    tags=tags,
+                    frozen=frozen,
+                    path=(*path, index),
+                    plan=plan,
+                )
             )
-            for index, item in enumerate(raw)
-        )
+        return " ".join(parts)
     if isinstance(raw, bool):
         return "true" if raw else "false"
     if isinstance(raw, (int, float)):
         return str(raw)
-    return _eqname_or_string(raw, contracts, frame, state, frozen, path, plan)
+    return _eqname_or_string(raw, contracts, frame, state, frozen, path)
 
 
 def _append_text(element: ET.Element, text: str) -> None:

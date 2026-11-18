@@ -1691,7 +1691,7 @@ def test_grouped_list_attributes_join_tokens() -> None:
                 assert [value.to_expanded_name() for value in values] == expanded
 
 
-def test_grouped_list_attribute_with_mixed_atomic_choice_is_ambiguous() -> None:
+def test_grouped_list_attribute_with_mixed_atomic_choice_round_trips() -> None:
     content = (
         '<optional><attribute name="z"><choice><list><zeroOrMore>'
         '<data type="integer"/></zeroOrMore></list><data type="integer"/>'
@@ -1700,13 +1700,130 @@ def test_grouped_list_attribute_with_mixed_atomic_choice_is_ambiguous() -> None:
     document = valid(content, '<r z="1 2"/>')
     for format_name in ("badgerfish", "jsonml"):
         data = document.to_data(format=format_name, fidelity="strict")
-        conversion_error(
-            "scalar-type-ambiguous",
-            "/r/@z" if format_name == "badgerfish" else "/1/z",
-            lambda format_name=format_name, data=data: document.schema.from_data(
-                data, format=format_name
-            ),
-        )
+        imported = document.schema.from_data(data, format=format_name)
+        assert not imported.report.has_errors, (format_name, imported.report.issues)
+        assert imported.root.attribute_lexical("z") == "1 2"
+        assert imported.to_data(format=format_name, fidelity="strict") == data
+
+
+def test_heterogeneous_list_qname_string_content_keeps_literal_tokens() -> None:
+    content = '<list><data type="QName"/><data type="string"/></list>'
+    document = valid(content, '<r xmlns:p="urn:e">p:a Q{urn:x}b</r>')
+    data = document.to_data(format="pyxsd-json", fidelity="strict")
+    assert data == {"r": ["Q{urn:e}a", "Q{urn:x}b"]}
+
+    imported = document.schema.from_data(data, format="pyxsd-json")
+    assert not imported.report.has_errors
+    assert imported.root.text_value() == "ns0:a Q{urn:x}b"
+    assert imported.to_data(format="pyxsd-json", fidelity="strict") == data
+
+
+def test_heterogeneous_list_qname_string_content_with_tag_context() -> None:
+    content = (
+        "<optional><attribute name='z'><choice><data type='integer'/>"
+        "<data type='string'/></choice></attribute></optional>"
+        '<list><data type="QName"/><data type="string"/></list>'
+    )
+    document = valid(content, '<r xmlns:p="urn:e" z="1">p:a Q{urn:x}b</r>')
+    data = document.to_data(format="pyxsd-json", fidelity="strict")
+    imported = document.schema.from_data(data, format="pyxsd-json")
+    assert not imported.report.has_errors
+    assert imported.root.text_value() == "p:a Q{urn:x}b"
+    assert imported.to_data(format="pyxsd-json", fidelity="strict") == data
+
+
+def test_heterogeneous_list_qname_string_attribute_keeps_literal_tokens() -> None:
+    content = (
+        '<optional><attribute name="z"><list><data type="QName"/>'
+        '<data type="string"/></list></attribute></optional><empty/>'
+    )
+    document = valid(content, '<r xmlns:p="urn:e" z="p:a Q{urn:x}b"/>')
+    data = document.to_data(format="pyxsd-json", fidelity="strict")
+    assert data == {"r": {"@z": ["Q{urn:e}a", "Q{urn:x}b"]}}
+    imported = document.schema.from_data(data, format="pyxsd-json")
+    assert not imported.report.has_errors
+    assert imported.root.attribute_lexical("z") == "ns0:a Q{urn:x}b"
+    assert imported.to_data(format="pyxsd-json", fidelity="strict") == data
+
+
+def test_list_token_contract_resolution_handles_structure() -> None:
+    from pyxsd.relaxng.contracts import scalar_contract
+    from pyxsd.relaxng.json_profile import (
+        _fixed_token_count,
+        _token_contracts,
+        _token_position_contracts,
+    )
+    from pyxsd.relaxng.patterns import (
+        Choice,
+        Data,
+        Empty,
+        Group,
+        OneOrMore,
+        Ref,
+        Text,
+    )
+
+    schema = schema_for("<data type='integer'/>")
+    plan = schema.projection
+    data = next(pattern for pattern in plan.encoding_patterns.values() if isinstance(pattern, Data))
+    integer = scalar_contract(data)
+
+    assert _fixed_token_count(Empty(), set()) == 0
+    assert _fixed_token_count(Group(data, data), set()) == 2
+    assert _fixed_token_count(Choice(Empty(), OneOrMore(data)), set()) is None
+    assert _fixed_token_count(OneOrMore(Empty()), set()) == 0
+    assert _fixed_token_count(Text(), set()) is None
+
+    ref = Ref()
+    ref.bind(data)
+    assert _fixed_token_count(ref, set()) == 1
+    cycle = Ref()
+    cycle.bind(cycle)
+    assert _fixed_token_count(cycle, set()) is None
+
+    assert _token_contracts(Group(data, data), 1, set()) == frozenset({integer})
+    assert _token_contracts(Group(OneOrMore(data), data), 0, set()) is None
+    assert _token_contracts(Choice(Empty(), OneOrMore(data)), 0, set()) == frozenset({integer})
+    assert _token_contracts(OneOrMore(Empty()), 0, set()) == frozenset()
+    assert _token_contracts(OneOrMore(Group(data, data)), 1, set()) == frozenset({integer})
+    assert _token_contracts(OneOrMore(Choice(Empty(), OneOrMore(data))), 0, set()) is None
+    assert _token_contracts(Text(), 0, set()) is None
+    assert _token_contracts(ref, 0, set()) == frozenset({integer})
+    assert _token_contracts(cycle, 0, set()) is None
+
+    variable = schema_for(
+        '<list><zeroOrMore><data type="QName"/></zeroOrMore><data type="string"/></list>'
+    )
+    variable_plan = variable.projection
+    route = variable_plan.routes[variable_plan.roots[0]]
+    list_contract = route.content.scalar_contracts[0]
+    assert list_contract.kind == "list"
+    assert _token_position_contracts((list_contract,), 0, variable_plan) is None
+
+
+def test_badgerfish_flat_arrays_are_repeated_scalar_occurrences() -> None:
+    content = (
+        "<zeroOrMore><element name='a'><choice><list><zeroOrMore>"
+        '<data type="integer"/></zeroOrMore></list><data type="integer"/>'
+        "</choice></element></zeroOrMore>"
+    )
+    cases = [
+        ("<r><a>1</a></r>", ["1"]),
+        ("<r><a>1</a><a>2</a></r>", ["1", "2"]),
+        ("<r><a>1 2</a></r>", ["1 2"]),
+    ]
+    for xml, expected in cases:
+        document = valid(content, xml)
+        data = document.to_data(format="badgerfish", fidelity="strict")
+        imported = document.schema.from_data(data, format="badgerfish")
+        assert not imported.report.has_errors, imported.report.issues
+        assert [child.text_value() for child in imported.root.children] == expected
+        assert imported.to_data(format="badgerfish", fidelity="strict") == data
+
+    list_data = {"r": {"a": [[1, 2]]}}
+    listed = valid(content, "<r><a>1 2</a></r>").schema.from_data(list_data, format="badgerfish")
+    assert not listed.report.has_errors
+    assert [child.text_value() for child in listed.root.children] == ["1 2"]
 
 
 def test_profile_list_qname_content_and_attribute_round_trip() -> None:
