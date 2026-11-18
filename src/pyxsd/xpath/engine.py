@@ -2,9 +2,17 @@
 
 The engine compiles an expression against an immutable
 :class:`XPathStaticContext` and evaluates it with an invocation-local
-:class:`ExpressionEnvironment`.  Every evaluation receives a fresh parser and
-dynamic ``XPathContext``; compiled expressions never retain mutable token
-state, and no parser class-level symbol table is modified.
+:class:`ExpressionEnvironment`.  Every evaluation receives a fresh dynamic
+``XPathContext``; compiled expressions never retain mutable token state, and no
+parser class-level symbol table is modified.
+
+An environment may carry an :class:`XPathParserCache` to reuse one built parser
+per distinct static configuration for the lifetime of one transformation.  The
+cache supplies every dynamic-context component per evaluation through the
+bucket's bridge holder, so a reused parser answers with the running evaluation's
+focus, variables, override targets, and declared-function implementations.  An
+environment without a cache builds a parser per evaluation, which is the
+standalone behaviour.
 
 XDM nodes are exposed to elementpath through grounded adapter nodes, so path
 expressions, predicates, attributes, comments, text, and processing
@@ -24,7 +32,8 @@ import copy
 import math
 import operator
 from abc import ABCMeta
-from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
+from collections import OrderedDict
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from types import MethodType
@@ -85,7 +94,6 @@ from pyxsd.xpath.environment import (
 )
 from pyxsd.xpath.functions import (
     FUNCTION_SCOPE_ATTRIBUTE,
-    ContextFunction,
     ContextFunctionToken,
     HostFunctionToken,
     atomic_to_elementpath,
@@ -739,6 +747,17 @@ class _ValueBridge:
         name = getattr(token, "name", None)
         if not isinstance(name, str) or not name:
             name = _token_function_name(token)
+        # The token's parser bucket owns every callback the function's body can
+        # reach, so a deferred invocation restores that bucket's dynamic slots.
+        # A function item is commonly called after the evaluation that created
+        # it has ended, and its body must still see that evaluation's bridge,
+        # override targets, and declared-function implementations.
+        holder = getattr(getattr(token, "parser", None), "_pyxsd_bridge_holder", None)
+        state = (
+            None
+            if holder is None
+            else (holder.bridge, holder.xpath_context, holder.overrides, holder.functions)
+        )
 
         def implementation(arguments: Any, environment: Any, closure: Any) -> XdmSequence:
             del environment, closure
@@ -747,9 +766,34 @@ class _ValueBridge:
                 for argument in arguments
             )
             clone = clone_function_token(token)
-            return self.to_xdm_sequence(clone(*converted, context=context))
+            return _with_holder_state(
+                holder, state, lambda: self.to_xdm_sequence(clone(*converted, context=context))
+            )
 
         return XdmFunction(implementation, arity=arity, name=name)
+
+
+def _with_holder_state(
+    holder: _BridgeHolder | None,
+    state: tuple[Any, Any, Any, Any] | None,
+    call: Callable[[], XdmSequence],
+) -> XdmSequence:
+    """Run *call* with a bucket's dynamic slots restored to *state*.
+
+    A deferred function item belongs to the evaluation that created it, not to
+    whichever evaluation happens to invoke it, so its body must see that
+    evaluation's bridge, override targets, and declared-function
+    implementations.  Restoring the previous values afterwards keeps a nested
+    or enclosing evaluation's slots intact.
+    """
+    if holder is None or state is None:
+        return call()
+    previous = (holder.bridge, holder.xpath_context, holder.overrides, holder.functions)
+    holder.bridge, holder.xpath_context, holder.overrides, holder.functions = state
+    try:
+        return call()
+    finally:
+        holder.bridge, holder.xpath_context, holder.overrides, holder.functions = previous
 
 
 # ---------------------------------------------------------------------------
@@ -896,7 +940,6 @@ class XPathEngine:
         parser = _build_parser(
             self._version,
             static_context,
-            functions=None,
             key=self._xslt_functions,
         )
         root_token = parser.parse(source)
@@ -935,7 +978,12 @@ class XPathEngine:
         *,
         focus: Focus | XdmItem | Sequence[Any] | None = None,
     ) -> XdmSequence:
-        """Evaluate one compiled expression with fresh invocation-local state."""
+        """Evaluate one compiled expression with invocation-local dynamic state.
+
+        When ``environment.parser_cache`` is supplied, the parser and its symbol
+        table are reused across evaluations of the same static configuration;
+        every dynamic-context component still comes from *environment*.
+        """
         if not isinstance(compiled, CompiledExpression):
             raise TypeError("compiled must be a CompiledExpression")
         if not isinstance(environment, ExpressionEnvironment):
@@ -947,46 +995,231 @@ class XPathEngine:
         if resolved.is_empty:
             return ()
 
-        parser = _build_parser(
-            self._version,
-            compiled.static_context,
-            functions=environment.functions,
-            key=self._xslt_functions,
-            base_uri=environment.base_uri,
-            decimal_formats=environment.decimal_formats,
-        )
+        cache = environment.parser_cache
+        if cache is None:
+            parser = _build_parser(
+                self._version,
+                compiled.static_context,
+                key=self._xslt_functions,
+                base_uri=environment.base_uri,
+                decimal_formats=environment.decimal_formats,
+            )
+            holder = parser._pyxsd_bridge_holder
+            assert holder is not None
+            _install_function_overrides(
+                parser, holder, _override_symbols(environment.function_overrides)
+            )
+        elif isinstance(cache, XPathParserCache):
+            bucket = cache.bucket(
+                self._version,
+                compiled.static_context,
+                environment,
+                xslt_functions=self._xslt_functions,
+            )
+            parser, holder = bucket.parser, bucket.holder
+        else:
+            raise TypeError("parser_cache must be an XPathParserCache or None")
+
         bridge = _ValueBridge(parser, compiled.static_context, environment, version=self._version)
         context = _build_context(compiled.static_context, environment, resolved, bridge)
         bridge._context = context
-        holder = parser._pyxsd_bridge_holder
-        assert holder is not None
+
+        previous = (holder.bridge, holder.xpath_context, holder.overrides, holder.functions)
         holder.bridge = bridge
-        _install_function_overrides(parser, holder, environment)
-
-        if compiled.continuation_plan is not None:
-            variables = _continuation_variables(environment, bridge)
-            if variables is not None:
-                result = ContinuationMachine(compiled.continuation_plan, variables).run()
-                return bridge.to_xdm_sequence(result)
-
+        holder.xpath_context = None
+        holder.overrides = _overrides_by_symbol(environment.function_overrides)
+        holder.functions = environment.functions
         try:
-            result = parser.parse(compiled.source).evaluate(context)
-            return bridge.to_xdm_sequence(result)
-        except LegacyNodeSetError as exc:
-            from pyxsd.xslt.errors import XsltDynamicError
+            if compiled.continuation_plan is not None:
+                variables = _continuation_variables(environment, bridge)
+                if variables is not None:
+                    result = ContinuationMachine(compiled.continuation_plan, variables).run()
+                    return bridge.to_xdm_sequence(result)
 
-            raise XsltDynamicError(str(exc), code=exc.code) from exc
+            try:
+                result = parser.parse(compiled.source).evaluate(context)
+                return bridge.to_xdm_sequence(result)
+            except LegacyNodeSetError as exc:
+                from pyxsd.xslt.errors import XsltDynamicError
+
+                raise XsltDynamicError(str(exc), code=exc.code) from exc
+        finally:
+            holder.bridge, holder.xpath_context, holder.overrides, holder.functions = previous
 
 
 # ---------------------------------------------------------------------------
 # Parser and context construction
 
 
+def _arity_key(arity: int | tuple[int, int | None]) -> object:
+    """A hashable form of one declared-function arity for the parser key."""
+    return arity if isinstance(arity, int) else tuple(arity)
+
+
+def _decimal_formats_key(
+    decimal_formats: Mapping[str | None, Mapping[str, str]],
+) -> tuple[tuple[str, tuple[tuple[str, str], ...]], ...]:
+    """The statically known decimal formats, in a hashable canonical order."""
+    return tuple(
+        sorted(
+            (str(name), tuple(sorted(attributes.items())))
+            for name, attributes in decimal_formats.items()
+        )
+    )
+
+
+def _override_symbols(function_overrides: Mapping[str, Any]) -> list[str]:
+    """The parser symbols an override table replaces, in table order.
+
+    The rule is the one the registration itself applies: a Clark name and a
+    prefixed lexical name both address the function's local symbol.
+    """
+    return [
+        name.rpartition("}")[2] if name.startswith("{") else name.rpartition(":")[2]
+        for name in function_overrides
+    ]
+
+
+def _overrides_by_symbol(function_overrides: Mapping[str, Any]) -> dict[str, Any]:
+    """The override table keyed by the parser symbol it replaces.
+
+    Later duplicates win, exactly as the registration loop did.
+    """
+    return dict(
+        zip(_override_symbols(function_overrides), function_overrides.values(), strict=True)
+    )
+
+
+def _parser_key(
+    version: str,
+    xslt_functions: bool,
+    static_context: XPathStaticContext,
+    environment: ExpressionEnvironment,
+) -> tuple[object, ...]:
+    """The complete static configuration one built parser bakes in.
+
+    Every component the parser copies at construction is here, so a change to
+    any one of them builds another bucket instead of silently answering with
+    another configuration's namespaces, arities, schema, or decimal formats.
+    """
+    return (
+        version,
+        xslt_functions,
+        tuple(sorted(static_context.namespaces.items())),
+        static_context.default_namespace,
+        tuple(sorted(static_context.variable_types.items())),
+        tuple(sorted((name, _arity_key(a)) for name, a in static_context.functions.items())),
+        id(static_context.schema),
+        static_context.base_uri,
+        environment.base_uri,
+        static_context.default_collation,
+        static_context.xsd_version,
+        static_context.xslt_version,
+        _decimal_formats_key(environment.decimal_formats),
+        frozenset(_override_symbols(environment.function_overrides)),
+    )
+
+
+class XPathParserCache:
+    """One transformation's built elementpath parsers.
+
+    Buckets are keyed by the complete static configuration a parser bakes in.
+    Every dynamic-context component is supplied per evaluation through the
+    bucket's ``_BridgeHolder``.  One cache belongs to one transformation
+    invocation: it is never process-global, never shared between
+    transformations, and never shared between threads.
+    """
+
+    __slots__ = ("_buckets", "_built", "_max_buckets", "_reused")
+
+    def __init__(self, *, max_buckets: int = 256) -> None:
+        if isinstance(max_buckets, bool) or not isinstance(max_buckets, int):
+            raise TypeError("max_buckets must be an integer")
+        if max_buckets < 1:
+            raise ValueError("max_buckets must be at least 1")
+        self._buckets: OrderedDict[tuple[object, ...], _ParserBucket] = OrderedDict()
+        self._max_buckets = max_buckets
+        self._built = 0
+        self._reused = 0
+
+    def bucket(
+        self,
+        version: str,
+        static_context: XPathStaticContext,
+        environment: ExpressionEnvironment,
+        *,
+        xslt_functions: bool,
+    ) -> _ParserBucket:
+        """The parser bucket for this static configuration, built on first use."""
+        key = _parser_key(version, xslt_functions, static_context, environment)
+        cached = self._buckets.get(key)
+        if cached is not None and cached.static_context.schema is static_context.schema:
+            self._buckets.move_to_end(key)
+            self._reused += 1
+            return cached
+
+        parser = _build_parser(
+            version,
+            static_context,
+            key=xslt_functions,
+            base_uri=environment.base_uri,
+            decimal_formats=environment.decimal_formats,
+        )
+        holder = parser._pyxsd_bridge_holder
+        assert holder is not None
+        _install_function_overrides(
+            parser, holder, _override_symbols(environment.function_overrides)
+        )
+        bucket = _ParserBucket(parser, holder, static_context, key)
+        self._buckets[key] = bucket
+        self._buckets.move_to_end(key)
+        self._built += 1
+        while len(self._buckets) > self._max_buckets:
+            self._buckets.popitem(last=False)
+        return bucket
+
+    def clear(self) -> None:
+        """Drop every bucket.  Never needed for correctness; used by tests."""
+        self._buckets.clear()
+
+    @property
+    def buckets_built(self) -> int:
+        """How many parsers this cache has constructed."""
+        return self._built
+
+    @property
+    def buckets_reused(self) -> int:
+        """How many lookups were answered by an existing bucket."""
+        return self._reused
+
+    @property
+    def bucket_count(self) -> int:
+        """How many buckets are currently held."""
+        return len(self._buckets)
+
+
+class _ParserBucket:
+    """One built parser plus the per-evaluation slots its callbacks read."""
+
+    __slots__ = ("holder", "key", "parser", "static_context")
+
+    def __init__(
+        self,
+        parser: Any,
+        holder: _BridgeHolder,
+        static_context: XPathStaticContext,
+        key: tuple[object, ...],
+    ) -> None:
+        self.parser = parser
+        self.holder = holder
+        self.static_context = static_context
+        self.key = key
+
+
 def _build_parser(
     version: str,
     static_context: XPathStaticContext,
     *,
-    functions: Mapping[str, Any] | None,
     key: bool,
     base_uri: str | None = None,
     decimal_formats: Mapping[str | None, Mapping[str, str]] | None = None,
@@ -1032,13 +1265,7 @@ def _build_parser(
         parser.variable_types = dict(static_context.variable_types)
 
     for name in static_context.functions:
-        _register_declared_function(
-            parser,
-            name,
-            static_context,
-            _function_target(static_context, name, functions),
-            holder,
-        )
+        _register_declared_function(parser, name, static_context, holder)
     if key and "key" not in parser.symbol_table:
         _register_key_function(parser, holder)
     return parser
@@ -1333,7 +1560,6 @@ def _register_declared_function(
     parser: Any,
     name: str,
     static_context: XPathStaticContext,
-    target: Any,
     holder: _BridgeHolder,
 ) -> None:
     arity = static_context.functions[name]
@@ -1343,6 +1569,9 @@ def _register_declared_function(
         bridge = holder.bridge
         if bridge is None:
             raise RuntimeError(f"host function {name!r} has no evaluation context")
+        # The implementation is a dynamic-context component: a reused parser
+        # answers with the target of the evaluation that is running.
+        target = _function_target(static_context, name, holder.functions)
         active_target = target
         bind_context = getattr(target, "with_context", None)
         if callable(bind_context):
@@ -1430,10 +1659,8 @@ def _context_target_binder(target: Any, bridge: _ValueBridge) -> Callable[[Any],
 def _function_target(
     static_context: XPathStaticContext,
     name: str,
-    functions: Mapping[str, Any] | None,
+    functions: Mapping[str, Any],
 ) -> Any:
-    if functions is None:
-        return None
     if name in functions:
         return functions[name]
     expanded = static_context.expand_name(name)
@@ -1941,91 +2168,51 @@ def _legacy_number_value(value: Any) -> float:
 def _install_function_overrides(
     parser: Any,
     holder: _BridgeHolder,
-    environment: ExpressionEnvironment,
+    symbols: Iterable[str],
 ) -> None:
     """Replace built-in callbacks with invocation-local XSLT-aware behavior.
 
-    Each override target receives the context item (or ``None``) and a tuple of
-    XDM argument sequences.  Installing the override on this parser instance
-    only avoids a process-global callback slot, so concurrent evaluations of the
-    same compiled expression stay independent.
+    One token class is created per symbol and carries the bucket's *holder*,
+    never a target: an override's implementation is a dynamic-context component
+    (XSLT 3.0 section 5.3.4), so ``ContextFunctionToken`` reads the running
+    evaluation's target from ``holder.overrides``.  Only the symbol set is baked
+    into the parser, which is what lets one parser serve every evaluation of a
+    static configuration.  Installing the override on this parser instance only
+    avoids a process-global callback slot, so concurrent transformations stay
+    independent.
     """
-    for name, target in environment.function_overrides.items():
-        symbol = name.rpartition("}")[2] if name.startswith("{") else name.rpartition(":")[2]
+    for symbol in symbols:
         base = parser.symbol_table.get(symbol)
         if base is None:
             # XPath 2.0 has no generate-id(); a stylesheet that calls it fails
             # at compile time, so there is nothing to override here.
             continue
-        if isinstance(target, ContextFunction):
-
-            def read_sequence(value: Any) -> Any:
-                active_bridge = holder.bridge
-                if active_bridge is None:  # pragma: no cover - installed first
-                    raise RuntimeError("a context function has no evaluation context")
-                return active_bridge.to_xdm_sequence(value)
-
-            def adapt_item(value: Any) -> Any:
-                active_bridge = holder.bridge
-                if active_bridge is None:  # pragma: no cover - installed first
-                    raise RuntimeError("a context function has no evaluation context")
-                return active_bridge.adapt_item(value)
-
-            parser._register(
-                symbol,
-                f"_PyxsdContext_{symbol.replace('-', '_')}",
-                bases=(ContextFunctionToken,),
-                label="function",
-                nargs=base.nargs,
-                sequence_types=base.sequence_types,
-                namespace=base.namespace,
-                direct=staticmethod(target.direct),
-                dynamic=staticmethod(target.dynamic) if target.dynamic is not None else None,
-                sequence_reader=staticmethod(read_sequence),
-                item_converter=staticmethod(adapt_item),
-            )
-            continue
-        class_name = f"_PyxsdOverride_{symbol.replace('-', '_')}"
-
-        def evaluate(
-            self: Any,
-            context: Any = None,
-            _base: Any = base,
-            _target: Any = target,
-        ) -> Any:
-            bridge = holder.bridge
-            if bridge is None:  # pragma: no cover - the bridge is installed first
-                raise RuntimeError("a function override has no evaluation context")
-            active = context if context is not None else self.context
-            arguments: list[Any] = []
-            for index in range(len(self)):
-                token = self._items[index]
-                arguments.append(bridge.to_xdm_sequence(list(token.select(active))))
-            item = None
-            raw_item = getattr(active, "item", None) if active is not None else None
-            if raw_item is not None:
-                item = next(iter(bridge.to_xdm_sequence(raw_item)), None)
-            result = _target(item, tuple(arguments))
-            return bridge.sequence_to_elementpath(as_xdm(result))
-
         parser._register(
             symbol,
-            class_name,
-            bases=(base,),
+            f"_PyxsdOverride_{symbol.replace('-', '_')}",
+            bases=(ContextFunctionToken,),
             label=base.label,
             nargs=base.nargs,
             sequence_types=base.sequence_types,
-            evaluate=evaluate,
+            namespace=getattr(base, "namespace", None),
+            holder=holder,
+            plain_base=base,
         )
 
 
 class _BridgeHolder:
-    """Per-parser bridge used only by callbacks registered on that parser.
+    """Per-evaluation state of the bucket's parser.
 
-    A fresh holder belongs to each parser instance produced for one evaluation.
-    Callbacks close over their holder, so concurrent evaluations never share a
-    bridge or a mutable callback slot.
+    One holder belongs to one bucket.  ``evaluate`` assigns the four fields
+    before the evaluation and restores them afterwards, so a nested evaluation
+    on the same bucket (an ``xsl:evaluate`` inside a predicate, a host callback,
+    pattern matching inside pattern matching) sees its own values and the
+    enclosing evaluation gets its own back.  A bucket's callbacks close over
+    their holder, so concurrent transformations never share a bridge or a
+    mutable callback slot.
     """
+
+    __slots__ = ("bridge", "functions", "overrides", "xpath_context")
 
     def __init__(self) -> None:
         self.bridge: _ValueBridge | None = None
@@ -2034,6 +2221,12 @@ class _BridgeHolder:
         #: a contextual Python extension instead of the focus captured when the
         #: expression environment was built.
         self.xpath_context: Any = None
+        #: The override table of the evaluation that is running, keyed by the
+        #: parser symbol an override replaces.  ``{}`` outside an evaluation.
+        self.overrides: Mapping[str, Any] = {}
+        #: The declared-function implementations of the evaluation that is
+        #: running.  ``{}`` outside an evaluation.
+        self.functions: Mapping[str, Any] = {}
 
 
 def _build_context(

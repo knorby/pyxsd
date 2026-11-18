@@ -267,6 +267,11 @@ class ExpressionEnvironment:
     current_datetime: _datetime.datetime | None = None
     implicit_timezone: Timezone | str | _datetime.tzinfo | _datetime.timedelta | None = None
     base_uri: str | None = None
+    #: A per-transformation parser-reuse handle.  Not a dynamic value: it is a
+    #: resource, like ``key_indexes``.  ``None`` means every evaluation builds
+    #: its own parser (the pre-Stage-2 behaviour).  The XPath engine validates
+    #: and uses it; this module only carries it so it holds no engine import.
+    parser_cache: object | None = None
 
     def __post_init__(self) -> None:
         variables = dict(_freeze_mapping(self.variables, "variables"))

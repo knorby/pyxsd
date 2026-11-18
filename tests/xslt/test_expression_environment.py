@@ -813,7 +813,7 @@ def test_node_adapter_protocol_surface() -> None:
 
     document = _document(b'<root xmlns:p="urn:p" a="1"><item>2</item></root>')
     static = XPathStaticContext()
-    parser = _build_parser("3.1", static, functions=None, key=False)
+    parser = _build_parser("3.1", static, key=False)
     bridge = _ValueBridge(parser, static, ExpressionEnvironment())
     root = bridge.adapt_item(document.root_element)
     item = bridge.adapt_item(document.root_element.children[0])
@@ -848,7 +848,7 @@ def test_value_bridge_round_trips_maps_arrays_and_functions() -> None:
     from pyxsd.xpath.engine import _build_parser, _ValueBridge
 
     static = XPathStaticContext(variable_types={"m": "map(*)", "a": "array(*)"})
-    parser = _build_parser("3.1", static, functions=None, key=False)
+    parser = _build_parser("3.1", static, key=False)
     bridge = _ValueBridge(parser, static, ExpressionEnvironment())
     bridge._context = XPathContext(item="")
 
@@ -876,7 +876,7 @@ def test_value_bridge_function_item_variants() -> None:
     from pyxsd.xpath.engine import _build_parser, _ValueBridge
 
     static = XPathStaticContext()
-    parser = _build_parser("3.1", static, functions=None, key=False)
+    parser = _build_parser("3.1", static, key=False)
     bridge = _ValueBridge(parser, static, ExpressionEnvironment())
     bridge._context = XPathContext(item="")
     named = parser.parse("fn:concat#2").evaluate()
@@ -938,7 +938,7 @@ def test_extension_backed_host_tokens_resolve_the_call_site_focus() -> None:
     )
     static = XPathStaticContext()
     bridge = _ValueBridge(
-        _build_parser("3.1", static, functions=None, key=False),
+        _build_parser("3.1", static, key=False),
         static,
         ExpressionEnvironment(variables={"cur": target, "plain": lambda: "plain"}),
     )
@@ -1037,7 +1037,7 @@ def test_continuation_variable_conversion_and_fallback() -> None:
     from pyxsd.xpath.engine import _build_parser, _continuation_variables, _ValueBridge
 
     static = XPathStaticContext(variable_types={"n": "xs:integer", "f": "function(*)"})
-    parser = _build_parser("3.1", static, functions=None, key=False)
+    parser = _build_parser("3.1", static, key=False)
     bridge = _ValueBridge(parser, static, ExpressionEnvironment())
     document = _document()
     assert _continuation_variables(ExpressionEnvironment(variables={"n": (1, 2)}), bridge) == {
@@ -1059,7 +1059,7 @@ def test_parser_builder_without_key_and_sequence_type_rejection() -> None:
     from pyxsd.xpath.engine import _build_parser
 
     static = XPathStaticContext()
-    parser = _build_parser("3.1", static, functions=None, key=False)
+    parser = _build_parser("3.1", static, key=False)
     assert "key" not in parser.symbol_table
     with pytest.raises(Exception, match="not allowed in XPath expression"):
         XPathEngine().compile("item()")
@@ -1172,7 +1172,7 @@ def test_host_function_token_protocol() -> None:
     from pyxsd.xpath.engine import _build_parser
     from pyxsd.xpath.functions import clone_function_token
 
-    parser = _build_parser("3.1", XPathStaticContext(), functions=None, key=False)
+    parser = _build_parser("3.1", XPathStaticContext(), key=False)
     token = HostFunctionToken(parser, lambda value=1: value, item_converter=lambda item: item)
     assert token.arity == 0
 
@@ -1217,9 +1217,7 @@ def test_clone_function_token_detaches_children_and_variables() -> None:
     from pyxsd.xpath.engine import _build_parser
     from pyxsd.xpath.functions import clone_function_token
 
-    parser = _build_parser(
-        "3.1", XPathStaticContext(variable_types={"n": "xs:integer"}), functions=None, key=False
-    )
+    parser = _build_parser("3.1", XPathStaticContext(variable_types={"n": "xs:integer"}), key=False)
     context = XPathContext(item="", variables={"n": 2})
     function = parser.parse("function($x){$x + $n}").evaluate(context)
     clone = clone_function_token(function)
@@ -1252,7 +1250,7 @@ def test_fresh_bridge_adapt_node_element_without_cache() -> None:
 
     document = _document()
     bridge = _ValueBridge(
-        _build_parser("3.1", XPathStaticContext(), functions=None, key=False),
+        _build_parser("3.1", XPathStaticContext(), key=False),
         XPathStaticContext(),
         ExpressionEnvironment(),
     )
@@ -1266,9 +1264,7 @@ def test_bridge_adapts_map_values_and_function_items() -> None:
     from pyxsd.xpath.engine import _build_parser, _ValueBridge
 
     static = XPathStaticContext()
-    bridge = _ValueBridge(
-        _build_parser("3.1", static, functions=None, key=False), static, ExpressionEnvironment()
-    )
+    bridge = _ValueBridge(_build_parser("3.1", static, key=False), static, ExpressionEnvironment())
     bridge._context = XPathContext(item="")
     function = XdmFunction(lambda arguments, environment, closure: (1,), arity=0)
     adapted = bridge.adapt_item(function)
@@ -1292,7 +1288,7 @@ def test_bridge_handles_anonymous_xsd_datatypes() -> None:
     Anonymous = type("parent|kind", (xsd.String,), {})
     value = Anonymous("x")
     bridge = _ValueBridge(
-        _build_parser("3.1", XPathStaticContext(), functions=None, key=False),
+        _build_parser("3.1", XPathStaticContext(), key=False),
         XPathStaticContext(),
         ExpressionEnvironment(),
     )
@@ -1303,7 +1299,7 @@ def test_bridge_handles_anonymous_xsd_datatypes() -> None:
 def test_function_item_name_falls_back_to_the_token_qname() -> None:
     from pyxsd.xpath.engine import _build_parser, _ValueBridge
 
-    parser = _build_parser("3.1", XPathStaticContext(), functions=None, key=False)
+    parser = _build_parser("3.1", XPathStaticContext(), key=False)
     bridge = _ValueBridge(parser, XPathStaticContext(), ExpressionEnvironment())
     bridge._context = XPathContext(item="")
     token = parser.parse("fn:concat#2").evaluate()
@@ -1338,7 +1334,7 @@ def test_continuation_plan_falls_back_for_node_variable() -> None:
 def test_parser_instance_tokenizer_is_reused() -> None:
     from pyxsd.xpath.engine import _build_parser
 
-    parser = _build_parser("3.1", XPathStaticContext(), functions=None, key=False)
+    parser = _build_parser("3.1", XPathStaticContext(), key=False)
     parser.parse("1")
     tokenizer = parser.tokenizer
     parser.parse("2")
@@ -1356,7 +1352,7 @@ def test_schema_constructor_without_namespace_is_skipped(tmp_path: Path) -> None
         encoding="utf-8",
     )
     pool = SchemaPool.from_imports([schema_path])
-    parser = _build_parser("3.1", XPathStaticContext(schema=pool), functions=None, key=False)
+    parser = _build_parser("3.1", XPathStaticContext(schema=pool), key=False)
     assert "Plain" not in parser.symbol_table
 
 
@@ -1365,7 +1361,7 @@ def test_schema_constructor_registration_is_idempotent(tmp_path: Path) -> None:
 
     pool = _money_schema(tmp_path)
     static = XPathStaticContext(namespaces={"m": MONEY}, schema=pool)
-    parser = _build_parser("3.1", static, functions=None, key=False)
+    parser = _build_parser("3.1", static, key=False)
     constructor = parser.symbol_table["m:Amount"]
     _register_schema_constructors(parser, static)
     assert parser.symbol_table["m:Amount"] is constructor
@@ -1396,7 +1392,7 @@ def test_continuation_variables_sequence_with_nested_function() -> None:
 
     static = XPathStaticContext(variable_types={"f": "function(*)"})
     bridge = _ValueBridge(
-        _build_parser("3.1", static, functions=None, key=False),
+        _build_parser("3.1", static, key=False),
         static,
         ExpressionEnvironment(),
     )
@@ -1423,7 +1419,7 @@ def test_token_tree_clone_handles_non_tokens_and_map_values() -> None:
     from pyxsd.xpath.functions import _clone_token_tree
 
     assert _clone_token_tree(42) == 42
-    parser = _build_parser("3.1", XPathStaticContext(), functions=None, key=False)
+    parser = _build_parser("3.1", XPathStaticContext(), key=False)
     map_token = parser.parse("map{'a': 1}")
     clone = _clone_token_tree(map_token)
     assert clone is not map_token
@@ -1525,9 +1521,9 @@ def test_declared_function_callback_requires_a_bridge() -> None:
 
     parser_static = XPathStaticContext(namespaces={"m": "urn:test"})
     static = XPathStaticContext(namespaces={"m": "urn:test"}, functions={"m:inc": 1})
-    parser = _build_parser("3.1", parser_static, functions=None, key=False)
+    parser = _build_parser("3.1", parser_static, key=False)
     holder = _BridgeHolder()
-    _register_declared_function(parser, "m:inc", static, increment, holder)
+    _register_declared_function(parser, "m:inc", static, holder)
     with pytest.raises(RuntimeError, match="no evaluation context"):
         parser.symbol_table["inc"].callback(1)
 

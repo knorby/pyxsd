@@ -557,7 +557,7 @@ def test_kind_test_tokens_require_a_context(pool: SchemaPool) -> None:
     from pyxsd.xpath.environment import XPathStaticContext
 
     static = XPathStaticContext(namespaces={"s": SUP}, schema=pool)
-    parser = _build_parser("3.1", static, functions=None, key=False)
+    parser = _build_parser("3.1", static, key=False)
     for source in (
         "element()",
         "attribute()",

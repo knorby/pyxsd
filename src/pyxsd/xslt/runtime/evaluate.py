@@ -487,6 +487,7 @@ def execute_dynamic_evaluate(
         current_datetime=invocation.current_datetime,
         implicit_timezone=invocation.implicit_timezone,
         base_uri=base_uri,
+        parser_cache=invocation._xpath_cache,
     )
     result = evaluate_dynamic(
         target,

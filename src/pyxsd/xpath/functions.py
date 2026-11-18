@@ -300,7 +300,7 @@ def _in_function_scope(context: Any) -> bool:
 
 
 class ContextFunctionToken(XPathFunction):
-    """An invocation-local token for one XSLT context-dependent function.
+    """A parser-resident token for one XSLT context-dependent function.
 
     Direct calls use the active XPath context and pass its context item to the
     ``direct`` callback.  Dynamic calls (including ``function-lookup`` results
@@ -308,9 +308,12 @@ class ContextFunctionToken(XPathFunction):
     callback, which makes XSLT's context-clearing rule explicit instead of
     silently reusing the caller's state.
 
-    The token class is registered on one evaluation's parser instance.  Its
-    callbacks close over that evaluation's bridge, so no process-global
-    transformation lookup exists and concurrent evaluations stay independent.
+    The class carries the parser bucket's ``holder`` and never a callback
+    target.  An override's implementation is a dynamic-context component (XSLT
+    3.0 section 5.3.4), so each call reads this evaluation's target from
+    ``holder.overrides`` and its bridge from ``holder.bridge``.  One class per
+    parser symbol therefore serves every evaluation that reuses the parser, and
+    no process-global transformation lookup exists.
     """
 
     symbol = "context-function"
@@ -318,23 +321,32 @@ class ContextFunctionToken(XPathFunction):
     label = "XSLT-defined function"
     namespace: str | None = None
 
-    direct: ContextFunctionCallback | None = None
-    dynamic: ContextFunctionCallback | None = None
-    sequence_reader: Callable[[Any], XdmSequence] | None = None
-    item_converter: Callable[[XdmItem], Any] | None = None
+    #: The bucket holder whose ``overrides`` table names this symbol's target
+    #: for the evaluation that is running.
+    holder: Any = None
+    #: The token class this override replaced.  An override target that is a
+    #: plain callable keeps that class's dynamic-call behavior, exactly as it
+    #: had when the callback was installed per evaluation.
+    plain_base: Any = None
 
     def __init__(self, parser: Any, nargs: int | None = None) -> None:
         super().__init__(parser, nargs)
 
-    def _require_callbacks(
-        self,
-    ) -> tuple[ContextFunctionCallback, Callable[[Any], XdmSequence], Callable[[XdmItem], Any]]:
-        direct = self.direct
-        reader = self.sequence_reader
-        converter = self.item_converter
-        if direct is None or reader is None or converter is None:
+    def _target(self) -> Any:
+        """This evaluation's implementation for ``self.lookup_name``."""
+        holder = self.holder
+        target = None if holder is None else holder.overrides.get(self.lookup_name)
+        if target is None:
             raise RuntimeError(f"the XSLT function {self.lookup_name!r} has no evaluation context")
-        return direct, reader, converter
+        return target
+
+    def _bridge(self) -> Any:
+        """The value bridge of the evaluation that is running."""
+        holder = self.holder
+        bridge = None if holder is None else holder.bridge
+        if bridge is None:
+            raise RuntimeError(f"the XSLT function {self.lookup_name!r} has no evaluation context")
+        return bridge
 
     def _context_item(self, context: Any, reader: Callable[[Any], XdmSequence]) -> XdmItem | None:
         raw = getattr(context, "item", None) if context is not None else None
@@ -362,27 +374,52 @@ class ContextFunctionToken(XPathFunction):
         return sequence_to_elementpath(as_xdm(result), item_converter=converter)
 
     def evaluate(self, context: Any = None) -> Any:
-        direct, reader, converter = self._require_callbacks()
+        target = self._target()
+        bridge = self._bridge()
         active = context if context is not None else self.context
+        if not isinstance(target, ContextFunction):
+            return _plain_override_result(self, target, bridge, active)
+        reader = bridge.to_xdm_sequence
         arguments = self._arguments(active, reader)
-        dynamic = self.dynamic
-        if dynamic is not None and _in_function_scope(active):
-            result = dynamic(None, arguments)
+        if target.dynamic is not None and _in_function_scope(active):
+            result = target.dynamic(None, arguments)
         else:
-            result = direct(self._context_item(active, reader), arguments)
-        return self._finish(result, converter)
+            result = target.direct(self._context_item(active, reader), arguments)
+        return self._finish(result, bridge.adapt_item)
 
     def __call__(self, *args: Any, context: Any = None) -> Any:
-        _, reader, converter = self._require_callbacks()
-        dynamic = self.dynamic
-        if dynamic is None:
-            direct, _, _ = self._require_callbacks()
-            dynamic = direct
-        arguments = tuple(reader(_evaluate_token(value, context)) for value in args)
-        return self._finish(dynamic(None, arguments), converter)
+        target = self._target()
+        if not isinstance(target, ContextFunction):
+            plain_base = self.plain_base
+            if plain_base is None:  # pragma: no cover - installed with the token class
+                raise RuntimeError(
+                    f"the XSLT function {self.lookup_name!r} has no evaluation context"
+                )
+            return plain_base.__call__(self, *args, context=context)
+        bridge = self._bridge()
+        dynamic = target.dynamic or target.direct
+        arguments = tuple(bridge.to_xdm_sequence(_evaluate_token(value, context)) for value in args)
+        return self._finish(dynamic(None, arguments), bridge.adapt_item)
 
     def __repr__(self) -> str:
         return f"<ContextFunctionToken {self.lookup_name}>"
+
+
+def _plain_override_result(token: Any, target: Any, bridge: Any, active: Any) -> Any:
+    """Call a plain-callable override with the token's argument sequences.
+
+    This is the algorithm the override used while its callback was closed over
+    one evaluation: the target and bridge now come from the bucket holder, and
+    nothing else changes.
+    """
+    arguments: list[Any] = []
+    for index in range(len(token)):
+        arguments.append(bridge.to_xdm_sequence(list(token._items[index].select(active))))
+    item = None
+    raw_item = getattr(active, "item", None) if active is not None else None
+    if raw_item is not None:
+        item = next(iter(bridge.to_xdm_sequence(raw_item)), None)
+    return bridge.sequence_to_elementpath(as_xdm(target(item, tuple(arguments))))
 
 
 def clone_function_token(token: Any) -> Any:
