@@ -136,7 +136,10 @@ _FLOAT_TOKEN = r"(?:[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?
 _DECIMAL_TOKEN = r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)"
 _QNAME_TOKEN = r"(?:[^\s:{}#@/$]+:)?[^\s:{}#@/$]+"
 _NO_XML_WS_PATTERN = r"^[^ \t\r\n]+(?![\s\S])"
-_BASE64_TOKEN_PATTERN = r"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)?(?![\s\S])"
+_BASE64_TOKEN_PATTERN = (
+    r"^(?=[A-Za-z0-9+/])(?:[A-Za-z0-9+/]{4})*"
+    r"(?:[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)?(?![\s\S])"
+)
 _B64_CW = rf"[A-Za-z0-9+/]{_XML_WS}"
 _BASE64_PATTERN = (
     rf"^{_XML_WS}(?:{_B64_CW}{_B64_CW}{_B64_CW}{_B64_CW})*"
@@ -144,6 +147,7 @@ _BASE64_PATTERN = (
     rf"{_B64_CW}{_B64_CW}={_XML_WS}={_XML_WS})?$"
 )
 _HEX_TOKEN = r"(?:[0-9A-Fa-f]{2})*"
+_HEX_LIST_TOKEN = r"(?:[0-9A-Fa-f]{2})+"
 
 
 def _scalar_pattern(token: str) -> str:
@@ -165,7 +169,7 @@ _DECIMAL_STRICT_PATTERN = _strict_pattern(_DECIMAL_TOKEN)
 _QNAME_PATTERN = _scalar_pattern(_QNAME_TOKEN)
 _QNAME_STRICT_PATTERN = _strict_pattern(_QNAME_TOKEN)
 _HEX_PATTERN = _scalar_pattern(_HEX_TOKEN)
-_HEX_TOKEN_PATTERN = _strict_pattern(_HEX_TOKEN)
+_HEX_LIST_TOKEN_PATTERN = _strict_pattern(_HEX_LIST_TOKEN)
 _EQNAME_TOKEN = r"(?:Q\{[^ \t\r\n{}]*\})?[^ \t\r\n:{}#@/]+"
 _EQNAME_PATTERN = r"^(?:Q\{[\s\S]*\})?[^\s:{}#@/]+(?![\s\S])"
 _EQNAME_STRICT_PATTERN = _strict_pattern(_EQNAME_TOKEN)
@@ -657,6 +661,11 @@ def _json_list_lexical(
             item,
             context,
         )
+        if not token:
+            raise ValueError(
+                "a RELAX NG list token cannot be empty; an empty array is the "
+                "representation of an empty list"
+            )
         if any(character in " \t\r\n" for character in token):
             raise ValueError(
                 "a RELAX NG list token cannot contain XML whitespace; an XSD "
@@ -1103,7 +1112,7 @@ def _plain_atomic_schema(contract: ScalarContract, *, token: bool = False) -> di
     if name == "hexBinary":
         return {
             "type": "string",
-            "pattern": _HEX_TOKEN_PATTERN if token else _HEX_PATTERN,
+            "pattern": _HEX_LIST_TOKEN_PATTERN if token else _HEX_PATTERN,
             "x-pyxsd-type": name,
             "x-pyxsd-encoding": "hex",
         }

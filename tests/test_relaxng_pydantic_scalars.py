@@ -2194,6 +2194,74 @@ def test_xsd_scalar_schemas_accept_collapsed_xml_whitespace():
     assert record.model_validate_json(json.dumps(record_input)).attr_a == Decimal("01.20")
 
 
+def test_empty_relaxng_list_tokens_are_rejected():
+    for name, valid, library in (
+        ("base64Binary", "YWI=", XSD),
+        ("hexBinary", "01FF", XSD),
+        ("string", "x", ""),
+        ("token", "x", ""),
+    ):
+        _, scalar = model_for(f'<data type="{name}" datatypeLibrary="{library}"/>')
+        scalar_empty = scalar.model_validate_json('""').root
+        assert scalar_empty == (b"" if name.endswith("Binary") else "")
+        Draft202012Validator(scalar.model_json_schema()).validate("")
+
+        _, listed = model_for(
+            f'<list><zeroOrMore><data type="{name}" datatypeLibrary="{library}"/>'
+            "</zeroOrMore></list>"
+        )
+        array_schema = next(
+            branch
+            for branch in listed.model_json_schema()["anyOf"]
+            if branch.get("type") == "array"
+        )
+        assert listed.model_validate_json("[]").root == []
+        Draft202012Validator(array_schema).validate([])
+        assert listed.model_validate_json(json.dumps([valid])).root == [
+            scalar.model_validate(valid).root
+        ]
+        Draft202012Validator(array_schema).validate([valid])
+        with pytest.raises(ValidationError):
+            listed.model_validate_json('[""]')
+        with pytest.raises(JsonSchemaValidationError):
+            Draft202012Validator(array_schema).validate([""])
+
+    _, fixed = model_for(
+        '<list><data type="base64Binary"/><data type="string" datatypeLibrary=""/></list>'
+    )
+    fixed_schema = next(
+        branch for branch in fixed.model_json_schema()["anyOf"] if branch.get("type") == "array"
+    )
+    assert fixed.model_validate_json('["YWI=", "x"]').root == (b"ab", "x")
+    Draft202012Validator(fixed_schema).validate(["YWI=", "x"])
+    for raw in ('["", "x"]', '["YWI=", ""]'):
+        with pytest.raises(ValidationError):
+            fixed.model_validate_json(raw)
+        with pytest.raises(JsonSchemaValidationError):
+            Draft202012Validator(fixed_schema).validate(json.loads(raw))
+
+    _, integers = model_for('<list><zeroOrMore><data type="integer"/></zeroOrMore></list>')
+    integer_schema = next(
+        branch for branch in integers.model_json_schema()["anyOf"] if branch.get("type") == "array"
+    )
+    with pytest.raises(ValidationError):
+        integers.model_validate_json('[""]')
+    with pytest.raises(JsonSchemaValidationError):
+        Draft202012Validator(integer_schema).validate([""])
+    assert integers.model_validate_json("[]").root == []
+    assert integers.model_validate_json('["1"]').root == [1]
+
+    _, nested = model_for('<list><data type="IDREFS"/></list>')
+    nested_schema = next(
+        branch for branch in nested.model_json_schema()["anyOf"] if branch.get("type") == "array"
+    )
+    assert nested.model_validate_json('[["a"]]').root[0].tokens
+    with pytest.raises(ValidationError):
+        nested.model_validate_json('[[""]]')
+    with pytest.raises(JsonSchemaValidationError):
+        Draft202012Validator(nested_schema).validate([[""]])
+
+
 def test_qname_schema_accepts_scalar_xml_whitespace_and_rejects_list_tokens():
     context = {"relaxng": {"namespaces": {"p": "urn:x"}}}
     _, scalar = model_for('<data type="QName"/>')

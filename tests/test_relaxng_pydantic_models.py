@@ -655,6 +655,48 @@ def test_unique_child_wildcard_resolves_a_local_route_without_parent_claims():
     assert "ancestor" in description["x-pyxsd-validation"]
 
 
+def test_route_metadata_is_attached_at_model_level():
+    scalar_schema = compile_element(f'<data type="integer" datatypeLibrary="{XSD}"/>')
+    Scalar = models(scalar_schema).model_for(element="doc")
+    scalar_route = root_route(scalar_schema)
+    scalar_description = Scalar.model_json_schema()
+    assert scalar_description["x-pyxsd-route"] == scalar_route.route_id
+    assert scalar_description["x-pyxsd-scope"] == "start"
+    assert scalar_description["x-pyxsd-element"] == "doc"
+    assert scalar_description["x-pyxsd-layout"] == "scalar"
+    assert scalar_description["x-pyxsd-cardinality"] == {"minimum": 1, "maximum": 1}
+    assert scalar_description["x-pyxsd-input-order"] == "unordered"
+    assert "start route" in scalar_description["x-pyxsd-validation"]
+
+    record_schema = compile_element('<element name="child"><text/></element>')
+    Record = models(record_schema).model_for(element="doc")
+    record_description = Record.model_json_schema()
+    assert record_description["x-pyxsd-route"] == root_route(record_schema).route_id
+    assert record_description["x-pyxsd-scope"] == "start"
+    assert record_description["x-pyxsd-element"] == "doc"
+    assert record_description["x-pyxsd-layout"] == Record.__relaxng_layout__
+    child_definition = next(iter(record_description["$defs"].values()))
+    assert child_definition["x-pyxsd-route"]
+    assert child_definition["x-pyxsd-scope"] == "local"
+    assert child_definition["x-pyxsd-element"] == "child"
+
+    recursive_schema = compile_grammar(
+        """
+        <start><ref name="node"/></start>
+        <define name="node"><element name="node">
+          <optional><attribute name="label"><text/></attribute></optional>
+          <zeroOrMore><ref name="node"/></zeroOrMore>
+        </element></define>
+        """
+    )
+    Node = models(recursive_schema).model_for(element="node")
+    recursive_description = model_schema(Node)
+    assert recursive_description["x-pyxsd-route"] == root_route(recursive_schema).route_id
+    assert recursive_description["x-pyxsd-scope"] == "start"
+    assert recursive_description["x-pyxsd-element"] == "node"
+    assert recursive_description["x-pyxsd-layout"] == Node.__relaxng_layout__
+
+
 def test_recursive_route_uses_finite_forward_references():
     schema = compile_grammar(
         """

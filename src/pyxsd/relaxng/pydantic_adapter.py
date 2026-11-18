@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import re
 from types import GenericAlias
-from typing import Annotated, Any, cast
+from typing import Any, cast
 
 from pyxsd.integrations import IntegrationError
 from pyxsd.integrations.pydantic import (
@@ -290,19 +290,16 @@ def _scalar_annotation(
 
 
 def _root_scalar_annotation(
-    metadata: dict[str, Any],
     contracts: tuple[ScalarContract, ...],
     *,
     codec: ScalarCodec,
     may_be_empty: bool,
 ) -> Any:
-    field = Field(json_schema_extra=metadata)
-    annotation = relaxng_scalar_annotation(
+    return relaxng_scalar_annotation(
         contracts,
         codec=codec,
         may_be_empty=may_be_empty,
     )
-    return Annotated[annotation, field]
 
 
 def _attach_route(
@@ -555,7 +552,6 @@ class RelaxNGModelSet:
             "maximum": 1,
         }
         annotation = _root_scalar_annotation(
-            metadata,
             route.content.scalar_contracts,
             codec=self._codec,
             may_be_empty=may_be_empty,
@@ -564,6 +560,7 @@ class RelaxNGModelSet:
         model = create_model(
             self._names[route.route_id],
             __base__=root_base[annotation],
+            __config__=ConfigDict(json_schema_extra=metadata),
             __module__=__name__,
         )
         _attach_route(model, self._plan, route, layout)
