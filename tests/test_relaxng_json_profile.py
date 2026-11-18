@@ -151,10 +151,10 @@ def test_generic_scalar_with_attributes_and_list_interpretation():
     content = ATTR + '<list><choice><data type="integer"/><data type="string"/></choice></list>'
     document = parse(content, '<r z="3">12</r>')
     tag = scalar_tag(document.root.scalar_value())
-    attribute_tag = scalar_tag(document.root.attribute_value("z"))
-    assert export(document) == {"r": {"@z": attribute_tag, "#content": tag}}
+    assert document.root.attribute_value("z") == 3
+    assert export(document) == {"r": {"@z": 3, "#content": tag}}
     assert export(document, plan=replace_root(document, generic_reason="opaque")) == {
-        "r": {"@z": attribute_tag, "#content": tag}
+        "r": {"@z": 3, "#content": tag}
     }
 
 
@@ -255,7 +255,7 @@ def test_mixed_text_and_tails_stay_lexical_while_scalar_slots_are_typed():
     )
     assert export(document) == {
         "r": [
-            {"@z": scalar_tag(document.root.attribute_value("z"))},
+            {"@z": 3},
             "before",
             {"a": "A"},
             "between",

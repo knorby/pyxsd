@@ -1039,11 +1039,11 @@ def test_wildcard_attribute_values_stay_lexical_strings() -> None:
     assert errors(schema, {"r": {"@bad name": "x", "#content": 3}})
 
 
-def test_attribute_scalar_tags_follow_element_content_contracts() -> None:
+def test_attribute_scalar_ignores_element_content_contracts() -> None:
     schema = schema_for(f'<attribute name="q"><data type="integer"/></attribute>{STRING}')
 
     data = exported(schema, '<r q="3">x</r>')
-    assert "#value" in data["r"]["@q"]
+    assert data["r"]["@q"] == 3
     assert data["r"]["#content"] == "x"
     assert_valid(schema, data)
 
@@ -2409,7 +2409,7 @@ def test_native_child_leaf_and_attribute_object_forms() -> None:
 
     assert leaf == {"c": ""}
     assert attributed["c"]["$"] == ""
-    assert "#value" in attributed["c"]["@z"]
+    assert attributed["c"]["@z"] == 3
 
     record = schema_for(
         '<element name="c"><interleave><element name="a"><data type="integer"/></element>'

@@ -631,7 +631,12 @@ class _Builder:
         pending = [(pattern, False, False)]
         while pending:
             current, ready, excluded = pending.pop()
-            if not excluded:
+            # An attribute event walks the outer element structure to find the
+            # matching Attribute pattern.  Scalars reached on that structural
+            # walk (notably the element-content branch) do not belong to the
+            # attribute's value site.  The matched Attribute's inner text
+            # derivation below records its complete value contracts instead.
+            if not excluded and not (site.kind == "attribute" and event == "attribute"):
                 self.record_schema_scalar(site, current)
             if current in results:
                 continue

@@ -435,7 +435,7 @@ def test_revalidation_retains_namespace_qname_and_base_frames_across_repeated_ed
     assert fresh.is_valid
     assert fresh.root.namespaces == {"q": "urn:two"}
     assert fresh.root.attribute_lexical("kind") == "q:item"
-    assert fresh.root.kind.lexical == "q:item"
+    assert fresh.root.kind.to_expanded_name() == "{urn:two}item"
     assert fresh.root.base_uri == "second/"
     assert fresh.root.children[0].base_uri == "deeper/"
     assert fresh.to_string() == (
@@ -445,7 +445,7 @@ def test_revalidation_retains_namespace_qname_and_base_frames_across_repeated_ed
 
     again = fresh.revalidate()
     assert again.root.namespaces == {"q": "urn:two"}
-    assert again.root.kind.lexical == "q:item"
+    assert again.root.kind.to_expanded_name() == "{urn:two}item"
     assert again.root.base_uri == "second/"
     assert again.root.children[0].base_uri == "deeper/"
     assert again.to_string() == fresh.to_string()
@@ -472,7 +472,7 @@ def test_repeated_lexical_edits_and_sequence_operations_revalidate_exact_state()
     assert fresh.to_string() == (
         '<doc n="2"><other>second</other> between <other>tail</other></doc>'
     )
-    assert fresh.root.n.lexical == "2"
+    assert fresh.root.n == 2
     assert [child.text_value() for child in fresh.root.children] == ["second", "tail"]
     assert [child.tail_value() for child in fresh.root.children] == [" between ", None]
 
@@ -569,8 +569,8 @@ def test_root_callable_transform_boundaries_and_non_tree_results():
     assert original.interpretations_current is True
     with pytest.raises(StaleInterpretationError):
         _ = cloned.root.n
-    assert original.root.n.lexical == "1"
-    assert cloned.revalidate().root.n.lexical == "1"
+    assert original.root.n == 1
+    assert cloned.revalidate().root.n == 1
 
     raw = _typed("<doc/>", schema=schema)
     assert raw.transform(lambda root: 42) == 42

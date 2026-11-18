@@ -182,10 +182,8 @@ def test_profile_alternatives_round_trip_with_complete_candidates() -> None:
     assert rebuilt.candidates == original.candidates
     original_attribute = document.root.attribute_value("z")
     rebuilt_attribute = imported.root.attribute_value("z")
-    assert rebuilt_attribute.lexical == original_attribute.lexical
-    assert tuple(candidate.candidate_id for candidate in rebuilt_attribute.candidates) == tuple(
-        candidate.candidate_id for candidate in original_attribute.candidates
-    )
+    assert original_attribute == rebuilt_attribute == 3
+    assert data["r"]["@z"] == 3
     assert imported.to_data(format="pyxsd-json", fidelity="strict") == data
 
 
@@ -679,7 +677,8 @@ def test_tag_context_round_trips_base_uri_metadata(tmp_path) -> None:
 
 def test_tag_context_shadow_seeded_bindings_per_node() -> None:
     content = (
-        "<optional><attribute name='z'><data type='QName'/></attribute></optional>"
+        "<optional><attribute name='z'><choice><data type='QName'/>"
+        "<data type='string'/></choice></attribute></optional>"
         "<choice><data type='QName'/><data type='string'/></choice>"
     )
     document = valid(content, '<r z="p:a" xmlns:p="urn:e" xmlns:q="urn:z">q:b</r>')
@@ -705,7 +704,8 @@ def test_tag_context_shadow_seeded_bindings_per_node() -> None:
 
 def test_conflicting_tag_contexts_on_one_node_are_rejected() -> None:
     content = (
-        "<optional><attribute name='z'><data type='QName'/></attribute></optional>"
+        "<optional><attribute name='z'><choice><data type='QName'/>"
+        "<data type='string'/></choice></attribute></optional>"
         "<choice><data type='QName'/><data type='string'/></choice>"
     )
     document = valid(content, '<r z="p:a" xmlns:p="urn:e" xmlns:q="urn:z">q:b</r>')
@@ -1277,7 +1277,8 @@ def test_imported_tree_parse_accepts_sparse_contexts() -> None:
 
 def test_badgerfish_and_jsonml_carry_scoped_qname_values() -> None:
     content = (
-        "<optional><attribute name='z'><data type='QName'/></attribute></optional>"
+        "<optional><attribute name='z'><choice><data type='QName'/>"
+        "<data type='string'/></choice></attribute></optional>"
         "<choice><data type='QName'/><data type='string'/></choice>"
     )
     document = valid(content, '<r z="p:a" xmlns:p="urn:e" xmlns:q="urn:z">q:b</r>')

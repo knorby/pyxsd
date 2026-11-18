@@ -397,6 +397,135 @@ def test_ambiguous_attribute_contract_wraps_by_expanded_name():
     assert len(value.candidates) == 2
     assert value.as_type("xsd:integer") == 12
     assert value.as_type("xsd:string") == "12"
+    identifiers = tuple(candidate.candidate_id for candidate in value.candidates)
+    assert identifiers == tuple(sorted(set(identifiers)))
+
+    again = typed(compiled, io.StringIO('<doc xmlns:p="urn:attrs" p:n="12"/>'))
+    repeated = again.root.attribute_value("{urn:attrs}n")
+    assert isinstance(repeated, AlternativeValue)
+    assert tuple(candidate.candidate_id for candidate in repeated.candidates) == identifiers
+    witness_site = attribute_occurrence(again, again.root, "{urn:attrs}n")
+    assert all(
+        witness.occurrence is witness_site
+        for witness in again.binding_evidence.scalar_witnesses_at(witness_site)
+    )
+
+
+def test_unique_attribute_ignores_a_distinct_element_content_contract():
+    compiled = compile_schema(
+        '<element name="doc"><attribute name="z">'
+        f"{data('integer')}</attribute>{data('string')}</element>"
+    )
+    document = typed(compiled, io.StringIO('<doc z="3">x</doc>'))
+
+    value = document.root.attribute_value("z")
+    assert value == 3
+    assert not isinstance(value, AlternativeValue)
+
+    attribute_site = attribute_occurrence(document, document.root, "z")
+    contracts = document.binding_evidence.schema_contracts_at(attribute_site)
+    assert [(contract.kind, contract.type_name) for contract in contracts] == [
+        ("atomic", "integer")
+    ]
+    witnesses = document.binding_evidence.scalar_witnesses_at(attribute_site)
+    assert len(witnesses) == 1
+    assert witnesses[0].occurrence is attribute_site
+
+    # The element text site keeps its own contract and decoded value.
+    assert document.root.scalar_value() == "x"
+    text_contracts = document.binding_evidence.schema_contracts_at(
+        text_occurrence(document, document.root)
+    )
+    assert [(contract.kind, contract.type_name) for contract in text_contracts] == [
+        ("atomic", "string")
+    ]
+
+
+def test_unique_list_and_qname_attributes_ignore_element_content_contracts():
+    listed = typed(
+        compile_schema(
+            '<element name="doc"><attribute name="pair"><list><oneOrMore>'
+            f"{data('integer')}</oneOrMore></list></attribute>{data('string')}"
+            "</element>"
+        ),
+        io.StringIO('<doc pair="1 2">x</doc>'),
+    )
+    pair = listed.root.attribute_value("pair")
+    assert not isinstance(pair, AlternativeValue)
+    assert tuple(pair) == (1, 2)
+    pair_site = attribute_occurrence(listed, listed.root, "pair")
+    pair_contracts = listed.binding_evidence.schema_contracts_at(pair_site)
+    assert [contract.kind for contract in pair_contracts] == ["list"]
+    tokens = [
+        occurrence
+        for occurrence in listed.binding_evidence.occurrences
+        if occurrence.kind == "token"
+    ]
+    assert len(tokens) == 2
+    for token in tokens:
+        assert token.parent is pair_site
+        assert [
+            (contract.kind, contract.type_name)
+            for contract in listed.binding_evidence.schema_contracts_at(token)
+        ] == [("atomic", "integer")]
+
+    qnamed = typed(
+        compile_schema(
+            '<element name="doc"><attribute name="q">'
+            f"{data('QName')}</attribute>{data('string')}</element>"
+        ),
+        io.StringIO('<doc xmlns:p="urn:a" q="p:a">x</doc>'),
+    )
+    qname = qnamed.root.attribute_value("q")
+    assert not isinstance(qname, AlternativeValue)
+    assert qname.to_expanded_name() == "{urn:a}a"
+    qname_contracts = qnamed.binding_evidence.schema_contracts_at(
+        attribute_occurrence(qnamed, qnamed.root, "q")
+    )
+    assert [(contract.kind, contract.type_name) for contract in qname_contracts] == [
+        ("atomic", "QName")
+    ]
+
+
+def test_empty_attribute_value_stays_lexical_and_unasserted():
+    compiled = compile_schema(
+        '<element name="doc"><optional><attribute name="flag"><empty/></attribute>'
+        f"</optional>{data('string')}</element>"
+    )
+    document = typed(compiled, io.StringIO('<doc flag="">x</doc>'))
+
+    site = attribute_occurrence(document, document.root, "flag")
+    assert document.binding_evidence.schema_contracts_at(site) == ()
+    assert document.binding_evidence.scalar_witnesses_at(site) == ()
+    assert document.root.attribute_value("flag") is None
+    assert document.root.attribute_lexical("flag") == ""
+
+
+def test_nested_attribute_value_choices_record_every_value_pattern():
+    compiled = compile_schema(
+        '<element name="doc"><attribute name="a"><choice>'
+        f"{data('integer')}<list><oneOrMore>{data('token')}"
+        f"</oneOrMore></list></choice></attribute>{data('string')}</element>"
+    )
+    document = typed(compiled, io.StringIO('<doc a="1 2">x</doc>'))
+
+    site = attribute_occurrence(document, document.root, "a")
+    contracts = document.binding_evidence.schema_contracts_at(site)
+    assert {(contract.kind, contract.type_name) for contract in contracts} == {
+        ("atomic", "integer"),
+        ("list", "list"),
+    }
+    value = document.root.attribute_value("a")
+    assert isinstance(value, AlternativeValue)
+    assert len(value.candidates) == 1
+    assert document.root.scalar_value() == "x"
+
+    # The wrapper shape stays schema-static: a lexical value that only the
+    # list branch accepts still keeps the complete two-contract wrapper.
+    one = typed(compiled, io.StringIO('<doc a="1">x</doc>'))
+    one_value = one.root.attribute_value("a")
+    assert isinstance(one_value, AlternativeValue)
+    assert len(one_value.candidates) == 2
 
 
 def test_trusted_xmlns_attribute_has_no_typed_attribute_site():

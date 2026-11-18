@@ -550,6 +550,32 @@ def test_empty_text_and_absent_text_remain_distinct_where_the_format_can(
         assert scalar_data != route_data
 
 
+def test_unique_attribute_exports_an_ordinary_scalar_in_native_and_profile() -> None:
+    document = valid(
+        f'<attribute name="z">{INTEGER}</attribute>{STRING}',
+        '<r z="3">x</r>',
+    )
+
+    assert document.root.attribute_value("z") == 3
+    assert not isinstance(document.root.attribute_value("z"), AlternativeValue)
+
+    raw = document.to_dict()
+    assert raw == {"@z": 3, "$": "x"}
+    assert isinstance(raw["@z"], int)
+    assert not isinstance(raw["@z"], AlternativeValue)
+
+    native = document.to_data(format="pyxsd")
+    profile = document.to_data(format="pyxsd-json")
+    assert native == {"@z": 3, "$": "x"}
+    assert profile == {"r": {"@z": 3, "#content": "x"}}
+    assert "#value" not in json.dumps(native)
+    assert "#value" not in json.dumps(profile)
+    assert json.loads(document.to_json(format="pyxsd-json")) == profile
+
+    for format, data in (("pyxsd", native), ("pyxsd-json", profile)):
+        validates(document.schema, data, format=format, fidelity="strict")
+
+
 def test_ordered_formats_preserve_mixed_text_tail_and_child_order() -> None:
     document = valid(MIXED_I, "<r>a<i>x</i>b<i>y</i>c</r>")
 
@@ -1475,11 +1501,27 @@ SCHEMA_CASES = [
     ),
 ]
 
+#: Documented strict-only representation losses in this matrix.  Anything else
+#: is an unexpected failure; every best-effort export must succeed.
+EXPECTED_STRICT_LOSSES: dict[tuple[str, FormatName], frozenset[str]] = {
+    ("optional-attributes", "parker"): frozenset({"attributes-lost"}),
+    **{
+        ("mixed", format): frozenset({"mixed-content"})
+        for format in ("pyxsd", "parker", "badgerfish")
+    },
+    **{
+        ("wildcard", format): frozenset({"order-ambiguous"})
+        for format in ("pyxsd", "parker", "badgerfish")
+    },
+}
 
-@pytest.mark.parametrize(("content", "xml"), [(case[1], case[2]) for case in SCHEMA_CASES])
+
+@pytest.mark.parametrize(
+    ("case", "content", "xml"), [(name, content, xml) for name, content, xml in SCHEMA_CASES]
+)
 @pytest.mark.parametrize("format", FORMATS)
 def test_every_actual_export_validates_under_every_fidelity_and_option(
-    content: str, xml: str, format: FormatName
+    case: str, content: str, xml: str, format: FormatName
 ) -> None:
     document = valid(content, xml)
     option_sets: list[dict[str, Any]] = [{}]
@@ -1490,14 +1532,27 @@ def test_every_actual_export_validates_under_every_fidelity_and_option(
             {"typed": False, "always_list": True},
         ]
 
+    expected_loss = EXPECTED_STRICT_LOSSES.get((case, format), frozenset())
+    successes = 0
     for fidelity in ("strict", "best-effort"):
         for options in option_sets:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", PyXSDWarning)
-                try:
-                    data = document.to_data(format=format, fidelity=fidelity, **options)  # type: ignore[arg-type]
-                except PyXSDError:
-                    continue
+            if fidelity == "strict" and expected_loss:
+                with pytest.raises(PyXSDError) as caught:
+                    document.to_data(format=format, fidelity=fidelity, **options)  # type: ignore[arg-type]
+                code = str(caught.value).split(" at ", 1)[0]
+                assert code in expected_loss, (case, format, options, caught.value)
+                continue
+
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", PyXSDWarning)
+                    data = document.to_data(  # type: ignore[arg-type]
+                        format=format, fidelity=fidelity, **options
+                    )
+            except PyXSDError as error:
+                pytest.fail(
+                    f"unexpected {fidelity} export failure for {case}/{format}/{options}: {error}"
+                )
             validates(
                 document.schema,
                 data,
@@ -1505,6 +1560,10 @@ def test_every_actual_export_validates_under_every_fidelity_and_option(
                 fidelity=fidelity,
                 **options,
             )
+            successes += 1
+
+    expected_successes = len(option_sets) * (1 if expected_loss else 2)
+    assert successes == expected_successes, (case, format, successes)
 
 
 def test_negative_shapes_fail_for_every_format() -> None:
@@ -1563,19 +1622,9 @@ def test_negative_shapes_fail_for_every_format() -> None:
             rejects(schema, data, format=format)
 
 
-def test_negative_ordered_envelopes_and_tag_positions_fail() -> None:
+def test_tag_positions_and_jsonml_attribute_placement_fail() -> None:
     record = schema_for(f"<interleave>{A}{B}</interleave>")
-    for format in ("jsonml", "pyxsd-json"):
-        rejects(
-            record,
-            ["r", ["a", 1], {"b": "x"}] if format == "jsonml" else {"r": {"a": 1}},
-            format=format,
-        )
-
-    sequence = schema_for(f"{A}{B}")
-    for format in ("pyxsd-json", "jsonml"):
-        reasons = sequence.json_schema(format=format)["x-pyxsd-validation"]["unvalidated"]
-        assert "relaxng-particle-order" in reasons, format
+    rejects(record, ["r", ["a", 1], {"b": "x"}], format="jsonml")
 
     content = '<element name="c"><element name="x"><data type="integer"/></element></element>'
     structured = schema_for(content)
@@ -1592,6 +1641,13 @@ def test_negative_ordered_envelopes_and_tag_positions_fail() -> None:
     rejects(structured, {"r": [{"c": [{"#value": tag}]}]}, format="pyxsd-json")
     rejects(structured, {"r": {"c": {"#value": tag}}}, format="badgerfish")
     rejects(structured, ["r", ["c", ["#value", tag]]], format="jsonml")
+
+
+def test_sequence_particle_order_is_a_disclosed_limitation() -> None:
+    sequence = schema_for(f"{A}{B}")
+    for format in ("pyxsd-json", "jsonml"):
+        reasons = sequence.json_schema(format=format)["x-pyxsd-validation"]["unvalidated"]
+        assert "relaxng-particle-order" in reasons, format
 
 
 def test_schema_envelope_metadata_and_disclosures_are_complete() -> None:
