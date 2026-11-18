@@ -147,8 +147,10 @@ def run_cases(
     """Execute every applicable case and return one explicit outcome each.
 
     *assertion_schema* resolves a case's declared schema pool for the
-    schema-aware assertion route.  It is called at most once per case, and
-    only when a catalog assertion actually contains a schema kind test.
+    schema-aware assertion route.  It is called once per schema-kind assertion
+    evaluated — a case may contain several, and a nested or repeated assertion
+    resolves the pool again — and never for a case whose assertions carry no
+    schema kind test.
     """
     results: list[CaseResult] = []
     for case in cases:

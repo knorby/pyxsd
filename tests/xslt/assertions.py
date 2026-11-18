@@ -561,6 +561,12 @@ def _result_context_item(items: tuple[Any, ...]) -> Any:
     valid result.  The engine's tree builder supplies the document node and
     keeps the raw items' type annotations; re-validating that tree at the
     delivery boundary is Task 1k and is not the assertion layer's concern.
+
+    This always sequence-normalizes: the single item is wrapped in a final
+    result tree, whatever delivery format produced it.  Raw delivery
+    (``<xsl:output tree="no"/>``, where the reference's ``$result`` is the
+    raw pre-tree sequence) is not distinguished yet; it is a queued follow-up
+    in task 1j's report and needs its own measured brief.
     """
     if not items:
         return _empty_document()
@@ -585,10 +591,17 @@ def _evaluate_schema_aware(
     which stays an explicit gap.  The pool is the case's in-scope schema
     components.  Failures are not caught here: the caller's ``try`` maps them
     through ``_translate_evaluation_error``.
+
+    ``$result`` and the context item are the same delivered principal
+    (``runner/assert.xsl:180-195`` binds both to ``$result``), so
+    ``$result instance of document-node(schema-element(...))`` answers what
+    ``(/) instance of ...`` answers.  An empty result keeps ``$result`` empty
+    while focusing an empty document node, exactly as the reference does.
     """
     if len(items) > 1:
         raise AssertionGap("an XPath assertion context is absent for a multi-item result")
-    focus = Focus(item=_result_context_item(items))
+    context_item = _result_context_item(items)
+    focus = Focus(item=context_item)
     static = XPathStaticContext(
         namespaces=_namespace_map(declarations),
         schema=pool,
@@ -596,9 +609,10 @@ def _evaluate_schema_aware(
     )
     engine = XPathEngine(ASSERTION_XPATH_VERSION)
     compiled = engine.compile(expression, static)
+    variables = {"result": (context_item,) if items else ()}
     values = engine.evaluate(
         compiled,
-        ExpressionEnvironment(variables={"result": items}),
+        ExpressionEnvironment(variables=variables),
         focus=focus,
     )
     if len(values) == 1:

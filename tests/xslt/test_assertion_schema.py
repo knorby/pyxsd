@@ -38,6 +38,7 @@ from pyxsd.xdm.document import parse_typed_document
 from pyxsd.xdm.nodes import NodeKind, XdmDocument
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xslt.results import ResultEntry
+from pyxsd.xslt.runtime.builder import ResultBuilder
 
 INVOICE = "urn:example:invoice"
 
@@ -127,6 +128,28 @@ def test_a_schema_element_assertion_without_a_pool_stays_a_gap(
     assert "XPST0008" in absent.message
 
 
+def test_a_missing_declaration_in_a_present_pool_is_a_gap(
+    invoice_pool: SchemaPool,
+) -> None:
+    # The pool exists but does not declare the named element.  That is the
+    # static XPST0008 the engine raises, not a silent `false`: the family stays
+    # an explicit adapter gap.
+    document = _typed_document(invoice_pool)
+
+    result = assert_case(
+        _case("<assert>(/) instance of document-node(schema-element(inv:Missing))</assert>"),
+        ResultSnapshot(result_items=(document,)),
+        schema=lambda: invoice_pool,
+    )
+
+    assert result.outcome is Outcome.ADAPTER_GAP
+    assert "[err:XPST0008]" in result.message
+    assert (
+        "no schema-element declaration 'inv:Missing' is in the in-scope schema definitions"
+        in result.message
+    )
+
+
 def test_the_schema_aware_context_item_rule(invoice_pool: SchemaPool) -> None:
     document = _typed_document(invoice_pool)
 
@@ -161,8 +184,38 @@ def test_the_engine_arm_returns_one_value_or_a_sequence(invoice_pool: SchemaPool
     assert _evaluate_schema_aware("count(.)", (), invoice_pool, ()) == 1
     assert _evaluate_schema_aware("'a'", (), invoice_pool, ()) == "a"
     assert _evaluate_schema_aware("(1, 2)", (), invoice_pool, ()) == (1, 2)
+    # The reference binds $result to the empty sequence for an empty result
+    # while the focus is $empty-doc; only the focus is substituted.
+    assert bool(_evaluate_schema_aware("empty($result)", (), invoice_pool, ()))
     with pytest.raises(AssertionGap, match="multi-item"):
         _evaluate_schema_aware("true()", (), invoice_pool, (1, 2))
+
+
+def test_the_result_variable_is_the_context_item(invoice_pool: SchemaPool) -> None:
+    # Document delivery hands the snapshot a parentless element: the content
+    # of the final result tree, not a tree of its own.  The context item is
+    # then that tree's document, and $result must name the same node — the
+    # reference binds both to $result, so the two kind tests agree.
+    typed = _typed_document(invoice_pool)
+    delivered = ResultBuilder.document().clone(typed.root_element)
+    assert delivered.kind is NodeKind.ELEMENT
+    assert delivered.parent is None
+    assert delivered.annotation.type_name == f"{{{INVOICE}}}InvoiceType"
+
+    snapshot = ResultSnapshot(result_items=(delivered,))
+    via_variable = assert_case(
+        _case("<assert>$result instance of document-node(schema-element(inv:Invoice))</assert>"),
+        snapshot,
+        schema=lambda: invoice_pool,
+    )
+    via_context = assert_case(
+        _case("<assert>(/) instance of document-node(schema-element(inv:Invoice))</assert>"),
+        snapshot,
+        schema=lambda: invoice_pool,
+    )
+
+    assert via_variable.outcome is Outcome.PASS
+    assert via_context.outcome is Outcome.PASS
 
 
 def test_only_schema_kind_tests_take_the_engine_route() -> None:
