@@ -176,6 +176,55 @@ def test_nondecodable_text_and_original_list_separators_are_not_decoded(monkeypa
     verify_tag_claims([parse_scalar_tag(tag, POINTER)], document)
 
 
+@pytest.mark.parametrize("format", ["pyxsd", "pyxsd-json"])
+@pytest.mark.parametrize(
+    ("pattern", "candidate_count"),
+    [("<text/>", 1), ('<choice><text/><data type="string"/></choice>', 2)],
+)
+def test_empty_lexical_alternatives_round_trip_and_verify(format, pattern, candidate_count):
+    document = parse(f'<attribute name="a">{pattern}</attribute>', '<r a=""/>')
+    assert document.is_valid
+    value = document.root.attribute_value("a")
+    assert isinstance(value, relaxng.AlternativeValue)
+    assert value.lexical == ""
+    assert len(value.candidates) == candidate_count
+    tag = scalar_to_relaxng_json(value, format=format)
+    assert tag["#value"]["lexical"] == ""
+    assert tag["#value"]["candidates"] == sorted(item.candidate_id for item in value.candidates)
+    assert all(tag["#value"]["candidates"])
+    claim = parse_scalar_tag(json.loads(json.dumps(tag)), "/@a")
+    assert claim.lexical == ""
+    verify_tag_claims([claim], document)
+    verify_tag_claims([replace(claim, location=ScalarTagLocation((), attribute="a"))], document)
+
+
+@pytest.mark.parametrize("format", ["pyxsd", "pyxsd-json"])
+def test_empty_permitted_whole_list_and_interpretation_round_trip_and_verify(format):
+    document = parse(
+        f'<attribute name="a"><list><zeroOrMore>{CHOICE}</zeroOrMore></list></attribute>',
+        '<r a=""/>',
+    )
+    assert document.is_valid
+    value = document.root.attribute_value("a")
+    assert isinstance(value, relaxng.AlternativeValue)
+    assert value.lexical == ""
+    assert len(value.candidates) == len(value.interpretations) == 1
+    interpretation = value.interpretations[0]
+    assert interpretation.lexical == ""
+    assert interpretation.token_spans == interpretation.token_candidates == ()
+    assert interpretation.candidate_id
+    for scalar in (value, interpretation):
+        tag = scalar_tag(scalar)
+        assert scalar_to_relaxng_json(scalar, format=format) == tag
+        assert tag["#value"]["lexical"] == ""
+        assert tag["#value"]["candidates"] == [interpretation.candidate_id]
+        claim = parse_scalar_tag(json.loads(json.dumps(tag)), "/@a")
+        assert claim.lexical == ""
+        assert claim.candidates == (interpretation.candidate_id,)
+        verify_tag_claims([claim], document)
+        verify_tag_claims([replace(claim, location=ScalarTagLocation((), attribute="a"))], document)
+
+
 def test_context_default_empty_and_implicit_xml_are_preserved_without_leaking():
     value = parse().root.scalar_value()
     for namespaces in ({}, {"": ""}, {"": "urn:default", "p": "urn:p", "xml": XML_NS}):
@@ -219,11 +268,17 @@ def test_version_is_exact_integer_one(version):
 
 
 @pytest.mark.parametrize("key", ["grammar", "lexical"])
-@pytest.mark.parametrize("bad", [None, 12, "", [], True])
-def test_grammar_and_lexical_must_be_nonempty_strings(key, bad):
+@pytest.mark.parametrize("bad", [None, 12, [], True])
+def test_grammar_and_lexical_must_be_strings(key, bad):
     tag = wire()
     tag["#value"][key] = bad
     assert_conversion(f"scalar-tag-{key}", lambda: parse_scalar_tag(tag, POINTER))
+
+
+def test_grammar_must_still_be_nonempty():
+    tag = wire()
+    tag["#value"]["grammar"] = ""
+    assert_conversion("scalar-tag-grammar", lambda: parse_scalar_tag(tag, POINTER))
 
 
 @pytest.mark.parametrize(

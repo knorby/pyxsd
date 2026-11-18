@@ -111,11 +111,12 @@ class ScalarTagClaim:
     location: ScalarTagLocation | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        for name, value in (("grammar", self.grammar), ("lexical", self.lexical)):
-            if not isinstance(value, str) or not value:
-                raise_conversion(
-                    f"scalar-tag-{name}", self.pointer, f"{name} must be a nonempty string"
-                )
+        if not isinstance(self.grammar, str) or not self.grammar:
+            raise_conversion(
+                "scalar-tag-grammar", self.pointer, "grammar must be a nonempty string"
+            )
+        if not isinstance(self.lexical, str):
+            raise_conversion("scalar-tag-lexical", self.pointer, "lexical must be a string")
         if not isinstance(self.context, DatatypeContext):
             raise_conversion("scalar-tag-context", self.pointer, "expected a DatatypeContext")
         context = _context_from_json(_context_json(self.context, self.pointer), self.pointer)
@@ -173,7 +174,7 @@ def scalar_to_relaxng_json(value: Any, *, format: str, typed: bool = True) -> Js
 
 
 def parse_scalar_tag(value: object, pointer: str) -> ScalarTagClaim:
-    """Parse structure only; the supplied pointer does not imply a tree address."""
+    """Parse structure, including empty lexical text, without inferring a tree address."""
     if not isinstance(value, dict) or value.keys() != {"#value"}:
         raise_conversion("scalar-tag-invalid", pointer, "expected exactly one #value member")
     body = value["#value"]
