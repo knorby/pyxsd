@@ -272,6 +272,11 @@ class ExpressionEnvironment:
     #: its own parser (the pre-Stage-2 behaviour).  The XPath engine validates
     #: and uses it; this module only carries it so it holds no engine import.
     parser_cache: object | None = None
+    #: A per-transformation adapter-reuse handle.  Not a dynamic value: a
+    #: resource, like ``key_indexes``.  ``None`` means every evaluation builds
+    #: its own adapter tree (the pre-Stage-3 behaviour).  ``object`` for the
+    #: same reason as ``parser_cache``: this module must not import the engine.
+    adapter_registry: object | None = None
 
     def __post_init__(self) -> None:
         variables = dict(_freeze_mapping(self.variables, "variables"))

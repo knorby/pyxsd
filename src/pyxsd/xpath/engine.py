@@ -20,6 +20,25 @@ instructions keep Task 8 identity and Task 7 typed values.  Results are
 converted back to XDM sequences, maps, arrays, and function items rather than
 collapsing into Python lists or strings.
 
+An environment may also carry an :class:`_XdmAdapterRegistry` to reuse one
+adapter tree per document for the lifetime of one transformation.  A document
+is registered only when its document order is finalized (``document_order ==
+0``), so a builder tree that may still grow is never registered and is adapted
+afresh for each evaluation, as is every detached temporary tree.  Registered
+trees keep one adapter object per XDM node for the whole transformation, which
+is what makes node identity, document order, and union deduplication agree
+across evaluations.  A node handed to an evaluation that its own document does
+not contain — a descendant of a temporary tree — is adapted from its root so
+its ancestors and siblings exist for that evaluation.  An XSLT 1.0 result tree
+fragment never reaches this layer as a node (it is a legacy fragment wrapper),
+so a 1.0 transformation reuses adapter trees only for parsed and resource
+documents.
+
+If a future builder path appends to a document after its document order is
+finalized, the fix is a structural revision counter on ``XdmDocument`` that the
+admission rule compares, not a cache flush: adapters of a registered tree are
+immutable and are never dropped while the transformation lives.
+
 Expressions that Task 5's continuation compiler can lower are evaluated by
 ``ContinuationMachine`` with an explicit heap continuation stack.  Unsupported
 constructs use the full elementpath evaluator, which is the documented
@@ -258,11 +277,10 @@ class _NodeAdapterMixin:
 
 
 class _XdmDocumentAdapter(DocumentNode, _NodeAdapterMixin):
-    __slots__ = ("_factory", "_xdm")
+    __slots__ = ("_xdm",)
 
-    def __init__(self, xdm: XdmDocument, factory: _ValueBridge) -> None:
+    def __init__(self, xdm: XdmDocument, factory: Any) -> None:
         self._xdm = xdm
-        self._factory = factory
         self.name = None
         self.value = xdm
         self.parent = None
@@ -289,7 +307,7 @@ class _XdmElementAdapter(ElementNode, _NodeAdapterMixin):
         self,
         xdm: XdmNode,
         parent: DocumentNode | ElementNode | None,
-        factory: _ValueBridge,
+        factory: Any,
     ) -> None:
         self._xdm = xdm
         self.name = xdm.name
@@ -346,7 +364,7 @@ class _XdmElementAdapter(ElementNode, _NodeAdapterMixin):
 class _XdmAttributeAdapter(AttributeNode, _NodeAdapterMixin):
     __slots__ = ("_xdm",)
 
-    def __init__(self, xdm: XdmNode, parent: ElementNode | None, factory: _ValueBridge) -> None:
+    def __init__(self, xdm: XdmNode, parent: ElementNode | None, factory: Any) -> None:
         del factory
         self._xdm = xdm
         self.name = xdm.name
@@ -377,7 +395,7 @@ class _XdmTextAdapter(TextNode, _NodeAdapterMixin):
     __slots__ = ("_xdm",)
 
     def __init__(
-        self, xdm: XdmNode, parent: DocumentNode | ElementNode | None, factory: _ValueBridge
+        self, xdm: XdmNode, parent: DocumentNode | ElementNode | None, factory: Any
     ) -> None:
         del factory
         self._xdm = xdm
@@ -394,7 +412,7 @@ class _XdmCommentAdapter(CommentNode, _NodeAdapterMixin):
         self,
         xdm: XdmNode,
         parent: DocumentNode | ElementNode | None,
-        factory: _ValueBridge,
+        factory: Any,
     ) -> None:
         del factory
         self._xdm = xdm
@@ -409,7 +427,7 @@ class _XdmProcessingInstructionAdapter(ProcessingInstructionNode, _NodeAdapterMi
         self,
         xdm: XdmNode,
         parent: DocumentNode | ElementNode | None,
-        factory: _ValueBridge,
+        factory: Any,
     ) -> None:
         del factory
         self._xdm = xdm
@@ -420,10 +438,198 @@ class _XdmProcessingInstructionAdapter(ProcessingInstructionNode, _NodeAdapterMi
 class _XdmNamespaceAdapter(NamespaceNode, _NodeAdapterMixin):
     __slots__ = ("_xdm",)
 
-    def __init__(self, xdm: XdmNode, parent: ElementNode, factory: _ValueBridge) -> None:
+    def __init__(self, xdm: XdmNode, parent: ElementNode, factory: Any) -> None:
         del factory
         self._xdm = xdm
         super().__init__(xdm.prefix, xdm.bound_uri or "", parent, xdm.document_order)
+
+
+def _adapter_node(node: XdmNode, parent: Any, factory: Any) -> Any:
+    """Construct the adapter for one non-document node of the tree.
+
+    The two factories — an evaluation's bridge for ephemeral and detached
+    builds and an :class:`_XdmAdapterRegistry` for registered builds — share
+    this dispatch so they cannot disagree about which adapter a kind gets.
+    Documents are handled by their factory before this point: a document is
+    built once and every other node of its tree is reached through it.
+    """
+    if node.kind is NodeKind.ELEMENT:
+        return _XdmElementAdapter(node, parent, factory)
+    if node.kind is NodeKind.ATTRIBUTE:
+        return _XdmAttributeAdapter(node, parent, factory)
+    if node.kind is NodeKind.TEXT:
+        return _XdmTextAdapter(node, parent, factory)
+    if node.kind is NodeKind.COMMENT:
+        return _XdmCommentAdapter(node, parent, factory)
+    if node.kind is NodeKind.PROCESSING_INSTRUCTION:
+        return _XdmProcessingInstructionAdapter(node, parent, factory)
+    if node.kind is NodeKind.NAMESPACE:
+        return _XdmNamespaceAdapter(node, parent, factory)
+    raise TypeError(  # pragma: no cover - the six non-document kinds are handled above
+        f"unsupported XDM node kind: {node.kind!r}"
+    )
+
+
+def _document_node_count(document: XdmDocument) -> int:
+    """How many tree nodes *document* holds, in the census's unit.
+
+    The count is of child-axis nodes: the document itself, elements, text,
+    comments, and processing instructions.  Attribute and namespace adapters
+    are built eagerly beside their parent element and measured about three
+    further adapters per element, so counting them here would triple the
+    budget's unit.  The stage's own census counts these same child-axis nodes,
+    so the budget and the census are stated in one unit.
+    """
+    count = 0
+    stack: list[XdmNode] = [document]
+    while stack:
+        node = stack.pop()
+        count += 1
+        stack.extend(node.children)
+    return count
+
+
+class _XdmAdapterRegistry:
+    """One transformation's XDM→elementpath adapter trees.
+
+    A document is registered by identity once its document order is finalized
+    (``document.document_order == 0``).  Every adapter of a registered tree
+    lives in ``nodes`` and is reused by every later evaluation of the same
+    transformation.  One registry belongs to one transformation invocation: it
+    is never process-global, never shared between transformations, and never
+    shared between threads.
+
+    Admission is capped twice: by document count and by a total node budget.
+    The budget's unit is the census's child-axis node count — the document,
+    elements, text, comments, and processing instructions, as
+    ``_document_node_count`` walks them — not the adapter count, which is about
+    two and a half times larger because attribute and namespace adapters are
+    built eagerly beside their element.  Counting adapters would refuse the
+    documents the stage measures in that same census unit.
+
+    A document that would exceed either cap is refused and adapted for the
+    current evaluation only, exactly as before; nothing is ever evicted,
+    because dropping a document would remove its identity mapping while
+    function items that captured its adapters keep the adapters alive.
+    Identity is injective only while the map and the live adapter set agree.
+    Refusal is per document, so a smaller document that still fits is admitted
+    after a larger one was refused; the admitted total never exceeds the
+    budget.
+    """
+
+    __slots__ = (
+        "_admitted_nodes",
+        "_built",
+        "_documents",
+        "_max_documents",
+        "_max_nodes",
+        "_nodes_built",
+        "_reused",
+        "nodes",
+    )
+
+    def __init__(self, *, max_documents: int = 512, max_nodes: int = 250_000) -> None:
+        if isinstance(max_documents, bool) or not isinstance(max_documents, int):
+            raise TypeError("max_documents must be an integer")
+        if max_documents < 1:
+            raise ValueError("max_documents must be at least 1")
+        if isinstance(max_nodes, bool) or not isinstance(max_nodes, int):
+            raise TypeError("max_nodes must be an integer")
+        if max_nodes < 1:
+            raise ValueError("max_nodes must be at least 1")
+        #: Every adapter of every registered tree, keyed by XDM node identity.
+        #: The adapter holds its XDM node, so an id in this map is never
+        #: recycled into another node.
+        self.nodes: dict[int, Any] = {}
+        self._documents: dict[int, _XdmDocumentAdapter] = {}
+        self._max_documents = max_documents
+        self._max_nodes = max_nodes
+        self._admitted_nodes = 0
+        self._built = 0
+        self._reused = 0
+        self._nodes_built = 0
+
+    def document(self, document: XdmDocument) -> _XdmDocumentAdapter | None:
+        """The adapter for *document*, registering it on first use.
+
+        ``None`` means the document is not registrable: its document order is
+        not finalized (a builder tree that may still grow), the registry
+        already holds ``max_documents`` documents, or admitting it would
+        exceed the node budget.  The caller then adapts it for this evaluation
+        only, exactly as before.
+        """
+        adapter = self._documents.get(id(document))
+        if adapter is not None:
+            self._reused += 1
+            return adapter
+        if document.document_order != 0:
+            return None
+        if len(self._documents) >= self._max_documents:
+            return None
+        count = _document_node_count(document)
+        if self._admitted_nodes + count > self._max_nodes:
+            return None
+        adapter = _XdmDocumentAdapter(document, self)
+        self._documents[id(document)] = adapter
+        self.nodes[id(document)] = adapter
+        self._admitted_nodes += count
+        self._built += 1
+        return adapter
+
+    def lookup(self, node: XdmNode) -> Any | None:
+        """The registered adapter for *node*, or ``None`` when unregistered."""
+        return self.nodes.get(id(node))
+
+    def adapt_node(self, node: XdmNode, parent: Any = None) -> Any:
+        """Construct and register one node of the tree currently being built.
+
+        This is the factory protocol the adapter constructors already call
+        (``factory.adapt_node(child, self)``), so a registered document is
+        built with the registry as its factory and every descendant lands in
+        ``nodes`` in one pass.  A node that is already registered returns its
+        existing adapter, so the method is idempotent.
+        """
+        adapter = self.nodes.get(id(node))
+        if adapter is not None:
+            return adapter
+        adapter = _adapter_node(node, parent, self)
+        self.nodes[id(node)] = adapter
+        self._nodes_built += 1
+        return adapter
+
+    def clear(self) -> None:
+        """Drop every registered document and its node adapters.
+
+        Never needed for correctness; used by tests.
+        """
+        self.nodes.clear()
+        self._documents.clear()
+        self._admitted_nodes = 0
+
+    @property
+    def documents_built(self) -> int:
+        """How many adapter trees this registry has constructed."""
+        return self._built
+
+    @property
+    def documents_reused(self) -> int:
+        """How many lookups were answered by an existing tree."""
+        return self._reused
+
+    @property
+    def document_count(self) -> int:
+        """How many adapter trees are currently held."""
+        return len(self._documents)
+
+    @property
+    def nodes_built(self) -> int:
+        """How many non-document adapters this registry has constructed."""
+        return self._nodes_built
+
+    @property
+    def admitted_nodes(self) -> int:
+        """How many child-axis nodes the admitted documents hold."""
+        return self._admitted_nodes
 
 
 class _FocusContextItemToken(ContextItemToken):
@@ -551,26 +757,31 @@ class _ValueBridge:
         environment: ExpressionEnvironment,
         *,
         version: str | None = None,
+        registry: _XdmAdapterRegistry | None = None,
     ) -> None:
         self.parser = parser
         self.static_context = static_context
         self.environment = environment
         self._legacy = version == "1.0" and static_context.xslt_version == "1.0"
-        self._adapters: dict[int, Any] = {}
+        self._ephemeral: dict[int, Any] = {}
+        self._registry = registry
         self._context: XPathContext | None = None
 
     # XDM -> elementpath
 
     def adapt_document(self, document: XdmDocument) -> _XdmDocumentAdapter:
-        adapter = self._adapters.get(id(document))
+        if self._registry is not None:
+            registered = self._registry.document(document)
+            if registered is not None:
+                return registered
+        adapter = self._ephemeral.get(id(document))
         if adapter is None:
             adapter = _XdmDocumentAdapter(document, self)
-            self._adapters[id(document)] = adapter
-        assert isinstance(adapter, _XdmDocumentAdapter)
+            self._ephemeral[id(document)] = adapter
         return adapter
 
     def adapt_node(self, node: XdmNode, parent: Any = None) -> Any:
-        existing = self._adapters.get(id(node))
+        existing = self._lookup(node)
         if existing is not None:
             return existing
         if node.kind is NodeKind.DOCUMENT:
@@ -579,21 +790,14 @@ class _ValueBridge:
             if node.kind is NodeKind.ELEMENT:
                 return self.adapt_node(node.document)
             raise ValueError(f"a {node.kind.value} node requires a parent adapter")
-        if node.kind is NodeKind.ELEMENT:
-            adapter: Any = _XdmElementAdapter(node, parent, self)
-        elif node.kind is NodeKind.ATTRIBUTE:
-            adapter = _XdmAttributeAdapter(node, parent, self)
-        elif node.kind is NodeKind.TEXT:
-            adapter = _XdmTextAdapter(node, parent, self)
-        elif node.kind is NodeKind.COMMENT:
-            adapter = _XdmCommentAdapter(node, parent, self)
-        elif node.kind is NodeKind.PROCESSING_INSTRUCTION:
-            adapter = _XdmProcessingInstructionAdapter(node, parent, self)
-        elif node.kind is NodeKind.NAMESPACE:
-            adapter = _XdmNamespaceAdapter(node, parent, self)
-        else:  # pragma: no cover - all seven kinds are handled above
-            raise TypeError(f"unsupported XDM node kind: {node.kind!r}")
-        self._adapters[id(node)] = adapter
+        adapter = _adapter_node(node, parent, self)
+        self._ephemeral[id(node)] = adapter
+        return adapter
+
+    def _lookup(self, node: XdmNode) -> Any | None:
+        adapter = self._ephemeral.get(id(node))
+        if adapter is None and self._registry is not None:
+            adapter = self._registry.lookup(node)
         return adapter
 
     def _adapt_rootless_node(self, node: XdmNode) -> Any:
@@ -621,13 +825,21 @@ class _ValueBridge:
             if item.kind is NodeKind.DOCUMENT:
                 return self.adapt_document(cast(XdmDocument, item))
             if item.parent is None:
-                adapter = self._adapters.get(id(item))
+                adapter = self._lookup(item)
                 if adapter is None:
                     adapter = self._adapt_rootless_node(item)
-                    self._adapters[id(item)] = adapter
+                    self._ephemeral[id(item)] = adapter
                 return adapter
             self.adapt_document(item.document)
-            adapter = self._adapters.get(id(item))
+            adapter = self._lookup(item)
+            if adapter is None:
+                # The node's document does not contain it: an element-rooted
+                # temporary tree from a sequence constructor.  Adapt its root
+                # so ancestors and siblings exist for this evaluation, then
+                # take the node's own adapter from the tree that was built.
+                root_adapter = self._adapt_rootless_node(item.root)
+                self._ephemeral[id(item.root)] = root_adapter
+                adapter = self._lookup(item)
             assert adapter is not None
             return adapter
         if isinstance(item, XdmAtomic):
@@ -996,6 +1208,9 @@ class XPathEngine:
         cache = environment.parser_cache
         if cache is not None and not isinstance(cache, XPathParserCache):
             raise TypeError("parser_cache must be an XPathParserCache or None")
+        registry = environment.adapter_registry
+        if registry is not None and not isinstance(registry, _XdmAdapterRegistry):
+            raise TypeError("adapter_registry must be an _XdmAdapterRegistry or None")
 
         resolved = _resolve_focus(focus)
         if resolved.is_empty:
@@ -1023,7 +1238,13 @@ class XPathEngine:
             )
             parser, holder = bucket.parser, bucket.holder
 
-        bridge = _ValueBridge(parser, compiled.static_context, environment, version=self._version)
+        bridge = _ValueBridge(
+            parser,
+            compiled.static_context,
+            environment,
+            version=self._version,
+            registry=registry,
+        )
         context = _build_context(compiled.static_context, environment, resolved, bridge)
         bridge._context = context
 

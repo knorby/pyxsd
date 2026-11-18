@@ -1132,6 +1132,7 @@ def _evaluate(
         implicit_timezone=environment.implicit_timezone,
         base_uri=environment.base_uri,
         parser_cache=environment.parser_cache,
+        adapter_registry=environment.adapter_registry,
     )
     return XPathEngine(expression.version).evaluate(expression, local, focus=focus)
 

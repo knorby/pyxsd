@@ -52,7 +52,12 @@ from pyxsd.xpath.continuation import (
     Suspension,
     XPathEvaluationError,
 )
-from pyxsd.xpath.engine import CompiledExpression, XPathEngine, XPathParserCache
+from pyxsd.xpath.engine import (
+    CompiledExpression,
+    XPathEngine,
+    XPathParserCache,
+    _XdmAdapterRegistry,
+)
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, FocusKind, FunctionArity
 from pyxsd.xslt.compiler.constructors import CONSTRUCTOR_INSTRUCTION_COMPILERS
 from pyxsd.xslt.compiler.context import (
@@ -5784,6 +5789,7 @@ class _Invocation(Transformation):
         self._numbering: NumberingCache | None = None
         self._numbering_counters: dict[object, tuple[_NumberPlan, NumberingCounter | None]] = {}
         self._xpath_cache = XPathParserCache()
+        self._adapter_registry = _XdmAdapterRegistry()
         self.dynamic_expressions = DynamicExpressionCache()
         self._active_iteration_frame: Frame | None = None
         self.current_merge_group: Mapping[str, XdmSequence] | None = None
@@ -7347,6 +7353,7 @@ class _Invocation(Transformation):
             implicit_timezone=self.implicit_timezone,
             base_uri=None,
             parser_cache=self._xpath_cache,
+            adapter_registry=self._adapter_registry,
         )
 
     def _decimal_format_objects(
