@@ -1481,6 +1481,40 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 continue
             groups.setdefault(_local_name(expanded), []).append(field)
         child_wildcards = self._child_wildcards(route)
+        declared_locals = set(groups)
+        exclusive_minimums: dict[str, int] = {}
+        wildcard_patterns: list[str] = []
+        wildcard_property_required = False
+        ambiguous_minimum = False
+        for wildcard in child_wildcards:
+            if wildcard.cardinality.minimum == 0:
+                continue
+            admitted = _admitted_names(wildcard.name_class)
+            if admitted is None:
+                if declared_locals:
+                    ambiguous_minimum = True
+                else:
+                    wildcard_property_required = True
+                if wildcard.cardinality.minimum > 1:
+                    ambiguous_minimum = True
+                continue
+            locals_ = {_split_expanded(name)[1] for name in admitted}
+            disjoint = locals_ - declared_locals
+            if disjoint:
+                wildcard_patterns.append(
+                    "^(?:" + "|".join(re.escape(local) for local in sorted(disjoint)) + ")$"
+                )
+                if wildcard.cardinality.minimum > 1:
+                    ambiguous_minimum = True
+            elif len(locals_) == 1:
+                only = next(iter(locals_))
+                exclusive_minimums[only] = (
+                    exclusive_minimums.get(only, 0) + wildcard.cardinality.minimum
+                )
+            else:
+                ambiguous_minimum = True
+        if ambiguous_minimum:
+            self.unvalidated.add("relaxng-wildcard-cardinality")
         properties: dict[str, Any] = {}
         required: list[str] = []
         for local in sorted(groups):
@@ -1496,14 +1530,15 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                     *(self._wildcard_child_value(wildcard) for wildcard in overlapping),
                 ]
             )
+            extra_minimum = exclusive_minimums.get(local, 0)
             if overlapping:
-                value = self._parker_wildcard_group(entries, overlapping, values)
+                value = self._parker_wildcard_group(entries, overlapping, values, extra_minimum)
             elif len(entries) == 1:
                 value = self._observed_group(values, entries[0].cardinality)
             else:
                 value = self._parker_merged_group(entries, values)
             properties[local] = value
-            if any(field.cardinality.minimum > 0 for field in entries):
+            if any(field.cardinality.minimum > 0 for field in entries) or extra_minimum:
                 required.append(local)
         if layout == "mixed":
             self.unvalidated.add("relaxng-mixed-order")
@@ -1541,8 +1576,10 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
             body["x-pyxsd-name-class"] = [
                 _name_class_metadata(wildcard.name_class) for wildcard in child_wildcards
             ]
-            if any(wildcard.cardinality.minimum > 0 for wildcard in child_wildcards):
+            if wildcard_property_required:
                 self._require_property(body, f"^{_NCNAME}$")
+            for pattern in wildcard_patterns:
+                self._require_property(body, pattern)
             self.unvalidated.add("relaxng-wildcard-names")
         else:
             body["additionalProperties"] = False
@@ -1553,10 +1590,11 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         entries: list[FieldContract],
         wildcards: list[WildcardContract],
         values: _Schema,
+        extra_minimum: int,
     ) -> _Schema:
         """A declared local that best-effort Parker merges with wildcard names."""
         self.unvalidated.add("relaxng-local-name-mapping")
-        minimum = sum(field.cardinality.minimum for field in entries)
+        minimum = sum(field.cardinality.minimum for field in entries) + extra_minimum
         declared_maximum = (
             None
             if any(field.cardinality.maximum is None for field in entries)
@@ -2236,7 +2274,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 "propertyNames": {
                     "anyOf": [
                         {"pattern": _JSONML_ATTRIBUTE_PATTERN},
-                        {"pattern": f"^(?:xmlns|xmlns:(?!xmlns$){_NCNAME})$"},
+                        {"pattern": f"^(?:xmlns|xmlns:(?!xml$)(?!xmlns$){_NCNAME})$"},
                     ]
                 },
                 "additionalProperties": self._scalar_union_ref(),
@@ -2426,7 +2464,13 @@ def _contracts_include_qname(contract: ScalarContract, plan: ProjectionPlan) -> 
         # An interpreted list keeps lexical text; any QName token can still
         # bring an authored prefix into the format's declaration scope.
         return True
-    return any(scalar_contract(token).type_name in _XSD_QNAME_TYPES for token in tokens[1])
+    for token in tokens[1]:
+        token_contract = scalar_contract(token)
+        if token_contract.library_uri not in (BUILTIN_LIBRARY, XSD_LIBRARY):
+            return True
+        if token_contract.type_name in _XSD_QNAME_TYPES:
+            return True
+    return False
 
 
 def _contracts_include_list(contract: ScalarContract) -> bool:

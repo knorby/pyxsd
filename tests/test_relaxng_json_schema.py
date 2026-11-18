@@ -3217,3 +3217,258 @@ def test_jsonml_same_local_required_child_does_not_overcount() -> None:
     ]
     assert list(Draft202012Validator(result).iter_errors(data)) == []
     assert "relaxng-wildcard-cardinality" in result["x-pyxsd-validation"]["unvalidated"]
+
+
+def test_custom_qname_list_token_declarations() -> None:
+    with qname_context({"p": "urn:x"}):
+        resolved = QName("p:v")
+    schema = RelaxNGSchema.compile(
+        io.StringIO(
+            f'<element xmlns="{NS}" datatypeLibrary="{XSD}" name="r"><list><group>'
+            '<data type="value" datatypeLibrary="urn:custom"/>'
+            '<data type="string"/>'
+            "</group></list></element>"
+        ),
+        datatype_libraries={
+            "urn:custom": DatatypeLibraryRegistration(
+                _Factory(resolved, decodable=True, named=True), "custom/1"
+            )
+        },
+    )
+    assert not schema.report.has_errors, schema.report.issues
+
+    for format in ("badgerfish", "jsonml"):
+        data = assert_export_valid(schema, "<r>x y</r>", format)
+        serialized = json.dumps(data)
+        if format == "badgerfish":
+            assert "@xmlns" in serialized
+        else:
+            assert "xmlns:" in serialized
+        assert (
+            "relaxng-custom-qname-declarations"
+            in format_schema(schema, format)["x-pyxsd-validation"]["unvalidated"]
+        )
+
+
+def test_parker_wildcard_minimums_are_disclosed_or_enforced() -> None:
+    ambiguous = schema_for(
+        '<element name="x"><data type="integer"/></element>'
+        '<oneOrMore><element><anyName/><data type="integer"/></element></oneOrMore>'
+    )
+    merged = format_export(
+        ambiguous,
+        '<r xmlns:b="urn:b"><x>1</x><b:x>2</b:x></r>',
+        "parker",
+        fidelity="best-effort",
+    )
+    route_id = ambiguous.projection.roots[0]
+    route = ambiguous.projection.routes[route_id]
+    plan = replace(
+        ambiguous.projection,
+        routes={
+            **ambiguous.projection.routes,
+            route_id: replace(
+                route,
+                wildcards=(replace(route.wildcards[0], cardinality=Cardinality(1, 1)),),
+            ),
+        },
+    )
+    assert merged == {"x": [1, 2]}
+    ambiguous_schema = schema_from_plan(plan, "r", format="parker")
+    assert list(Draft202012Validator(ambiguous_schema).iter_errors(merged)) == []
+    assert "relaxng-wildcard-cardinality" in ambiguous_schema["x-pyxsd-validation"]["unvalidated"]
+    disjoint = format_export(
+        ambiguous,
+        '<r xmlns:b="urn:b"><x>1</x><b:y>2</b:y></r>',
+        "parker",
+        fidelity="best-effort",
+    )
+    assert disjoint == {"x": 1, "y": 2}
+    assert list(Draft202012Validator(ambiguous_schema).iter_errors(disjoint)) == []
+
+
+def test_parker_disjoint_finite_wildcard_minimum_is_enforced() -> None:
+    schema = schema_for(
+        '<element name="x"><data type="integer"/></element>'
+        '<oneOrMore><element><anyName/><data type="integer"/></element></oneOrMore>'
+    )
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    plan = replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(
+                route,
+                wildcards=(
+                    replace(
+                        route.wildcards[0],
+                        name_class=NameChoice((Name(None, "b"),)),
+                        cardinality=Cardinality(1, 1),
+                    ),
+                ),
+            ),
+        },
+    )
+    result = schema_from_plan(plan, "r", format="parker")
+    data = format_export(
+        schema,
+        '<r xmlns:b="urn:b"><x>1</x><b:b>2</b:b></r>',
+        "parker",
+        fidelity="best-effort",
+    )
+    assert data == {"x": 1, "b": 2}
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+    assert list(Draft202012Validator(result).iter_errors({"x": 1})), (
+        "the finite wildcard key must be present"
+    )
+    assert "relaxng-wildcard-cardinality" not in result["x-pyxsd-validation"]["unvalidated"]
+
+
+def test_parker_exclusive_finite_wildcard_minimum_merges_into_local() -> None:
+    schema = schema_for(
+        '<element name="x"><data type="integer"/></element>'
+        '<oneOrMore><element><anyName/><data type="integer"/></element></oneOrMore>'
+    )
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    plan = replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(
+                route,
+                wildcards=(
+                    replace(
+                        route.wildcards[0],
+                        name_class=NameChoice((Name(None, "x"),)),
+                        cardinality=Cardinality(1, 1),
+                    ),
+                ),
+            ),
+        },
+    )
+    result = schema_from_plan(plan, "r", format="parker")
+    data = format_export(
+        schema,
+        '<r xmlns:b="urn:b"><x>1</x><b:x>2</b:x></r>',
+        "parker",
+        fidelity="best-effort",
+    )
+    assert data == {"x": [1, 2]}
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+    assert list(Draft202012Validator(result).iter_errors({"x": 1}))
+    assert "relaxng-wildcard-cardinality" not in result["x-pyxsd-validation"]["unvalidated"]
+
+
+def test_parker_multiple_colliding_wildcard_locals_disclose() -> None:
+    schema = schema_for(
+        '<element name="x"><data type="integer"/></element>'
+        '<element name="y"><data type="integer"/></element>'
+        '<oneOrMore><element><anyName/><data type="integer"/></element></oneOrMore>'
+    )
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    plan = replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(
+                route,
+                wildcards=(
+                    replace(
+                        route.wildcards[0],
+                        name_class=NameChoice((Name(None, "x"), Name(None, "y"))),
+                        cardinality=Cardinality(1, 1),
+                    ),
+                ),
+            ),
+        },
+    )
+    result = schema_from_plan(plan, "r", format="parker")
+    data = format_export(
+        schema,
+        '<r xmlns:b="urn:b"><x>1</x><y>2</y><b:x>3</b:x></r>',
+        "parker",
+        fidelity="best-effort",
+    )
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+    assert "relaxng-wildcard-cardinality" in result["x-pyxsd-validation"]["unvalidated"]
+
+
+def test_parker_open_wildcard_minimum_above_one_is_disclosed() -> None:
+    schema = schema_for(
+        '<zeroOrMore><element><anyName/><data type="integer"/></element></zeroOrMore>'
+    )
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    plan = replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(
+                route,
+                wildcards=(replace(route.wildcards[0], cardinality=Cardinality(2, None)),),
+            ),
+        },
+    )
+    result = schema_from_plan(plan, "r", format="parker")
+    data = format_export(schema, "<r><a>1</a><a>2</a></r>", "parker", fidelity="best-effort")
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+    assert "relaxng-wildcard-cardinality" in result["x-pyxsd-validation"]["unvalidated"]
+
+
+def test_jsonml_generic_route_rejects_xmlns_xml() -> None:
+    schema = schema_for(
+        '<zeroOrMore><element><anyName/><data type="string"/></element></zeroOrMore>'
+    )
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    wildcard = route.wildcards[0]
+    plan = replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(route, wildcards=(replace(wildcard, child_route_id=None),)),
+        },
+    )
+    result = schema_from_plan(plan, format="jsonml")
+    assert (
+        list(Draft202012Validator(result).iter_errors(["r", ["x", {"xmlns:p": "urn:x"}, "v"]]))
+        == []
+    )
+    assert list(Draft202012Validator(result).iter_errors(["r", ["x", {"xmlns:xml": "urn:x"}, "v"]]))
+
+
+def test_parker_finite_disjoint_wildcard_minimum_above_one_discloses() -> None:
+    schema = schema_for(
+        '<element name="x"><data type="integer"/></element>'
+        '<oneOrMore><element><anyName/><data type="integer"/></element></oneOrMore>'
+    )
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    plan = replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(
+                route,
+                wildcards=(
+                    replace(
+                        route.wildcards[0],
+                        name_class=NameChoice((Name(None, "b"),)),
+                        cardinality=Cardinality(2, 2),
+                    ),
+                ),
+            ),
+        },
+    )
+    result = schema_from_plan(plan, "r", format="parker")
+    data = format_export(
+        schema,
+        '<r xmlns:b="urn:b"><x>1</x><b:b>2</b:b><b:b>3</b:b></r>',
+        "parker",
+        fidelity="best-effort",
+    )
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+    assert "relaxng-wildcard-cardinality" in result["x-pyxsd-validation"]["unvalidated"]
