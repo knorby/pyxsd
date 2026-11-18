@@ -138,6 +138,7 @@ __all__ = [
     "UnsupportedDatatypeOperation",
     "XsdDatatypeFactory",
     "datatype_supports_decode",
+    "datatype_supports_encode",
     "resolve_datatype_selector",
 ]
 
@@ -769,12 +770,13 @@ class Datatype(ABC):
     """The compiled behavior of one RELAX NG datatype.
 
     ``supports_decode`` is an explicit, schema-static capability declaration
-    for :meth:`decode`.  The base class does not infer capability from method
-    overrides: a subclass may override ``decode`` only to raise
+    for :meth:`decode`; ``supports_encode`` is the matching declaration for
+    :meth:`encode`.  The base class does not infer capability from method
+    overrides: a subclass may override ``decode`` or ``encode`` only to raise
     :class:`UnsupportedDatatypeOperation`, and such a datatype remains
-    nondecodable for shape selection until it declares support.  The flag is
-    implementation behavior, not datatype semantic identity; it does not
-    participate in equality, hashing, or pattern identity.
+    nondecodable/nonencodable for shape selection until it declares support.
+    The flags are implementation behavior, not datatype semantic identity; they
+    do not participate in equality, hashing, or pattern identity.
 
     Implementations that serve as pattern payloads must also be immutable,
     hashable, value-comparable, and deterministically ``repr``-able, because
@@ -782,6 +784,7 @@ class Datatype(ABC):
     """
 
     supports_decode: ClassVar[bool] = False
+    supports_encode: ClassVar[bool] = False
 
     @abstractmethod
     def allows(self, lexical: str, context: DatatypeContext) -> bool:
@@ -816,6 +819,16 @@ def datatype_supports_decode(datatype: object) -> bool:
     return getattr(type(datatype), "supports_decode", False) is True
 
 
+def datatype_supports_encode(datatype: object) -> bool:
+    """Return whether *datatype* explicitly declares encoder support.
+
+    This reads the class-level :attr:`Datatype.supports_encode` declaration.
+    It never infers support from an ``encode`` override and never calls
+    ``encode``.  Instance state cannot turn capability on or off.
+    """
+    return getattr(type(datatype), "supports_encode", False) is True
+
+
 class DatatypeFactory(ABC):
     """A datatype library: compile a type name and parameters into a datatype."""
 
@@ -843,6 +856,7 @@ class ScalarDatatype(Datatype):
     """
 
     supports_decode: ClassVar[bool] = True
+    supports_encode: ClassVar[bool] = True
 
     library_uri: str
     type_name: str

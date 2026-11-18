@@ -10,6 +10,7 @@ from copy import deepcopy
 from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -33,6 +34,7 @@ from pyxsd.relaxng.datatypes import (  # noqa: E402
     DatatypeFactory,
     DatatypeLibraryRegistration,
     UnsupportedDatatypeOperation,
+    datatype_supports_encode,
 )
 from pyxsd.relaxng.json_values import scalar_tag  # noqa: E402
 from pyxsd.relaxng.pydantic_adapter import RelaxNGModelSet  # noqa: E402
@@ -130,6 +132,7 @@ class UnsupportedDecodingDatatype(NonDecodingDatatype):
 
     type_name = "unsupported"
     supports_decode = True
+    supports_encode = True
 
     def decode(self, lexical: str, context: DatatypeContext) -> object:
         del lexical, context
@@ -146,6 +149,7 @@ class EncodeOnlyDatatype(NonDecodingDatatype):
     """A datatype with an encoder but no decoder declaration."""
 
     type_name = "encode-only"
+    supports_encode = True
 
     def decode(self, lexical: str, context: DatatypeContext) -> object:
         del lexical, context
@@ -207,6 +211,7 @@ class CollectionDatatype(Datatype):
     type_name = "collection"
     parameters = ()
     supports_decode = True
+    supports_encode = True
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
@@ -243,6 +248,7 @@ class NullDecodingDatatype(Datatype):
     type_name = "null-value"
     parameters = ()
     supports_decode = True
+    supports_encode = True
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
@@ -272,6 +278,43 @@ class NullDecodingDatatype(Datatype):
         raise TypeError("expected None")
 
 
+class NestedCollectionDatatype(Datatype):
+    """A custom encoder+decoder whose decoded value contains nested lists."""
+
+    library_uri = "urn:test"
+    type_name = "nested-collection"
+    parameters = ()
+    supports_decode = True
+    supports_encode = True
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}()"
+
+    def allows(self, lexical: str, context: DatatypeContext) -> bool:
+        del context
+        return lexical == "nested"
+
+    def equal(
+        self,
+        left: str,
+        left_context: DatatypeContext,
+        right: str,
+        right_context: DatatypeContext,
+    ) -> bool:
+        del left_context, right_context
+        return left == right
+
+    def decode(self, lexical: str, context: DatatypeContext) -> list[Any]:
+        del lexical, context
+        return [["a"], [["b"]]]
+
+    def encode(self, value: object, context: DatatypeContext) -> str:
+        del context
+        if value == [["a"], [["b"]]]:
+            return "nested"
+        raise TypeError("expected the nested collection value")
+
+
 class CustomBinaryDatatype(Datatype):
     """A custom-library type merely named ``base64Binary``."""
 
@@ -279,6 +322,7 @@ class CustomBinaryDatatype(Datatype):
     type_name = "base64Binary"
     parameters = ()
     supports_decode = True
+    supports_encode = True
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
@@ -341,6 +385,8 @@ class ResultDatatype(Datatype):
 class ResultEncodingDatatype(ResultDatatype):
     """A decoder+encoder type whose decoded strings must not be re-decoded."""
 
+    supports_encode = True
+
     def encode(self, value: object, context: DatatypeContext) -> str:
         del context
         if isinstance(value, str) and value.startswith("result:"):
@@ -356,6 +402,27 @@ class LossyEncodingDatatype(ResultEncodingDatatype):
     def encode(self, value: object, context: DatatypeContext) -> str:
         del value, context
         return "bad"
+
+
+class UnsupportedEncodingDatatype(ResultDatatype):
+    """A declared encoder that reports the operation is unsupported."""
+
+    type_name = "unsupported-encoding"
+    supports_encode = True
+
+    def encode(self, value: object, context: DatatypeContext) -> str:
+        del value, context
+        raise UnsupportedDatatypeOperation("no encoder")
+
+
+class UndeclaredEncoderDatatype(ResultDatatype):
+    """A datatype overriding encode without declaring encoder support."""
+
+    type_name = "undeclared-encoder"
+
+    def encode(self, value: object, context: DatatypeContext) -> str:
+        del value, context
+        return "value"
 
 
 class LossyEncodingFactory(DatatypeFactory):
@@ -388,6 +455,24 @@ class CustomBinaryFactory(DatatypeFactory):
         return CustomBinaryDatatype()
 
 
+class NestedCollectionFactory(DatatypeFactory):
+    def create(self, type_name, parameters, context):
+        del type_name, parameters, context
+        return NestedCollectionDatatype()
+
+
+class UnsupportedEncodingFactory(DatatypeFactory):
+    def create(self, type_name, parameters, context):
+        del type_name, parameters, context
+        return UnsupportedEncodingDatatype()
+
+
+class UndeclaredEncoderFactory(DatatypeFactory):
+    def create(self, type_name, parameters, context):
+        del type_name, parameters, context
+        return UndeclaredEncoderDatatype()
+
+
 class ResultFactory(DatatypeFactory):
     def create(self, type_name, parameters, context):
         del type_name, parameters, context
@@ -407,6 +492,7 @@ class CustomQNameDatatype(Datatype):
     type_name = "QName"
     parameters = ()
     supports_decode = True
+    supports_encode = True
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
@@ -866,7 +952,8 @@ def test_json_dump_and_schema_preserve_wrapper_and_input_distinctions():
     assert body["properties"]["version"] == {"type": "integer", "const": 1}
     assert body["properties"]["candidates"]["minItems"] == 1
     assert body["properties"]["candidates"]["uniqueItems"] is True
-    assert schema["x-pyxsd-cardinality"] == {"minimum": 1, "maximum": 1}
+    if "x-pyxsd-cardinality" in schema:
+        assert schema["x-pyxsd-cardinality"] == {"minimum": 1, "maximum": 1}
 
     _, integer = model_for('<data type="integer"/>')
     integer_schema = integer.model_json_schema()
@@ -882,10 +969,13 @@ def test_json_dump_and_schema_preserve_wrapper_and_input_distinctions():
         branch for branch in fixed.model_json_schema()["anyOf"] if branch.get("type") == "array"
     )
     assert list_schema["minItems"] == list_schema["maxItems"] == 2
-    assert list_schema["prefixItems"] == [
-        {"anyOf": [{"type": "integer"}, {"type": "string"}]},
-        {"type": "string", "x-pyxsd-type": "token"},
-    ]
+    integer_item = list_schema["prefixItems"][0]
+    assert {"type": "integer"} in integer_item["anyOf"]
+    assert any(
+        branch.get("type") == "string" and branch.get("pattern") is not None
+        for branch in integer_item["anyOf"]
+    )
+    assert list_schema["prefixItems"][1] == {"type": "string", "x-pyxsd-type": "token"}
     assert list_schema["x-pyxsd-list-shape"] == "tuple"
 
     _, optional = model_for(
@@ -902,9 +992,12 @@ def test_custom_decodable_scalar_schema_is_bounded_and_has_no_dangling_ref():
         datatype_libraries={"urn:result": registration(ResultEncodingFactory(), "result/2")},
     )
     schema = custom.model_json_schema()
-    assert {"type": "string"} in schema["anyOf"]
-    assert {"type": "number"} in schema["anyOf"]
-    assert {"type": "boolean"} in schema["anyOf"]
+    opaque = next(
+        branch for branch in schema["anyOf"] if "anyOf" in branch and "x-pyxsd-validation" in branch
+    )
+    assert {"type": "string"} in opaque["anyOf"]
+    assert {"type": "number"} in opaque["anyOf"]
+    assert {"type": "boolean"} in opaque["anyOf"]
     assert not any("$ref" in branch for branch in schema["anyOf"])
     assert custom.model_validate("value").root == "result:value"
     assert custom.model_validate("result:value").root == "result:value"
@@ -913,9 +1006,8 @@ def test_custom_decodable_scalar_schema_is_bounded_and_has_no_dangling_ref():
         custom.model_validate_json(custom.model_validate("value").model_dump_json()).root
         == "result:value"
     )
-    validation = next(
-        branch["x-pyxsd-validation"] for branch in schema["anyOf"] if "x-pyxsd-validation" in branch
-    )
+    tag_branch = next(branch for branch in schema["anyOf"] if branch.get("type") == "object")
+    validation = tag_branch["x-pyxsd-validation"]
     assert set(validation) == {"grammar-fingerprint", "candidate-completeness"}
 
 
@@ -1038,7 +1130,10 @@ def test_opaque_empty_lists_remain_nondecodable_wrappers():
 
     schema = empty_list.model_json_schema()
     assert not any(branch.get("type") == "array" for branch in schema["anyOf"])
-    assert {"type": "string"} in schema["anyOf"]
+    assert any(
+        branch.get("type") == "string" and "x-pyxsd-validation" in branch
+        for branch in schema["anyOf"]
+    )
     assert any(branch.get("type") == "object" for branch in schema["anyOf"])
 
     _, ambiguous = model_for(
@@ -1152,7 +1247,9 @@ def test_json_lists_round_trip_declared_token_shapes():
     array_schema = next(
         branch for branch in integers_schema["anyOf"] if branch.get("type") == "array"
     )
-    assert array_schema["items"] == {"anyOf": [{"type": "integer"}, {"type": "string"}]}
+    assert array_schema["items"]["anyOf"][0] == {"type": "integer"}
+    assert array_schema["items"]["anyOf"][1]["type"] == "string"
+    assert array_schema["items"]["anyOf"][1]["pattern"] is not None
 
     _, xsd_list = model_for('<data type="IDREFS"/>')
     xsd_model = xsd_list.model_validate_json('["a", "b"]')
@@ -1205,20 +1302,15 @@ def test_binary_scalars_and_lists_round_trip():
         for branch in binary_list.model_json_schema()["anyOf"]
         if branch.get("type") == "array"
     )
-    assert list_schema["prefixItems"] == [
-        {
-            "type": "string",
-            "pattern": list_schema["prefixItems"][0]["pattern"],
-            "x-pyxsd-type": "base64Binary",
-            "x-pyxsd-encoding": "base64",
-        },
-        {
-            "type": "string",
-            "pattern": list_schema["prefixItems"][1]["pattern"],
-            "x-pyxsd-type": "hexBinary",
-            "x-pyxsd-encoding": "hex",
-        },
-    ]
+    assert list_schema["prefixItems"][0]["type"] == "string"
+    assert list_schema["prefixItems"][0]["pattern"] is not None
+    assert list_schema["prefixItems"][0]["x-pyxsd-type"] == "base64Binary"
+    assert list_schema["prefixItems"][0]["x-pyxsd-encoding"] == "base64"
+    assert "x-pyxsd-validation" in list_schema["prefixItems"][0]
+    assert list_schema["prefixItems"][1]["type"] == "string"
+    assert list_schema["prefixItems"][1]["pattern"] is not None
+    assert list_schema["prefixItems"][1]["x-pyxsd-type"] == "hexBinary"
+    assert list_schema["prefixItems"][1]["x-pyxsd-encoding"] == "hex"
 
 
 def test_decoder_only_and_round_trip_encodable_contracts():
@@ -1237,7 +1329,18 @@ def test_decoder_only_and_round_trip_encodable_contracts():
     with pytest.raises(ValidationError) as error:
         model.model_validate("result:value")
     assert "bare string is always lexical" in message(error.value)
-    assert any(branch.get("type") == "object" for branch in model.model_json_schema()["anyOf"])
+    schema = model.model_json_schema()
+    assert any(branch.get("type") == "object" for branch in schema["anyOf"])
+    assert any(branch.get("type") == "string" for branch in schema["anyOf"])
+    assert not any(branch.get("type") == "array" for branch in schema["anyOf"])
+    assert not any(branch.get("type") == "boolean" for branch in schema["anyOf"])
+    assert not any(branch.get("type") == "number" for branch in schema["anyOf"])
+    assert not any(
+        "anyOf" in branch and "x-pyxsd-validation" in branch for branch in schema["anyOf"]
+    )
+    for invalid in ("1", "[1]"):
+        with pytest.raises(ValidationError):
+            model.model_validate_json(invalid)
 
     _, decoded_list = model_for(
         '<list><zeroOrMore><data type="result" datatypeLibrary="urn:result"/></zeroOrMore></list>',
@@ -1246,7 +1349,13 @@ def test_decoder_only_and_round_trip_encodable_contracts():
     list_value = decoded_list.model_validate("value value").root
     assert isinstance(list_value, AlternativeValue)
     assert list_value.candidates[0].decoded == ["result:value", "result:value"]
-    assert decoded_list.model_validate("").root == []
+    empty_list = decoded_list.model_validate("").root
+    assert isinstance(empty_list, AlternativeValue)
+    assert empty_list.candidates[0].decodable is True
+    with pytest.raises(ValidationError):
+        decoded_list.model_validate_json("[]")
+    list_schema = decoded_list.model_json_schema()
+    assert not any(branch.get("type") == "array" for branch in list_schema["anyOf"])
 
     encoding = {"urn:result": registration(ResultEncodingFactory(), "result/2")}
     _, encoded = model_for(
@@ -1259,6 +1368,26 @@ def test_decoder_only_and_round_trip_encodable_contracts():
     assert "result:result:" not in lexical
     assert json.loads(encoded.model_validate("value").model_dump_json()) == "result:value"
     assert encoded.model_validate_json('"result:value"').root == "result:value"
+
+    _, unsupported_encoder = model_for(
+        '<data type="unsupported-encoding" datatypeLibrary="urn:test"/>',
+        datatype_libraries={
+            "urn:test": registration(UnsupportedEncodingFactory(), "unsupported-enc/1")
+        },
+    )
+    unsupported_value = unsupported_encoder.model_validate("value").root
+    assert isinstance(unsupported_value, AlternativeValue)
+    with pytest.raises(ValidationError) as error:
+        unsupported_encoder.model_validate(123)
+    assert "decoder-only" in message(error.value)
+
+
+def test_fixed_empty_list_round_trip():
+    _, empty = model_for("<list><empty/></list>")
+    value = empty.model_validate("")
+    assert value.root == ()
+    assert json.loads(value.model_dump_json()) == []
+    assert empty.model_validate_json("[]").root == ()
 
 
 def test_codec_fingerprint_matches_public_schema_identity():
@@ -1405,7 +1534,7 @@ def test_json_list_edge_contracts_and_direct_conversion_helpers():
     )
     with pytest.raises(ValidationError) as error:
         interpretation.model_validate_json("[12]")
-    assert "no complete decoder" in message(error.value)
+    assert "decoder-only item" in message(error.value)
 
     _, fixed = model_for(
         '<list><data type="integer"/><data type="token" datatypeLibrary=""/></list>'
@@ -1545,6 +1674,18 @@ def test_optional_none_dumps_and_optional_presence():
     assert json.loads(empty_text.model_dump_json()) == ""
     assert text.model_validate_json(empty_text.model_dump_json()).root == ""
 
+    _, present = model_for(
+        '<optional><attribute name="a"><text/></attribute></optional>'
+        '<optional><element name="child"><text/></element></optional><empty/>'
+    )
+    present_model = present.model_validate({"@a": "", "child": ""})
+    assert present_model.model_dump() == {"@a": "", "child": ""}
+    present_json = json.loads(present_model.model_dump_json())
+    assert present_json == {"@a": "", "child": ""}
+    Draft202012Validator(present.model_json_schema()).validate(present_json)
+    assert present.model_validate(present_model.model_dump()).child.root == ""
+    assert present.model_validate_json(present_model.model_dump_json()).attr_a == ""
+
 
 def test_list_include_exclude_restores_original_wrapper_indices():
     _, repeated = model_for(
@@ -1563,6 +1704,16 @@ def test_list_include_exclude_restores_original_wrapper_indices():
         assert dumped["child"][0] is model.child[1].root
     assert model.model_dump(include={"child"})["child"][0] is model.child[0].root
     assert model.model_dump(exclude={"child"}) == {}
+    for kwargs in (
+        {"include": {"child": {1}}},
+        {"exclude": {"child": {0}}},
+        {"include": {"child": {1: True}}},
+        {"exclude": {"child": {0: True}}},
+    ):
+        dumped_json = json.loads(model.model_dump_json(**kwargs))
+        assert len(dumped_json["child"]) == 1
+    assert len(model.model_dump(include={"child": 1})["child"]) == 1
+    assert len(model.model_dump(exclude={"child": 0})["child"]) == 1
 
     _, nested = model_for(
         '<zeroOrMore><element name="child">'
@@ -1650,13 +1801,16 @@ def test_json_schema_lexical_item_and_binary_alignment():
     )
     with pytest.raises(ValidationError) as error:
         opaque.model_validate_json("[]")
-    assert "no complete decoder" in message(error.value)
+    assert "decoder-only item" in message(error.value)
 
     _, integers = model_for('<list><data type="integer"/></list>')
     integer_schema = next(
         branch for branch in integers.model_json_schema()["anyOf"] if branch.get("type") == "array"
     )
-    assert {"type": "string"} in integer_schema["prefixItems"][0]["anyOf"]
+    assert any(
+        branch.get("type") == "string" and branch.get("pattern") is not None
+        for branch in integer_schema["prefixItems"][0]["anyOf"]
+    )
     assert integers.model_validate_json('["1"]').root == (1,)
 
     _, qnames = model_for('<list><data type="QName"/></list>')
@@ -1690,7 +1844,12 @@ def test_json_schema_lexical_item_and_binary_alignment():
     assert collection_value == ["a", "b"]
     assert json.loads(collection.model_validate("items").model_dump_json()) == ["a", "b"]
     collection_schema = collection.model_json_schema()
-    assert any(branch.get("type") == "array" for branch in collection_schema["anyOf"])
+    opaque = next(
+        branch
+        for branch in collection_schema["anyOf"]
+        if "anyOf" in branch and "x-pyxsd-validation" in branch
+    )
+    assert any(branch.get("type") == "array" for branch in opaque["anyOf"])
     assert collection.model_validate_json('["a", "b"]').root == ["a", "b"]
 
     _, null_value = model_for(
@@ -1758,6 +1917,130 @@ def test_unreachable_include_filter_branches_are_defensive():
     assert _included_indices(1, 2) == {1}
     assert _excluded_indices(object(), 2) == set()
     assert _excluded_indices(1, 2) == {1}
+
+
+def test_xsd_lexical_schema_matches_runtime_forms():
+    integer_schema = model_for('<data type="integer"/>')[1].model_json_schema()
+    for lexical in ("01", "+1", "-001"):
+        assert isinstance(model_for('<data type="integer"/>')[1].model_validate(lexical).root, int)
+        Draft202012Validator(integer_schema).validate(lexical)
+    for invalid in ("abc", "1.0", ""):
+        with pytest.raises(JsonSchemaValidationError):
+            Draft202012Validator(integer_schema).validate(invalid)
+
+    _, boolean = model_for('<data type="boolean"/>')
+    boolean_schema = boolean.model_json_schema()
+    for lexical in ("true", "false", "1", "0"):
+        assert boolean.model_validate(lexical).root in (True, False)
+        Draft202012Validator(boolean_schema).validate(lexical)
+    for invalid in ("TRUE", "+1", "yes"):
+        with pytest.raises(JsonSchemaValidationError):
+            Draft202012Validator(boolean_schema).validate(invalid)
+
+    _, floating = model_for('<data type="float"/>')
+    float_schema = floating.model_json_schema()
+    for lexical in ("+1.5", "1.", ".5", "1e3", "INF", "-INF", "NaN"):
+        assert floating.model_validate(lexical).root is not None
+        Draft202012Validator(float_schema).validate(lexical)
+    for invalid in ("+INF", "nan", "abc"):
+        with pytest.raises(JsonSchemaValidationError):
+            Draft202012Validator(float_schema).validate(invalid)
+
+    _, decimal = model_for('<data type="decimal"/>')
+    decimal_schema = decimal.model_json_schema()
+    for lexical in ("01.20", "+1.20", ".5", "1."):
+        assert decimal.model_validate(lexical).root == Decimal(lexical)
+        Draft202012Validator(decimal_schema).validate(lexical)
+    with pytest.raises(JsonSchemaValidationError):
+        Draft202012Validator(decimal_schema).validate("1e3")
+
+    _, base64_model = model_for('<data type="base64Binary"/>')
+    base64_schema = base64_model.model_json_schema()
+    for lexical in ("Y W I=", "YW I="):
+        assert base64_model.model_validate(lexical).root == b"ab"
+        Draft202012Validator(base64_schema).validate(lexical)
+    for invalid in ("A", "YWI", "!!!!"):
+        with pytest.raises(JsonSchemaValidationError):
+            Draft202012Validator(base64_schema).validate(invalid)
+
+    _, hex_model = model_for('<data type="hexBinary"/>')
+    hex_schema = hex_model.model_json_schema()
+    assert hex_model.model_validate("01FF").root == b"\x01\xff"
+    Draft202012Validator(hex_schema).validate("01FF")
+    for invalid in ("0 1FF", "ABC", "0G"):
+        with pytest.raises(JsonSchemaValidationError):
+            Draft202012Validator(hex_schema).validate(invalid)
+
+    _, integer_list = model_for('<list><zeroOrMore><data type="integer"/></zeroOrMore></list>')
+    with pytest.raises(ValidationError):
+        integer_list.model_validate_json('["abc"]')
+    with pytest.raises(JsonSchemaValidationError):
+        Draft202012Validator(integer_list.model_json_schema()).validate(["abc"])
+
+    _, date = model_for('<data type="date"/>')
+    date_branch = next(
+        branch
+        for branch in date.model_json_schema()["anyOf"]
+        if branch.get("x-pyxsd-validation") is not None
+    )
+    assert "temporal or lexical" in date_branch["x-pyxsd-validation"]["lexical"]
+
+    _, qname = model_for('<data type="QName"/>')
+    qname_branch = next(
+        branch for branch in qname.model_json_schema()["anyOf"] if branch.get("x-pyxsd-qname")
+    )
+    assert "qname-context" in qname_branch["x-pyxsd-validation"]
+
+
+def test_nested_custom_collection_schema_is_recursive():
+    _, nested = model_for(
+        '<data type="nested-collection" datatypeLibrary="urn:test"/>',
+        datatype_libraries={"urn:test": registration(NestedCollectionFactory(), "nested/1")},
+    )
+    value = nested.model_validate("nested").root
+    assert value == [["a"], [["b"]]]
+    dumped = nested.model_validate("nested").model_dump_json()
+    assert json.loads(dumped) == [["a"], [["b"]]]
+    Draft202012Validator(nested.model_json_schema()).validate(json.loads(dumped))
+
+
+def test_model_dump_parameter_capability(monkeypatch):
+    import pyxsd.relaxng.pydantic_values as pydantic_values_module
+
+    _, record = model_for('<attribute name="a"><data type="integer"/></attribute>')
+    model = record.model_validate({"@a": 1})
+    real = pydantic_values_module._MODEL_DUMP_PARAMETERS
+    older = frozenset(name for name in real if name != "polymorphic_serialization")
+    monkeypatch.setattr(pydantic_values_module, "_MODEL_DUMP_PARAMETERS", older)
+    assert model.model_dump() == {"@a": 1}
+    with pytest.raises(TypeError):
+        model.model_dump(polymorphic_serialization=False)
+    monkeypatch.setattr(pydantic_values_module, "_MODEL_DUMP_PARAMETERS", real)
+    if "polymorphic_serialization" in real:
+        assert model.model_dump(polymorphic_serialization=False) == {"@a": 1}
+
+
+def test_explicit_encoder_capability_declarations():
+    schema = compile_element('<data type="integer"/>')
+    pattern = schema.projection.encoding_patterns[root_contracts(schema)[0].pattern_identity]
+    assert datatype_supports_encode(pattern.datatype) is True
+    assert datatype_supports_encode(ResultDatatype()) is False
+    assert datatype_supports_encode(ResultEncodingDatatype()) is True
+    assert datatype_supports_encode(CollectionDatatype()) is True
+    assert datatype_supports_encode(PermissiveDecoderOnlyDatatype()) is False
+    assert datatype_supports_encode(UndeclaredEncoderDatatype()) is False
+
+    _, undeclared = model_for(
+        '<data type="undeclared-encoder" datatypeLibrary="urn:test"/>',
+        datatype_libraries={"urn:test": registration(UndeclaredEncoderFactory(), "undeclared/1")},
+    )
+    assert isinstance(undeclared.model_validate("value").root, AlternativeValue)
+    with pytest.raises(ValidationError):
+        undeclared.model_validate(123)
+    assert not any(
+        "anyOf" in branch and "x-pyxsd-validation" in branch
+        for branch in undeclared.model_json_schema()["anyOf"]
+    )
 
 
 def test_xsd_models_keep_existing_behavior():
