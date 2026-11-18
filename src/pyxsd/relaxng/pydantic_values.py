@@ -27,8 +27,11 @@ document evidence participates.
 A unique contract returns an ordinary value only when the decoded value can be
 re-encoded to a value-equal lexical form.  Decoder-only contracts return an
 immutable wrapper, so a value from a document can always be validated again.
-Supplying a decoded Python value for a decoder-only contract is not supported;
-use its lexical string, tag, or snapshot instead.
+Bare strings are always lexical input: for a permissive decoder-only contract a
+decoded-looking string cannot be distinguished from lexical text and is decoded
+as lexical.  Exact decoded provenance for such a contract requires a tag or
+snapshot.  A non-string decoded Python value for a decoder-only contract is not
+supported because no honest lexical form exists.
 """
 
 from __future__ import annotations
@@ -36,7 +39,9 @@ from __future__ import annotations
 import base64
 from collections.abc import Callable, Mapping
 from decimal import Decimal
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
+
+from pydantic.main import IncEx
 
 from pydantic import (
     BaseModel,
@@ -65,7 +70,14 @@ from pyxsd.relaxng.datatypes import (
     datatype_supports_decode,
 )
 from pyxsd.relaxng.json_values import parse_scalar_tag, scalar_tag
-from pyxsd.relaxng.patterns import List, Pattern, nullable
+from pyxsd.relaxng.patterns import (
+    Choice,
+    Empty,
+    List,
+    OneOrMore,
+    Pattern,
+    nullable,
+)
 from pyxsd.relaxng.projection import ProjectionPlan
 from pyxsd.relaxng.schema import RelaxNGSchema
 from pyxsd.relaxng.validator import DerivationContext, text_derivative, xml_whitespace_tokens
@@ -112,6 +124,9 @@ _XSD_FLOAT_TYPES = frozenset({"double", "float"})
 _XSD_LIST_VALUED_TYPES = frozenset({"ENTITIES", "IDREFS", "NMTOKENS"})
 _DECIMAL_PATTERN = r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$"
 _EQNAME_PATTERN = r"^(?:Q\{[\s\S]*\})?[^\s:{}#@/]+$"
+_QNAME_PATTERN = r"^(?:[^\s:{}#@/$]+:)?[^\s:{}#@/$]+$"
+_BASE64_PATTERN = r"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+_HEX_PATTERN = r"^(?:[0-9A-Fa-f]{2})*$"
 _TAG_KEY = "#value"
 
 
@@ -245,14 +260,9 @@ def _decode_token(
     context: DatatypeContext,
 ) -> object:
     """Decode one list token through its static scalar pattern, or fail closed."""
-    contract = scalar_contract(pattern)
-    if contract.kind != "atomic":
-        return _UNDECODABLE
-    datatype = getattr(pattern, "datatype", None)
-    if not datatype_supports_decode(datatype):
-        return _UNDECODABLE
+    datatype = cast(Datatype, cast(Any, pattern).datatype)
     try:
-        return cast(Datatype, datatype).decode(lexical, context)
+        return datatype.decode(lexical, context)
     except UnsupportedDatatypeOperation:
         return _UNDECODABLE
 
@@ -272,8 +282,7 @@ def _decode_list(pattern: List, lexical: str, context: DatatypeContext) -> objec
     assert plan is not None
     tokens = xml_whitespace_tokens(lexical)
     if plan.kind == "fixed":
-        if len(tokens) != len(plan.patterns):
-            return _UNDECODABLE
+        assert len(tokens) == len(plan.patterns)
         patterns = plan.patterns
     else:
         assert plan.patterns
@@ -422,7 +431,7 @@ def _value_from_candidates(
         candidate = candidates[0]
         if contract.kind == "text":
             return lexical
-        if candidate.decodable:
+        if candidate.decodable and candidate.decoded is not None:
             pattern = codec.pattern_for(contract)
             if _round_trips(codec, contract, pattern, candidate.decoded, lexical, context):
                 return candidate.decoded
@@ -457,10 +466,11 @@ def _is_xsd_list_valued(contract: ScalarContract) -> bool:
 
 
 def _is_binary(contract: ScalarContract) -> bool:
-    return contract.kind == "atomic" and contract.type_name in {
-        "base64Binary",
-        "hexBinary",
-    }
+    return (
+        contract.kind == "atomic"
+        and contract.library_uri == XSD_LIBRARY
+        and contract.type_name in {"base64Binary", "hexBinary"}
+    )
 
 
 def _decoded_string_lexical(
@@ -509,8 +519,8 @@ def _string_lexical(
         return lexical
     raise ValueError(
         f"scalar lexical {lexical!r} does not satisfy the {contract.kind} contract "
-        f"in context {_context_text(context)}; if this is a decoded value, a "
-        "decoder-only contract cannot be supplied as a string"
+        f"in context {_context_text(context)}; a bare string is always lexical, so "
+        "a decoded value requires an exact #value tag or an AlternativeValue snapshot"
     )
 
 
@@ -549,11 +559,7 @@ def _json_list_lexical(
 ) -> str:
     """Convert one JSON array to the declared RELAX NG list lexical value."""
     shape = list_shape(pattern)
-    if shape == "interpretation":
-        raise ValueError(
-            "this RELAX NG list contract has no statically representable token "
-            "shape; supply a lexical string or an exact #value tag"
-        )
+    assert shape != "interpretation"
     plan = _list_token_plan(pattern)
     assert plan is not None
     if shape == "tuple":
@@ -648,6 +654,12 @@ def _lexical_from_input(
         lexical = _string_lexical(codec, contract, pattern, value, context)
     elif mode == "json" and isinstance(value, list):
         if contract.kind == "list":
+            if not list_items_decodable(cast(List, pattern)):
+                raise ValueError(
+                    "this RELAX NG list contract has no complete decoder; supply "
+                    "a lexical string, an exact #value tag, or an AlternativeValue "
+                    "snapshot instead of a JSON array"
+                )
             lexical = _json_list_lexical(
                 codec,
                 contract,
@@ -897,11 +909,20 @@ def _tag_schema() -> dict[str, Any]:
 
 def _opaque_scalar_schema() -> dict[str, Any]:
     """A bounded inline shape for a custom decoded value."""
+    scalar: dict[str, Any] = {
+        "anyOf": [
+            {"type": "string"},
+            {"type": "number"},
+            {"type": "boolean"},
+            {"type": "null"},
+        ]
+    }
     return {
         "anyOf": [
             {"type": "string"},
             {"type": "number"},
             {"type": "boolean"},
+            {"type": "array", "items": scalar},
         ]
     }
 
@@ -937,10 +958,54 @@ def _plain_atomic_schema(contract: ScalarContract) -> dict[str, Any]:
             "x-pyxsd-type": name,
         }
     if name == "base64Binary":
-        return {"type": "string", "x-pyxsd-type": name, "x-pyxsd-encoding": "base64"}
+        return {
+            "type": "string",
+            "pattern": _BASE64_PATTERN,
+            "x-pyxsd-type": name,
+            "x-pyxsd-encoding": "base64",
+        }
     if name == "hexBinary":
-        return {"type": "string", "x-pyxsd-type": name, "x-pyxsd-encoding": "hex"}
+        return {
+            "type": "string",
+            "pattern": _HEX_PATTERN,
+            "x-pyxsd-type": name,
+            "x-pyxsd-encoding": "hex",
+        }
     return {"type": "string", "x-pyxsd-type": name}
+
+
+def _list_minimum(pattern: List) -> int:
+    """Return the static minimum token count of one plain list pattern."""
+    node = pattern.pattern
+    if isinstance(node, Choice):
+        first = node.first
+        second = node.second
+        assert isinstance(first, Empty) or isinstance(second, Empty)
+        return 0
+    assert isinstance(node, OneOrMore)
+    return 1
+
+
+def _lexical_branch(contract: ScalarContract) -> dict[str, Any] | None:
+    """The additional lexical-string input branch a contract accepts."""
+    if contract.kind == "text":
+        return None
+    if contract.kind == "list":
+        return {"type": "string"}
+    if contract.library_uri == XSD_LIBRARY and contract.type_name in _QNAME_TYPE_NAMES:
+        return {"type": "string", "pattern": _QNAME_PATTERN}
+    base = _plain_atomic_schema(contract)
+    if base.get("type") == "string":
+        return None
+    return {"type": "string"}
+
+
+def _list_item_schema(contract: ScalarContract) -> dict[str, Any]:
+    """One list item shape; JSON lexical strings remain accepted items."""
+    lexical = _lexical_branch(contract)
+    if lexical is None:
+        return _plain_atomic_schema(contract)
+    return _merge_schemas(_plain_atomic_schema(contract), lexical)
 
 
 def _list_schema(codec: ScalarCodec, contract: ScalarContract) -> dict[str, Any]:
@@ -958,16 +1023,17 @@ def _list_schema(codec: ScalarCodec, contract: ScalarContract) -> dict[str, Any]
             "items": False,
             "minItems": len(plan.patterns),
             "maxItems": len(plan.patterns),
-            "prefixItems": [
-                _plain_atomic_schema(scalar_contract(token)) for token in plan.patterns
-            ],
+            "prefixItems": [_list_item_schema(scalar_contract(token)) for token in plan.patterns],
         }
     else:
         assert plan.patterns
         body = {
             "type": "array",
-            "items": _plain_atomic_schema(scalar_contract(plan.patterns[0])),
+            "items": _list_item_schema(scalar_contract(plan.patterns[0])),
         }
+        minimum = _list_minimum(pattern)
+        if minimum > 0:
+            body["minItems"] = minimum
     body["x-pyxsd-list-shape"] = shape
     return body
 
@@ -1016,9 +1082,10 @@ def _json_schema(
             base = _list_schema(codec, contract)
         else:
             base = _atomic_schema(codec, contract)
-        # Every codec-backed position accepts its lexical form and a structural
-        # tag; typed scalar positions additionally accept their declared shape.
-        schema = _merge_schemas(base, {"type": "string"}, tag)
+        lexical = _lexical_branch(contract)
+        branches = [base] if lexical is None else [base, lexical]
+        branches.append(tag)
+        schema = _merge_schemas(*branches)
     if may_be_empty:
         schema = _merge_schemas(schema, {"type": "null"})
     return schema
@@ -1141,6 +1208,8 @@ def _serializer(
 
     def serialize(value: Any, handler: Callable[[Any], Any], info: SerializationInfo) -> Any:
         del handler
+        if value is None:
+            return None
         if isinstance(value, (AlternativeValue, ListInterpretation)):
             if info.mode == "json":
                 return scalar_tag(value)
@@ -1154,40 +1223,189 @@ def _serializer(
     return serialize
 
 
-def _restore_scalar_wrappers(value: Any, data: Any) -> Any:
+def _include_field_spec(include: Any, key: str, name: str) -> Any:
+    """Resolve one field's include spec; ``False`` means absent."""
+    if include is None:
+        return None
+    if include is True:
+        return True
+    if isinstance(include, Mapping):
+        if key in include:
+            return include[key]
+        if name in include:
+            return include[name]
+        return None
+    if isinstance(include, (set, frozenset, list, tuple)):
+        return bool(key in include or name in include)
+    return None
+
+
+def _exclude_field_spec(exclude: Any, key: str, name: str) -> Any:
+    """Resolve one field's exclude spec; ``None`` means no exclusion."""
+    if exclude is None:
+        return None
+    if isinstance(exclude, Mapping):
+        if key in exclude:
+            return exclude[key]
+        if name in exclude:
+            return exclude[name]
+        return None
+    if isinstance(exclude, (set, frozenset, list, tuple)):
+        return True if (key in exclude or name in exclude) else None
+    return None
+
+
+def _included_indices(spec: Any, length: int) -> set[int]:
+    if spec is None or spec is True:
+        return set(range(length))
+    if isinstance(spec, int):
+        return {spec} if 0 <= spec < length else set()
+    if isinstance(spec, Mapping):
+        return {
+            index
+            for index, value in spec.items()
+            if isinstance(index, int) and 0 <= index < length and value is not False
+        }
+    if isinstance(spec, (set, frozenset, list, tuple)):
+        return {index for index in spec if isinstance(index, int) and 0 <= index < length}
+    return set(range(length))
+
+
+def _excluded_indices(spec: Any, length: int) -> set[int]:
+    if spec is None:
+        return set()
+    if isinstance(spec, int):
+        return {spec} if 0 <= spec < length else set()
+    if isinstance(spec, Mapping):
+        return {
+            index
+            for index, value in spec.items()
+            if isinstance(index, int) and 0 <= index < length and value is True
+        }
+    if isinstance(spec, (set, frozenset, list, tuple)):
+        return {index for index in spec if isinstance(index, int) and 0 <= index < length}
+    return set()
+
+
+def _list_item_spec(spec: Any, index: int) -> Any:
+    if isinstance(spec, Mapping):
+        return spec.get(index)
+    return None
+
+
+def _restore_scalar_list(
+    values: list[Any] | tuple[Any, ...],
+    data: list[Any],
+    include: Any,
+    exclude: Any,
+) -> list[Any]:
+    """Restore wrappers in a filtered list by original index."""
+    length = len(values)
+    selected = _included_indices(include, length)
+    selected -= _excluded_indices(exclude, length)
+    restored: list[Any] = []
+    for index, dumped in zip(sorted(selected), data, strict=False):
+        item_include = _list_item_spec(include, index)
+        item_exclude = _list_item_spec(exclude, index)
+        restored.append(
+            _restore_scalar_wrappers(
+                values[index],
+                dumped,
+                include=item_include,
+                exclude=item_exclude,
+            )
+        )
+    return restored
+
+
+def _restore_scalar_wrappers(
+    value: Any,
+    data: Any,
+    *,
+    include: Any = None,
+    exclude: Any = None,
+) -> Any:
     """Restore wrappers recursively in a Python-mode dump tree."""
     if isinstance(value, (AlternativeValue, ListInterpretation)):
         return value
     if isinstance(value, BaseModel):
         if getattr(type(value), "__pydantic_root_model__", False):
-            return _restore_scalar_wrappers(getattr(value, "root", None), data)
+            return _restore_scalar_wrappers(
+                getattr(value, "root", None), data, include=include, exclude=exclude
+            )
         assert isinstance(data, dict)
         for name, field in getattr(type(value), "model_fields", {}).items():
-            child = getattr(value, name, None)
             key = field.alias if field.alias in data else name
-            if key in data:
-                data[key] = _restore_scalar_wrappers(child, data[key])
+            if key not in data:
+                continue
+            child = getattr(value, name, None)
+            child_include = _include_field_spec(include, key, name)
+            child_exclude = _exclude_field_spec(exclude, key, name)
+            if isinstance(child, (tuple, list)) and isinstance(data[key], list):
+                data[key] = _restore_scalar_list(
+                    child,
+                    data[key],
+                    child_include,
+                    child_exclude,
+                )
+            else:
+                data[key] = _restore_scalar_wrappers(
+                    child,
+                    data[key],
+                    include=child_include,
+                    exclude=child_exclude,
+                )
         return data
-    if isinstance(value, (tuple, list)) and isinstance(data, list):
-        return [
-            _restore_scalar_wrappers(item, dumped)
-            for item, dumped in zip(value, data, strict=False)
-        ]
     return data
 
 
-def model_dump_with_scalar_wrappers(self: Any, *args: Any, **kwargs: Any) -> Any:
+def model_dump_with_scalar_wrappers(
+    self: Any,
+    *,
+    mode: Literal["json", "python"] | str = "python",
+    include: IncEx | None = None,
+    exclude: IncEx | None = None,
+    context: Any | None = None,
+    by_alias: bool | None = None,
+    exclude_unset: bool = False,
+    exclude_defaults: bool = False,
+    exclude_none: bool = False,
+    exclude_computed_fields: bool = False,
+    round_trip: bool = False,
+    warnings: bool | Literal["none", "warn", "error"] = True,
+    fallback: Callable[[Any], Any] | None = None,
+    serialize_as_any: bool = False,
+    polymorphic_serialization: bool | None = None,
+) -> Any:
     """Public Python dumps restore exact scalar wrapper objects.
 
     Pydantic serializes dataclass values even when a wrap serializer returns the
-    object unchanged, so the generated models override :meth:`model_dump` after
-    the normal dump has applied aliases, exclusions, and defaults.  JSON mode
-    keeps the serializer's tags and contract-aware values.
+    object unchanged, so generated models override :meth:`model_dump` after the
+    normal dump has applied aliases, exclusions, and defaults.  JSON mode keeps
+    the serializer's tags and contract-aware values.  List include/exclude
+    filters use original indices when restoring wrappers, not filtered
+    positions.
     """
-    data = BaseModel.model_dump(self, *args, **kwargs)
-    if kwargs.get("mode", "python") != "python":
+    data = BaseModel.model_dump(
+        self,
+        mode=mode,
+        include=include,
+        exclude=exclude,
+        context=context,
+        by_alias=by_alias,
+        exclude_unset=exclude_unset,
+        exclude_defaults=exclude_defaults,
+        exclude_none=exclude_none,
+        exclude_computed_fields=exclude_computed_fields,
+        round_trip=round_trip,
+        warnings=warnings,
+        fallback=fallback,
+        serialize_as_any=serialize_as_any,
+        polymorphic_serialization=polymorphic_serialization,
+    )
+    if mode != "python":
         return data
-    return _restore_scalar_wrappers(self, data)
+    return _restore_scalar_wrappers(self, data, include=include, exclude=exclude)
 
 
 def _empty_string(value: Any) -> str:

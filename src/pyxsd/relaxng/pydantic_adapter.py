@@ -362,17 +362,25 @@ def _parse_name(value: object, *, what: str) -> tuple[str | None, str]:
     return None, value
 
 
+def _is_none(value: Any) -> bool:
+    """Field exclusion predicate for omitted optional attributes/children."""
+    return value is None
+
+
 def _field_info(
     alias: str,
     *,
     metadata: dict[str, Any],
     cardinality: Cardinality,
+    omit_none: bool = False,
 ) -> Any:
     repeatable = cardinality.repeatable
     options: dict[str, Any] = {
         "alias": alias,
         "json_schema_extra": metadata,
     }
+    if omit_none:
+        options["exclude_if"] = _is_none
     if repeatable:
         options["min_length"] = cardinality.minimum
         options["max_length"] = cardinality.maximum
@@ -593,6 +601,9 @@ class RelaxNGModelSet:
                     alias,
                     metadata=field_metadata,
                     cardinality=cardinality,
+                    omit_none=(
+                        cardinality.minimum == 0 and not cardinality.repeatable and alias != "$"
+                    ),
                 ),
             )
 
