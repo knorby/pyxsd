@@ -431,6 +431,54 @@ def _unique_value(
     return _value_from_candidates(codec, contracts, candidates, lexical, context)
 
 
+def _ambiguous_list_value(
+    codec: ScalarCodec,
+    contracts: tuple[ScalarContract, ...],
+    value: tuple[Any, ...] | list[Any],
+    context: DatatypeContext,
+    mode: str,
+) -> Any:
+    """Encode one statically representable list assignment at an ambiguous site.
+
+    Only whole-list contracts can encode a sequence.  Every successful encoding
+    must agree on one lexical form; otherwise the typed value does not identify
+    one honest lexical spelling.  The encoded contract must survive the normal
+    complete candidate recomputation, so a list value cannot silently fall back
+    to a different atomic alternative.
+    """
+    encodings: list[tuple[ScalarContract, str]] = []
+    for contract in contracts:
+        if contract.kind != "list":
+            continue
+        pattern = codec.pattern_for(contract)
+        try:
+            lexical = _encode_assignment(contract, pattern, value, context, mode)
+        except ValueError:
+            continue
+        encodings.append((contract, lexical))
+    if not encodings:
+        raise ValueError(
+            "an ambiguous RELAX NG scalar position requires a lexical string, "
+            "an exact #value tag, an AlternativeValue snapshot, or a list value "
+            "accepted by one declared whole-list contract"
+        )
+    lexicals = {lexical for _, lexical in encodings}
+    if len(lexicals) > 1:
+        raise ValueError(
+            "the supplied list value encodes to several lexical forms at an ambiguous "
+            "RELAX NG scalar position; supply a lexical string or a tag instead"
+        )
+    lexical = next(iter(lexicals))
+    candidates = _surviving_candidates(codec, contracts, lexical, context)
+    encoded = {contract for contract, _ in encodings}
+    if not any(candidate.contract in encoded for candidate in candidates):
+        raise ValueError(
+            "the supplied list value does not survive its declared whole-list contract "
+            f"in context {_context_text(context)}"
+        )
+    return _wrapper(codec, candidates, lexical, context)
+
+
 def _raw_value(
     codec: ScalarCodec,
     contracts: tuple[ScalarContract, ...],
@@ -440,14 +488,16 @@ def _raw_value(
 ) -> Any:
     """Validate a bare value; only a unique static contract accepts typed input."""
     if len(contracts) > 1:
-        if not isinstance(value, str):
-            raise ValueError(
-                "an ambiguous RELAX NG scalar position requires a lexical string, "
-                "an exact #value tag, or an AlternativeValue snapshot; "
-                f"got {type(value).__name__}"
-            )
-        candidates = _surviving_candidates(codec, contracts, value, context)
-        return _wrapper(codec, candidates, value, context)
+        if isinstance(value, str):
+            candidates = _surviving_candidates(codec, contracts, value, context)
+            return _wrapper(codec, candidates, value, context)
+        if isinstance(value, (tuple, list)):
+            return _ambiguous_list_value(codec, contracts, value, context, mode)
+        raise ValueError(
+            "an ambiguous RELAX NG scalar position requires a lexical string, "
+            "an exact #value tag, or an AlternativeValue snapshot; "
+            f"got {type(value).__name__}"
+        )
     return _unique_value(codec, contracts, value, context, mode)
 
 

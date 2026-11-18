@@ -518,6 +518,55 @@ def test_list_ambiguity_never_collapses_to_a_string():
     assert by_kind["list"].decoded == [12]
     assert by_kind["atomic"].decoded == 12
     assert ambiguous.model_validate("1 2").root.candidates[0].decoded == [1, 2]
+    listed = ambiguous.model_validate([1, 2]).root
+    assert listed.lexical == "1 2"
+    assert listed.candidates[0].decoded == [1, 2]
+    assert ambiguous.model_validate_json("[1, 2]").root.candidates[0].decoded == [1, 2]
+
+    _, heterogeneous = model_for(
+        '<choice><list><data type="integer"/><data type="token" datatypeLibrary=""/></list>'
+        '<data type="integer"/></choice>'
+    )
+    tuple_value = heterogeneous.model_validate((1, "a")).root
+    assert tuple_value.lexical == "1 a"
+    assert tuple_value.candidates[0].decoded == (1, "a")
+
+    _, atomic_only = model_for('<choice><data type="integer"/><data type="string"/></choice>')
+    with pytest.raises(ValidationError):
+        atomic_only.model_validate([1])
+
+    _, wrong_shape = model_for(
+        '<choice><list><zeroOrMore><data type="integer"/></zeroOrMore></list>'
+        '<data type="string"/></choice>'
+    )
+    with pytest.raises(ValidationError):
+        wrong_shape.model_validate((1, 2))
+
+    _, divergent = model_for(
+        '<choice><list><zeroOrMore><data type="boolean"/></zeroOrMore></list>'
+        '<list><zeroOrMore><data type="integer"/></zeroOrMore></list></choice>'
+    )
+    with pytest.raises(ValidationError) as error:
+        divergent.model_validate([1])
+    assert "several lexical forms" in message(error.value)
+
+    _, excluded = model_for(
+        '<choice><list><zeroOrMore><data type="integer"><except>'
+        '<value type="integer">5</value></except></data></zeroOrMore></list>'
+        '<data type="integer"/></choice>'
+    )
+    with pytest.raises(ValidationError) as error:
+        excluded.model_validate([5])
+    assert "does not survive" in message(error.value)
+
+    _, duplicate_lexical = model_for(
+        '<choice><list><zeroOrMore><data type="integer"/></zeroOrMore></list>'
+        '<list><zeroOrMore><data type="integer">'
+        '<param name="minInclusive">0</param></data></zeroOrMore></list></choice>'
+    )
+    same = duplicate_lexical.model_validate([1]).root
+    assert same.lexical == "1"
+    assert len(same.candidates) == 2
 
     fixed_schema, _ = model_for(
         '<list><data type="integer"/><data type="token" datatypeLibrary=""/></list>'
