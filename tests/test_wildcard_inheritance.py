@@ -605,6 +605,80 @@ class TestAttributeGroupAttributeUses:
         assert wildcard_errors(report) == []
         assert attribute_restriction_errors(report) == []
 
+    @pytest.mark.parametrize("xsd_version", ("1.0", "1.1"))
+    def test_a_nested_group_contributed_use_admits_a_redeclaration(self, parse, xsd_version):
+        """The base's uses include the one a nested group contributes.
+
+        The base reaches ``a`` directly through ``outer`` and ``b`` through
+        ``outer``'s reference to ``inner``; the restriction redeclares both.
+        Without the nested-group merge ``b`` looks like a new use the base's
+        wildcard has to admit.
+        """
+        report = parse(
+            """
+<xs:attributeGroup name="outer">
+  <xs:attribute name="a" type="xs:string"/>
+  <xs:attributeGroup ref="t:inner"/>
+  <xs:anyAttribute namespace="##other" processContents="lax"/>
+</xs:attributeGroup>
+<xs:attributeGroup name="inner">
+  <xs:attribute name="b" type="xs:string"/>
+</xs:attributeGroup>
+<xs:complexType name="base">
+  <xs:attributeGroup ref="t:outer"/>
+</xs:complexType>
+<xs:complexType name="derived">
+  <xs:complexContent>
+    <xs:restriction base="t:base">
+      <xs:attribute name="a" type="xs:string"/>
+      <xs:attribute name="b" type="xs:string"/>
+      <xs:anyAttribute namespace="##other" processContents="lax"/>
+    </xs:restriction>
+  </xs:complexContent>
+</xs:complexType>
+""",
+            head=NS_HEAD,
+            xsd_version=xsd_version,
+        )
+        assert attribute_restriction_errors(report) == []
+        assert wildcard_errors(report) == []
+
+    @pytest.mark.parametrize("xsd_version", ("1.0", "1.1"))
+    def test_an_extension_union_admits_a_restriction_to_the_inherited_namespace(
+        self, parse, xsd_version
+    ):
+        """``urn:extra`` from the base survives the ``urn:other`` extension.
+
+        The mirror of the test above: here the extension contributes the
+        *other* namespace and the restriction keeps the base's, so dropping
+        the base arm of the union makes ``urn:extra`` look uninherited.
+        """
+        report = parse(
+            """
+<xs:complexType name="base">
+  <xs:anyAttribute namespace="urn:extra" processContents="lax"/>
+</xs:complexType>
+<xs:complexType name="mid">
+  <xs:complexContent>
+    <xs:extension base="t:base">
+      <xs:anyAttribute namespace="urn:other" processContents="lax"/>
+    </xs:extension>
+  </xs:complexContent>
+</xs:complexType>
+<xs:complexType name="derived">
+  <xs:complexContent>
+    <xs:restriction base="t:mid">
+      <xs:anyAttribute namespace="urn:extra" processContents="lax"/>
+    </xs:restriction>
+  </xs:complexContent>
+</xs:complexType>
+""",
+            head=NS_HEAD,
+            xsd_version=xsd_version,
+        )
+        assert wildcard_errors(report) == []
+        assert attribute_restriction_errors(report) == []
+
 
 class TestAttributeWildcardInheritanceAcrossImports:
     """Each spec keeps the target namespace of the document declaring it."""
@@ -781,6 +855,20 @@ class TestAttributeGroupUseWalk:
         outer = _group_stub("outer", uses=[outer_use], refs=[_ref_stub(inner)])
         er = SimpleNamespace(attributeGroupRefs=[_ref_stub(outer)])
         assert attribute_group_attribute_uses(er, None) == {"a": outer_use}
+
+    def test_a_nested_groups_distinct_use_reaches_the_caller(self):
+        """A nested group's own attribute is a use of the referring type.
+
+        The shadowing test above cannot see this: both levels declare ``a``,
+        so a walk that never merged the nested group's declarations would
+        still answer ``{"a"}``.
+        """
+        outer_use = _StubUse("a")
+        inner_use = _StubUse("b")
+        inner = _group_stub("inner", uses=[inner_use])
+        outer = _group_stub("outer", uses=[outer_use], refs=[_ref_stub(inner)])
+        er = SimpleNamespace(attributeGroupRefs=[_ref_stub(outer)])
+        assert attribute_group_attribute_uses(er, None) == {"a": outer_use, "b": inner_use}
 
     def test_a_prohibited_group_contribution_is_not_a_use(self):
         group = _group_stub("g", uses=[_StubUse("a"), _StubUse("b", "prohibited")])
