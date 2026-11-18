@@ -1,0 +1,9 @@
+<element xmlns="http://relaxng.org/ns/structure/1.0"
+         name="doc">
+  <attribute name="a">
+    <choice>
+      <data type="integer" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"/>
+      <data type="string" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"/>
+    </choice>
+  </attribute>
+</element>

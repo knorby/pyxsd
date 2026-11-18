@@ -1,0 +1,8 @@
+<element xmlns="http://relaxng.org/ns/structure/1.0"
+         name="doc">
+  <mixed>
+    <zeroOrMore>
+      <element name="em"><text/></element>
+    </zeroOrMore>
+  </mixed>
+</element>

@@ -1,0 +1,12 @@
+<element xmlns="http://relaxng.org/ns/structure/1.0"
+         name="doc">
+  <element name="known"><text/></element>
+  <zeroOrMore>
+    <element>
+      <anyName>
+        <except><name>known</name></except>
+      </anyName>
+      <text/>
+    </element>
+  </zeroOrMore>
+</element>
