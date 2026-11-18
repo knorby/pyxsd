@@ -539,11 +539,14 @@ def test_unimplemented_production_adapter_raises_explicitly_without_xsd_path(
     monkeypatch.setattr(xsd_dict_export, "bound_to_dict", fail("bound_to_dict"))
     monkeypatch.setattr(xsd_data_import, "data_to_element", fail("data_to_element"))
 
-    with pytest.raises(RelaxNGUnsupportedAdapterError) as raised:
-        export_relaxng(document, format=format)
+    if format == "pyxsd-json":
+        assert export_relaxng(document, format=format) == {"doc": 12}
+    else:
+        with pytest.raises(RelaxNGUnsupportedAdapterError) as raised:
+            export_relaxng(document, format=format)
 
-    assert raised.value.format == format
-    assert "not implemented" in str(raised.value)
+        assert raised.value.format == format
+        assert "not implemented" in str(raised.value)
     assert xsd_calls == []
 
 

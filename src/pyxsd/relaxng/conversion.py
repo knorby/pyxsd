@@ -8,9 +8,9 @@ values requires a valid document whose evidence still describes the current
 lexical revision.  Native ``typed=False`` output and JsonML stay lexical, so
 they may export a dirty or invalid current tree; they never consult evidence.
 
-No adapter is allowed to fall back to an XSD converter.  Until the concrete
-RELAX NG adapters land, each production registry entry raises
-:class:`RelaxNGUnsupportedAdapterError` explicitly.
+No adapter is allowed to fall back to an XSD converter. The ``pyxsd-json``
+adapter uses the compiled RELAX NG projection plan; remaining entries raise
+:class:`RelaxNGUnsupportedAdapterError` explicitly until implemented.
 """
 
 from __future__ import annotations
@@ -104,10 +104,30 @@ class _UnimplementedAdapter:
         raise RelaxNGUnsupportedAdapterError(self.format)
 
 
+class _ProfileAdapter:
+    """Lossless plan-directed profile; dispatch checks evidence on every call."""
+
+    format: FormatName = "pyxsd-json"
+    requires_current_typed_evidence = True
+
+    def export(
+        self,
+        document: RelaxNGDocument,
+        *,
+        fidelity: Fidelity,
+        typed: bool,
+        always_list: bool,
+        mode: ExportMode,
+    ) -> JsonValue:
+        from pyxsd.relaxng.json_profile import export_profile
+
+        return export_profile(document.root, document.schema.projection)
+
+
 #: The single registry every RELAX NG export path resolves through.
 _ADAPTERS: dict[FormatName, ExportAdapter] = {
     "pyxsd": _UnimplementedAdapter("pyxsd", requires_current_typed_evidence=True),
-    "pyxsd-json": _UnimplementedAdapter("pyxsd-json", requires_current_typed_evidence=True),
+    "pyxsd-json": _ProfileAdapter(),
     "parker": _UnimplementedAdapter("parker", requires_current_typed_evidence=True),
     "badgerfish": _UnimplementedAdapter("badgerfish", requires_current_typed_evidence=True),
     "jsonml": _UnimplementedAdapter("jsonml", requires_current_typed_evidence=False),
