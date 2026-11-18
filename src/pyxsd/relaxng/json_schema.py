@@ -2112,8 +2112,21 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
             # declared same-local name, so counts over either set would falsely
             # reject a valid merged array.
             self.unvalidated.add("relaxng-wildcard-cardinality")
+        overlapping_wildcards: set[int] = set()
+        for index, wildcard in enumerate(child_wildcards):
+            for other in child_wildcards[index + 1 :]:
+                if _wildcards_overlap(wildcard, other):
+                    overlapping_wildcards.add(id(wildcard))
+                    overlapping_wildcards.add(id(other))
+                    if any(
+                        item.cardinality.minimum > 0 or item.cardinality.maximum is not None
+                        for item in (wildcard, other)
+                    ):
+                        self.unvalidated.add("relaxng-wildcard-cardinality")
         constraints: list[_Schema] = []
         for wildcard in child_wildcards:
+            if id(wildcard) in overlapping_wildcards:
+                continue
             if wildcard.cardinality.minimum == 0 and wildcard.cardinality.maximum is None:
                 continue
             if any(
@@ -2327,6 +2340,17 @@ def _name_class_admits_local(name_class: NameClass, local: str) -> bool:
     return any(_split_expanded(name)[1] == local for name in names)
 
 
+def _wildcards_overlap(left: WildcardContract, right: WildcardContract) -> bool:
+    """Whether two wildcard classes can share a lexical local name."""
+    left_names = _admitted_names(left.name_class)
+    right_names = _admitted_names(right.name_class)
+    if left_names is None or right_names is None:
+        return True
+    left_locals = {_split_expanded(name)[1] for name in left_names}
+    right_locals = {_split_expanded(name)[1] for name in right_names}
+    return bool(left_locals & right_locals)
+
+
 def _wildcard_tag_schema(name_class: NameClass) -> _Schema:
     """A symbolic tag schema for the names one wildcard class admits."""
     names = _admitted_names(name_class)
@@ -2417,6 +2441,17 @@ def _plan_has_unenforced_wildcard_maximum(plan: ProjectionPlan, format: str) -> 
             for field in route.children.values()
             if field.cardinality.maximum != 0
         )
+        child_wildcards = [
+            wildcard
+            for wildcard in route.wildcards
+            if wildcard.role == "child" and wildcard.cardinality.maximum not in (None, 0)
+        ]
+        for index, wildcard in enumerate(child_wildcards):
+            for other in child_wildcards[index + 1 :]:
+                if _wildcards_overlap(wildcard, other) and any(
+                    item.cardinality.maximum is not None for item in (wildcard, other)
+                ):
+                    return True
         for wildcard in route.wildcards:
             maximum = wildcard.cardinality.maximum
             if maximum is None or maximum == 0:

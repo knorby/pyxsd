@@ -3694,3 +3694,107 @@ def test_jsonml_wildcard_maximum_with_generic_field_is_disclosed() -> None:
     )
     result = schema_from_plan(plan, format="jsonml")
     assert "relaxng-wildcard-cardinality" in result["x-pyxsd-validation"]["unvalidated"]
+
+
+def _jsonml_two_wildcard_plan(
+    schema: RelaxNGSchema,
+    left: tuple[NameClass, Cardinality],
+    right: tuple[NameClass, Cardinality],
+) -> ProjectionPlan:
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    wildcard = route.wildcards[0]
+    return replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(
+                route,
+                wildcards=(
+                    replace(wildcard, name_class=left[0], cardinality=left[1]),
+                    replace(wildcard, name_class=right[0], cardinality=right[1]),
+                ),
+            ),
+        },
+    )
+
+
+def test_jsonml_overlapping_wildcards_do_not_emit_independent_counts() -> None:
+    schema = schema_for(
+        '<zeroOrMore><element><anyName/><data type="integer"/></element></zeroOrMore>'
+    )
+    unit = Cardinality(1, 1)
+    plan = _jsonml_two_wildcard_plan(schema, (AnyName(), unit), (AnyName(), unit))
+    result = schema_from_plan(plan, format="jsonml")
+    reasons = result["x-pyxsd-validation"]["unvalidated"]
+    assert reasons == sorted(reasons)
+    assert "relaxng-wildcard-cardinality" in reasons
+
+    two = format_export(schema, "<r><a>1</a><b>2</b></r>", "jsonml", fidelity="best-effort")
+    assert list(Draft202012Validator(result).iter_errors(two)) == []
+    one = format_export(schema, "<r><a>1</a></r>", "jsonml", fidelity="best-effort")
+    assert list(Draft202012Validator(result).iter_errors(one)) == []
+
+
+def test_jsonml_open_and_finite_overlapping_wildcards_disclose() -> None:
+    schema = schema_for(
+        '<zeroOrMore><element><anyName/><data type="integer"/></element></zeroOrMore>'
+    )
+    unit = Cardinality(1, 1)
+    plan = _jsonml_two_wildcard_plan(
+        schema,
+        (AnyName(), unit),
+        (NameChoice((Name(None, "b"), Name(None, "c"))), unit),
+    )
+    result = schema_from_plan(plan, format="jsonml")
+    data = format_export(schema, "<r><b>1</b><c>2</c></r>", "jsonml", fidelity="best-effort")
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+    assert "relaxng-wildcard-cardinality" in result["x-pyxsd-validation"]["unvalidated"]
+
+
+def test_jsonml_same_local_finite_wildcard_pair_discloses() -> None:
+    schema = schema_for(
+        '<zeroOrMore><element><anyName/><data type="integer"/></element></zeroOrMore>'
+    )
+    unit = Cardinality(1, 1)
+    plan = _jsonml_two_wildcard_plan(
+        schema,
+        (NameChoice((Name(None, "b"), Name(None, "c"))), unit),
+        (NameChoice((Name(None, "b"),)), unit),
+    )
+    result = schema_from_plan(plan, format="jsonml")
+    data = format_export(schema, "<r><b>1</b><c>2</c></r>", "jsonml", fidelity="best-effort")
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+    assert "relaxng-wildcard-cardinality" in result["x-pyxsd-validation"]["unvalidated"]
+
+
+def test_jsonml_disjoint_finite_wildcard_pair_keeps_counts() -> None:
+    schema = schema_for(
+        '<zeroOrMore><element><anyName/><data type="integer"/></element></zeroOrMore>'
+    )
+    unit = Cardinality(1, 1)
+    plan = _jsonml_two_wildcard_plan(
+        schema,
+        (NameChoice((Name(None, "b"),)), unit),
+        (NameChoice((Name(None, "c"),)), unit),
+    )
+    result = schema_from_plan(plan, format="jsonml")
+    data = format_export(schema, "<r><b>1</b><c>2</c></r>", "jsonml", fidelity="best-effort")
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+    assert "relaxng-wildcard-cardinality" not in result["x-pyxsd-validation"]["unvalidated"]
+    missing = format_export(schema, "<r><b>1</b></r>", "jsonml", fidelity="best-effort")
+    assert list(Draft202012Validator(result).iter_errors(missing))
+    too_many = format_export(schema, "<r><b>1</b><b>2</b></r>", "jsonml", fidelity="best-effort")
+    assert list(Draft202012Validator(result).iter_errors(too_many))
+
+
+def test_jsonml_overlapping_unbounded_wildcards_stay_reason_free() -> None:
+    schema = schema_for(
+        '<zeroOrMore><element><anyName/><data type="integer"/></element></zeroOrMore>'
+    )
+    unbounded = Cardinality(0, None)
+    plan = _jsonml_two_wildcard_plan(schema, (AnyName(), unbounded), (AnyName(), unbounded))
+    result = schema_from_plan(plan, format="jsonml")
+    data = format_export(schema, "<r><a>1</a><b>2</b></r>", "jsonml", fidelity="best-effort")
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+    assert "relaxng-wildcard-cardinality" not in result["x-pyxsd-validation"]["unvalidated"]
