@@ -93,26 +93,29 @@ _TAG_KEY = "#value"
 #: One NCName-shaped token as the lexical formats spell local names.
 _NCNAME = "[^\\s:{}#@/$]+"
 
+#: A lexical QName prefix; ``xmlns`` is reserved for declarations.
+_PREFIX = f"(?!xmlns:){_NCNAME}"
+
 #: A lexical QName: an optional prefix and one local name.
-_QNAME_PATTERN = f"^(?:{_NCNAME}:)?{_NCNAME}$"
+_QNAME_PATTERN = f"^(?:{_PREFIX}:)?{_NCNAME}$"
 
 #: A native Clark name: ``{uri}local`` or a bare local name.
-_CLARK_PATTERN = "^(?:\\{[\\s\\S]*\\})?[^\\s:{}#@/]+$"
+_CLARK_PATTERN = "^(?:\\{[\\s\\S]*\\})?[^\\s:{}#@/$]+$"
 
 #: Native attribute keys: ``@`` plus a Clark name, never a namespace declaration.
 _CLARK_ATTRIBUTE_PATTERN = (
     "^@(?!xmlns$)(?!Q\\{http://www\\.w3\\.org/2000/xmlns/\\})"
-    "(?!\\{http://www\\.w3\\.org/2000/xmlns/\\})(?:\\{[\\s\\S]*\\})?[^\\s:{}#@/]+$"
+    "(?!\\{http://www\\.w3\\.org/2000/xmlns/\\})(?:\\{[\\s\\S]*\\})?[^\\s:{}#@/$]+$"
 )
 
 #: BadgerFish attribute keys: ``@`` plus a lexical QName.
-_LEXICAL_ATTRIBUTE_PATTERN = f"^@(?!xmlns$)(?:{_NCNAME}:)?{_NCNAME}$"
+_LEXICAL_ATTRIBUTE_PATTERN = f"^@(?!xmlns(?::|$))(?:{_NCNAME}:)?{_NCNAME}$"
 
 #: JsonML attribute keys: a lexical QName, never a namespace declaration.
 _JSONML_ATTRIBUTE_PATTERN = f"^(?!xmlns(?::|$))(?:{_NCNAME}:)?{_NCNAME}$"
 
 #: One namespace-declaration prefix (the default binding is the empty string).
-_NAMESPACE_PREFIX_PATTERN = f"^(?:{_NCNAME})?$"
+_NAMESPACE_PREFIX_PATTERN = f"^(?!xmlns$)(?:{_NCNAME})?$"
 
 #: XSD 1.0 atomic families whose decoded values share one JSON representation.
 _XSD_INTEGER_TYPES = frozenset(
@@ -966,6 +969,8 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         if format == "jsonml":
             self.unvalidated.add("relaxng-lexical-name-binding")
             self.unvalidated.add("relaxng-prefix-scope")
+        if format in ("badgerfish", "jsonml") and _plan_has_custom_scalars(plan):
+            self.unvalidated.add("relaxng-custom-qname-declarations")
 
     # ------------------------------------------------------------------
     # Entry point, definitions, and root selection
@@ -1147,9 +1152,16 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         """Whether an element can omit every attribute and child."""
         if any(field.cardinality.minimum > 0 for field in route.attributes.values()):
             return False
+        return self._children_can_be_absent(route)
+
+    def _children_can_be_absent(self, route: RouteContract) -> bool:
+        """Whether every child can be absent, ignoring dropped attributes."""
         if any(field.cardinality.minimum > 0 for field in route.children.values()):
             return False
-        return not any(wildcard.cardinality.minimum > 0 for wildcard in route.wildcards)
+        return not any(
+            wildcard.role == "child" and wildcard.cardinality.minimum > 0
+            for wildcard in route.wildcards
+        )
 
     @staticmethod
     def _require_property(body: _Schema, pattern: str) -> None:
@@ -1159,7 +1171,14 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         )
 
     def _attribute_site(self, field: FieldContract, route: RouteContract) -> _Schema:
-        """One attribute value from its own and the element's scalar evidence."""
+        """One attribute value from its own scalar evidence only.
+
+        An attribute with no contracts is lexical even when the element's
+        content is typed; attribute evidence never borrows the element's
+        content contracts in that case.
+        """
+        if not field.scalar_contracts:
+            return {"type": "string"}
         contracts = (
             *field.scalar_contracts,
             *_content_scalar_contracts(route.content.model),
@@ -1444,7 +1463,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 else {"type": "string"}
             )
             branches: list[_Schema] = []
-            if self._can_be_empty(route):
+            if self._children_can_be_absent(route):
                 branches.extend([{"type": "object", "maxProperties": 0}, scalar])
             branches.append(self._parker_object(route, layout))
             return {
@@ -1461,12 +1480,25 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
             if not self._fits(field):
                 continue
             groups.setdefault(_local_name(expanded), []).append(field)
+        child_wildcards = self._child_wildcards(route)
         properties: dict[str, Any] = {}
         required: list[str] = []
         for local in sorted(groups):
             entries = groups[local]
-            values = _any_of([self._child_field_value(field) for field in entries])
-            if len(entries) == 1:
+            overlapping = [
+                wildcard
+                for wildcard in child_wildcards
+                if _name_class_admits_local(wildcard.name_class, local)
+            ]
+            values = _any_of(
+                [
+                    *(self._child_field_value(field) for field in entries),
+                    *(self._wildcard_child_value(wildcard) for wildcard in overlapping),
+                ]
+            )
+            if overlapping:
+                value = self._parker_wildcard_group(entries, overlapping, values)
+            elif len(entries) == 1:
                 value = self._observed_group(values, entries[0].cardinality)
             else:
                 value = self._parker_merged_group(entries, values)
@@ -1476,7 +1508,6 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         if layout == "mixed":
             self.unvalidated.add("relaxng-mixed-order")
             properties["$"] = {"type": "string"}
-        child_wildcards = self._child_wildcards(route)
         if not properties and not child_wildcards:
             return {
                 "type": "object",
@@ -1516,6 +1547,39 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         else:
             body["additionalProperties"] = False
         return body
+
+    def _parker_wildcard_group(
+        self,
+        entries: list[FieldContract],
+        wildcards: list[WildcardContract],
+        values: _Schema,
+    ) -> _Schema:
+        """A declared local that best-effort Parker merges with wildcard names."""
+        self.unvalidated.add("relaxng-local-name-mapping")
+        minimum = sum(field.cardinality.minimum for field in entries)
+        declared_maximum = (
+            None
+            if any(field.cardinality.maximum is None for field in entries)
+            else sum(field.cardinality.maximum or 0 for field in entries)
+        )
+        maximum = (
+            None
+            if declared_maximum is None
+            or any(wildcard.cardinality.maximum is None for wildcard in wildcards)
+            else declared_maximum + sum(wildcard.cardinality.maximum or 0 for wildcard in wildcards)
+        )
+        branches: list[_Schema] = []
+        if minimum <= 1:
+            branches.append(values)
+        array: _Schema = {
+            "type": "array",
+            "items": values,
+            "minItems": max(2, minimum),
+        }
+        if maximum is not None:
+            array["maxItems"] = maximum
+        branches.append(array)
+        return _any_of(branches)
 
     def _parker_merged_group(self, entries: list[FieldContract], values: _Schema) -> _Schema:
         """One local key shared by several expanded names."""
@@ -1596,7 +1660,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         else:
             body["propertyNames"] = {
                 "type": "string",
-                "pattern": f"^{_NCNAME}:{re.escape(local)}$",
+                "pattern": f"^{_PREFIX}:{re.escape(local)}$",
             }
             body["additionalProperties"] = value
         return body
@@ -1667,7 +1731,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         for (namespaced, local), entries in sorted(attribute_groups.items()):
             value = _any_of([self._attribute_site(field, route) for field in entries])
             if namespaced:
-                pattern = f"^@{_NCNAME}:{re.escape(local)}$"
+                pattern = f"^@{_PREFIX}:{re.escape(local)}$"
                 patterns[pattern] = value
                 if any(field.cardinality.minimum > 0 for field in entries):
                     pattern_requirements.append(pattern)
@@ -1692,7 +1756,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 ]
             )
             if namespaced:
-                pattern = f"^{_NCNAME}:{re.escape(local)}$"
+                pattern = f"^{_PREFIX}:{re.escape(local)}$"
                 patterns[pattern] = value
                 if any(field.cardinality.minimum > 0 for field in entries):
                     pattern_requirements.append(pattern)
@@ -1865,10 +1929,12 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         generic: bool,
     ) -> _Schema:
         layout = _exporter_layout(route, generic)
-        attributes, required_attributes, attributes_possible = self._jsonml_attributes(route)
+        attributes, _required_attributes, attributes_possible, required = self._jsonml_attributes(
+            route
+        )
         content = self._jsonml_content(route, layout)
         branches: list[_Schema] = []
-        if not required_attributes:
+        if not required:
             branches.append(self._jsonml_branch(tag, None, content, layout))
         if attributes_possible:
             branches.append(self._jsonml_branch(tag, attributes, content, layout))
@@ -1981,18 +2047,40 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
             if not self._fits(field):
                 continue
             groups.setdefault((expanded.startswith("{"), _local_name(expanded)), []).append(field)
+        child_wildcards = self._child_wildcards(route)
+        declared_locals = {
+            _local_name(expanded)
+            for expanded in route.children
+            if self._fits(route.children[expanded])
+        }
+        overlapping_locals = {
+            local
+            for local in declared_locals
+            if any(
+                _name_class_admits_local(wildcard.name_class, local) for wildcard in child_wildcards
+            )
+        }
+        if overlapping_locals:
+            # A lexical tag pattern cannot distinguish a wildcard name from a
+            # declared same-local name, so counts over either set would falsely
+            # reject a valid merged array.
+            self.unvalidated.add("relaxng-wildcard-cardinality")
         constraints: list[_Schema] = []
-        for wildcard in self._child_wildcards(route):
+        for wildcard in child_wildcards:
             if wildcard.cardinality.minimum == 0 and wildcard.cardinality.maximum is None:
                 continue
+            if any(
+                _name_class_admits_local(wildcard.name_class, local) for local in declared_locals
+            ):
+                continue
             wildcard_constraint: _Schema = {
-                "contains": self._wildcard_child_value(wildcard),
+                "contains": self._jsonml_wildcard_contains_item(wildcard),
                 "minContains": wildcard.cardinality.minimum,
             }
             if wildcard.cardinality.maximum is not None:
                 wildcard_constraint["maxContains"] = wildcard.cardinality.maximum
             constraints.append(wildcard_constraint)
-        for entries in groups.values():
+        for (_namespaced, local), entries in groups.items():
             minimum = sum(field.cardinality.minimum for field in entries)
             maximum = (
                 None
@@ -2005,7 +2093,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 "contains": _any_of([self._jsonml_contains_item(field) for field in entries]),
                 "minContains": minimum,
             }
-            if maximum is not None:
+            if maximum is not None and local not in overlapping_locals:
                 constraint["maxContains"] = maximum
             constraints.append(constraint)
         return constraints
@@ -2013,17 +2101,28 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
     def _jsonml_contains_item(self, field: FieldContract) -> _Schema:
         """One named child array, pinned to its own finite tag."""
         assert field.expanded_name is not None
+        return self._jsonml_tagged_array(
+            self._child_field_value(field),
+            _finite_tag_schema(field.expanded_name),
+        )
+
+    def _jsonml_wildcard_contains_item(self, wildcard: WildcardContract) -> _Schema:
+        """One wildcard child array, pinned to the wildcard's finite tags."""
+        return self._jsonml_tagged_array(
+            self._wildcard_child_value(wildcard),
+            _wildcard_tag_schema(wildcard.name_class),
+        )
+
+    @staticmethod
+    def _jsonml_tagged_array(value: _Schema, tag: _Schema) -> _Schema:
         return {
             "allOf": [
-                self._child_field_value(field),
-                {
-                    "type": "array",
-                    "prefixItems": [_finite_tag_schema(field.expanded_name)],
-                },
+                value,
+                {"type": "array", "prefixItems": [tag]},
             ]
         }
 
-    def _jsonml_attributes(self, route: RouteContract) -> tuple[_Schema, list[str], bool]:
+    def _jsonml_attributes(self, route: RouteContract) -> tuple[_Schema, list[str], bool, bool]:
         properties: dict[str, Any] = {}
         required: list[str] = []
         patterns: dict[str, _Schema] = {}
@@ -2036,7 +2135,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         for (namespaced, local), entries in sorted(groups.items()):
             value = _any_of([self._attribute_site(field, route) for field in entries])
             if namespaced:
-                pattern = f"^(?!xmlns:){_NCNAME}:{re.escape(local)}$"
+                pattern = f"^{_PREFIX}:{re.escape(local)}$"
                 patterns[pattern] = value
                 if any(field.cardinality.minimum > 0 for field in entries):
                     requirements.append(pattern)
@@ -2046,7 +2145,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                     required.append(local)
         if self._declarations_possible:
             properties["xmlns"] = {"type": "string"}
-            patterns[f"^xmlns:(?!xml$){_NCNAME}$"] = {"type": "string"}
+            patterns[f"^xmlns:(?!xml$)(?!xmlns$){_NCNAME}$"] = {"type": "string"}
         for wildcard in self._attribute_wildcards(route):
             patterns[_JSONML_ATTRIBUTE_PATTERN] = self._wildcard_attribute_site(wildcard)
             self.unvalidated.add("relaxng-attribute-name-class")
@@ -2073,7 +2172,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 _name_class_metadata(wildcard.name_class)
                 for wildcard in self._attribute_wildcards(route)
             ]
-        return body, required, possible
+        return body, required, possible, bool(required or requirements)
 
     def _jsonml_disclosures(self, route: RouteContract, layout: str) -> None:
         if self._child_wildcards(route):
@@ -2137,7 +2236,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 "propertyNames": {
                     "anyOf": [
                         {"pattern": _JSONML_ATTRIBUTE_PATTERN},
-                        {"pattern": f"^(?:xmlns|xmlns:{_NCNAME})$"},
+                        {"pattern": f"^(?:xmlns|xmlns:(?!xmlns$){_NCNAME})$"},
                     ]
                 },
                 "additionalProperties": self._scalar_union_ref(),
@@ -2162,7 +2261,7 @@ def _finite_tag_schema(name: str) -> _Schema:
     uri, local = _split_expanded(name)
     if uri is None:
         return {"const": local}
-    return {"type": "string", "pattern": f"^{_NCNAME}:{re.escape(local)}$"}
+    return {"type": "string", "pattern": f"^{_PREFIX}:{re.escape(local)}$"}
 
 
 def _open_tag_schema() -> _Schema:
@@ -2171,6 +2270,79 @@ def _open_tag_schema() -> _Schema:
         "pattern": _QNAME_PATTERN,
         "x-pyxsd-wildcard": True,
     }
+
+
+def _name_class_admits_local(name_class: NameClass, local: str) -> bool:
+    """Whether a name class can admit a name with this local name."""
+    names = _admitted_names(name_class)
+    if names is None:
+        return True
+    return any(_split_expanded(name)[1] == local for name in names)
+
+
+def _wildcard_tag_schema(name_class: NameClass) -> _Schema:
+    """A symbolic tag schema for the names one wildcard class admits."""
+    names = _admitted_names(name_class)
+    if names is None:
+        return _open_tag_schema()
+    if not names:
+        return {"not": {}}
+    return _any_of([_finite_tag_schema(name) for name in names])
+
+
+def _pattern_has_custom_datatype(pattern: Pattern, seen: set[int]) -> bool:
+    """Whether a list pattern contains a custom datatype token."""
+    if id(pattern) in seen:
+        return False
+    seen.add(id(pattern))
+    if isinstance(pattern, (Data, DataExcept, Value)):
+        return scalar_contract(pattern).library_uri not in (
+            BUILTIN_LIBRARY,
+            XSD_LIBRARY,
+        )
+    if isinstance(pattern, Ref):
+        return _pattern_has_custom_datatype(pattern.target, seen)
+    if isinstance(pattern, List):
+        return _pattern_has_custom_datatype(pattern.pattern, seen)
+    if isinstance(pattern, (Choice, Group)):
+        return _pattern_has_custom_datatype(pattern.first, seen) or _pattern_has_custom_datatype(
+            pattern.second, seen
+        )
+    if isinstance(pattern, OneOrMore):
+        return _pattern_has_custom_datatype(pattern.pattern, seen)
+    return False
+
+
+def _contract_has_custom_library(contract: ScalarContract, plan: ProjectionPlan) -> bool:
+    if contract.kind == "atomic":
+        return contract.library_uri not in (BUILTIN_LIBRARY, XSD_LIBRARY)
+    if contract.kind != "list":
+        return False
+    pattern = plan.encoding_patterns[contract.pattern_identity]
+    assert isinstance(pattern, List)
+    return _pattern_has_custom_datatype(pattern, set())
+
+
+def _plan_has_custom_scalars(plan: ProjectionPlan) -> bool:
+    """Whether any scalar site can carry custom-datatype output."""
+    for route in plan.routes.values():
+        if any(
+            _contract_has_custom_library(contract, plan)
+            for contract in route.content.scalar_contracts
+        ):
+            return True
+        for field in (*route.attributes.values(), *route.children.values()):
+            if any(
+                _contract_has_custom_library(contract, plan) for contract in field.scalar_contracts
+            ):
+                return True
+        for wildcard in route.wildcards:
+            if any(
+                _contract_has_custom_library(contract, plan)
+                for contract in wildcard.scalar_contracts
+            ):
+                return True
+    return False
 
 
 def _plan_has_namespaced_names(plan: ProjectionPlan) -> bool:

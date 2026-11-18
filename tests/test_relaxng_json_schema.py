@@ -30,6 +30,7 @@ from pyxsd.relaxng import RelaxNGSchema
 from pyxsd.relaxng.datatypes import Datatype, DatatypeFactory, DatatypeLibraryRegistration
 from pyxsd.relaxng.json_profile import export_profile
 from pyxsd.relaxng.json_schema import (
+    _QNAME_PATTERN,
     _admitted_names,
     _any_of,
     _apply_cardinality,
@@ -55,6 +56,7 @@ from pyxsd.relaxng.patterns import (
     Text,
 )
 from pyxsd.relaxng.projection import Cardinality, ContentContract, ProjectionPlan
+from pyxsd.xsd_data_types import QName, qname_context
 
 NS = "http://relaxng.org/ns/structure/1.0"
 XSD = "http://www.w3.org/2001/XMLSchema-datatypes"
@@ -1797,7 +1799,7 @@ def test_finite_lexical_roots_require_a_prefix_and_use_any_of() -> None:
         serialized = json.dumps(result)
         assert "ns0" not in serialized
         assert ':"' not in serialized
-        assert "^[^\\\\s:{}#@/$]+:a$" in serialized or "^[^\\\\s:{}#@/$]+:b$" in serialized
+        assert ":a$" in serialized or ":b$" in serialized
         assert_valid(schema, exported(schema, '<a xmlns="urn:a"/>'), element=None)
         assert_valid(schema, exported(schema, '<b xmlns="urn:b"/>'), element=None)
 
@@ -2836,3 +2838,382 @@ def test_conventional_tags_are_rejected_in_scalar_positions() -> None:
     assert format_errors(integer, {"r": {"#value": {}}}, "badgerfish")
     assert format_errors(integer, ["r", {"#value": {}}], "jsonml")
     assert format_errors(integer, {"$": {"#value": {}}}, "pyxsd", "r")
+
+
+def test_attribute_with_empty_contracts_stays_lexical() -> None:
+    fixtures = [
+        ('<attribute name="e"><empty/></attribute><empty/>', '<r e=""/>'),
+        ('<attribute name="e"><empty/></attribute><data type="integer"/>', '<r e="">3</r>'),
+        ('<optional><attribute name="e"><empty/></attribute></optional><empty/>', "<r/>"),
+        ('<optional><attribute name="e"><empty/></attribute></optional><empty/>', '<r e=""/>'),
+    ]
+    for content, xml in fixtures:
+        schema = schema_for(content)
+        for format in ("pyxsd", "badgerfish", "jsonml"):
+            element = "r" if format == "pyxsd" else None
+            assert_export_valid(schema, xml, format, element, fidelity="best-effort")
+
+    required = schema_for('<attribute name="e"><empty/></attribute><data type="integer"/>')
+    native = format_schema(required, "pyxsd", "r")
+    assert native["properties"]["@e"] == {"type": "string"}
+    assert format_errors(required, {"@e": 3, "$": 3}, "pyxsd", "r")
+    assert format_errors(required, {"r": {"@e": 3, "$": 3}}, "badgerfish")
+    assert format_errors(required, ["r", {"e": 3}, 3], "jsonml")
+
+
+def test_native_child_wildcard_does_not_match_the_text_key() -> None:
+    schema = schema_for(
+        '<mixed><zeroOrMore><element><anyName/><data type="integer"/></element></zeroOrMore></mixed>'
+    )
+    data = assert_export_valid(
+        schema,
+        '<r><x xmlns="urn:a">1</x>hello</r>',
+        "pyxsd",
+        "r",
+        fidelity="best-effort",
+    )
+    assert data["$"] == "hello"
+
+    listed = format_schema(schema, "pyxsd", "r", always_list=True)
+    listed_data = format_export(
+        schema,
+        '<r><x xmlns="urn:a">1</x>hello</r>',
+        "pyxsd",
+        always_list=True,
+        fidelity="best-effort",
+    )
+    assert list(Draft202012Validator(listed).iter_errors(listed_data)) == []
+
+    nested = schema_for(
+        '<element name="c"><mixed><zeroOrMore><element><anyName/>'
+        '<data type="integer"/></element></zeroOrMore></mixed></element>'
+    )
+    nested_data = assert_export_valid(
+        nested,
+        '<r><c><x xmlns="urn:a">1</x>hello</c></r>',
+        "pyxsd",
+        "r",
+        fidelity="best-effort",
+    )
+    assert nested_data["c"]["$"] == "hello"
+
+
+def _finite_wildcard_plan(
+    schema: RelaxNGSchema, names: tuple[str, ...], cardinality: Cardinality
+) -> ProjectionPlan:
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    wildcard = route.wildcards[0]
+    name_class = NameChoice(tuple(Name(None, name) for name in names))
+    return replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(
+                route,
+                wildcards=(
+                    replace(
+                        wildcard,
+                        name_class=name_class,
+                        cardinality=cardinality,
+                    ),
+                ),
+            ),
+        },
+    )
+
+
+def test_jsonml_wildcard_contains_skips_declared_local_overlap() -> None:
+    schema = schema_for(
+        '<element name="x" ns="urn:a"><data type="integer"/></element>'
+        "<zeroOrMore><element><anyName><except><name>x</name></except></anyName>"
+        '<data type="integer"/></element></zeroOrMore>'
+    )
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    plan = replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(
+                route,
+                wildcards=(replace(route.wildcards[0], cardinality=Cardinality(1, 2)),),
+            ),
+        },
+    )
+    result = schema_from_plan(plan, format="jsonml")
+    data = format_export(
+        schema,
+        '<r xmlns:a="urn:a" xmlns:b="urn:b"><a:x>1</a:x><b:x>2</b:x></r>',
+        "jsonml",
+        fidelity="best-effort",
+    )
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+    assert "relaxng-wildcard-cardinality" in result["x-pyxsd-validation"]["unvalidated"]
+
+
+def test_jsonml_disjoint_wildcard_contains_stays_counted() -> None:
+    schema = schema_for(
+        '<element name="a"><data type="integer"/></element>'
+        "<zeroOrMore><element><anyName><except><name>a</name></except></anyName>"
+        '<data type="integer"/></element></zeroOrMore>'
+    )
+    plan = _finite_wildcard_plan(schema, ("b", "c"), Cardinality(1, 2))
+    result = schema_from_plan(plan, format="jsonml")
+
+    data = format_export(
+        schema, "<r><a>1</a><b>2</b><c>3</c></r>", "jsonml", fidelity="best-effort"
+    )
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+    too_many = format_export(
+        schema,
+        "<r><a>1</a><b>2</b><c>3</c><b>4</b></r>",
+        "jsonml",
+        fidelity="best-effort",
+    )
+    assert list(Draft202012Validator(result).iter_errors(too_many))
+    assert "relaxng-wildcard-cardinality" not in result["x-pyxsd-validation"]["unvalidated"]
+
+
+def test_parker_best_effort_merges_declared_and_wildcard_locals() -> None:
+    schema = schema_for(
+        '<element name="x" ns="urn:a"><data type="integer"/></element>'
+        "<zeroOrMore><element><anyName><except><name>x</name></except></anyName>"
+        '<data type="integer"/></element></zeroOrMore>'
+    )
+    data = assert_export_valid(
+        schema,
+        '<r xmlns:a="urn:a" xmlns:b="urn:b"><a:x>1</a:x><b:x>2</b:x></r>',
+        "parker",
+        "r",
+        fidelity="best-effort",
+    )
+    assert data == {"x": [1, 2]}
+    assert (
+        "relaxng-local-name-mapping"
+        in format_schema(schema, "parker", "r")["x-pyxsd-validation"]["unvalidated"]
+    )
+    with pytest.raises(PyXSDError):
+        format_export(
+            schema,
+            '<r xmlns:a="urn:a" xmlns:b="urn:b"><a:x>1</a:x><b:x>2</b:x></r>',
+            "parker",
+            fidelity="strict",
+        )
+
+
+def test_parker_mixed_text_ignores_dropped_required_attributes() -> None:
+    schema = schema_for(
+        '<attribute name="q"><data type="integer"/></attribute>'
+        '<mixed><zeroOrMore><element name="i"><data type="string"/></element>'
+        "</zeroOrMore></mixed>"
+    )
+    data = assert_export_valid(schema, '<r q="1">hi</r>', "parker", "r", fidelity="best-effort")
+    assert data == "hi"
+    with pytest.raises(PyXSDError):
+        format_export(schema, '<r q="1">hi</r>', "parker", fidelity="strict")
+
+
+def test_jsonml_required_namespaced_attribute_suppresses_empty_attrs() -> None:
+    schema = schema_for('<attribute name="q" ns="urn:a"><data type="integer"/></attribute><empty/>')
+    result = format_schema(schema, "jsonml")
+    data = format_export(schema, '<r xmlns:a="urn:a" a:q="1"/>', "jsonml", fidelity="best-effort")
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+    assert format_errors(schema, ["r"], "jsonml")
+
+
+def test_badgerfish_rejects_xmlns_prefixed_attribute_keys() -> None:
+    schema = schema_for("<zeroOrMore><attribute><anyName/><text/></attribute></zeroOrMore><empty/>")
+    assert format_errors(schema, {"r": {"@xmlns:p": "urn:x"}}, "badgerfish", "r")
+
+
+def test_reserved_xmlns_prefix_is_rejected_in_lexical_names() -> None:
+    opened = schema_for('<anyName/><data type="string"/>', name="")
+    qname = schema_for('<data type="QName"/>')
+    finite = schema_for("<empty/>", name='name="r" ns="urn:a"')
+
+    assert format_errors(opened, {"xmlns:r": ""}, "badgerfish")
+    assert format_errors(opened, ["xmlns:r"], "jsonml")
+    assert format_errors(finite, {"xmlns:r": {}}, "badgerfish")
+    assert format_errors(finite, ["xmlns:r"], "jsonml")
+    assert format_errors(qname, {"r": "xmlns:p"}, "badgerfish")
+
+    schema = schema_for('<data type="string"/>')
+    assert format_errors(schema, {"r": {"@xmlns": {"xmlns": "urn:x"}, "$": "v"}}, "badgerfish")
+    assert format_errors(schema, ["r", {"xmlns:xmlns": "urn:x"}, "v"], "jsonml")
+
+
+def test_custom_qname_decoders_declare_prefixes() -> None:
+    with qname_context({"p": "urn:custom"}):
+        resolved = QName("p:v")
+    schema = custom_schema(
+        '<data type="value" datatypeLibrary="urn:custom"/>',
+        "urn:custom",
+        value=resolved,
+        decodable=True,
+        named=True,
+    )
+
+    for format in ("badgerfish", "jsonml"):
+        data = assert_export_valid(schema, "<r>x</r>", format)
+        serialized = json.dumps(data)
+        if format == "badgerfish":
+            assert "@xmlns" in serialized
+        else:
+            assert "xmlns:" in serialized
+        assert (
+            "relaxng-custom-qname-declarations"
+            in format_schema(schema, format)["x-pyxsd-validation"]["unvalidated"]
+        )
+
+
+def test_custom_scalar_declaration_disclosure_covers_lists() -> None:
+    atomic = custom_schema(
+        '<data type="value" datatypeLibrary="urn:custom"/>',
+        "urn:custom",
+        value=5,
+        decodable=True,
+        named=True,
+    )
+    listed = custom_schema(
+        '<list><oneOrMore><data type="value" datatypeLibrary="urn:custom"/></oneOrMore></list>',
+        "urn:custom",
+        value=5,
+        decodable=True,
+        named=True,
+    )
+
+    assert (
+        "relaxng-custom-qname-declarations"
+        in format_schema(atomic, "badgerfish")["x-pyxsd-validation"]["unvalidated"]
+    )
+    for schema, xml in ((atomic, "<r>x</r>"), (listed, "<r>x y</r>")):
+        assert_export_valid(schema, xml, "badgerfish")
+        assert (
+            "relaxng-custom-qname-declarations"
+            in format_schema(schema, "jsonml")["x-pyxsd-validation"]["unvalidated"]
+        )
+
+
+def test_parker_overlapping_wildcard_static_counts() -> None:
+    schema = schema_for(
+        '<oneOrMore><element name="x" ns="urn:a"><data type="integer"/></element>'
+        "</oneOrMore>"
+        "<zeroOrMore><element><anyName><except><name>x</name></except></anyName>"
+        '<data type="integer"/></element></zeroOrMore>'
+    )
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    field = route.children["{urn:a}x"]
+    wildcard = route.wildcards[0]
+    plan = replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(
+                route,
+                children={"{urn:a}x": replace(field, cardinality=Cardinality(2, 2))},
+                wildcards=(replace(wildcard, cardinality=Cardinality(1, 2)),),
+            ),
+        },
+    )
+    result = schema_from_plan(plan, "r", format="parker")
+    data = format_export(
+        schema,
+        '<r xmlns:a="urn:a" xmlns:b="urn:b"><a:x>1</a:x><a:x>2</a:x><b:x>3</b:x></r>',
+        "parker",
+        fidelity="best-effort",
+    )
+    assert data == {"x": [1, 2, 3]}
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+
+
+def test_wildcard_tag_and_custom_pattern_helpers() -> None:
+    from pyxsd.relaxng.json_schema import (
+        _pattern_has_custom_datatype,
+        _wildcard_tag_schema,
+    )
+
+    assert _wildcard_tag_schema(NameChoice(())) == {"not": {}}
+    assert _wildcard_tag_schema(AnyName()) == {
+        "type": "string",
+        "pattern": _QNAME_PATTERN,
+        "x-pyxsd-wildcard": True,
+    }
+
+    integer = Data(object())
+    assert not _pattern_has_custom_datatype(integer, {id(integer)})
+    assert not _pattern_has_custom_datatype(Empty(), set())
+    reference = Ref()
+    reference.bind(Empty())
+    assert not _pattern_has_custom_datatype(reference, set())
+
+
+def test_custom_field_and_wildcard_scalars_are_disclosed() -> None:
+    attribute = custom_schema(
+        '<attribute name="a"><data type="value" datatypeLibrary="urn:custom"/></attribute><empty/>',
+        "urn:custom",
+        value=5,
+        decodable=True,
+        named=True,
+    )
+    wildcard = custom_schema(
+        "<zeroOrMore><attribute><anyName/>"
+        '<data type="value" datatypeLibrary="urn:custom"/></attribute></zeroOrMore>'
+        "<empty/>",
+        "urn:custom",
+        value="x",
+        decodable=False,
+        named=True,
+    )
+    empty_list = schema_for("<list><empty/></list>")
+
+    assert (
+        "relaxng-custom-qname-declarations"
+        in format_schema(attribute, "badgerfish")["x-pyxsd-validation"]["unvalidated"]
+    )
+    assert (
+        "relaxng-custom-qname-declarations"
+        in format_schema(wildcard, "jsonml")["x-pyxsd-validation"]["unvalidated"]
+    )
+    assert (
+        "relaxng-custom-qname-declarations"
+        not in format_schema(empty_list, "jsonml")["x-pyxsd-validation"]["unvalidated"]
+    )
+    assert_export_valid(attribute, '<r a="x"/>', "badgerfish", "r")
+    assert_export_valid(wildcard, '<r q="x"/>', "jsonml", "r")
+
+
+def test_jsonml_same_local_required_child_does_not_overcount() -> None:
+    schema = schema_for(
+        '<element name="x" ns="urn:a"><data type="integer"/></element>'
+        "<zeroOrMore><element><anyName><except><name>x</name></except></anyName>"
+        '<data type="integer"/></element></zeroOrMore>'
+    )
+    route_id = schema.projection.roots[0]
+    route = schema.projection.routes[route_id]
+    plan = replace(
+        schema.projection,
+        routes={
+            **schema.projection.routes,
+            route_id: replace(
+                route,
+                wildcards=(replace(route.wildcards[0], cardinality=Cardinality(1, 2)),),
+            ),
+        },
+    )
+    result = schema_from_plan(plan, format="jsonml")
+    data = format_export(
+        schema,
+        '<r xmlns:a="urn:a" xmlns:b="urn:b"><a:x>1</a:x><b:x>2</b:x></r>',
+        "jsonml",
+        fidelity="best-effort",
+    )
+    assert data == [
+        "r",
+        {"xmlns:ns0": "urn:a", "xmlns:ns_75726e3a62": "urn:b"},
+        ["ns0:x", 1],
+        ["ns_75726e3a62:x", 2],
+    ]
+    assert list(Draft202012Validator(result).iter_errors(data)) == []
+    assert "relaxng-wildcard-cardinality" in result["x-pyxsd-validation"]["unvalidated"]
