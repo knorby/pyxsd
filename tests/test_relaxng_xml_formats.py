@@ -714,19 +714,37 @@ def test_root_route_helper_keeps_the_required_and_lexical_modes() -> None:
 def test_grouped_order_helper_handles_empty_and_reordered_plans() -> None:
     assert xml_conversion._check_grouped_order(None, (), (), "strict") is None
 
-    document = valid(f"{A}{B}", "<r><a>1</a><b>x</b></r>")
+    content = (
+        "<choice><group><element name='a'><data type='integer'/></element>"
+        "<element name='b'><data type='string'/></element></group>"
+        "<group><element name='b'><data type='string'/></element>"
+        "<element name='a'><data type='integer'/></element></group></choice>"
+    )
+    document = valid(content, "<r><a>1</a><b>x</b></r>")
+    conversion_error(
+        "order-ambiguous",
+        "",
+        lambda: xml_conversion._check_grouped_order(None, document.root.children, (), "strict"),
+    )
+    with pytest.warns(PyXSDWarning, match="order-ambiguous"):
+        assert (
+            xml_conversion._check_grouped_order(None, document.root.children, (), "best-effort")
+            is None
+        )
+
     plan = document.schema.projection
     route = plan.routes[plan.roots[0]]
-    reordered = dict(reversed(list(route.children.items())))
-    bad_route = replace(route, children=reordered)
 
     conversion_error(
         "order-ambiguous",
         "",
-        lambda: xml_conversion._check_grouped_order(
-            bad_route, document.root.children, (), "strict"
-        ),
+        lambda: xml_conversion._check_grouped_order(route, document.root.children, (), "strict"),
     )
+    with pytest.warns(PyXSDWarning, match="order-ambiguous"):
+        assert (
+            xml_conversion._check_grouped_order(route, document.root.children, (), "best-effort")
+            is None
+        )
 
 
 def test_scalar_helper_defensive_branches() -> None:

@@ -36,7 +36,6 @@ from pyxsd.relaxng.json_schema import (
     _apply_cardinality,
     _child_model,
     _combine_tokens,
-    _content_scalar_contracts,
     _excluded_eqnames,
     _may_be_empty,
     _mentioned_names,
@@ -1048,6 +1047,55 @@ def test_attribute_scalar_ignores_element_content_contracts() -> None:
     assert_valid(schema, data)
 
 
+@pytest.mark.parametrize("format", ("pyxsd", "pyxsd-json"))
+def test_declared_attribute_schema_uses_only_field_scalar_contracts(format: str) -> None:
+    schema = schema_for(f'<attribute name="q"><data type="integer"/></attribute>{STRING}')
+    data = format_export(schema, '<r q="3">x</r>', format)
+    assert format_errors(schema, data, format) == []
+
+    tag = {
+        "#value": {
+            "version": 1,
+            "grammar": "g",
+            "lexical": "3",
+            "context": {"base_uri": None, "namespaces": {}},
+            "candidates": ["c"],
+        }
+    }
+    if format == "pyxsd":
+        wrong_string: object = {"@q": "not-an-integer", "$": "x"}
+        wrong_tag: object = {"@q": tag, "$": "x"}
+    else:
+        wrong_string = {"r": {"@q": "not-an-integer", "#content": "x"}}
+        wrong_tag = {"r": {"@q": tag, "#content": "x"}}
+    assert format_errors(schema, wrong_string, format)
+    assert format_errors(schema, wrong_tag, format)
+
+
+@pytest.mark.parametrize("format", ("pyxsd", "pyxsd-json"))
+def test_ambiguous_list_and_qname_attribute_schemas_remain_typed(format: str) -> None:
+    ambiguous = schema_for(
+        '<attribute name="q"><choice><data type="integer"/><data type="string"/></choice>'
+        f"</attribute>{STRING}"
+    )
+    ambiguous_data = format_export(ambiguous, '<r q="12">x</r>', format)
+    assert "#value" in json.dumps(ambiguous_data)
+    assert format_errors(ambiguous, ambiguous_data, format) == []
+
+    listed = schema_for(
+        '<attribute name="pair"><list><oneOrMore><data type="integer"/></oneOrMore>'
+        f"</list></attribute>{STRING}"
+    )
+    listed_data = format_export(listed, '<r pair="1 2">x</r>', format)
+    assert format_errors(listed, listed_data, format) == []
+
+
+def test_qname_attribute_schema_accepts_the_lexical_control() -> None:
+    qnamed = schema_for(f'<attribute name="q"><data type="QName"/></attribute>{STRING}')
+    qname_data = format_export(qnamed, '<r xmlns:p="urn:a" q="p:a">x</r>', "pyxsd-json")
+    assert format_errors(qnamed, qname_data, "pyxsd-json") == []
+
+
 def test_two_unknown_record_field_routes_share_the_generic_definition() -> None:
     schema = schema_for(f"<interleave>{A}{B}</interleave>")
     route_id = schema.projection.roots[0]
@@ -1482,14 +1530,6 @@ def test_may_be_empty_covers_every_contract_kind() -> None:
     assert _may_be_empty(ContentContract("repeat", (empty,)))
     assert not _may_be_empty(ContentContract("repeat", (scalar,)))
     assert not _may_be_empty(ContentContract("unknown"))
-    assert _content_scalar_contracts(ContentContract("empty")) == ()
-
-
-def test_content_scalar_contracts_ignore_attributes() -> None:
-    schema = schema_for(f'<attribute name="q">{INTEGER}</attribute>{INTEGER}')
-    route = schema.projection.routes[schema.projection.roots[0]]
-
-    assert _content_scalar_contracts(route.content.model) == (route.content.scalar_contracts[0],)
 
 
 def test_token_plan_helpers_cover_every_combination() -> None:

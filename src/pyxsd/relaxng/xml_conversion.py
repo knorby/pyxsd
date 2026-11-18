@@ -188,9 +188,20 @@ def _mixed_text(node: RelaxNGElement) -> str:
     return "".join(pieces)
 
 
-def _parent_name(node: RelaxNGElement) -> str:
-    parent = node.parent
-    return _local_name(parent._name_) if parent is not None else ""
+def _unique_grouped_child_sequence(
+    route: RouteContract,
+    names: list[str],
+    path: _Path,
+) -> tuple[str, ...] | None:
+    """The one child sequence the compiled model admits for these names."""
+    counts = Counter(names)
+    analysis = _OrderAnalysis(tuple(sorted(counts)), path)
+    sequences = _model_order(
+        route.content.model, tuple(counts[name] for name in analysis.names), analysis
+    )
+    if len(sequences) != 1:
+        return None
+    return next(iter(sequences))
 
 
 def _check_grouped_order(
@@ -199,39 +210,26 @@ def _check_grouped_order(
     path: _Path,
     fidelity: Fidelity,
 ) -> None:
-    """Reject grouped child order that a schema order cannot reconstruct."""
+    """Reject grouped child order only when the compiled model is ambiguous."""
     if not children:
         return
-    observed = [child._name_ for child in children]
-    seen: set[str] = set()
-    first_order: list[str] = []
-    previous: str | None = None
-    for name in observed:
-        if name != previous and name in seen:
-            _loss(
-                "order-ambiguous",
-                path,
-                "grouped export cannot retain the interleaving of child "
-                f"{name!r} in element {_parent_name(children[0])!r}",
-                fidelity,
-            )
-            return
-        if name not in seen:
-            seen.add(name)
-            first_order.append(name)
-        previous = name
-
-    plan_order = list(route.children) if route is not None else []
-    known = [name for name in plan_order if name in seen]
-    extras = [name for name in first_order if name not in set(plan_order)]
-    if first_order != known + extras:
+    if route is None:
         _loss(
             "order-ambiguous",
             path,
-            "grouped export cannot reconstruct the child order of element "
-            f"{_parent_name(children[0])!r}",
+            "grouped properties do not determine one accepted compiled child order",
             fidelity,
         )
+        return
+    names = [child._name_ for child in children]
+    if _unique_grouped_child_sequence(route, names, path) is not None:
+        return
+    _loss(
+        "order-ambiguous",
+        path,
+        "grouped properties do not determine one accepted compiled child order",
+        fidelity,
+    )
 
 
 def _check_mixed_order(
@@ -240,16 +238,7 @@ def _check_mixed_order(
     path: _Path,
     fidelity: Fidelity,
 ) -> None:
-    children = node.children
-    if len({child._name_ for child in children}) > 1:
-        _loss(
-            "order-ambiguous",
-            path,
-            f"grouped export cannot retain the child order of mixed element {node._name_!r}",
-            fidelity,
-        )
-    else:
-        _check_grouped_order(route, children, path, fidelity)
+    _check_grouped_order(route, node.children, path, fidelity)
 
 
 # ---------------------------------------------------------------------------
@@ -364,16 +353,7 @@ def _conventional_scalar(
     names: _LexicalNames | None = None,
 ) -> JsonValue:
     """Convert one conventional-format scalar without inventing metadata."""
-    if isinstance(value, AlternativeValue):
-        if len(value.candidates) == 1 and value.candidates[0].decodable:
-            value = value.candidates[0].decoded
-        else:
-            if format == "parker":
-                _parker_wrapper_qnames(value, fidelity=fidelity, path=path)
-            elif names is not None:
-                _declare_wrapper_qnames(value, names=names, path=path)
-            return value.lexical
-    elif isinstance(value, ListInterpretation):
+    if isinstance(value, (AlternativeValue, ListInterpretation)):
         if format == "parker":
             _parker_wrapper_qnames(value, fidelity=fidelity, path=path)
         elif names is not None:
@@ -1143,7 +1123,7 @@ def _check_native_strict(
         text = node.text_value()
         tails = [child.tail_value() or "" for child in children]
         if (layout == "mixed" and (text or any(tails))) or (
-            not typed and layout != "mixed" and any(tails)
+            not typed and layout != "mixed" and (any(tails) or bool(text and text.strip()))
         ):
             _loss(
                 "mixed-content",
@@ -1771,13 +1751,7 @@ def _reserve_jsonml_names(
 
 
 def _reserve_value_names(value: Any, names: _LexicalNames) -> None:
-    if isinstance(value, AlternativeValue):
-        candidate = value.candidates[0] if len(value.candidates) == 1 else None
-        if candidate is not None and candidate.decodable:
-            _reserve_value_names(candidate.decoded, names)
-            return
-        _declare_wrapper_qnames(value, names=names, path=())
-    elif isinstance(value, ListInterpretation):
+    if isinstance(value, (AlternativeValue, ListInterpretation)):
         _declare_wrapper_qnames(value, names=names, path=())
     elif isinstance(value, (tuple, list)):
         for item in value:
@@ -1916,24 +1890,51 @@ def _resolve_lexical_name(
         return _expand_native_name(key, path)
     if ":" in key:
         prefix, local = key.split(":", 1)
-        if not prefix or NCName._pattern.fullmatch(prefix) is None:
+        if prefix == "xmlns" or not prefix or NCName._pattern.fullmatch(prefix) is None:
             raise_conversion("name-invalid", json_pointer(path), f"invalid QName {key!r}")
         if NCName._pattern.fullmatch(local) is None:
             raise_conversion("name-invalid", json_pointer(path), f"invalid QName {key!r}")
-        uri = XML_NS if prefix == "xml" else frame.get(prefix)
-        if uri is None:
+        if prefix == "xml":
+            uri: str | None = XML_NS
+        else:
+            uri = frame.get(prefix)
+        if not uri:
             _loss(
                 "namespace-unresolved",
                 path,
-                f"the prefix {prefix!r} is not bound in this element's scope",
+                f"the prefix {prefix!r} has no namespace binding in this element's scope",
                 fidelity,
             )
             return key
-        return f"{{{uri}}}{local}" if uri else local
+        return f"{{{uri}}}{local}"
     if NCName._pattern.fullmatch(key) is None:
         raise_conversion("name-invalid", json_pointer(path), f"invalid XML name {key!r}")
     uri = "" if attribute else frame.get("", "")
     return f"{{{uri}}}{key}" if uri else key
+
+
+def _validate_namespace_frame(frame: dict[str, str], path: _Path, *, marker: str) -> None:
+    """Reject reserved, empty, and invalid bindings in one lexical frame."""
+    for prefix, uri in frame.items():
+        if prefix == "xmlns":
+            raise_conversion(
+                "name-invalid",
+                json_pointer((*path, marker)),
+                "the reserved xmlns prefix cannot be declared",
+            )
+        if prefix == "xml":
+            if uri != XML_NS:
+                raise_conversion(
+                    "namespace-conflict",
+                    json_pointer((*path, marker)),
+                    f"the xml prefix must bind {XML_NS!r}",
+                )
+        elif prefix and not uri:
+            raise_conversion(
+                "namespace-unresolved",
+                json_pointer((*path, marker)),
+                f"the prefix {prefix!r} cannot bind an empty namespace URI",
+            )
 
 
 def _merge_declarations(
@@ -1944,26 +1945,38 @@ def _merge_declarations(
     marker: str = _XMLNS_KEY,
 ) -> dict[str, str]:
     """Apply in-band declarations over the inherited frame."""
+    _validate_namespace_frame(frame, path, marker=marker)
     merged = dict(frame)
     for prefix, uri in declarations.items():
-        if prefix == "xml" and uri != XML_NS:
-            raise_conversion(
-                "namespace-conflict",
-                json_pointer((*path, marker)),
-                "the implicit xml prefix cannot be rebound",
-            )
         merged[prefix] = uri
+    _validate_namespace_frame(merged, path, marker=marker)
     return merged
 
 
 def _check_declaration(prefix: object, uri: object, path: _Path) -> tuple[str, str]:
     if not isinstance(prefix, str) or (prefix and NCName._pattern.fullmatch(prefix) is None):
         raise_conversion("name-invalid", json_pointer(path), f"invalid namespace prefix {prefix!r}")
+    if prefix == "xmlns":
+        raise_conversion(
+            "name-invalid", json_pointer(path), "the reserved xmlns prefix cannot be declared"
+        )
     if not isinstance(uri, str):
         raise_conversion(
             "container-invalid",
             json_pointer(path),
             "a namespace declaration value must be a string",
+        )
+    if prefix == "xml" and uri != XML_NS:
+        raise_conversion(
+            "namespace-conflict",
+            json_pointer(path),
+            f"the xml prefix must bind {XML_NS!r}",
+        )
+    if prefix and not uri:
+        raise_conversion(
+            "namespace-unresolved",
+            json_pointer(path),
+            f"the prefix {prefix!r} cannot bind an empty namespace URI",
         )
     return prefix, uri
 
@@ -2069,13 +2082,13 @@ def _bind_grouped_claim(
         )
 
 
-def _check_grouped_import_order(
+def _grouped_import_sequence(
     route: RouteContract | None,
     names: list[str],
     path: _Path,
     fidelity: Fidelity,
-) -> None:
-    """Reject grouped child groups that do not determine one compiled order."""
+) -> tuple[str, ...] | None:
+    """The unique compiled child sequence for grouped import, when one exists."""
     if route is None:
         _loss(
             "order-ambiguous",
@@ -2083,7 +2096,7 @@ def _check_grouped_import_order(
             "no compiled child order can reconstruct grouped properties",
             fidelity,
         )
-        return
+        return None
     admitted = set(route.children)
     wildcards = [wildcard for wildcard in route.wildcards if wildcard.role == "child"]
     for name in names:
@@ -2094,23 +2107,16 @@ def _check_grouped_import_order(
             continue
         # An unknown child is a lexical mismatch for the ordinary validator to
         # report, not evidence that a valid grouped export lost its order.
-        return
-    observed = tuple(names)
-    counts = Counter(observed)
-    analysis = _OrderAnalysis(tuple(sorted(counts)), path)
-    sequences = _model_order(
-        route.content.model, tuple(counts[n] for n in analysis.names), analysis
-    )
-    if len(sequences) == 1 and (
-        observed in sequences or _order_matches(route.content.model, observed, analysis)
-    ):
-        return
-    _loss(
-        "order-ambiguous",
-        path,
-        "grouped properties do not determine one accepted compiled child order",
-        fidelity,
-    )
+        return None
+    sequence = _unique_grouped_child_sequence(route, names, path)
+    if sequence is None:
+        _loss(
+            "order-ambiguous",
+            path,
+            "grouped properties do not determine one accepted compiled child order",
+            fidelity,
+        )
+    return sequence
 
 
 def _child_field(route: RouteContract, expanded: str) -> FieldContract | WildcardContract | None:
@@ -2281,44 +2287,13 @@ class _GroupedImporter:
         entries: list[tuple[str, Any, str, _Path]],
         path: _Path,
         layout: str,
-    ) -> list[tuple[str, Any, str, _Path]]:
-        """Validate caller order, canonicalizing only order-insensitive records."""
+    ) -> list[tuple[str, Any, _Path]]:
+        """Expand grouped occurrences and rebuild the unique compiled order."""
         if not entries:
-            return entries
-        if layout != "record":
-            names: list[str] = []
-            for expanded, raw, _key, child_path in entries:
-                child_route, child_generic = self._child_target(route, expanded)
-                _repeated, values = _grouped_values(
-                    route,
-                    expanded,
-                    raw,
-                    child_route,
-                    child_generic,
-                    child_path,
-                    flat_scalar_arrays=self._flat_scalar_arrays,
-                )
-                names.extend([expanded] * len(values))
-            _check_grouped_import_order(route, names, path, self.fidelity)
-        if layout == "record" and route is not None:
-            by_name = {entry[0]: entry for entry in entries}
-            ordered = [by_name[name] for name in route.children if name in by_name]
-            ordered.extend(entry for entry in entries if entry[0] not in route.children)
-            return ordered
-        return entries
-
-    def _append_children(
-        self,
-        element: ET.Element,
-        route: RouteContract | None,
-        entries: list[tuple[str, Any, str, _Path]],
-        frame: dict[str, str],
-        base: str | None,
-        element_path: tuple[int, ...],
-        layout: str,
-        path: _Path,
-    ) -> None:
-        for expanded, raw, _key, child_path in self._ordered(route, entries, path, layout):
+            return []
+        occurrences: dict[str, list[tuple[Any, _Path]]] = {}
+        flat: list[tuple[str, Any, _Path]] = []
+        for expanded, raw, _key, child_path in entries:
             child_route, child_generic = self._child_target(route, expanded)
             repeated, values = _grouped_values(
                 route,
@@ -2331,18 +2306,58 @@ class _GroupedImporter:
             )
             for index, value in enumerate(values):
                 value_path = (*child_path, index) if repeated else child_path
-                element.append(
-                    self._element(
-                        expanded,
-                        value,
-                        child_route,
-                        frame,
-                        base,
-                        value_path,
-                        (*element_path, len(element)),
-                        generic=child_generic,
-                    )
+                occurrences.setdefault(expanded, []).append((value, value_path))
+                flat.append((expanded, value, value_path))
+
+        if not flat:
+            return []
+
+        if layout == "record" and route is not None:
+            ordered: list[tuple[str, Any, _Path]] = []
+            names = [name for name in route.children if name in occurrences]
+            names.extend(name for name in occurrences if name not in route.children)
+            for name in names:
+                for value, value_path in occurrences[name]:
+                    ordered.append((name, value, value_path))
+            return ordered
+
+        names = [expanded for expanded, _value, _value_path in flat]
+        sequence = _grouped_import_sequence(route, names, path, self.fidelity)
+        if sequence is None:
+            return flat
+
+        queues = {name: list(values) for name, values in occurrences.items()}
+        ordered = []
+        for name in sequence:
+            value, value_path = queues[name].pop(0)
+            ordered.append((name, value, value_path))
+        return ordered
+
+    def _append_children(
+        self,
+        element: ET.Element,
+        route: RouteContract | None,
+        entries: list[tuple[str, Any, str, _Path]],
+        frame: dict[str, str],
+        base: str | None,
+        element_path: tuple[int, ...],
+        layout: str,
+        path: _Path,
+    ) -> None:
+        for expanded, value, value_path in self._ordered(route, entries, path, layout):
+            child_route, child_generic = self._child_target(route, expanded)
+            element.append(
+                self._element(
+                    expanded,
+                    value,
+                    child_route,
+                    frame,
+                    base,
+                    value_path,
+                    (*element_path, len(element)),
+                    generic=child_generic,
                 )
+            )
 
     def _child_target(
         self, route: RouteContract | None, expanded: str

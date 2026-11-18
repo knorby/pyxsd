@@ -566,7 +566,7 @@ class _RelaxNGJSONSchemaBuilder(_ScalarSchemaMixin):
         for expanded in sorted(route.attributes):
             field = route.attributes[expanded]
             key = "@" + expanded_to_eqname(expanded)
-            properties[key] = self._attribute_value(field, route)
+            properties[key] = self._attribute_value(field)
             if field.cardinality.minimum > 0:
                 required.append(key)
         wildcards = tuple(
@@ -581,20 +581,16 @@ class _RelaxNGJSONSchemaBuilder(_ScalarSchemaMixin):
         )
         return properties, required, wildcards
 
-    def _attribute_value(self, field: FieldContract, route: RouteContract) -> _Schema:
-        """One attribute value: typed scalar or raw lexical string.
+    def _attribute_value(self, field: FieldContract) -> _Schema:
+        """One attribute value from that field's own scalar contracts only.
 
-        Attribute evidence carries every scalar pattern reachable in the
-        element's own content, so a mixed text or whole-element scalar branch
-        can make an otherwise unique attribute value a tagged alternative.
+        Attribute evidence never borrows the element's content patterns: a
+        mixed-text or whole-element scalar branch cannot make an unrelated
+        attribute schema accept a tag or a non-decodable lexical value.
         """
         if not field.scalar_contracts:
             return {"type": "string"}
-        contracts = (
-            *field.scalar_contracts,
-            *_content_scalar_contracts(route.content.model),
-        )
-        return self._scalar_site(contracts, may_be_empty=False)
+        return self._scalar_site(field.scalar_contracts, may_be_empty=False)
 
     def _apply_attribute_openness(
         self, body: _Schema, wildcards: tuple[WildcardContract, ...]
@@ -1172,22 +1168,19 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
             {"not": {"propertyNames": {"not": {"pattern": pattern}}}}
         )
 
-    def _attribute_site(self, field: FieldContract, route: RouteContract) -> _Schema:
-        """One attribute value from its own scalar evidence only.
+    def _attribute_site(self, field: FieldContract) -> _Schema:
+        """One attribute value from its own field contracts only.
 
         An attribute with no contracts is lexical even when the element's
-        content is typed; attribute evidence never borrows the element's
-        content contracts in that case.
+        content is typed.  The element's content patterns are never appended:
+        they belong to a different occurrence and cannot make this attribute
+        accept a tag or another scalar branch.
         """
         if not field.scalar_contracts:
             return {"type": "string"}
-        contracts = (
-            *field.scalar_contracts,
-            *_content_scalar_contracts(route.content.model),
-        )
         if self.format == "pyxsd" and not self.typed:
             return {"type": "string"}
-        return self._scalar_site(contracts, may_be_empty=False)
+        return self._scalar_site(field.scalar_contracts, may_be_empty=False)
 
     def _wildcard_attribute_site(self, wildcard: WildcardContract) -> _Schema:
         # The open-name pattern also covers declared attribute keys, whose own
@@ -1317,7 +1310,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         for expanded in sorted(route.attributes):
             field = route.attributes[expanded]
             key = "@" + expanded
-            properties[key] = self._attribute_site(field, route)
+            properties[key] = self._attribute_site(field)
             if field.cardinality.minimum > 0:
                 required.append(key)
         for expanded in sorted(route.children):
@@ -1776,7 +1769,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 (expanded.startswith("{"), _local_name(expanded)), []
             ).append(field)
         for (namespaced, local), entries in sorted(attribute_groups.items()):
-            value = _any_of([self._attribute_site(field, route) for field in entries])
+            value = _any_of([self._attribute_site(field) for field in entries])
             if namespaced:
                 pattern = f"^@{_PREFIX}:{re.escape(local)}$"
                 patterns[pattern] = value
@@ -1879,7 +1872,11 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 "pattern": _NAMESPACE_PREFIX_PATTERN,
                 "not": {"const": "xml"},
             },
-            "additionalProperties": {"type": "string"},
+            "patternProperties": {
+                "^$": {"type": "string"},
+                "^(?!$).+$": {"type": "string", "minLength": 1},
+            },
+            "additionalProperties": False,
             "minProperties": 1,
         }
 
@@ -2193,7 +2190,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 route.attributes[expanded]
             )
         for (namespaced, local), entries in sorted(groups.items()):
-            value = _any_of([self._attribute_site(field, route) for field in entries])
+            value = _any_of([self._attribute_site(field) for field in entries])
             if namespaced:
                 pattern = f"^{_PREFIX}:{re.escape(local)}$"
                 patterns[pattern] = value
@@ -2205,7 +2202,10 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                     required.append(local)
         if self._declarations_possible:
             properties["xmlns"] = {"type": "string"}
-            patterns[f"^xmlns:(?!xml$)(?!xmlns$){_NCNAME}$"] = {"type": "string"}
+            patterns[f"^xmlns:(?!xml$)(?!xmlns$){_NCNAME}$"] = {
+                "type": "string",
+                "minLength": 1,
+            }
         for wildcard in self._attribute_wildcards(route):
             patterns[_JSONML_ATTRIBUTE_PATTERN] = self._wildcard_attribute_site(wildcard)
             self.unvalidated.add("relaxng-attribute-name-class")
@@ -2298,6 +2298,12 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                         {"pattern": _JSONML_ATTRIBUTE_PATTERN},
                         {"pattern": f"^(?:xmlns|xmlns:(?!xml$)(?!xmlns$){_NCNAME})$"},
                     ]
+                },
+                "patternProperties": {
+                    f"^xmlns:(?!xml$)(?!xmlns$){_NCNAME}$": {
+                        "type": "string",
+                        "minLength": 1,
+                    }
                 },
                 "additionalProperties": self._scalar_union_ref(),
             },
@@ -2614,27 +2620,6 @@ def _child_model(model: ContentContract) -> ContentContract | None:
             result = ContentContract(node.kind, operands)
         results[id(node)] = result
     return results[id(model)]
-
-
-def _content_scalar_contracts(model: ContentContract) -> tuple[ScalarContract, ...]:
-    """Every scalar pattern in one element's own content model.
-
-    Attribute sites see these contracts in addition to their own declared
-    contract: the mixed text pattern or a whole-element scalar alternative is
-    part of the complete grammar-level evidence at the same element.
-    """
-    result: dict[ScalarContract, None] = {}
-    pending: list[ContentContract] = [model]
-    seen: set[int] = set()
-    while pending:
-        node = pending.pop()
-        if id(node) in seen:
-            continue
-        seen.add(id(node))
-        if node.kind == "scalar":
-            result.update(dict.fromkeys(node.scalar_contracts))
-        pending.extend(node.operands)
-    return tuple(sorted(result, key=lambda item: item.pattern_identity))
 
 
 def _may_be_empty(model: ContentContract) -> bool:

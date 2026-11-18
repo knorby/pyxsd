@@ -621,19 +621,15 @@ def test_repeated_interleaved_and_ordered_children_round_trip() -> None:
     )
     assert data
 
-    for format in ("parker", "badgerfish"):
-        with pytest.raises(PyXSDError, match=r"^order-ambiguous at"):
-            document.to_data(format=format, fidelity="strict")
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            data = document.to_data(format=format, fidelity="best-effort")
-        assert "order-ambiguous" in warning_prefixes(caught), format
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", PyXSDWarning)
-            imported = document.schema.from_data(
-                jsonable(data), format=format, fidelity="best-effort"
-            )
-        assert not imported.report.has_errors
+    for format in ("pyxsd", "parker", "badgerfish"):
+        data, imported = round_trip(document, format, fidelity="strict")
+        assert sorted(child._name_ for child in imported.root.children) == sorted(
+            child._name_ for child in document.root.children
+        )
+        assert sorted(child.text_value() for child in imported.root.children) == sorted(
+            child.text_value() for child in document.root.children
+        )
+        assert data
 
 
 def test_recursive_route_round_trips_in_every_format() -> None:
@@ -822,11 +818,12 @@ def test_nondecodable_candidates_are_tagged_or_kept_lexical_without_inventing_va
 def test_strict_losses_raise_and_best_effort_warns_with_only_represented_information() -> None:
     mixed = valid(MIXED_I, "<r>a<i>x</i>b</r>")
     attributes = valid(ATTR + STRING, '<r z="v">x</r>')
-    interleaved = valid(
-        "<interleave><zeroOrMore><element name='a'><data type='integer'/></element>"
-        "</zeroOrMore><zeroOrMore><element name='b'><data type='string'/></element>"
-        "</zeroOrMore></interleave>",
-        "<r><b>x</b><a>1</a><b>y</b></r>",
+    ambiguous_order = valid(
+        "<choice><group><element name='a'><data type='integer'/></element>"
+        "<element name='b'><data type='string'/></element></group>"
+        "<group><element name='b'><data type='string'/></element>"
+        "<element name='a'><data type='integer'/></element></group></choice>",
+        "<r><a>1</a><b>x</b></r>",
     )
     qname = valid('<data type="QName"/>', '<r xmlns:p="urn:p">p:v</r>')
 
@@ -835,8 +832,8 @@ def test_strict_losses_raise_and_best_effort_warns_with_only_represented_informa
         (mixed, "parker", "mixed-content"),
         (mixed, "badgerfish", "mixed-content"),
         (attributes, "parker", "attributes-lost"),
-        (interleaved, "parker", "order-ambiguous"),
-        (interleaved, "badgerfish", "order-ambiguous"),
+        (ambiguous_order, "parker", "order-ambiguous"),
+        (ambiguous_order, "badgerfish", "order-ambiguous"),
         (qname, "pyxsd", "namespace-lost"),
         (qname, "parker", "namespace-lost"),
     ]
@@ -1650,6 +1647,265 @@ def test_sequence_particle_order_is_a_disclosed_limitation() -> None:
         assert "relaxng-particle-order" in reasons, format
 
 
+# ---------------------------------------------------------------------------
+# 9b. Phase 5 blocker remediation regressions
+# ---------------------------------------------------------------------------
+
+
+def _format_root_scalar(data: Any, format: FormatName) -> Any:
+    if format == "parker":
+        return data
+    if format == "badgerfish":
+        return data["r"]
+    assert format == "jsonml"
+    return data[1]
+
+
+def test_grouped_import_reconstructs_unique_repeated_child_sequence() -> None:
+    content = (
+        "<oneOrMore><group>"
+        f"{A}"
+        '<element name="b"><data type="string"/></element>'
+        "</group></oneOrMore>"
+    )
+    document = valid(content, "<r><a>1</a><b>x</b><a>2</a><b>y</b></r>")
+
+    for format in ("pyxsd", "parker", "badgerfish"):
+        data = document.to_data(format=format, fidelity="strict")
+        imported = document.schema.from_data(jsonable(data), format=format, fidelity="strict")
+        assert not imported.report.has_errors, (format, imported.report.issues)
+        assert [child._name_ for child in imported.root.children] == ["a", "b", "a", "b"]
+        assert [child.text_value() for child in imported.root.children] == ["1", "x", "2", "y"]
+
+
+def test_grouped_import_reconstructs_reversed_unique_child_sequence() -> None:
+    content = f'{A}<element name="b"><data type="string"/></element>'
+    document = valid(content, "<r><a>1</a><b>x</b></r>")
+
+    reversed_data: dict[FormatName, Any] = {
+        "pyxsd": {"b": "x", "a": 1},
+        "parker": {"b": "x", "a": 1},
+        "badgerfish": {"r": {"b": "x", "a": 1}},
+    }
+    for format, data in reversed_data.items():
+        imported = document.schema.from_data(data, format=format, fidelity="strict")
+        assert not imported.report.has_errors, (format, imported.report.issues)
+        assert [child._name_ for child in imported.root.children] == ["a", "b"]
+
+
+def test_grouped_import_keeps_genuinely_ambiguous_orders_ambiguous() -> None:
+    content = (
+        "<choice><group><element name='a'><data type='integer'/></element>"
+        "<element name='b'><data type='string'/></element></group>"
+        "<group><element name='b'><data type='string'/></element>"
+        "<element name='a'><data type='integer'/></element></group></choice>"
+    )
+    schema = schema_for(content)
+
+    for format, data in (
+        ("pyxsd", {"a": 1, "b": "x"}),
+        ("parker", {"a": 1, "b": "x"}),
+        ("badgerfish", {"r": {"a": 1, "b": "x"}}),
+    ):
+        with pytest.raises(PyXSDError, match=r"^order-ambiguous at "):
+            schema.from_data(data, format=format, fidelity="strict")
+
+
+def test_grouped_import_empty_occurrence_array_constructs_no_children() -> None:
+    schema = schema_for(f"<zeroOrMore>{A}</zeroOrMore>")
+    for format, data in (
+        ("pyxsd", {"a": []}),
+        ("parker", {"a": []}),
+        ("badgerfish", {"r": {"a": []}}),
+    ):
+        imported = schema.from_data(data, format=format, fidelity="strict")
+        assert not imported.report.has_errors, (format, imported.report.issues)
+        assert imported.root.children == ()
+
+
+def test_lexical_namespaces_reject_reserved_and_empty_bindings() -> None:
+    schema = schema_for('<element name="child"><data type="string"/></element>')
+
+    badgerfish_cases = [
+        {"r": {"@xmlns": {"xmlns": "urn:x"}, "child": "v"}},
+        {"r": {"@xmlns": {"p": ""}, "p:child": "v"}},
+    ]
+    for data in badgerfish_cases:
+        with pytest.raises(PyXSDError):
+            schema.from_data(data, format="badgerfish", fidelity="strict")
+
+    jsonml_cases = [
+        ["r", {"xmlns:xmlns": "urn:x"}, ["child", "v"]],
+        ["r", {"xmlns:p": ""}, ["p:child", "v"]],
+    ]
+    for data in jsonml_cases:
+        with pytest.raises(PyXSDError):
+            schema.from_data(data, format="jsonml", fidelity="strict")
+
+    for format, data in (
+        ("badgerfish", {"r": {"child": "v"}}),
+        ("jsonml", ["r", ["child", "v"]]),
+    ):
+        with pytest.raises(PyXSDError):
+            schema.from_data(data, format=format, fidelity="strict", namespaces={"xmlns": "urn:x"})
+        with pytest.raises(PyXSDError):
+            schema.from_data(data, format=format, fidelity="strict", namespaces={"p": ""})
+        with pytest.raises(PyXSDError):
+            schema.from_data(data, format=format, fidelity="strict", namespaces={"xml": "urn:x"})
+
+    valid_badgerfish = schema.from_data(
+        {"r": {"@xmlns": {"": ""}, "child": "v"}}, format="badgerfish", fidelity="strict"
+    )
+    assert not valid_badgerfish.report.has_errors
+    valid_jsonml = schema.from_data(
+        ["r", {"xmlns": ""}, ["child", "v"]], format="jsonml", fidelity="strict"
+    )
+    assert not valid_jsonml.report.has_errors
+    for format, data in (
+        ("badgerfish", {"r": {"child": "v"}}),
+        ("jsonml", ["r", ["child", "v"]]),
+    ):
+        seeded = schema.from_data(data, format=format, fidelity="strict", namespaces={"": ""})
+        assert not seeded.report.has_errors
+
+    valid_xml_badgerfish = schema.from_data(
+        {"r": {"@xmlns": {"xml": XML_NS}, "child": "v"}},
+        format="badgerfish",
+        fidelity="strict",
+    )
+    assert not valid_xml_badgerfish.report.has_errors
+    valid_xml_jsonml = schema.from_data(
+        ["r", {"xmlns:xml": XML_NS}, ["child", "v"]],
+        format="jsonml",
+        fidelity="strict",
+    )
+    assert not valid_xml_jsonml.report.has_errors
+
+
+@pytest.mark.parametrize("format", ("badgerfish", "jsonml"))
+def test_lexical_namespace_schema_matches_reserved_and_empty_rules(format: FormatName) -> None:
+    document = valid(
+        '<element name="child" ns="urn:a"><data type="string"/></element>',
+        '<r xmlns:p="urn:a"><p:child>v</p:child></r>',
+    )
+    data = document.to_data(format=format, fidelity="strict")
+    validates(document.schema, data, format=format, fidelity="strict")
+
+    empty_binding = copy.deepcopy(data)
+    reserved_binding = copy.deepcopy(data)
+    if format == "badgerfish":
+        empty_binding["r"]["@xmlns"]["p"] = ""
+        reserved_binding["r"]["@xmlns"]["xmlns"] = "urn:reserved"
+    else:
+        empty_binding[1]["xmlns:p"] = ""
+        reserved_binding[1]["xmlns:xmlns"] = "urn:reserved"
+    rejects(document.schema, empty_binding, format=format, fidelity="strict")
+    rejects(document.schema, reserved_binding, format=format, fidelity="strict")
+
+
+def test_conventional_formats_keep_schema_ambiguous_values_lexical() -> None:
+    ambiguous = "<choice><data type='integer'/><data type='boolean'/></choice>"
+    documents = [
+        (valid(ambiguous, "<r>12</r>"), "12"),
+        (valid(ambiguous, "<r>true</r>"), "true"),
+        (
+            valid(
+                "<choice><data type='integer'/><list><oneOrMore>"
+                "<data type='integer'/></oneOrMore></list></choice>",
+                "<r>1 2</r>",
+            ),
+            "1 2",
+        ),
+        (valid("<choice><text/><data type='integer'/></choice>", "<r>abc</r>"), "abc"),
+    ]
+
+    for document, expected in documents:
+        for format in ("parker", "badgerfish", "jsonml"):
+            data = document.to_data(format=format, fidelity="strict")
+            assert jsonable(data) == data
+            assert _format_root_scalar(data, format) == expected, format
+
+
+def test_grouped_strict_order_accepts_unique_compiled_sequences() -> None:
+    mixed = valid(
+        '<mixed><element name="a"><data type="string"/></element>'
+        '<element name="b"><data type="string"/></element></mixed>',
+        "<r><a>A</a><b>B</b></r>",
+    )
+    repeated = valid(
+        "<oneOrMore><group>"
+        f"{A}"
+        '<element name="b"><data type="string"/></element>'
+        "</group></oneOrMore>",
+        "<r><a>1</a><b>x</b><a>2</a><b>y</b></r>",
+    )
+
+    for document, expected in (
+        (mixed, ["a", "b"]),
+        (repeated, ["a", "b", "a", "b"]),
+    ):
+        for format in ("parker", "badgerfish"):
+            data = document.to_data(format=format, fidelity="strict")
+            imported = document.schema.from_data(jsonable(data), format=format, fidelity="strict")
+            assert not imported.report.has_errors, (format, imported.report.issues)
+            assert [child._name_ for child in imported.root.children] == expected
+
+
+def test_grouped_strict_order_rejects_genuine_interleave_ambiguity() -> None:
+    document = valid(
+        "<mixed><choice><group><element name='a'><data type='integer'/></element>"
+        "<element name='b'><data type='string'/></element></group>"
+        "<group><element name='b'><data type='string'/></element>"
+        "<element name='a'><data type='integer'/></element></group></choice></mixed>",
+        "<r><a>1</a><b>x</b></r>",
+    )
+    for format in ("parker", "badgerfish"):
+        with pytest.raises(PyXSDError, match=r"^order-ambiguous at "):
+            document.to_data(format=format, fidelity="strict")
+
+
+def test_native_lexical_leading_text_is_a_mixed_content_loss() -> None:
+    document = valid(
+        f"{A}<element name='b'><data type='string'/></element>", "<r><a>1</a><b>x</b></r>"
+    )
+    assert document.to_data(format="pyxsd", typed=False, fidelity="strict") == {
+        "a": "1",
+        "b": "x",
+    }
+    document.root.set_text("leading")
+
+    with pytest.raises(PyXSDError, match=r"^mixed-content at "):
+        document.to_data(format="pyxsd", typed=False, fidelity="strict")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        fallback = document.to_data(format="pyxsd", typed=False, fidelity="best-effort")
+    assert "mixed-content" in warning_prefixes(caught)
+    assert fallback["$"] == "leading"
+
+    document.root.set_text("   ")
+    assert document.to_data(format="pyxsd", typed=False, fidelity="strict") == {
+        "a": "1",
+        "b": "x",
+    }
+    document.root.set_text("")
+    assert document.to_data(format="pyxsd", typed=False, fidelity="strict") == {
+        "a": "1",
+        "b": "x",
+    }
+
+    document.root.children[-1].set_tail("tail")
+    with pytest.raises(PyXSDError, match=r"^mixed-content at "):
+        document.to_data(format="pyxsd", typed=False, fidelity="strict")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        fallback = document.to_data(format="pyxsd", typed=False, fidelity="best-effort")
+    assert "mixed-content" in warning_prefixes(caught)
+    assert "tail" not in json.dumps(fallback)
+
+    childless = valid(STRING, "<r>text</r>")
+    assert childless.to_data(format="pyxsd", typed=False, fidelity="strict") == {"$": "text"}
+
+
 def test_schema_envelope_metadata_and_disclosures_are_complete() -> None:
     document = valid(ALT, "<r>12</r>")
     for format in FORMATS:
@@ -1790,14 +2046,15 @@ def test_every_conversion_failure_names_a_concrete_limit() -> None:
         attributes.to_data(format="parker", fidelity="strict")
     messages.append(str(caught.value))
 
-    interleaved = valid(
-        "<interleave><zeroOrMore><element name='a'><data type='integer'/></element>"
-        "</zeroOrMore><zeroOrMore><element name='b'><data type='string'/></element>"
-        "</zeroOrMore></interleave>",
-        "<r><b>x</b><a>1</a><b>y</b></r>",
+    ambiguous_order = valid(
+        "<choice><group><element name='a'><data type='integer'/></element>"
+        "<element name='b'><data type='string'/></element></group>"
+        "<group><element name='b'><data type='string'/></element>"
+        "<element name='a'><data type='integer'/></element></group></choice>",
+        "<r><a>1</a><b>x</b></r>",
     )
     with pytest.raises(PyXSDError) as caught:
-        interleaved.to_data(format="parker", fidelity="strict")
+        ambiguous_order.to_data(format="parker", fidelity="strict")
     messages.append(str(caught.value))
 
     for message in messages:

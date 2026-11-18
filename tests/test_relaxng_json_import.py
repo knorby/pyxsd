@@ -1423,7 +1423,7 @@ def test_badgerfish_declaration_validation() -> None:
     )
     conversion_error(
         "namespace-conflict",
-        "/r/@xmlns",
+        "/r/@xmlns/xml",
         lambda: schema.from_data({"r": {"@xmlns": {"xml": "urn:x"}, "$": 1}}, format="badgerfish"),
     )
     conversion_error(
@@ -1575,10 +1575,11 @@ def test_single_list_or_atomic_child_stays_one_list_scalar() -> None:
 def test_repeated_list_or_atomic_child_requires_unambiguous_nesting() -> None:
     document = valid(f"<zeroOrMore>{_LIST_OR_INTEGER}</zeroOrMore>", "<r><a>1 2</a></r>")
     parker_data = document.to_data(format="parker", fidelity="strict")
+    assert parker_data == {"a": "1 2"}
     conversion_error(
         "scalar-type-ambiguous",
         "/a",
-        lambda: document.schema.from_data(parker_data, format="parker"),
+        lambda: document.schema.from_data({"a": [1, 2]}, format="parker"),
     )
 
     for format_name in ("badgerfish", "jsonml"):
@@ -1819,7 +1820,7 @@ def test_badgerfish_repeatable_wildcard_wraps_occurrences() -> None:
 
     listed = valid(content, "<r><item>1 2</item></r>")
     listed_data = listed.to_data(format="badgerfish", fidelity="strict")
-    assert listed_data == {"r": {"item": [[1, 2]]}}
+    assert listed_data == {"r": {"item": ["1 2"]}}
     listed_import = listed.schema.from_data(listed_data, format="badgerfish")
     assert not listed_import.report.has_errors, listed_import.report.issues
     assert [child.text_value() for child in listed_import.root.children] == ["1 2"]
