@@ -14,7 +14,7 @@ import re
 from dataclasses import asdict
 from decimal import Decimal
 from types import GenericAlias
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, overload
 
 try:
     from pydantic import (
@@ -45,6 +45,10 @@ from ._values import (
     project,
     value_equal,
 )
+
+if TYPE_CHECKING:
+    from pyxsd.relaxng.pydantic_adapter import RelaxNGModelSet
+    from pyxsd.relaxng.schema import RelaxNGSchema
 
 __all__ = ["ModelSet", "models"]
 
@@ -436,6 +440,27 @@ class ModelSet:
         return model.model_validate(project(shape, node, explicit=True))
 
 
-def models(schema: Schema) -> ModelSet:
-    """Create a model registry without requiring instance XML."""
-    return ModelSet(schema)
+@overload
+def models(schema: Schema) -> ModelSet: ...
+
+
+@overload
+def models(schema: RelaxNGSchema) -> RelaxNGModelSet: ...
+
+
+def models(schema: Schema | RelaxNGSchema) -> ModelSet | RelaxNGModelSet:
+    """Create a model registry without requiring instance XML.
+
+    A compiled XSD schema still returns the existing :class:`ModelSet`.  A
+    compiled RELAX NG schema returns its route registry; the RELAX NG adapter
+    is imported lazily so XSD-only use never imports RELAX NG projection code.
+    """
+    if isinstance(schema, Schema):
+        return ModelSet(schema)
+    from pyxsd.relaxng.schema import RelaxNGSchema
+
+    if isinstance(schema, RelaxNGSchema):
+        from pyxsd.relaxng.pydantic_adapter import RelaxNGModelSet
+
+        return RelaxNGModelSet(schema)
+    raise TypeError("models() requires a compiled XSD or RELAX NG schema")
