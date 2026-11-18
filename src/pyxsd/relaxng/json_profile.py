@@ -12,6 +12,7 @@ from typing import Any, Literal
 from pyxsd.data_conversion.contracts import JsonValue, json_pointer, raise_conversion
 from pyxsd.data_conversion.names import eqname_to_expanded, expanded_to_eqname
 from pyxsd.exceptions import PyXSDError
+from pyxsd.relaxng.document import _whole_element_scalar_value
 from pyxsd.relaxng.json_values import scalar_to_relaxng_json
 from pyxsd.relaxng.names import ExceptName, Name, NameChoice, NsName
 from pyxsd.relaxng.projection import ContentContract, ProjectionPlan, RouteContract
@@ -78,18 +79,29 @@ def _root_route(root: RelaxNGElement, plan: ProjectionPlan, element: str | None)
     raise_conversion("root-unresolved", "", f"root {actual!r} is outside the start name class")
 
 
-def _child_model(model: ContentContract) -> ContentContract | None:
-    """Erase attribute-only subexpressions, retaining child ordering operators."""
+def _child_model(
+    model: ContentContract, memo: dict[int, ContentContract | None]
+) -> ContentContract | None:
+    """Erase attribute-only content once per DAG node, preserving shared operands."""
+    key = id(model)
+    if key in memo:
+        return memo[key]
     if model.kind in ("attribute", "empty"):
-        return None
-    operands = tuple(child for part in model.operands if (child := _child_model(part)) is not None)
-    if model.kind in ("group", "interleave") and len(operands) == 1:
-        return operands[0]
-    if model.operands and not operands:
-        return None
-    # Keep choice/repeat even with one child operand: erasing an empty
-    # alternative must not turn an ordered model into a different layout.
-    return ContentContract(model.kind, operands)
+        result = None
+    else:
+        operands = tuple(
+            child for part in model.operands if (child := _child_model(part, memo)) is not None
+        )
+        if model.kind in ("group", "interleave") and len(operands) == 1:
+            result = operands[0]
+        elif model.operands and not operands:
+            result = None
+        else:
+            # Keep choice/repeat even with one child operand: erasing an empty
+            # alternative must not turn an ordered model into a different layout.
+            result = ContentContract(model.kind, operands)
+    memo[key] = result
+    return result
 
 
 def _layout(route: RouteContract | None, generic: bool) -> _Layout:
@@ -101,15 +113,13 @@ def _layout(route: RouteContract | None, generic: bool) -> _Layout:
         return "mixed"
     if route.content.mixed:
         return "mixed"
-    model = _child_model(route.content.model)
+    model = _child_model(route.content.model, {})
     if model is None:
         return "empty"
     if len(route.children) == 1 and next(iter(route.children.values())).cardinality.repeatable:
         return "repeated"
-    if (
-        model.kind == "interleave"
-        and not route.wildcards
-        and all(not field.cardinality.repeatable for field in route.children.values())
+    if model.kind == "interleave" and all(
+        not field.cardinality.repeatable for field in route.children.values()
     ):
         return "record"
     return "sequence"
@@ -186,7 +196,7 @@ def _export(
             return attributes if has_attributes else ""
         wrapped = has_attributes or generic or bool(route and route.generic_reason)
         value = _scalar(
-            node.scalar_value() if node.text_value() else "",
+            _whole_element_scalar_value(node),
             (*path, "#content") if wrapped else path,
         )
         if wrapped:

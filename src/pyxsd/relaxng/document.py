@@ -248,6 +248,26 @@ class _TypedInterpretation(_TypedSnapshotState):
         )
 
 
+def _whole_element_scalar_value(node: RelaxNGElement) -> Any:
+    """Read a profile scalar, including accepted empty lexical evidence.
+
+    The generic Phase 3 accessor still distinguishes an absent character node.
+    Whole-element scalar slots instead retain any typed empty list/alternative
+    assigned to that position. The ordinary accessor supplies the same validity
+    and freshness gates before this helper consults its snapshot.
+    """
+    value = node.scalar_value()
+    if value is not None or node.text_value() not in (None, ""):
+        return value
+    snapshot = cast(_TypedInterpretation, node.revision._typed_snapshot)
+    occurrence = snapshot._text_sites.get(node)
+    if occurrence is None or not cast(EvidenceGraph, snapshot._evidence).scalar_witnesses_at(
+        occurrence
+    ):
+        return ""
+    return snapshot._value_at(occurrence)
+
+
 class RelaxNGDocument(Document):
     """One RELAX NG parse revision with its fresh merged report.
 

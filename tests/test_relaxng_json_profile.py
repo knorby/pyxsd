@@ -5,13 +5,16 @@ from __future__ import annotations
 import io
 import json
 from dataclasses import replace
+from xml.etree import ElementTree as ET
 
 import pytest
 
+from pyxsd.data_conversion.contracts import JsonValue
 from pyxsd.exceptions import PyXSDError, ValidationError
 from pyxsd.relaxng import RelaxNGSchema, StaleInterpretationError
 from pyxsd.relaxng.datatypes import Datatype, DatatypeFactory, DatatypeLibraryRegistration
 from pyxsd.relaxng.json_values import scalar_tag
+from pyxsd.relaxng.projection import ContentContract
 
 NS = "http://relaxng.org/ns/structure/1.0"
 XSD = "http://www.w3.org/2001/XMLSchema-datatypes"
@@ -57,11 +60,11 @@ def replace_root(document, **changes):
         ("<empty/>", "<r/>", ""),
         (ATTR, "<r/>", {}),
         (ATTR, '<r z="3"/>', {"@z": 3}),
-        ("<text/>", "<r/>", ""),
+        ('<data type="string"/>', "<r/>", ""),
         (INTEGER, "<r>12</r>", 12),
         (ATTR + INTEGER, "<r>12</r>", {"#content": 12}),
         (ATTR + INTEGER, '<r z="3">12</r>', {"@z": 3, "#content": 12}),
-        (ATTR + "<text/>", "<r/>", {"#content": ""}),
+        (ATTR + '<data type="string"/>', "<r/>", {"#content": ""}),
         (f"<interleave>{A}{B}</interleave>", "<r><b>B</b><a>A</a></r>", {"a": "A", "b": "B"}),
         (A + B, "<r><a>A</a><b>B</b></r>", [{"a": "A"}, {"b": "B"}]),
         (f"<choice>{A}{B}</choice>", "<r><a>A</a></r>", [{"a": "A"}]),
@@ -138,9 +141,10 @@ def test_generic_scalar_and_tags_never_become_child_objects():
     assert export(document) == {"r": tag}
     plan = replace_root(document, generic_reason="opaque application projection")
     assert export(document, plan=plan) == {"r": {"#content": tag}}
-    assert export(
-        parse("<text/>"), plan=replace_root(parse("<text/>"), generic_reason="opaque")
-    ) == {"r": {"#content": ""}}
+    empty = parse('<data type="string"/>')
+    assert export(empty, plan=replace_root(empty, generic_reason="opaque")) == {
+        "r": {"#content": ""}
+    }
 
 
 def test_generic_scalar_with_attributes_and_list_interpretation():
@@ -456,11 +460,113 @@ def test_interleave_with_repeatable_fields_is_ordered_not_a_record():
     }
 
 
-def test_interleave_with_wildcards_is_ordered_not_a_closed_record():
+def test_interleave_attribute_wildcards_contribute_to_the_record():
     content = (
         "<zeroOrMore><attribute><anyName/><text/></attribute></zeroOrMore>"
         f"<interleave>{A}{B}</interleave>"
     )
     assert export(parse(content, '<r n="1"><b>B</b><a>A</a></r>')) == {
-        "r": [{"@n": "1"}, {"b": "B"}, {"a": "A"}]
+        "r": {"@n": "1", "b": "B", "a": "A"}
     }
+
+
+@pytest.mark.parametrize(("xml", "expected"), [("<r/>", []), ("<r><a>x</a></r>", ["x"])])
+def test_shared_doubling_content_dag_has_bounded_layout_work(monkeypatch, xml, expected):
+    document = parse(f"<zeroOrMore>{A}</zeroOrMore>", xml)
+    plan = document.schema.projection
+    route = plan.routes[plan.roots[0]]
+    model = route.content.model
+    # Doubling a* by grouping it with itself keeps the language a*. Preserve
+    # the compact compiled representation rather than expanding 2**20 copies.
+    for _ in range(20):
+        model = ContentContract("group", (model, model))
+    plan = replace_root(document, content=replace(route.content, model=model))
+    pending = [model]
+    identities = set()
+    while pending:
+        item = pending.pop()
+        if id(item) not in identities:
+            identities.add(id(item))
+            pending.extend(item.operands)
+
+    original = ContentContract.__getattribute__
+    reads = 0
+
+    def bounded_operands(self, name):
+        nonlocal reads
+        if name == "operands" and id(self) in identities:
+            reads += 1
+            assert reads <= 4 * len(identities), "layout re-expanded a shared content DAG"
+        return original(self, name)
+
+    monkeypatch.setattr(ContentContract, "__getattribute__", bounded_operands)
+    assert export(document, plan=plan) == {"r": expected}
+    assert reads <= 4 * len(identities)
+
+
+@pytest.mark.parametrize("text", [None, ""])
+@pytest.mark.parametrize("slot", ["stable", "attributes", "generic"])
+@pytest.mark.parametrize(
+    ("scalar", "kind"),
+    [
+        ('<choice><data type="string"/><data type="token"/></choice>', "tag"),
+        ("<text/>", "tag"),
+        ('<list><zeroOrMore><data type="integer"/></zeroOrMore></list>', "array"),
+        ('<data type="string"/>', "string"),
+    ],
+)
+def test_empty_scalar_evidence_exports_through_production_adapter(text, slot, scalar, kind):
+    content = scalar
+    if slot == "attributes":
+        content = ATTR + scalar
+    elif slot == "generic":
+        content = f"<element><anyName/>{scalar}</element>"
+    schema = schema_for(content)
+
+    def source(characters):
+        root = ET.Element("r")
+        leaf = ET.SubElement(root, "s") if slot == "generic" else root
+        leaf.text = characters
+        return root
+
+    document = schema.parse(source(text), typed=True)
+    assert not document.report.has_errors, document.report.issues
+    node = document.root.children[0] if slot == "generic" else document.root
+    assert node.text_value() == text
+    if text is None:
+        # Phase 3's generic accessor still reports the absent character node.
+        assert node.scalar_value() is None
+    expected: JsonValue
+    if kind == "tag":
+        present = schema.parse(source(""), typed=True)
+        reference = present.root.children[0] if slot == "generic" else present.root
+        reference_value = reference.scalar_value()
+        assert reference_value.lexical == ""
+        expected = scalar_tag(reference_value)
+    else:
+        expected = [] if kind == "array" else ""
+    if slot == "attributes":
+        expected = {"#content": expected}
+    elif slot == "generic":
+        expected = [{"s": {"#content": expected}}]
+    assert document.to_data(format="pyxsd-json") == {"r": expected}
+    assert json.loads(document.to_json(format="pyxsd-json")) == {"r": expected}
+    if text is None:
+        assert node.scalar_value() is None
+
+
+@pytest.mark.parametrize("text", [None, ""])
+def test_empty_branch_without_scalar_witness_exports_empty_string(text):
+    source = ET.Element("r")
+    source.text = text
+    document = schema_for(f"<choice><empty/>{INTEGER}</choice>").parse(source, typed=True)
+    assert not document.report.has_errors
+    assert document.root.scalar_value() is None
+    assert document.to_data(format="pyxsd-json") == {"r": ""}
+
+
+def test_whole_element_scalar_helper_has_a_lexical_empty_fallback_without_a_site():
+    from pyxsd.relaxng.document import _whole_element_scalar_value
+
+    document = parse("<empty/>")
+    assert _whole_element_scalar_value(document.root) == ""
