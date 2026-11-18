@@ -119,6 +119,32 @@ def test_route_patterns_are_the_exact_registered_element_assignments():
     assert plan.grammar_fingerprint.startswith("pyxsd.relaxng.projection-grammar/1:")
 
 
+def test_route_patterns_preserve_equivalent_same_name_variants():
+    schema = compile_grammar(
+        "<start><choice>"
+        '<element name="doc"><group>'
+        '<attribute name="a"><text/></attribute>'
+        '<attribute name="b"><text/></attribute>'
+        "</group></element>"
+        '<element name="doc"><group>'
+        '<attribute name="b"><text/></attribute>'
+        '<attribute name="a"><text/></attribute>'
+        "</group></element>"
+        "</choice></start>"
+    )
+    plan = schema.projection
+    route = plan.routes[plan.roots[0]]
+    assert len(route.patterns) == 2
+    assert route.patterns[0] is not route.patterns[1]
+    assert route.patterns[0].name_class == route.patterns[1].name_class
+    assert route.route_id == _route_id(route.occurrence)
+    Root = models(schema).model_for(element="doc")
+    model = Root.model_validate({"@a": "A", "@b": "B"})
+    tree = route_to_lexical(route, model)
+    assert tree.root.attrib == {"a": "A", "b": "B"}
+    assert validate_route_data(route, model) == {"@a": model.attr_a, "@b": model.attr_b}
+
+
 def test_standalone_record_required_optional_repeat_and_direct_construction():
     registry, route = registry_and_route(
         """
