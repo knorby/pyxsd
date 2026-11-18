@@ -721,6 +721,50 @@ class RelaxNGSchema:
             fidelity=fidelity,
         )
 
+    def json_schema(
+        self,
+        *,
+        format: FormatName = "pyxsd-json",
+        element: str | None = None,
+        fidelity: Fidelity = "strict",
+        typed: bool = True,
+        always_list: bool = False,
+    ) -> dict[str, object]:
+        """Describe this schema's JSON data contract as Draft 2020-12 JSON Schema.
+
+        The generated schema matches what :meth:`from_data` accepts and
+        :meth:`RelaxNGDocument.to_data` produces for the selected format, so
+        every export from a valid, current revision validates against it. It is
+        a structural description, never full RELAX NG validation: grammar
+        validity, name classes, datatype contexts, candidate identity, and
+        unexpressed ordering are listed under
+        ``x-pyxsd-validation.unvalidated``.
+
+        - ``format`` - the data-format contract; the RELAX NG profile
+          describes ``"pyxsd-json"`` and advertises
+          ``x-pyxsd-profile: "relaxng"``.
+
+        - ``element`` - an optional local, Clark, or EQName spelling that
+          narrows the start name class; ``None`` describes every admitted root
+          name, keeping an open class symbolic.
+
+        - ``fidelity`` - ``"strict"`` or ``"best-effort"`` representation
+          handling; an unknown value raises ``ValueError``.
+
+        - ``typed`` / ``always_list`` - native-only export options; they must
+          keep their defaults for every other format.
+        """
+        from pyxsd.relaxng.json_schema import build_relaxng_json_schema
+
+        return build_relaxng_json_schema(
+            self,
+            format=format,
+            element=element,
+            fidelity=fidelity,
+            typed=typed,
+            always_list=always_list,
+        )
+
     def _parse_imported_tree(self, tree: ImportedTree, *, format: FormatName) -> RelaxNGDocument:
         """Parse one imported tree, then verify its parsed tag claims.
 
