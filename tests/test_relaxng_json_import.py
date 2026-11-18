@@ -1801,6 +1801,43 @@ def test_list_token_contract_resolution_handles_structure() -> None:
     assert _token_position_contracts((list_contract,), 0, variable_plan) is None
 
 
+def test_badgerfish_repeatable_wildcard_wraps_occurrences() -> None:
+    content = (
+        "<zeroOrMore><element><anyName/><choice>"
+        '<list><oneOrMore><data type="integer"/></oneOrMore></list>'
+        '<data type="integer"/></choice></element></zeroOrMore>'
+    )
+
+    repeated = valid(content, "<r><item>1</item><item>2</item></r>")
+    repeated_data = repeated.to_data(format="badgerfish", fidelity="strict")
+    assert repeated_data == {"r": {"item": ["1", "2"]}}
+    imported = repeated.schema.from_data(repeated_data, format="badgerfish")
+    assert not imported.report.has_errors, imported.report.issues
+    assert [child.text_value() for child in imported.root.children] == ["1", "2"]
+    assert imported.to_data(format="badgerfish", fidelity="strict") == repeated_data
+
+    listed = valid(content, "<r><item>1 2</item></r>")
+    listed_data = listed.to_data(format="badgerfish", fidelity="strict")
+    assert listed_data == {"r": {"item": [[1, 2]]}}
+    listed_import = listed.schema.from_data(listed_data, format="badgerfish")
+    assert not listed_import.report.has_errors, listed_import.report.issues
+    assert [child.text_value() for child in listed_import.root.children] == ["1 2"]
+    assert listed_import.to_data(format="badgerfish", fidelity="strict") == listed_data
+
+
+def test_badgerfish_nonrepeatable_wildcard_list_is_not_over_wrapped() -> None:
+    content = (
+        "<element><anyName/><list><zeroOrMore><data type='integer'/></zeroOrMore></list></element>"
+    )
+    document = valid(content, "<r><item>1 2</item></r>")
+    data = document.to_data(format="badgerfish", fidelity="strict")
+    assert data == {"r": {"item": [1, 2]}}
+    imported = document.schema.from_data(data, format="badgerfish")
+    assert not imported.report.has_errors, imported.report.issues
+    assert [child.text_value() for child in imported.root.children] == ["1 2"]
+    assert imported.to_data(format="badgerfish", fidelity="strict") == data
+
+
 def test_badgerfish_flat_arrays_are_repeated_scalar_occurrences() -> None:
     content = (
         "<zeroOrMore><element name='a'><choice><list><zeroOrMore>"

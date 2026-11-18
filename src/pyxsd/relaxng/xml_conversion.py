@@ -1658,11 +1658,6 @@ def _badgerfish_children(
         groups.setdefault(child._name_, []).append(child)
 
     plan_order = list(route.children) if route is not None else []
-    repeatable = (
-        {name: field.cardinality.repeatable for name, field in route.children.items()}
-        if route is not None
-        else {}
-    )
     plan_set = set(plan_order)
     ordered = [name for name in plan_order if name in groups]
     ordered.extend(name for name in groups if name not in plan_set)
@@ -1671,7 +1666,8 @@ def _badgerfish_children(
     for name in ordered:
         group = groups[name]
         lexical = names.lexical(name)
-        is_array = repeatable.get(name, False) or len(group) > 1
+        declared = _child_field(route, name) if route is not None else None
+        is_array = (declared is not None and declared.cardinality.repeatable) or len(group) > 1
         values: list[JsonValue] = []
         for index, child in enumerate(group):
             child_path = (*path, lexical, index) if is_array else (*path, lexical)
@@ -2145,9 +2141,9 @@ def _grouped_values(
         return False, [value]
     if any(isinstance(item, (list, dict)) for item in raw):
         return True, list(raw)
-    if flat_scalar_arrays and isinstance(field, FieldContract):
-        # BadgerFish wraps a repeatable known field in an outer occurrence
-        # array, so its flat scalar array can only mean repeated children.
+    if flat_scalar_arrays and field is not None:
+        # BadgerFish wraps every declared repeatable field, named or wildcard,
+        # in an outer occurrence array, so a flat scalar array means occurrences.
         return True, list(raw)
     list_contracts = tuple(contract for contract in contracts if _list_valued(contract))
     if list_contracts:

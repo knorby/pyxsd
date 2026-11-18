@@ -428,7 +428,7 @@ def test_wildcard_name_classes_are_known_prefix_seeds(name_class: str) -> None:
     prefix = "ns0" if "nsName" in name_class else "ns_" + b"urn:wild".hex()
 
     assert document.to_data(format="badgerfish") == {
-        "r": {"@xmlns": {prefix: "urn:wild"}, f"{prefix}:item": "v"}
+        "r": {"@xmlns": {prefix: "urn:wild"}, f"{prefix}:item": ["v"]}
     }
     assert document.to_data(format="jsonml") == [
         "r",
