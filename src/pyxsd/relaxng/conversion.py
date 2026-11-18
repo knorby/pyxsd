@@ -1,21 +1,22 @@
 """RELAX NG data-export dispatch and its freshness policy.
 
-Every public data format owns one RELAX NG adapter entry.  Dispatch validates
-the shared format/fidelity names and the native-only option rules exactly as
-the XSD export entry points do, then applies one freshness gate before the
-adapter runs: a typed export from a format that materializes schema-directed
-values requires a valid document whose evidence still describes the current
-lexical revision.  Native ``typed=False`` output and JsonML stay lexical, so
-they may export a dirty or invalid current tree; they never consult evidence.
+Every public data format owns one concrete RELAX NG adapter entry.  Dispatch
+validates the shared format/fidelity names and the native-only option rules
+exactly as the XSD export entry points do, then applies one freshness gate
+before the adapter runs: a typed export from a format that materializes
+schema-directed values requires a valid document whose evidence still
+describes the current lexical revision.  Native ``typed=False`` output and
+JsonML stay lexical, so they may export a dirty or invalid current tree; they
+never consult evidence.
 
-No adapter is allowed to fall back to an XSD converter. The ``pyxsd-json``
-adapter uses the compiled RELAX NG projection plan; remaining entries raise
-:class:`RelaxNGUnsupportedAdapterError` explicitly until implemented.
+No adapter is allowed to fall back to an XSD converter.  Native, Parker,
+BadgerFish, JsonML, and the ``pyxsd-json`` profile all traverse the compiled
+RELAX NG projection and the authoritative lexical tree directly.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
 from pyxsd.data_conversion.contracts import (
     Fidelity,
@@ -40,9 +41,12 @@ __all__ = [
 #: Closed export mode: raw Python values or JSON-safe/tagged values.
 ExportMode: TypeAlias = Literal["raw", "json-safe"]
 
+#: Adapter result, which may carry raw scalar wrappers in native raw mode.
+ExportResult: TypeAlias = Any
+
 
 class RelaxNGUnsupportedAdapterError(PyXSDError):
-    """A requested RELAX NG export format still has no concrete adapter."""
+    """A requested RELAX NG export format has no concrete adapter."""
 
     def __init__(self, format: FormatName) -> None:
         super().__init__(f"RELAX NG data export adapter for format {format!r} is not implemented")
@@ -54,11 +58,13 @@ class ExportAdapter(Protocol):
 
     ``requires_current_typed_evidence`` marks adapters whose typed output
     materializes schema-directed values.  Dispatch checks it before
-    :meth:`export`, so even an unfinished adapter never sees a stale or
-    invalid typed document.  The export options are the XSD-compatible
-    ``fidelity``, ``typed``, and ``always_list`` contract; ``mode`` selects
-    raw Python/wrapper output for :meth:`RelaxNGDocument.to_dict` or
-    JSON-safe/tagged output for ``to_data`` and ``to_json``.
+    :meth:`export`, so a stale or invalid typed document never reaches the
+    adapter.  The export options are the XSD-compatible ``fidelity``,
+    ``typed``, and ``always_list`` contract; ``mode`` selects raw
+    Python/wrapper output for :meth:`RelaxNGDocument.to_dict` or
+    JSON-safe/tagged output for ``to_data`` and ``to_json``.  A raw native
+    result may contain typed wrappers, so the adapter result is not restricted
+    to :data:`~pyxsd.data_conversion.contracts.JsonValue`.
     """
 
     format: FormatName
@@ -72,36 +78,9 @@ class ExportAdapter(Protocol):
         typed: bool,
         always_list: bool,
         mode: ExportMode,
-    ) -> JsonValue:
+    ) -> ExportResult:
         """Return *document* under this adapter's format contract."""
         ...
-
-
-class _UnimplementedAdapter:
-    """Production placeholder that never delegates to an XSD converter."""
-
-    __slots__ = ("format", "requires_current_typed_evidence")
-
-    def __init__(
-        self,
-        format: FormatName,
-        *,
-        requires_current_typed_evidence: bool,
-    ) -> None:
-        self.format = format
-        self.requires_current_typed_evidence = requires_current_typed_evidence
-
-    def export(
-        self,
-        document: RelaxNGDocument,
-        *,
-        fidelity: Fidelity,
-        typed: bool,
-        always_list: bool,
-        mode: ExportMode,
-    ) -> JsonValue:
-        del document, fidelity, typed, always_list, mode
-        raise RelaxNGUnsupportedAdapterError(self.format)
 
 
 class _ProfileAdapter:
@@ -119,18 +98,108 @@ class _ProfileAdapter:
         always_list: bool,
         mode: ExportMode,
     ) -> JsonValue:
+        del fidelity, typed, always_list, mode
         from pyxsd.relaxng.json_profile import export_profile
 
         return export_profile(document.root, document.schema.projection)
 
 
+class _NativeAdapter:
+    """Grouped native ``pyxsd`` structure with raw or JSON-safe scalars."""
+
+    format: FormatName = "pyxsd"
+    requires_current_typed_evidence = True
+
+    def export(
+        self,
+        document: RelaxNGDocument,
+        *,
+        fidelity: Fidelity,
+        typed: bool,
+        always_list: bool,
+        mode: ExportMode,
+    ) -> ExportResult:
+        from pyxsd.relaxng.xml_conversion import export_native
+
+        return export_native(
+            document,
+            fidelity=fidelity,
+            typed=typed,
+            always_list=always_list,
+            mode=mode,
+        )
+
+
+class _ParkerAdapter:
+    """Root-absorbed, local-name grouped Parker objects."""
+
+    format: FormatName = "parker"
+    requires_current_typed_evidence = True
+
+    def export(
+        self,
+        document: RelaxNGDocument,
+        *,
+        fidelity: Fidelity,
+        typed: bool,
+        always_list: bool,
+        mode: ExportMode,
+    ) -> JsonValue:
+        del typed, always_list, mode
+        from pyxsd.relaxng.xml_conversion import export_parker
+
+        return export_parker(document, fidelity=fidelity)
+
+
+class _BadgerFishAdapter:
+    """Root-retained BadgerFish objects with deterministic prefixes."""
+
+    format: FormatName = "badgerfish"
+    requires_current_typed_evidence = True
+
+    def export(
+        self,
+        document: RelaxNGDocument,
+        *,
+        fidelity: Fidelity,
+        typed: bool,
+        always_list: bool,
+        mode: ExportMode,
+    ) -> JsonValue:
+        del typed, always_list, mode
+        from pyxsd.relaxng.xml_conversion import export_badgerfish
+
+        return export_badgerfish(document, fidelity=fidelity)
+
+
+class _JsonMLAdapter:
+    """Ordered lexical JsonML available for dirty and invalid trees."""
+
+    format: FormatName = "jsonml"
+    requires_current_typed_evidence = False
+
+    def export(
+        self,
+        document: RelaxNGDocument,
+        *,
+        fidelity: Fidelity,
+        typed: bool,
+        always_list: bool,
+        mode: ExportMode,
+    ) -> JsonValue:
+        del typed, always_list, mode
+        from pyxsd.relaxng.xml_conversion import export_jsonml
+
+        return export_jsonml(document, fidelity=fidelity)
+
+
 #: The single registry every RELAX NG export path resolves through.
 _ADAPTERS: dict[FormatName, ExportAdapter] = {
-    "pyxsd": _UnimplementedAdapter("pyxsd", requires_current_typed_evidence=True),
+    "pyxsd": _NativeAdapter(),
     "pyxsd-json": _ProfileAdapter(),
-    "parker": _UnimplementedAdapter("parker", requires_current_typed_evidence=True),
-    "badgerfish": _UnimplementedAdapter("badgerfish", requires_current_typed_evidence=True),
-    "jsonml": _UnimplementedAdapter("jsonml", requires_current_typed_evidence=False),
+    "parker": _ParkerAdapter(),
+    "badgerfish": _BadgerFishAdapter(),
+    "jsonml": _JsonMLAdapter(),
 }
 
 
@@ -174,7 +243,7 @@ def _dispatch(
     typed: bool,
     always_list: bool,
     mode: ExportMode,
-) -> JsonValue:
+) -> ExportResult:
     """Run the one validation, freshness, and adapter path for both modes."""
     requested_format = validate_format(format)
     requested_fidelity = validate_fidelity(fidelity)
@@ -198,7 +267,7 @@ def _export_native_raw(
     *,
     typed: bool,
     always_list: bool,
-) -> JsonValue:
+) -> dict:
     """Serve ``RelaxNGDocument.to_dict`` from the registry in raw mode."""
     return _dispatch(
         document,

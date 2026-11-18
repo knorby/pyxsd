@@ -29,7 +29,6 @@ from pyxsd.relaxng import (
     RelaxNGLimits,
     RelaxNGSchema,
 )
-from pyxsd.relaxng.conversion import RelaxNGUnsupportedAdapterError
 from pyxsd.relaxng.diagnostics import MISSING_ATTRIBUTE, UNEXPECTED_ELEMENT
 from pyxsd.resource_policy import ResourceData
 from pyxsd.schema_base import SchemaBase
@@ -560,11 +559,6 @@ def test_data_conversion_methods_dispatch_without_xsd_paths(monkeypatch):
 
     calls = (
         (lambda: document.to_dict(), PyXSDError, "requires a typed document"),
-        (
-            lambda: document.to_dict(typed=False),
-            RelaxNGUnsupportedAdapterError,
-            "not implemented",
-        ),
         (lambda: document.to_data(), PyXSDError, "requires a typed document"),
         (
             lambda: document.to_data(format="jsonml", typed=False),
@@ -572,15 +566,14 @@ def test_data_conversion_methods_dispatch_without_xsd_paths(monkeypatch):
             "native-only",
         ),
         (lambda: document.to_json(), PyXSDError, "requires a typed document"),
-        (
-            lambda: document.to_json(typed=False),
-            RelaxNGUnsupportedAdapterError,
-            "not implemented",
-        ),
     )
     for call, error, message in calls:
         with pytest.raises(error, match=message):
             call()
+
+    assert document.to_dict(typed=False) == {"item": "x"}
+    assert document.to_data(typed=False) == {"item": "x"}
+    assert document.to_json(typed=False) == '{"item": "x"}'
 
     assert dict(document.root.attributes) == attributes_before
     assert document.root.revision is revision

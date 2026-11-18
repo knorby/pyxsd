@@ -1,12 +1,11 @@
 """Public RELAX NG conversion dispatch and freshness gates.
 
-Task 1 installs no concrete format adapters. These tests replace the internal
-registry with recording fakes to prove that every public format reaches a
-RELAX NG-owned adapter with the XSD option contract, that typed exports require
-valid current evidence before adapter invocation, and that the lexical escape
-paths observe the actual dirty or invalid tree. Production entries must raise
-an explicit RELAX NG unsupported-adapter error rather than falling through to
-an XSD converter.
+These tests replace the internal registry with recording fakes to prove that
+every public format reaches a RELAX NG-owned adapter with the XSD option
+contract, that typed exports require valid current evidence before adapter
+invocation, and that the lexical escape paths observe the actual dirty or
+invalid tree. Production entries own concrete adapters and never fall through
+to an XSD converter.
 """
 
 from __future__ import annotations
@@ -26,11 +25,7 @@ from pyxsd.data_conversion.contracts import FormatName
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError, ValidationError
 from pyxsd.relaxng import RelaxNGDocument, RelaxNGSchema, StaleInterpretationError, conversion
-from pyxsd.relaxng.conversion import (
-    ExportMode,
-    RelaxNGUnsupportedAdapterError,
-    export_relaxng,
-)
+from pyxsd.relaxng.conversion import ExportMode, export_relaxng
 
 NS = "http://relaxng.org/ns/structure/1.0"
 XSD_DATATYPES = "http://www.w3.org/2001/XMLSchema-datatypes"
@@ -163,15 +158,13 @@ def test_invalid_and_dirty_jsonml_is_lexical_while_gated_formats_fail() -> None:
     invalid = _invalid_typed_document()
     with pytest.raises(ValidationError):
         export_relaxng(invalid, format="badgerfish")
-    with pytest.raises(RelaxNGUnsupportedAdapterError):
-        export_relaxng(invalid, format="jsonml")
+    assert export_relaxng(invalid, format="jsonml") == ["doc", "oops"]
 
     dirty = _typed_document()
     dirty.root.set_text("13")
     with pytest.raises(StaleInterpretationError):
         export_relaxng(dirty, format="parker")
-    with pytest.raises(RelaxNGUnsupportedAdapterError):
-        export_relaxng(dirty, format="jsonml")
+    assert export_relaxng(dirty, format="jsonml") == ["doc", "13"]
 
 
 @pytest.mark.parametrize("method", ["to_dict", "to_data", "to_json"])
@@ -520,8 +513,17 @@ def test_json_rejects_nonfinite_adapter_output_but_to_dict_stays_raw(
     ]
 
 
+PRODUCTION_RESULTS: dict[FormatName, Any] = {
+    "pyxsd": {"$": 12},
+    "pyxsd-json": {"doc": 12},
+    "parker": 12,
+    "badgerfish": {"doc": 12},
+    "jsonml": ["doc", 12],
+}
+
+
 @pytest.mark.parametrize("format", FORMATS)
-def test_unimplemented_production_adapter_raises_explicitly_without_xsd_path(
+def test_production_adapter_exports_without_an_xsd_path(
     monkeypatch: pytest.MonkeyPatch,
     format: FormatName,
 ) -> None:
@@ -539,14 +541,7 @@ def test_unimplemented_production_adapter_raises_explicitly_without_xsd_path(
     monkeypatch.setattr(xsd_dict_export, "bound_to_dict", fail("bound_to_dict"))
     monkeypatch.setattr(xsd_data_import, "data_to_element", fail("data_to_element"))
 
-    if format == "pyxsd-json":
-        assert export_relaxng(document, format=format) == {"doc": 12}
-    else:
-        with pytest.raises(RelaxNGUnsupportedAdapterError) as raised:
-            export_relaxng(document, format=format)
-
-        assert raised.value.format == format
-        assert "not implemented" in str(raised.value)
+    assert export_relaxng(document, format=format) == PRODUCTION_RESULTS[format]
     assert xsd_calls == []
 
 
@@ -561,8 +556,8 @@ def test_native_to_dict_uses_the_relaxng_adapter_not_the_xsd_pathway(
     monkeypatch.setattr(xsd_dict_export, "bound_to_dict", fail)
     monkeypatch.setattr(xsd_data_export, "bound_to_data", fail)
 
-    with pytest.raises(RelaxNGUnsupportedAdapterError):
-        document.to_dict()
+    assert document.to_dict() == {"$": 12}
+    assert document.to_data(format="pyxsd") == {"$": 12}
 
 
 def test_registry_injection_does_not_leak_between_tests(

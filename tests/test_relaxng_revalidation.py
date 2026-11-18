@@ -29,7 +29,6 @@ from pyxsd.relaxng import (
     RelaxNGSchema,
     StaleInterpretationError,
 )
-from pyxsd.relaxng.conversion import RelaxNGUnsupportedAdapterError
 from pyxsd.relaxng.xml_writer import clone_relaxng
 from pyxsd.xdm.errors import XdmInputError
 
@@ -536,13 +535,9 @@ def test_lexical_escape_paths_work_on_dirty_and_stale_documents(tmp_path):
     validation = _validation_only('<doc n="1"/>')
     validation.root.set_text("changed")
     assert validation.to_string() == '<doc n="1">changed</doc>'
-    for conversion in (
-        lambda: validation.to_dict(typed=False),
-        lambda: validation.to_data(typed=False),
-        lambda: validation.to_json(typed=False),
-    ):
-        with pytest.raises(RelaxNGUnsupportedAdapterError, match="not implemented"):
-            conversion()
+    assert validation.to_dict(typed=False) == {"@n": "1", "$": "changed"}
+    assert validation.to_data(typed=False) == {"@n": "1", "$": "changed"}
+    assert validation.to_json(typed=False) == '{"@n": "1", "$": "changed"}'
 
 
 def test_root_callable_transform_boundaries_and_non_tree_results():
