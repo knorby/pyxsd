@@ -955,7 +955,6 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         self._opaque_key = f"{format}-opaque-scalar"
         self._opaque_shell: _Schema | None = None
         self._pending: list[tuple[str, str, str | None, bool]] = []
-        self._declarations_possible = _plan_has_declarations(plan)
         if format == "parker" and _plan_has_attributes(plan):
             self.unvalidated.add("relaxng-parker-attribute-loss")
         if format == "parker" and _plan_has_namespaced_names(plan):
@@ -1734,8 +1733,9 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
             branches: list[_Schema] = []
             if self._can_be_empty(route):
                 branches.append(scalar)
-            if self._attributes_possible(route) or self._declarations_possible:
-                branches.append(self._badgerfish_object(route, layout, scalar=scalar))
+            # Namespace declarations are legal on any BadgerFish element
+            # object, even when the projection never needs to emit one.
+            branches.append(self._badgerfish_object(route, layout, scalar=scalar))
             return _any_of(branches)
         if layout == "mixed":
             mixed_scalar: _Schema = (
@@ -1763,8 +1763,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         required: list[str] = []
         patterns: dict[str, _Schema] = {}
         pattern_requirements: list[str] = []
-        if self._declarations_possible:
-            properties["@xmlns"] = self._xmlns_schema()
+        properties["@xmlns"] = self._xmlns_schema()
         attribute_groups: dict[tuple[bool, str], list[FieldContract]] = {}
         for expanded in sorted(route.attributes):
             field = route.attributes[expanded]
@@ -1829,9 +1828,8 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         body: _Schema = {
             "type": "object",
             "x-pyxsd-layout": layout,
+            "properties": properties,
         }
-        if properties:
-            body["properties"] = properties
         if patterns:
             body["patternProperties"] = patterns
         if required:
@@ -1853,8 +1851,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         child_wildcards = self._child_wildcards(route)
         if any(wildcard.cardinality.minimum > 0 for wildcard in child_wildcards):
             self._require_property(body, _QNAME_PATTERN)
-        if self._declarations_possible:
-            body["x-pyxsd-prefix-scope"] = True
+        body["x-pyxsd-prefix-scope"] = True
         return body
 
     @staticmethod
@@ -1981,15 +1978,14 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
         generic: bool,
     ) -> _Schema:
         layout = _exporter_layout(route, generic)
-        attributes, _required_attributes, attributes_possible, required = self._jsonml_attributes(
+        attributes, _required_attributes, _attributes_possible, required = self._jsonml_attributes(
             route
         )
         content = self._jsonml_content(route, layout)
         branches: list[_Schema] = []
         if not required:
             branches.append(self._jsonml_branch(tag, None, content, layout))
-        if attributes_possible:
-            branches.append(self._jsonml_branch(tag, attributes, content, layout))
+        branches.append(self._jsonml_branch(tag, attributes, content, layout))
         body: _Schema = {
             "type": "array",
             "minItems": 1,
@@ -2208,29 +2204,25 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 properties[local] = value
                 if any(field.cardinality.minimum > 0 for field in entries):
                     required.append(local)
-        if self._declarations_possible:
-            properties["xmlns"] = {
-                "type": "string",
-                "not": {"enum": [_XML_NS, _XMLNS_NS]},
-            }
-            patterns["^xmlns:xml$"] = {"const": _XML_NS}
-            patterns[f"^xmlns:(?!xml$)(?!xmlns$){_NCNAME}$"] = {
-                "type": "string",
-                "minLength": 1,
-                "not": {"enum": [_XML_NS, _XMLNS_NS]},
-            }
+        properties["xmlns"] = {
+            "type": "string",
+            "not": {"enum": [_XML_NS, _XMLNS_NS]},
+        }
+        patterns["^xmlns:xml$"] = {"const": _XML_NS}
+        patterns[f"^xmlns:(?!xml$)(?!xmlns$){_NCNAME}$"] = {
+            "type": "string",
+            "minLength": 1,
+            "not": {"enum": [_XML_NS, _XMLNS_NS]},
+        }
         for wildcard in self._attribute_wildcards(route):
             patterns[_JSONML_ATTRIBUTE_PATTERN] = self._wildcard_attribute_site(wildcard)
             self.unvalidated.add("relaxng-attribute-name-class")
-        possible = bool(properties or patterns)
         body: _Schema = {
             "type": "object",
             "minProperties": 1,
+            "properties": properties,
+            "patternProperties": patterns,
         }
-        if properties:
-            body["properties"] = properties
-        if patterns:
-            body["patternProperties"] = patterns
         if required:
             body["required"] = sorted(set(required))
         if requirements:
@@ -2245,7 +2237,7 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 _name_class_metadata(wildcard.name_class)
                 for wildcard in self._attribute_wildcards(route)
             ]
-        return body, required, possible, bool(required or requirements)
+        return body, required, True, bool(required or requirements)
 
     def _jsonml_disclosures(self, route: RouteContract, layout: str) -> None:
         if self._child_wildcards(route):
@@ -2505,30 +2497,6 @@ def _plan_has_attributes(plan: ProjectionPlan) -> bool:
     return False
 
 
-def _plan_has_declarations(plan: ProjectionPlan) -> bool:
-    """Whether any efficient lexical export can need a namespace declaration."""
-    for route in plan.routes.values():
-        if _name_class_namespaced(route.name_class):
-            return True
-        if any(_split_expanded(name)[0] for name in (*route.attributes, *route.children)):
-            return True
-        if any(_name_class_namespaced(wildcard.name_class) for wildcard in route.wildcards):
-            return True
-        if any(
-            _contracts_include_qname(contract, plan) for contract in route.content.scalar_contracts
-        ):
-            return True
-        for field in (*route.attributes.values(), *route.children.values()):
-            if any(_contracts_include_qname(contract, plan) for contract in field.scalar_contracts):
-                return True
-        for wildcard in route.wildcards:
-            if any(
-                _contracts_include_qname(contract, plan) for contract in wildcard.scalar_contracts
-            ):
-                return True
-    return False
-
-
 def _name_class_namespaced(name_class: NameClass) -> bool:
     if isinstance(name_class, AnyName):
         # An open name can admit a namespaced name, which needs a prefix.
@@ -2543,34 +2511,6 @@ def _name_class_namespaced(name_class: NameClass) -> bool:
         return _name_class_namespaced(name_class.base) or _name_class_namespaced(
             name_class.excluded
         )
-    return False
-
-
-def _contracts_include_qname(contract: ScalarContract, plan: ProjectionPlan) -> bool:
-    if contract.kind in ("atomic", "list") and contract.library_uri not in (
-        BUILTIN_LIBRARY,
-        XSD_LIBRARY,
-    ):
-        # A custom decoder may return a QName or a list of QNames, which the
-        # conventional exporters spell with a declared prefix.
-        return True
-    if contract.kind == "atomic":
-        return contract.type_name in _XSD_QNAME_TYPES
-    if contract.kind != "list":
-        return False
-    pattern = plan.encoding_patterns[contract.pattern_identity]
-    assert isinstance(pattern, List)
-    tokens = _token_patterns(pattern)
-    if tokens is None:
-        # An interpreted list keeps lexical text; any QName token can still
-        # bring an authored prefix into the format's declaration scope.
-        return True
-    for token in tokens[1]:
-        token_contract = scalar_contract(token)
-        if token_contract.library_uri not in (BUILTIN_LIBRARY, XSD_LIBRARY):
-            return True
-        if token_contract.type_name in _XSD_QNAME_TYPES:
-            return True
     return False
 
 

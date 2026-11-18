@@ -2323,7 +2323,6 @@ for format in ("pyxsd", "parker", "badgerfish", "jsonml"):
 def test_static_name_class_and_contract_helpers() -> None:
     from pyxsd.relaxng.json_schema import (
         _contracts_include_list,
-        _contracts_include_qname,
         _name_class_namespaced,
         _root_metadata,
     )
@@ -2343,32 +2342,12 @@ def test_static_name_class_and_contract_helpers() -> None:
     assert not _name_class_namespaced(_Unknown())
     assert _root_metadata("{urn:a}r") == {"kind": "name", "uri": "urn:a", "local": "r"}
 
-    qname = schema_for('<data type="QName"/>')
-    route = qname.projection.routes[qname.projection.roots[0]]
-    assert _contracts_include_qname(route.content.scalar_contracts[0], qname.projection)
+    route = schema_for('<data type="QName"/>')
+    route_contract = route.projection.routes[route.projection.roots[0]]
     listed = schema_for('<list><oneOrMore><data type="integer"/></oneOrMore></list>')
     listed_route = listed.projection.routes[listed.projection.roots[0]]
     assert _contracts_include_list(listed_route.content.scalar_contracts[0])
-    assert not _contracts_include_list(route.content.scalar_contracts[0])
-    assert not _contracts_include_qname(listed_route.content.scalar_contracts[0], listed.projection)
-    qname_list = schema_for('<list><oneOrMore><data type="QName"/></oneOrMore></list>')
-    qname_list_route = qname_list.projection.routes[qname_list.projection.roots[0]]
-    assert _contracts_include_qname(
-        qname_list_route.content.scalar_contracts[0], qname_list.projection
-    )
-    interpreted = schema_for(
-        '<list><choice><data type="QName"/><data type="string"/></choice></list>'
-    )
-    interpreted_route = interpreted.projection.routes[interpreted.projection.roots[0]]
-    assert _contracts_include_qname(
-        interpreted_route.content.scalar_contracts[0], interpreted.projection
-    )
-    plain_wildcard = schema_for(
-        '<zeroOrMore><attribute><nsName ns=""/><text/></attribute></zeroOrMore><empty/>'
-    )
-    from pyxsd.relaxng.json_schema import _plan_has_declarations
-
-    assert not _plan_has_declarations(plain_wildcard.projection)
+    assert not _contracts_include_list(route_contract.content.scalar_contracts[0])
 
 
 def test_conventional_ambiguous_and_text_scalars_validate() -> None:

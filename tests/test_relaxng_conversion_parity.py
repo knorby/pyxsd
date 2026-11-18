@@ -1607,7 +1607,7 @@ def test_negative_shapes_fail_for_every_format() -> None:
             "cardinality": {"r": {"a": [1, 1], "b": "x"}},
             "bool": {"r": {"a": True, "b": "x"}},
             "null": {"r": {"a": None, "b": "x"}},
-            "xmlns": {"r": {"@xmlns": {"p": "urn:x"}, "a": 1, "b": "x"}},
+            "xmlns": {"r": {"@xmlns": {"p": XML_NS}, "a": 1, "b": "x"}},
         },
         "jsonml": {
             "wrong-root": ["nope", ["a", 1], ["b", "x"]],
@@ -1616,7 +1616,7 @@ def test_negative_shapes_fail_for_every_format() -> None:
             "cardinality": ["r", ["a", 1], ["a", 1], ["b", "x"]],
             "bool": ["r", ["a", True], ["b", "x"]],
             "null": ["r", ["a", None], ["b", "x"]],
-            "xmlns": ["r", {"xmlns:p": "urn:x"}, ["a", 1], ["b", "x"]],
+            "xmlns": ["r", {"xmlns:p": XML_NS}, ["a", 1], ["b", "x"]],
         },
     }
 
@@ -1844,6 +1844,57 @@ def test_lexical_namespaces_reject_reserved_and_empty_bindings() -> None:
         fidelity="strict",
     )
     assert not valid_xml_jsonml.report.has_errors
+
+
+@pytest.mark.parametrize("format", ("badgerfish", "jsonml"))
+def test_declaration_free_plans_accept_legal_declaration_envelopes(
+    format: FormatName,
+) -> None:
+    schema = schema_for('<element name="child"><text/></element>')
+    document = valid('<element name="child"><text/></element>', "<r><child>v</child></r>")
+
+    plain = document.to_data(format=format, fidelity="strict")
+    validates(schema, plain, format=format, fidelity="strict")
+
+    if format == "badgerfish":
+        positives = [
+            {"r": {"@xmlns": {"": ""}, "child": "v"}},
+            {"r": {"@xmlns": {"xml": XML_NS}, "child": "v"}},
+            {"r": {"child": {"@xmlns": {"": ""}, "$": "v"}}},
+        ]
+    else:
+        positives = [
+            ["r", {"xmlns": ""}, ["child", "v"]],
+            ["r", {"xmlns:xml": XML_NS}, ["child", "v"]],
+            ["r", ["child", {"xmlns": ""}, "v"]],
+        ]
+    for data in positives:
+        imported = schema.from_data(data, format=format, fidelity="strict")
+        assert not imported.report.has_errors, (format, imported.report.issues)
+        validates(schema, data, format=format, fidelity="strict")
+
+    if format == "badgerfish":
+        negatives = [
+            {"r": {"@xmlns": {"": XML_NS}, "child": "v"}},
+            {"r": {"@xmlns": {"p": XML_NS}, "child": "v"}},
+            {"r": {"@xmlns": {"p": XMLNS_NS}, "child": "v"}},
+            {"r": {"@xmlns": {"xml": "urn:wrong"}, "child": "v"}},
+            {"r": {"@xmlns": {"xmlns": "urn:x"}, "child": "v"}},
+            {"r": {"@xmlns": {"p": ""}, "child": "v"}},
+        ]
+    else:
+        negatives = [
+            ["r", {"xmlns": XML_NS}, ["child", "v"]],
+            ["r", {"xmlns:p": XML_NS}, ["child", "v"]],
+            ["r", {"xmlns:p": XMLNS_NS}, ["child", "v"]],
+            ["r", {"xmlns:xml": "urn:wrong"}, ["child", "v"]],
+            ["r", {"xmlns:xmlns": "urn:x"}, ["child", "v"]],
+            ["r", {"xmlns:p": ""}, ["child", "v"]],
+        ]
+    for data in negatives:
+        with pytest.raises(PyXSDError):
+            schema.from_data(data, format=format, fidelity="strict")
+        rejects(schema, data, format=format, fidelity="strict")
 
 
 @pytest.mark.parametrize("format", ("badgerfish", "jsonml"))
