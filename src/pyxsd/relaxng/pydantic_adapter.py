@@ -46,7 +46,11 @@ from pyxsd.relaxng.projection import (
     ProjectionPlan,
     RouteContract,
 )
-from pyxsd.relaxng.pydantic_values import ScalarCodec, relaxng_scalar_annotation
+from pyxsd.relaxng.pydantic_values import (
+    ScalarCodec,
+    model_dump_with_scalar_wrappers,
+    relaxng_scalar_annotation,
+)
 from pyxsd.relaxng.schema import RelaxNGSchema
 
 __all__ = ["RelaxNGModelSet"]
@@ -313,6 +317,7 @@ def _attach_route(
     target.__relaxng_start__ = scope == "start"
     target.__relaxng_element__ = route.expanded_name
     target.__relaxng_input_order__ = "unordered"
+    target.model_dump = model_dump_with_scalar_wrappers
 
 
 def _model_stem(route: RouteContract) -> str:
@@ -665,6 +670,7 @@ class RelaxNGModelSet:
                 extra="forbid",
                 strict=True,
                 validate_by_name=True,
+                serialize_by_alias=True,
                 json_schema_extra=model_schema,
             ),
             __validators__=validators,

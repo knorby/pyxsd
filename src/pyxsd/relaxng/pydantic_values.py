@@ -9,40 +9,62 @@ a Python value's type or from one document's easiest branch:
 - A unique contract without a complete decoder, and every ambiguous contract
   position, returns an immutable :class:`~pyxsd.relaxng.values.AlternativeValue`.
 - Ambiguous atomic positions accept only a lexical string, an exact Phase 5
-  ``#value`` tag, or an alternative snapshot.  A bare non-string scalar is
-  rejected because it cannot name an ambiguous lexical spelling.
+  ``#value`` tag, or an alternative snapshot.  A bare non-string scalar,
+  tuple, or list is rejected because it cannot name an ambiguous lexical
+  spelling.  Typed list values are accepted only at a unique statically
+  representable list contract.
 
 Every accepted tag or snapshot is treated as an assertion to recheck.  The
 complete candidate set is recomputed from the static contract set, the lexical
 text, and the scoped datatype context; supplied candidate IDs never filter or
 authorize a subset.  Standalone snapshots carry a revision marker that no live
-document revision can use.  No process-global registry, mutable caller context,
-or document evidence participates.
+document revision can use.  A bare :class:`ListInterpretation` is accepted only
+as one scoped whole-list assertion after grammar/context/contract/candidate
+recomputation; its parse-local token constraint graph is not retained in the
+standalone value.  No process-global registry, mutable caller context, or
+document evidence participates.
+
+A unique contract returns an ordinary value only when the decoded value can be
+re-encoded to a value-equal lexical form.  Decoder-only contracts return an
+immutable wrapper, so a value from a document can always be validated again.
+Supplying a decoded Python value for a decoder-only contract is not supported;
+use its lexical string, tag, or snapshot instead.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import base64
+from collections.abc import Callable, Mapping
+from decimal import Decimal
 from typing import Annotated, Any, cast
 
-from pydantic import BeforeValidator, PlainSerializer, ValidationInfo, WithJsonSchema
-from pyxsd.data_conversion.names import eqname_to_expanded
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    SerializationInfo,
+    ValidationInfo,
+    WithJsonSchema,
+    WrapSerializer,
+)
+from pyxsd.data_conversion.names import eqname_to_expanded, expanded_to_eqname
 from pyxsd.exceptions import PyXSDError
 from pyxsd.integrations import IntegrationError
 from pyxsd.relaxng.contracts import (
     ScalarContract,
     candidate_id,
+    list_items_decodable,
     list_shape,
     scalar_contract,
 )
 from pyxsd.relaxng.datatypes import (
+    BUILTIN_LIBRARY,
+    XSD_LIBRARY,
     Datatype,
     DatatypeContext,
     UnsupportedDatatypeOperation,
     datatype_supports_decode,
 )
-from pyxsd.relaxng.json_schema import _ScalarSchemaMixin
-from pyxsd.relaxng.json_values import parse_scalar_tag, scalar_to_relaxng_json
+from pyxsd.relaxng.json_values import parse_scalar_tag, scalar_tag
 from pyxsd.relaxng.patterns import List, Pattern, nullable
 from pyxsd.relaxng.projection import ProjectionPlan
 from pyxsd.relaxng.schema import RelaxNGSchema
@@ -50,6 +72,7 @@ from pyxsd.relaxng.validator import DerivationContext, text_derivative, xml_whit
 from pyxsd.relaxng.values import (
     AlternativeValue,
     Candidate,
+    ListInterpretation,
     _list_token_plan,
     encode_scalar,
 )
@@ -68,6 +91,28 @@ STANDALONE_REVISION = 0
 
 _UNDECODABLE = object()
 _QNAME_TYPE_NAMES = frozenset({"QName", "NOTATION"})
+_XSD_INTEGER_TYPES = frozenset(
+    {
+        "byte",
+        "int",
+        "integer",
+        "long",
+        "negativeInteger",
+        "nonNegativeInteger",
+        "nonPositiveInteger",
+        "positiveInteger",
+        "short",
+        "unsignedByte",
+        "unsignedInt",
+        "unsignedLong",
+        "unsignedShort",
+    }
+)
+_XSD_FLOAT_TYPES = frozenset({"double", "float"})
+_XSD_LIST_VALUED_TYPES = frozenset({"ENTITIES", "IDREFS", "NMTOKENS"})
+_DECIMAL_PATTERN = r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$"
+_EQNAME_PATTERN = r"^(?:Q\{[\s\S]*\})?[^\s:{}#@/]+$"
+_TAG_KEY = "#value"
 
 
 def _relaxng_context(info: ValidationInfo | None) -> DatatypeContext | None:
@@ -138,17 +183,23 @@ class ScalarCodec:
         self,
         schema: RelaxNGSchema,
         plan: ProjectionPlan,
-        grammar_fingerprint: str,
+        grammar_fingerprint: str | None = None,
     ) -> None:
         if not isinstance(schema, RelaxNGSchema):
             raise TypeError("ScalarCodec requires a RelaxNGSchema")
         if not isinstance(plan, ProjectionPlan):
             raise TypeError("ScalarCodec requires a ProjectionPlan")
-        if not isinstance(grammar_fingerprint, str) or not grammar_fingerprint:
-            raise ValueError("ScalarCodec requires a nonempty grammar fingerprint")
+        if grammar_fingerprint is not None and not isinstance(grammar_fingerprint, str):
+            raise TypeError("the grammar fingerprint must be a string or None")
+        expected = schema._grammar_fingerprint
+        if grammar_fingerprint is not None and grammar_fingerprint != expected:
+            raise IntegrationError(
+                "ScalarCodec grammar fingerprint does not match the compiled RELAX NG "
+                "schema; tags and candidate IDs must use the public schema identity"
+            )
         self.schema = schema
         self.plan = plan
-        self.grammar_fingerprint = grammar_fingerprint
+        self.grammar_fingerprint = expected
         self.encoding_patterns = plan.encoding_patterns
         self._pool = schema.grammar.graph
 
@@ -215,7 +266,7 @@ def _decode_list(pattern: List, lexical: str, context: DatatypeContext) -> objec
     undecodable; it is never collapsed to its lexical string.
     """
     shape = list_shape(pattern)
-    if shape == "interpretation":
+    if shape == "interpretation" or not list_items_decodable(pattern):
         return _UNDECODABLE
     plan = _list_token_plan(pattern)
     assert plan is not None
@@ -260,6 +311,62 @@ def _candidate(
     except UnsupportedDatatypeOperation:
         return Candidate(identifier, contract, None, False)
     return Candidate(identifier, contract, decoded, True)
+
+
+def _lexical_equal(
+    contract: ScalarContract,
+    pattern: Pattern,
+    left: str,
+    right: str,
+    context: DatatypeContext,
+) -> bool:
+    """Compare two lexical forms in the contract's value space."""
+    if contract.kind == "atomic":
+        datatype = cast(Datatype, cast(Any, pattern).datatype)
+        return datatype.equal(left, context, right, context)
+    shape = list_shape(cast(List, pattern))
+    assert shape != "interpretation"
+    plan = _list_token_plan(cast(List, pattern))
+    assert plan is not None
+    left_tokens = xml_whitespace_tokens(left)
+    right_tokens = xml_whitespace_tokens(right)
+    assert len(left_tokens) == len(right_tokens)
+    if plan.kind == "fixed":
+        assert len(left_tokens) == len(plan.patterns)
+        patterns = plan.patterns
+    else:
+        assert plan.patterns
+        patterns = tuple(plan.patterns[0] for _ in left_tokens)
+    return all(
+        _lexical_equal(
+            scalar_contract(token_pattern),
+            token_pattern,
+            left_token.text,
+            right_token.text,
+            context,
+        )
+        for token_pattern, left_token, right_token in zip(
+            patterns, left_tokens, right_tokens, strict=True
+        )
+    )
+
+
+def _round_trips(
+    codec: ScalarCodec,
+    contract: ScalarContract,
+    pattern: Pattern,
+    decoded: object,
+    lexical: str,
+    context: DatatypeContext,
+) -> bool:
+    """Whether a decoded value re-encodes to a value-equal lexical form."""
+    try:
+        encoded = encode_scalar(contract, decoded, context, pattern=pattern)
+    except (TypeError, ValueError, UnsupportedDatatypeOperation):
+        return False
+    if not codec.accepts(pattern, encoded, context):
+        return False
+    return _lexical_equal(contract, pattern, encoded, lexical, context)
 
 
 def _surviving_candidates(
@@ -316,7 +423,9 @@ def _value_from_candidates(
         if contract.kind == "text":
             return lexical
         if candidate.decodable:
-            return candidate.decoded
+            pattern = codec.pattern_for(contract)
+            if _round_trips(codec, contract, pattern, candidate.decoded, lexical, context):
+                return candidate.decoded
     return _wrapper(codec, candidates, lexical, context)
 
 
@@ -325,24 +434,153 @@ def _encode_assignment(
     pattern: Pattern,
     value: object,
     context: DatatypeContext,
-    mode: str,
 ) -> str:
     """Encode one typed assignment without a ``str(value)`` fallback."""
-    shaped = value
-    if (
-        contract.kind == "list"
-        and mode == "json"
-        # JSON has one sequence spelling.  A fixed tuple contract still returns
-        # its declared tuple shape; only the wire input is normalized here.
-        and isinstance(pattern, List)
-        and list_shape(pattern) == "tuple"
-        and isinstance(value, list)
-    ):
-        shaped = tuple(value)
     try:
-        return encode_scalar(contract, shaped, context, pattern=pattern)
-    except (TypeError, ValueError, UnsupportedDatatypeOperation) as error:
+        return encode_scalar(contract, value, context, pattern=pattern)
+    except UnsupportedDatatypeOperation as error:
+        raise ValueError(
+            "this RELAX NG scalar contract is decoder-only; it has no encoder for "
+            "the supplied Python value. Supply a lexical string, an exact #value "
+            "tag, or an AlternativeValue snapshot instead"
+        ) from error
+    except (TypeError, ValueError) as error:
         raise ValueError(str(error)) from error
+
+
+def _is_xsd_list_valued(contract: ScalarContract) -> bool:
+    return (
+        contract.kind == "atomic"
+        and contract.library_uri == XSD_LIBRARY
+        and contract.type_name in _XSD_LIST_VALUED_TYPES
+    )
+
+
+def _is_binary(contract: ScalarContract) -> bool:
+    return contract.kind == "atomic" and contract.type_name in {
+        "base64Binary",
+        "hexBinary",
+    }
+
+
+def _decoded_string_lexical(
+    codec: ScalarCodec,
+    contract: ScalarContract,
+    pattern: Pattern,
+    value: str,
+    context: DatatypeContext,
+) -> str | None:
+    """Return the encoded lexical if *value* is this contract's decoded string."""
+    try:
+        encoded = encode_scalar(contract, value, context, pattern=pattern)
+    except (TypeError, ValueError, UnsupportedDatatypeOperation):
+        return None
+    if not codec.accepts(pattern, encoded, context):
+        return None
+    datatype = getattr(pattern, "datatype", None)
+    if not datatype_supports_decode(datatype):
+        return None
+    try:
+        decoded = cast(Datatype, datatype).decode(encoded, context)
+    except UnsupportedDatatypeOperation:
+        return None
+    return encoded if decoded == value else None
+
+
+def _string_lexical(
+    codec: ScalarCodec,
+    contract: ScalarContract,
+    pattern: Pattern,
+    value: str,
+    context: DatatypeContext,
+) -> str:
+    """Resolve one string input as a decoded form or a lexical form.
+
+    A decoder+encoder contract is first asked whether the string is its decoded
+    value; this prevents a ``result:value`` decoded string from being decoded a
+    second time as lexical ``result:value``.  Otherwise the string is treated as
+    lexical evidence and validated against the same unique contract.
+    """
+    encoded = _decoded_string_lexical(codec, contract, pattern, value, context)
+    if encoded is not None:
+        return encoded
+    lexical = _lexical_string(contract, value, context)
+    if codec.accepts(pattern, lexical, context):
+        return lexical
+    raise ValueError(
+        f"scalar lexical {lexical!r} does not satisfy the {contract.kind} contract "
+        f"in context {_context_text(context)}; if this is a decoded value, a "
+        "decoder-only contract cannot be supplied as a string"
+    )
+
+
+def _xsd_list_json_lexical(value: list[Any], context: DatatypeContext) -> str:
+    """Join a JSON array for one XSD list-valued atomic contract."""
+    del context
+    tokens: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError("an XSD list value requires string tokens in JSON input")
+        tokens.append(item)
+    return " ".join(tokens)
+
+
+def _json_token_lexical(
+    codec: ScalarCodec,
+    contract: ScalarContract,
+    pattern: Pattern,
+    value: object,
+    context: DatatypeContext,
+) -> str:
+    """Convert one JSON list item to its declared token lexical form."""
+    if isinstance(value, str):
+        return _string_lexical(codec, contract, pattern, value, context)
+    if _is_xsd_list_valued(contract) and isinstance(value, list):
+        return _xsd_list_json_lexical(value, context)
+    return _encode_assignment(contract, pattern, value, context)
+
+
+def _json_list_lexical(
+    codec: ScalarCodec,
+    contract: ScalarContract,
+    pattern: List,
+    value: list[Any],
+    context: DatatypeContext,
+) -> str:
+    """Convert one JSON array to the declared RELAX NG list lexical value."""
+    shape = list_shape(pattern)
+    if shape == "interpretation":
+        raise ValueError(
+            "this RELAX NG list contract has no statically representable token "
+            "shape; supply a lexical string or an exact #value tag"
+        )
+    plan = _list_token_plan(pattern)
+    assert plan is not None
+    if shape == "tuple":
+        if len(value) != len(plan.patterns):
+            raise ValueError(
+                f"this fixed RELAX NG list requires {len(plan.patterns)} tokens, not {len(value)}"
+            )
+        patterns = plan.patterns
+    else:
+        assert plan.patterns
+        patterns = tuple(plan.patterns[0] for _ in value)
+    tokens: list[str] = []
+    for token_pattern, item in zip(patterns, value, strict=True):
+        token = _json_token_lexical(
+            codec,
+            scalar_contract(token_pattern),
+            token_pattern,
+            item,
+            context,
+        )
+        if any(character in " \t\r\n" for character in token):
+            raise ValueError(
+                "a RELAX NG list token cannot contain XML whitespace; an XSD "
+                "list-valued or other multi-token value does not fit one token"
+            )
+        tokens.append(token)
+    return " ".join(tokens)
 
 
 def _lexical_string(
@@ -357,7 +595,11 @@ def _lexical_string(
     prefix: the expanded URI must already have an in-scope binding, or be the
     current default namespace when the name is unprefixed.
     """
-    if contract.kind != "atomic" or contract.type_name not in _QNAME_TYPE_NAMES:
+    if (
+        contract.kind != "atomic"
+        or contract.library_uri != XSD_LIBRARY
+        or contract.type_name not in _QNAME_TYPE_NAMES
+    ):
         return value
     if not value.startswith("Q{"):
         return value
@@ -403,11 +645,22 @@ def _lexical_from_input(
             raise ValueError("a RELAX NG text scalar requires a string")
         lexical = value
     elif isinstance(value, str):
-        # The explicit lexical form is checked against the same contract; it
-        # does not select a datatype because this position is statically unique.
-        lexical = _lexical_string(contract, value, context)
+        lexical = _string_lexical(codec, contract, pattern, value, context)
+    elif mode == "json" and isinstance(value, list):
+        if contract.kind == "list":
+            lexical = _json_list_lexical(
+                codec,
+                contract,
+                cast(List, pattern),
+                value,
+                context,
+            )
+        elif _is_xsd_list_valued(contract):
+            lexical = _xsd_list_json_lexical(value, context)
+        else:
+            lexical = _encode_assignment(contract, pattern, value, context)
     else:
-        lexical = _encode_assignment(contract, pattern, value, context, mode)
+        lexical = _encode_assignment(contract, pattern, value, context)
     if not codec.accepts(pattern, lexical, context):
         raise ValueError(
             f"scalar lexical {lexical!r} does not satisfy the {contract.kind} contract "
@@ -431,54 +684,6 @@ def _unique_value(
     return _value_from_candidates(codec, contracts, candidates, lexical, context)
 
 
-def _ambiguous_list_value(
-    codec: ScalarCodec,
-    contracts: tuple[ScalarContract, ...],
-    value: tuple[Any, ...] | list[Any],
-    context: DatatypeContext,
-    mode: str,
-) -> Any:
-    """Encode one statically representable list assignment at an ambiguous site.
-
-    Only whole-list contracts can encode a sequence.  Every successful encoding
-    must agree on one lexical form; otherwise the typed value does not identify
-    one honest lexical spelling.  The encoded contract must survive the normal
-    complete candidate recomputation, so a list value cannot silently fall back
-    to a different atomic alternative.
-    """
-    encodings: list[tuple[ScalarContract, str]] = []
-    for contract in contracts:
-        if contract.kind != "list":
-            continue
-        pattern = codec.pattern_for(contract)
-        try:
-            lexical = _encode_assignment(contract, pattern, value, context, mode)
-        except ValueError:
-            continue
-        encodings.append((contract, lexical))
-    if not encodings:
-        raise ValueError(
-            "an ambiguous RELAX NG scalar position requires a lexical string, "
-            "an exact #value tag, an AlternativeValue snapshot, or a list value "
-            "accepted by one declared whole-list contract"
-        )
-    lexicals = {lexical for _, lexical in encodings}
-    if len(lexicals) > 1:
-        raise ValueError(
-            "the supplied list value encodes to several lexical forms at an ambiguous "
-            "RELAX NG scalar position; supply a lexical string or a tag instead"
-        )
-    lexical = next(iter(lexicals))
-    candidates = _surviving_candidates(codec, contracts, lexical, context)
-    encoded = {contract for contract, _ in encodings}
-    if not any(candidate.contract in encoded for candidate in candidates):
-        raise ValueError(
-            "the supplied list value does not survive its declared whole-list contract "
-            f"in context {_context_text(context)}"
-        )
-    return _wrapper(codec, candidates, lexical, context)
-
-
 def _raw_value(
     codec: ScalarCodec,
     contracts: tuple[ScalarContract, ...],
@@ -488,16 +693,14 @@ def _raw_value(
 ) -> Any:
     """Validate a bare value; only a unique static contract accepts typed input."""
     if len(contracts) > 1:
-        if isinstance(value, str):
-            candidates = _surviving_candidates(codec, contracts, value, context)
-            return _wrapper(codec, candidates, value, context)
-        if isinstance(value, (tuple, list)):
-            return _ambiguous_list_value(codec, contracts, value, context, mode)
-        raise ValueError(
-            "an ambiguous RELAX NG scalar position requires a lexical string, "
-            "an exact #value tag, or an AlternativeValue snapshot; "
-            f"got {type(value).__name__}"
-        )
+        if not isinstance(value, str):
+            raise ValueError(
+                "an ambiguous RELAX NG scalar position requires a lexical string, "
+                "an exact #value tag, or an AlternativeValue snapshot; "
+                f"got {type(value).__name__}"
+            )
+        candidates = _surviving_candidates(codec, contracts, value, context)
+        return _wrapper(codec, candidates, value, context)
     return _unique_value(codec, contracts, value, context, mode)
 
 
@@ -546,6 +749,51 @@ def _snapshot_value(
     return _value_from_candidates(codec, contracts, candidates, snapshot.lexical, context)
 
 
+def _interpretation_value(
+    codec: ScalarCodec,
+    contracts: tuple[ScalarContract, ...],
+    interpretation: ListInterpretation,
+    supplied: DatatypeContext | None,
+) -> Any:
+    """Recheck a bare whole-list interpretation as one scoped assertion.
+
+    Its token-level constraint graph belongs to one document parse and is not
+    retained in a standalone model value.  The whole-list grammar identity,
+    contract, candidate ID, lexical content, and scoped context are checked by
+    recomputation; the result uses the same static value form as any other
+    recomputed candidate set.
+    """
+    if not any(contract.kind == "list" for contract in contracts):
+        raise ValueError("a ListInterpretation requires a list scalar position")
+    if interpretation.grammar_fingerprint != codec.grammar_fingerprint:
+        raise ValueError(
+            "list interpretation grammar fingerprint does not match this compiled RELAX NG grammar"
+        )
+    context = _scoped_context(interpretation.context, supplied, kind="list interpretation")
+    if candidate_id(codec.grammar_fingerprint, interpretation.contract) != (
+        interpretation.candidate_id
+    ):
+        raise ValueError("list interpretation candidate ID does not match its whole-list contract")
+    if interpretation.contract not in contracts:
+        raise ValueError(
+            "list interpretation contract is not statically possible at this scalar position"
+        )
+    candidates = _surviving_candidates(codec, contracts, interpretation.lexical, context)
+    expected = {candidate.candidate_id: candidate.contract for candidate in candidates}
+    if expected.get(interpretation.candidate_id) != interpretation.contract:
+        raise ValueError(
+            "list interpretation candidate does not match the complete recomputed "
+            "candidates at this scalar position"
+        )
+    return _value_from_candidates(
+        codec,
+        contracts,
+        candidates,
+        interpretation.lexical,
+        context,
+    )
+
+
 def _tag_value(
     codec: ScalarCodec,
     contracts: tuple[ScalarContract, ...],
@@ -590,37 +838,146 @@ def _validate(
     mode = getattr(info, "mode", "python")
     if isinstance(value, AlternativeValue):
         return _snapshot_value(codec, contracts, value, supplied)
+    if isinstance(value, ListInterpretation):
+        return _interpretation_value(codec, contracts, value, supplied)
     if isinstance(value, Mapping) and "#value" in value:
         return _tag_value(codec, contracts, value, supplied)
     return _raw_value(codec, contracts, value, context, mode)
 
 
-def _json_scalar(value: Any) -> Any:
-    """Serialize one scalar for Python/JSON-mode dumps."""
-    return scalar_to_relaxng_json(value, format="pyxsd-json")
+def _tag_schema() -> dict[str, Any]:
+    """The structural version-1 tag shape plus its native-check disclosure."""
+    context: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "base_uri": {"type": ["string", "null"]},
+            "namespaces": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "not": {"required": ["xml"]},
+            },
+        },
+        "required": ["base_uri", "namespaces"],
+        "additionalProperties": False,
+    }
+    body: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "version": {"type": "integer", "const": 1},
+            "grammar": {"type": "string", "minLength": 1},
+            "lexical": {"type": "string"},
+            "context": context,
+            "candidates": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": True,
+                "items": {"type": "string", "minLength": 1},
+            },
+        },
+        "required": ["version", "grammar", "lexical", "context", "candidates"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {_TAG_KEY: body},
+        "required": [_TAG_KEY],
+        "additionalProperties": False,
+        "x-pyxsd-validation": {
+            "grammar-fingerprint": (
+                "must equal the compiled schema fingerprint; checked by native "
+                "RELAX NG Pydantic validation, not by JSON Schema"
+            ),
+            "candidate-completeness": (
+                "candidate IDs must equal the complete recomputed set; checked by "
+                "native RELAX NG Pydantic validation, not by JSON Schema"
+            ),
+        },
+    }
 
 
-class _FieldSchemaBuilder(_ScalarSchemaMixin):
-    """Field-level reuse of the document profile's exact scalar shapes."""
+def _opaque_scalar_schema() -> dict[str, Any]:
+    """A bounded inline shape for a custom decoded value."""
+    return {
+        "anyOf": [
+            {"type": "string"},
+            {"type": "number"},
+            {"type": "boolean"},
+        ]
+    }
 
-    def __init__(self, plan: ProjectionPlan) -> None:
-        self.plan = plan
-        self.defs: dict[str, Any] = {}
-        self.unvalidated: set[str] = set()
-        self._tagged = True
-        self._qname_eqname = True
-        self._opaque_key = "relaxng-scalar"
-        self._opaque_shell: dict[str, Any] | None = None
 
-    def _opaque_scalar(self) -> dict[str, Any]:
-        """A bounded inline shape; no dangling ``$defs`` reference in a model."""
+def _plain_atomic_schema(contract: ScalarContract) -> dict[str, Any]:
+    """The JSON value a decodable atomic contract exports."""
+    if contract.library_uri == BUILTIN_LIBRARY:
+        return {"type": "string", "x-pyxsd-type": contract.type_name}
+    if contract.library_uri != XSD_LIBRARY:
+        return _opaque_scalar_schema()
+    name = contract.type_name
+    assert name is not None
+    if name == "boolean":
+        return {"type": "boolean"}
+    if name in _XSD_INTEGER_TYPES:
+        return {"type": "integer"}
+    if name == "decimal":
+        return {"type": "string", "pattern": _DECIMAL_PATTERN, "x-pyxsd-type": "decimal"}
+    if name in _XSD_FLOAT_TYPES:
         return {
             "anyOf": [
-                {"type": "string"},
                 {"type": "number"},
-                {"type": "boolean"},
+                {"enum": ["INF", "-INF", "NaN"]},
             ]
         }
+    if name in _QNAME_TYPE_NAMES:
+        return {"type": "string", "pattern": _EQNAME_PATTERN, "x-pyxsd-qname": True}
+    if name in _XSD_LIST_VALUED_TYPES:
+        return {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "x-pyxsd-type": name,
+        }
+    if name == "base64Binary":
+        return {"type": "string", "x-pyxsd-type": name, "x-pyxsd-encoding": "base64"}
+    if name == "hexBinary":
+        return {"type": "string", "x-pyxsd-type": name, "x-pyxsd-encoding": "hex"}
+    return {"type": "string", "x-pyxsd-type": name}
+
+
+def _list_schema(codec: ScalarCodec, contract: ScalarContract) -> dict[str, Any]:
+    """A plain fixed or homogeneous array, or the structural tag shape."""
+    pattern = codec.plan.encoding_patterns[contract.pattern_identity]
+    assert isinstance(pattern, List)
+    shape = list_shape(pattern)
+    if shape == "interpretation" or not list_items_decodable(pattern):
+        return _tag_schema()
+    plan = _list_token_plan(pattern)
+    assert plan is not None
+    if plan.kind == "fixed":
+        body: dict[str, Any] = {
+            "type": "array",
+            "items": False,
+            "minItems": len(plan.patterns),
+            "maxItems": len(plan.patterns),
+            "prefixItems": [
+                _plain_atomic_schema(scalar_contract(token)) for token in plan.patterns
+            ],
+        }
+    else:
+        assert plan.patterns
+        body = {
+            "type": "array",
+            "items": _plain_atomic_schema(scalar_contract(plan.patterns[0])),
+        }
+    body["x-pyxsd-list-shape"] = shape
+    return body
+
+
+def _atomic_schema(codec: ScalarCodec, contract: ScalarContract) -> dict[str, Any]:
+    """One atomic scalar's JSON shape, or the structural tag shape."""
+    pattern = codec.pattern_for(contract)
+    if not datatype_supports_decode(getattr(pattern, "datatype", None)):
+        return _tag_schema()
+    return _plain_atomic_schema(contract)
 
 
 def _merge_schemas(*schemas: dict[str, Any]) -> dict[str, Any]:
@@ -648,8 +1005,7 @@ def _json_schema(
     may_be_empty: bool,
 ) -> dict[str, Any]:
     """Describe accepted scalar input for one Pydantic model annotation."""
-    builder = _FieldSchemaBuilder(codec.plan)
-    tag = builder._tag_schema()
+    tag = _tag_schema()
     if len(contracts) > 1:
         schema = _merge_schemas({"type": "string"}, tag)
     else:
@@ -657,16 +1013,181 @@ def _json_schema(
         if contract.kind == "text":
             base = {"type": "string"}
         elif contract.kind == "list":
-            base = builder._list_schema(contract)
+            base = _list_schema(codec, contract)
         else:
-            base = builder._atomic_schema(contract)
-        # Every codec-backed position accepts its lexical form and an exact
-        # tag; typed scalar positions additionally accept their Python/JSON
-        # value shape.  The tag shape never freezes grammar or candidate IDs.
+            base = _atomic_schema(codec, contract)
+        # Every codec-backed position accepts its lexical form and a structural
+        # tag; typed scalar positions additionally accept their declared shape.
         schema = _merge_schemas(base, {"type": "string"}, tag)
     if may_be_empty:
         schema = _merge_schemas(schema, {"type": "null"})
     return schema
+
+
+def _generic_json_value(value: Any) -> Any:
+    """Convert one custom decoded value without pretending a datatype choice."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    if isinstance(value, str):
+        return str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return base64.b64encode(bytes(value)).decode("ascii")
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, (tuple, list)):
+        return [_generic_json_value(item) for item in value]
+    raise TypeError(f"cannot convert {type(value).__name__} to a JSON scalar")
+
+
+def _atomic_json_value(contract: ScalarContract, value: Any) -> Any:
+    """Serialize one atomic decoded value using its declared contract."""
+    if _is_binary(contract):
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            raw = bytes(value)
+            if contract.type_name == "hexBinary":
+                return raw.hex().upper()
+            return base64.b64encode(raw).decode("ascii")
+        return _generic_json_value(value)
+    if _is_xsd_list_valued(contract):
+        tokens = getattr(value, "tokens", None)
+        if tokens is not None:
+            return [str(token) for token in tokens]
+        if isinstance(value, (tuple, list)):
+            return [str(item) for item in value]
+        if isinstance(value, str):
+            return [span.text for span in xml_whitespace_tokens(value)]
+        return _generic_json_value(value)
+    if contract.library_uri != XSD_LIBRARY:
+        return _generic_json_value(value)
+    name = contract.type_name
+    if name == "boolean":
+        return bool(value)
+    if name in _XSD_INTEGER_TYPES:
+        return int(value)
+    if name == "decimal":
+        return format(value, "f") if isinstance(value, Decimal) else str(value)
+    if name in _XSD_FLOAT_TYPES:
+        number = float(value)
+        if number != number:
+            return "NaN"
+        if number == float("inf"):
+            return "INF"
+        if number == float("-inf"):
+            return "-INF"
+        return number
+    if name in _QNAME_TYPE_NAMES:
+        expanded = getattr(value, "to_expanded_name", None)
+        if callable(expanded):
+            return expanded_to_eqname(expanded(strict=True))
+        return _generic_json_value(value)
+    lexical = getattr(value, "lexical", None)
+    if callable(lexical):
+        return str(lexical())
+    if isinstance(value, str):
+        return str(value)
+    return _generic_json_value(value)
+
+
+def _list_json_value(
+    codec: ScalarCodec,
+    contract: ScalarContract,
+    value: Any,
+) -> Any:
+    """Serialize one whole-list value using its declared token contracts."""
+    assert isinstance(value, (tuple, list))
+    pattern = codec.plan.encoding_patterns[contract.pattern_identity]
+    assert isinstance(pattern, List)
+    shape = list_shape(pattern)
+    plan = _list_token_plan(pattern)
+    assert shape != "interpretation" and plan is not None
+    if plan.kind == "fixed":
+        assert len(value) == len(plan.patterns)
+        patterns = plan.patterns
+    else:
+        assert plan.patterns
+        patterns = tuple(plan.patterns[0] for _ in value)
+    return [
+        _atomic_json_value(scalar_contract(token_pattern), item)
+        for token_pattern, item in zip(patterns, value, strict=True)
+    ]
+
+
+def _json_value_for_contract(
+    codec: ScalarCodec,
+    contracts: tuple[ScalarContract, ...],
+    value: Any,
+) -> Any:
+    """Convert one accepted Python scalar to its contract-aware JSON value."""
+    assert len(contracts) == 1
+    contract = contracts[0]
+    if contract.kind == "text":
+        return value
+    if contract.kind == "list":
+        return _list_json_value(codec, contract, value)
+    return _atomic_json_value(contract, value)
+
+
+def _serializer(
+    codec: ScalarCodec | None,
+    contracts: tuple[ScalarContract, ...],
+) -> Any:
+    """Build one wrap serializer preserving Python wrappers and tagging JSON."""
+
+    def serialize(value: Any, handler: Callable[[Any], Any], info: SerializationInfo) -> Any:
+        del handler
+        if isinstance(value, (AlternativeValue, ListInterpretation)):
+            if info.mode == "json":
+                return scalar_tag(value)
+            return value
+        if info.mode != "json":
+            return value
+        if codec is None:
+            return value
+        return _json_value_for_contract(codec, contracts, value)
+
+    return serialize
+
+
+def _restore_scalar_wrappers(value: Any, data: Any) -> Any:
+    """Restore wrappers recursively in a Python-mode dump tree."""
+    if isinstance(value, (AlternativeValue, ListInterpretation)):
+        return value
+    if isinstance(value, BaseModel):
+        if getattr(type(value), "__pydantic_root_model__", False):
+            return _restore_scalar_wrappers(getattr(value, "root", None), data)
+        assert isinstance(data, dict)
+        for name, field in getattr(type(value), "model_fields", {}).items():
+            child = getattr(value, name, None)
+            key = field.alias if field.alias in data else name
+            if key in data:
+                data[key] = _restore_scalar_wrappers(child, data[key])
+        return data
+    if isinstance(value, (tuple, list)) and isinstance(data, list):
+        return [
+            _restore_scalar_wrappers(item, dumped)
+            for item, dumped in zip(value, data, strict=False)
+        ]
+    return data
+
+
+def model_dump_with_scalar_wrappers(self: Any, *args: Any, **kwargs: Any) -> Any:
+    """Public Python dumps restore exact scalar wrapper objects.
+
+    Pydantic serializes dataclass values even when a wrap serializer returns the
+    object unchanged, so the generated models override :meth:`model_dump` after
+    the normal dump has applied aliases, exclusions, and defaults.  JSON mode
+    keeps the serializer's tags and contract-aware values.
+    """
+    data = BaseModel.model_dump(self, *args, **kwargs)
+    if kwargs.get("mode", "python") != "python":
+        return data
+    return _restore_scalar_wrappers(self, data)
 
 
 def _empty_string(value: Any) -> str:
@@ -710,7 +1231,7 @@ def _codec_less_annotation(
     return Annotated[
         Any,
         BeforeValidator(validate_text),
-        PlainSerializer(_json_scalar, return_type=Any, when_used="json"),
+        WrapSerializer(_serializer(None, contracts), return_type=Any, when_used="always"),
         WithJsonSchema(schema),
     ]
 
@@ -744,7 +1265,7 @@ def relaxng_scalar_annotation(
         return Annotated[
             Any,
             BeforeValidator(validate_empty),
-            PlainSerializer(_json_scalar, return_type=Any, when_used="json"),
+            WrapSerializer(_serializer(None, ()), return_type=Any, when_used="always"),
             WithJsonSchema(schema),
         ]
     if codec is None:
@@ -760,6 +1281,6 @@ def relaxng_scalar_annotation(
     return Annotated[
         Any,
         BeforeValidator(validate),
-        PlainSerializer(_json_scalar, return_type=Any, when_used="json"),
+        WrapSerializer(_serializer(codec, unique), return_type=Any, when_used="always"),
         WithJsonSchema(_json_schema(codec, unique, may_be_empty=may_be_empty)),
     ]
