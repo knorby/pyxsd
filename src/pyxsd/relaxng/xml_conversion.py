@@ -32,11 +32,13 @@ from pyxsd.data_conversion.contracts import (
     warn_conversion,
 )
 from pyxsd.data_conversion.values import scalar_to_json
+from pyxsd.dtd_declarations import declaration_context
 from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import XML_NS
 from pyxsd.relaxng.contracts import ScalarContract, scalar_contract
 from pyxsd.relaxng.datatypes import DatatypeContext
 from pyxsd.relaxng.document import _whole_element_scalar_value
+from pyxsd.relaxng.errors import RelaxNGLimitError
 from pyxsd.relaxng.evidence import EvidenceGraph, EvidenceOccurrence, build_binding_evidence
 from pyxsd.relaxng.json_profile import _child_route, _layout, _root_route
 from pyxsd.relaxng.json_values import scalar_to_relaxng_json
@@ -982,6 +984,10 @@ class _LexicalQNameAudit:
                 request._capture = "none"
                 request._xdm_requested = False
                 view = request.revalidate()
+        except RelaxNGLimitError:
+            # Exhaustion is not missing evidence or a QName-loss verdict.
+            # Stop here: a fallback must not restart work after this budget.
+            raise
         except (PyXSDError, RuntimeError) as error:
             self.unavailable = f"whole-document QName audit failed: {error}"
             return
@@ -1052,15 +1058,16 @@ def _potential_qname_loss(
         scalar = RelaxNGElement.from_etree(source, base_uri=node.base_uri)
         scalar.set_namespace_bindings(node.namespaces or {})
         pattern = Element(Name(None, "scalar"), plan.encoding_patterns[contract.pattern_identity])
-        limits = document.schema.limits
-        if not validate_element(scalar, pattern, limits=limits).valid:
-            continue
-        proof = build_binding_evidence(
-            scalar,
-            pattern,
-            datatype_context=DatatypeContext(node.base_uri, node.namespaces or {}),
-            limits=limits,
-        )
+        limits = document.schema.limits if document._limits is None else document._limits
+        with declaration_context(document._declarations):
+            if not validate_element(scalar, pattern, limits=limits).valid:
+                continue
+            proof = build_binding_evidence(
+                scalar,
+                pattern,
+                datatype_context=DatatypeContext(node.base_uri, node.namespaces or {}),
+                limits=limits,
+            )
         for edge in proof.retained_edges:
             for witness in edge.witnesses:
                 if _atomic_qname(scalar_contract(witness.pattern)) and _lexical_bindings(

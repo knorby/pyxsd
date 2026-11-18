@@ -2011,6 +2011,7 @@ def test_unavailable_whole_audit_fails_closed_only_for_local_token_potential(tex
 
 @pytest.mark.parametrize("unavailable", ["busy", "limits", "missing"])
 def test_lexical_qname_audit_reports_guard_budget_and_missing_evidence(unavailable, monkeypatch):
+    from pyxsd.relaxng.errors import RelaxNGLimitError
     from pyxsd.relaxng.limits import RelaxNGLimits
     from pyxsd.relaxng.schema import _parse_guard
 
@@ -2031,10 +2032,16 @@ def test_lexical_qname_audit_reports_guard_budget_and_missing_evidence(unavailab
 
         monkeypatch.setattr(RelaxNGSchema, "_parse_guarded_instance", missing)
     try:
-        with pytest.raises(PyXSDError) as caught:
+        expected_error = RelaxNGLimitError if unavailable == "limits" else PyXSDError
+        with pytest.raises(expected_error) as caught:
             document.to_data(typed=False, fidelity="strict")
         message = str(caught.value)
-        assert message.startswith("namespace-lost at '/$': ")
+        if unavailable == "limits":
+            assert caught.value.budget == "max_evidence_states"
+            assert caught.value.configured == 0
+            assert caught.value.observed == 1
+        else:
+            assert message.startswith("namespace-lost at '/$': ")
         assert {
             "busy": "concurrently or reentrantly",
             "limits": "max_evidence_states",
@@ -2118,3 +2125,176 @@ def test_lexical_whole_document_audit_includes_scalar_branches_of_structural_rou
         )
     else:
         assert document.to_data(typed=False, fidelity="strict") == {"@kind": "s", "i": text}
+
+
+@pytest.mark.parametrize("attribute", [False, True])
+@pytest.mark.parametrize("listed", [False, True])
+@pytest.mark.parametrize("budget", [0, 3])
+@pytest.mark.parametrize("fidelity", ["strict", "best-effort"])
+def test_qname_audit_limit_exhaustion_does_not_start_fallback_work(
+    attribute,
+    listed,
+    budget,
+    fidelity,
+    monkeypatch,
+):
+    import pyxsd.relaxng.schema as schema_module
+    from pyxsd.relaxng.errors import RelaxNGLimitError
+    from pyxsd.relaxng.limits import RelaxNGLimits
+
+    scalar = '<data type="QName"/>'
+    text = "p:v"
+    if listed:
+        scalar = f"<list><oneOrMore>{scalar}</oneOrMore></list>"
+        text = "p:v p:w"
+    content = f'<attribute name="x">{scalar}</attribute><empty/>' if attribute else scalar
+    schema = schema_for(content)
+    xml = f'<r xmlns:p="urn:p" x="{text}"/>' if attribute else (f'<r xmlns:p="urn:p">{text}</r>')
+    limits = RelaxNGLimits(max_evidence_states=budget)
+    document = schema.parse(io.StringIO(xml), typed=False, limits=limits)
+    assert document.is_valid
+    assert schema.limits.max_evidence_states is None
+    original = schema_module.build_binding_evidence
+    used_limits, failures = [], []
+
+    def whole_builder(*args, **kwargs):
+        used_limits.append(kwargs["limits"])
+        try:
+            return original(*args, **kwargs)
+        except RelaxNGLimitError as error:
+            failures.append(error)
+            raise
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("exhausted whole-document audit started fallback validation/evidence work")
+
+    monkeypatch.setattr(schema_module, "build_binding_evidence", whole_builder)
+    monkeypatch.setattr(xml_conversion, "validate_element", forbidden)
+    monkeypatch.setattr(xml_conversion, "build_binding_evidence", forbidden)
+    report, root, declarations = document.report, document.root, document._declarations
+    revision = root.revision
+    before = document.to_string()
+    context = revision.context_for(root)
+    messages = []
+    with warnings.catch_warnings(record=True) as recorded:
+        for _ in range(2):
+            with pytest.raises(RelaxNGLimitError) as caught:
+                document.to_data(typed=False, fidelity=fidelity)
+            error = caught.value
+            assert error is failures[-1]
+            assert (error.stage, error.budget, error.configured, error.observed) == (
+                "evidence",
+                "max_evidence_states",
+                budget,
+                budget + 1,
+            )
+            messages.append(str(error))
+    assert messages[0] == messages[1]
+    assert recorded == []
+    assert len(used_limits) == 2 and all(value is limits for value in used_limits)
+    assert document.root is root and root.revision is revision
+    assert revision.context_for(root) is context
+    assert document.report is report and document._declarations is declarations
+    assert document.to_string() == before
+    assert document._limits is limits
+    assert document.binding_evidence is None and revision._typed_snapshot is None
+    assert document.typed is False and document.interpretations_current and not revision.dirty
+    # A failed audit must also release the schema's ordinary parse guard.
+    assert schema.parse(io.StringIO(xml), typed=False, limits=limits).is_valid
+
+
+@pytest.mark.parametrize("attribute", [False, True])
+@pytest.mark.parametrize("budget", [0, 3])
+def test_unavailable_qname_audit_fallback_uses_instance_evidence_limits(
+    attribute,
+    budget,
+    monkeypatch,
+):
+    from pyxsd.relaxng.errors import RelaxNGLimitError
+    from pyxsd.relaxng.limits import RelaxNGLimits
+
+    scalar = '<list><oneOrMore><data type="QName"/></oneOrMore></list>'
+    position = f'<attribute name="x">{scalar}</attribute><empty/>' if attribute else scalar
+    schema = schema_for('<attribute name="kind"><value>ok</value></attribute>' + position)
+    xml = (
+        '<r xmlns:p="urn:p" kind="invalid" x="p:v p:w"/>'
+        if attribute
+        else ('<r xmlns:p="urn:p" kind="invalid">p:v p:w</r>')
+    )
+    limits = RelaxNGLimits(max_evidence_states=budget)
+    document = schema.parse(io.StringIO(xml), typed=False, limits=limits)
+    assert not document.is_valid
+    original = xml_conversion.build_binding_evidence
+    used_limits, returned = [], []
+
+    def local_builder(*args, **kwargs):
+        used_limits.append(kwargs["limits"])
+        proof = original(*args, **kwargs)
+        returned.append(proof)
+        return proof
+
+    monkeypatch.setattr(xml_conversion, "build_binding_evidence", local_builder)
+    report, root, before = document.report, document.root, document.to_string()
+    with pytest.raises(RelaxNGLimitError) as caught:
+        document.to_data(typed=False, fidelity="strict")
+    assert (caught.value.budget, caught.value.configured, caught.value.observed) == (
+        "max_evidence_states",
+        budget,
+        budget + 1,
+    )
+    assert len(used_limits) == 1 and used_limits[0] is limits
+    assert returned == []
+    assert document.root is root and document.report is report and document.to_string() == before
+    assert document.binding_evidence is None and root.revision._typed_snapshot is None
+    assert not root.revision.dirty and document.typed is False
+
+
+@pytest.mark.parametrize("attribute", [False, True])
+@pytest.mark.parametrize("entity,loss", [("foo", True), ("missing", False)])
+def test_qname_fallback_keeps_saved_declarations_and_context(attribute, entity, loss, monkeypatch):
+    from pyxsd.dtd_declarations import active_declaration_evidence
+    from pyxsd.relaxng.limits import RelaxNGLimits
+
+    scalar = '<list><data type="QName"/><data type="ENTITY"/></list>'
+    position = f'<attribute name="x">{scalar}</attribute><empty/>' if attribute else scalar
+    schema = schema_for('<attribute name="kind"><value>ok</value></attribute>' + position)
+    text = f"p:v {entity}"
+    body = (
+        f'<r xmlns:p="urn:p" kind="invalid" x="{text}"/>'
+        if attribute
+        else (f'<r xmlns:p="urn:p" kind="invalid">{text}</r>')
+    )
+    limits = RelaxNGLimits(max_evidence_states=1000)
+    source = io.StringIO("<!DOCTYPE r [<!ENTITY foo SYSTEM 'foo.bin' NDATA data>]>" + body)
+    source.name = "urn:instance:resource-limits"
+    document = schema.parse(source, typed=False, limits=limits)
+    assert not document.is_valid
+    assert document.root.base_uri == source.name
+    original = xml_conversion.validate_element
+    checked = []
+
+    def validate(scalar, pattern, **kwargs):
+        evidence = active_declaration_evidence()
+        checked.append(kwargs["limits"])
+        assert kwargs["limits"] is limits
+        assert evidence is not None and evidence.declarations is document._declarations
+        assert scalar.namespaces == document.root.namespaces
+        assert scalar.base_uri == document.root.base_uri
+        return original(scalar, pattern, **kwargs)
+
+    monkeypatch.setattr(xml_conversion, "validate_element", validate)
+    previous = active_declaration_evidence()
+    if loss:
+        conversion_error(
+            "namespace-lost",
+            "/@x" if attribute else "/$",
+            lambda: document.to_data(typed=False, fidelity="strict"),
+        )
+    else:
+        assert document.to_data(typed=False, fidelity="strict") == {
+            "@kind": "invalid",
+            "@x" if attribute else "$": text,
+        }
+    assert checked == [limits]
+    assert active_declaration_evidence() is previous
+    assert document.binding_evidence is None and document.root.revision._typed_snapshot is None
