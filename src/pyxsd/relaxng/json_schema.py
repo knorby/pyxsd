@@ -2236,6 +2236,13 @@ def _name_class_namespaced(name_class: NameClass) -> bool:
 
 
 def _contracts_include_qname(contract: ScalarContract, plan: ProjectionPlan) -> bool:
+    if contract.kind in ("atomic", "list") and contract.library_uri not in (
+        BUILTIN_LIBRARY,
+        XSD_LIBRARY,
+    ):
+        # A custom decoder may return a QName or a list of QNames, which the
+        # conventional exporters spell with a declared prefix.
+        return True
     if contract.kind == "atomic":
         return contract.type_name in _XSD_QNAME_TYPES
     if contract.kind != "list":
