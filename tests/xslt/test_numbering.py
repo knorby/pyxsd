@@ -1204,6 +1204,25 @@ def test_number_counts_once_per_parent_for_a_wide_sibling_list() -> None:
     )
 
 
+def test_number_any_in_an_unfinalized_temporary_tree_keeps_the_reference_answer() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main" match="/">
+          <xsl:variable name="t" as="element()"><a><b/><b/><b/><c/></a></xsl:variable>
+          <xsl:number level="any" select="$t/c" count="a|b|c"/>
+        </xsl:template>
+        """
+    )
+    # The variable holds an element-rooted tree that was never finalized, so
+    # every node reports document_order -1 and the incremental walk cannot
+    # order them. The marker takes the reference walk and keeps its pre-cache
+    # answer instead of raising an internal AssertionError (a KeyError under
+    # PYTHONOPTIMIZE). XSLT 3.0 section 12.3 makes 5 the normative answer;
+    # reaching it needs the tree finalized first (or an identity-based walk),
+    # which belongs to the tree/parser stage.
+    assert text(lambda: transform(source, None, initial_template="main")) == "1"
+
+
 def test_number_implied_count_follows_each_selected_nodes_name() -> None:
     source = stylesheet(
         """
@@ -1325,3 +1344,24 @@ def test_numbering_counter_shares_state_within_one_transformation() -> None:
     )
     single = cache.counter("single", "single", lambda node: node.kind is NodeKind.DOCUMENT, None)
     assert single.place_marker(document) == (1,)
+
+
+def test_numbering_counter_rejects_a_mismatched_level() -> None:
+    from pyxsd.xdm.nodes import NodeKind, XdmDocument
+    from pyxsd.xslt.runtime.numbering import NumberingCache, place_marker
+
+    document = XdmDocument.parse(b"<doc><a/></doc>")
+    counter = NumberingCache().counter(
+        "single", "single", lambda node: node.kind is NodeKind.ELEMENT, None
+    )
+    # Internal invariant: a counter carries one instruction's level and
+    # predicates, so numbering another level through it is a programming
+    # error rather than a silently wrong marker.
+    with pytest.raises(AssertionError):
+        place_marker(
+            document.root_element.children[0],
+            "any",
+            lambda node: node.kind is NodeKind.ELEMENT,
+            None,
+            counter=counter,
+        )

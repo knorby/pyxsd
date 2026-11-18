@@ -279,7 +279,9 @@ def place_marker(
     Without *counter* every primitive is recomputed (the reference
     implementation).  With *counter*, sibling counts and ``level="any"`` walks
     are built once per instruction and reused by every later marker of the
-    same instruction in the same transformation.
+    same instruction in the same transformation.  *counter* must have been
+    built for this instruction's *level*, *matches_count*, and
+    *matches_from*: that pairing is an internal invariant, not an argument.
     """
     if not isinstance(node, XdmNode):
         raise TypeError("xsl:number requires a node")
@@ -297,6 +299,9 @@ def _place_marker(
 ) -> tuple[int, ...]:
     """The one implementation of XSLT 3.0 section 12.3, cached or not."""
     if counter is not None:
+        # A counter belongs to exactly one instruction; answering another
+        # level's marker with it would silently apply the wrong predicates.
+        assert counter._level == level
         matches_count = counter._count
         matches_from = counter._from
     root = node.root
@@ -334,6 +339,12 @@ def _place_marker(
             1 + _preceding_count(candidate, matches_count, counter) for candidate in selected
         )
     if counter is not None:
+        if node.document_order < 0:
+            # An element-rooted temporary tree that was never finalized has no
+            # document order: every node reports -1, so the incremental walk
+            # cannot place this marker.  Number it with the reference walk,
+            # which does not depend on distinct document positions.
+            return _place_marker(node, level, matches_count, matches_from, None)
         return counter.count_any(node)
     candidates = _document_order_candidates(node)
     counted_nodes = [candidate for candidate in candidates if matches_count(candidate)]
@@ -514,10 +525,13 @@ class _AnyCounts:
         matches_count: Callable[[XdmNode], bool],
         matches_from: Callable[[XdmNode], bool] | None,
     ) -> None:
-        # Every tree this engine can number is frozen and finalised before it
-        # is visible (`XdmDocument.parse`, `Builder.finalize`,
-        # `Builder.whitespace.strip`), so a walk's document order cannot
-        # change under a counter.
+        # A finalized tree has one distinct document position per node
+        # (`XdmDocument.parse`, `Builder.finalize`, `Builder.whitespace.strip`),
+        # so a forward walk can place every marker.  A tree that was never
+        # finalized — the element-rooted content `Builder.to_sequence` returns —
+        # reports ``document_order == -1`` on every node, and ``_place_marker``
+        # routes those markers to the reference walk instead of constructing
+        # this class.
         self.root = root
         self.walk: Iterator[XdmNode] = iter(_tree_nodes(root))
         self.pending: XdmNode | None = next(self.walk, None)

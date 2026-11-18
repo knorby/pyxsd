@@ -279,9 +279,11 @@ _PRINCIPAL_KIND_NODE: dict[str, NodeKind] = {
 def _principal_kind_node(axis: str) -> NodeKind:
     """The principal node kind of *axis* for a name test.
 
-    Memoised over the closed axis-name set: the body was measured at
-    69,239,427 calls / 18.981 s cumulative (30.8% of the profiled run) on
-    number-2501, 15.890 s of it building this literal.
+    Memoised over the closed axis-name set.  The sibling-counting change in
+    this stage removed most of the name-test volume this used to serve, so its
+    honest justification is the residual traffic: about 4% wall on the
+    name-test-bound `number-0301`, not the profiled share the cache was
+    measured against before that change.
     """
     return _PRINCIPAL_KIND_NODE[_principal_kind(axis)]
 
