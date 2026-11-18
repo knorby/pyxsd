@@ -12,6 +12,7 @@ import json
 import warnings
 from dataclasses import replace
 from decimal import Decimal
+from itertools import permutations, product
 from typing import Any
 
 import pytest
@@ -1310,7 +1311,7 @@ def test_native_lexical_repeated_qnames_have_indexed_pointers(attribute):
         if attribute
         else '<r xmlns:p="urn:p"><item>v</item><item>p:v</item></r>',
     )
-    pointer = "/item/1/@q" if attribute else "/item/1/$"
+    pointer = "/item/1/@q" if attribute else "/item/1"
     conversion_error(
         "namespace-lost", pointer, lambda: document.to_data(typed=False, fidelity="strict")
     )
@@ -1324,7 +1325,7 @@ def test_native_always_list_single_child_qname_pointer():
         '<r xmlns:p="urn:p"><item>p:v</item></r>',
     )
     conversion_error(
-        "namespace-lost", "/item/0/$", lambda: document.to_data(fidelity="strict", always_list=True)
+        "namespace-lost", "/item/0", lambda: document.to_data(fidelity="strict", always_list=True)
     )
 
 
@@ -1457,13 +1458,328 @@ def test_native_order_summary_visits_shared_model_dag_once(monkeypatch):
     calls = 0
     original = xml_conversion._model_order
 
-    def bounded(model, observed, memo):
+    def bounded(model, counts, analysis):
         nonlocal calls
         calls += 1
         assert calls < 100, "shared model traversal lost its memoization"
-        return original(model, observed, memo)
+        return original(model, counts, analysis)
 
     monkeypatch.setattr(xml_conversion, "_model_order", bounded)
     changed = replace(route, content=replace(route.content, model=model))
     assert xml_conversion._native_order(changed, document.root.children, ()) is None
     assert calls < 60
+
+
+@pytest.mark.parametrize("attribute", [False, True])
+@pytest.mark.parametrize("text", ["text", ""])
+@pytest.mark.parametrize("nested", [False, True])
+def test_native_mixed_leaf_keeps_scalar_interpretation_with_attributes(attribute, text, nested):
+    content = f'<optional><attribute name="id">{STRING}</attribute></optional>{MIXED_I}'
+    attrs = ' id="x"' if attribute else ""
+    xml = f"<r{attrs}>{text}</r>"
+    if nested:
+        content = f'<element name="item">{content}</element>'
+        xml = f"<r><item{attrs}>{text}</item></r>"
+    document = valid(content, xml)
+    node = document.root.children[0] if nested else document.root
+    # Explicit empty text must be distinguished from an absent character node.
+    if text == "":
+        node.set_text("")
+        document = document.revalidate()
+        node = document.root.children[0] if nested else document.root
+    value = xml_conversion._whole_element_scalar_value(node)
+    assert isinstance(value, AlternativeValue)
+    raw = document.to_dict()
+    safe = document.to_data()
+    if nested:
+        raw, safe = raw["item"], safe["item"]
+    if nested and not attribute:
+        assert raw == value
+        assert safe == scalar_tag(value)
+    else:
+        assert raw["$"] == value
+        assert safe["$"] == scalar_tag(value)
+
+
+@pytest.mark.parametrize("iterations", [1, 2, 3])
+@pytest.mark.parametrize("typed", [False, True])
+def test_native_strict_fixed_repeated_group_uses_observed_counts(iterations, typed):
+    content = f"<oneOrMore><group>{A}{B}</group></oneOrMore>"
+    document = valid(content, "<r>" + "<a>1</a><b>x</b>" * iterations + "</r>")
+    a, b = (1 if typed else "1"), "x"
+    assert document.to_data(typed=typed, fidelity="strict") == {
+        "a": a if iterations == 1 else [a] * iterations,
+        "b": b if iterations == 1 else [b] * iterations,
+    }
+
+
+@pytest.mark.parametrize("order", ["<a>1</a>", "<b>x</b>", "<a>1</a><b>x</b>"])
+def test_native_strict_choice_counts_ignore_unavailable_names(order):
+    content = f"<choice><group>{A}{B}</group><group>{B}{A}</group>{A}{B}</choice>"
+    document = valid(content, f"<r>{order}</r>")
+    if order.count("</") == 2:
+        conversion_error("order-ambiguous", "", lambda: document.to_data(fidelity="strict"))
+    else:
+        assert document.to_data(fidelity="strict") == ({"a": 1} if "<a>" in order else {"b": "x"})
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+def test_native_strict_lexical_checks_observed_sequence_against_model(dirty):
+    document = parse(f"{A}{B}", "<r><b>x</b><a>1</a></r>", typed=False)
+    if dirty:
+        document = valid(f"{A}{B}", "<r><a>1</a><b>x</b></r>")
+        document.root.children[0].set_name("b")
+        document.root.children[1].set_name("a")
+    conversion_error(
+        "order-ambiguous", "", lambda: document.to_data(typed=False, fidelity="strict")
+    )
+
+
+@pytest.mark.parametrize("attribute", [False, True])
+@pytest.mark.parametrize("typed", [False, True])
+@pytest.mark.parametrize("text,loss", [("v p:ordinary", False), ("p:v ordinary", True)])
+def test_native_lexical_mixed_qname_list_audits_only_qname_tokens(attribute, typed, text, loss):
+    scalar = '<list><data type="QName"/><data type="string"/></list>'
+    content = f'<attribute name="q">{scalar}</attribute><empty/>' if attribute else scalar
+    xml = f'<r xmlns:p="urn:p" q="{text}"/>' if attribute else f'<r xmlns:p="urn:p">{text}</r>'
+    document = parse(content, xml, typed=typed)
+    assert document.is_valid
+    if loss:
+        conversion_error(
+            "namespace-lost",
+            "/@q" if attribute else "/$",
+            lambda: document.to_data(typed=False, fidelity="strict"),
+        )
+    else:
+        assert document.to_data(typed=False, fidelity="strict") == {
+            "@q" if attribute else "$": text
+        }
+
+
+@pytest.mark.parametrize("exact", [False, True])
+@pytest.mark.parametrize("typed", [False, True])
+def test_native_lexical_wildcard_attribute_contracts_match_observed_name(exact, typed):
+    string_name = 'name="s:a"' if exact else ""
+    string_class = "" if exact else '<nsName ns="urn:s"/>'
+    string_attr = f'<attribute {string_name} xmlns:s="urn:s">{string_class}{STRING}</attribute>'
+    if not exact:
+        string_attr = f"<oneOrMore>{string_attr}</oneOrMore>"
+    content = (
+        f"<interleave>{string_attr}"
+        '<zeroOrMore><attribute><nsName ns="urn:q"/><data type="QName"/></attribute>'
+        "</zeroOrMore></interleave>"
+    )
+    document = parse(content, '<r xmlns:s="urn:s" xmlns:p="urn:p" s:a="p:ordinary"/>', typed=typed)
+    assert document.is_valid
+    assert document.to_data(typed=False, fidelity="strict") == {"@{urn:s}a": "p:ordinary"}
+
+
+def test_native_strict_lexical_rejects_incomplete_fixed_sequence():
+    document = parse(f"{A}{B}", "<r><a>1</a></r>", typed=False)
+    conversion_error(
+        "order-ambiguous", "", lambda: document.to_data(typed=False, fidelity="strict")
+    )
+
+
+def test_native_strict_long_fixed_repetition_does_not_recurse_per_child():
+    document = valid(f"<oneOrMore>{A}</oneOrMore>", "<r>" + "<a>1</a>" * 300 + "</r>")
+    assert document.to_data(fidelity="strict") == {"a": [1] * 300}
+
+
+@pytest.mark.parametrize(
+    "order,ambiguous",
+    [
+        ("<a>1</a>", False),
+        ("<a>1</a><b>x</b>", False),
+        ("<a>1</a><b>x</b><a>2</a>", True),
+        ("<a>1</a><b>x</b><a>2</a><b>y</b>", False),
+    ],
+)
+def test_native_strict_repeated_optional_group_uses_counts(order, ambiguous):
+    document = valid(
+        f"<oneOrMore><group>{A}<optional>{B}</optional></group></oneOrMore>", f"<r>{order}</r>"
+    )
+    if ambiguous:
+        conversion_error("order-ambiguous", "/a/1", lambda: document.to_data(fidelity="strict"))
+    else:
+        assert document.to_data(fidelity="strict") == document.to_data()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        A,
+        f"{A}{B}",
+        f"<optional>{A}</optional><optional>{B}</optional>",
+        f"<choice><group>{A}{B}</group><group>{B}{A}</group></choice>",
+        f"<oneOrMore><group>{A}{B}</group></oneOrMore>",
+        f"<oneOrMore><optional>{A}</optional></oneOrMore>",
+        f"<interleave><oneOrMore>{A}</oneOrMore><optional>{B}</optional></interleave>",
+        f"<interleave><group>{A}{A}</group>{B}</interleave>",
+        "<element><anyName/><text/></element>",
+        "<text/>",
+        "<notAllowed/>",
+    ],
+)
+def test_native_order_analysis_agrees_with_compiled_sequence_language(content):
+    schema = schema_for(content)
+    plan = schema.projection
+    model = plan.routes[plan.roots[0]].content.model
+    analysis = xml_conversion._OrderAnalysis(("a", "b"), ())
+    for a_count, b_count in product(range(3), repeat=2):
+        observed_counts = (a_count, b_count)
+        orders = set(permutations(("a",) * a_count + ("b",) * b_count))
+        accepted = set()
+        for order in orders:
+            xml = (
+                "<r>"
+                + "".join(f"<{name}>{'1' if name == 'a' else 'x'}</{name}>" for name in order)
+                + "</r>"
+            )
+            valid_order = schema.parse(io.StringIO(xml), typed=False).is_valid
+            assert xml_conversion._order_matches(model, order, analysis) == valid_order
+            # Repeat queries prove cache results retain the same verdict.
+            assert xml_conversion._order_matches(model, order, analysis) == valid_order
+            if valid_order:
+                accepted.add(order)
+        reconstructed = xml_conversion._model_order(model, observed_counts, analysis)
+        if "interleave" not in content:
+            assert len(reconstructed) == min(2, len(accepted))
+            assert reconstructed <= accepted
+        else:
+            assert len(reconstructed) == bool(accepted)
+            assert reconstructed <= accepted
+
+
+def test_native_order_analysis_budget_fails_closed_at_owning_pointer():
+    document = valid(f"{A}{B}", "<r><a>1</a><b>x</b></r>")
+    plan = document.schema.projection
+    model = plan.routes[plan.roots[0]].content.model
+    analysis = xml_conversion._OrderAnalysis(("a", "b"), ("r",), remaining=1)
+    conversion_error(
+        "order-ambiguous", "/r", lambda: xml_conversion._model_order(model, (1, 1), analysis)
+    )
+
+
+def test_native_lexical_unknown_leaf_root_does_not_need_child_order():
+    document = valid("<text/>", "<r>text</r>")
+    document.root.set_name("unknown")
+    assert document.to_data(typed=False, fidelity="strict") == {"$": "text"}
+
+
+@pytest.mark.parametrize(
+    "text,bindings",
+    [
+        ("v p:ordinary", []),
+        ("p:v ordinary", [("p", "urn:p")]),
+    ],
+)
+def test_qname_list_wrappers_declare_only_qname_token_bindings(text, bindings):
+    document = valid(
+        '<choice><list><choice><data type="QName"/><data type="NOTATION"/></choice>'
+        '<data type="string"/></list>'
+        '<data type="integer"/></choice>',
+        f'<r xmlns:p="urn:p">{text}</r>',
+    )
+    value = document.root.scalar_value()
+    assert isinstance(value, AlternativeValue)
+    assert xml_conversion._lexical_qname_prefixes(value) == bindings
+    assert xml_conversion._lexical_qname_prefixes(value.interpretations[0]) == bindings
+    expected = {"@xmlns": dict(bindings), "$": text} if bindings else text
+    assert document.to_data(format="badgerfish", fidelity="strict") == {"r": expected}
+
+
+@pytest.mark.parametrize("state", ["current", "dirty", "stale", "untyped"])
+@pytest.mark.parametrize("attribute", [False, True])
+def test_lexical_list_qname_audit_never_uses_stale_values_or_decoders(
+    state, attribute, monkeypatch
+):
+    scalar = '<list><data type="QName"/><data type="string"/></list>'
+    content = f'<attribute name="q">{scalar}</attribute><empty/>' if attribute else scalar
+    xml = (
+        '<r xmlns:p="urn:p" q="v p:ordinary"/>'
+        if attribute
+        else ('<r xmlns:p="urn:p">v p:ordinary</r>')
+    )
+    document = parse(content, xml, typed=state != "untyped")
+    if state == "dirty":
+        if attribute:
+            document.root.set_attribute("q", "p:v ordinary")
+        else:
+            document.root.set_text("p:v ordinary")
+    elif state == "stale":
+        document = document.transform(lambda root: root)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("lexical QName audit read typed values or invoked a decoder")
+
+    from pyxsd.relaxng.datatypes import ScalarDatatype
+    from pyxsd.relaxng.tree import RelaxNGElement
+
+    monkeypatch.setattr(RelaxNGElement, "scalar_value", forbidden)
+    monkeypatch.setattr(RelaxNGElement, "attribute_value", forbidden)
+    monkeypatch.setattr(ScalarDatatype, "decode", forbidden)
+    if state == "dirty":
+        conversion_error(
+            "namespace-lost",
+            "/@q" if attribute else "/$",
+            lambda: document.to_data(typed=False, fidelity="strict"),
+        )
+    else:
+        assert document.to_data(typed=False, fidelity="strict") == {
+            "@q" if attribute else "$": "v p:ordinary"
+        }
+
+
+@pytest.mark.parametrize(
+    "content,text",
+    [
+        ('<list><data type="string"/><data type="string"/></list>', "p:v p:w"),
+        ('<list><optional><data type="string"/></optional></list>', "p:v"),
+        ('<choice><data type="QName"/><data type="string"/></choice>', "p:v ordinary"),
+    ],
+)
+def test_lexical_string_tokens_do_not_acquire_qname_candidates(content, text):
+    document = valid(content, f'<r xmlns:p="urn:p">{text}</r>')
+    assert document.to_data(typed=False, fidelity="strict") == {"$": text}
+
+
+@pytest.mark.parametrize("order", ["<a>1</a><b>x</b>", "<b>x</b><a>1</a>"])
+def test_native_strict_choice_ambiguity_survives_a_grouped_suffix(order):
+    document = valid(
+        f"<group><choice><group>{A}{B}</group><group>{B}{A}</group></choice>"
+        '<element name="c"><empty/></element></group>',
+        f"<r>{order}<c/></r>",
+    )
+    conversion_error("order-ambiguous", "", lambda: document.to_data(fidelity="strict"))
+
+
+@pytest.mark.parametrize(
+    "scalar,expected",
+    [
+        (STRING, ""),
+        ('<list><zeroOrMore><data type="integer"/></zeroOrMore></list>', []),
+    ],
+)
+@pytest.mark.parametrize("attribute", [False, True])
+def test_native_mixed_leaf_preserves_absent_empty_scalar_evidence(scalar, expected, attribute):
+    content = (
+        f'<optional><attribute name="id">{STRING}</attribute></optional>'
+        f'<choice>{scalar}<element name="i"><empty/></element></choice>'
+    )
+    document = valid(content, '<r id="x"/>' if attribute else "<r/>")
+    assert document.root.text_value() is None
+    assert xml_conversion._whole_element_scalar_value(document.root) == expected
+    assert document.to_dict()["$"] == expected
+    assert document.to_data()["$"] == expected
+
+
+def test_native_attribute_object_does_not_invent_scalar_for_ignored_whitespace():
+    document = valid(
+        f'<optional><attribute name="id">{STRING}</attribute></optional>'
+        f"<zeroOrMore>{A}</zeroOrMore>",
+        '<r id="x"> \n </r>',
+    )
+    assert document.root.scalar_value() is None
+    assert document.to_dict() == {"@id": "x"}
+    assert document.to_data() == {"@id": "x"}

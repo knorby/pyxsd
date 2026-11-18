@@ -17,7 +17,10 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterator
+from dataclasses import dataclass, field
+from itertools import product
 from typing import TYPE_CHECKING, Any, NoReturn, cast
+from xml.etree import ElementTree as ET
 
 from pyxsd.data_conversion.contracts import (
     Fidelity,
@@ -31,7 +34,9 @@ from pyxsd.data_conversion.values import scalar_to_json
 from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import XML_NS
 from pyxsd.relaxng.contracts import ScalarContract, scalar_contract
+from pyxsd.relaxng.datatypes import DatatypeContext
 from pyxsd.relaxng.document import _whole_element_scalar_value
+from pyxsd.relaxng.evidence import EvidenceGraph, build_binding_evidence
 from pyxsd.relaxng.json_profile import _child_route, _layout, _root_route
 from pyxsd.relaxng.json_values import scalar_to_relaxng_json
 from pyxsd.relaxng.names import ExceptName, Name, NameChoice, NameClass, NsName
@@ -39,6 +44,7 @@ from pyxsd.relaxng.patterns import (
     Choice,
     Data,
     DataExcept,
+    Element,
     Group,
     Interleave,
     List,
@@ -47,6 +53,7 @@ from pyxsd.relaxng.patterns import (
 )
 from pyxsd.relaxng.projection import ContentContract, ProjectionPlan, RouteContract
 from pyxsd.relaxng.tree import RelaxNGElement
+from pyxsd.relaxng.validator import validate_element
 from pyxsd.relaxng.values import AlternativeValue, ListInterpretation
 from pyxsd.xsd_data_types import QName
 
@@ -268,8 +275,21 @@ def _lexical_qname_prefixes(value: AlternativeValue | ListInterpretation) -> lis
     """Original lexical prefixes and their scoped namespace URIs."""
     if not _qname_candidates(value):
         return []
+    tokens: list[str] = []
+    if isinstance(value, AlternativeValue):
+        if any(_atomic_qname(c.contract) for c in value.candidates):
+            tokens.append(value.lexical.strip())
+        interpretations = value.interpretations
+    else:
+        interpretations = (value,)
+    for interpretation in interpretations:
+        for span, candidates in zip(
+            interpretation.token_spans, interpretation.token_candidates, strict=True
+        ):
+            if any(_atomic_qname(c.contract) for c in candidates):
+                tokens.append(span.text)
     prefixes: list[tuple[str, str]] = []
-    for token in value.lexical.split():
+    for token in tokens:
         prefix = token.split(":", 1)[0] if ":" in token else ""
         uri = value.context.namespaces.get(prefix)
         if uri:
@@ -595,66 +615,243 @@ def _child_paths(
         yield child, child_path
 
 
+_Counts = tuple[int, ...]
+_Sequence = tuple[str, ...]
+
+
+@dataclass
+class _OrderAnalysis:
+    """One bounded, parse-local dynamic program; never enumerate derivations."""
+
+    names: tuple[str, ...]
+    path: _Path
+    remaining: int = 100_000
+    sequences: dict[tuple[int, _Counts], set[_Sequence]] = field(default_factory=dict)
+    matches: dict[tuple[int, _Sequence], bool] = field(default_factory=dict)
+
+    def step(self) -> None:
+        self.remaining -= 1
+        if self.remaining < 0:
+            raise_conversion(
+                "order-ambiguous",
+                json_pointer(self.path),
+                "native child-order reconstruction exceeded its work budget",
+            )
+
+    def splits(self, counts: _Counts) -> Iterator[tuple[_Counts, _Counts]]:
+        for left in product(*(range(count + 1) for count in counts)):
+            self.step()
+            yield left, tuple(total - part for total, part in zip(counts, left, strict=True))
+
+
+def _order_parts(
+    parts: tuple[ContentContract, ...],
+    counts: _Counts,
+    analysis: _OrderAnalysis,
+    *,
+    unordered: bool,
+) -> set[_Sequence]:
+    if len(parts) == 1:
+        return _model_order(parts[0], counts, analysis)
+    result: set[_Sequence] = set()
+    for left, right in analysis.splits(counts):
+        first = _model_order(parts[0], left, analysis)
+        if not first:
+            continue
+        rest = _order_parts(parts[1:], right, analysis, unordered=unordered)
+        for a in first:
+            for b in rest:
+                # Interleave defines no cross-operand order. Use one canonical
+                # ordering for its operands, while retaining choices within each.
+                result.add(a + b if not unordered else sum(sorted((a, b)), ()))
+                if len(result) == 2:
+                    return result
+    return result
+
+
 def _model_order(
     model: ContentContract,
-    observed: frozenset[str],
-    memo: dict[int, tuple[frozenset[str], frozenset[tuple[str, str]]]],
-) -> tuple[frozenset[str], frozenset[tuple[str, str]]]:
-    """Summarize possible ordered pairs once per DAG node, without derivations.
+    counts: _Counts,
+    analysis: _OrderAnalysis,
+) -> set[_Sequence]:
+    """At most two distinct reconstructions for these exact observed counts.
 
-    Interleave contributes no cross-operand precedence: its fields are
-    explicitly unordered. Choice unions *all* orders, never one chosen branch.
+    Empty repeat iterations contribute no additional sequences. Nonempty
+    iterations strictly decrease the remaining counts, including nullable
+    operands; shared model/count states are evaluated only once.
     """
-    key = id(model)
-    if key in memo:
-        return memo[key]
+    key = id(model), counts
+    if key in analysis.sequences:
+        return analysis.sequences[key]
+    analysis.step()
+    result: set[_Sequence] = set()
     if model.kind == "child":
-        names = frozenset(
-            name
-            for name in observed
-            if model.name_class is not None and model.name_class.contains(*_split(name))
+        if sum(counts) == 1:
+            name = analysis.names[counts.index(1)]
+            if cast(NameClass, model.name_class).contains(*_split(name)):
+                result.add((name,))
+    elif model.kind in ("attribute", "empty", "scalar"):
+        if not any(counts):
+            result.add(())
+    elif model.kind == "choice":
+        for part in model.operands:
+            result.update(_model_order(part, counts, analysis))
+            if len(result) >= 2:
+                break
+    elif model.kind in ("group", "interleave"):
+        result = _order_parts(
+            model.operands, counts, analysis, unordered=model.kind == "interleave"
         )
-        result: tuple[frozenset[str], frozenset[tuple[str, str]]] = names, frozenset()
+    elif model.kind == "repeat":
+        result = _repeat_orders(model, counts, analysis)
+    # notAllowed has no accepted child sequence.
+    result = set(sorted(result)[:2])
+    analysis.sequences[key] = result
+    return result
+
+
+def _repeat_orders(
+    model: ContentContract,
+    counts: _Counts,
+    analysis: _OrderAnalysis,
+) -> set[_Sequence]:
+    # Lexicographic subcounts precede any vector obtained by adding a
+    # nonempty iteration. Compute that table bottom-up, not by child recursion.
+    for target, _ in analysis.splits(counts):
+        key = id(model), target
+        if key in analysis.sequences:
+            continue
+        if not any(target):
+            result = _model_order(model.operands[0], target, analysis)
+        else:
+            result = set()
+            for left, right in analysis.splits(target):
+                if not any(left):
+                    continue
+                first = _model_order(model.operands[0], left, analysis)
+                rest = analysis.sequences[id(model), right] if any(right) else {()}
+                result.update(a + b for a in first for b in rest)
+                if len(result) >= 2:
+                    break
+        analysis.sequences[key] = set(sorted(result)[:2])
+    return analysis.sequences[id(model), counts]
+
+
+def _match_parts(
+    parts: tuple[ContentContract, ...],
+    observed: _Sequence,
+    analysis: _OrderAnalysis,
+    *,
+    unordered: bool,
+) -> bool:
+    if len(parts) == 1:
+        return _order_matches(parts[0], observed, analysis)
+    partitions = (
+        (
+            (
+                tuple(name for name, keep in zip(observed, mask, strict=True) if keep),
+                tuple(name for name, keep in zip(observed, mask, strict=True) if not keep),
+            )
+            for mask in product((False, True), repeat=len(observed))
+        )
+        if unordered
+        else ((observed[:index], observed[index:]) for index in range(len(observed) + 1))
+    )
+    for first, rest in partitions:
+        analysis.step()
+        if _order_matches(parts[0], first, analysis) and _match_parts(
+            parts[1:], rest, analysis, unordered=unordered
+        ):
+            return True
+    return False
+
+
+def _order_matches(
+    model: ContentContract,
+    observed: _Sequence,
+    analysis: _OrderAnalysis,
+) -> bool:
+    """Check the authored sequence, not just its multiset, including interleave."""
+    key = id(model), observed
+    if key in analysis.matches:
+        return analysis.matches[key]
+    analysis.step()
+    if model.kind == "child":
+        result = len(observed) == 1 and cast(NameClass, model.name_class).contains(
+            *_split(observed[0])
+        )
+    elif model.kind in ("attribute", "empty", "scalar"):
+        result = not observed
+    elif model.kind == "choice":
+        result = any(_order_matches(part, observed, analysis) for part in model.operands)
+    elif model.kind in ("group", "interleave"):
+        result = _match_parts(
+            model.operands, observed, analysis, unordered=model.kind == "interleave"
+        )
+    elif model.kind == "repeat":
+        reachable = {0}
+        for end in range(1, len(observed) + 1):
+            for start in range(end):
+                analysis.step()
+                if start in reachable and _order_matches(
+                    model.operands[0], observed[start:end], analysis
+                ):
+                    reachable.add(end)
+                    break
+        result = (
+            len(observed) in reachable
+            if observed
+            else _order_matches(model.operands[0], (), analysis)
+        )
     else:
-        parts = [_model_order(part, observed, memo) for part in model.operands]
-        names = frozenset(name for fields, _ in parts for name in fields)
-        pairs = {pair for _, edges in parts for pair in edges}
-        if model.kind == "group":
-            preceding: set[str] = set()
-            for fields, _ in parts:
-                pairs.update((a, b) for a in preceding for b in fields if a != b)
-                preceding.update(fields)
-        elif model.kind == "repeat":
-            pairs.update((a, b) for a in names for b in names if a != b)
-        result = names, frozenset(pairs)
-    memo[key] = result
+        result = False
+    analysis.matches[key] = result
     return result
 
 
 def _native_order(
     route: RouteContract | None, children: tuple[RelaxNGElement, ...], path: _Path
 ) -> None:
-    order = list(dict.fromkeys(child._name_ for child in children))
-    if len(order) < 2:
-        return
     if route is None:
-        raise_conversion("order-ambiguous", json_pointer(path), "no compiled child order")
-    _, pairs = _model_order(route.content.model, frozenset(order), {})
-    positions = {name: index for index, name in enumerate(order)}
-    if any(positions[a] > positions[b] for a, b in pairs):
-        raise_conversion(
-            "order-ambiguous",
-            json_pointer(path),
-            "grouped properties cannot reconstruct every compiled child order",
-        )
+        if children:
+            raise_conversion("order-ambiguous", json_pointer(path), "no compiled child order")
+        return
+    observed = tuple(child._name_ for child in children)
+    counts = Counter(observed)
+    analysis = _OrderAnalysis(tuple(sorted(counts)), path)
+    sequences = _model_order(
+        route.content.model, tuple(counts[n] for n in analysis.names), analysis
+    )
+    if len(sequences) == 1 and (
+        observed in sequences or _order_matches(route.content.model, observed, analysis)
+    ):
+        return
+    seen: Counter[str] = Counter()
+    previous: str | None = None
+    for name in observed:
+        if name != previous and seen[name]:
+            path = (*path, name, seen[name])
+            break
+        seen[name] += 1
+        previous = name
+    raise_conversion(
+        "order-ambiguous",
+        json_pointer(path),
+        "grouped properties do not determine one accepted compiled child order",
+    )
+
+
+def _atomic_qname(contract: ScalarContract) -> bool:
+    return (
+        contract.kind == "atomic"
+        and contract.type_name in ("QName", "NOTATION")
+        and contract.library_uri == "http://www.w3.org/2001/XMLSchema-datatypes"
+    )
 
 
 def _contract_qname(contract: ScalarContract, plan: ProjectionPlan) -> bool:
     if contract.kind != "list":
-        return (
-            contract.type_name in ("QName", "NOTATION")
-            and contract.library_uri == "http://www.w3.org/2001/XMLSchema-datatypes"
-        )
+        return _atomic_qname(contract)
     pending = [plan.encoding_patterns[contract.pattern_identity]]
     seen: set[int] = set()
     while pending:
@@ -684,6 +881,7 @@ def _lexical_bindings(node: RelaxNGElement, lexical: str) -> dict[str, str]:
 
 
 def _native_lexical_context(
+    document: RelaxNGDocument,
     node: RelaxNGElement,
     route: RouteContract | None,
     plan: ProjectionPlan,
@@ -692,22 +890,14 @@ def _native_lexical_context(
 ) -> None:
     if route is None:
         return
-    slots = []
-    if any(_contract_qname(c, plan) for c in route.content.scalar_contracts):
-        slots.append((node.text_value() or "", (*path, "$")))
+    slots = [
+        (node.text_value() or "", route.content.scalar_contracts, _native_scalar_path(node, path))
+    ]
     for name, lexical in _data_attributes(node):
-        field = route.attributes.get(name)
-        contracts = (
-            field.scalar_contracts
-            if field is not None
-            else tuple(
-                c for w in route.wildcards if w.role == "attribute" for c in w.scalar_contracts
-            )
-        )
-        if any(_contract_qname(c, plan) for c in contracts):
-            slots.append((lexical, (*path, "@" + name)))
-    for lexical, pointer in slots:
-        if _lexical_bindings(node, lexical):
+        contracts = _attribute_scalar_contracts(route.content.model, name)
+        slots.append((lexical, contracts, (*path, "@" + name)))
+    for lexical, contracts, pointer in slots:
+        if _slot_qname_loss(document, node, lexical, contracts, plan):
             _loss(
                 "namespace-lost",
                 pointer,
@@ -716,9 +906,90 @@ def _native_lexical_context(
             )
 
 
+def _attribute_scalar_contracts(model: ContentContract, name: str) -> tuple[ScalarContract, ...]:
+    """Keep the name/contract correlation that merged wildcard views erase."""
+    pending = [model]
+    seen: set[int] = set()
+    contracts: dict[ScalarContract, None] = {}
+    while pending:
+        part = pending.pop()
+        if id(part) in seen:
+            continue
+        seen.add(id(part))
+        if part.kind == "attribute":
+            if cast(NameClass, part.name_class).contains(*_split(name)):
+                contracts.update(dict.fromkeys(part.scalar_contracts))
+        else:
+            pending.extend(part.operands)
+    return tuple(contracts)
+
+
+def _slot_qname_loss(
+    document: RelaxNGDocument,
+    node: RelaxNGElement,
+    lexical: str,
+    contracts: tuple[ScalarContract, ...],
+    plan: ProjectionPlan,
+) -> bool:
+    """Audit accepting scalar/token witnesses without typed reads or decoding.
+
+    A validation-only or edited tree has no authoritative ListInterpretation.
+    Build an isolated scalar proof from the compiled contract and current frame;
+    its retained token spans are the same per-token evidence used by
+    ListInterpretation.token_candidates. Never attach this proof to the document.
+    """
+    if not _lexical_bindings(node, lexical):
+        return False
+    for contract in contracts:
+        if not _contract_qname(contract, plan):
+            continue
+        source = ET.Element("scalar")
+        source.text = lexical
+        scalar = RelaxNGElement.from_etree(source, base_uri=node.base_uri)
+        scalar.set_namespace_bindings(node.namespaces or {})
+        pattern = Element(Name(None, "scalar"), plan.encoding_patterns[contract.pattern_identity])
+        limits = document.schema.limits
+        if not validate_element(scalar, pattern, limits=limits).valid:
+            continue
+        proof = build_binding_evidence(
+            scalar,
+            pattern,
+            datatype_context=DatatypeContext(node.base_uri, node.namespaces or {}),
+            limits=limits,
+        )
+        for edge in proof.retained_edges:
+            for witness in edge.witnesses:
+                if _atomic_qname(scalar_contract(witness.pattern)) and _lexical_bindings(
+                    node, witness.lexical
+                ):
+                    return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Native pyxsd
 # ---------------------------------------------------------------------------
+
+
+def _native_scalar_path(node: RelaxNGElement, path: _Path) -> _Path:
+    """A leaf child is the value itself; roots and objects own a '$' member."""
+    return (
+        (*path, _TEXT_KEY)
+        if node.parent is None or node.children or _data_attributes(node)
+        else path
+    )
+
+
+def _native_scalar_evidence(document: RelaxNGDocument, node: RelaxNGElement) -> bool:
+    """Distinguish accepted empty scalars from skipped/insignificant text."""
+    graph = cast(EvidenceGraph, document.binding_evidence)
+    return any(
+        site.element is node
+        and site.kind == "text"
+        and site.content_index == 0
+        and graph.scalar_witnesses_at(site)
+        for site in graph.occurrences
+    )
 
 
 def export_native(
@@ -790,28 +1061,14 @@ def _check_native_strict(
                 fidelity,
             )
 
-    seen: set[str] = set()
-    previous: str | None = None
-    for child, child_path in _child_paths(node, path, always_list):
-        name = child._name_
-        if fidelity == "strict" and name != previous and name in seen:
-            raise_conversion(
-                "order-ambiguous",
-                json_pointer(child_path),
-                "native export groups repeated children and loses their "
-                "interleaving with other names",
-            )
-        seen.add(name)
-        previous = name
-
     if fidelity == "strict":
         _native_order(route, children, path)
     if typed and fidelity == "strict":
-        _check_native_qnames(node.scalar_value(), (*path, _TEXT_KEY), mode=mode)
+        _check_native_qnames(node.scalar_value(), _native_scalar_path(node, path), mode=mode)
         for name, _lexical in _data_attributes(node):
             _check_native_qnames(node.attribute_value(name), (*path, "@" + name), mode=mode)
     elif not typed:
-        _native_lexical_context(node, route, plan, path, fidelity)
+        _native_lexical_context(document, node, route, plan, path, fidelity)
 
     for child, child_path in _child_paths(node, path, always_list):
         child_route, child_generic = _node_layout(route, child, plan)
@@ -915,7 +1172,9 @@ def _native_object(
         result[name] = values if always_list else (values[0] if len(values) == 1 else values)
 
     layout = _layout(route, generic)
-    if layout == "scalar":
+    if layout == "scalar" or (
+        typed and not node.children and _native_scalar_evidence(document, node)
+    ):
         result[_TEXT_KEY] = _native_leaf(
             document, node, (*path, _TEXT_KEY), layout=layout, typed=typed, mode=mode
         )
