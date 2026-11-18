@@ -273,7 +273,7 @@ def test_interleave_is_a_record_and_jsonml_keeps_document_order() -> None:
 
 @pytest.mark.parametrize(
     ("format", "pointer"),
-    [("pyxsd", "/a"), ("parker", ""), ("badgerfish", "/r")],
+    [("pyxsd", "/a/1"), ("parker", ""), ("badgerfish", "/r")],
 )
 def test_strict_grouped_formats_reject_unreconstructable_interleaving(
     format: str, pointer: str
@@ -1068,16 +1068,19 @@ def test_wrapper_qname_declarations_keep_original_prefixes_and_conflicts() -> No
         '<data type="string"/></choice></element></zeroOrMore>',
         '<r><item xmlns:p="urn:a">p:v</item><item xmlns:p="urn:b">p:v</item></r>',
     )
-    conversion_error(
-        "namespace-conflict",
-        "/r/item/1",
-        lambda: xml_conversion.export_badgerfish(conflict, fidelity="strict"),
-    )
-    conversion_error(
-        "namespace-conflict",
-        "",
-        lambda: xml_conversion.export_jsonml(conflict, fidelity="strict"),
-    )
+    assert conflict.to_data(format="badgerfish", fidelity="strict") == {
+        "r": {
+            "item": [
+                {"@xmlns": {"p": "urn:a"}, "$": "p:v"},
+                {"@xmlns": {"p": "urn:b"}, "$": "p:v"},
+            ]
+        }
+    }
+    assert conflict.to_data(format="jsonml", fidelity="strict") == [
+        "r",
+        ["item", {"xmlns:p": "urn:a"}, "p:v"],
+        ["item", {"xmlns:p": "urn:b"}, "p:v"],
+    ]
 
 
 def test_lexical_name_declaration_conflicts() -> None:
@@ -1118,14 +1121,14 @@ def test_ambiguous_unprefixed_qname_keeps_the_default_namespace() -> None:
 
     assert document.to_data(format="badgerfish") == {
         "r": {
-            "@xmlns": {"": "urn:example", "ns0": "urn:example"},
-            "ns0:item": ["v"],
+            "@xmlns": {"ns0": "urn:example"},
+            "ns0:item": [{"@xmlns": {"": "urn:example"}, "$": "v"}],
         }
     }
     assert document.to_data(format="jsonml") == [
         "r",
-        {"xmlns": "urn:example", "xmlns:ns0": "urn:example"},
-        ["ns0:item", "v"],
+        {"xmlns:ns0": "urn:example"},
+        ["ns0:item", {"xmlns": "urn:example"}, "v"],
     ]
     with pytest.warns(PyXSDWarning, match="default namespace"):
         assert document.to_data(format="parker") == {"item": "v"}
@@ -1139,3 +1142,328 @@ def test_jsonml_handles_an_open_wildcard_route() -> None:
 
     assert document.to_data(format="jsonml") == ["r", ["x", 12]]
     assert document.to_data() == {"x": 12}
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize(
+    "content,text",
+    [(INTEGER, "12"), (STRING, ""), (STRING, "  "), (f"<choice>{INTEGER}{STRING}</choice>", "12")],
+)
+def test_attributed_native_scalar_keeps_typed_content(content, text, nested):
+    pattern = '<attribute name="a"><data type="string"/></attribute>' + content
+    xml = f'<r a="x">{text}</r>'
+    if nested:
+        pattern = f'<element name="item">{pattern}</element>'
+        xml = f'<r><item a="x">{text}</item></r>'
+    document = valid(pattern, xml)
+    node = document.root.children[0] if nested else document.root
+    expected = xml_conversion._whole_element_scalar_value(node)
+    raw = document.to_dict()
+    safe = document.to_data()
+    if nested:
+        raw, safe = raw["item"], safe["item"]
+    assert raw["$"] == expected
+    if isinstance(expected, AlternativeValue):
+        assert safe["$"] == scalar_tag(expected)
+    else:
+        assert safe["$"] == expected
+    lexical = document.to_dict(typed=False)
+    assert (lexical["item"] if nested else lexical)["$"] == text
+
+
+@pytest.mark.parametrize("order", ["<a/><b/>", "<b/><a/>"])
+def test_native_rejects_choice_of_distinct_orders(order):
+    a, b = '<element name="a"><empty/></element>', '<element name="b"><empty/></element>'
+    document = valid(
+        f"<choice><group>{a}{b}</group><group>{b}{a}</group></choice>", f"<r>{order}</r>"
+    )
+    conversion_error("order-ambiguous", "", lambda: document.to_data(fidelity="strict"))
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("tail", ["LOST", " \n "])
+def test_native_lexical_strict_audits_element_only_tails(nested, tail):
+    pattern = '<element name="a"><empty/></element>'
+    xml = "<r><a/></r>"
+    if nested:
+        pattern = f'<element name="item">{pattern}</element>'
+        xml = "<r><item><a/></item></r>"
+    document = valid(pattern, xml)
+    owner = document.root.children[0] if nested else document.root
+    owner.children[0].set_tail(tail)
+    conversion_error(
+        "mixed-content",
+        "/item" if nested else "",
+        lambda: document.to_data(typed=False, fidelity="strict"),
+    )
+    with pytest.warns(PyXSDWarning, match="mixed-content"):
+        document.to_data(typed=False)
+
+
+@pytest.mark.parametrize("attribute", [False, True])
+@pytest.mark.parametrize("default", [False, True])
+@pytest.mark.parametrize("datatype", ["QName", "NOTATION"])
+def test_native_lexical_qname_context_loss(attribute, default, datatype):
+    declaration = 'xmlns="urn:p"' if default else 'xmlns:p="urn:p"'
+    text = "v" if default else "p:v"
+    pattern = f'<data type="{datatype}"/>'
+    xml = f"<r {declaration}>{text}</r>"
+    name = 'name="r" ns="urn:p"' if default else 'name="r"'
+    if attribute:
+        pattern = f'<attribute name="q"><data type="{datatype}"/></attribute><empty/>'
+        xml = f'<r {declaration} q="{text}"/>'
+    document = valid(pattern, xml, name=name)
+    pointer = "/@q" if attribute else "/$"
+    conversion_error(
+        "namespace-lost", pointer, lambda: document.to_data(typed=False, fidelity="strict")
+    )
+
+
+@pytest.mark.parametrize("typed", [False, True])
+@pytest.mark.parametrize("attribute", [False, True])
+def test_jsonml_lexical_qnames_keep_frames_when_untyped_or_dirty(typed, attribute):
+    pattern = (
+        '<attribute name="q"><data type="QName"/></attribute><empty/>'
+        if attribute
+        else '<data type="QName"/>'
+    )
+    xml = '<r xmlns:p="urn:p" q="p:v"/>' if attribute else '<r xmlns:p="urn:p">p:v</r>'
+    document = parse(pattern, xml, typed=typed)
+    assert document.is_valid
+    if typed:
+        if attribute:
+            document.root.set_attribute("q", "p:w")
+        else:
+            document.root.set_text("p:w")
+    result = document.to_data(format="jsonml")
+    assert result[1]["xmlns:p"] == "urn:p"
+    assert (result[1]["q"] if attribute else result[2]) == ("p:w" if typed else "p:v")
+
+
+@pytest.mark.parametrize("format", ["badgerfish", "jsonml"])
+def test_authored_ns0_does_not_collide_with_generated_root_prefix(format):
+    document = valid(
+        f'<choice><data type="QName"/>{STRING}</choice>',
+        '<r xmlns="urn:a" xmlns:ns0="urn:b">ns0:v</r>',
+        name='name="r" ns="urn:a"',
+    )
+    result = document.to_data(format=format)
+    if format == "badgerfish":
+        assert result == {"ns1:r": {"@xmlns": {"ns0": "urn:b", "ns1": "urn:a"}, "$": "ns0:v"}}
+    else:
+        assert result == ["ns1:r", {"xmlns:ns0": "urn:b", "xmlns:ns1": "urn:a"}, "ns0:v"]
+
+
+@pytest.mark.parametrize("always_list", [False, True])
+def test_native_repeated_error_pointer_contains_group_index(always_list):
+    document = valid(
+        '<zeroOrMore><element name="item"><attribute name="q"><data type="QName"/>'
+        "</attribute><empty/></element></zeroOrMore>",
+        '<r xmlns:p="urn:p"><item q="v"/><item q="p:v"/></r>',
+    )
+    conversion_error(
+        "namespace-lost",
+        "/item/1/@q",
+        lambda: document.to_data(fidelity="strict", always_list=always_list),
+    )
+
+
+@pytest.mark.parametrize(
+    "pattern,xml",
+    [
+        (
+            '<group><element name="b"><empty/></element><element name="a"><empty/></element></group>',
+            "<r><b/><a/></r>",
+        ),
+        (
+            '<group><optional><element name="b"><empty/></element></optional><element name="a"><empty/></element></group>',
+            "<r><a/></r>",
+        ),
+        (
+            '<group><optional><element name="b"><empty/></element></optional><element name="a"><empty/></element></group>',
+            "<r><b/><a/></r>",
+        ),
+        (
+            '<interleave><element name="a"><empty/></element><element name="b"><empty/></element></interleave>',
+            "<r><a/><b/></r>",
+        ),
+        (
+            '<interleave><element name="a"><empty/></element><element name="b"><empty/></element></interleave>',
+            "<r><b/><a/></r>",
+        ),
+    ],
+)
+def test_native_model_order_does_not_reject_fixed_optional_or_interleave_records(pattern, xml):
+    document = valid(pattern, xml)
+    assert document.to_data(fidelity="strict") == {
+        child._name_: None for child in document.root.children
+    }
+
+
+@pytest.mark.parametrize("attribute", [False, True])
+def test_native_lexical_repeated_qnames_have_indexed_pointers(attribute):
+    scalar = '<data type="QName"/>'
+    content = f'<attribute name="q">{scalar}</attribute><empty/>' if attribute else scalar
+    document = valid(
+        f'<oneOrMore><element name="item">{content}</element></oneOrMore>',
+        '<r xmlns:p="urn:p"><item q="v"/><item q="p:v"/></r>'
+        if attribute
+        else '<r xmlns:p="urn:p"><item>v</item><item>p:v</item></r>',
+    )
+    pointer = "/item/1/@q" if attribute else "/item/1/$"
+    conversion_error(
+        "namespace-lost", pointer, lambda: document.to_data(typed=False, fidelity="strict")
+    )
+    with pytest.warns(PyXSDWarning, match="namespace-lost"):
+        assert document.to_data(typed=False)["item"][1] == ({"@q": "p:v"} if attribute else "p:v")
+
+
+def test_native_always_list_single_child_qname_pointer():
+    document = valid(
+        '<element name="item"><data type="QName"/></element>',
+        '<r xmlns:p="urn:p"><item>p:v</item></r>',
+    )
+    conversion_error(
+        "namespace-lost", "/item/0/$", lambda: document.to_data(fidelity="strict", always_list=True)
+    )
+
+
+def test_namespace_scopes_reset_default_for_unqualified_descendants():
+    document = valid(
+        '<element name="item" ns="urn:p"><attribute name="q"><choice>'
+        '<data type="QName"/><data type="string"/></choice></attribute>'
+        '<element name="leaf" ns=""><empty/></element></element>',
+        '<r><item xmlns="urn:p" q="v"><leaf xmlns=""/></item></r>',
+    )
+    assert document.to_data(format="jsonml") == [
+        "r",
+        {"xmlns:ns0": "urn:p"},
+        ["ns0:item", {"xmlns": "urn:p", "q": "v"}, ["leaf", {"xmlns": ""}]],
+    ]
+    assert document.to_data(format="badgerfish") == {
+        "r": {
+            "@xmlns": {"ns0": "urn:p"},
+            "ns0:item": {"@xmlns": {"": "urn:p"}, "@q": "v", "leaf": {"@xmlns": {"": ""}}},
+        }
+    }
+
+
+def test_jsonml_stale_and_generic_nodes_keep_authoritative_namespace_context():
+    document = valid(
+        "<zeroOrMore><element><anyName/><text/></element></zeroOrMore>",
+        '<r xmlns:p="urn:p"><item>p:v</item></r>',
+    )
+    stale = document.transform(lambda root: root)
+    assert stale.to_data(format="jsonml") == [
+        "r",
+        {"xmlns:p": "urn:p"},
+        ["item", {"xmlns:p": "urn:p"}, "p:v"],
+    ]
+
+
+@pytest.mark.parametrize("attribute", [False, True])
+def test_native_lexical_qname_lists_require_context(attribute):
+    scalar = '<list><oneOrMore><data type="QName"/></oneOrMore></list>'
+    content = f'<attribute name="q">{scalar}</attribute><empty/>' if attribute else scalar
+    document = valid(
+        content,
+        '<r xmlns:p="urn:p" q="p:v p:w"/>' if attribute else '<r xmlns:p="urn:p">p:v p:w</r>',
+    )
+    conversion_error(
+        "namespace-lost",
+        "/@q" if attribute else "/$",
+        lambda: document.to_data(typed=False, fidelity="strict"),
+    )
+
+
+def test_qname_attribute_does_not_make_string_content_namespace_dependent():
+    document = valid(
+        '<attribute name="q"><data type="QName"/></attribute><data type="string"/>',
+        '<r xmlns:p="urn:p" q="v">p:ordinary-string</r>',
+    )
+    assert document.to_data(typed=False, fidelity="strict") == {"@q": "v", "$": "p:ordinary-string"}
+
+
+def test_native_order_repeat_and_dirty_unknown_root():
+    document = valid(
+        f"<oneOrMore><choice>{A}{B}</choice></oneOrMore>", "<r><a>1</a><a>2</a><b>x</b></r>"
+    )
+    conversion_error("order-ambiguous", "", lambda: document.to_data(fidelity="strict"))
+    unknown = valid(f"{A}{B}", "<r><a>1</a><b>x</b></r>")
+    unknown.root.set_name("unknown")
+    conversion_error("order-ambiguous", "", lambda: unknown.to_data(typed=False, fidelity="strict"))
+
+
+@pytest.mark.parametrize(
+    "scalar,text",
+    [
+        ('<list><group><data type="integer"/><data type="integer"/></group></list>', "1 2"),
+        ('<list><choice><data type="integer"/><data type="string"/></choice></list>', "word"),
+        ('<list><optional><data type="integer"/></optional></list>', "1"),
+    ],
+)
+def test_native_lexical_nonqname_lists_do_not_claim_context_loss(scalar, text):
+    document = valid(scalar, f'<r xmlns:p="urn:p">{text}</r>')
+    assert document.to_data(typed=False, fidelity="strict") == {"$": text}
+
+
+@pytest.mark.parametrize("format", ["badgerfish", "jsonml"])
+def test_wildcard_generated_prefix_avoids_an_authored_hex_prefix(format):
+    prefix = "ns_" + b"urn:wild".hex()
+    document = valid(
+        '<element><anyName/><choice><data type="QName"/><data type="string"/></choice></element>',
+        f'<r><item xmlns="urn:wild" xmlns:{prefix}="urn:other">{prefix}:v</item></r>',
+    )
+    data = document.to_data(format=format)
+    if format == "badgerfish":
+        assert data == {
+            "r": {
+                "@xmlns": {prefix + "_": "urn:wild"},
+                prefix + "_:item": {"@xmlns": {prefix: "urn:other"}, "$": prefix + ":v"},
+            }
+        }
+    else:
+        assert data == [
+            "r",
+            {"xmlns:" + prefix + "_": "urn:wild"},
+            [prefix + "_:item", {"xmlns:" + prefix: "urn:other"}, prefix + ":v"],
+        ]
+
+
+def test_inconsistent_dirty_default_frame_raises_instead_of_changing_root_namespace():
+    document = valid('<data type="QName"/>', "<r>v</r>")
+    document.root.set_namespace_bindings({"": "urn:p"})
+    conversion_error("namespace-conflict", "", lambda: document.to_data(format="jsonml"))
+
+
+def test_scoped_namespace_declarations_do_not_mutate_shared_allocations():
+    document = valid("<empty/>")
+    names = xml_conversion._LexicalNames([])
+    scoped = names.at(document.root)
+    scoped.declare("p", "urn:p", ())
+    assert scoped.declarations() == {"p": "urn:p"}
+    assert names.declarations() == {}
+
+
+def test_native_order_summary_visits_shared_model_dag_once(monkeypatch):
+    from pyxsd.relaxng.projection import ContentContract
+
+    document = valid(f"{A}{B}", "<r><a>1</a><b>x</b></r>")
+    plan = document.schema.projection
+    route = plan.routes[plan.roots[0]]
+    model = route.content.model
+    for _ in range(24):
+        model = ContentContract("choice", (model, model))
+    calls = 0
+    original = xml_conversion._model_order
+
+    def bounded(model, observed, memo):
+        nonlocal calls
+        calls += 1
+        assert calls < 100, "shared model traversal lost its memoization"
+        return original(model, observed, memo)
+
+    monkeypatch.setattr(xml_conversion, "_model_order", bounded)
+    changed = replace(route, content=replace(route.content, model=model))
+    assert xml_conversion._native_order(changed, document.root.children, ()) is None
+    assert calls < 60

@@ -15,6 +15,8 @@ the only attributes excluded from ordinary data.
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from pyxsd.data_conversion.contracts import (
@@ -25,15 +27,25 @@ from pyxsd.data_conversion.contracts import (
     raise_conversion,
     warn_conversion,
 )
-from pyxsd.data_conversion.names import PrefixAllocator
 from pyxsd.data_conversion.values import scalar_to_json
 from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import XML_NS
+from pyxsd.relaxng.contracts import ScalarContract, scalar_contract
 from pyxsd.relaxng.document import _whole_element_scalar_value
 from pyxsd.relaxng.json_profile import _child_route, _layout, _root_route
 from pyxsd.relaxng.json_values import scalar_to_relaxng_json
 from pyxsd.relaxng.names import ExceptName, Name, NameChoice, NameClass, NsName
-from pyxsd.relaxng.projection import ProjectionPlan, RouteContract
+from pyxsd.relaxng.patterns import (
+    Choice,
+    Data,
+    DataExcept,
+    Group,
+    Interleave,
+    List,
+    OneOrMore,
+    Value,
+)
+from pyxsd.relaxng.projection import ContentContract, ProjectionPlan, RouteContract
 from pyxsd.relaxng.tree import RelaxNGElement
 from pyxsd.relaxng.values import AlternativeValue, ListInterpretation
 from pyxsd.xsd_data_types import QName
@@ -375,13 +387,29 @@ def _lexical_qname(value: QName, *, path: _Path, names: _LexicalNames) -> str:
 
 
 class _LexicalNames:
-    """Deterministic lexical QNames and the declarations they require."""
+    """Shared generated prefixes, with authored bindings scoped to each node."""
 
-    __slots__ = ("_allocator", "_exact")
+    __slots__ = ("_exact", "_frames", "_prefixes", "_reserved", "_used")
 
-    def __init__(self, known_names: list[str]) -> None:
-        self._allocator = PrefixAllocator(known_names)
+    def __init__(self, known_names: list[str], reserved: set[str] | None = None) -> None:
+        self._reserved = set(reserved or ())
+        self._prefixes: dict[str, str] = {}
+        self._used: dict[str, str] = {}
+        self._frames: dict[RelaxNGElement, dict[str, str]] = {}
         self._exact: dict[str, str] = {}
+        index = 0
+        for uri in sorted({uri for name in known_names if (uri := _split(name)[0])}):
+            while f"ns{index}" in self._reserved:
+                index += 1
+            self._prefixes[uri] = f"ns{index}"
+            index += 1
+
+    def at(self, node: RelaxNGElement) -> _LexicalNames:
+        scoped = object.__new__(_LexicalNames)
+        scoped._prefixes, scoped._used = self._prefixes, self._used
+        scoped._reserved, scoped._frames = self._reserved, self._frames
+        scoped._exact = dict(self._frames.get(node, {}))
+        return scoped
 
     def lexical(self, expanded_name: str, *, attribute: bool = False) -> str:
         uri, local = _split(expanded_name)
@@ -389,7 +417,14 @@ class _LexicalNames:
             return local
         if uri == XML_NS:
             return f"xml:{local}"
-        return self._allocator.lexical(expanded_name, attribute=attribute)
+        prefix = self._prefixes.get(uri)
+        if prefix is None:
+            prefix = "ns_" + uri.encode("utf-8").hex()
+            while prefix in self._reserved:
+                prefix += "_"
+            self._prefixes[uri] = prefix
+        self._used[prefix] = uri
+        return f"{prefix}:{local}"
 
     def declare(self, prefix: str, uri: str, path: _Path) -> None:
         """Keep an original lexical prefix binding for a surviving QName."""
@@ -408,7 +443,7 @@ class _LexicalNames:
                 json_pointer(path),
                 f"QName prefix {prefix!r} denotes both {existing!r} and {uri!r}",
             )
-        generated = self._allocator.frame().get(prefix)
+        generated = self._used.get(prefix)
         if generated is not None and generated != uri:
             raise_conversion(
                 "namespace-conflict",
@@ -418,7 +453,7 @@ class _LexicalNames:
         self._exact[prefix] = uri
 
     def declarations(self) -> dict[str, str]:
-        declarations = dict(self._allocator.frame())
+        declarations = dict(self._used)
         for prefix, uri in self._exact.items():
             existing = declarations.get(prefix)
             if existing is not None and existing != uri:
@@ -429,6 +464,59 @@ class _LexicalNames:
                 )
             declarations[prefix] = uri
         return dict(sorted(declarations.items()))
+
+
+def _wrapper_bindings(value: Any) -> dict[str, str]:
+    if isinstance(value, (AlternativeValue, ListInterpretation)):
+        return dict(_lexical_qname_prefixes(value))
+    if isinstance(value, (tuple, list)):
+        return {p: uri for item in value for p, uri in _wrapper_bindings(item).items()}
+    return {}
+
+
+def _namespace_names(
+    document: RelaxNGDocument, route: RouteContract | None, plan: ProjectionPlan, *, lexical: bool
+) -> _LexicalNames:
+    """Reserve authored prefixes before allocating any generated name.
+
+    Lexical escape exports retain authoritative frames, not stale evidence.
+    Typed exports need authored bindings only where wrapper text survives.
+    """
+    nodes = [document.root]
+    reserved: set[str] = set()
+    while nodes:
+        node = nodes.pop()
+        reserved.update(node.namespaces or {})
+        nodes.extend(node.children)
+    names = _LexicalNames(_known_names(plan), reserved)
+    pending = [(document.root, route, False, "")]
+    while pending:
+        node, node_route, generic, inherited_default = pending.pop()
+        frame = dict(node.namespaces or {})
+        if lexical:
+            bindings = {p: uri for p, uri in frame.items() if p != "xml"}
+        else:
+            bindings = {}
+            for name, _ in _data_attributes(node):
+                bindings.update(_wrapper_bindings(node.attribute_value(name)))
+            if _layout(node_route, generic) == "scalar" or not node.children:
+                bindings.update(_wrapper_bindings(_whole_element_scalar_value(node)))
+        # A default binding belongs only on its owning element. A lexical
+        # unnamespaced descendant also needs the ordinary XML default reset.
+        if inherited_default and "" not in bindings:
+            bindings[""] = frame.get("", "")
+        if bindings.get("") and not _split(node._name_)[0]:
+            raise_conversion(
+                "namespace-conflict",
+                "",
+                "a default QName namespace cannot qualify an unnamespaced element",
+            )
+        names._frames[node] = bindings
+        current_default = bindings.get("", inherited_default)
+        for child in node.children:
+            child_route, child_generic = _child_route(node_route, child, plan)
+            pending.append((child, child_route, child_generic, current_default))
+    return names
 
 
 def _name_class_names(name_class: NameClass) -> list[str]:
@@ -492,6 +580,142 @@ def _iter_qname_values(value: Any) -> list[QName]:
     return found
 
 
+def _child_paths(
+    node: RelaxNGElement, path: _Path, always_list: bool
+) -> Iterator[tuple[RelaxNGElement, _Path]]:
+    """Address native child values in their actual grouped representation."""
+    counts = Counter(child._name_ for child in node.children)
+    indexes: Counter[str] = Counter()
+    for child in node.children:
+        name = child._name_
+        child_path = (*path, name)
+        if always_list or counts[name] > 1:
+            child_path = (*child_path, indexes[name])
+        indexes[name] += 1
+        yield child, child_path
+
+
+def _model_order(
+    model: ContentContract,
+    observed: frozenset[str],
+    memo: dict[int, tuple[frozenset[str], frozenset[tuple[str, str]]]],
+) -> tuple[frozenset[str], frozenset[tuple[str, str]]]:
+    """Summarize possible ordered pairs once per DAG node, without derivations.
+
+    Interleave contributes no cross-operand precedence: its fields are
+    explicitly unordered. Choice unions *all* orders, never one chosen branch.
+    """
+    key = id(model)
+    if key in memo:
+        return memo[key]
+    if model.kind == "child":
+        names = frozenset(
+            name
+            for name in observed
+            if model.name_class is not None and model.name_class.contains(*_split(name))
+        )
+        result: tuple[frozenset[str], frozenset[tuple[str, str]]] = names, frozenset()
+    else:
+        parts = [_model_order(part, observed, memo) for part in model.operands]
+        names = frozenset(name for fields, _ in parts for name in fields)
+        pairs = {pair for _, edges in parts for pair in edges}
+        if model.kind == "group":
+            preceding: set[str] = set()
+            for fields, _ in parts:
+                pairs.update((a, b) for a in preceding for b in fields if a != b)
+                preceding.update(fields)
+        elif model.kind == "repeat":
+            pairs.update((a, b) for a in names for b in names if a != b)
+        result = names, frozenset(pairs)
+    memo[key] = result
+    return result
+
+
+def _native_order(
+    route: RouteContract | None, children: tuple[RelaxNGElement, ...], path: _Path
+) -> None:
+    order = list(dict.fromkeys(child._name_ for child in children))
+    if len(order) < 2:
+        return
+    if route is None:
+        raise_conversion("order-ambiguous", json_pointer(path), "no compiled child order")
+    _, pairs = _model_order(route.content.model, frozenset(order), {})
+    positions = {name: index for index, name in enumerate(order)}
+    if any(positions[a] > positions[b] for a, b in pairs):
+        raise_conversion(
+            "order-ambiguous",
+            json_pointer(path),
+            "grouped properties cannot reconstruct every compiled child order",
+        )
+
+
+def _contract_qname(contract: ScalarContract, plan: ProjectionPlan) -> bool:
+    if contract.kind != "list":
+        return (
+            contract.type_name in ("QName", "NOTATION")
+            and contract.library_uri == "http://www.w3.org/2001/XMLSchema-datatypes"
+        )
+    pending = [plan.encoding_patterns[contract.pattern_identity]]
+    seen: set[int] = set()
+    while pending:
+        pattern = pending.pop()
+        if id(pattern) in seen:
+            continue
+        seen.add(id(pattern))
+        if isinstance(pattern, (Data, DataExcept, Value)):
+            if _contract_qname(scalar_contract(pattern), plan):
+                return True
+        elif isinstance(pattern, (Choice, Group, Interleave)):
+            pending.extend((pattern.first, pattern.second))
+        elif isinstance(pattern, (List, OneOrMore)):
+            pending.append(pattern.pattern)
+    return False
+
+
+def _lexical_bindings(node: RelaxNGElement, lexical: str) -> dict[str, str]:
+    """Only bindings used by lexical QName tokens, including the default."""
+    frame = node.namespaces or {}
+    prefixes = {token.split(":", 1)[0] if ":" in token else "" for token in lexical.split()}
+    return {
+        prefix: frame[prefix]
+        for prefix in sorted(prefixes)
+        if frame.get(prefix) and prefix != "xml"
+    }
+
+
+def _native_lexical_context(
+    node: RelaxNGElement,
+    route: RouteContract | None,
+    plan: ProjectionPlan,
+    path: _Path,
+    fidelity: Fidelity,
+) -> None:
+    if route is None:
+        return
+    slots = []
+    if any(_contract_qname(c, plan) for c in route.content.scalar_contracts):
+        slots.append((node.text_value() or "", (*path, "$")))
+    for name, lexical in _data_attributes(node):
+        field = route.attributes.get(name)
+        contracts = (
+            field.scalar_contracts
+            if field is not None
+            else tuple(
+                c for w in route.wildcards if w.role == "attribute" for c in w.scalar_contracts
+            )
+        )
+        if any(_contract_qname(c, plan) for c in contracts):
+            slots.append((lexical, (*path, "@" + name)))
+    for lexical, pointer in slots:
+        if _lexical_bindings(node, lexical):
+            _loss(
+                "namespace-lost",
+                pointer,
+                "native lexical values cannot carry QName context",
+                fidelity,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Native pyxsd
 # ---------------------------------------------------------------------------
@@ -509,8 +733,17 @@ def export_native(
     plan = document.schema.projection
     route = _root_or_none(document, require=typed)
     root = document.root
-    if fidelity == "strict":
-        _check_native_strict(document, root, route, plan, (), typed=typed, mode=mode)
+    _check_native_strict(
+        document,
+        root,
+        route,
+        plan,
+        (),
+        typed=typed,
+        mode=mode,
+        fidelity=fidelity,
+        always_list=always_list,
+    )
     layout = _layout(route, False)
     if root.children or _data_attributes(root):
         return _native_object(
@@ -537,51 +770,62 @@ def _check_native_strict(
     typed: bool,
     mode: ExportMode,
     generic: bool = False,
+    fidelity: Fidelity = "strict",
+    always_list: bool = False,
 ) -> None:
     """Reject native grouping losses before any representation is built."""
     layout = _layout(route, generic)
     children = node.children
-    if layout == "mixed" and children:
+    if children:
         text = node.text_value()
         tails = [child.tail_value() or "" for child in children]
-        if text or any(tails):
-            raise_conversion(
+        if (layout == "mixed" and (text or any(tails)) and fidelity == "strict") or (
+            not typed and layout != "mixed" and any(tails)
+        ):
+            _loss(
                 "mixed-content",
-                json_pointer(path),
+                path,
                 "native export groups character data under '$' and loses "
                 "its position among child elements",
+                fidelity,
             )
 
     seen: set[str] = set()
     previous: str | None = None
-    for child in children:
+    for child, child_path in _child_paths(node, path, always_list):
         name = child._name_
-        if name != previous and name in seen:
+        if fidelity == "strict" and name != previous and name in seen:
             raise_conversion(
                 "order-ambiguous",
-                json_pointer((*path, name)),
+                json_pointer(child_path),
                 "native export groups repeated children and loses their "
                 "interleaving with other names",
             )
         seen.add(name)
         previous = name
 
-    if typed:
+    if fidelity == "strict":
+        _native_order(route, children, path)
+    if typed and fidelity == "strict":
         _check_native_qnames(node.scalar_value(), (*path, _TEXT_KEY), mode=mode)
         for name, _lexical in _data_attributes(node):
             _check_native_qnames(node.attribute_value(name), (*path, "@" + name), mode=mode)
+    elif not typed:
+        _native_lexical_context(node, route, plan, path, fidelity)
 
-    for child in children:
+    for child, child_path in _child_paths(node, path, always_list):
         child_route, child_generic = _node_layout(route, child, plan)
         _check_native_strict(
             document,
             child,
             child_route,
             plan,
-            (*path, child._name_),
+            child_path,
             typed=typed,
             mode=mode,
             generic=child_generic,
+            fidelity=fidelity,
+            always_list=always_list,
         )
 
 
@@ -642,10 +886,9 @@ def _native_object(
             result["@" + name] = _native_json_scalar(value, lexical, (*path, "@" + name))
 
     groups: dict[str, list[Any]] = {}
-    for child in node.children:
+    for child, child_path in _child_paths(node, path, always_list):
         child_route, child_generic = _node_layout(route, child, plan)
         child_layout = _layout(child_route, child_generic)
-        child_path = (*path, child._name_)
         if child.children or _data_attributes(child):
             exported = _native_object(
                 document,
@@ -672,7 +915,11 @@ def _native_object(
         result[name] = values if always_list else (values[0] if len(values) == 1 else values)
 
     layout = _layout(route, generic)
-    if layout == "mixed":
+    if layout == "scalar":
+        result[_TEXT_KEY] = _native_leaf(
+            document, node, (*path, _TEXT_KEY), layout=layout, typed=typed, mode=mode
+        )
+    elif layout == "mixed":
         pieces: list[str] = []
         text = node.text_value()
         if text is not None:
@@ -874,7 +1121,7 @@ def export_badgerfish(document: RelaxNGDocument, *, fidelity: Fidelity) -> JsonV
     """Export a root-retained BadgerFish object with deterministic prefixes."""
     plan = document.schema.projection
     route = _root_route(document.root, plan, None)
-    names = _LexicalNames(_known_names(plan))
+    names = _namespace_names(document, route, plan, lexical=not _typed_available(document))
     root_name = names.lexical(document.root._name_)
     value = _badgerfish_node(
         document,
@@ -889,6 +1136,8 @@ def export_badgerfish(document: RelaxNGDocument, *, fidelity: Fidelity) -> JsonV
     if declarations:
         declaration_values: dict[str, JsonValue] = dict(declarations)
         if isinstance(value, dict):
+            declaration_values.update(cast(dict[str, JsonValue], value.get(_XMLNS_KEY, {})))
+            value = {key: item for key, item in value.items() if key != _XMLNS_KEY}
             value = {_XMLNS_KEY: declaration_values, **value}
         else:
             value = {_XMLNS_KEY: declaration_values, _TEXT_KEY: value}
@@ -896,6 +1145,29 @@ def export_badgerfish(document: RelaxNGDocument, *, fidelity: Fidelity) -> JsonV
 
 
 def _badgerfish_node(
+    document: RelaxNGDocument,
+    node: RelaxNGElement,
+    route: RouteContract | None,
+    plan: ProjectionPlan,
+    path: _Path,
+    *,
+    fidelity: Fidelity,
+    names: _LexicalNames,
+    generic: bool = False,
+) -> JsonValue:
+    scoped = names.at(node)
+    value = _badgerfish_value(
+        document, node, route, plan, path, fidelity=fidelity, names=scoped, generic=generic
+    )
+    if scoped._exact:
+        attrs: dict[str, JsonValue] = {_XMLNS_KEY: dict(scoped._exact)}
+        if isinstance(value, dict):
+            return {**attrs, **value}
+        return {**attrs, _TEXT_KEY: value}
+    return value
+
+
+def _badgerfish_value(
     document: RelaxNGDocument,
     node: RelaxNGElement,
     route: RouteContract | None,
@@ -1083,8 +1355,8 @@ def export_jsonml(document: RelaxNGDocument, *, fidelity: Fidelity) -> JsonValue
     del fidelity
     plan = document.schema.projection
     route = _root_or_none(document, require=False)
-    names = _LexicalNames(_known_names(plan))
     typed = _typed_available(document)
+    names = _namespace_names(document, route, plan, lexical=not typed)
     _reserve_jsonml_names(document.root, route, plan, names, typed=typed)
     declarations = names.declarations()
     result = _jsonml_node(
@@ -1120,6 +1392,7 @@ def _reserve_jsonml_names(
     generic: bool = False,
 ) -> None:
     """Reserve every lexical name before root declarations shift positions."""
+    names = names.at(node)
     names.lexical(node._name_)
     layout = _layout(route, generic)
     for name, _lexical in _data_attributes(node):
@@ -1160,9 +1433,14 @@ def _jsonml_node(
     root_declarations: bool = False,
     generic: bool = False,
 ) -> list[JsonValue]:
+    names = names.at(node)
     tag = names.lexical(node._name_)
     result: list[JsonValue] = [tag]
     attrs = _jsonml_attributes(document, node, route, path, names=names, typed=typed)
+    attrs = {
+        **{("xmlns" if p == "" else f"xmlns:{p}"): uri for p, uri in names._exact.items()},
+        **attrs,
+    }
     if attrs:
         result.append(attrs)
     shift = 1 if root_declarations and not attrs and not path else 0
