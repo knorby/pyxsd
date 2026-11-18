@@ -121,6 +121,13 @@ from pyxsd.xpath.functions import (
     function_arity,
     sequence_to_elementpath,
 )
+from pyxsd.xpath.regex_cache import install_regex_translation_cache
+
+# Memoise elementpath's regex translation at this import seam.  The call has to
+# follow the elementpath imports above: the installer sweeps the modules that
+# have already bound ``translate_pattern``, and patching its definition module
+# covers any elementpath module imported later.
+install_regex_translation_cache()
 
 __all__ = [
     "CompiledExpression",
