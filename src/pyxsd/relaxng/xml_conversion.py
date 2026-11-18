@@ -858,11 +858,15 @@ def _order_matches(
 
 
 def _native_order(
-    route: RouteContract | None, children: tuple[RelaxNGElement, ...], path: _Path
+    route: RouteContract | None,
+    children: tuple[RelaxNGElement, ...],
+    path: _Path,
+    *,
+    fidelity: Fidelity = "strict",
 ) -> None:
     if route is None:
         if children:
-            raise_conversion("order-ambiguous", json_pointer(path), "no compiled child order")
+            _loss("order-ambiguous", path, "no compiled child order", fidelity)
         return
     observed = tuple(child._name_ for child in children)
     counts = Counter(observed)
@@ -882,10 +886,11 @@ def _native_order(
             break
         seen[name] += 1
         previous = name
-    raise_conversion(
+    _loss(
         "order-ambiguous",
-        json_pointer(path),
+        path,
         "grouped properties do not determine one accepted compiled child order",
+        fidelity,
     )
 
 
@@ -1131,13 +1136,13 @@ def _check_native_strict(
     fidelity: Fidelity = "strict",
     always_list: bool = False,
 ) -> None:
-    """Reject native grouping losses before any representation is built."""
+    """Raise or warn on native grouping losses before representation is built."""
     layout = _layout(route, generic)
     children = node.children
     if children:
         text = node.text_value()
         tails = [child.tail_value() or "" for child in children]
-        if (layout == "mixed" and (text or any(tails)) and fidelity == "strict") or (
+        if (layout == "mixed" and (text or any(tails))) or (
             not typed and layout != "mixed" and any(tails)
         ):
             _loss(
@@ -1148,13 +1153,22 @@ def _check_native_strict(
                 fidelity,
             )
 
-    if fidelity == "strict":
-        _native_order(route, children, path)
-    if typed and fidelity == "strict":
-        _check_native_qnames(node.scalar_value(), _native_scalar_path(node, path), mode=mode)
+    _native_order(route, children, path, fidelity=fidelity)
+    if typed:
+        _check_native_qnames(
+            node.scalar_value(),
+            _native_scalar_path(node, path),
+            mode=mode,
+            fidelity=fidelity,
+        )
         for name, _lexical in _data_attributes(node):
-            _check_native_qnames(node.attribute_value(name), (*path, "@" + name), mode=mode)
-    elif not typed:
+            _check_native_qnames(
+                node.attribute_value(name),
+                (*path, "@" + name),
+                mode=mode,
+                fidelity=fidelity,
+            )
+    else:
         _native_lexical_context(node, route, plan, path, fidelity, audit)
 
     for child, child_path in _child_paths(node, path, always_list):
@@ -1174,7 +1188,13 @@ def _check_native_strict(
         )
 
 
-def _check_native_qnames(value: Any, path: _Path, *, mode: ExportMode) -> None:
+def _check_native_qnames(
+    value: Any,
+    path: _Path,
+    *,
+    mode: ExportMode,
+    fidelity: Fidelity = "strict",
+) -> None:
     if mode == "raw" or isinstance(value, (AlternativeValue, ListInterpretation)):
         return
     for qname in _iter_qname_values(value):
@@ -1183,10 +1203,11 @@ def _check_native_qnames(value: Any, path: _Path, *, mode: ExportMode) -> None:
         except ValueError:
             expanded = "{unresolved}"
         if expanded.startswith("{"):
-            raise_conversion(
+            _loss(
                 "namespace-lost",
-                json_pointer(path),
+                path,
                 f"native export cannot carry the namespace of xs:QName {str(qname)!r}",
+                fidelity,
             )
 
 
