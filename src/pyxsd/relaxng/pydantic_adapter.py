@@ -49,6 +49,9 @@ from pyxsd.relaxng.schema import RelaxNGSchema
 
 __all__ = ["RelaxNGModelSet"]
 
+#: Validator names start with an underscore, which ``_safe_name`` never emits.
+_CHILD_PRESENCE_VALIDATOR = "__pyxsd_relaxng_child_presence__"
+
 #: One JSON Schema description of a schema-static scalar contract.
 ContractMetadata = dict[str, Any]
 
@@ -152,15 +155,62 @@ def _child_content(model: ContentContract) -> ContentContract | None:
     return results[id(model)]
 
 
+def _content_cannot_match(model: ContentContract) -> bool:
+    """Whether the whole content model is impossible (``notAllowed``)."""
+    results: dict[int, bool] = {}
+    pending: list[tuple[ContentContract, bool]] = [(model, False)]
+    while pending:
+        node, ready = pending.pop()
+        if id(node) in results:
+            continue
+        if not ready:
+            pending.append((node, True))
+            for operand in node.operands:
+                if id(operand) not in results:
+                    pending.append((operand, False))
+            continue
+        if node.kind == "notAllowed":
+            value = True
+        elif node.kind in ("empty", "attribute", "child", "element", "scalar"):
+            value = False
+        elif node.kind in ("group", "interleave"):
+            value = any(results[id(operand)] for operand in node.operands)
+        elif node.kind in ("choice", "repeat"):
+            value = all(results[id(operand)] for operand in node.operands)
+        else:
+            value = False
+        results[id(node)] = value
+    return results[id(model)]
+
+
+def _flat_interleave(model: ContentContract) -> bool:
+    """Whether a content tree is only flat singular child structure.
+
+    Singular optional choices (``empty`` or one child) and nested interleaves
+    remain order-immaterial.  Groups and repeats introduce order or multiplicity
+    and therefore are not flat.
+    """
+    if model.kind in ("child", "empty"):
+        return True
+    if model.kind == "choice":
+        return all(_flat_interleave(operand) for operand in model.operands)
+    if model.kind != "interleave":
+        return False
+    return all(_flat_interleave(operand) for operand in model.operands)
+
+
 def _route_layout(route: RouteContract) -> str:
     """Describe the retained child layout without reading instance content.
 
-    ``record`` is an interleave of singular children, whose relative order is
-    immaterial.  ``interleaved`` is an interleave containing a repeatable
-    child, where canonical reconstruction still needs the compiled order.
+    ``record`` is an interleave whose operands are only flat singular child
+    elements, whose relative order is immaterial.  ``interleaved`` is an
+    interleave containing a repeatable child or nested ordered/choice
+    structure, where canonical reconstruction still needs the compiled order.
     ``ordered`` is a group/sequence.  Input through Pydantic is always
     unordered; this value only records what the retained route requires.
     """
+    if _content_cannot_match(route.content.model):
+        return "generic"
     if route.content.scalar_contracts:
         return "scalar"
     if route.generic_reason is not None or route.wildcards or route.content.mixed:
@@ -176,9 +226,9 @@ def _route_layout(route: RouteContract) -> str:
     if model.kind == "repeat":
         return "repeated"
     if model.kind == "interleave":
-        return (
-            "interleaved" if any(field.cardinality.repeatable for field in children) else "record"
-        )
+        if _flat_interleave(model) and not any(field.cardinality.repeatable for field in children):
+            return "record"
+        return "interleaved"
     return "ordered"
 
 
@@ -411,6 +461,11 @@ class RelaxNGModelSet:
                 f"{route.generic_reason}; Pydantic fields cannot represent this "
                 "content without losing required XML information"
             )
+        if _content_cannot_match(route.content.model):
+            raise IntegrationError(
+                f"RELAX NG route {_route_label(route)} cannot match any document: "
+                "its content is notAllowed"
+            )
         if route.content.mixed:
             raise IntegrationError(
                 f"RELAX NG route {_route_label(route)} has mixed content; Pydantic "
@@ -490,7 +545,7 @@ class RelaxNGModelSet:
         field_extras: dict[str, dict[str, Any]] = {}
         child_fields: list[tuple[str, str, bool]] = []
         fields: dict[str, Any] = {}
-        used: set[str] = {"xml_contract"}
+        used: set[str] = {"xml_contract", _CHILD_PRESENCE_VALIDATOR}
 
         def add(
             alias: str,
@@ -577,7 +632,7 @@ class RelaxNGModelSet:
             return value
 
         validators: dict[str, Any] = {
-            "relaxng_children": model_validator(mode="before")(validate_children)
+            _CHILD_PRESENCE_VALIDATOR: model_validator(mode="before")(validate_children)
         }
         model = create_model(
             self._names[route.route_id],

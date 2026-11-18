@@ -19,7 +19,9 @@ from pyxsd.relaxng.projection import ContentContract  # noqa: E402
 from pyxsd.relaxng.pydantic_adapter import (  # noqa: E402
     RelaxNGModelSet,
     _child_content,
+    _content_cannot_match,
     _content_may_be_empty,
+    _flat_interleave,
     _route_layout,
 )
 from pyxsd.relaxng.schema import RelaxNGSchema  # noqa: E402
@@ -157,6 +159,73 @@ def test_record_fields_defaults_cardinality_and_strict_input():
         Root.model_validate({"@version": "7", "single": "a", "maybe": None, "need": ["x"]})
 
 
+def test_child_names_cannot_shadow_the_presence_validator():
+    schema = compile_element(
+        '<element name="relaxng_children"><text/></element>'
+        '<element name="relaxng-children"><text/></element>'
+        '<element name="sibling"><text/></element>'
+        '<zeroOrMore><element name="many"><text/></element></zeroOrMore>'
+    )
+    Root = models(schema).model_for(element="doc")
+    assert "relaxng_children" in Root.model_fields
+    assert "relaxng_children_2" in Root.model_fields
+    assert Root.model_fields["relaxng_children"].alias == "relaxng_children"
+    assert Root.model_fields["relaxng_children_2"].alias == "relaxng-children"
+    assert "__pyxsd_relaxng_child_presence__" not in Root.model_fields
+
+    by_alias = Root.model_validate(
+        {
+            "relaxng_children": "plain",
+            "relaxng-children": "dashed",
+            "sibling": "s",
+            "many": ["m"],
+        }
+    )
+    assert by_alias.relaxng_children.root == "plain"
+    assert by_alias.relaxng_children_2.root == "dashed"
+    assert by_alias.many[0].root == "m"
+    by_name = Root.model_validate(
+        {
+            "relaxng_children": "plain",
+            "relaxng_children_2": "dashed",
+            "sibling": "s",
+        }
+    )
+    assert by_name.relaxng_children_2.root == "dashed"
+
+    invalid_values = (
+        {"relaxng_children": None, "relaxng-children": "dashed", "sibling": "s"},
+        {"relaxng_children": "plain", "relaxng-children": None, "sibling": "s"},
+        {"relaxng_children": "plain", "relaxng_children_2": None, "sibling": "s"},
+        {"relaxng_children": "plain", "relaxng-children": "dashed", "sibling": None},
+        {
+            "relaxng_children": "plain",
+            "relaxng-children": "dashed",
+            "sibling": "s",
+            "many": [None],
+        },
+    )
+    for data in invalid_values:
+        with pytest.raises(pydantic.ValidationError):
+            Root.model_validate(data)
+
+
+def test_namespaced_alias_and_field_name_are_both_checked_for_null():
+    schema = compile_element(
+        '<element name="item" ns="urn:x"><text/></element><element name="sibling"><text/></element>'
+    )
+    Root = models(schema).model_for(element="doc")
+    assert Root.model_fields["item"].alias == "{urn:x}item"
+    assert Root.model_validate({"{urn:x}item": "value", "sibling": "s"}).item.root == "value"
+    assert Root.model_validate({"item": "value", "sibling": "s"}).item.root == "value"
+    for data in (
+        {"{urn:x}item": None, "sibling": "s"},
+        {"item": None, "sibling": "s"},
+    ):
+        with pytest.raises(pydantic.ValidationError):
+            Root.model_validate(data)
+
+
 def test_scalar_presence_tracks_content_emptiness():
     optional = models(
         compile_element(
@@ -244,6 +313,18 @@ def test_scalar_presence_tracks_content_emptiness():
             '<element name="b"><text/></element></interleave>',
             "record",
         ),
+        (
+            '<interleave><optional><element name="a"><text/></element></optional>'
+            '<optional><element name="b"><text/></element></optional></interleave>',
+            "record",
+        ),
+        (
+            '<interleave><group><element name="a"><text/></element>'
+            '<element name="b"><text/></element></group>'
+            '<element name="c"><text/></element></interleave>',
+            "interleaved",
+        ),
+        ('<interleave><element name="a"><text/></element></interleave>', "ordered"),
         (
             '<choice><element name="a"><text/></element>'
             '<element name="b"><text/></element></choice>',
@@ -343,6 +424,27 @@ def test_layout_and_empty_helpers_cover_condition_arms():
     )
     assert _route_layout(root_route(mixed)) == "generic"
 
+    generic_loss = compile_element(
+        '<element name="bad"><choice>'
+        f'<data type="integer" datatypeLibrary="{XSD}"/>'
+        '<element name="nested"><empty/></element></choice></element>'
+        '<element name="good"><text/></element>'
+    )
+    bad = generic_loss.projection.routes[root_route(generic_loss).children["bad"].child_route_id]
+    assert bad.generic_reason is not None
+    assert _route_layout(bad) == "generic"
+
+    child_wildcard = compile_element(
+        "<zeroOrMore><element><anyName/><empty/></element></zeroOrMore>"
+    )
+    assert _route_layout(root_route(child_wildcard)) == "generic"
+
+    attribute_wildcard = compile_element(
+        "<zeroOrMore><attribute><anyName/></attribute></zeroOrMore>"
+        '<element name="visible"><text/></element>'
+    )
+    assert _route_layout(root_route(attribute_wildcard)) == "generic"
+
     repeated_group = compile_element(
         '<oneOrMore><element name="a"><text/></element>'
         '<element name="b"><text/></element></oneOrMore>'
@@ -350,7 +452,9 @@ def test_layout_and_empty_helpers_cover_condition_arms():
     assert _route_layout(root_route(repeated_group)) == "repeated"
 
     not_allowed = compile_element("<notAllowed/>")
+    assert _route_layout(root_route(not_allowed)) == "generic"
     assert _content_may_be_empty(root_route(not_allowed).content.model) is False
+    assert _content_cannot_match(root_route(not_allowed).content.model) is True
 
     empty = ContentContract("empty")
     child = ContentContract("child")
@@ -379,6 +483,46 @@ def test_layout_and_empty_helpers_cover_condition_arms():
     assert _child_content(ContentContract("attribute")) is None
     assert _child_content(ContentContract("group", (child,))).kind == "child"
     assert _child_content(ContentContract("group", (child, child))).kind == "group"
+
+    not_allowed_contract = ContentContract("notAllowed")
+    repeat_child = ContentContract("repeat", (child,))
+    group_child = ContentContract("group", (child, child))
+    assert _flat_interleave(child) is True
+    assert _flat_interleave(empty) is True
+    assert _flat_interleave(ContentContract("choice", (empty, child))) is True
+    assert _flat_interleave(ContentContract("choice", (group_child, child))) is False
+    assert _flat_interleave(group_child) is False
+    assert _flat_interleave(ContentContract("interleave", (child, repeat_child))) is False
+    assert (
+        _flat_interleave(
+            ContentContract("interleave", (child, ContentContract("interleave", (child, child))))
+        )
+        is True
+    )
+    for kind in ("empty", "attribute", "child", "element", "scalar"):
+        assert _content_cannot_match(ContentContract(kind)) is False
+    assert _content_cannot_match(not_allowed_contract) is True
+    assert _content_cannot_match(ContentContract("group", (empty, not_allowed_contract))) is True
+    assert (
+        _content_cannot_match(ContentContract("interleave", (empty, not_allowed_contract))) is True
+    )
+    assert _content_cannot_match(ContentContract("choice", (not_allowed_contract, empty))) is False
+    assert (
+        _content_cannot_match(
+            ContentContract("choice", (not_allowed_contract, not_allowed_contract))
+        )
+        is True
+    )
+    assert _content_cannot_match(ContentContract("repeat", (not_allowed_contract,))) is True
+    assert _content_cannot_match(ContentContract("repeat", (empty,))) is False
+    assert _content_cannot_match(ContentContract("unknown-kind")) is False
+
+
+def test_not_allowed_route_is_rejected_instead_of_building_an_empty_model():
+    schema = compile_element("<notAllowed/>")
+    with pytest.raises(IntegrationError, match="notAllowed") as error:
+        models(schema).model_for(element="doc")
+    assert root_route(schema).route_id in str(error.value)
 
 
 def test_empty_route_is_a_strict_model_with_no_fields():
@@ -537,6 +681,29 @@ def test_recursive_route_uses_finite_forward_references():
     assert len(schema.projection.routes) == 1
 
 
+def test_recursive_schema_metadata_is_deterministic_and_not_a_field():
+    schema = compile_grammar(
+        """
+        <start><ref name="node"/></start>
+        <define name="node"><element name="node">
+          <optional><attribute name="label"><text/></attribute></optional>
+          <zeroOrMore><ref name="node"/></zeroOrMore>
+        </element></define>
+        """
+    )
+    first = models(schema).model_for(element="node")
+    second = models(schema).model_for(element="node")
+    assert first is not second
+    assert first.__relaxng_route_id__ == second.__relaxng_route_id__
+    assert first.__relaxng_layout__ == second.__relaxng_layout__ == "repeated"
+    assert first.model_json_schema() == second.model_json_schema()
+    description = model_schema(first)
+    assert description["x-pyxsd-layout"] == "repeated"
+    assert description["x-pyxsd-route"] == root_route(schema).route_id
+    assert all(not name.startswith("__relaxng") for name in first.model_fields)
+    assert not any(key.startswith("__relaxng") for key in description.get("properties", {}))
+
+
 def test_multiple_paths_reuse_finite_recursive_classes():
     schema = compile_grammar(
         """
@@ -622,8 +789,9 @@ def test_wildcard_roles_report_lost_arbitrary_names():
     attribute_wildcard = compile_element(
         "<zeroOrMore><attribute><anyName/></attribute></zeroOrMore>"
     )
-    with pytest.raises(IntegrationError, match="attribute wildcard"):
+    with pytest.raises(IntegrationError, match="attribute wildcard") as error:
         models(attribute_wildcard).model_for(element="doc")
+    assert root_route(attribute_wildcard).route_id in str(error.value)
     # An attribute wildcard is not a child view when resolving a path step.
     with pytest.raises(IntegrationError, match="not admitted"):
         models(attribute_wildcard).model_for(element="doc", path=("anything",))
@@ -632,8 +800,9 @@ def test_wildcard_roles_report_lost_arbitrary_names():
         "<zeroOrMore><attribute><anyName/></attribute></zeroOrMore>"
         "<zeroOrMore><element><anyName/><empty/></element></zeroOrMore>"
     )
-    with pytest.raises(IntegrationError, match="attribute and child wildcard"):
+    with pytest.raises(IntegrationError, match="attribute and child wildcard") as error:
         models(both).model_for(element="doc")
+    assert root_route(both).route_id in str(error.value)
 
 
 def test_start_and_local_scope_metadata_never_claims_ancestor_validation():
