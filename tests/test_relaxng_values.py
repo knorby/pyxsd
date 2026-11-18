@@ -77,6 +77,8 @@ from pyxsd.relaxng.values import (
     Candidate,
     alternative_value_from_witnesses,
     candidate_for_witness,
+    list_interpretation,
+    list_value,
 )
 
 CX = DatatypeContext(None, {})
@@ -240,6 +242,35 @@ class ExplodingDecodeDatatype(Datatype):
         raise RuntimeError("decoder exploded")
 
 
+class NoneDecodingDatatype(Datatype):
+    """A named custom datatype whose declared decoder returns Python None."""
+
+    library_uri = "urn:custom"
+    type_name = "none"
+    parameters = ()
+    supports_decode = True
+
+    def __repr__(self):
+        return f"{type(self).__name__}()"
+
+    def allows(self, lexical, context):
+        return lexical == "ok"
+
+    def equal(self, left, left_context, right, right_context):
+        return left == right
+
+    def decode(self, lexical, context):
+        return None
+
+
+class NoneDecodingFactory(DatatypeFactory):
+    """A factory that returns the None-decoding custom datatype."""
+
+    def create(self, type_name, parameters, context):
+        del type_name, parameters, context
+        return NoneDecodingDatatype()
+
+
 class NamedCustomDatatype(NonDecodingDatatype):
     type_name = "named"
 
@@ -302,6 +333,9 @@ RECURSIVE_SCHEMA = (
 CUSTOM_SCHEMA = (
     f'<element xmlns="{RNG_NS}" name="r">'
     '<data type="opaque" datatypeLibrary="urn:custom"/></element>'
+)
+CUSTOM_NONE_SCHEMA = (
+    f'<element xmlns="{RNG_NS}" name="r"><data type="none" datatypeLibrary="urn:custom"/></element>'
 )
 
 
@@ -999,13 +1033,21 @@ class TestCandidateAndAlternativeConstruction:
             (("a", object(), 1, True), TypeError),
             (("a", atomic_contract(), 1, "yes"), TypeError),
             (("a", atomic_contract(), 1, False), ValueError),
-            (("a", atomic_contract(), None, True), ValueError),
             (("a", scalar_contract(Text()), "words", True), ValueError),
         ],
     )
     def test_invalid_candidates_are_rejected(self, args, error):
         with pytest.raises(error):
             Candidate(*args)
+
+    def test_a_decodable_candidate_may_decode_to_none(self):
+        item = Candidate("a", atomic_contract(), None, True)
+
+        assert item.decodable is True
+        assert item.decoded is None
+        assert item == Candidate("a", atomic_contract(), None, True)
+        assert item != candidate("a")
+        assert "decodable=True" in repr(item)
 
     def test_text_candidates_are_never_decodable(self):
         text = scalar_contract(Text())
@@ -1156,6 +1198,76 @@ class TestAtomicAlternatives:
             value.as_type(("urn:custom", "opaque"))
         with pytest.raises(UnsupportedDatatypeOperation):
             value.as_candidate(item.candidate_id)
+
+    def test_a_declared_decoder_returning_none_decodes_successfully(self):
+        root = tree("<r>ok</r>")
+        start = element("r", Data(NoneDecodingDatatype()))
+        graph = evidence(root, start)
+        (witness,) = graph.scalar_witnesses_at(site(graph, root))
+        value = alternative_value_from_witnesses(
+            (witness,), grammar_fingerprint="grammar", revision=3
+        )
+
+        (item,) = value.candidates
+        assert item.contract.library_uri == "urn:custom"
+        assert item.contract.type_name == "none"
+        assert item.decodable is True
+        assert item.decoded is None
+        assert value.as_python() is None
+        assert value.as_type(("urn:custom", "none")) is None
+        assert value.as_candidate(item.candidate_id) is None
+
+    def test_none_decoding_scalars_survive_typed_annotation_materialization(self):
+        schema = compile_schema(
+            CUSTOM_NONE_SCHEMA,
+            datatype_libraries={
+                "urn:custom": DatatypeLibraryRegistration(NoneDecodingFactory(), "custom-none/1")
+            },
+        )
+        document = schema.parse(io.StringIO("<r>ok</r>"), typed=True, capture="patterns")
+
+        assert document.is_valid
+        assert document.binding_evidence is not None
+        assert document.root.scalar_value() is None
+        (annotation,) = document.annotations.for_node(document.root).scalar
+        (item,) = annotation.value.candidates
+        assert annotation.value.as_python() is None
+        assert annotation.value.as_type(("urn:custom", "none")) is None
+        assert annotation.value.as_candidate(item.candidate_id) is None
+        assert item.decodable is True
+        assert item.decoded is None
+
+    def test_none_decoding_list_items_remain_a_plain_decoded_list(self):
+        pattern = List(OneOrMore(Data(NoneDecodingDatatype())))
+        contract = scalar_contract(pattern)
+        root = tree("<r>ok ok</r>")
+        graph = evidence(root, element("r", pattern))
+        witnesses = graph.scalar_witnesses_at(site(graph, root))
+        (witness,) = witnesses
+
+        interpretation = list_interpretation(
+            witness, graph, grammar_fingerprint="grammar", revision=1
+        )
+        assert interpretation.is_plain
+        assert [
+            (item.decodable, item.decoded)
+            for group in interpretation.token_candidates
+            for item in group
+        ] == [(True, None), (True, None)]
+        assert interpretation.as_python() == [None, None]
+        assert interpretation.as_types((("urn:custom", "none"), ("urn:custom", "none"))) == (
+            None,
+            None,
+        )
+
+        value = list_value(
+            witnesses,
+            graph,
+            schema_contracts=(contract,),
+            grammar_fingerprint="grammar",
+            revision=1,
+        )
+        assert value == [None, None]
 
     def test_decode_failures_other_than_capability_propagate(self):
         root = tree("<r>ok</r>")

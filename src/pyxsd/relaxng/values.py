@@ -70,10 +70,13 @@ __all__ = [
 class Candidate:
     """One surviving scalar contract, its optional decoded value, and its ID.
 
-    ``decoded`` is ``None`` exactly when ``decodable`` is false.  A missing
-    decoder never fabricates a string value or uses lexical equality.
-    Candidates order lexically by :attr:`candidate_id`; decoded values may be
-    unhashable, so candidates are not hashable either.
+    ``decodable`` is the discriminator.  A decodable candidate carries its
+    decoder's result in ``decoded``; that result may be any Python object,
+    including ``None``.  A nondecodable candidate has ``decoded is None`` and
+    never carries a fabricated value.  A missing decoder therefore never falls
+    back to a string value or lexical equality.  Candidates order lexically by
+    :attr:`candidate_id`; decoded values may be unhashable, so candidates are
+    not hashable either.
     """
 
     candidate_id: str
@@ -90,8 +93,6 @@ class Candidate:
             raise TypeError("candidate decodability must be a bool")
         if not self.decodable and self.decoded is not None:
             raise ValueError("a nondecodable candidate cannot carry a fabricated value")
-        if self.decodable and self.decoded is None:
-            raise ValueError("a decodable candidate must carry its decoded value")
         if self.contract.kind == "text" and self.decodable:
             raise ValueError("text is a lexical contract and cannot be decoded")
 
