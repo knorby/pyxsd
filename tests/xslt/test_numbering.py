@@ -660,6 +660,7 @@ def test_numbering_module_rejects_invalid_argument_types() -> None:
     from pyxsd.xdm.nodes import NodeKind, XdmDocument
     from pyxsd.xslt.runtime.numbering import (
         DecimalFormat,
+        NumberingCache,
         format_number,
         format_place_marker,
         place_marker,
@@ -672,6 +673,8 @@ def test_numbering_module_rejects_invalid_argument_types() -> None:
         place_marker("x", "single", lambda node: True, None)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         place_marker(paragraph, "invalid", lambda node: True, None)
+    with pytest.raises(ValueError):
+        NumberingCache().counter("key", "invalid", lambda node: True, None)
     with pytest.raises(ValueError):
         format_place_marker([1.5], "1")  # type: ignore[list-item]
     with pytest.raises(XsltDynamicError) as caught:
@@ -1076,3 +1079,249 @@ def test_exponent_picture_pads_mandatory_fractional_digits() -> None:
     assert values(lambda: transform(source, None, initial_template="main")) == [
         "9.99999999999999999999999999990e28"
     ]
+
+
+# ---------------------------------------------------------------------------
+# Counting once per parent and the per-instruction counting state
+
+
+def test_number_any_from_resets_at_the_nearest_preceding_match() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:for-each select="//p">
+            <xsl:number level="any" count="p" from="chapter|section"/>
+          </xsl:for-each>
+        </xsl:template>
+        """
+    )
+    input_source = b"""<doc><chapter>
+      <section><p/><p/></section>
+      <section><p/></section>
+    </chapter></doc>"""
+    # Both sections reset the count; only the nearest preceding match wins.
+    assert text(lambda: transform(source, input_source, initial_template="main")) == "121"
+
+
+def test_number_any_counts_ancestors_and_preceding_nodes() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:for-each select="//f"><xsl:number level="any" count="*"/></xsl:for-each>
+        </xsl:template>
+        """
+    )
+    input_source = b'<doc a="1"><a><b/></a><c><d><e><f n="2"/></e></d></c></doc>'
+    # The union includes ancestors and preceding subtrees; attributes and
+    # namespace nodes are never counted.
+    assert text(lambda: transform(source, input_source, initial_template="main")) == "7"
+
+
+def test_number_count_pattern_with_a_predicate_is_honoured() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:for-each select="//p">
+            <xsl:number level="single" count="section[@level='2']"/>
+            <xsl:text>/</xsl:text>
+            <xsl:number level="multiple" count="section[@level='2']"/>
+            <xsl:text>|</xsl:text>
+          </xsl:for-each>
+        </xsl:template>
+        """
+    )
+    input_source = b"""<doc>
+      <section level="1"/>
+      <section level="2"><p/></section>
+      <section level="2"><p/></section>
+    </doc>"""
+    # The per-parent array is built from predicate results, not from a
+    # name/kind shortcut that would count the level="1" section.
+    assert text(lambda: transform(source, input_source, initial_template="main")) == "1/1|2/2|"
+
+
+def test_number_any_across_markers_out_of_document_order() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:for-each select="//p">
+            <xsl:number level="any" count="p" from="chapter"/><xsl:text>,</xsl:text>
+          </xsl:for-each>
+          <xsl:text>|</xsl:text>
+          <xsl:for-each select="//p">
+            <xsl:sort select="@n" data-type="number" order="descending"/>
+            <xsl:number level="any" count="p" from="chapter"/><xsl:text>,</xsl:text>
+          </xsl:for-each>
+        </xsl:template>
+        """
+    )
+    input_source = b"""<doc>
+      <chapter><p n="1"/><p n="2"/><p n="3"/></chapter>
+      <chapter><p n="4"/><p n="5"/></chapter>
+    </doc>"""
+    # The reverse visit must read the same markers from the recorded state.
+    assert (
+        text(lambda: transform(source, input_source, initial_template="main"))
+        == "1,2,3,1,2,|2,1,3,2,1,"
+    )
+
+
+def test_number_single_attribute_selected_node_counts_no_preceding_siblings() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main" match="/">
+          <xsl:number select="(//@n)[1]" count="*|@*"/>
+        </xsl:template>
+        """
+    )
+    input_source = b'<doc n="0"><item n="1"/><item n="2"/></doc>'
+    # XSLT 3.0 section 12.3: an attribute node has no preceding siblings.  The
+    # pre-change sibling scan returned 3 because the attribute is not one of
+    # its parent's children, so the loop never stopped.
+    assert text(lambda: transform(source, input_source)) == "1"
+
+
+def test_number_counts_once_per_parent_for_a_wide_sibling_list() -> None:
+    notes = "".join(f'<note id="{index}"/>' for index in range(1, 61))
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:for-each select="//note">
+            <xsl:number level="any" count="note" from="chapter"/><xsl:text> </xsl:text>
+          </xsl:for-each>
+          <xsl:text>|</xsl:text>
+          <xsl:for-each select="//note">
+            <xsl:number level="single" count="note"/><xsl:text> </xsl:text>
+          </xsl:for-each>
+        </xsl:template>
+        """
+    )
+    input_source = f"<doc><chapter>{notes}</chapter></doc>".encode()
+    expected = " ".join(str(index) for index in range(1, 61))
+    assert (
+        text(lambda: transform(source, input_source, initial_template="main"))
+        == f"{expected} |{expected} "
+    )
+
+
+def test_number_implied_count_follows_each_selected_nodes_name() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:for-each select="//*">
+            <xsl:number level="single"/><xsl:text>|</xsl:text>
+          </xsl:for-each>
+        </xsl:template>
+        """
+    )
+    input_source = b"<doc><a/><b/><a/><b/></doc>"
+    # The implied count is the selected node's own kind and name, so markers
+    # for two names may not share one per-parent array.
+    assert text(lambda: transform(source, input_source, initial_template="main")) == "1|1|1|2|2|"
+
+
+def test_number_cache_does_not_leak_between_transformations() -> None:
+    source = stylesheet(
+        """
+        <xsl:template match="/">
+          <out><xsl:apply-templates select="//p"/></out>
+        </xsl:template>
+        <xsl:template match="p">
+          <xsl:number level="any" count="p" from="chapter"/><xsl:text>,</xsl:text>
+        </xsl:template>
+        """
+    )
+    first_input = b"<doc><chapter><p/><p/></chapter></doc>"
+    other_input = b"<doc><chapter><p/><p/><p/></chapter><chapter><p/></chapter></doc>"
+    stylesheet_ = compiled(source)
+    first = stylesheet_.transform(source=first_input).principal_tree.string_value
+    other = stylesheet_.transform(source=other_input).principal_tree.string_value
+    again = stylesheet_.transform(source=first_input).principal_tree.string_value
+    assert first == "1,2,"
+    assert other == "1,2,3,1,"
+    assert again == first
+
+
+def test_number_count_pattern_with_a_variable_is_not_cached() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main" match="/">
+          <xsl:for-each select="//item">
+            <xsl:variable name="wanted" select="if (position() le 2) then 'a' else 'b'"/>
+            <xsl:number level="single" count="*[@role = $wanted]"/><xsl:text>|</xsl:text>
+          </xsl:for-each>
+          <xsl:for-each select="//item">
+            <xsl:variable name="wanted" select="if (position() le 2) then 'a' else 'b'"/>
+            <xsl:number level="any" count="item" from="*[@role = $wanted]"/><xsl:text>|</xsl:text>
+          </xsl:for-each>
+        </xsl:template>
+        """
+    )
+    input_source = b'<doc><item role="a"/><item role="a"/><item role="b"/><item role="b"/></doc>'
+    # A variable-bearing count or from pattern keeps the per-marker path: the
+    # first marker's locals must never answer a later marker.
+    assert (
+        text(lambda: transform(source, input_source, initial_template="main")) == "1|2|1|2|1|1|1|1|"
+    )
+
+
+def test_numbering_counter_shares_state_within_one_transformation() -> None:
+    from pyxsd.xdm.nodes import NodeKind, XdmDocument
+    from pyxsd.xslt.runtime.numbering import NumberingCache, place_marker
+
+    document = XdmDocument.parse(b'<doc><chapter n="1"><a/><a/></chapter></doc>')
+    chapter = document.root_element.children[0]
+    first, _ = chapter.children
+    cache = NumberingCache()
+    counter = cache.counter("any", "any", lambda node: node.kind is NodeKind.ELEMENT, None)
+    assert cache.counter("any", "any", lambda node: False, None) is counter
+    assert counter.place_marker(first) == (3,)
+    # A marker that arrives earlier in document order reads the recorded state.
+    assert counter.place_marker(chapter) == (2,)
+    attribute = chapter.attributes[0]
+    assert place_marker(
+        attribute,
+        "any",
+        lambda node: node.kind is NodeKind.ELEMENT,
+        None,
+        counter=counter,
+    ) == (2,)
+    namespace = chapter.namespace_nodes[0]
+    assert place_marker(
+        namespace,
+        "any",
+        lambda node: node.kind is NodeKind.ELEMENT,
+        None,
+        counter=counter,
+    ) == (2,)
+    attribute_count = cache.counter(
+        "attribute-count",
+        "any",
+        lambda node: node.kind is NodeKind.ATTRIBUTE,
+        None,
+    )
+    assert place_marker(
+        attribute,
+        "any",
+        lambda node: node.kind is NodeKind.ATTRIBUTE,
+        None,
+        counter=attribute_count,
+    ) == (1,)
+    attribute_from = cache.counter(
+        "attribute-from",
+        "any",
+        lambda node: node.kind is NodeKind.ELEMENT,
+        lambda node: node is attribute,
+    )
+    assert (
+        place_marker(
+            attribute,
+            "any",
+            lambda node: node.kind is NodeKind.ELEMENT,
+            lambda node: node is attribute,
+            counter=attribute_from,
+        )
+        == ()
+    )
+    single = cache.counter("single", "single", lambda node: node.kind is NodeKind.DOCUMENT, None)
+    assert single.place_marker(document) == (1,)

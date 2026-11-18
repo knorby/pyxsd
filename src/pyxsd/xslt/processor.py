@@ -272,6 +272,8 @@ from pyxsd.xslt.runtime.iteration import (
 )
 from pyxsd.xslt.runtime.numbering import (
     DecimalFormat,
+    NumberingCache,
+    NumberingCounter,
     decimal_format_attributes,
     effective_decimal_formats,
     validate_decimal_formats,
@@ -5779,6 +5781,8 @@ class _Invocation(Transformation):
         super().__init__(stylesheet, options, limits=limits, shared=shared)
         self._mode_dispatchers: dict[tuple[str | None, str | None], RuleDispatcher] = {}
         self._pattern_environments: dict[int, ExpressionEnvironment] = {}
+        self._numbering: NumberingCache | None = None
+        self._numbering_counters: dict[object, tuple[_NumberPlan, NumberingCounter | None]] = {}
         self.dynamic_expressions = DynamicExpressionCache()
         self._active_iteration_frame: Frame | None = None
         self.current_merge_group: Mapping[str, XdmSequence] | None = None
@@ -6553,6 +6557,43 @@ class _Invocation(Transformation):
             )
             self._pattern_environments[key] = environment
         return environment
+
+    def numbering_counter(
+        self,
+        plan: _NumberPlan,
+        node: XdmNode,
+        matches_count: Callable[[XdmNode], bool],
+        matches_from: Callable[[XdmNode], bool] | None,
+    ) -> NumberingCounter | None:
+        """The instruction's counting state, or ``None`` when it may not be reused.
+
+        Reusing a count across markers is only sound while ``count`` and
+        ``from`` depend on the tested node alone.  An implied ``count``
+        depends on the selected node's kind and name as well, so that
+        signature joins the key; a pattern that references a variable is
+        never reused, because the invocation's ``locals`` can differ between
+        two executions of the same instruction.
+        """
+        key: object = (id(plan),)
+        if plan.count is None:
+            key = (id(plan), node.kind, node.name)
+        entry = self._numbering_counters.get(key)
+        if entry is not None:
+            return entry[1]
+        counter: NumberingCounter | None = None
+        if (plan.count is None or not _pattern_variable_names(plan.count)) and (
+            plan.from_pattern is None or not _pattern_variable_names(plan.from_pattern)
+        ):
+            if self._numbering is None:
+                self._numbering = NumberingCache()
+            counter = self._numbering.counter(
+                key,
+                plan.level,
+                matches_count,
+                matches_from,
+            )
+        self._numbering_counters[key] = (plan, counter)
+        return counter
 
     def _step_xpath(self, frame: Frame) -> FrameResult:
         state = cast(_XPathState, frame.program)

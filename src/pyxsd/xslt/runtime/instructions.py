@@ -1625,7 +1625,8 @@ def execute_number(
             if plan.from_pattern is not None
             else None
         )
-        numbers = place_marker(node, plan.level, count_match, from_match)
+        counter = invocation.numbering_counter(plan, node, count_match, from_match)
+        numbers = place_marker(node, plan.level, count_match, from_match, counter=counter)
     start_at = (
         invocation._value_source(plan.start_at, context) if plan.start_at is not None else None
     )

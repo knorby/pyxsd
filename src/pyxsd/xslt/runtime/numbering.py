@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 import unicodedata
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from typing import Any, NoReturn
@@ -25,6 +25,8 @@ from pyxsd.xslt.errors import XsltDynamicError, XsltStaticError
 __all__ = [
     "DEFAULT_DECIMAL_FORMAT",
     "DecimalFormat",
+    "NumberingCache",
+    "NumberingCounter",
     "decimal_format_attributes",
     "effective_decimal_formats",
     "format_number",
@@ -269,12 +271,34 @@ def place_marker(
     level: str,
     matches_count: Callable[[XdmNode], bool],
     matches_from: Callable[[XdmNode], bool] | None,
+    *,
+    counter: NumberingCounter | None = None,
 ) -> tuple[int, ...]:
-    """Compute the normative place marker for *node* at *level*."""
+    """Compute the normative place marker for *node* at *level*.
+
+    Without *counter* every primitive is recomputed (the reference
+    implementation).  With *counter*, sibling counts and ``level="any"`` walks
+    are built once per instruction and reused by every later marker of the
+    same instruction in the same transformation.
+    """
     if not isinstance(node, XdmNode):
         raise TypeError("xsl:number requires a node")
     if level not in ("single", "multiple", "any"):
         raise ValueError(f"unknown numbering level {level!r}")
+    return _place_marker(node, level, matches_count, matches_from, counter)
+
+
+def _place_marker(
+    node: XdmNode,
+    level: str,
+    matches_count: Callable[[XdmNode], bool],
+    matches_from: Callable[[XdmNode], bool] | None,
+    counter: NumberingCounter | None,
+) -> tuple[int, ...]:
+    """The one implementation of XSLT 3.0 section 12.3, cached or not."""
+    if counter is not None:
+        matches_count = counter._count
+        matches_from = counter._from
     root = node.root
     from_match = matches_from or (lambda candidate: candidate is root)
     ancestors_or_self = (node, *node.ancestors)
@@ -291,7 +315,7 @@ def place_marker(
             return ()
         if from_node not in (counted, *counted.ancestors):
             return ()
-        return (1 + _preceding_siblings(counted, matches_count),)
+        return (1 + _preceding_count(counted, matches_count, counter),)
     if level == "multiple":
         counted_nodes = [candidate for candidate in ancestors_or_self if matches_count(candidate)]
         from_node = next(
@@ -306,7 +330,11 @@ def place_marker(
             if from_node in (candidate, *candidate.ancestors)
         ]
         selected.reverse()
-        return tuple(1 + _preceding_siblings(candidate, matches_count) for candidate in selected)
+        return tuple(
+            1 + _preceding_count(candidate, matches_count, counter) for candidate in selected
+        )
+    if counter is not None:
+        return counter.count_any(node)
     candidates = _document_order_candidates(node)
     counted_nodes = [candidate for candidate in candidates if matches_count(candidate)]
     from_node = next(
@@ -323,6 +351,17 @@ def place_marker(
     return (len(selected),) if selected else ()
 
 
+def _preceding_count(
+    node: XdmNode,
+    matches_count: Callable[[XdmNode], bool],
+    counter: NumberingCounter | None,
+) -> int:
+    """Count matching preceding siblings, through *counter* when it has one."""
+    if counter is None:
+        return _preceding_siblings(node, matches_count)
+    return counter.preceding_siblings(node)
+
+
 def _preceding_siblings(node: XdmNode, matches_count: Callable[[XdmNode], bool]) -> int:
     parent = node.parent
     if parent is None:
@@ -334,6 +373,202 @@ def _preceding_siblings(node: XdmNode, matches_count: Callable[[XdmNode], bool])
         if matches_count(sibling):
             count += 1
     return count
+
+
+class NumberingCache:
+    """One transformation's ``xsl:number`` counting state.
+
+    Owned by the invocation and dropped with it.  Nothing stored here outlives
+    the transformation, so no source document, temporary tree, or compiled
+    pattern is retained between cases.
+    """
+
+    __slots__ = ("_counters",)
+
+    def __init__(self) -> None:
+        # ``_NumberPlan`` is an unhashable frozen dataclass (its ``Instruction``
+        # holds a mapping proxy), so the key the caller supplies must be a
+        # hashable value that names one instruction.  The caller keeps the
+        # plan alive for the transformation's lifetime; this mapping keeps the
+        # counter itself.
+        self._counters: dict[object, NumberingCounter] = {}
+
+    def counter(
+        self,
+        key: object,
+        level: str,
+        matches_count: Callable[[XdmNode], bool],
+        matches_from: Callable[[XdmNode], bool] | None,
+    ) -> NumberingCounter:
+        """Return the counter for *key*, building it on first use.
+
+        *key* must name the same ``xsl:number`` instruction with a
+        node-deterministic ``count``/``from`` pair; the first caller's
+        predicates are the ones the counter keeps.
+        """
+        counter = self._counters.get(key)
+        if counter is None:
+            counter = NumberingCounter(level, matches_count, matches_from)
+            self._counters[key] = counter
+        return counter
+
+
+class NumberingCounter:
+    """The counting state of one ``xsl:number`` instruction in one transformation."""
+
+    __slots__ = ("_any", "_count", "_from", "_level", "_siblings")
+
+    def __init__(
+        self,
+        level: str,
+        matches_count: Callable[[XdmNode], bool],
+        matches_from: Callable[[XdmNode], bool] | None,
+    ) -> None:
+        if level not in ("single", "multiple", "any"):
+            raise ValueError(f"unknown numbering level {level!r}")
+        self._level = level
+        self._count = matches_count
+        self._from = matches_from
+        self._siblings: dict[int, tuple[XdmNode, _SiblingCounts]] = {}
+        self._any: dict[int, tuple[XdmNode, _AnyCounts]] = {}
+
+    def place_marker(self, node: XdmNode) -> tuple[int, ...]:
+        """The normative place marker for *node* (XSLT 3.0 section 12.3)."""
+        return place_marker(node, self._level, self._count, self._from, counter=self)
+
+    def preceding_siblings(self, node: XdmNode) -> int:
+        """Count *node*'s matching preceding siblings once per parent."""
+        parent = node.parent
+        if parent is None:
+            return 0
+        entry = self._siblings.get(id(parent))
+        if entry is None:
+            entry = (parent, _SiblingCounts.build(parent.children, self._count))
+            self._siblings[id(parent)] = entry
+        return entry[1].preceding(node)
+
+    def count_any(self, node: XdmNode) -> tuple[int, ...]:
+        """The ``level="any"`` marker, walking each root once per instruction."""
+        root = node.root
+        entry = self._any.get(id(root))
+        if entry is None:
+            entry = (root, _AnyCounts(root, self._count, self._from))
+            self._any[id(root)] = entry
+        return entry[1].count_at(node)
+
+
+@dataclass(slots=True)
+class _SiblingCounts:
+    """Per-parent sibling counts for one ``count`` predicate.
+
+    ``cumulative[i]`` is the number of matching children among
+    ``children[:i]``.  A node that is not one of *children* — an attribute or
+    namespace node — has no preceding siblings (XSLT 3.0 section 12.3), which
+    the absent position reports as zero.
+    """
+
+    children: tuple[XdmNode, ...]
+    positions: dict[int, int]
+    cumulative: list[int]
+
+    @classmethod
+    def build(
+        cls,
+        children: tuple[XdmNode, ...],
+        matches_count: Callable[[XdmNode], bool],
+    ) -> _SiblingCounts:
+        positions: dict[int, int] = {}
+        cumulative: list[int] = []
+        matches = 0
+        for index, child in enumerate(children):
+            positions[child.node_id] = index
+            cumulative.append(matches)
+            if matches_count(child):
+                matches += 1
+        return cls(children, positions, cumulative)
+
+    def preceding(self, node: XdmNode) -> int:
+        """The number of *node*'s preceding siblings that match ``count``."""
+        position = self.positions.get(node.node_id)
+        if position is None:
+            return 0
+        return self.cumulative[position]
+
+
+class _AnyCounts:
+    """``level="any"`` counts for one root, walked once per instruction.
+
+    XSLT 3.0 section 12.3: ``$A`` holds every node, other than attributes and
+    namespaces, at or before the selected node that matches ``count``; ``$F``
+    is the last such node that matches ``from``; and the marker counts ``$A``
+    from ``$F`` onwards.  In a forward document-order walk the last ``from``
+    match seen is therefore the reset point and the running count since it is
+    the marker.
+    """
+
+    __slots__ = ("_count", "_from", "pending", "root", "running", "seen_from", "state", "walk")
+
+    def __init__(
+        self,
+        root: XdmNode,
+        matches_count: Callable[[XdmNode], bool],
+        matches_from: Callable[[XdmNode], bool] | None,
+    ) -> None:
+        # Every tree this engine can number is frozen and finalised before it
+        # is visible (`XdmDocument.parse`, `Builder.finalize`,
+        # `Builder.whitespace.strip`), so a walk's document order cannot
+        # change under a counter.
+        self.root = root
+        self.walk: Iterator[XdmNode] = iter(_tree_nodes(root))
+        self.pending: XdmNode | None = next(self.walk, None)
+        self.seen_from = False
+        self.running = 0
+        # ``node_id -> (seen_from, running)`` for every tree node passed.
+        self.state: dict[int, tuple[bool, int]] = {}
+        self._count = matches_count
+        self._from = matches_from or (lambda candidate: candidate is root)
+
+    def count_at(self, node: XdmNode) -> tuple[int, ...]:
+        """The marker for *node*, advancing the walk only forwards."""
+        if node.kind is NodeKind.ATTRIBUTE or node.kind is NodeKind.NAMESPACE:
+            self._advance(node)
+            parent = node.parent
+            assert parent is not None
+            seen_from, running = self.state[parent.node_id]
+            if self._from(node):
+                seen_from, running = True, 0
+            if self._count(node):
+                running += 1
+            return _any_marker((seen_from, running))
+        cached = self.state.get(node.node_id)
+        if cached is not None:
+            return _any_marker(cached)
+        self._advance(node)
+        assert self.pending is node
+        self._visit()
+        return _any_marker(self.state[node.node_id])
+
+    def _advance(self, node: XdmNode) -> None:
+        """Consume every tree node that precedes *node* in document order."""
+        while self.pending is not None and self.pending.document_order < node.document_order:
+            self._visit()
+
+    def _visit(self) -> None:
+        node = self.pending
+        assert node is not None
+        self.pending = next(self.walk, None)
+        if self._from(node):
+            self.seen_from = True
+            self.running = 0
+        if self._count(node):
+            self.running += 1
+        self.state[node.node_id] = (self.seen_from, self.running)
+
+
+def _any_marker(state: tuple[bool, int]) -> tuple[int, ...]:
+    """The ``level="any"`` marker for one walk state (section 12.3 rules 5-7)."""
+    seen_from, running = state
+    return (running,) if seen_from and running else ()
 
 
 def _document_order_candidates(node: XdmNode) -> list[XdmNode]:
