@@ -1499,18 +1499,25 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                     ambiguous_minimum = True
                 continue
             locals_ = {_split_expanded(name)[1] for name in admitted}
+            colliding = locals_ & declared_locals
             disjoint = locals_ - declared_locals
-            if disjoint:
+            if colliding:
+                if disjoint or len(locals_) > 1:
+                    # The wildcard may merge into a declared local or appear
+                    # under a disjoint one; neither key is individually
+                    # required without rejecting a valid mixed export.
+                    ambiguous_minimum = True
+                else:
+                    only = next(iter(locals_))
+                    exclusive_minimums[only] = (
+                        exclusive_minimums.get(only, 0) + wildcard.cardinality.minimum
+                    )
+            elif disjoint:
                 wildcard_patterns.append(
                     "^(?:" + "|".join(re.escape(local) for local in sorted(disjoint)) + ")$"
                 )
                 if wildcard.cardinality.minimum > 1:
                     ambiguous_minimum = True
-            elif len(locals_) == 1:
-                only = next(iter(locals_))
-                exclusive_minimums[only] = (
-                    exclusive_minimums.get(only, 0) + wildcard.cardinality.minimum
-                )
             else:
                 ambiguous_minimum = True
         if ambiguous_minimum:
