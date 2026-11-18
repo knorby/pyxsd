@@ -9,9 +9,11 @@ than being pretended away.
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import replace
@@ -508,6 +510,8 @@ def test_tagged_alternative_validates_and_does_not_freeze_identity() -> None:
     body = tag_definition["properties"]["#value"]
     assert body["properties"]["grammar"] == {"type": "string", "minLength": 1}
     assert "enum" not in body["properties"]["candidates"]
+    assert "relaxng-scalar-tag-grammar-identity" in unvalidated(schema)
+    assert "relaxng-scalar-tag-order" in unvalidated(schema)
 
 
 def _tag(schema: RelaxNGSchema, xml: str = "<r>12</r>") -> dict[str, Any]:
@@ -627,13 +631,21 @@ def test_custom_decodable_scalar_uses_a_disclosed_sound_union() -> None:
         named=True,
     )
 
-    union = root_body(generated(schema, "r"))["type"]
-    assert set(union) == {"array", "boolean", "number", "string"}
+    result = generated(schema, "r")
+    assert root_body(result)["$ref"] == "#/$defs/opaque-scalar"
+    union = result["$defs"]["opaque-scalar"]["anyOf"]
+    assert {branch.get("type") for branch in union} == {
+        "array",
+        "boolean",
+        "number",
+        "string",
+    }
     assert "relaxng-custom-scalar" in unvalidated(schema)
     assert_valid(schema, exported(schema, "<r>x</r>"))
-    for value in ("x", 1, 1.5, True, []):
+    for value in ("x", 1, 1.5, True, [], [1, "x", [True]]):
         assert_valid(schema, {"r": value})
-    assert errors(schema, {"r": {"not": "a scalar"}})
+    for value in ({"not": "a scalar"}, [None], [{}], [1, [None]]):
+        assert errors(schema, {"r": value})
 
 
 def test_list_scalars_are_arrays_not_repeated_children() -> None:
@@ -654,6 +666,29 @@ def test_list_scalars_are_arrays_not_repeated_children() -> None:
     assert errors(homogeneous, {"r": [[1]]})
     assert errors(fixed, {"r": [1]})
     assert errors(empty, {"r": [1]})
+
+
+def test_homogeneous_list_token_minimums() -> None:
+    optional = schema_for('<list><zeroOrMore><data type="integer"/></zeroOrMore></list>')
+    required = schema_for('<list><oneOrMore><data type="integer"/></oneOrMore></list>')
+
+    assert exported(optional, "<r/>") == {"r": []}
+    assert_valid(optional, {"r": []})
+    assert_valid(required, {"r": [1]})
+    assert errors(required, {"r": []})
+    assert root_body(generated(required, "r"))["minItems"] == 1
+    assert "minItems" not in root_body(generated(optional, "r"))
+
+
+def test_xsd_list_valued_atomics_require_a_token() -> None:
+    for type_name in ("IDREFS", "ENTITIES", "NMTOKENS"):
+        schema = schema_for(f'<data type="{type_name}"/>')
+        body = root_body(generated(schema, "r"))
+        assert body["type"] == "array"
+        assert body["minItems"] == 1
+        assert errors(schema, {"r": []})
+        assert_valid(schema, {"r": ["a"]})
+    assert exported(schema_for('<data type="IDREFS"/>'), "<r>a b</r>") == {"r": ["a", "b"]}
 
 
 def test_nonplain_list_uses_the_whole_list_tag() -> None:
@@ -690,7 +725,7 @@ def test_custom_list_token_uses_the_sound_union() -> None:
     result = generated(schema, "r")
     body = root_body(result)
     assert body["type"] == "array"
-    assert body["items"]["type"] == ["array", "boolean", "number", "string"]
+    assert body["items"] == {"$ref": "#/$defs/opaque-scalar"}
     assert "relaxng-custom-scalar" in unvalidated(schema)
 
 
@@ -1016,7 +1051,7 @@ def test_duplicate_child_wildcards_do_not_repeat_a_branch() -> None:
     )
     route_id = schema.projection.roots[0]
     route = schema.projection.routes[route_id]
-    wildcard = replace(route.wildcards[0], child_route_id=None)
+    wildcard = route.wildcards[0]
     plan = plan_with(schema, wildcards=(wildcard, wildcard))
 
     result = schema_from_plan(plan, "r")
@@ -1026,7 +1061,142 @@ def test_duplicate_child_wildcards_do_not_repeat_a_branch() -> None:
         if item.get("x-pyxsd-wildcard") and "propertyNames" in item
     )
 
-    assert child_map["additionalProperties"] == {"$ref": "#/$defs/generic-route"}
+    reference = child_map["additionalProperties"]
+    assert re.fullmatch(r"#/\$defs/route-\d+-generic", reference["$ref"])
+    assert reference["$ref"].rsplit("/", 1)[-1] in result["$defs"]
+
+
+ATTR_PAIR = (
+    '<attribute name="q"><data type="integer"/></attribute>'
+    "<zeroOrMore><attribute><anyName><except><name>q</name></except></anyName>"
+    "<text/></attribute></zeroOrMore>"
+)
+
+
+@pytest.mark.parametrize(
+    ("content", "xml"),
+    [
+        ("<empty/>", '<r q="3" extra="x"/>'),
+        ('<data type="integer"/>', '<r q="3" extra="x">4</r>'),
+        (f"<zeroOrMore>{A}</zeroOrMore>", '<r q="3" extra="x"><a>A</a></r>'),
+        (f"<interleave>{A}{B}</interleave>", '<r q="3" extra="x"><a>A</a><b>B</b></r>'),
+        (f"{A}{B}", '<r q="3" extra="x"><a>A</a><b>B</b></r>'),
+        (f"<mixed><zeroOrMore>{A}</zeroOrMore></mixed>", '<r q="3" extra="x">t<a>A</a></r>'),
+    ],
+    ids=["empty", "scalar", "repeated", "record", "sequence", "mixed"],
+)
+def test_attribute_wildcard_does_not_constrain_declared_typed_attributes(
+    content: str, xml: str
+) -> None:
+    schema = schema_for(ATTR_PAIR + content)
+
+    data = exported(schema, xml)
+    assert_valid(schema, data)
+    assert "@extra" in json.dumps(data)
+    assert "@q" in json.dumps(data)
+    bad = copy.deepcopy(data["r"])
+    if isinstance(bad, list):
+        attribute_map = next(item for item in bad if any(k.startswith("@") for k in item))
+        attribute_map["@xmlns"] = "urn:x"
+    else:
+        bad["@xmlns"] = "urn:x"
+    assert errors(schema, {"r": bad})
+    xmlns_name = (
+        next(key for key in json.dumps(data).split('"') if key.startswith("@Q{http"))
+        if False
+        else "@Q{http://www.w3.org/2000/xmlns/}p"
+    )
+    bad = copy.deepcopy(data["r"])
+    if isinstance(bad, list):
+        attribute_map = next(item for item in bad if any(k.startswith("@") for k in item))
+        attribute_map[xmlns_name] = "urn:x"
+    else:
+        bad[xmlns_name] = "urn:x"
+    assert errors(schema, {"r": bad})
+    assert "relaxng-attribute-name-class" in unvalidated(schema)
+
+
+def test_opaque_scalar_definition_is_shared_across_positions() -> None:
+    schema = custom_schema(
+        '<attribute name="a"><data type="value" datatypeLibrary="urn:custom"/></attribute>'
+        '<attribute name="b"><data type="value" datatypeLibrary="urn:custom"/></attribute>'
+        "<empty/>",
+        "urn:custom",
+        value="x",
+        named=True,
+    )
+
+    result = generated(schema, "r")
+    body = root_body(result)
+    assert body["properties"]["@a"]["$ref"] == "#/$defs/opaque-scalar"
+    assert body["properties"]["@b"]["$ref"] == "#/$defs/opaque-scalar"
+    assert list(result["$defs"]).count("opaque-scalar") == 1
+    data = exported(schema, '<r a="x" b="y"/>')
+    assert data == {"r": {"@a": "x", "@b": "x"}}
+    assert_valid(schema, data)
+
+
+@pytest.mark.parametrize(
+    ("attribute_content", "xml", "expected"),
+    [
+        ('<data type="boolean"/>', '<r q="true" extra="x"/>', True),
+        (
+            '<list><oneOrMore><data type="integer"/></oneOrMore></list>',
+            '<r q="1 2" extra="x"/>',
+            [1, 2],
+        ),
+        (
+            '<choice><data type="integer"/><data type="string"/></choice>',
+            '<r q="12" extra="x"/>',
+            "tag",
+        ),
+    ],
+    ids=["boolean", "list", "tag"],
+)
+def test_attribute_wildcard_keeps_declared_boolean_list_and_tag_values(
+    attribute_content: str, xml: str, expected: object
+) -> None:
+    schema = schema_for(
+        f'<attribute name="q">{attribute_content}</attribute>'
+        "<zeroOrMore><attribute><anyName><except><name>q</name></except></anyName>"
+        "<text/></attribute></zeroOrMore><empty/>"
+    )
+
+    data = exported(schema, xml)
+
+    assert_valid(schema, data)
+    value = data["r"]["@q"]
+    if expected == "tag":
+        assert "#value" in value
+    else:
+        assert value == expected
+
+
+def test_attribute_wildcard_still_rejects_a_wrong_declared_value() -> None:
+    schema = schema_for(f"{ATTR_PAIR}<empty/>")
+
+    assert_valid(schema, {"r": {"@q": 3, "@extra": "x"}})
+    assert errors(schema, {"r": {"@q": "3", "@extra": "x"}})
+    assert errors(schema, {"r": {"@q": 3, "@extra": 1}})
+
+
+def test_attribute_wildcard_name_class_metadata() -> None:
+    schema = schema_for(
+        '<zeroOrMore><attribute><nsName ns="urn:a"/><text/></attribute></zeroOrMore><empty/>'
+    )
+
+    body = root_body(generated(schema, "r"))
+
+    assert body["x-pyxsd-name-class"] == [{"kind": "nsName", "uri": "urn:a"}]
+    assert "relaxng-attribute-name-class" in unvalidated(schema)
+    data = exported(schema, '<r xmlns:p="urn:a" p:x="1"/>')
+    assert data == {"r": {"@Q{urn:a}x": "1"}}
+    assert_valid(schema, data)
+
+    excluded = schema_for(f"{ATTR_PAIR}<empty/>")
+    excluded_body = root_body(generated(excluded, "r"))
+    assert excluded_body["x-pyxsd-name-class"][0]["kind"] == "except"
+    assert excluded_body["x-pyxsd-name-class"][0]["excluded"]["local"] == "q"
 
 
 def test_sequence_with_an_unknown_child_model_uses_a_generic_map() -> None:
@@ -1063,6 +1233,56 @@ def test_recursive_route_emits_a_ref_cycle_and_validates_depth_two() -> None:
     assert data == {"node": {"@id": 1, "node": [{"@id": 2, "node": []}]}}
     assert_valid(schema, data, "node")
     assert errors(schema, {"node": {"@id": 1, "node": [{"@id": 2, "extra": 1}]}}, "node")
+
+
+RECURSIVE_ANY = """\
+<start><ref name="node"/></start>
+<define name="node"><element><anyName/>
+  <zeroOrMore><ref name="node"/></zeroOrMore>
+</element></define>"""
+
+
+def test_recursive_anyname_route_emits_a_finite_ref_cycle() -> None:
+    schema = grammar_for(RECURSIVE_ANY)
+
+    result = generated(schema)
+    route = next(iter(result["$defs"].values()))
+    wildcard_map = next(
+        branch
+        for branch in route["items"]["anyOf"]
+        if branch.get("x-pyxsd-wildcard") and "propertyNames" in branch
+    )
+    assert wildcard_map["additionalProperties"] == {"$ref": "#/$defs/route-1"}
+    data = exported(schema, "<n0><n1><n2/></n1></n0>")
+    assert data == {"n0": [{"n1": [{"n2": []}]}]}
+    assert_valid(schema, data)
+
+    depth = 60
+    xml = "".join(f"<n{index}>" for index in range(depth - 1))
+    xml += f"<n{depth - 1}/>" + "".join(f"</n{index}>" for index in reversed(range(depth - 1)))
+    deep = exported(schema, xml)
+    assert_valid(schema, deep)
+
+
+RECURSIVE_GENERIC_VARIANT = """\
+<start><ref name="A"/></start>
+<define name="A"><element name="a"><ref name="B"/></element></define>
+<define name="B"><element name="b"><zeroOrMore><element><anyName/>
+  <ref name="A"/>
+</element></zeroOrMore></element></define>"""
+
+
+def test_generic_variant_definition_is_registered_before_recursive_fill() -> None:
+    schema = grammar_for(RECURSIVE_GENERIC_VARIANT)
+
+    result = generated(schema, "a")
+    keys = [key for key in result["$defs"] if key.endswith("-generic")]
+    assert len(keys) == 1
+    assert re.fullmatch(r"route-\d+-generic", keys[0])
+
+    data = exported(schema, "<a><b><x><a><b/></a></x></b></a>")
+    assert data == {"a": [{"b": [{"x": [{"a": [{"b": []}]}]}]}]}
+    assert_valid(schema, data, "a")
 
 
 def test_deep_element_chains_finish_without_unbounded_expansion() -> None:
@@ -1260,32 +1480,33 @@ def test_token_plan_helpers_cover_every_combination() -> None:
     empty = Empty()
     one = OneOrMore(integer)
     results: dict[int, Any] = {
-        id(empty): ("fixed", ()),
-        id(integer): ("fixed", (integer,)),
-        id(one): ("list", (integer,)),
+        id(empty): ("fixed", (), 0),
+        id(integer): ("fixed", (integer,), 1),
+        id(one): ("list", (integer,), 1),
     }
 
-    assert _combine_tokens(empty, results) == ("fixed", ())
-    assert _combine_tokens(integer, results) == ("fixed", (integer,))
-    assert _combine_tokens(one, results) == ("list", (integer,))
-    assert _combine_tokens(Choice(empty, one), results) == ("list", (integer,))
-    assert _combine_tokens(Choice(one, empty), results) == ("list", (integer,))
+    assert _combine_tokens(empty, results) == ("fixed", (), 0)
+    assert _combine_tokens(integer, results) == ("fixed", (integer,), 1)
+    assert _combine_tokens(one, results) == ("list", (integer,), 1)
+    assert _combine_tokens(Choice(empty, one), results) == ("list", (integer,), 0)
+    assert _combine_tokens(Choice(one, empty), results) == ("list", (integer,), 0)
     assert _combine_tokens(Choice(integer, one), results) is None
-    assert _combine_tokens(Group(integer, empty), results) == ("fixed", (integer,))
+    assert _combine_tokens(Group(integer, empty), results) == ("fixed", (integer,), 1)
     assert _combine_tokens(Group(integer, one), {**results, id(one): None}) is None
     assert _combine_tokens(Group(integer, one), results) is None
     pair = Group(integer, integer)
-    assert _combine_tokens(OneOrMore(pair), {id(pair): ("fixed", (integer, integer))}) is None
-    assert _combine_tokens(OneOrMore(integer), {id(integer): ("fixed", (integer,))}) == (
+    assert _combine_tokens(OneOrMore(pair), {id(pair): ("fixed", (integer, integer), 2)}) is None
+    assert _combine_tokens(OneOrMore(integer), {id(integer): ("fixed", (integer,), 1)}) == (
         "list",
         (integer,),
+        1,
     )
     assert _combine_tokens(OneOrMore(integer), {id(integer): None}) is None
     assert _combine_tokens(Choice(integer, one), {id(integer): None, id(one): None}) is None
     assert _combine_tokens(Text(), results) is None
     reference = Ref()
     reference.bind(integer)
-    assert _combine_tokens(reference, results) == ("fixed", (integer,))
+    assert _combine_tokens(reference, results) == ("fixed", (integer,), 1)
 
 
 def test_token_patterns_extracts_fixed_and_homogeneous_lists() -> None:
@@ -1345,9 +1566,9 @@ def test_token_patterns_handle_refs_and_shared_operands() -> None:
     referenced = _token_patterns(List(reference))
     nested_plan = _token_patterns(nested)
 
-    assert plan == ("fixed", (integer, integer))
-    assert referenced == ("fixed", (integer,))
-    assert nested_plan == ("fixed", (integer, integer, integer))
+    assert plan == ("fixed", (integer, integer), 2)
+    assert referenced == ("fixed", (integer,), 1)
+    assert nested_plan == ("fixed", (integer, integer, integer), 3)
 
 
 def test_cardinality_and_branch_deduplication_helpers() -> None:

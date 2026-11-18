@@ -119,11 +119,14 @@ _Layout = Literal["empty", "scalar", "repeated", "record", "sequence", "mixed"]
 #: A JSON Schema fragment.
 _Schema = dict[str, Any]
 
-#: One plain list token plan: a fixed tuple or one homogeneous item contract.
-_TokenPlan = tuple[Literal["fixed", "list"], tuple[Pattern, ...]]
+#: One plain list token plan and its minimum required token count.
+_TokenPlan = tuple[Literal["fixed", "list"], tuple[Pattern, ...], int]
 
 #: The shared generic child/route envelope definition key.
 _GENERIC_KEY = "generic-route"
+
+#: The recursive sound union used for opaque custom scalar values.
+_OPAQUE_KEY = "opaque-scalar"
 
 
 def build_relaxng_json_schema(
@@ -174,6 +177,7 @@ class _RelaxNGJSONSchemaBuilder:
         }
         self.layouts: dict[str, _Layout] = {}
         self._generic_shell: _Schema | None = None
+        self._opaque_shell: _Schema | None = None
 
     # ------------------------------------------------------------------
     # Entry point and root selection
@@ -311,12 +315,10 @@ class _RelaxNGJSONSchemaBuilder:
     # Attributes
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _has_attribute_wildcard(route: RouteContract) -> bool:
-        return any(wildcard.role == "attribute" for wildcard in route.wildcards)
-
-    def _attribute_shape(self, route: RouteContract) -> tuple[_Schema, list[str], bool]:
-        """Declared ``@EQName`` properties, required keys, and openness."""
+    def _attribute_shape(
+        self, route: RouteContract
+    ) -> tuple[_Schema, list[str], tuple[WildcardContract, ...]]:
+        """Declared ``@EQName`` properties, required keys, and wildcards."""
         properties: dict[str, Any] = {}
         required: list[str] = []
         for expanded in sorted(route.attributes):
@@ -325,7 +327,13 @@ class _RelaxNGJSONSchemaBuilder:
             properties[key] = self._attribute_value(field, route)
             if field.cardinality.minimum > 0:
                 required.append(key)
-        return properties, required, self._has_attribute_wildcard(route)
+        wildcards = tuple(
+            sorted(
+                (wildcard for wildcard in route.wildcards if wildcard.role == "attribute"),
+                key=lambda wildcard: repr(wildcard.name_class),
+            )
+        )
+        return properties, required, wildcards
 
     def _attribute_value(self, field: FieldContract, route: RouteContract) -> _Schema:
         """One attribute value: typed scalar or raw lexical string.
@@ -342,17 +350,32 @@ class _RelaxNGJSONSchemaBuilder:
         )
         return self._scalar_site(contracts, may_be_empty=False)
 
-    @staticmethod
-    def _apply_attribute_openness(body: _Schema, wildcard: bool) -> None:
-        """Close an object, or admit open attributes as lexical strings.
+    def _apply_attribute_openness(
+        self, body: _Schema, wildcards: tuple[WildcardContract, ...]
+    ) -> None:
+        """Close an object, or admit undeclared attributes as lexical strings.
 
-        Wildcard attribute values never acquire a typed contract: the exporter
-        writes their raw lexical form, so one string pattern covers them.
+        ``additionalProperties`` covers only names absent from ``properties``,
+        so declared typed attributes keep their own schema.  ``propertyNames``
+        admits the declared non-attribute members (children and ``#content``)
+        or a valid ``@EQName``; namespace declarations and invalid keys stay
+        rejected.
         """
-        if wildcard:
-            body["patternProperties"] = {_ATTRIBUTE_KEY_PATTERN: {"type": "string"}}
-            body["x-pyxsd-wildcard"] = True
-        body["additionalProperties"] = False
+        if not wildcards:
+            body["additionalProperties"] = False
+            return
+        declared = [name for name in body.get("properties", {}) if not name.startswith("@")]
+        names: list[_Schema] = []
+        if declared:
+            names.append({"enum": sorted(declared)})
+        names.append({"pattern": _ATTRIBUTE_KEY_PATTERN})
+        body["propertyNames"] = names[0] if len(names) == 1 else {"anyOf": names}
+        body["additionalProperties"] = {"type": "string"}
+        body["x-pyxsd-wildcard"] = True
+        body["x-pyxsd-name-class"] = [
+            _name_class_metadata(wildcard.name_class) for wildcard in wildcards
+        ]
+        self.unvalidated.add("relaxng-attribute-name-class")
 
     # ------------------------------------------------------------------
     # Route layouts
@@ -395,7 +418,7 @@ class _RelaxNGJSONSchemaBuilder:
         value: _Schema,
         properties: _Schema,
         required: list[str],
-        wildcard: bool,
+        wildcards: tuple[WildcardContract, ...],
         generic: bool,
     ) -> _Schema:
         body: _Schema = {
@@ -406,7 +429,7 @@ class _RelaxNGJSONSchemaBuilder:
         if generic:
             body["x-pyxsd-wildcard"] = True
             self.unvalidated.add("relaxng-generic-route")
-        self._apply_attribute_openness(body, wildcard)
+        self._apply_attribute_openness(body, wildcards)
         return body
 
     def _repeated_body(self, route: RouteContract) -> _Schema:
@@ -503,6 +526,7 @@ class _RelaxNGJSONSchemaBuilder:
             self.defs[_GENERIC_KEY] = self._generic_shell
             self.unvalidated.add("relaxng-generic-route")
             self.unvalidated.add("relaxng-mixed-order")
+            self.unvalidated.add("relaxng-attribute-name-class")
             self._generic_shell.update(self._generic_mixed_definition())
         return {"$ref": f"#/$defs/{_GENERIC_KEY}"}
 
@@ -510,10 +534,11 @@ class _RelaxNGJSONSchemaBuilder:
         """The fully generic ordered envelope used outside every compiled route."""
         attribute_map: _Schema = {
             "type": "object",
-            "patternProperties": {_ATTRIBUTE_KEY_PATTERN: {"type": "string"}},
-            "additionalProperties": False,
+            "propertyNames": {"pattern": _ATTRIBUTE_KEY_PATTERN},
+            "additionalProperties": {"type": "string"},
             "minProperties": 1,
             "x-pyxsd-wildcard": True,
+            "x-pyxsd-name-class": [{"kind": "anyName"}],
         }
         child_map: _Schema = {
             "type": "object",
@@ -529,7 +554,12 @@ class _RelaxNGJSONSchemaBuilder:
             "x-pyxsd-wildcard": True,
         }
 
-    def _attribute_map(self, properties: _Schema, required: list[str], wildcard: bool) -> _Schema:
+    def _attribute_map(
+        self,
+        properties: _Schema,
+        required: list[str],
+        wildcards: tuple[WildcardContract, ...],
+    ) -> _Schema:
         body: _Schema = {
             "type": "object",
             "properties": properties,
@@ -537,7 +567,7 @@ class _RelaxNGJSONSchemaBuilder:
         }
         if required:
             body["required"] = required
-        self._apply_attribute_openness(body, wildcard)
+        self._apply_attribute_openness(body, wildcards)
         return body
 
     @staticmethod
@@ -604,12 +634,42 @@ class _RelaxNGJSONSchemaBuilder:
         return self._route_ref(child.route_id)
 
     def _generic_value(self, route: RouteContract | None) -> _Schema:
-        """One value under an open child name, mirroring ``generic=True``."""
+        """One value under an open child name, mirroring ``generic=True``.
+
+        A route whose normal layout is already mixed has the same body with or
+        without the generic flag, so its normal ``$ref`` is reused and closes
+        recursive wildcard cycles.  Every other layout needs a separate
+        generic-variant definition whose shell is registered before filling,
+        because the flag forces ordered mixed content or the scalar envelope.
+        """
         if route is None:
             return self._generic_mixed_ref()
-        if route.content.scalar_contracts:
-            return self._generic_scalar_body(route)
-        return self._mixed_body(route)
+        if self.layouts[route.route_id] == "mixed":
+            return self._route_ref(route.route_id)
+        return self._generic_route_ref(route)
+
+    def _generic_route_ref(self, route: RouteContract) -> _Schema:
+        """A recursive reference to one route's generic-variant definition."""
+        key = f"{self.keys[route.route_id]}-generic"
+        shell = self.defs.get(key)
+        if shell is None:
+            shell = {}
+            self.defs[key] = shell
+            body = self._generic_route_body(route)
+            body["x-pyxsd-wildcard"] = True
+            self.unvalidated.add("relaxng-generic-route")
+            shell.update(body)
+        return {"$ref": f"#/$defs/{key}"}
+
+    def _generic_route_body(self, route: RouteContract) -> _Schema:
+        """The generic-flag body for a route whose normal layout is not mixed."""
+        if self.layouts[route.route_id] == "scalar":
+            body = self._generic_scalar_body(route)
+            body["x-pyxsd-layout"] = "scalar"
+            return body
+        body = self._mixed_body(route)
+        body["x-pyxsd-layout"] = "mixed"
+        return body
 
     # ------------------------------------------------------------------
     # Scalars and tags
@@ -648,7 +708,7 @@ class _RelaxNGJSONSchemaBuilder:
             return self._tag_schema()
         token_patterns = _token_patterns(pattern)
         assert token_patterns is not None
-        kind, patterns = token_patterns
+        kind, patterns, minimum = token_patterns
         if kind == "fixed":
             body: _Schema = {
                 "type": "array",
@@ -663,6 +723,8 @@ class _RelaxNGJSONSchemaBuilder:
                 "type": "array",
                 "items": self._token_schema(patterns[0]),
             }
+            if minimum > 0:
+                body["minItems"] = minimum
         body["x-pyxsd-list-shape"] = shape
         return body
 
@@ -713,17 +775,34 @@ class _RelaxNGJSONSchemaBuilder:
                 "x-pyxsd-qname": True,
             }
         if name in _XSD_LIST_VALUED_TYPES:
-            return {"type": "array", "items": {"type": "string"}}
+            return {"type": "array", "items": {"type": "string"}, "minItems": 1}
         return {"type": "string", "x-pyxsd-type": name}
 
     def _opaque_scalar(self) -> _Schema:
-        """A disclosed sound union for a custom decoded value."""
+        """A disclosed recursive sound union for a custom decoded value."""
         self.unvalidated.add("relaxng-custom-scalar")
-        return {"type": ["array", "boolean", "number", "string"]}
+        if self._opaque_shell is None:
+            self._opaque_shell = {}
+            self.defs[_OPAQUE_KEY] = self._opaque_shell
+            self._opaque_shell.update(
+                {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "number"},
+                        {"type": "boolean"},
+                        {
+                            "type": "array",
+                            "items": {"$ref": f"#/$defs/{_OPAQUE_KEY}"},
+                        },
+                    ]
+                }
+            )
+        return {"$ref": f"#/$defs/{_OPAQUE_KEY}"}
 
     def _tag_schema(self) -> _Schema:
         """The exact version-1 tagged-scalar wire shape, without frozen IDs."""
         self.unvalidated.add("relaxng-scalar-tag-order")
+        self.unvalidated.add("relaxng-scalar-tag-grammar-identity")
         context: _Schema = {
             "type": "object",
             "properties": {
@@ -908,30 +987,30 @@ def _combine_tokens(pattern: Pattern, results: dict[int, _TokenPlan | None]) -> 
     if isinstance(pattern, Ref):
         return results[id(pattern.target)]
     if isinstance(pattern, Empty):
-        return ("fixed", ())
+        return ("fixed", (), 0)
     if isinstance(pattern, (Data, DataExcept, Value)):
-        return ("fixed", (pattern,))
+        return ("fixed", (pattern,), 1)
     if isinstance(pattern, Group):
         first = results[id(pattern.first)]
         second = results[id(pattern.second)]
         if first is None or second is None:
             return None
         if first[0] == second[0] == "fixed":
-            return ("fixed", (*first[1], *second[1]))
+            return ("fixed", (*first[1], *second[1]), first[2] + second[2])
         return None
     if isinstance(pattern, OneOrMore):
         item = results[id(pattern.pattern)]
         if item is not None and item[0] == "fixed" and len(item[1]) == 1:
-            return ("list", item[1])
+            return ("list", item[1], 1)
         return None
     if isinstance(pattern, Choice):
         first = results[id(pattern.first)]
         second = results[id(pattern.second)]
         if first is not None and second is not None:
             if first[0] == "fixed" and not first[1] and second[0] == "list":
-                return second
+                return ("list", second[1], 0)
             if second[0] == "fixed" and not second[1] and first[0] == "list":
-                return first
+                return ("list", first[1], 0)
         return None
     return None
 
