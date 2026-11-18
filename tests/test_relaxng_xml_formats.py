@@ -747,6 +747,51 @@ def test_grouped_order_helper_handles_empty_and_reordered_plans() -> None:
         )
 
 
+def test_bounded_interleave_shuffle_deduplicates_duplicate_heads() -> None:
+    analysis = xml_conversion._OrderAnalysis(("a",), ())
+    assert xml_conversion._interleave_sequences(("a",), ("a",), analysis) == {("a", "a")}
+
+
+def test_bounded_model_order_budget_is_ambiguity(monkeypatch) -> None:
+    document = valid(f"{A}{B}", "<r><a>1</a><b>x</b></r>")
+    model = document.schema.projection.routes[document.schema.projection.roots[0]].content.model
+
+    exhausted = xml_conversion._OrderAnalysis(("a", "b"), (), remaining=0)
+    assert xml_conversion._bounded_model_order(model, (1, 1), exhausted) is None
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise PyXSDError("container-invalid at ''")
+
+    monkeypatch.setattr(xml_conversion, "_model_order", fail)
+    with pytest.raises(PyXSDError, match="container-invalid"):
+        xml_conversion._bounded_model_order(
+            model, (1, 1), xml_conversion._OrderAnalysis(("a", "b"), ())
+        )
+
+
+def test_order_budget_is_reported_as_ambiguity_in_export(monkeypatch) -> None:
+    original = xml_conversion._OrderAnalysis
+
+    def low_budget(*args: object, **kwargs: object) -> object:
+        kwargs["remaining"] = 0
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(xml_conversion, "_OrderAnalysis", low_budget)
+    document = valid(f"{A}{B}", "<r><a>1</a><b>x</b></r>")
+
+    with pytest.raises(PyXSDError, match=r"^order-ambiguous at "):
+        document.to_data(format="pyxsd", fidelity="strict")
+    with pytest.warns(PyXSDWarning, match="order-ambiguous"):
+        assert document.to_data(format="pyxsd", fidelity="best-effort") == {
+            "a": 1,
+            "b": "x",
+        }
+    with pytest.raises(PyXSDError, match=r"^order-ambiguous at "):
+        document.to_data(format="parker", fidelity="strict")
+    with pytest.warns(PyXSDWarning, match="order-ambiguous"):
+        document.to_data(format="parker", fidelity="best-effort")
+
+
 def test_scalar_helper_defensive_branches() -> None:
     assert xml_conversion._needs_lexical_fallback([b"x"]) is True
     assert xml_conversion._needs_lexical_fallback((1, 2)) is False
@@ -1661,12 +1706,8 @@ def test_native_order_analysis_agrees_with_compiled_sequence_language(content):
             if valid_order:
                 accepted.add(order)
         reconstructed = xml_conversion._model_order(model, observed_counts, analysis)
-        if "interleave" not in content:
-            assert len(reconstructed) == min(2, len(accepted))
-            assert reconstructed <= accepted
-        else:
-            assert len(reconstructed) == bool(accepted)
-            assert reconstructed <= accepted
+        assert len(reconstructed) == min(2, len(accepted))
+        assert reconstructed <= accepted
 
 
 def test_native_order_analysis_budget_fails_closed_at_owning_pointer():
@@ -1814,9 +1855,13 @@ def test_native_strict_nested_interleave_association_is_not_order_loss(choice, o
     assert document.to_data(fidelity="strict") == dict.fromkeys(order)
     plan = document.schema.projection
     model = plan.routes[plan.roots[0]].content.model
-    assert xml_conversion._model_order(
+    reconstructed = xml_conversion._model_order(
         model, (1, 1, 1), xml_conversion._OrderAnalysis(("a", "b", "z"), ())
-    ) == {("a", "b", "z")}
+    )
+    # The model has genuine shuffles, but every permutation is accepted; the
+    # grouped representation therefore remains order-insensitive.
+    assert len(reconstructed) == 2
+    assert reconstructed <= set(permutations(("a", "b", "z")))
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -1836,12 +1881,15 @@ def test_native_nested_interleave_preserves_group_and_repeat_constraints(reverse
         )
     else:
         assert document.is_valid
-        assert document.to_data(fidelity="strict") == {
-            "z": [None, None],
-            "b": None,
-            "a": [None, None],
-            "c": None,
-        }
+        with pytest.raises(PyXSDError, match=r"^order-ambiguous at "):
+            document.to_data(fidelity="strict")
+        with pytest.warns(PyXSDWarning, match="order-ambiguous"):
+            assert document.to_data(fidelity="best-effort") == {
+                "z": [None, None],
+                "b": None,
+                "a": [None, None],
+                "c": None,
+            }
 
 
 @pytest.mark.parametrize("typed", [False, True])

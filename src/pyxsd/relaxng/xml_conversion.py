@@ -98,7 +98,9 @@ _Path = tuple[str | int, ...]
 
 _TEXT_KEY = "$"
 _XMLNS_KEY = "@xmlns"
-_XMLNS = "{http://www.w3.org/2000/xmlns/}"
+_XMLNS_NS = "http://www.w3.org/2000/xmlns/"
+_XMLNS = f"{{{_XMLNS_NS}}}"
+_XML_WHITESPACE = frozenset(" \t\r\n")
 _WILDCARD_URI_SEED = "__pyxsd_relaxng_wildcard__"
 
 
@@ -176,6 +178,11 @@ def _has_non_whitespace_content(node: RelaxNGElement) -> bool:
     )
 
 
+def _has_non_xml_whitespace(text: str | None) -> bool:
+    """Whether *text* contains anything beyond XML's four whitespace chars."""
+    return text is not None and any(character not in _XML_WHITESPACE for character in text)
+
+
 def _mixed_text(node: RelaxNGElement) -> str:
     pieces: list[str] = []
     text = node.text_value()
@@ -188,6 +195,20 @@ def _mixed_text(node: RelaxNGElement) -> str:
     return "".join(pieces)
 
 
+def _bounded_model_order(
+    model: ContentContract,
+    counts: _Counts,
+    analysis: _OrderAnalysis,
+) -> set[_Sequence] | None:
+    """Run the order analysis, treating budget exhaustion as ambiguity."""
+    try:
+        return _model_order(model, counts, analysis)
+    except PyXSDError as error:
+        if str(error).startswith("order-ambiguous at "):
+            return None
+        raise
+
+
 def _unique_grouped_child_sequence(
     route: RouteContract,
     names: list[str],
@@ -196,12 +217,26 @@ def _unique_grouped_child_sequence(
     """The one child sequence the compiled model admits for these names."""
     counts = Counter(names)
     analysis = _OrderAnalysis(tuple(sorted(counts)), path)
-    sequences = _model_order(
+    sequences = _bounded_model_order(
         route.content.model, tuple(counts[name] for name in analysis.names), analysis
     )
-    if len(sequences) != 1:
+    if sequences is None or len(sequences) != 1:
         return None
     return next(iter(sequences))
+
+
+def _order_unconstrained(model: ContentContract) -> bool:
+    """Whether every child permutation is accepted by this content model."""
+    pending = [model]
+    while pending:
+        node = pending.pop()
+        if node.kind in ("attribute", "child", "empty", "scalar"):
+            continue
+        if node.kind in ("choice", "interleave"):
+            pending.extend(node.operands)
+            continue
+        return False
+    return True
 
 
 def _check_grouped_order(
@@ -220,6 +255,8 @@ def _check_grouped_order(
             "grouped properties do not determine one accepted compiled child order",
             fidelity,
         )
+        return
+    if _order_unconstrained(route.content.model):
         return
     names = [child._name_ for child in children]
     if _unique_grouped_child_sequence(route, names, path) is not None:
@@ -672,29 +709,53 @@ def _order_parts(
         rest = _order_parts(parts[1:], right, analysis, unordered=unordered)
         for a in first:
             for b in rest:
-                result.add(_interleave_sequence(a, b) if unordered else a + b)
-                if len(result) == 2:
-                    return result
+                if unordered:
+                    for shuffled in _interleave_sequences(a, b, analysis):
+                        result.add(shuffled)
+                        if len(result) == 2:
+                            return result
+                else:
+                    result.add(a + b)
+                    if len(result) == 2:
+                        return result
     return result
 
 
-def _interleave_sequence(first: _Sequence, second: _Sequence) -> _Sequence:
-    """Canonical shuffle, preserving each operand's group/repeat precedence.
+def _interleave_sequences(
+    first: _Sequence,
+    second: _Sequence,
+    analysis: _OrderAnalysis,
+) -> set[_Sequence]:
+    """Up to two genuine interleavings, preserving each operand's order.
 
-    Choosing the least available head is associative and commutative across
-    the disjoint name classes required of compiled interleave operands. Sorting
-    concatenated blocks instead would retain the arbitrary binary association.
+    The dynamic program stores at most two suffixes per ``(i, j)`` state, so
+    the table stays bounded and never enumerates all binomial shuffles.  Every
+    state consumes one analysis step, keeping the existing work budget.
     """
-    merged: list[str] = []
-    left = right = 0
-    while left < len(first) and right < len(second):
-        if first[left] < second[right]:
-            merged.append(first[left])
-            left += 1
-        else:
-            merged.append(second[right])
-            right += 1
-    return (*merged, *first[left:], *second[right:])
+    if not first:
+        return {second}
+    if not second:
+        return {first}
+    width = len(second)
+    next_row: list[tuple[_Sequence, ...]] = [(second[index:],) for index in range(width + 1)]
+    for left_index in range(len(first) - 1, -1, -1):
+        row: list[tuple[_Sequence, ...]] = [()] * (width + 1)
+        row[width] = (first[left_index:],)
+        for right_index in range(width - 1, -1, -1):
+            analysis.step()
+            candidates: set[_Sequence] = set()
+            for tail in next_row[right_index]:
+                candidates.add((first[left_index], *tail))
+                if len(candidates) >= 2:
+                    break
+            if len(candidates) < 2:
+                for tail in row[right_index + 1]:
+                    candidates.add((second[right_index], *tail))
+                    if len(candidates) >= 2:
+                        break
+            row[right_index] = tuple(sorted(candidates)[:2])
+        next_row = row
+    return set(next_row[0])
 
 
 def _model_order(
@@ -848,12 +909,22 @@ def _native_order(
         if children:
             _loss("order-ambiguous", path, "no compiled child order", fidelity)
         return
+    if _order_unconstrained(route.content.model):
+        return
     observed = tuple(child._name_ for child in children)
     counts = Counter(observed)
     analysis = _OrderAnalysis(tuple(sorted(counts)), path)
-    sequences = _model_order(
+    sequences = _bounded_model_order(
         route.content.model, tuple(counts[n] for n in analysis.names), analysis
     )
+    if sequences is None:
+        _loss(
+            "order-ambiguous",
+            path,
+            "native child-order reconstruction exceeded its work budget",
+            fidelity,
+        )
+        return
     if len(sequences) == 1 and (
         observed in sequences or _order_matches(route.content.model, observed, analysis)
     ):
@@ -1123,7 +1194,7 @@ def _check_native_strict(
         text = node.text_value()
         tails = [child.tail_value() or "" for child in children]
         if (layout == "mixed" and (text or any(tails))) or (
-            not typed and layout != "mixed" and (any(tails) or bool(text and text.strip()))
+            not typed and layout != "mixed" and (any(tails) or _has_non_xml_whitespace(text))
         ):
             _loss(
                 "mixed-content",
@@ -1133,7 +1204,8 @@ def _check_native_strict(
                 fidelity,
             )
 
-    _native_order(route, children, path, fidelity=fidelity)
+    if layout != "record":
+        _native_order(route, children, path, fidelity=fidelity)
     if typed:
         _check_native_qnames(
             node.scalar_value(),
@@ -1280,7 +1352,7 @@ def _native_object(
             result[_TEXT_KEY] = "".join(pieces)
     else:
         text = node.text_value()
-        if text is not None and text.strip():
+        if _has_non_xml_whitespace(text):
             result[_TEXT_KEY] = text
     return result
 
@@ -1922,6 +1994,12 @@ def _validate_namespace_frame(frame: dict[str, str], path: _Path, *, marker: str
                 json_pointer((*path, marker)),
                 "the reserved xmlns prefix cannot be declared",
             )
+        if uri == _XMLNS_NS:
+            raise_conversion(
+                "namespace-conflict",
+                json_pointer((*path, marker)),
+                "the XMLNS namespace URI cannot be bound to any prefix",
+            )
         if prefix == "xml":
             if uri != XML_NS:
                 raise_conversion(
@@ -1929,6 +2007,12 @@ def _validate_namespace_frame(frame: dict[str, str], path: _Path, *, marker: str
                     json_pointer((*path, marker)),
                     f"the xml prefix must bind {XML_NS!r}",
                 )
+        elif uri == XML_NS:
+            raise_conversion(
+                "namespace-conflict",
+                json_pointer((*path, marker)),
+                f"only the xml prefix may bind {XML_NS!r}",
+            )
         elif prefix and not uri:
             raise_conversion(
                 "namespace-unresolved",
@@ -1966,13 +2050,26 @@ def _check_declaration(prefix: object, uri: object, path: _Path) -> tuple[str, s
             json_pointer(path),
             "a namespace declaration value must be a string",
         )
-    if prefix == "xml" and uri != XML_NS:
+    if uri == _XMLNS_NS:
         raise_conversion(
             "namespace-conflict",
             json_pointer(path),
-            f"the xml prefix must bind {XML_NS!r}",
+            "the XMLNS namespace URI cannot be bound to any prefix",
         )
-    if prefix and not uri:
+    if prefix == "xml":
+        if uri != XML_NS:
+            raise_conversion(
+                "namespace-conflict",
+                json_pointer(path),
+                f"the xml prefix must bind {XML_NS!r}",
+            )
+    elif uri == XML_NS:
+        raise_conversion(
+            "namespace-conflict",
+            json_pointer(path),
+            f"only the xml prefix may bind {XML_NS!r}",
+        )
+    elif prefix and not uri:
         raise_conversion(
             "namespace-unresolved",
             json_pointer(path),
@@ -2108,6 +2205,8 @@ def _grouped_import_sequence(
         # An unknown child is a lexical mismatch for the ordinary validator to
         # report, not evidence that a valid grouped export lost its order.
         return None
+    if _order_unconstrained(route.content.model):
+        return tuple(names)
     sequence = _unique_grouped_child_sequence(route, names, path)
     if sequence is None:
         _loss(

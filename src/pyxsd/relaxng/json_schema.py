@@ -117,6 +117,9 @@ _JSONML_ATTRIBUTE_PATTERN = f"^(?!xmlns(?::|$))(?:{_NCNAME}:)?{_NCNAME}$"
 #: One namespace-declaration prefix (the default binding is the empty string).
 _NAMESPACE_PREFIX_PATTERN = f"^(?!xmlns$)(?:{_NCNAME})?$"
 
+_XML_NS = "http://www.w3.org/XML/1998/namespace"
+_XMLNS_NS = "http://www.w3.org/2000/xmlns/"
+
 #: XSD 1.0 atomic families whose decoded values share one JSON representation.
 _XSD_INTEGER_TYPES = frozenset(
     {
@@ -1868,13 +1871,18 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
     def _xmlns_schema(self) -> _Schema:
         return {
             "type": "object",
-            "propertyNames": {
-                "pattern": _NAMESPACE_PREFIX_PATTERN,
-                "not": {"const": "xml"},
-            },
+            "propertyNames": {"pattern": _NAMESPACE_PREFIX_PATTERN},
             "patternProperties": {
-                "^$": {"type": "string"},
-                "^(?!$).+$": {"type": "string", "minLength": 1},
+                "^$": {
+                    "type": "string",
+                    "not": {"enum": [_XML_NS, _XMLNS_NS]},
+                },
+                "^xml$": {"const": _XML_NS},
+                "^(?!xml$)(?!$).+$": {
+                    "type": "string",
+                    "minLength": 1,
+                    "not": {"enum": [_XML_NS, _XMLNS_NS]},
+                },
             },
             "additionalProperties": False,
             "minProperties": 1,
@@ -2201,10 +2209,15 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 if any(field.cardinality.minimum > 0 for field in entries):
                     required.append(local)
         if self._declarations_possible:
-            properties["xmlns"] = {"type": "string"}
+            properties["xmlns"] = {
+                "type": "string",
+                "not": {"enum": [_XML_NS, _XMLNS_NS]},
+            }
+            patterns["^xmlns:xml$"] = {"const": _XML_NS}
             patterns[f"^xmlns:(?!xml$)(?!xmlns$){_NCNAME}$"] = {
                 "type": "string",
                 "minLength": 1,
+                "not": {"enum": [_XML_NS, _XMLNS_NS]},
             }
         for wildcard in self._attribute_wildcards(route):
             patterns[_JSONML_ATTRIBUTE_PATTERN] = self._wildcard_attribute_site(wildcard)
@@ -2296,14 +2309,22 @@ class _FormatJSONSchemaBuilder(_ScalarSchemaMixin):
                 "propertyNames": {
                     "anyOf": [
                         {"pattern": _JSONML_ATTRIBUTE_PATTERN},
-                        {"pattern": f"^(?:xmlns|xmlns:(?!xml$)(?!xmlns$){_NCNAME})$"},
+                        {"pattern": f"^(?:xmlns|xmlns:(?!xmlns$){_NCNAME})$"},
                     ]
                 },
+                "properties": {
+                    "xmlns": {
+                        "type": "string",
+                        "not": {"enum": [_XML_NS, _XMLNS_NS]},
+                    }
+                },
                 "patternProperties": {
+                    "^xmlns:xml$": {"const": _XML_NS},
                     f"^xmlns:(?!xml$)(?!xmlns$){_NCNAME}$": {
                         "type": "string",
                         "minLength": 1,
-                    }
+                        "not": {"enum": [_XML_NS, _XMLNS_NS]},
+                    },
                 },
                 "additionalProperties": self._scalar_union_ref(),
             },

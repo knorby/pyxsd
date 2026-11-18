@@ -612,24 +612,30 @@ def test_repeated_interleaved_and_ordered_children_round_trip() -> None:
         assert lexical_tree(imported.root) == lexical_tree(document.root)
         assert data
 
-    data, native = round_trip(document, "pyxsd", fidelity="strict")
-    assert sorted(child._name_ for child in native.root.children) == sorted(
-        child._name_ for child in document.root.children
-    )
-    assert sorted(child.text_value() for child in native.root.children) == sorted(
-        child.text_value() for child in document.root.children
-    )
-    assert data
+    for format in ("pyxsd-json", "jsonml"):
+        data, imported = round_trip(document, format, fidelity="strict")
+        assert lexical_tree(imported.root) == lexical_tree(document.root)
+        assert data
 
     for format in ("pyxsd", "parker", "badgerfish"):
-        data, imported = round_trip(document, format, fidelity="strict")
-        assert sorted(child._name_ for child in imported.root.children) == sorted(
-            child._name_ for child in document.root.children
-        )
-        assert sorted(child.text_value() for child in imported.root.children) == sorted(
-            child.text_value() for child in document.root.children
-        )
-        assert data
+        with pytest.raises(PyXSDError, match=r"^order-ambiguous at"):
+            document.to_data(format=format, fidelity="strict")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            fallback = document.to_data(format=format, fidelity="best-effort")
+        assert "order-ambiguous" in warning_prefixes(caught), format
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", PyXSDWarning)
+            imported = document.schema.from_data(
+                jsonable(fallback), format=format, fidelity="best-effort"
+            )
+        assert not imported.report.has_errors
+        assert sorted(child._name_ for child in imported.root.children) == [
+            "a",
+            "a",
+            "b",
+            "b",
+        ]
 
 
 def test_recursive_route_round_trips_in_every_format() -> None:
@@ -1723,6 +1729,30 @@ def test_grouped_import_empty_occurrence_array_constructs_no_children() -> None:
         assert imported.root.children == ()
 
 
+def test_repeated_interleave_import_is_order_ambiguous() -> None:
+    content = (
+        "<interleave><zeroOrMore><element name='a'><data type='integer'/></element>"
+        "</zeroOrMore><zeroOrMore><element name='b'><data type='string'/></element>"
+        "</zeroOrMore></interleave>"
+    )
+    schema = schema_for(content)
+    grouped = {"a": [1, 2], "b": ["x", "y"]}
+
+    for format, data in (
+        ("pyxsd", grouped),
+        ("parker", grouped),
+        ("badgerfish", {"r": grouped}),
+    ):
+        with pytest.raises(PyXSDError, match=r"^order-ambiguous at "):
+            schema.from_data(data, format=format, fidelity="strict")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            imported = schema.from_data(data, format=format, fidelity="best-effort")
+        assert "order-ambiguous" in warning_prefixes(caught), format
+        assert not imported.report.has_errors
+        assert [child._name_ for child in imported.root.children] == ["a", "a", "b", "b"]
+
+
 def test_lexical_namespaces_reject_reserved_and_empty_bindings() -> None:
     schema = schema_for('<element name="child"><data type="string"/></element>')
 
@@ -1733,6 +1763,19 @@ def test_lexical_namespaces_reject_reserved_and_empty_bindings() -> None:
     for data in badgerfish_cases:
         with pytest.raises(PyXSDError):
             schema.from_data(data, format="badgerfish", fidelity="strict")
+    for declaration in (
+        {"p": XML_NS},
+        {"": XML_NS},
+        {"p": XMLNS_NS},
+        {"": XMLNS_NS},
+        {"xml": XMLNS_NS},
+    ):
+        with pytest.raises(PyXSDError):
+            schema.from_data(
+                {"r": {"@xmlns": declaration, "child": "v"}},
+                format="badgerfish",
+                fidelity="strict",
+            )
 
     jsonml_cases = [
         ["r", {"xmlns:xmlns": "urn:x"}, ["child", "v"]],
@@ -1741,6 +1784,19 @@ def test_lexical_namespaces_reject_reserved_and_empty_bindings() -> None:
     for data in jsonml_cases:
         with pytest.raises(PyXSDError):
             schema.from_data(data, format="jsonml", fidelity="strict")
+    for key, uri in (
+        ("xmlns:p", XML_NS),
+        ("xmlns", XML_NS),
+        ("xmlns:p", XMLNS_NS),
+        ("xmlns", XMLNS_NS),
+        ("xmlns:xml", XMLNS_NS),
+    ):
+        with pytest.raises(PyXSDError):
+            schema.from_data(
+                ["r", {key: uri}, ["child", "v"]],
+                format="jsonml",
+                fidelity="strict",
+            )
 
     for format, data in (
         ("badgerfish", {"r": {"child": "v"}}),
@@ -1752,6 +1808,14 @@ def test_lexical_namespaces_reject_reserved_and_empty_bindings() -> None:
             schema.from_data(data, format=format, fidelity="strict", namespaces={"p": ""})
         with pytest.raises(PyXSDError):
             schema.from_data(data, format=format, fidelity="strict", namespaces={"xml": "urn:x"})
+        for seeded in (
+            {"p": XML_NS},
+            {"": XML_NS},
+            {"p": XMLNS_NS},
+            {"": XMLNS_NS},
+        ):
+            with pytest.raises(PyXSDError):
+                schema.from_data(data, format=format, fidelity="strict", namespaces=seeded)
 
     valid_badgerfish = schema.from_data(
         {"r": {"@xmlns": {"": ""}, "child": "v"}}, format="badgerfish", fidelity="strict"
@@ -1793,14 +1857,30 @@ def test_lexical_namespace_schema_matches_reserved_and_empty_rules(format: Forma
 
     empty_binding = copy.deepcopy(data)
     reserved_binding = copy.deepcopy(data)
+    xml_positive = copy.deepcopy(data)
+    xml_namespace_uri = copy.deepcopy(data)
+    prefixed_xml_uri = copy.deepcopy(data)
+    default_xml_uri = copy.deepcopy(data)
     if format == "badgerfish":
         empty_binding["r"]["@xmlns"]["p"] = ""
         reserved_binding["r"]["@xmlns"]["xmlns"] = "urn:reserved"
+        xml_positive["r"]["@xmlns"]["xml"] = XML_NS
+        xml_namespace_uri["r"]["@xmlns"]["xml"] = XMLNS_NS
+        prefixed_xml_uri["r"]["@xmlns"]["p"] = XML_NS
+        default_xml_uri["r"]["@xmlns"][""] = XML_NS
     else:
         empty_binding[1]["xmlns:p"] = ""
         reserved_binding[1]["xmlns:xmlns"] = "urn:reserved"
+        xml_positive[1]["xmlns:xml"] = XML_NS
+        xml_namespace_uri[1]["xmlns:xml"] = XMLNS_NS
+        prefixed_xml_uri[1]["xmlns:p"] = XML_NS
+        default_xml_uri[1]["xmlns"] = XML_NS
+    validates(document.schema, xml_positive, format=format, fidelity="strict")
     rejects(document.schema, empty_binding, format=format, fidelity="strict")
     rejects(document.schema, reserved_binding, format=format, fidelity="strict")
+    rejects(document.schema, xml_namespace_uri, format=format, fidelity="strict")
+    rejects(document.schema, prefixed_xml_uri, format=format, fidelity="strict")
+    rejects(document.schema, default_xml_uri, format=format, fidelity="strict")
 
 
 def test_conventional_formats_keep_schema_ambiguous_values_lexical() -> None:
@@ -1904,6 +1984,25 @@ def test_native_lexical_leading_text_is_a_mixed_content_loss() -> None:
 
     childless = valid(STRING, "<r>text</r>")
     assert childless.to_data(format="pyxsd", typed=False, fidelity="strict") == {"$": "text"}
+
+    nbsp = valid(f"{A}<element name='b'><data type='string'/></element>", "<r><a>1</a><b>x</b></r>")
+    nbsp.root.set_text("\u00a0")
+    with pytest.raises(PyXSDError, match=r"^mixed-content at "):
+        nbsp.to_data(format="pyxsd", typed=False, fidelity="strict")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        fallback = nbsp.to_data(format="pyxsd", typed=False, fidelity="best-effort")
+    assert "mixed-content" in warning_prefixes(caught)
+    assert fallback["$"] == "\u00a0"
+
+    xml_whitespace = valid(
+        f"{A}<element name='b'><data type='string'/></element>", "<r><a>1</a><b>x</b></r>"
+    )
+    xml_whitespace.root.set_text(" \t\r\n")
+    assert xml_whitespace.to_data(format="pyxsd", typed=False, fidelity="strict") == {
+        "a": "1",
+        "b": "x",
+    }
 
 
 def test_schema_envelope_metadata_and_disclosures_are_complete() -> None:
