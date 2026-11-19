@@ -139,7 +139,7 @@ def test_relaxng_preview_transform_is_rejected_before_compilation(tmp_path):
             schema_ref=schema_ref,
         )
     assert raised.value.fault.code == "unsupported_capability"
-    assert "Phase 7 Task 6" in raised.value.fault.message
+    assert raised.value.fault.message == "RELAX NG preview transforms are not supported yet"
 
 
 def test_execution_main_rejects_invalid_request_byte_budgets():

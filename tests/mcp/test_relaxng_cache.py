@@ -267,9 +267,10 @@ def test_relaxng_dependency_bytes_invalidate_the_cached_schema(tmp_path):
         with cache.acquire(second) as replaced:
             assert replaced is not after
             assert replaced.report.has_errors
+            assert "relaxng-resource-read" in {issue.code for issue in replaced.report.issues}
             with pytest.raises(ToolError) as raised:
                 require_complete_schema(replaced)
-        assert raised.value.fault.code in {"invalid_schema", "schema_incomplete"}
+        assert raised.value.fault.code == "invalid_schema"
         assert cache.info().stale == 1
         with cache.acquire(second) as confirmed:
             assert confirmed is replaced
