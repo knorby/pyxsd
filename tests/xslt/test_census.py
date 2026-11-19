@@ -37,6 +37,14 @@ GATE_ONLY_CATALOG = """\
 </catalog>
 """
 
+GATE_OTHER_CATALOG = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="http://www.w3.org/2012/10/xslt-test-catalog">
+  <test-set name="gate" file="gate/_gate-test-set.xml"/>
+  <test-set name="other" file="other/_other-test-set.xml"/>
+</catalog>
+"""
+
 GATE_TEST_SET = """\
 <?xml version="1.0" encoding="UTF-8"?>
 <test-set xmlns="http://www.w3.org/2012/10/xslt-test-catalog" name="gate">
@@ -46,6 +54,39 @@ GATE_TEST_SET = """\
   <test-case name="case-001">
     <environment ref="gate-env"/>
     <test><stylesheet file="case-001.xsl"/></test>
+    <result><assert-xml><![CDATA[<out>right</out>]]></assert-xml></result>
+  </test-case>
+</test-set>
+"""
+
+GATE_TWO_CASE_TEST_SET = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<test-set xmlns="http://www.w3.org/2012/10/xslt-test-catalog" name="gate">
+  <environment name="gate-env">
+    <source role="."><content><![CDATA[<doc/>]]></content></source>
+  </environment>
+  <test-case name="case-001">
+    <environment ref="gate-env"/>
+    <test><stylesheet file="case-001.xsl"/></test>
+    <result><assert-xml><![CDATA[<out>right</out>]]></assert-xml></result>
+  </test-case>
+  <test-case name="case-002">
+    <environment ref="gate-env"/>
+    <test><stylesheet file="case-002.xsl"/></test>
+    <result><assert-xml><![CDATA[<out>right</out>]]></assert-xml></result>
+  </test-case>
+</test-set>
+"""
+
+OTHER_TEST_SET = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<test-set xmlns="http://www.w3.org/2012/10/xslt-test-catalog" name="other">
+  <environment name="other-env">
+    <source role="."><content><![CDATA[<doc/>]]></content></source>
+  </environment>
+  <test-case name="other-001">
+    <environment ref="other-env"/>
+    <test><stylesheet file="other-001.xsl"/></test>
     <result><assert-xml><![CDATA[<out>right</out>]]></assert-xml></result>
   </test-case>
 </test-set>
@@ -109,11 +150,29 @@ def _fixture_repo(tmp_path: Path, *, pinned_version: str | None = None) -> Path:
     return root
 
 
+def _three_case_repo(tmp_path: Path) -> Path:
+    """A synthetic repo with two ``gate/`` cases and one ``other/`` case."""
+    root = tmp_path / "repo"
+    corpus = root / "tests" / "xslt" / "corpus"
+    gate = corpus / "gate"
+    gate.mkdir(parents=True)
+    (corpus / "catalog.xml").write_text(GATE_OTHER_CATALOG, encoding="utf-8")
+    (gate / "_gate-test-set.xml").write_text(GATE_TWO_CASE_TEST_SET, encoding="utf-8")
+    for name in ("case-001", "case-002"):
+        (gate / f"{name}.xsl").write_text(SHEET, encoding="utf-8")
+    other = corpus / "other"
+    other.mkdir()
+    (other / "_other-test-set.xml").write_text(OTHER_TEST_SET, encoding="utf-8")
+    (other / "other-001.xsl").write_text(SHEET, encoding="utf-8")
+    (root / "tests" / "xslt" / "baselines").mkdir(parents=True)
+    return root
+
+
 def _catalog(root: Path):
     return load_catalog(root / "tests" / "xslt" / "corpus" / "catalog.xml")
 
 
-def _write_baseline(root: Path) -> Path:
+def _write_baseline(root: Path, cases: dict[str, str] | None = None) -> Path:
     path = root / "tests" / "xslt" / "baselines" / "xslt30.toml"
     baseline_module.write_baseline(
         path,
@@ -124,10 +183,17 @@ def _write_baseline(root: Path) -> Path:
                 "profile": "xslt30",
                 "timeout_seconds": report_xslt.DEFAULT_TIMEOUT,
             },
-            cases={"gate/case-001": "fail"},
+            cases={"gate/case-001": "fail"} if cases is None else cases,
         ),
     )
     return path
+
+
+def _run_census(root: Path, target: Path, argv: tuple[str, ...] = ()) -> dict:
+    """Write a census by argv and return the parsed document."""
+    argv = ("--profile", "xslt30", "--census", str(target), *argv)
+    assert report_xslt.run(list(argv), repo_root=root) == 0
+    return json.loads(target.read_text(encoding="utf-8"))
 
 
 def _mixed_results() -> tuple[CaseResult, ...]:
@@ -649,7 +715,7 @@ def test_a_filtered_gated_run_measures_only_the_matching_family(tmp_path: Path) 
         "--profile",
         "xslt30",
         "--filter",
-        "pinned",
+        "pinned/",
         "--census",
         str(target),
         "--include-gated",
@@ -681,3 +747,259 @@ def test_a_filtered_gated_run_measures_only_the_matching_family(tmp_path: Path) 
     bounded = json.loads(limited.read_text(encoding="utf-8"))
     assert [case["name"] for case in bounded["cases"]] == ["gate/case-001"]
     assert [case["name"] for case in bounded["gated"]["cases"]] == ["pinned/pinned-001"]
+
+
+# ---------------------------------------------------------------------------
+# Filter universe and the skipped section
+
+
+def test_a_zero_match_filter_token_exits_two_naming_the_token(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _fixture_repo(tmp_path, pinned_version="9.0")
+
+    argv = ["--profile", "xslt30", "--list-only", "--filter", "gate/case-999"]
+    assert report_xslt.run(argv, repo_root=root) == 2
+    assert "gate/case-999" in capsys.readouterr().err
+
+    argv = ["--profile", "xslt30", "--list-only", "--filter", "gate/,,gate/case-001"]
+    assert report_xslt.run(argv, repo_root=root) == 2
+    assert "token '' is empty" in capsys.readouterr().err
+
+    # The universe is the profile's selection plus, with --include-gated, the
+    # gated candidates: a gated-only family is not zero-match there.
+    target = tmp_path / "census.json"
+    document = _run_census(root, target, ("--include-gated", "--filter", "pinned/"))
+    assert document["cases"] == []
+    assert [case["name"] for case in document["gated"]["cases"]] == ["pinned/pinned-001"]
+    assert document["selection"]["matched"] == 0
+    assert document["selection"]["available"] == 1
+
+    refused = tmp_path / "refused.json"
+    argv = ["--profile", "xslt30", "--census", str(refused), "--filter", "pinned/"]
+    assert report_xslt.run(argv, repo_root=root) == 2
+    assert "pinned/" in capsys.readouterr().err
+    assert not refused.exists()
+
+
+def test_skip_set_is_the_matching_baselines_timeout_rows(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _three_case_repo(tmp_path)
+    _write_baseline(
+        root,
+        {"gate/case-001": "timeout", "gate/case-002": "fail", "other/other-001": "pass"},
+    )
+
+    document = _run_census(root, tmp_path / "census.json", ("--skip-timeouts",))
+    assert document["skipped"]["cases"] == ["gate/case-001"]
+    assert document["selection"] == {
+        "filters": [],
+        "limit": None,
+        "skip_timeouts": True,
+        "available": 3,
+        "matched": 3,
+        "selected": 2,
+    }
+    assert sum(document["totals"].values()) == 2
+    assert [case["name"] for case in document["cases"]] == [
+        "gate/case-002",
+        "other/other-001",
+    ]
+    assert "wrote 2 census records" in capsys.readouterr().err
+
+    # The skip set follows the baseline; it is never a hardcoded family list.
+    _write_baseline(
+        root,
+        {"gate/case-001": "fail", "gate/case-002": "timeout", "other/other-001": "pass"},
+    )
+    derived = _run_census(root, tmp_path / "derived.json", ("--skip-timeouts",))
+    assert derived["skipped"]["cases"] == ["gate/case-002"]
+    assert [case["name"] for case in derived["cases"]] == [
+        "gate/case-001",
+        "other/other-001",
+    ]
+
+    # A gap or a failure is never skipped; an empty skip set is legal and the
+    # run is still marked.
+    _write_baseline(
+        root,
+        {"gate/case-001": "adapter-gap", "gate/case-002": "fail", "other/other-001": "pass"},
+    )
+    unskipped = _run_census(root, tmp_path / "unskipped.json", ("--skip-timeouts",))
+    assert "skipped" not in unskipped
+    assert unskipped["selection"]["skip_timeouts"] is True
+    assert unskipped["selection"]["selected"] == 3
+
+    _write_baseline(
+        root,
+        {"gate/case-001": "timeout", "gate/case-002": "fail", "other/other-001": "pass"},
+    )
+
+    # A recorded timeout outside the filter slice was never in scope.
+    _write_baseline(
+        root,
+        {"gate/case-001": "fail", "gate/case-002": "timeout", "other/other-001": "pass"},
+    )
+    outside = _run_census(
+        root, tmp_path / "outside.json", ("--filter", "gate/case-001", "--skip-timeouts")
+    )
+    assert "skipped" not in outside
+    assert outside["selection"]["selected"] == 1
+
+    _write_baseline(
+        root,
+        {"gate/case-001": "timeout", "gate/case-002": "fail", "other/other-001": "pass"},
+    )
+    sliced = _run_census(root, tmp_path / "sliced.json", ("--filter", "gate/", "--skip-timeouts"))
+    assert sliced["skipped"]["cases"] == ["gate/case-001"]
+    assert (sliced["selection"]["matched"], sliced["selection"]["selected"]) == (2, 1)
+
+    # filter -> skip -> limit: the limit bounds the cases that survive skipping.
+    ordered = _run_census(
+        root,
+        tmp_path / "ordered.json",
+        ("--filter", "gate/", "--skip-timeouts", "--limit", "1"),
+    )
+    assert [case["name"] for case in ordered["cases"]] == ["gate/case-002"]
+    assert (ordered["selection"]["matched"], ordered["selection"]["selected"]) == (2, 1)
+
+
+def test_skipped_rows_stay_outside_the_verdict_vocabulary(tmp_path: Path) -> None:
+    root = _three_case_repo(tmp_path)
+    _write_baseline(
+        root,
+        {"gate/case-001": "timeout", "gate/case-002": "fail", "other/other-001": "pass"},
+    )
+    document = _run_census(root, tmp_path / "census.json", ("--skip-timeouts",))
+
+    skipped = document["skipped"]
+    assert set(skipped) == {"note", "count", "source", "cases"}
+    assert skipped["note"] == census.SKIPPED_NOTE
+    assert skipped["count"] == 1
+    assert set(skipped["source"]) == {"profile", "corpus", "timeout_seconds"}
+    assert skipped["cases"] == ["gate/case-001"]
+    assert "outcome" not in json.dumps(skipped)
+    assert "signature" not in json.dumps(skipped)
+
+    names = {case["name"] for case in document["cases"]}
+    assert names.isdisjoint(skipped["cases"])
+    samples = {sample for group in document["signatures"] for sample in group["samples"]}
+    assert samples.isdisjoint(skipped["cases"])
+    assert sum(document["totals"].values()) == len(document["cases"])
+    assert len(document["cases"]) == document["selection"]["selected"]
+    assert document["selection"]["selected"] + skipped["count"] == document["selection"]["matched"]
+
+    selection = census.Selection(available=3, matched=3, selected=2)
+    with pytest.raises(ValueError, match="both sections"):
+        census.build_census(
+            (CaseResult.passed("a"), CaseResult.failed("b")),
+            profile="xslt30",
+            corpus="c",
+            timeout_seconds=5.0,
+            selection=selection,
+            skipped=census.Skipped(source={"profile": "xslt30"}, names=("b",)),
+        )
+    with pytest.raises(ValueError, match="selection"):
+        census.build_census(
+            (CaseResult.passed("a"),),
+            profile="xslt30",
+            corpus="c",
+            timeout_seconds=5.0,
+            skipped=census.Skipped(source={"profile": "xslt30"}, names=("b",)),
+        )
+    with pytest.raises(ValueError, match="duplicate skipped case"):
+        census.build_census(
+            (CaseResult.passed("a"),),
+            profile="xslt30",
+            corpus="c",
+            timeout_seconds=5.0,
+            selection=census.Selection(available=3, matched=3, selected=1),
+            skipped=census.Skipped(source={}, names=("b", "b")),
+        )
+    with pytest.raises(ValueError, match="requires a name"):
+        census.build_census(
+            (CaseResult.passed("a"),),
+            profile="xslt30",
+            corpus="c",
+            timeout_seconds=5.0,
+            selection=census.Selection(available=2, matched=2, selected=1),
+            skipped=census.Skipped(source={}, names=("",)),
+        )
+    with pytest.raises(ValueError, match="fewer than"):
+        census.build_census(
+            (CaseResult.passed("a"),),
+            profile="xslt30",
+            corpus="c",
+            timeout_seconds=5.0,
+            selection=census.Selection(available=2, matched=0, selected=1),
+        )
+    with pytest.raises(ValueError, match="more than"):
+        census.build_census(
+            (CaseResult.passed("a"),),
+            profile="xslt30",
+            corpus="c",
+            timeout_seconds=5.0,
+            selection=census.Selection(available=1, matched=2, selected=1),
+        )
+
+
+def test_a_full_census_is_byte_identical_to_the_unfiltered_render() -> None:
+    results = _mixed_results()
+    names = tuple(result.name for result in results)
+    plain = census.build_census(results, profile="xslt30", corpus="pinned", timeout_seconds=5.0)
+    full_coverage = census.build_census(
+        results,
+        profile="xslt30",
+        corpus="pinned",
+        timeout_seconds=5.0,
+        selection=census.Selection(
+            filters=names,
+            available=len(names),
+            matched=len(names),
+            selected=len(names),
+        ),
+    )
+
+    filtered = json.loads(census.render_json(full_coverage))
+    assert list(filtered) == [
+        "profile",
+        "corpus",
+        "timeout_seconds",
+        "selection",
+        "totals",
+        "cases",
+        "signatures",
+    ]
+    filtered.pop("selection")
+    assert json.dumps(filtered, indent=2, ensure_ascii=False) + "\n" == census.render_json(plain)
+    assert "selection" not in json.loads(census.render_json(plain))
+    assert "skipped" not in json.loads(census.render_json(plain))
+
+
+def test_an_engine_touching_change_runs_affected_families_unskipped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rule = report_xslt.HONESTY_RULES[1]
+    for phrase in ("src/", "tests/xslt/suite.py", "tests/xslt/environment.py", "--skip-timeouts"):
+        assert phrase in rule
+
+    root = _three_case_repo(tmp_path)
+    _write_baseline(
+        root,
+        {"gate/case-001": "timeout", "gate/case-002": "fail", "other/other-001": "pass"},
+    )
+    for host in ("--enforce", "--check", "--list-only"):
+        assert (
+            report_xslt.run(["--profile", "xslt30", host, "--skip-timeouts"], repo_root=root) == 2
+        )
+        assert "--skip-timeouts" in capsys.readouterr().err
+    target = tmp_path / "baseline.toml"
+    argv = ["--profile", "xslt30", "--write-baseline", str(target), "--skip-timeouts"]
+    assert report_xslt.run(argv, repo_root=root) == 2
+    assert "--skip-timeouts" in capsys.readouterr().err
+    assert not target.exists()
+
+    document = _run_census(root, tmp_path / "census.json", ("--skip-timeouts",))
+    assert document["selection"]["skip_timeouts"] is True
+    assert document["skipped"]["cases"] == ["gate/case-001"]

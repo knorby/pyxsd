@@ -15,13 +15,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from tests.xslt.outcomes import CaseResult
+from tests.xslt.outcomes import CaseResult, Outcome
 
 #: The checked-in baseline directory used by the CI contract.
 BASELINE_DIR = Path(__file__).parent / "baselines"
 
 #: Baseline document schema version.
 BASELINE_SCHEMA = 1
+
+#: The only strings a baseline may record: the Outcome vocabulary.  "skipped" is
+#: deliberately absent: a row a run did not measure is not a verdict.
+_BASELINE_VERDICTS = frozenset(member.value for member in Outcome)
 
 _BARE_KEY = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
 
@@ -194,4 +198,10 @@ def load_baseline(source: str | Path, *, directory: Path | None = None) -> Basel
         raise ValueError(f"baseline {path} requires [meta] and [cases] tables")
     if not all(isinstance(value, str) for value in cases.values()):
         raise ValueError(f"baseline {path} case outcomes must be strings")
+    unknown = sorted(name for name, outcome in cases.items() if outcome not in _BASELINE_VERDICTS)
+    if unknown:
+        raise ValueError(
+            f"baseline {path} case {unknown[0]} records {cases[unknown[0]]!r}, "
+            "which is not a verdict"
+        )
     return Baseline(meta=meta, cases=cases)
