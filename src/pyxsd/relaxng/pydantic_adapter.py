@@ -51,7 +51,7 @@ from pyxsd.integrations.pydantic import (
 )
 from pyxsd.namespaces import clark, local_name
 from pyxsd.relaxng.annotations import _alternative_value_at_site
-from pyxsd.relaxng.contracts import ScalarContract, scalar_contract
+from pyxsd.relaxng.contracts import ScalarContract, candidate_id, scalar_contract
 from pyxsd.relaxng.datatypes import DatatypeContext, UnsupportedDatatypeOperation
 from pyxsd.relaxng.diagnostics import report_mismatches
 from pyxsd.relaxng.document import RelaxNGDocument
@@ -82,6 +82,7 @@ from pyxsd.relaxng.projection import (
     RouteContract,
 )
 from pyxsd.relaxng.pydantic_values import (
+    STANDALONE_REVISION,
     ScalarCodec,
     context_from_mapping,
     model_dump_json_with_scalar_wrappers,
@@ -91,7 +92,12 @@ from pyxsd.relaxng.pydantic_values import (
 from pyxsd.relaxng.schema import RelaxNGSchema
 from pyxsd.relaxng.tree import NodeContext, RelaxNGElement
 from pyxsd.relaxng.validator import validate_element_recovering
-from pyxsd.relaxng.values import AlternativeValue, ListInterpretation, encode_scalar
+from pyxsd.relaxng.values import (
+    AlternativeValue,
+    Candidate,
+    ListInterpretation,
+    encode_scalar,
+)
 from pyxsd.validation import ValidationReport
 from pyxsd.xsd_data_types import QName
 
@@ -577,13 +583,7 @@ def _model_values(route: RouteContract, model: BaseModel) -> dict[str, Any]:
     values: dict[str, Any] = {}
     for name, field_info in model_class.model_fields.items():
         alias = field_info.alias or name
-        try:
-            values[alias] = getattr(model, name)
-        except AttributeError:
-            raise ValueError(
-                f"RELAX NG route {_route_label(route)} path {alias}: "
-                f"the model instance has no value for field {alias!r}"
-            ) from None
+        values[alias] = getattr(model, name)
     return values
 
 
@@ -1538,37 +1538,29 @@ def _route_after_validator(route: RouteContract) -> Any:
 
 def _route_to_lexical_with_element(
     route: RouteContract,
-    model: BaseModel | Mapping[str, Any],
+    model: BaseModel,
     *,
     context: object | None,
     element: str,
-    plan: ProjectionPlan | None = None,
 ) -> ImportedTree:
     """Build one lexical route tree under a caller-supplied concrete root name.
 
-    The tree is first validated against the retained element assignments with
-    that exact name.  If no assignment accepts it, the ordinary compiled tree
-    is still constructed and parsed by the caller, so a grammar mismatch
+    The model has already passed its normal Pydantic input contract.  The
+    tree is then validated against the retained element assignments with the
+    exact root spelling.  If no assignment accepts it, the ordinary compiled
+    tree is still constructed and parsed by the caller, so a grammar mismatch
     becomes a document report instead of a fabricated acceptance or a witness
     root.  Conversion and shape errors before that point (for example an
     unknown model route or leftover field values) still raise.
     """
-    if isinstance(model, BaseModel):
-        values = _model_values(route, model)
-        normalized = True
-    elif isinstance(model, Mapping):
-        values = dict(model)
-        normalized = False
-    else:
-        raise ValueError(f"RELAX NG route {_route_label(route)}: model data must be a mapping")
+    values = _model_values(route, model)
     _check_route_supported(route)
     try:
         root, contexts = _accepted_route_tree(
             route,
             values,
             context,
-            normalized=normalized,
-            plan=plan,
+            normalized=True,
             root_name=element,
         )
     except ValueError:
@@ -1576,8 +1568,7 @@ def _route_to_lexical_with_element(
             route,
             values,
             context,
-            normalized=normalized,
-            plan=plan,
+            normalized=True,
             root_name=element,
         )
     return _imported_tree(root, contexts)
@@ -1972,15 +1963,25 @@ class RelaxNGModelSet:
         """Build and parse one lexical document from a validated route model.
 
         The default route is the model class's own route only when it is an
-        admitted start.  ``route`` may select a start route by ID or exact
-        expanded name; a local route is rejected because a document must
-        validate from the original grammar start.  A fixed start uses its
-        expanded name, while an open name class requires an explicit admitted
-        ``element`` spelling rather than a validation witness.  The model is
-        revalidated before construction, so mutated or ``model_construct``
-        instances cannot produce a document.  Grammar mismatches after a
-        successful conversion are reported by the ordinary parse, never
-        asserted as valid by this method.
+        admitted start.  ``route`` is a selector and check for that same
+        compiled route, not a reshape operation: selecting another start route
+        raises instead of dropping or inventing fields.  A local model or route
+        is rejected because a document must validate from the original grammar
+        start.  A fixed start uses its expanded name, while an open name class
+        requires an explicit admitted ``element`` spelling rather than a
+        validation witness.  Caller ``context`` is the document's inherited
+        frame; a scalar snapshot declaring a conflicting root namespace or
+        base URI fails closed instead of silently choosing one context.
+
+        The model is first re-entered through its normal Pydantic input
+        contract by round-tripping an alias-preserving dump.  This rejects
+        mutated fields, bare ambiguous scalars, invalid wrapper/tag candidate
+        sets, and ``model_construct`` omissions exactly as ``model_validate``
+        does; native route validation alone is never a substitute.  The fresh
+        ``build_model`` is the only model used for tree construction, and its
+        after-validator already certifies the native route, so it is not
+        validated twice.  Grammar mismatches after a successful conversion are
+        reported by the ordinary parse, never asserted as valid by this method.
         """
         if not isinstance(model, BaseModel):
             raise TypeError("model must be a Pydantic model")
@@ -1988,24 +1989,136 @@ class RelaxNGModelSet:
         selected = self._select_document_route(model_route, route)
         root_name = self._document_element(selected, element)
         model_class = self._model(selected)
-        build_model: BaseModel | Mapping[str, Any]
-        if isinstance(model, model_class):
-            validate_route_data(model_class, model, context=context, plan=self._plan)
-            build_model = model
-        else:
-            values = _model_values(model_route, model)
-            if _route_is_root_model(selected):
-                build_model = model_class.model_validate(values["$"], context=context)
-            else:
-                build_model = model_class.model_validate(values, context=context)
+        build_model = model_class.model_validate(
+            self._validation_payload(selected, model),
+        )
         tree = _route_to_lexical_with_element(
             selected,
             build_model,
             context=context,
             element=root_name,
-            plan=self._plan,
         )
         return self.schema._parse_imported_tree(tree, format="pyxsd")
+
+    def _validation_payload(self, route: RouteContract, model: BaseModel) -> Any:
+        """Return an alias-preserving dump prepared for model revalidation.
+
+        Dumped wrappers stay immutable snapshots.  A resolved QName loses its
+        scoped prefix when dumped as an ordinary Python value, so each scalar
+        position containing QNames is wrapped in an equivalent complete
+        snapshot carrying exactly the QName's own prefix bindings.  The model
+        is then validated without one global caller frame: namespace rebinding
+        between siblings must not reinterpret a decoded QName or contradict a
+        child snapshot's recorded context.  Caller ``context`` is applied only
+        while building the lexical tree.
+        """
+        dump = model.model_dump(by_alias=True, round_trip=True)
+        return self._validation_data(route, dump, (route.expanded_name or "",))
+
+    def _validation_data(
+        self,
+        route: RouteContract,
+        data: Any,
+        path: tuple[str, ...],
+    ) -> Any:
+        if data is None:
+            # A child position never accepts None; the parent's before-validator
+            # reports the omission/invalid shape before route construction.
+            return None
+        if _route_is_root_model(route):
+            return self._scoped_validation_value(route.content.scalar_contracts, data, route, path)
+        result = dict(data)
+        if "$" in result and route.content.scalar_contracts:
+            result["$"] = self._scoped_validation_value(
+                route.content.scalar_contracts,
+                result["$"],
+                route,
+                (*path, "$"),
+            )
+        for name, field in route.attributes.items():
+            alias = "@" + name
+            if alias not in result:
+                continue
+            result[alias] = self._scoped_validation_value(
+                field.scalar_contracts,
+                result[alias],
+                route,
+                (*path, alias),
+            )
+        for name, field in route.children.items():
+            if name not in result:
+                continue
+            child_route_id = field.child_route_id
+            if child_route_id is None:  # pragma: no cover - planner supplies fixed child routes
+                continue
+            child_route = self._plan.routes.get(child_route_id)
+            if child_route is None:  # pragma: no cover - the plan owns every referenced route
+                continue
+            value = result[name]
+            if field.cardinality.repeatable and isinstance(value, (list, tuple)):
+                result[name] = [
+                    self._validation_data(child_route, item, (*path, name)) for item in value
+                ]
+            else:
+                result[name] = self._validation_data(child_route, value, (*path, name))
+        return result
+
+    def _scoped_validation_value(
+        self,
+        contracts: tuple[ScalarContract, ...],
+        value: Any,
+        route: RouteContract,
+        path: tuple[str, ...],
+    ) -> Any:
+        """Preserve one resolved QName value's own scoped namespace context."""
+        if value is None or isinstance(value, (AlternativeValue, ListInterpretation)):
+            return value
+        if isinstance(value, Mapping) and "#value" in value:
+            return value
+        if isinstance(value, QName):
+            qnames: tuple[QName, ...] = (value,)
+        elif isinstance(value, (list, tuple)) and value:
+            qnames = tuple(value)
+        else:
+            return value
+        if not all(isinstance(item, QName) and item._resolved_ for item in qnames):
+            return value
+        namespaces: dict[str, str] = {}
+        for item in qnames:
+            prefix = item._prefix_
+            uri = item._uri_
+            if uri is None and prefix:
+                return value
+            existing = namespaces.get(prefix)
+            if existing is not None and existing != uri:
+                raise _projection_error(
+                    route,
+                    path,
+                    f"QName values declare conflicting namespace bindings for {prefix!r}",
+                )
+            if uri is not None:
+                namespaces[prefix] = uri
+        context = DatatypeContext(None, namespaces)
+        lexical = " ".join(str(item) for item in qnames)
+        candidates = tuple(
+            Candidate(
+                candidate_id(self._codec.grammar_fingerprint, contract),
+                contract,
+                None,
+                False,
+            )
+            for contract in contracts
+            if self._codec.accepts(self._codec.pattern_for(contract), lexical, context)
+        )
+        if not candidates:
+            return value
+        return AlternativeValue(
+            lexical,
+            candidates,
+            context,
+            self._codec.grammar_fingerprint,
+            STANDALONE_REVISION,
+        )
 
     def _select_document_route(
         self, model_route: RouteContract, selector: str | None
@@ -2030,11 +2143,21 @@ class RelaxNGModelSet:
                 ) from None
             except ValueError as error:
                 raise IntegrationError(str(error)) from None
+        if model_route.route_id not in self._plan.roots:
+            raise IntegrationError(
+                f"RELAX NG model route {_route_label(model_route)} is in local scope and "
+                "cannot produce a document start; use from_node for local snapshots"
+            )
         if selected.route_id not in self._plan.roots:
             raise IntegrationError(
                 f"RELAX NG route {_route_label(selected)} is in local scope and cannot "
                 "produce a document start; to_document requires an admitted start route "
                 "(use from_node for local snapshots)"
+            )
+        if selected.route_id != model_route.route_id:
+            raise IntegrationError(
+                f"RELAX NG model route {_route_label(model_route)} can only become a "
+                f"document for its own compiled start route, not {_route_label(selected)}"
             )
         return selected
 

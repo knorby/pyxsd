@@ -36,9 +36,11 @@ from pyxsd.relaxng.projection import ProjectionPlan  # noqa: E402
 from pyxsd.relaxng.pydantic_adapter import (  # noqa: E402
     RelaxNGModelSet,
     _project_record,
+    route_to_lexical,
 )
 from pyxsd.relaxng.schema import RelaxNGSchema  # noqa: E402
 from pyxsd.relaxng.values import AlternativeValue  # noqa: E402
+from pyxsd.xsd_data_types import QName, qname_context  # noqa: E402
 
 NS = "http://relaxng.org/ns/structure/1.0"
 XSD = "http://www.w3.org/2001/XMLSchema-datatypes"
@@ -258,7 +260,8 @@ def test_from_node_start_and_local_snapshots_use_their_own_scope():
         model_set.from_node(document.root, element="doc", path=("other",))
 
 
-def test_from_node_generic_name_fallback_checks_the_name_class(monkeypatch):
+def test_from_node_generic_name_fallback_is_defensive_for_unrouted_nodes(monkeypatch):
+    """Typed parses assign route classes; this pins the fail-closed fallback."""
     schema = compile_element(
         '<attribute name="v"><text/></attribute>'
         '<element name="item"><attribute name="v"><text/></attribute><text/></element>'
@@ -366,7 +369,8 @@ def test_record_optional_scalar_empty_attribute_and_absent_repeat():
     assert repeated_set.to_document(repeated).to_string() == '<doc n="x"/>'
 
 
-def test_projection_reports_missing_typed_scalar_and_attribute_evidence(monkeypatch):
+def test_projection_missing_typed_evidence_branches_are_defensive(monkeypatch):
+    """Valid documents carry evidence; these unreachable branches fail closed."""
     scalar_schema = compile_element('<data type="integer"/>')
     scalar_set = registry(scalar_schema)
     scalar_document = parse(scalar_schema, "<doc>12</doc>")
@@ -381,7 +385,8 @@ def test_projection_reports_missing_typed_scalar_and_attribute_evidence(monkeypa
         attribute_set.from_document(attribute_document)
 
 
-def test_projection_defensive_child_checks_fail_closed(monkeypatch):
+def test_projection_unreachable_child_states_fail_closed(monkeypatch):
+    """A valid typed document cannot reach these fabricated child states."""
     required_schema = compile_element('<element name="item"><text/></element>')
     required_set = registry(required_schema)
     required_route = required_schema.projection.routes[required_schema.projection.roots[0]]
@@ -534,7 +539,7 @@ def test_missing_standalone_qname_context_is_still_a_conversion_error():
     with pytest.raises(pydantic.ValidationError):
         Root.model_validate({"@ref": "p:x"})
     constructed = Root.model_construct(attr_ref="p:x")
-    with pytest.raises(ValueError, match="route path"):
+    with pytest.raises(pydantic.ValidationError, match="does not satisfy"):
         model_set.to_document(constructed)
 
 
@@ -556,57 +561,45 @@ def test_default_and_explicit_start_route_selection():
         model_set.to_document(model, route=object())  # type: ignore[arg-type]
 
 
-def test_to_document_can_select_a_compatible_other_start_route(monkeypatch):
+def test_to_document_route_is_a_check_of_the_model_own_route():
     schema = compile_grammar(
         "<start><choice>"
-        '<element name="a"><attribute name="v"><text/></attribute><text/></element>'
-        '<element name="b"><attribute name="v"><text/></attribute><text/></element>'
+        '<element name="records"><attribute name="v"><text/></attribute><text/></element>'
+        '<element name="scalar"><data type="integer" '
+        f'datatypeLibrary="{XSD}"/></element>'
         "</choice></start>"
     )
     model_set = registry(schema)
-    model_a = model_set.model_for(element="a").model_validate({"@v": "x", "$": "value"})
-    created = model_set.to_document(model_a, route="b")
-    assert created.is_valid
-    assert created.to_string() == '<b v="x">value</b>'
+    records = model_set.model_for(element="records").model_validate({"@v": "x", "$": "value"})
+    scalar = model_set.model_for(element="scalar").model_validate(12)
+    records_route = schema.projection.routes[records.__relaxng_route_id__]
+    scalar_route = schema.projection.routes[scalar.__relaxng_route_id__]
+
+    for selector in (records_route.route_id, records_route.expanded_name):
+        assert model_set.to_document(records, route=selector).to_string() == (
+            '<records v="x">value</records>'
+        )
+    for selector in (scalar_route.route_id, scalar_route.expanded_name):
+        assert model_set.to_document(scalar, route=selector).to_string() == ("<scalar>12</scalar>")
+
+    with pytest.raises(IntegrationError, match="can only become a document") as error:
+        model_set.to_document(records, route=scalar_route.expanded_name)
+    message = str(error.value)
+    assert records_route.route_id in message
+    assert scalar_route.route_id in message
+    with pytest.raises(IntegrationError, match="can only become a document"):
+        model_set.to_document(scalar, route=records_route.expanded_name)
     with pytest.raises(TypeError, match="Pydantic model"):
         model_set.to_document({"$": "value"})  # type: ignore[arg-type]
-
-    root_schema = compile_grammar(
-        "<start><choice>"
-        '<element name="a"><text/></element>'
-        '<element name="b"><text/></element>'
-        "</choice></start>"
-    )
-    root_set = registry(root_schema)
-    root_model = root_set.model_for(element="a").model_validate("value")
-    assert root_set.to_document(root_model, route="b").to_string() == "<b>value</b>"
 
     def ambiguous(self: ProjectionPlan, selector: str):
         del self, selector
         raise ValueError("ambiguous RELAX NG projection route; use a route ID")
 
-    monkeypatch.setattr(ProjectionPlan, "resolve_route", ambiguous)
-    with pytest.raises(IntegrationError, match="ambiguous"):
-        model_set.to_document(model_a, route="b")
-
-
-def test_private_element_override_helper_rejects_non_model_data():
-    schema = compile_element("<text/>")
-    route = schema.projection.routes[schema.projection.roots[0]]
-    tree = adapter._route_to_lexical_with_element(
-        route,
-        {"$": "value"},
-        context=None,
-        element="doc",
-    )
-    assert tree.root.text == "value"
-    with pytest.raises(ValueError, match="model data must be a mapping"):
-        adapter._route_to_lexical_with_element(
-            route,
-            object(),
-            context=None,
-            element="doc",
-        )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ProjectionPlan, "resolve_route", ambiguous)
+        with pytest.raises(IntegrationError, match="ambiguous"):
+            model_set.to_document(records, route="records")
 
 
 def test_to_document_canonicalizes_equal_routes_and_rejects_foreign_models():
@@ -621,6 +614,64 @@ def test_to_document_canonicalizes_equal_routes_and_rejects_foreign_models():
     with pytest.raises(IntegrationError, match="another compiled schema"):
         model_set.to_document(foreign_model)
 
+    nested_schema = compile_element(
+        '<attribute name="v"><text/></attribute>'
+        '<element name="item"><choice><data type="integer"/><data type="string"/></choice>'
+        "</element>"
+    )
+    nested_set = registry(nested_schema)
+    equal_nested_schema = compile_element(
+        '<attribute name="v"><text/></attribute>'
+        '<element name="item"><choice><data type="integer"/><data type="string"/></choice>'
+        "</element>"
+    )
+    equal_nested_model = (
+        registry(equal_nested_schema)
+        .model_for(element="doc")
+        .model_validate({"@v": "x", "item": "12"})
+    )
+    created = nested_set.to_document(equal_nested_model)
+    assert created.is_valid
+    assert created.to_string() == '<doc v="x"><item>12</item></doc>'
+    canonical = nested_set.from_document(created)
+    assert type(canonical.item) is nested_set.model_for(element="doc", path=("item",))
+    assert canonical.model_dump(by_alias=True) == equal_nested_model.model_dump(by_alias=True)
+
+
+def test_to_document_preserves_qname_list_contexts_and_rejects_edges():
+    list_schema = compile_element('<list><oneOrMore><data type="QName"/></oneOrMore></list>')
+    list_set = registry(list_schema)
+    list_document = parse(list_schema, '<doc xmlns:p="urn:x">p:a p:b</doc>')
+    list_model = list_set.from_document(list_document)
+    created = list_set.to_document(list_model)
+    assert created.is_valid
+    assert created.to_string() == '<doc xmlns:p="urn:x">p:a p:b</doc>'
+
+    Root = list_set.model_for(element="doc")
+    with qname_context({"p": "urn:a"}):
+        first = QName("p:a")
+    with qname_context({"p": "urn:b"}):
+        second = QName("p:b")
+    with pytest.raises(ValueError, match="QName values declare conflicting"):
+        list_set.to_document(Root.model_construct(root=(first, second)))
+
+    with qname_context({}):
+        unbound = QName("p:x")
+        plain = QName("plain")
+    assert list_set.to_document(Root.model_construct(root=(plain,))).is_valid
+    with pytest.raises(pydantic.ValidationError):
+        list_set.to_document(Root.model_construct(root=(unbound,)))
+    with pytest.raises(pydantic.ValidationError):
+        list_set.to_document(Root.model_construct(root=QName("p:x")))
+
+    restricted_schema = compile_element('<data type="QName"><param name="pattern">a</param></data>')
+    restricted_set = registry(restricted_schema)
+    restricted = restricted_set.model_for(element="doc")
+    with qname_context({"": "urn:x"}):
+        rejected = QName("b")
+    with pytest.raises(pydantic.ValidationError):
+        restricted_set.to_document(restricted.model_construct(root=rejected))
+
 
 def test_local_route_to_document_is_rejected_with_local_scope():
     schema = compile_element('<element name="item"><text/></element>')
@@ -632,13 +683,13 @@ def test_local_route_to_document_is_rejected_with_local_scope():
     with pytest.raises(IntegrationError, match="local scope"):
         model_set.to_document(local_model)
     local_route = schema.projection.routes[local.__relaxng_route_id__]
+    for selector in (None, local_route.route_id, schema.projection.roots[0]):
+        kwargs = {} if selector is None else {"route": selector}
+        with pytest.raises(IntegrationError, match="local scope"):
+            model_set.to_document(local_model, **kwargs)
+    start_model = model_set.from_document(document)
     with pytest.raises(IntegrationError, match="local scope"):
-        model_set.to_document(local_model, route=local_route.route_id)
-    with pytest.raises(pydantic.ValidationError):
-        model_set.to_document(
-            local_model,
-            route=schema.projection.roots[0],
-        )
+        model_set.to_document(start_model, route=local_route.route_id)
 
 
 def test_fixed_and_open_start_element_spellings_are_explicit():
@@ -673,7 +724,7 @@ def test_fixed_and_open_start_element_spellings_are_explicit():
         open_set.to_document(absent)
 
 
-def test_to_document_revalidates_mutated_and_constructed_models():
+def test_to_document_revalidates_mutated_and_constructed_records():
     schema = compile_element(
         '<attribute name="n"><data type="integer"/></attribute><data type="integer"/>'
     )
@@ -687,31 +738,109 @@ def test_to_document_revalidates_mutated_and_constructed_models():
 
     mutated = Root.model_validate({"@n": 7, "$": 12})
     mutated.attr_n = None
-    with pytest.raises(ValueError, match="missing-attribute"):
+    with pytest.raises(pydantic.ValidationError, match="scalar content is required"):
         model_set.to_document(mutated)
-
-    with pytest.raises(ValueError, match="missing-attribute"):
+    with pytest.raises(pydantic.ValidationError, match="scalar content is required"):
         model_set.to_document(Root.model_construct(attr_n=None, **{value_field: 12}))
-    missing = Root.model_construct()
-    with pytest.raises(ValueError, match="has no value for field"):
-        model_set.to_document(missing)
-    with pytest.raises(ValueError, match="missing-content"):
+    with pytest.raises(pydantic.ValidationError):
+        model_set.to_document(Root.model_construct())
+    with pytest.raises(pydantic.ValidationError, match="scalar content is required"):
         model_set.to_document(Root.model_construct(attr_n=7, **{value_field: None}))
+    with pytest.raises(pydantic.ValidationError):
+        model_set.to_document(Root.model_construct(attr_n=7, **{value_field: "not-an-integer"}))
+    with pytest.raises(pydantic.ValidationError, match="scalar-tag-invalid"):
+        model_set.to_document(Root.model_construct(attr_n=7, **{value_field: {"#value": {}}}))
 
-    malformed = Root.model_construct(attr_n=7, **{value_field: {"#value": {}}})
-    with pytest.raises(ValueError, match="route path"):
-        model_set.to_document(malformed)
+
+def test_to_document_rejects_constructed_none_child_content():
+    schema = compile_element('<element name="item"><text/></element>')
+    model_set = registry(schema)
+    Root = model_set.model_for(element="doc")
+    with pytest.raises(pydantic.ValidationError, match="omitted, not None"):
+        model_set.to_document(Root.model_construct(item=None))
 
 
-def test_nested_malformed_scalar_tag_reports_the_child_path():
+def test_to_document_revalidates_ambiguous_root_scalars():
+    schema = compile_element('<choice><data type="integer"/><data type="string"/></choice>')
+    model_set = registry(schema)
+    Root = model_set.model_for(element="doc")
+    valid = Root.model_validate("12")
+    assert isinstance(valid.root, AlternativeValue)
+    created = model_set.to_document(valid)
+    assert created.is_valid
+    assert created.to_string() == "<doc>12</doc>"
+    round_tripped = model_set.from_document(created)
+    assert round_tripped.model_dump() == valid.model_dump()
+    assert tuple(item.candidate_id for item in round_tripped.root.candidates) == tuple(
+        item.candidate_id for item in valid.root.candidates
+    )
+
+    mutated = Root.model_validate("12")
+    mutated.root = 12
+    with pytest.raises(pydantic.ValidationError, match="ambiguous RELAX NG scalar"):
+        model_set.to_document(mutated)
+    with pytest.raises(pydantic.ValidationError, match="ambiguous RELAX NG scalar"):
+        model_set.to_document(Root.model_construct(root=12))
+
+    wrapper = valid.root
+    incomplete = AlternativeValue(
+        wrapper.lexical,
+        (wrapper.candidates[0],),
+        wrapper.context,
+        wrapper.grammar_fingerprint,
+        wrapper.revision,
+    )
+    with pytest.raises(pydantic.ValidationError, match="candidate set"):
+        model_set.to_document(Root.model_construct(root=incomplete))
+    with pytest.raises(pydantic.ValidationError, match="scalar-tag-invalid"):
+        model_set.to_document(Root.model_construct(root={"#value": {}}))
+
+
+def test_to_document_revalidates_ambiguous_attribute_scalars():
+    schema = compile_element(
+        '<attribute name="v"><choice><data type="integer"/>'
+        '<data type="string"/></choice></attribute>'
+    )
+    model_set = registry(schema)
+    Root = model_set.model_for(element="doc")
+    valid = Root.model_validate({"@v": "12"})
+    assert isinstance(valid.attr_v, AlternativeValue)
+    assert model_set.to_document(valid).is_valid
+    mutated = Root.model_validate({"@v": "12"})
+    mutated.attr_v = 12
+    with pytest.raises(pydantic.ValidationError, match="ambiguous RELAX NG scalar"):
+        model_set.to_document(mutated)
+    with pytest.raises(pydantic.ValidationError, match="ambiguous RELAX NG scalar"):
+        model_set.to_document(Root.model_construct(attr_v=12))
+
+
+def test_nested_malformed_scalar_tag_is_rejected_before_document_creation():
     schema = compile_element('<element name="item"><data type="integer"/></element>')
     model_set = registry(schema)
     Root = model_set.model_for(element="doc")
     Child = model_set.model_for(element="doc", path=("item",))
     child = Child.model_construct(root={"#value": {}})
     parent = Root.model_construct(item=child)
-    with pytest.raises(ValueError, match="route path doc/item"):
+    with pytest.raises(pydantic.ValidationError, match="scalar-tag-invalid"):
         model_set.to_document(parent)
+    route = schema.projection.routes[schema.projection.roots[0]]
+    with pytest.raises(ValueError, match="route path doc/item"):
+        route_to_lexical(route, parent)
+
+
+def test_root_context_conflict_is_not_silently_ignored():
+    schema = compile_element(
+        '<optional><attribute name="xml:base"><text/></attribute></optional>'
+        '<choice><data type="integer"/><data type="string"/></choice>'
+    )
+    model_set = registry(schema)
+    document = parse(schema, '<doc xml:base="urn:doc">12</doc>')
+    model = model_set.from_document(document)
+    same = model_set.to_document(model, context={"relaxng": {"base_uri": "urn:doc"}})
+    assert same.is_valid
+    assert same.root.base_uri == "urn:doc"
+    with pytest.raises(ValueError, match="conflicting base URIs"):
+        model_set.to_document(model, context={"relaxng": {"base_uri": "urn:other"}})
 
 
 def test_to_document_does_not_mutate_model_or_caller_context():
@@ -732,7 +861,8 @@ def test_to_document_does_not_mutate_model_or_caller_context():
     assert context == original
 
 
-def test_document_creation_delegates_grammar_verdict_to_the_ordinary_parse(monkeypatch):
+def test_document_creation_fallback_is_defensive_and_returns_parse_report(monkeypatch):
+    """Admitted start routes normally validate; this pins the report fallback."""
     schema = compile_element("<text/>")
     model_set = registry(schema)
     Root = model_set.model_for(element="doc")
