@@ -303,7 +303,7 @@ def test_capabilities_add_schema_languages_without_changing_old_keys(tmp_path):
                         "completeness": "boolean",
                         "suppressed_count": True,
                     },
-                    "comparison": {"structural": False, "corpus": False},
+                    "comparison": {"structural": True, "corpus": True},
                     "conversion": {
                         "tools": True,
                         "export_data": True,
@@ -320,6 +320,10 @@ def test_capabilities_add_schema_languages_without_changing_old_keys(tmp_path):
                     },
                     "projection": {"models": True, "records": True},
                 },
+            }
+            assert languages["relax-ng"]["mcp"]["comparison"] == {
+                "structural": True,
+                "corpus": True,
             }
 
     anyio.run(scenario)

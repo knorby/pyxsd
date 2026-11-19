@@ -125,7 +125,7 @@ def _schema_languages() -> dict[str, JsonValue]:
                     "completeness": "boolean",
                     "suppressed_count": True,
                 },
-                "comparison": {"structural": False, "corpus": False},
+                "comparison": {"structural": True, "corpus": True},
                 "conversion": _conversion_tools(),
                 "projection": {"models": True, "records": True},
             },

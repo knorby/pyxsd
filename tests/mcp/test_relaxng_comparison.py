@@ -587,6 +587,98 @@ def test_relaxng_compile_limit_is_a_typed_fault_not_a_corpus_verdict(tmp_path):
     anyio.run(scenario)
 
 
+def test_relaxng_corpus_parses_are_validation_only(tmp_path, monkeypatch):
+    from pyxsd.relaxng import RelaxNGSchema
+
+    calls: list[dict[str, object]] = []
+    original = RelaxNGSchema.parse
+
+    def spy(self, xml, **kwargs):
+        calls.append(kwargs)
+        return original(self, xml, **kwargs)
+
+    monkeypatch.setattr(RelaxNGSchema, "parse", spy)
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, _, workspace):
+            await upload(
+                inputs,
+                workspace,
+                _schema_files(
+                    "relax-ng",
+                    "relax-ng",
+                    **{"valid.xml": VALID},
+                ),
+            )
+            async with inputs.capture(workspace) as capture:
+                operation = ComparisonOperation(
+                    request_id="validation-only",
+                    capture=capture_to_wire(capture),
+                    old_schema=_reference("old.schema", "relax-ng"),
+                    new_schema=_reference("new.schema", "relax-ng"),
+                    corpus=_corpus("valid.xml"),
+                    corpus_requested=True,
+                )
+                cache = SchemaCache(inputs.limits)
+                try:
+                    result = execute_comparison(operation, cache, "test")
+                finally:
+                    cache.close()
+            assert result["corpus"]["files"][0]["status"] == "valid"
+            assert len(calls) == 2
+            assert all(call.get("typed") is False for call in calls)
+
+    anyio.run(scenario)
+
+
+@pytest.mark.parametrize(
+    ("old_format", "new_format", "document", "text", "old_status", "new_status"),
+    [
+        ("relax-ng", "xsd", "regressed.xml", REGRESSED, "unknown", "invalid"),
+        ("xsd", "relax-ng", "valid.xml", VALID, "valid", "unknown"),
+    ],
+)
+def test_one_sided_unknown_dominates_a_decided_outcome(
+    tmp_path, old_format, new_format, document, text, old_status, new_status
+):
+    limits = Limits(enforced=True, workers=1, relaxng_derivative_states=1)
+
+    async def scenario():
+        async with harness(tmp_path, limits) as (_, inputs, pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                _schema_files(old_format, new_format, **{document: text}),
+            )
+            result = await ComparisonService(inputs, pool).compare(
+                _request(
+                    workspace,
+                    old_format,
+                    new_format,
+                    corpus=_corpus(document),
+                )
+            )
+            corpus = result["corpus"]
+            (entry,) = corpus["files"]
+            assert entry["status"] == "unknown"
+            assert entry["old"] == old_status
+            assert entry["new"] == new_status
+            assert corpus["totals"]["unknown"] == 1
+            assert corpus["totals"]["regressed"] == 0
+            assert corpus["totals"]["resolved"] == 0
+            assert corpus["totals"]["valid"] == 0
+            assert corpus["regressions"] == []
+            assert corpus["resolutions"] == []
+            assert corpus["unknowns"] == [document]
+            unknown_side = "old" if old_status == "unknown" else "new"
+            decided_side = "new" if unknown_side == "old" else "old"
+            assert set(entry["faults"]) == {unknown_side}
+            assert entry["faults"][unknown_side]["code"] == "limit_exceeded"
+            assert decided_side not in entry.get("faults", {})
+
+    anyio.run(scenario)
+
+
 def test_corpus_time_budget_skips_remaining_relaxng_files(tmp_path):
     async def scenario():
         async with harness(tmp_path, Limits(enforced=True, workers=1, corpus_file_seconds=1)) as (
@@ -637,8 +729,18 @@ def test_corpus_time_budget_skips_remaining_relaxng_files(tmp_path):
 @pytest.mark.parametrize(
     "fault",
     [
-        ToolFault(code="worker_died", message="Worker died without a verdict"),
-        ToolFault(code="deadline_exceeded", message="Comparison budget exhausted"),
+        ToolFault(
+            code="worker_died",
+            message="Worker died without a verdict",
+            retryable=True,
+            details={"phase": "corpus", "documents": 1},
+        ),
+        ToolFault(
+            code="deadline_exceeded",
+            message="Comparison budget exhausted",
+            retryable=True,
+            details={"budget": "batch_seconds"},
+        ),
     ],
 )
 def test_worker_crash_and_time_budget_never_become_corpus_verdicts(tmp_path, fault):
@@ -674,6 +776,8 @@ def test_worker_crash_and_time_budget_never_become_corpus_verdicts(tmp_path, fau
                     )
                 )
             assert raised.value.fault.code == fault.code
+            assert raised.value.fault.retryable is fault.retryable
+            assert raised.value.fault.details == fault.details
 
     anyio.run(scenario)
 
@@ -724,6 +828,54 @@ def test_classify_source_failures_are_malformed_and_unbounded_messages():
     assert unknown.fault is not None
     assert unknown.fault["message"] == "unexpected operation"
     assert unknown.fault["details"] == {}
+
+
+def test_compare_schemas_tool_supports_relaxng_structure_and_corpus(tmp_path):
+    from tests.mcp.test_server import connected, create_workspace, structured
+
+    async def scenario():
+        async with connected(
+            tmp_path, enabled_groups={"exploration", "workspaces", "execution"}
+        ) as (client, _services):
+            workspace = await create_workspace(client)
+            await client.call_tool(
+                "pyxsd_put_files",
+                {
+                    "workspace_id": workspace,
+                    "files": [
+                        {"path": "old.rng", "text": RNG_OLD},
+                        {"path": "new.rng", "text": RNG_NEW},
+                        {"path": "regressed.xml", "text": REGRESSED},
+                    ],
+                },
+            )
+            submitted = await client.call_tool(
+                "pyxsd_compare_schemas",
+                {
+                    "workspace_id": workspace,
+                    "old_schema": {
+                        "source": {"path": "old.rng"},
+                        "format": "relax-ng",
+                    },
+                    "new_schema": {
+                        "source": {"path": "new.rng"},
+                        "format": "relax-ng",
+                    },
+                    "corpus": [{"path": "regressed.xml"}],
+                },
+            )
+            result = structured(submitted)["data"]
+            assert result["structural"]["totals"]["changed"] > 0
+            (entry,) = result["corpus"]["files"]
+            assert entry["path"] == "regressed.xml"
+            assert entry["status"] == "regressed"
+            assert entry["old"] == "valid"
+            assert entry["new"] == "invalid"
+            assert entry["evidence"][0]["code"]
+            assert result["corpus"]["totals"]["unknown"] == 0
+            assert result["conclusions"]["corpus_only"] is True
+
+    anyio.run(scenario)
 
 
 def test_xsd_comparison_retains_existing_corpus_contract(tmp_path):
