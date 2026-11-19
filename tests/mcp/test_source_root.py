@@ -116,11 +116,26 @@ def relaxng_ref():
 
 
 def test_source_root_relaxng_discovery_and_validation(tmp_path):
+    from pyxsd.mcp.config import Settings
+    from pyxsd.mcp.server import Services
+
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    make_tree(source_root)
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    settings = Settings(
+        project_root=project_root,
+        source_root=source_root,
+        limits=Limits(enforced=True, workers=1),
+    )
+
     async def scenario():
-        async with harness(tmp_path) as (service, _inputs, _pool, workspace):
-            envelope = await service.validate_document(
+        async with Services(settings) as services:
+            workspace = await services.inputs.create()
+            envelope = await services.exploration.validate_document(
                 ValidateDocumentRequest(
-                    workspace_id=workspace,
+                    workspace_id=workspace.id,
                     document=FileRef(path="data/relaxng.xml"),
                     schema_ref=relaxng_ref(),
                 )
