@@ -1,30 +1,43 @@
-"""Memoise elementpath's regex translation for the process.
+r"""Memoise elementpath's regex translation for the process.
 
 elementpath translates the source pattern to Python regex syntax on every
 ``fn:matches``/``fn:replace``/``fn:tokenize``/``fn:analyze-string`` call.
 ``translate_pattern`` is a pure function of its arguments and elementpath's
 installed Unicode data, and a single sweep can call it more than a million
 times for one distinct pattern (``unicode90-001``).  This module wraps it once
-at the XPath-engine import seam, following the project's documented policy of
-patching elementpath parsers, and leaves results and errors untouched.
+at the XPath-engine import seam, as the engine already does for elementpath's
+parsers, and leaves results and errors untouched.
 
 The cache is process-scoped on purpose: the key is content-addressed and the
-function retains no transformation, document, or parser state.  It is bounded
-at ``_CACHE_MAXSIZE`` entries, so a pathological caller cannot grow it without
-limit.  ``install_unicode_data`` changes the translation input, so the
-installed version is part of the key; a caller that installs different data
-under an identical version string must call ``clear_translation_cache()``.
+function retains no transformation, document, or parser state.
+``_CACHE_MAXSIZE`` bounds the number of entries, not their bytes: a translation
+scales with the pattern's Unicode-class expansion (``\p{Ll}`` is 858 characters
+and ``\p{L}`` about 1.6 thousand; a 1,000-character pattern built from 200
+``\p{L}`` classes is roughly 1.26 MiB), so 1,024 large computed classes could
+retain over 1 GiB.  In the two censuses measured for this memo, each worker
+retained at most 433 entries with a largest entry of 3,466 characters and peak
+worker RSS stayed below the un-memoised run; a stylesheet that computes
+thousands of large distinct classes can still retain multiple GiB for the
+process lifetime, which is the residual risk this count bound does not remove.
+``install_unicode_data`` changes the translation input, so the installed version
+is part of the key; a caller that installs different data under an identical
+version string must call ``clear_translation_cache()``.
 
 ``lru_cache`` never stores an exception, so an invalid pattern is re-translated
-on every call and raises the same ``RegexError`` with the same traceback and
-``__cause__`` chain as before; only successful translations are memoised.
+on every call and raises the same exception class and message with the same
+``__cause__`` chain as before; only successful translations are memoised.  The
+wrapper adds its own frames to the traceback, so the *frames* differ even though
+the exception and its cause do not; because the patch is process-global, a
+co-installed elementpath consumer sees those additional frames too.
 
 The installer patches ``elementpath.regex.patterns`` (the definition module)
 and then every module in ``sys.modules`` that has already bound the original
 function.  Patching the definition module covers every elementpath module
 imported *later*; the scan covers those imported *before*.  Between the two no
-loaded module can keep the uncached hot path, and a future elementpath release
-that adds a module is covered without a change here.
+loaded *elementpath* module can keep the uncached hot path, and a future
+elementpath release that adds a module is covered without a change here.  The
+scan matches the attribute name, so a module that bound the function under
+another name would be missed; elementpath has no such binding.
 """
 
 from __future__ import annotations
@@ -61,6 +74,8 @@ def _original_call(
 _translate_cached = lru_cache(maxsize=_CACHE_MAXSIZE)(_original_call)
 
 
+# ``@wraps`` copies elementpath's ``__doc__`` over any docstring written here,
+# so the contract lives in the module docstring instead.
 @wraps(_ORIGINAL)
 def translate_pattern(
     pattern: str,
@@ -70,7 +85,6 @@ def translate_pattern(
     lazy_quantifiers: bool = True,
     anchors: bool = True,
 ) -> str:
-    """Translate one pattern with the process-wide memo (elementpath's signature)."""
     return _translate_cached(
         pattern,
         flags,
@@ -97,7 +111,11 @@ def _patch_loaded_modules() -> None:
 
 
 def install_regex_translation_cache() -> bool:
-    """Install the memo once per process; ``True`` only for the installing call."""
+    """Install the memo once per process for callers that install sequentially.
+
+    Returns ``True`` only for the call that installs it; a later call changes
+    nothing and returns ``False``.
+    """
     global _INSTALLED
     if _INSTALLED:
         return False
