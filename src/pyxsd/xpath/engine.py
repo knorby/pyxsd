@@ -1289,11 +1289,17 @@ def _arity_key(arity: int | tuple[int, int | None]) -> object:
 
 def _decimal_formats_key(
     decimal_formats: Mapping[str | None, Mapping[str, str]],
-) -> tuple[tuple[str, tuple[tuple[str, str], ...]], ...]:
-    """The statically known decimal formats, in a hashable canonical order."""
+) -> tuple[tuple[tuple[bool, str], tuple[tuple[str, str], ...]], ...]:
+    """The statically known decimal formats, in a hashable canonical order.
+
+    Each entry is tagged with whether it is the default format.  ``None`` and
+    the lexical QName ``"None"`` are both valid, distinct keys of
+    ``decimal_formats``; without the tag they would share one key component and
+    the second configuration would reuse the first one's table.
+    """
     return tuple(
         sorted(
-            (str(name), tuple(sorted(attributes.items())))
+            ((name is None, name if name is not None else ""), tuple(sorted(attributes.items())))
             for name, attributes in decimal_formats.items()
         )
     )
