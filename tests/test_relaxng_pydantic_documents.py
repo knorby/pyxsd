@@ -613,6 +613,8 @@ def test_to_document_canonicalizes_equal_routes_and_rejects_foreign_models():
     foreign_model = registry(foreign_schema).model_for(element="doc").model_validate(7)
     with pytest.raises(IntegrationError, match="another compiled schema"):
         model_set.to_document(foreign_model)
+    with pytest.raises(IntegrationError, match="another compiled schema"):
+        model_set.to_document(foreign_model, route=schema.projection.roots[0])
 
     nested_schema = compile_element(
         '<attribute name="v"><text/></attribute>'
@@ -758,6 +760,104 @@ def test_to_document_rejects_constructed_none_child_content():
     Root = model_set.model_for(element="doc")
     with pytest.raises(pydantic.ValidationError, match="omitted, not None"):
         model_set.to_document(Root.model_construct(item=None))
+
+
+def test_to_document_does_not_coerce_non_mapping_child_record_data():
+    schema = compile_element(
+        '<element name="item"><optional><attribute name="a"><text/></attribute>'
+        "</optional><text/></element>"
+    )
+    model_set = registry(schema)
+    Root = model_set.model_for(element="doc")
+
+    class IterableValue:
+        def __iter__(self):
+            return iter((("sub", "x"),))
+
+    invalid_values = ("", [], [("sub", "x")], 12, IterableValue())
+    for value in invalid_values:
+        with pytest.raises(pydantic.ValidationError):
+            Root.model_validate({"item": value})
+        with pytest.raises(pydantic.ValidationError):
+            model_set.to_document(Root.model_construct(item=value))
+
+    valid = Root.model_validate({"item": {"@a": "x", "$": "value"}})
+    created = model_set.to_document(valid)
+    assert created.is_valid
+    assert created.to_string() == '<doc><item a="x">value</item></doc>'
+
+
+def test_to_document_does_not_transport_qnames_across_scalar_shapes():
+    text_schema = compile_element("<text/>")
+    text_set = registry(text_schema)
+    TextRoot = text_set.model_for(element="doc")
+    with qname_context({"p": "urn:x"}):
+        qname = QName("p:a")
+    with pytest.raises(pydantic.ValidationError):
+        TextRoot.model_validate((qname,))
+    with pytest.raises(pydantic.ValidationError):
+        text_set.to_document(TextRoot.model_construct(root=(qname,)))
+
+    list_schema = compile_element('<list><oneOrMore><data type="QName"/></oneOrMore></list>')
+    list_set = registry(list_schema)
+    ListRoot = list_set.model_for(element="doc")
+    with pytest.raises(pydantic.ValidationError):
+        ListRoot.model_validate(qname)
+    with pytest.raises(pydantic.ValidationError):
+        list_set.to_document(ListRoot.model_construct(root=qname))
+
+    atomic_schema = compile_element('<data type="QName"/>')
+    atomic_set = registry(atomic_schema)
+    AtomicRoot = atomic_set.model_for(element="doc")
+    with pytest.raises(pydantic.ValidationError):
+        AtomicRoot.model_validate([qname])
+    with pytest.raises(pydantic.ValidationError):
+        atomic_set.to_document(AtomicRoot.model_construct(root=[qname]))
+
+    with pytest.raises(pydantic.ValidationError):
+        list_set.to_document(ListRoot.model_construct(root=(QName("p:x"),)))
+    mixed_list_schema = compile_element(
+        '<list><choice><data type="QName"/><data type="string"/></choice></list>'
+    )
+    mixed_list_set = registry(mixed_list_schema)
+    MixedListRoot = mixed_list_set.model_for(element="doc")
+    with pytest.raises(pydantic.ValidationError):
+        mixed_list_set.to_document(MixedListRoot.model_construct(root=(qname,)))
+
+
+def test_ambiguous_qname_string_transport_matches_normal_model_validation():
+    schema = compile_element('<choice><data type="QName"/><data type="string"/></choice>')
+    model_set = registry(schema)
+    Root = model_set.model_for(element="doc")
+    with qname_context({"p": "urn:x"}):
+        qname = QName("p:a")
+
+    normal = Root.model_validate(qname)
+    assert isinstance(normal.root, AlternativeValue)
+    assert tuple(item.contract.kind for item in normal.root.candidates) == ("atomic",)
+    created = model_set.to_document(Root.model_construct(root=qname))
+    assert created.is_valid
+    assert created.to_string() == "<doc>p:a</doc>"
+    reparsed = model_set.from_document(created)
+    assert tuple(item.candidate_id for item in reparsed.root.candidates) == tuple(
+        item.candidate_id for item in normal.root.candidates
+    )
+    assert (reparsed.root.context.namespaces == {}) == (normal.root.context.namespaces == {})
+
+    explicit_schema = compile_element('<choice><data type="QName"/><data type="string"/></choice>')
+    explicit_set = registry(explicit_schema)
+    ExplicitRoot = explicit_set.model_for(element="doc")
+    explicit = ExplicitRoot.model_validate(
+        qname,
+        context={"relaxng": {"namespaces": {"p": "urn:x"}}},
+    )
+    assert len(explicit.root.candidates) == 2
+    snapshot_created = explicit_set.to_document(explicit)
+    assert snapshot_created.is_valid
+    snapshot_reparsed = explicit_set.from_document(snapshot_created)
+    assert tuple(item.candidate_id for item in snapshot_reparsed.root.candidates) == tuple(
+        item.candidate_id for item in explicit.root.candidates
+    )
 
 
 def test_to_document_revalidates_ambiguous_root_scalars():

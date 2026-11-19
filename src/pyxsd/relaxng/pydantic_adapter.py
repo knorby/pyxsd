@@ -52,7 +52,7 @@ from pyxsd.integrations.pydantic import (
 from pyxsd.namespaces import clark, local_name
 from pyxsd.relaxng.annotations import _alternative_value_at_site
 from pyxsd.relaxng.contracts import ScalarContract, candidate_id, scalar_contract
-from pyxsd.relaxng.datatypes import DatatypeContext, UnsupportedDatatypeOperation
+from pyxsd.relaxng.datatypes import XSD_LIBRARY, DatatypeContext, UnsupportedDatatypeOperation
 from pyxsd.relaxng.diagnostics import report_mismatches
 from pyxsd.relaxng.document import RelaxNGDocument
 from pyxsd.relaxng.evidence import EvidenceGraph
@@ -96,6 +96,7 @@ from pyxsd.relaxng.values import (
     AlternativeValue,
     Candidate,
     ListInterpretation,
+    _list_token_plan,
     encode_scalar,
 )
 from pyxsd.validation import ValidationReport
@@ -2012,7 +2013,7 @@ class RelaxNGModelSet:
         child snapshot's recorded context.  Caller ``context`` is applied only
         while building the lexical tree.
         """
-        dump = model.model_dump(by_alias=True, round_trip=True)
+        dump = model.model_dump(by_alias=True, round_trip=True, serialize_as_any=True)
         return self._validation_data(route, dump, (route.expanded_name or "",))
 
     def _validation_data(
@@ -2021,12 +2022,10 @@ class RelaxNGModelSet:
         data: Any,
         path: tuple[str, ...],
     ) -> Any:
-        if data is None:
-            # A child position never accepts None; the parent's before-validator
-            # reports the omission/invalid shape before route construction.
-            return None
         if _route_is_root_model(route):
             return self._scoped_validation_value(route.content.scalar_contracts, data, route, path)
+        if not isinstance(data, Mapping):
+            return data
         result = dict(data)
         if "$" in result and route.content.scalar_contracts:
             result["$"] = self._scoped_validation_value(
@@ -2070,14 +2069,27 @@ class RelaxNGModelSet:
         route: RouteContract,
         path: tuple[str, ...],
     ) -> Any:
-        """Preserve one resolved QName value's own scoped namespace context."""
+        """Preserve one resolved QName value's own scoped namespace context.
+
+        Transport is allowed only when the schema-static scalar shape can
+        actually accept it: one atomic QName contract for a single QName, or
+        one whole-list contract whose every token position is an atomic QName
+        for a nonempty QName sequence.  Any other shape is returned unchanged
+        so the ordinary Pydantic field contract rejects it.  In particular, a
+        bare QName at an ambiguous multi-contract position never creates a
+        candidate set of its own.
+        """
         if value is None or isinstance(value, (AlternativeValue, ListInterpretation)):
             return value
         if isinstance(value, Mapping) and "#value" in value:
             return value
         if isinstance(value, QName):
+            if not self._may_transport_single_qname(contracts):
+                return value
             qnames: tuple[QName, ...] = (value,)
         elif isinstance(value, (list, tuple)) and value:
+            if not self._may_transport_qname_list(contracts):
+                return value
             qnames = tuple(value)
         else:
             return value
@@ -2120,16 +2132,40 @@ class RelaxNGModelSet:
             STANDALONE_REVISION,
         )
 
+    @staticmethod
+    def _is_atomic_qname(contract: ScalarContract) -> bool:
+        return (
+            contract.kind == "atomic"
+            and contract.library_uri == XSD_LIBRARY
+            and contract.type_name in {"QName", "NOTATION"}
+        )
+
+    def _may_transport_single_qname(self, contracts: tuple[ScalarContract, ...]) -> bool:
+        return len(contracts) == 1 and self._is_atomic_qname(contracts[0])
+
+    def _may_transport_qname_list(self, contracts: tuple[ScalarContract, ...]) -> bool:
+        if len(contracts) != 1 or contracts[0].kind != "list":
+            return False
+        pattern = self._codec.pattern_for(contracts[0])
+        if not isinstance(pattern, PatternList):  # pragma: no cover - list contract shape
+            return False
+        plan = _list_token_plan(pattern)
+        if plan is None or not plan.patterns:
+            return False
+        return all(
+            self._is_atomic_qname(scalar_contract(token_pattern)) for token_pattern in plan.patterns
+        )
+
     def _select_document_route(
         self, model_route: RouteContract, selector: str | None
     ) -> RouteContract:
+        if model_route.route_id not in self._plan.routes:
+            raise IntegrationError(
+                f"RELAX NG route {_route_label(model_route)}: the model class belongs "
+                "to another compiled schema"
+            )
         if selector is None:
-            selected = self._plan.routes.get(model_route.route_id)
-            if selected is None:
-                raise IntegrationError(
-                    f"RELAX NG route {_route_label(model_route)}: the model class belongs "
-                    "to another compiled schema"
-                )
+            selected = self._plan.routes[model_route.route_id]
         else:
             if not isinstance(selector, str) or not selector:
                 raise IntegrationError(
