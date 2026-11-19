@@ -4,12 +4,15 @@ import json
 import secrets
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from typing import cast
 
 from pydantic import JsonValue
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
 from pyxsd.introspection import ComponentDescription, describe_schema
+from pyxsd.relaxng import RelaxNGSchema
+from pyxsd.relaxng.comparison import compare_relaxng_structure
 from pyxsd.schema import Schema
 
 from ..cache import (
@@ -85,9 +88,39 @@ def execute_comparison(
         hints=(),
         processor_version=processor_version,
     )
-    with cache.acquire(old_request) as old_schema, cache.acquire(new_request) as new_schema:
+    with ExitStack() as leases:
+        old_schema = leases.enter_context(cache.acquire(old_request))
+        new_schema = (
+            old_schema
+            if operation.old_schema == operation.new_schema
+            else leases.enter_context(cache.acquire(new_request))
+        )
         require_complete_schema(old_schema)
         require_complete_schema(new_schema)
+        if not isinstance(old_schema, Schema) or not isinstance(new_schema, Schema):
+            structural_rng: dict[str, JsonValue]
+            if isinstance(old_schema, RelaxNGSchema) and isinstance(new_schema, RelaxNGSchema):
+                structural_rng = compare_relaxng_structure(
+                    old_schema, new_schema, detail_limit=cache.limits.page_items
+                )
+            else:
+                structural_rng = {
+                    "status": "not_comparable",
+                    "old_format": operation.old_schema.format,
+                    "new_format": operation.new_schema.format,
+                    "statement": "Structural comparison requires schemas in the same language.",
+                }
+            return {
+                "structural": structural_rng,
+                "corpus": {
+                    "status": "unsupported",
+                    "statement": "Corpus comparison currently requires two XSD schemas.",
+                },
+                "conclusions": {
+                    "corpus_only": True,
+                    "statement": "No corpus verdict or universal compatibility conclusion was computed.",
+                },
+            }
         old_schema = require_xsd_schema(old_schema)
         new_schema = require_xsd_schema(new_schema)
         old_description, new_description = describe_schema(old_schema), describe_schema(new_schema)
