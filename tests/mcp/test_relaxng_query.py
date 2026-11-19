@@ -255,6 +255,26 @@ def test_namespaced_relaxng_query_uses_expanded_names(tmp_path):
     anyio.run(scenario)
 
 
+def test_invalid_relaxng_document_remains_queryable(tmp_path):
+    document = '<root><item id="a">lead<em>inner</em>tail</item><wrong/></root>'
+
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.rng": RNG_SCHEMA, "document.xml": document},
+            )
+            summary = await ask(service, workspace, xpath="/root/item")
+            item = summary.data["results"][0]
+            assert item["text"] == "lead"
+            assert item["location"]["path"][-1] == {"name": "item", "index": 1}
+            scalar = await ask(service, workspace, xpath="string(/root/item)")
+            assert scalar.data["results"] == "leadinnertail"
+
+    anyio.run(scenario)
+
+
 def test_query_uses_validation_only_parsing_without_evidence(tmp_path):
     """A typed parse would exhaust this budget; queries must stay lexical."""
     document = '<root><item id="a">one</item><item id="b">two</item></root>'
@@ -342,6 +362,21 @@ def test_query_results_page_through_cursor_and_budget(tmp_path):
                 await ask(service, workspace, xpath="/root/item", page=Page(limit=51))
 
     anyio.run(scenario)
+
+
+def test_projected_relaxng_nodes_are_structural():
+    schema = RelaxNGSchema.compile(io.StringIO(RNG_SCHEMA))
+    document = schema.parse(io.StringIO(DOCUMENT), typed=True)
+    item = document.root.children[0]
+    assert type(item) is not RelaxNGElement
+    assert worker_main._structural_node(item)
+    summary = worker_main._node_summary(document, item, None)
+    assert summary["name"] == "item"
+    assert summary["text"] == "lead"
+    index = SourceIndex("/workspace/document.xml", DOCUMENT.encode())
+    subtree = worker_main._node_summary(document, item, index)
+    assert base64.b64decode(subtree["data"]) == (b'<item id="a">lead<em>inner</em>tail</item>')
+    assert subtree["source_faithful"] is True
 
 
 def test_source_unavailable_when_no_addressable_occurrence():
