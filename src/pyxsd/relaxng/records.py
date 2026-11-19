@@ -1,8 +1,8 @@
-"""RELAX NG record column compilation and fixed Arrow schemas.
+"""RELAX NG record column compilation, current-evidence rows, and Arrow output.
 
 Rows are compiled from the schema-side route graph before any document exists.
-This module deliberately constructs only Arrow schemas in this phase; evidence
-backed row extraction is a separate step.
+Typed row values and selections come only from current accepting evidence;
+fixed Arrow schemas are established at compile time.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from pyxsd.integrations._shape import scalar_kind
 from pyxsd.integrations._values import prepare_document
 from pyxsd.integrations.projection import FieldSource, field_source_metadata
 from pyxsd.namespaces import clark, local_name, namespace_of
+from pyxsd.relaxng.annotations import typed_value_at_site
 from pyxsd.relaxng.contracts import (
     ScalarContract,
     candidate_id,
@@ -830,19 +831,6 @@ def _node_route_id(node: Any) -> str | None:
     return None
 
 
-def _node_matches_route(node: Any, route: RouteContract) -> bool:
-    """Route identity is generated; only a generic route falls back to names."""
-    actual = _node_route_id(node)
-    if actual is not None:
-        return actual == route.route_id
-    if route.generic_reason is None:
-        return False
-    name = _node_name(node)
-    if route.expanded_name is not None and name != route.expanded_name:
-        return False
-    return route.name_class.contains(namespace_of(name), local_name(name))
-
-
 def _text_sites(graph: EvidenceGraph) -> dict[Any, EvidenceOccurrence]:
     result: dict[Any, EvidenceOccurrence] = {}
     for occurrence in graph.occurrences:
@@ -1033,30 +1021,54 @@ def _selected_alternative(
     )
 
 
-def _read_selected_scalar(
+def _typed_value(
     context: _RowContext,
     node: Any,
     occurrence: EvidenceOccurrence | None,
+    attribute: str | None,
+) -> Any:
+    """Return the typed value backed by current evidence, or ``None``.
+
+    The public accessor is the first source.  It conservatively returns
+    ``None`` when an element has no character data even if an empty lexical
+    witness survives.  In that case the exact retained occurrence is read
+    through the shared evidence interpreter so an accepted empty string or
+    zero-token list is not mistaken for an absent/empty branch.
+    """
+    value = node.attribute_value(attribute) if attribute is not None else node.scalar_value()
+    if value is not None:
+        return value
+    if occurrence is None or not context.graph.scalar_witnesses_at(occurrence):
+        return None
+    try:
+        return typed_value_at_site(
+            context.graph,
+            occurrence,
+            grammar_fingerprint=context.plan.grammar_fingerprint,
+            revision=node.revision.revision_id,
+            contracts=context.graph.schema_contracts_at(occurrence),
+        )
+    except (AmbiguousValueError, UnsupportedDatatypeOperation, ValueError, TypeError) as exc:
+        raise IntegrationError(f"cannot read current scalar evidence: {exc}") from exc
+
+
+def _read_selected_scalar(
+    context: _RowContext,
+    node: Any,
+    occurrence: EvidenceOccurrence,
+    typed_value: Any,
     contract: ScalarContract,
     arrow_shape: Any,
     *,
-    attribute: str | None,
     label: str,
 ) -> _SelectedValue:
     """Read only the selected surviving contract at one exact scalar occurrence."""
-    typed_value = node.attribute_value(attribute) if attribute is not None else node.scalar_value()
-    assert typed_value is not None
-    schema_contracts = context.graph.schema_contracts_at(cast(EvidenceOccurrence, occurrence))
-    if len(schema_contracts) == 1 and schema_contracts[0] != contract:
-        raise IntegrationError(
-            f"{label}: current scalar evidence differs from the selected contract"
-        )
     if isinstance(typed_value, AlternativeValue):
         return _selected_alternative(
             context,
             typed_value,
             contract,
-            cast(EvidenceOccurrence, occurrence),
+            occurrence,
             arrow_shape,
             label,
         )
@@ -1067,10 +1079,27 @@ def _read_selected_scalar(
     return _SelectedValue(
         converted,
         CandidateSelection(
-            cast(EvidenceOccurrence, occurrence),
+            occurrence,
             candidate_id(context.plan.grammar_fingerprint, contract),
         ),
     )
+
+
+def _empty_scalar_reason(*, has_lexical: bool, lexical: str, nullable: bool, label: str) -> Any:
+    """Resolve a position with no surviving typed interpretation.
+
+    Whitespace-only or absent character data may be the compiled empty branch.
+    A nullable binding returns ``None``; no selection is invented.  Anything
+    else is a contextual error because non-whitespace lexical content cannot be
+    silently dropped or replaced with an empty value.
+    """
+    if has_lexical and lexical.strip(" \t\r\n"):
+        raise IntegrationError(
+            f"{label}: present character data has no accepting scalar interpretation"
+        )
+    if nullable:
+        return None
+    raise IntegrationError(f"{label}: required scalar content has no surviving interpretation")
 
 
 def _read_element_value(
@@ -1082,20 +1111,25 @@ def _read_element_value(
     label: str,
 ) -> _SelectedValue:
     arrow_shape = _arrow_shape(context, contract)
-    if node.text_value() is None:
-        if contract.kind == "list":
-            return _SelectedValue([])
-        if nullable:
-            return _SelectedValue(None)
-        raise IntegrationError(f"{label}: required scalar content is absent")
     occurrence = context.text_sites.get(node)
+    typed_value = _typed_value(context, node, occurrence, None)
+    if typed_value is None:
+        text = node.text_value()
+        return _SelectedValue(
+            _empty_scalar_reason(
+                has_lexical=text is not None,
+                lexical=text or "",
+                nullable=nullable,
+                label=label,
+            )
+        )
     return _read_selected_scalar(
         context,
         node,
-        occurrence,
+        cast(EvidenceOccurrence, occurrence),
+        typed_value,
         contract,
         arrow_shape,
-        attribute=None,
         label=label,
     )
 
@@ -1106,18 +1140,37 @@ def _read_attribute_value(
     field: FieldContract,
     contract: ScalarContract,
     *,
+    nullable: bool,
     label: str,
 ) -> _SelectedValue:
-    if node.attribute_lexical(field.expanded_name) is None:
-        return _SelectedValue(None)
+    lexical = node.attribute_lexical(field.expanded_name)
+    if lexical is None:
+        return _SelectedValue(
+            _empty_scalar_reason(
+                has_lexical=False,
+                lexical="",
+                nullable=nullable,
+                label=label,
+            )
+        )
     occurrence = context.attribute_sites.get((node, field.expanded_name))
+    typed_value = _typed_value(context, node, occurrence, field.expanded_name)
+    if typed_value is None:
+        return _SelectedValue(
+            _empty_scalar_reason(
+                has_lexical=True,
+                lexical=lexical,
+                nullable=nullable,
+                label=label,
+            )
+        )
     return _read_selected_scalar(
         context,
         node,
-        occurrence,
+        cast(EvidenceOccurrence, occurrence),
+        typed_value,
         contract,
         _arrow_shape(context, contract),
-        attribute=field.expanded_name,
         label=label,
     )
 
@@ -1131,30 +1184,11 @@ def _record_selection(
         selections.append((selected.selection, label))
 
 
-def _climb_row(
-    context: _RowContext,
-    row: Any,
-    target: int,
-    source: FieldSource,
-    label: str,
-) -> Any:
+def _climb_row(context: _RowContext, row: Any, target: int) -> Any:
     chain = context.plan.row_chain
     node = row
-    index = len(chain) - 1
-    while index > target:
-        parent = node.parent
-        if parent is None:
-            raise IntegrationError(
-                f"{label}: source climbs above the configured root "
-                f"{chain[0].expanded_name or chain[0].route_id}"
-            )
-        index -= 1
-        expected = chain[index]
-        if not _node_matches_route(parent, expected):
-            raise IntegrationError(
-                f"{label}: ancestor node does not match row path route {_route_label(expected)}"
-            )
-        node = parent
+    for _ in range(len(chain) - 1 - target):
+        node = node.parent
     return node
 
 
@@ -1162,7 +1196,6 @@ def _column_endpoint(
     context: _RowContext,
     binding: RelaxNGColumnBinding,
     row: Any,
-    label: str,
 ) -> tuple[Any | None, RouteContract]:
     chain = context.plan.row_chain
     source = binding.source
@@ -1172,7 +1205,7 @@ def _column_endpoint(
         target = len(chain) - 1 - source.levels
     else:
         target = len(chain) - 1
-    node = _climb_row(context, row, target, source, label)
+    node = _climb_row(context, row, target)
     route = chain[target]
     for step in source.path:
         edge = _child_step(context.plan.schema.projection, route, step, "column path step")
@@ -1194,13 +1227,18 @@ def _column_value(
         f"route {_route_label(binding.occurrence_route)} "
         f"declaration {_format_path(binding.declaration)}"
     )
-    endpoint, route = _column_endpoint(context, binding, row, label)
+    endpoint, route = _column_endpoint(context, binding, row)
     if endpoint is None:
         return _SelectedValue(None)
     if binding.source.attribute is not None:
         field = _attribute_field(route, binding.source.attribute)
         return _read_attribute_value(
-            context, endpoint, field, binding.selected_contract, label=label
+            context,
+            endpoint,
+            field,
+            binding.selected_contract,
+            nullable=binding.nullable,
+            label=label,
         )
     return _read_element_value(
         context,
@@ -1247,7 +1285,14 @@ def _default_record_value(
             f"route {_route_label(route)}"
         )
         contract = _single_contract(attribute.scalar_contracts, label)
-        selected = _read_attribute_value(context, node, attribute, contract, label=label)
+        selected = _read_attribute_value(
+            context,
+            node,
+            attribute,
+            contract,
+            nullable=attribute.cardinality.minimum == 0,
+            label=label,
+        )
         result[attribute.alias] = selected.value
         _record_selection(selections, selected, label)
     if route.content.scalar_contracts:
@@ -1316,6 +1361,39 @@ def _check_joint(
     )
 
 
+def _row_level_matches(node: Any, route: RouteContract) -> bool:
+    """Match one actual row-chain level against the compiled chain."""
+    actual = _node_route_id(node)
+    if actual is not None:
+        return actual == route.route_id
+    name = _node_name(node)
+    return route.name_class.contains(namespace_of(name), local_name(name))
+
+
+def _row_chain_error(plan: RelaxNGProjectionPlan, node: Any) -> tuple[str, str] | None:
+    """Require the selected node's full actual ancestor chain to match."""
+    chain: list[Any] = []
+    current = node
+    while current is not None:
+        chain.append(current)
+        current = current.parent
+    chain.reverse()
+    actual = "/".join(_node_name(item) for item in chain)
+    if len(chain) != len(plan.row_chain):
+        return (
+            f"expected {len(plan.row_chain)} row levels, found {len(chain)}",
+            actual,
+        )
+    for level, (candidate, route) in enumerate(zip(chain, plan.row_chain, strict=True)):
+        if not _row_level_matches(candidate, route):
+            return (
+                f"level {level} node {_node_name(candidate)!r} does not match "
+                f"compiled route {_route_label(route)}",
+                actual,
+            )
+    return None
+
+
 def _row_nodes(
     plan: RelaxNGProjectionPlan,
     document: Document,
@@ -1335,11 +1413,14 @@ def _row_nodes(
         candidates = document.findall(selector, namespaces=namespaces)
         description = "selector node"
     for index, node in enumerate(candidates, 1):
-        if not _node_matches_route(node, plan.route):
-            actual = _node_route_id(node) or _node_name(node)
+        mismatch = _row_chain_error(plan, node)
+        if mismatch is not None:
+            reason, actual = mismatch
             raise IntegrationError(
-                f"row {index} {description} {_node_name(node)!r} route {actual!r} "
-                f"does not match configured row route {_route_label(plan.route)}"
+                f"row {index} {description} {_node_name(node)!r} does not match "
+                f"configured row path {_format_path(plan.row_path)} "
+                f"(route {_route_label(plan.route)}): {reason}; "
+                f"actual ancestor path {actual}"
             )
         yield index, node
 
@@ -1560,5 +1641,6 @@ class RelaxNGRecordProjection:
         batch_size: int = 10000,
         errors: Literal["raise", "report"] = "raise",
     ) -> Any:
+        """Task 7 owns dataset publishing; this projection only writes rows."""
         del sources, destination, selector, namespaces, batch_size, errors
         raise IntegrationError(_DATASET_EXTRACTION)

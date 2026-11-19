@@ -11,7 +11,7 @@ from __future__ import annotations
 import io
 from dataclasses import dataclass
 from decimal import Decimal
-from types import SimpleNamespace
+from xml.etree import ElementTree as ET
 
 import pytest
 
@@ -27,15 +27,11 @@ from pyxsd.relaxng.datatypes import (  # noqa: E402
     DatatypeLibraryRegistration,
 )
 from pyxsd.relaxng.errors import StaleInterpretationError  # noqa: E402
-from pyxsd.relaxng.evidence import EvidenceGraph  # noqa: E402
-from pyxsd.relaxng.names import Name  # noqa: E402
+from pyxsd.relaxng.evidence import CandidateSelection, EvidenceGraph  # noqa: E402
 from pyxsd.relaxng.records import (  # noqa: E402
     RelaxNGRecordProjection,
-    _context,
     _convert_value,
-    _node_matches_route,
-    _node_route_id,
-    _read_selected_scalar,
+    _empty_scalar_reason,
     iter_relaxng_rows,
 )
 from pyxsd.relaxng.schema import RelaxNGSchema  # noqa: E402
@@ -146,15 +142,18 @@ def test_unique_scalar_attributes_and_child_columns_are_typed():
 
 
 def test_root_scalar_column_preserves_empty_string_against_absent_none():
-    schema = compile_element('<choice><data type="string"/><empty/></choice>')
-    record = projection(schema, columns={"value": FieldSource()})
-    assert rows(record, typed(schema, "<doc>hello</doc>")) == [{"value": "hello"}]
-    assert rows(record, typed(schema, "<doc/>")) == [{"value": None}]
-    from xml.etree import ElementTree as ET
-
+    empty_string = compile_element('<choice><data type="string"/><empty/></choice>')
+    string_projection = projection(empty_string, columns={"value": FieldSource()})
+    assert rows(string_projection, typed(empty_string, "<doc>hello</doc>")) == [{"value": "hello"}]
+    assert rows(string_projection, typed(empty_string, "<doc/>")) == [{"value": ""}]
     element = ET.Element("doc")
     element.text = ""
-    assert rows(record, typed(schema, element)) == [{"value": ""}]
+    assert rows(string_projection, typed(empty_string, element)) == [{"value": ""}]
+
+    empty_branch = compile_element('<choice><data type="int"/><empty/></choice>')
+    absent = projection(empty_branch, columns={"value": FieldSource()})
+    assert rows(absent, typed(empty_branch, "<doc/>")) == [{"value": None}]
+    assert rows(absent, typed(empty_branch, "<doc> </doc>")) == [{"value": None}]
 
 
 def test_optional_attribute_path_and_text_yield_none_but_empty_is_a_value():
@@ -174,7 +173,7 @@ def test_optional_attribute_path_and_text_yield_none_but_empty_is_a_value():
         },
     )
     assert rows(record, typed(schema, "<doc><name/></doc>")) == [
-        {"opt": None, "value": None, "name": None}
+        {"opt": None, "value": None, "name": ""}
     ]
     assert rows(record, typed(schema, '<doc opt=""><name>x</name></doc>')) == [
         {"opt": "", "value": None, "name": "x"}
@@ -446,8 +445,10 @@ def test_recursive_route_ancestor_cannot_climb_above_the_document_root():
     document = typed(schema, '<order id="1"><order id="2"/></order>')
     with pytest.raises(IntegrationError) as error:
         rows(record, document, selector=".")
-    assert "row 1" in str(error.value)
-    assert "above" in str(error.value)
+    message = str(error.value)
+    assert "row 1" in message
+    assert "expected 2 row levels" in message
+    assert "actual ancestor path order" in message
     assert rows(record, document, selector="order") == [{"id": 2, "parent": 1}]
 
 
@@ -771,46 +772,6 @@ def test_arrow_scalar_conversion_rejects_missing_contract_context(contract, valu
         _convert_value(contract, value, arrow_shape, "field")
 
 
-def test_generated_and_generic_node_route_matching():
-    class Generated:
-        _relaxng_route_id_ = "route-a"
-        _name_ = "doc"
-
-    class Alternate:
-        __relaxng_route_id__ = "route-b"
-        _name_ = "doc"
-
-    class Bare:
-        _name_ = "doc"
-
-    generic = SimpleNamespace(
-        route_id="route-generic",
-        generic_reason="opaque scalar contract",
-        expanded_name="doc",
-        name_class=Name(None, "doc"),
-    )
-    stable = SimpleNamespace(
-        route_id="route-a",
-        generic_reason=None,
-        expanded_name="doc",
-        name_class=Name(None, "doc"),
-    )
-    other = SimpleNamespace(
-        route_id="route-other",
-        generic_reason="opaque scalar contract",
-        expanded_name="other",
-        name_class=Name(None, "other"),
-    )
-    assert _node_route_id(Generated()) == "route-a"
-    assert _node_route_id(Alternate()) == "route-b"
-    assert _node_route_id(Bare()) is None
-    assert _node_matches_route(Generated(), stable)
-    assert not _node_matches_route(Alternate(), stable)
-    assert not _node_matches_route(Bare(), stable)
-    assert not _node_matches_route(Bare(), other)
-    assert _node_matches_route(Bare(), generic)
-
-
 def test_ambiguous_list_selection_decodes_the_selected_whole_list():
     schema = compile_element(
         '<choice><list><data type="int"/></list><data type="string"/></choice>'
@@ -837,33 +798,169 @@ def test_nondecodable_whole_list_is_a_column_error():
     assert "whole list is not decodable" in str(error.value)
 
 
-def test_unique_contract_mismatch_on_a_forged_context_is_rejected():
-    schema = compile_element('<data type="int"/>')
-    record = projection(schema, columns={"value": FieldSource()})
-    document = typed(schema, "<doc>12</doc>")
-    context = _context(record._plan, document)
-    forged_contract = atomic_contract("string")
-    with pytest.raises(IntegrationError, match="differs from the selected contract"):
-        _read_selected_scalar(
-            context,
-            document.root,
-            context.text_sites[document.root],
-            forged_contract,
-            pa.string(),
-            attribute=None,
-            label="field",
-        )
+def test_required_empty_string_and_text_use_surviving_evidence():
+    empty_string = compile_element('<data type="string"/>')
+    document = typed(empty_string, "<doc/>")
+    explicit = projection(empty_string, columns={"value": FieldSource()})
+    assert rows(explicit, document) == [{"value": ""}]
+    default = RelaxNGRecordProjection(empty_string, element="doc")
+    assert default.table(document).to_pylist() == [{"value": ""}]
+
+    empty_text = compile_element("<text/>")
+    text_document = typed(empty_text, "<doc/>")
+    text_explicit = projection(empty_text, columns={"value": FieldSource()})
+    assert rows(text_explicit, text_document) == [{"value": ""}]
+    text_default = RelaxNGRecordProjection(empty_text, element="doc")
+    assert text_default.table(text_document).to_pylist() == [{"value": ""}]
 
 
-def test_required_absent_scalar_content_is_a_row_error():
-    schema = compile_element('<data type="string"/>')
+def test_empty_string_and_empty_list_record_their_selections(monkeypatch):
+    empty_string = compile_element('<data type="string"/>')
+    string_record = projection(empty_string, columns={"value": FieldSource()})
+    string_document = typed(empty_string, "<doc/>")
+    seen: list[tuple[object, ...]] = []
+    original = EvidenceGraph.compatible
+
+    def capture(self, selections):
+        items = tuple(selections)
+        seen.append(items)
+        return original(self, items)
+
+    monkeypatch.setattr(EvidenceGraph, "compatible", capture)
+    assert rows(string_record, string_document) == [{"value": ""}]
+    binding = string_record._plan.columns[0]
+    assert [item.candidate_id for item in seen[0]] == [binding.candidate]
+
+    empty_list = compile_element('<list><zeroOrMore><data type="int"/></zeroOrMore></list>')
+    list_record = projection(empty_list, columns={"value": FieldSource()})
+    list_document = typed(empty_list, "<doc/>")
+    seen.clear()
+    assert rows(list_record, list_document) == [{"value": []}]
+    list_binding = list_record._plan.columns[0]
+    assert [item.candidate_id for item in seen[0]] == [list_binding.candidate]
+
+
+def test_empty_branch_does_not_invent_a_list_or_selection(monkeypatch):
+    schema = compile_element(
+        '<choice><list><oneOrMore><data type="int"/></oneOrMore></list><empty/></choice>'
+    )
     document = typed(schema, "<doc/>")
     explicit = projection(schema, columns={"value": FieldSource()})
-    with pytest.raises(IntegrationError, match="required scalar content is absent"):
-        rows(explicit, document)
+    seen: list[tuple[object, ...]] = []
+    original = EvidenceGraph.compatible
+
+    def capture(self, selections):
+        items = tuple(selections)
+        seen.append(items)
+        return original(self, items)
+
+    monkeypatch.setattr(EvidenceGraph, "compatible", capture)
+    assert rows(explicit, document) == [{"value": None}]
+    assert seen == [()]
     default = RelaxNGRecordProjection(schema, element="doc")
-    with pytest.raises(IntegrationError, match="required scalar content is absent"):
-        list(iter_relaxng_rows(default._plan, document))
+    assert default.table(document).to_pylist() == [{"value": None}]
+    whitespace = typed(schema, "<doc> \n</doc>")
+    assert rows(explicit, whitespace) == [{"value": None}]
+    explicit_empty = ET.Element("doc")
+    explicit_empty.text = ""
+    assert rows(explicit, typed(schema, explicit_empty)) == [{"value": None}]
+
+
+def test_empty_list_repro_a_contributes_a_joint_selection():
+    schema = compile_element(
+        """
+        <choice>
+          <group>
+            <element name="x"><list><zeroOrMore><data type="int"/></zeroOrMore></list></element>
+            <element name="y"><data type="int"/></element>
+          </group>
+          <group>
+            <element name="x"><empty/></element>
+            <element name="y"><data type="string"/></element>
+          </group>
+        </choice>
+        """
+    )
+    document = typed(schema, "<doc><x/><y>12</y></doc>")
+    record = projection(
+        schema,
+        columns={
+            "x": FieldSource(path=("x",)),
+            "y": FieldSource(path=("y",), datatype=STRING),
+        },
+    )
+    graph = document.binding_evidence
+    x_binding, y_binding = record._plan.columns
+    x_node, y_node = document.root.children
+    x_occurrence = next(
+        site
+        for site in graph.occurrences
+        if site.element is x_node and site.kind == "text" and site.content_index == 0
+    )
+    y_occurrence = next(
+        site
+        for site in graph.occurrences
+        if site.element is y_node and site.kind == "text" and site.content_index == 0
+    )
+    x_selection = CandidateSelection(x_occurrence, x_binding.candidate)
+    y_selection = CandidateSelection(y_occurrence, y_binding.candidate)
+    assert graph.compatible((x_selection,))
+    assert graph.compatible((y_selection,))
+    assert not graph.compatible((x_selection, y_selection))
+    with pytest.raises(IntegrationError) as error:
+        rows(record, document)
+    message = str(error.value)
+    assert "row 1" in message
+    assert "x" in message and "y" in message
+    assert "conflict" in message
+
+
+def test_default_projection_uses_backed_empty_strings_and_lists(monkeypatch):
+    schema = compile_element(
+        """
+        <attribute name="version"><data type="int"/></attribute>
+        <element name="items"><list><zeroOrMore><data type="int"/></zeroOrMore></list></element>
+        <element name="name"><text/></element>
+        """
+    )
+    document = typed(schema, '<doc version="1"><items/><name/></doc>')
+    record = RelaxNGRecordProjection(schema, element="doc")
+    seen: list[tuple[object, ...]] = []
+    original = EvidenceGraph.compatible
+
+    def capture(self, selections):
+        items = tuple(selections)
+        seen.append(items)
+        return original(self, items)
+
+    monkeypatch.setattr(EvidenceGraph, "compatible", capture)
+    assert record.table(document).to_pylist() == [{"version": 1, "items": [], "name": ""}]
+    assert len(seen[0]) == 3
+
+
+def test_required_empty_attribute_and_empty_branch_attribute():
+    empty_string = compile_element('<attribute name="a"><data type="string"/></attribute>')
+    assert rows(
+        projection(empty_string, columns={"a": FieldSource(attribute="a")}),
+        typed(empty_string, '<doc a=""/>'),
+    ) == [{"a": ""}]
+
+    empty_branch = compile_element(
+        '<optional><attribute name="a"><choice><data type="int"/><empty/></choice></attribute></optional>'
+    )
+    document = typed(empty_branch, '<doc a=""/>')
+    record = projection(empty_branch, columns={"a": FieldSource(attribute="a")})
+    assert rows(record, document) == [{"a": None}]
+    assert rows(record, typed(empty_branch, "<doc/>")) == [{"a": None}]
+
+    required = compile_element(
+        '<attribute name="a"><choice><data type="int"/><empty/></choice></attribute>'
+    )
+    with pytest.raises(IntegrationError, match="has no surviving interpretation"):
+        rows(
+            projection(required, columns={"a": FieldSource(attribute="a")}),
+            typed(required, '<doc a=""/>'),
+        )
 
 
 def test_shared_route_under_another_ancestor_cannot_climb_the_compiled_chain():
@@ -907,8 +1004,128 @@ def test_shared_route_under_another_ancestor_cannot_climb_the_compiled_chain():
     assert next(stream) == {"number": 1, "parent_id": 10, "version": 1}
     with pytest.raises(IntegrationError) as error:
         next(stream)
-    assert "row 2" in str(error.value)
-    assert "ancestor node does not match" in str(error.value)
+    message = str(error.value)
+    assert "row 2" in message
+    assert "row path doc/orders/order" in message
+    assert "actual ancestor path doc/archive/order" in message
+    assert "does not match compiled route orders" in message
+
+
+def test_generic_row_route_falls_back_to_name_class():
+    schema = compile_grammar(
+        f"""
+        <start>
+          <element name="doc" datatypeLibrary="{XSD}">
+            <choice>
+              <data type="int"/>
+              <element name="value"><data type="int"/></element>
+            </choice>
+          </element>
+        </start>
+        """
+    )
+    record = projection(schema, columns={"value": FieldSource(path=("value",))})
+    document = typed(schema, "<doc><value>1</value></doc>")
+    assert rows(record, document) == [{"value": 1}]
+
+
+def test_default_projection_reports_a_required_empty_branch():
+    schema = compile_element(
+        '<attribute name="a"><choice><data type="int"/><empty/></choice></attribute><empty/>'
+    )
+    record = RelaxNGRecordProjection(schema, element="doc")
+    document = typed(schema, '<doc a=""/>')
+    with pytest.raises(IntegrationError) as error:
+        list(iter_relaxng_rows(record._plan, document))
+    message = str(error.value)
+    assert "row 1" in message
+    assert "has no surviving interpretation" in message
+
+
+def test_evidence_decoder_failure_is_a_contextual_error():
+    class FailingDecoderFactory(DatatypeFactory):
+        def create(self, type_name, parameters, context):
+            del type_name, parameters, context
+
+            @dataclass(frozen=True)
+            class FailingDatatype:
+                library_uri: str = "urn:fail"
+                type_name: str = "fail"
+                parameters: tuple[object, ...] = ()
+                white_space: str = "preserve"
+                semantic_context: tuple[tuple[str, str], ...] = ()
+                supports_decode: bool = True
+
+                def allows(self, lexical, context):
+                    del lexical, context
+                    return True
+
+                def equal(self, left, right, context):
+                    del context
+                    return left == right
+
+                def decode(self, lexical, context):
+                    del lexical, context
+                    raise ValueError("decoder failed")
+
+            return FailingDatatype()
+
+    schema = compile_element(
+        '<data type="fail" datatypeLibrary="urn:fail"/>',
+        datatype_libraries={
+            "urn:fail": DatatypeLibraryRegistration(FailingDecoderFactory(), "fail/1"),
+        },
+    )
+    record = projection(schema, columns={"value": FieldSource()})
+    with pytest.raises(IntegrationError) as error:
+        rows(record, typed(schema, "<doc/>"))
+    message = str(error.value)
+    assert "row 1" in message
+    assert "cannot read current scalar evidence" in message
+    assert "decoder failed" in message
+
+
+def test_non_whitespace_without_scalar_evidence_is_rejected():
+    with pytest.raises(IntegrationError, match="present character data"):
+        _empty_scalar_reason(
+            has_lexical=True,
+            lexical="text",
+            nullable=True,
+            label="field",
+        )
+
+
+def test_recursive_local_plan_rejects_a_grandchild_row():
+    schema = compile_grammar(
+        f"""
+        <start>
+          <element name="order" datatypeLibrary="{XSD}">
+            <attribute name="id"><data type="int"/></attribute>
+            <zeroOrMore><ref name="order"/></zeroOrMore>
+          </element>
+        </start>
+        <define name="order">
+          <element name="order" datatypeLibrary="{XSD}">
+            <attribute name="id"><data type="int"/></attribute>
+            <zeroOrMore><ref name="order"/></zeroOrMore>
+          </element>
+        </define>
+        """
+    )
+    record = projection(
+        schema,
+        element="order",
+        path=("order",),
+        columns={"id": FieldSource(attribute="id")},
+    )
+    document = typed(schema, '<order id="1"><order id="2"><order id="3"/></order></order>')
+    with pytest.raises(IntegrationError) as error:
+        rows(record, document, selector="order/order")
+    message = str(error.value)
+    assert "row 1" in message
+    assert "expected 2 row levels" in message
+    assert "actual ancestor path order/order/order" in message
+    assert rows(record, document, selector="order") == [{"id": 2}]
 
 
 def test_invalid_selectors_and_plans_are_rejected():
