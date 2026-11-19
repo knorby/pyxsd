@@ -107,9 +107,12 @@ __all__ = [
 #: authority or become current merely by matching a number.
 STANDALONE_REVISION = 0
 
-# Request-local nesting only: provisional claims are checked against native
-# joint evidence by the outer generated model before it can be returned.
+# Request-local field validation only. Depth never defers native joint checks;
+# the adapter explicitly identifies the parent-owned children that may defer.
 _MODEL_VALIDATION_DEPTH: ContextVar[int] = ContextVar("relaxng_model_validation_depth", default=0)
+_MODEL_SCALAR_CONTEXT: ContextVar[DatatypeContext | None] = ContextVar(
+    "relaxng_model_scalar_context", default=None
+)
 
 _UNDECODABLE = object()
 _UNSET = object()
@@ -191,7 +194,12 @@ def _relaxng_context(info: ValidationInfo | None) -> DatatypeContext | None:
     outer context mapping nor the nested namespace mapping is mutated, and no
     object from the caller becomes part of the returned immutable context.
     """
-    return _context_from_mapping(getattr(info, "context", None))
+    occurrence = _MODEL_SCALAR_CONTEXT.get()
+    return (
+        occurrence
+        if occurrence is not None
+        else _context_from_mapping(getattr(info, "context", None))
+    )
 
 
 def _context_from_mapping(context: object) -> DatatypeContext | None:
@@ -903,6 +911,8 @@ def _snapshot_value(
     contracts: tuple[ScalarContract, ...],
     snapshot: AlternativeValue,
     supplied: DatatypeContext | None,
+    *,
+    joint: bool = False,
 ) -> Any:
     """Recheck and normalize one immutable alternative snapshot."""
     if snapshot.grammar_fingerprint != codec.grammar_fingerprint:
@@ -917,7 +927,7 @@ def _snapshot_value(
     candidates = _surviving_candidates(codec, contracts, snapshot.lexical, context)
     expected = tuple(candidate.candidate_id for candidate in candidates)
     claimed = tuple(candidate.candidate_id for candidate in snapshot.candidates)
-    if not snapshot.document_evidence or not _MODEL_VALIDATION_DEPTH.get():
+    if not snapshot.document_evidence or not joint:
         if expected != claimed:
             raise ValueError(
                 "scalar snapshot candidate set does not match the complete recomputed "
@@ -1002,6 +1012,8 @@ def _tag_value(
     contracts: tuple[ScalarContract, ...],
     value: Mapping[Any, Any],
     supplied: DatatypeContext | None,
+    *,
+    joint: bool = False,
 ) -> Any:
     """Parse and recheck one exact Phase 5 tagged scalar claim."""
     try:
@@ -1015,7 +1027,7 @@ def _tag_value(
     context = _scoped_context(claim.context, supplied, kind="tag")
     candidates = _surviving_candidates(codec, contracts, claim.lexical, context)
     expected = tuple(candidate.candidate_id for candidate in candidates)
-    if claim.candidates != expected and not _MODEL_VALIDATION_DEPTH.get():
+    if claim.candidates != expected and not joint:
         raise ValueError(
             "scalar tag candidate set does not match the complete recomputed "
             f"candidates {expected!r}"
@@ -1040,6 +1052,7 @@ def _validate(
     info: ValidationInfo | None,
     *,
     may_be_empty: bool,
+    model_field: bool = False,
 ) -> Any:
     """Shared field validator for codec-backed scalar annotations."""
     if value is None:
@@ -1049,12 +1062,17 @@ def _validate(
     supplied = _relaxng_context(info)
     context = supplied if supplied is not None else DatatypeContext(None, {})
     mode = getattr(info, "mode", "python")
+    joint = (
+        model_field
+        and getattr(info, "field_name", None) is not None
+        and _MODEL_VALIDATION_DEPTH.get() > 0
+    )
     if isinstance(value, AlternativeValue):
-        return _snapshot_value(codec, contracts, value, supplied)
+        return _snapshot_value(codec, contracts, value, supplied, joint=joint)
     if isinstance(value, ListInterpretation):
         return _interpretation_value(codec, contracts, value, supplied)
     if isinstance(value, Mapping) and "#value" in value:
-        return _tag_value(codec, contracts, value, supplied)
+        return _tag_value(codec, contracts, value, supplied, joint=joint)
     return _raw_value(codec, contracts, value, context, mode)
 
 
@@ -1910,6 +1928,7 @@ def relaxng_scalar_annotation(
     *,
     codec: ScalarCodec | None = None,
     may_be_empty: bool = False,
+    _model_field: bool = False,
 ) -> Any:
     """Return one Pydantic annotation for a schema-static scalar position.
 
@@ -1918,6 +1937,10 @@ def relaxng_scalar_annotation(
     text content can be described; every datatype contract raises
     :class:`~pyxsd.integrations.IntegrationError` instead of selecting an
     unchecked operation.  The adapter always supplies its codec.
+
+    ``_model_field`` is reserved for generated fields whose owning route model
+    checks native joint evidence. Standalone annotations never inherit that
+    promise merely because a different model is being validated.
     """
     unique = _contracts(contracts)
     if not unique:
@@ -1945,7 +1968,9 @@ def relaxng_scalar_annotation(
         codec.pattern_for(contract)
 
     def validate(value: Any, info: ValidationInfo) -> Any:
-        return _validate(codec, unique, value, info, may_be_empty=may_be_empty)
+        return _validate(
+            codec, unique, value, info, may_be_empty=may_be_empty, model_field=_model_field
+        )
 
     return Annotated[
         Any,

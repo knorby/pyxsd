@@ -140,6 +140,90 @@ def test_forged_document_evidence_cannot_select_a_branch():
         scalar_adapter.validate_python(scalar_tag(forged))
 
 
+def test_independent_validation_in_another_models_before_validator_checks_joint_claims():
+    inner_set = registry(
+        compile_element('<choice><data type="integer"/><data type="string"/></choice>')
+    )
+    Inner = inner_set.model_for(element="doc")
+    snapshot = Inner.model_validate("12").root
+    forged = replace(snapshot, candidates=snapshot.candidates[:1], document_evidence=True)
+    with pytest.raises(pydantic.ValidationError, match="candidate"):
+        Inner.model_validate(forged)
+    String = registry(compile_element('<data type="string"/>')).model_for(element="doc")
+
+    class Outer(String):
+        @pydantic.model_validator(mode="before")
+        @classmethod
+        def validate_independent_model(cls, value):
+            Inner.model_validate(forged)
+            return value
+
+    with pytest.raises(pydantic.ValidationError, match="candidate"):
+        Outer.model_validate("ok")
+
+    scalar = pydantic.TypeAdapter(
+        adapter.relaxng_scalar_annotation(
+            Inner.__relaxng_route__.content.scalar_contracts,
+            codec=adapter.ScalarCodec(inner_set.schema, Inner.__relaxng_plan__),
+        )
+    )
+
+    class ScalarOuter(String):
+        @pydantic.model_validator(mode="before")
+        @classmethod
+        def validate_independent_scalar(cls, value):
+            scalar.validate_python(forged)
+            return value
+
+    with pytest.raises(pydantic.ValidationError, match="candidate"):
+        ScalarOuter.model_validate("ok")
+
+
+@pytest.mark.parametrize(("uri", "datatype"), [("urn:a", "integer"), ("urn:b", "string")])
+def test_open_name_document_joint_evidence_uses_actual_root(uri, datatype):
+    schema = compile_grammar(
+        f"<start><choice>"
+        f'<element datatypeLibrary="{XSD}"><nsName ns="urn:a"/><data type="integer"/></element>'
+        f'<element datatypeLibrary="{XSD}"><nsName ns="urn:b"/><data type="string"/></element>'
+        "</choice></start>"
+    )
+    model_set = registry(schema)
+    assert model_set.model_for(element="{urn:a}doc") is model_set.model_for(element="{urn:b}doc")
+    document = parse(schema, f'<doc xmlns="{uri}">12</doc>')
+    model = model_set.from_document(document)
+    assert [candidate.contract.type_name for candidate in model.root.candidates] == [datatype]
+    created = model_set.to_document(model, element=f"{{{uri}}}doc")
+    assert created.is_valid
+    assert created.root._name_ == f"{{{uri}}}doc"
+    assert model_set.from_document(created).model_dump_json() == model.model_dump_json()
+    Model = type(model)
+    # Without an actual root spelling, neither namespace branch is authority
+    # for narrowing a standalone model's locally ambiguous value.
+    with pytest.raises(pydantic.ValidationError, match="candidate"):
+        Model.model_validate(model.root)
+    with pytest.raises(pydantic.ValidationError, match="candidate"):
+        Model.model_validate_json(model.model_dump_json())
+    only_string = Model.model_validate("not-an-integer")
+    assert model_set.to_document(only_string, element="{urn:b}other").is_valid
+    projected_string = model_set.from_document(
+        parse(schema, '<doc xmlns="urn:b">not-an-integer</doc>')
+    )
+    assert (
+        Model.model_validate(projected_string.root).root.candidates
+        == projected_string.root.candidates
+    )
+    assert adapter.validate_route_data(Model, model) == {"$": model.root}
+    assert adapter.validate_route_data(Model.__relaxng_route__, model) == {"$": model.root}
+
+
+def test_nested_open_names_keep_the_explicit_projection_boundary():
+    schema = compile_element('<element><nsName ns="urn:child"/><data type="integer"/></element>')
+    document = parse(schema, '<doc><child xmlns="urn:child">12</child></doc>')
+    assert document.is_valid
+    with pytest.raises(IntegrationError, match=r"wildcard|generic"):
+        registry(schema).from_document(document)
+
+
 def test_joint_snapshot_claims_for_attributes_and_merged_element_assignments():
     schema = compile_grammar(
         f"<start><choice>"
@@ -1105,7 +1189,7 @@ def test_document_creation_fallback_is_defensive_and_returns_parse_report(monkey
     original = adapter._accepted_route_tree
 
     def force_fallback(*args: object, **kwargs: object):
-        if kwargs.get("root_name") is not None:
+        if kwargs.get("root_name") is not None and "defer_joint" not in kwargs:
             raise ValueError("forced named validation failure")
         return original(*args, **kwargs)
 

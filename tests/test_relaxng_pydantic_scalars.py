@@ -158,7 +158,8 @@ def test_local_and_nested_native_validation_preserve_caller_base_uri():
         supports_encode = True
 
         def allows(self, lexical, context):
-            return context.base_uri == "urn:base" and lexical.isdigit()
+            expected_base = "urn:other" if lexical == "34" else "urn:base"
+            return context.base_uri == expected_base and lexical.isdigit()
 
         def decode(self, lexical, context):
             assert self.allows(lexical, context)
@@ -184,6 +185,46 @@ def test_local_and_nested_native_validation_preserve_caller_base_uri():
     assert Local.model_validate(12, context=context).root == 12
     Doc = registry.model_for(element="doc")
     assert Doc.model_validate({"x": 12}, context=context).x.root == 12
+    root_schema = compile_element(
+        '<data datatypeLibrary="urn:test" type="baseInteger"/>',
+        datatype_libraries={"urn:test": DatatypeLibraryRegistration(BaseFactory(), "base-v1")},
+    )
+    roots = RelaxNGModelSet(root_schema)
+    Root = roots.model_for(element="doc")
+    document = roots.to_document(Root.model_validate(12, context=context), context=context)
+    assert document.is_valid
+    root_snapshot = roots.from_document(document)
+    assert root_snapshot.root == 12
+    assert roots.to_document(root_snapshot).is_valid
+    nested_document = registry.to_document(
+        Doc.model_validate({"x": 12}, context=context), context=context
+    )
+    assert nested_document.is_valid
+    projected = registry.from_document(nested_document)
+    assert projected.x.root == 12
+    assert (
+        registry.from_node(nested_document.root.children[0], element="doc", path=("x",)).root == 12
+    )
+    scoped_schema = compile_element(
+        '<element name="x"><attribute name="xml:base"><text/></attribute>'
+        '<data datatypeLibrary="urn:test" type="baseInteger"/></element>'
+        '<element name="y"><attribute name="xml:base"><text/></attribute>'
+        '<data datatypeLibrary="urn:test" type="baseInteger"/></element>',
+        datatype_libraries={"urn:test": DatatypeLibraryRegistration(BaseFactory(), "base-v1")},
+    )
+    scoped = RelaxNGModelSet(scoped_schema)
+    sibling_document = scoped_schema.parse(
+        io.StringIO('<doc><x xml:base="urn:base">12</x><y xml:base="urn:other">34</y></doc>')
+    )
+    sibling_document.require_valid()
+    projected = scoped.from_document(sibling_document)
+    assert projected.x.model_dump()["$"] == 12
+    assert projected.y.model_dump()["$"] == 34
+    reconstructed = scoped.to_document(projected, context={"relaxng": {"base_uri": "urn:outer"}})
+    assert reconstructed.is_valid
+    assert [child.base_uri for child in reconstructed.root.children] == ["urn:base", "urn:other"]
+    local = scoped.from_node(sibling_document.root.children[1], element="doc", path=("y",))
+    assert local.model_dump()["$"] == 34
     with pytest.raises(ValidationError):
         Local.model_validate(12)
 

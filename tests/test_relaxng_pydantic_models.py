@@ -711,7 +711,7 @@ def test_recursive_route_uses_finite_forward_references():
     Node = registry.model_for(element="node")
     assert Node is registry.model_for(element="node", path=("node", "node"))
     annotation = Node.model_fields["node"].annotation
-    assert get_args(annotation) == (Node,)
+    assert get_args(get_args(annotation)[0])[0] is Node
     assert Node.model_fields["node"].default_factory is list
     model = Node.model_validate({"@label": "root", "node": [{"node": []}]})
     assert model.attr_label == "root"
@@ -776,10 +776,10 @@ def test_multiple_paths_reuse_finite_recursive_classes():
     assert Next.__relaxng_layout__ == "ordered"
     assert Node.__relaxng_route_id__ != Next.__relaxng_route_id__
     assert Doc.model_fields["a"].annotation is A
-    assert get_args(Doc.model_fields["b"].annotation) == (B,)
+    assert get_args(get_args(Doc.model_fields["b"].annotation)[0])[0] is B
     assert A.model_fields["node"].annotation is Node
     assert B.model_fields["node"].annotation is Node
-    assert get_args(Node.model_fields["next"].annotation) == (Next,)
+    assert get_args(get_args(Node.model_fields["next"].annotation)[0])[0] is Next
     assert Next.model_fields["node"].annotation is Node
     data = {
         "a": {"node": {"next": [{"node": {"leaf": ["x"]}}]}},

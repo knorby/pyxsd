@@ -405,7 +405,7 @@ def test_recursive_grammar_builds_finite_forward_references():
     registry = models(schema)
     Node = registry.model_for(element="node")
     assert Node is registry.model_for(element="node")
-    assert get_args(Node.model_fields["node"].annotation) == (Node,)
+    assert get_args(get_args(Node.model_fields["node"].annotation)[0])[0] is Node
     assert Node.model_fields["node"].default_factory is list
     model = Node.model_validate({"@label": "root", "node": [{"node": []}]})
     assert model.attr_label == "root"

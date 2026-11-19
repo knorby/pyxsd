@@ -29,12 +29,13 @@ from __future__ import annotations
 import heapq
 import re
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from types import GenericAlias, MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 from xml.etree import ElementTree as ET
 
-from pydantic import ValidationInfo
+from pydantic import ValidationInfo, WrapValidator
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
 from pyxsd.integrations import IntegrationError
@@ -82,6 +83,7 @@ from pyxsd.relaxng.projection import (
     RouteContract,
 )
 from pyxsd.relaxng.pydantic_values import (
+    _MODEL_SCALAR_CONTEXT,
     _MODEL_VALIDATION_DEPTH,
     STANDALONE_REVISION,
     ScalarCodec,
@@ -107,6 +109,51 @@ if TYPE_CHECKING:
     from pyxsd.relaxng.json_profile import ImportedTree
 
 __all__ = ["RelaxNGModelSet", "route_to_lexical", "validate_route_data"]
+
+# A one-call handoff from a declared child field or document projection. It is
+# consumed before any model/user validators run, so unrelated validation cannot
+# borrow a parent's promise to check the child's joint evidence.
+_CHILD_INPUT: ContextVar[tuple[str, object] | None] = ContextVar(
+    "relaxng_child_input", default=None
+)
+_OCCURRENCE_ATTRIBUTE = "_relaxng_occurrence"
+
+
+@dataclass(frozen=True)
+class _ModelOccurrence:
+    """Independent occurrence metadata; never a node or a validity certificate."""
+
+    name: str | None
+    context: DatatypeContext
+
+
+@dataclass(frozen=True)
+class _ScopedInput:
+    """One exact model input paired with its own occurrence, not a global frame."""
+
+    value: Any
+    occurrence: _ModelOccurrence
+
+
+def _occurrence_context(
+    context: object | None, occurrence: _ModelOccurrence | None, *, child: bool = False
+) -> DatatypeContext:
+    inherited = context_from_mapping(context)
+    if occurrence is None:
+        return inherited
+    return _merge_contexts(inherited, (occurrence.context,), path=(), allow_shadow=child)
+
+
+def _child_annotation(annotation: Any, route_id: str) -> Any:
+    def validate_child(value: Any, handler: Callable[[Any], Any]) -> Any:
+        token = _CHILD_INPUT.set((route_id, value))
+        try:
+            return handler(value)
+        finally:
+            _CHILD_INPUT.reset(token)
+
+    return Annotated[annotation, WrapValidator(validate_child)]
+
 
 #: Validator names start with an underscore, which ``_safe_name`` never emits.
 _CHILD_PRESENCE_VALIDATOR = "__pyxsd_relaxng_child_presence__"
@@ -347,6 +394,7 @@ def _scalar_annotation(
         contracts,
         codec=codec,
         may_be_empty=may_be_empty,
+        _model_field=True,
     )
 
 
@@ -360,6 +408,7 @@ def _root_scalar_annotation(
         contracts,
         codec=codec,
         may_be_empty=may_be_empty,
+        _model_field=True,
     )
 
 
@@ -1219,6 +1268,9 @@ class _Renderer:
                     f"{child_route.route_id} does not match field route {child_route_id}"
                 )
             child_data = _model_values(child_route, value)
+            occurrence = getattr(value, _OCCURRENCE_ATTRIBUTE, None)
+            if occurrence is not None:
+                inherited = _occurrence_context(inherited, occurrence, child=True)
             normalized = True
         else:
             if self.plan is None:
@@ -1385,6 +1437,7 @@ def _accepted_route_tree(
     normalized: bool,
     plan: ProjectionPlan | None = None,
     root_name: str | None = None,
+    defer_joint: bool = False,
 ) -> tuple[ET.Element, dict[int, DatatypeContext]]:
     """Build and natively validate one tree with bounded choice enumeration.
 
@@ -1423,9 +1476,15 @@ def _accepted_route_tree(
             rejection: ValueError | None = error
         else:
             rejection = _native_rejection(route, tree, root_name=root_name)
-            if rejection is None and _MODEL_VALIDATION_DEPTH.get() <= 1:
+            if rejection is None and not defer_joint:
                 try:
-                    _check_joint_claims(route, data, tree, plan=plan)
+                    _check_joint_claims(
+                        route,
+                        data,
+                        tree,
+                        plan=plan,
+                        abstract_root=root_name is None and route.expanded_name is None,
+                    )
                 except ValueError as error:
                     rejection = error
             if rejection is None:
@@ -1465,6 +1524,7 @@ def _check_joint_claims(
     tree: tuple[ET.Element, dict[int, DatatypeContext]],
     *,
     plan: ProjectionPlan | None,
+    abstract_root: bool = False,
 ) -> None:
     """Check provisional subsets against all accepting native derivations.
 
@@ -1506,23 +1566,36 @@ def _check_joint_claims(
     pattern: Pattern = route.patterns[0]
     for alternative in route.patterns[1:]:
         pattern = Choice(pattern, alternative)
-    evidence = build_binding_evidence(
-        root,
-        pattern,
-        datatype_context=DatatypeContext(root.base_uri, root.namespaces or {}),
-        limits=None,
+    cases = (
+        [(_witness_name(item.name_class), item) for item in route.patterns]
+        if abstract_root
+        else [(root._name_, pattern)]
     )
-    for node, attribute, claim in claims:
-        actual: set[str] = set()
-        for occurrence in evidence.occurrences:
-            if occurrence.element is node and (
-                (attribute is None and occurrence.kind == "text")
-                or (occurrence.kind == "attribute" and occurrence.name == attribute)
-            ):
-                actual.update(
-                    candidate_id(claim.grammar_fingerprint, scalar_contract(witness.pattern))
-                    for witness in evidence.scalar_witnesses_at(occurrence)
-                )
+    actual_sets: list[set[str]] = [set() for _ in claims]
+    for name, start in cases:
+        # This is a fresh synthetic tree, not a document node. An abstract
+        # route ranges over every assignment's admitted root, never just the
+        # first witness. A projected occurrence instead keeps its exact name.
+        root._name_ = name
+        if abstract_root and not validate_element_recovering(root, start).valid:
+            continue
+        evidence = build_binding_evidence(
+            root,
+            start,
+            datatype_context=DatatypeContext(root.base_uri, root.namespaces or {}),
+            limits=None,
+        )
+        for (node, attribute, claim), actual in zip(claims, actual_sets, strict=True):
+            for occurrence in evidence.occurrences:
+                if occurrence.element is node and (
+                    (attribute is None and occurrence.kind == "text")
+                    or (occurrence.kind == "attribute" and occurrence.name == attribute)
+                ):
+                    actual.update(
+                        candidate_id(claim.grammar_fingerprint, scalar_contract(witness.pattern))
+                        for witness in evidence.scalar_witnesses_at(occurrence)
+                    )
+    for (_, _, claim), actual in zip(claims, actual_sets, strict=True):
         if actual != {candidate.candidate_id for candidate in claim.candidates}:
             raise ValueError(
                 f"RELAX NG route {_route_label(route)}: scalar candidate set contradicts "
@@ -1570,21 +1643,26 @@ def validate_route_data(
     if model_class is not None:
         if isinstance(payload, model_class):
             values = _model_values(route, payload)
+            occurrence = getattr(payload, _OCCURRENCE_ATTRIBUTE, None)
             _accepted_route_tree(
                 route,
                 values,
-                context,
+                _occurrence_context(context, occurrence),
                 normalized=True,
                 plan=plan if plan is not None else getattr(model_class, "__relaxng_plan__", None),
+                root_name=occurrence.name if occurrence is not None else None,
             )
             return values
         payload = model_class.model_validate(payload, context=context)
         return _model_values(route, payload)
     if isinstance(payload, BaseModel):
         values = _model_values(route, payload)
+        occurrence = getattr(payload, _OCCURRENCE_ATTRIBUTE, None)
+        context = _occurrence_context(context, occurrence)
         normalized = True
     elif isinstance(payload, Mapping):
         values = dict(payload)
+        occurrence = None
         normalized = False
     else:
         raise ValueError(f"RELAX NG route {_route_label(route)}: data must be a mapping")
@@ -1594,6 +1672,7 @@ def validate_route_data(
         context,
         normalized=normalized,
         plan=plan,
+        root_name=occurrence.name if occurrence is not None else None,
     )
     return values
 
@@ -1643,18 +1722,49 @@ def _route_after_validator(route: RouteContract) -> Any:
     def validate_route(
         value: Any, handler: Callable[[Any], BaseModel], info: ValidationInfo
     ) -> BaseModel:
+        pending = _CHILD_INPUT.get()
+        is_child = pending is not None and pending[0] == route.route_id and pending[1] is value
+        child_token = _CHILD_INPUT.set(None)
         token = _MODEL_VALIDATION_DEPTH.set(_MODEL_VALIDATION_DEPTH.get() + 1)
+        scalar_token = _MODEL_SCALAR_CONTEXT.set(None)
         try:
+            occurrence = (
+                value.occurrence
+                if isinstance(value, _ScopedInput)
+                else getattr(value, _OCCURRENCE_ATTRIBUTE, None)
+            )
+            if isinstance(value, _ScopedInput):
+                value = value.value
+            context = _occurrence_context(
+                getattr(info, "context", None), occurrence, child=is_child
+            )
+            if occurrence is not None:
+                _MODEL_SCALAR_CONTEXT.set(context)
             model = handler(value)
-            context = context_from_mapping(getattr(info, "context", None))
-            if _MODEL_VALIDATION_DEPTH.get() > 1:
+            if is_child:
                 context = _shadowed_child_context(
                     context, route, _route_states(route, _model_values(route, model)), ()
                 )
-            validate_route_data(route, model, context=context)
+            root, contexts = _accepted_route_tree(
+                route,
+                _model_values(route, model),
+                context,
+                normalized=True,
+                defer_joint=is_child,
+                root_name=occurrence.name if occurrence is not None else None,
+            )
+            object.__setattr__(
+                model,
+                _OCCURRENCE_ATTRIBUTE,
+                _ModelOccurrence(
+                    occurrence.name if occurrence is not None else None, contexts[id(root)]
+                ),
+            )
             return model
         finally:
             _MODEL_VALIDATION_DEPTH.reset(token)
+            _MODEL_SCALAR_CONTEXT.reset(scalar_token)
+            _CHILD_INPUT.reset(child_token)
 
     return validate_route
 
@@ -1677,6 +1787,7 @@ def _route_to_lexical_with_element(
     unknown model route or leftover field values) still raise.
     """
     values = _model_values(route, model)
+    context = _occurrence_context(context, getattr(model, _OCCURRENCE_ATTRIBUTE, None))
     _check_route_supported(route)
     try:
         root, contexts = _accepted_route_tree(
@@ -1834,6 +1945,7 @@ def _project_record(
                 child,
                 (*path, name),
                 model_for=model_for,
+                _nested=True,
             )
         )
     for name, field in route.children.items():
@@ -1867,6 +1979,7 @@ def _project_node(
     path: tuple[str, ...],
     *,
     model_for: Callable[[RouteContract], type[BaseModel]],
+    _nested: bool = False,
 ) -> BaseModel:
     """Validate and normalize one route's independent model snapshot.
 
@@ -1876,24 +1989,22 @@ def _project_node(
     needs no single global namespace frame: sibling fields may declare the
     same prefix with different namespace URIs without leaking to each other.
     """
-    depth = _MODEL_VALIDATION_DEPTH.get()
-    token = _MODEL_VALIDATION_DEPTH.set(depth + 1)
+    model_class = model_for(route)
+    node.scalar_value()
+    if not _route_is_root_model(route):
+        data = _project_record(plan, route, node, path, model_for=model_for)
+    else:
+        data = _scalar_content_value(route, node, path)
+        if data is _MISSING:
+            data = None
+    scoped = _ScopedInput(
+        data, _ModelOccurrence(node._name_, DatatypeContext(node.base_uri, node.namespaces or {}))
+    )
+    token = _CHILD_INPUT.set((route.route_id, scoped) if _nested else None)
     try:
-        model_class = model_for(route)
-        node.scalar_value()
-        if not _route_is_root_model(route):
-            data = _project_record(plan, route, node, path, model_for=model_for)
-            result = model_class.model_validate(data)
-        else:
-            value = _scalar_content_value(route, node, path)
-            if value is _MISSING:
-                value = None
-            result = model_class.model_validate(value)
+        return model_class.model_validate(scoped)
     finally:
-        _MODEL_VALIDATION_DEPTH.reset(token)
-    if depth == 0:
-        validate_route_data(route, result)
-    return result
+        _CHILD_INPUT.reset(token)
 
 
 class RelaxNGModelSet:
@@ -2120,7 +2231,12 @@ class RelaxNGModelSet:
         root_name = self._document_element(selected, element)
         model_class = self._model(selected)
         build_model = model_class.model_validate(
-            self._validation_payload(selected, model),
+            self._scope_payload(
+                selected,
+                model,
+                self._validation_payload(selected, model),
+                root_name=root_name,
+            ),
             context=context,
         )
         tree = _route_to_lexical_with_element(
@@ -2130,6 +2246,42 @@ class RelaxNGModelSet:
             element=root_name,
         )
         return self.schema._parse_imported_tree(tree, format="pyxsd")
+
+    def _scope_payload(
+        self,
+        route: RouteContract,
+        model: Any,
+        data: Any,
+        *,
+        root_name: str | None = None,
+    ) -> Any:
+        """Retain each model occurrence while revalidating its dumped fields."""
+        if not isinstance(model, BaseModel):
+            return data
+        if not _route_is_root_model(route) and isinstance(data, Mapping):
+            data = dict(data)
+            sources = {
+                field.alias or name: getattr(model, name, None)
+                for name, field in type(model).model_fields.items()
+            }
+            for name, field in route.children.items():
+                if name not in data:
+                    continue
+                child_route = self._plan.routes[cast(str, field.child_route_id)]
+                source = sources.get(name)
+                if field.cardinality.repeatable and isinstance(source, (list, tuple)):
+                    data[name] = [
+                        self._scope_payload(child_route, original, dumped)
+                        for original, dumped in zip(source, data[name], strict=True)
+                    ]
+                else:
+                    data[name] = self._scope_payload(child_route, source, data[name])
+        occurrence = getattr(model, _OCCURRENCE_ATTRIBUTE, None)
+        if occurrence is None:
+            return data
+        return _ScopedInput(
+            data, _ModelOccurrence(root_name or occurrence.name, occurrence.context)
+        )
 
     def _validation_payload(self, route: RouteContract, model: BaseModel) -> Any:
         """Return an alias-preserving dump prepared for model revalidation.
@@ -2450,8 +2602,11 @@ class RelaxNGModelSet:
             field = route.children[name]
             assert field.child_route_id is not None
             child_name = self._names[field.child_route_id]
+            child_annotation = _child_annotation(child_name, field.child_route_id)
             annotation: Any = (
-                GenericAlias(list, child_name) if field.cardinality.repeatable else child_name
+                GenericAlias(list, child_annotation)
+                if field.cardinality.repeatable
+                else child_annotation
             )
             add(
                 field.expanded_name,
