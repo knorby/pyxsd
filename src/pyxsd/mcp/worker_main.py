@@ -22,7 +22,8 @@ from pyxsd.introspection import (
     find_components,
     related_components,
 )
-from pyxsd.relaxng import RelaxNGLimitError
+from pyxsd.locations import IssueLocation
+from pyxsd.relaxng import RelaxNGElement, RelaxNGLimitError, RelaxNGSchema
 from pyxsd.relaxng.datatypes import DatatypeRegistrationError, UnsupportedDatatypeError
 from pyxsd.schema_base import SchemaBase
 from pyxsd.schema_context import last_components, remember_components
@@ -30,6 +31,7 @@ from pyxsd.source_spans import SourceIndex
 from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 from .cache import (
+    CompiledSchema,
     CompileRequest,
     SchemaCache,
     _closure_policy,
@@ -88,6 +90,19 @@ def _for_schema(
     )
 
 
+def _schema_parse(schema: CompiledSchema, path: str) -> Document:
+    """Parse one instance through the schema's public, language-native method.
+
+    MCP validation and queries need only the lexical tree and the verdict.
+    RELAX NG therefore parses with ``typed=False``: evidence and pattern
+    capture are never computed, while names, attributes, text, and source
+    occurrences stay available. XSD parsing keeps its existing semantics.
+    """
+    if isinstance(schema, RelaxNGSchema):
+        return schema.parse(path, typed=False)
+    return schema.parse(path)
+
+
 def _parse(
     operation: ParseOperation | QueryOperation, cache: SchemaCache, processor_version: str
 ) -> Document:
@@ -103,7 +118,7 @@ def _parse(
     request = _for_schema(operation, operation.schema_ref, processor_version)
     with cache.acquire(request) as schema:
         require_complete_schema(schema)
-        return schema.parse("/workspace/" + operation.document.path)
+        return _schema_parse(schema, "/workspace/" + operation.document.path)
 
 
 def _page(total: int, offset: int, returned: int) -> dict[str, JsonValue]:
@@ -229,7 +244,7 @@ def _parse_batch(
             for index in indexes:
                 current = operation.items[index]
                 try:
-                    document = schema.parse("/workspace/" + current.document.path)
+                    document = _schema_parse(schema, "/workspace/" + current.document.path)
                 except (FileNotFoundError, InputPolicyError, PyXSDError) as exc:
                     code = "not_found" if _missing_file(exc) else "invalid_xml"
                     fault = _operational_fault(exc, code, cache.limits.message_bytes)
@@ -517,6 +532,36 @@ def _find(
 _SOURCE_UNAVAILABLE = "The occurrence has no addressable original source bytes"
 
 
+def _structural_node(node: object) -> bool:
+    """Whether a query result is a document node rather than a scalar value.
+
+    XSD binds generated :class:`~pyxsd.schema_base.SchemaBase` instances;
+    RELAX NG keeps its lexical :class:`~pyxsd.relaxng.tree.RelaxNGElement`
+    tree, including any generated projection subclasses. Both are structural
+    nodes with source occurrences; neither requires the other's schema model.
+    """
+    return isinstance(node, (SchemaBase, RelaxNGElement))
+
+
+def _node_text(node: SchemaBase | RelaxNGElement) -> object:
+    """Return the node's lexical element text or its bound XSD value pieces.
+
+    RELAX NG exposes leading character data through lexical access, never
+    through a typed alternative. XSD keeps its existing list of bound values.
+    """
+    if isinstance(node, RelaxNGElement):
+        return node.text_value()
+    return getattr(node, "_value_", None)
+
+
+def _node_location(document: Document, node: SchemaBase | RelaxNGElement) -> IssueLocation | None:
+    """Return the node's exact source occurrence under its own schema model."""
+    if isinstance(node, RelaxNGElement):
+        return node.source_location
+    provenance = document._provenance
+    return provenance.bound_location(node) if provenance is not None else None
+
+
 def _source_index(operation: QueryOperation, cache: SchemaCache) -> SourceIndex:
     """Index the operation document's captured bytes once, under the MCP budget."""
     policy = InputResourcePolicy(capture_from_wire(operation.capture), cache.limits)
@@ -538,14 +583,13 @@ def _source_index(operation: QueryOperation, cache: SchemaCache) -> SourceIndex:
 
 
 def _node_summary(
-    document: Document, node: SchemaBase, index: SourceIndex | None
+    document: Document, node: SchemaBase | RelaxNGElement, index: SourceIndex | None
 ) -> dict[str, JsonValue]:
     result: dict[str, JsonValue] = {"name": getattr(node, "_name_", None)}
-    provenance = document._provenance
-    location = provenance.bound_location(node) if provenance is not None else None
+    location = _node_location(document, node)
     result["location"] = encode_value(location)
     if index is None:
-        result["text"] = encode_value(getattr(node, "_value_", None))
+        result["text"] = encode_value(_node_text(node))
         return result
     span = None if location is None else index.span(location.path)
     result["encoding"] = "base64"
@@ -584,11 +628,14 @@ def _query(
             else operation.offset + operation.limit
         ]
         results: JsonValue
-        if all(isinstance(item, SchemaBase) for item in page):
+        if all(_structural_node(item) for item in page):
             index = (
                 _source_index(operation, cache) if operation.result == "subtree" and page else None
             )
-            results = [_node_summary(document, item, index) for item in page]
+            results = [
+                _node_summary(document, cast(SchemaBase | RelaxNGElement, item), index)
+                for item in page
+            ]
         else:
             results = encode_value(page)
         return {"results": results, "page": _page(len(value), operation.offset, len(page))}
