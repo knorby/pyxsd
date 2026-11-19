@@ -127,15 +127,6 @@ def variant_contains(schema: dict[str, Any], expected: dict[str, Any]) -> bool:
     )
 
 
-def model_schema(model: Any) -> dict[str, Any]:
-    """Return the model's own JSON Schema, following Pydantic's wrapper."""
-    schema = model.model_json_schema()
-    reference = schema.get("$ref")
-    if reference is None:
-        return schema
-    return schema["$defs"][reference.rsplit("/", 1)[-1]]
-
-
 # ---------------------------------------------------------------------------
 # 1. Matched XSD and RELAX NG Pydantic contracts
 # ---------------------------------------------------------------------------
@@ -196,8 +187,22 @@ def test_matched_flat_record_models_share_alias_field_and_default_contract():
     assert rng_schema_json["properties"]["n"]["minItems"] == 0
     assert xsd_schema_json["additionalProperties"] is False
     assert rng_schema_json["additionalProperties"] is False
-    assert "Task " not in rng_schema_json["x-pyxsd-validation"]
-    assert "not implemented" not in rng_schema_json["x-pyxsd-validation"]
+    serialized = json.dumps(rng_schema_json)
+    assert "Task " not in serialized
+    assert "not implemented" not in serialized
+
+    local_definitions = {
+        name: definition
+        for name, definition in rng_schema_json["$defs"].items()
+        if definition.get("x-pyxsd-scope") == "local"
+    }
+    assert {"RelaxNGModel_label", "RelaxNGModel_n"} <= set(local_definitions)
+    for name, definition in local_definitions.items():
+        validation = definition["x-pyxsd-validation"]
+        assert "local route" in validation, name
+        assert "ancestor and sibling constraints are not validated" in validation, name
+        assert "Task " not in validation, name
+        assert "not implemented" not in validation, name
 
 
 def test_matched_whole_element_scalar_models_agree_on_common_input_and_documents():
@@ -318,7 +323,7 @@ def test_recursive_grammar_builds_finite_forward_references():
     assert model.attr_label == "root"
     assert model.node[0].node == []
     assert Node.__relaxng_layout__ == "repeated"
-    assert model_schema(Node)["x-pyxsd-layout"] == "repeated"
+    assert Node.model_json_schema()["$defs"]["RelaxNGModel_node"]["x-pyxsd-layout"] == "repeated"
 
 
 def test_correlated_choice_is_accepted_only_jointly():
@@ -553,8 +558,15 @@ def test_xsd_import_rejects_relaxng_tag_shapes():
         '<xs:element name="x" type="xs:int"/></xs:sequence>'
         "</xs:complexType></xs:element>"
     )
+    plain = {"doc": [{"x": 1}]}
+    assert (
+        complex_xsd.from_data(plain, format="pyxsd-json").to_data(
+            format="pyxsd-json", fidelity="strict"
+        )
+        == plain
+    )
     with pytest.raises(PyXSDError):
-        complex_xsd.from_data({"doc": {"#value": tagged["doc"]["#value"]}}, format="pyxsd-json")
+        complex_xsd.from_data({"doc": [{"x": tagged["doc"]["#value"]}]}, format="pyxsd-json")
     assert complex_xsd.parse(io.StringIO("<doc><x>1</x></doc>")).to_dict() == {"x": 1}
 
 
@@ -901,10 +913,6 @@ class UndecodableDatatype:
     def allows(self, lexical: str, context: object) -> bool:
         del lexical, context
         return True
-
-    def equal(self, left: str, right: str, context: object) -> bool:
-        del context
-        return left == right
 
 
 class UndecodableFactory(DatatypeFactory):
