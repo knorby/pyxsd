@@ -76,6 +76,16 @@ class TestInteger:
         assert result == 6
         assert type(result) is int
 
+    @pytest.mark.parametrize("digits", [4301, 5000])
+    def test_huge_lexical_values_do_not_use_the_int_string_limit(self, digits):
+        text = "9" * digits
+        value = Integer(text)
+        assert value == 10**digits - 1
+        assert str(value) == text
+        assert str(Integer("-" + text)) == "-" + text
+        assert str(PositiveInteger(text)) == text
+        assert str(NonNegativeInteger(text)) == text
+
 
 class TestPositiveInteger:
     def test_valid(self):

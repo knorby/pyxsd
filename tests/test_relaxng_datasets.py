@@ -217,6 +217,28 @@ def test_relaxng_dataset_manifest_is_schema_neutral(tmp_path):
     assert reference.equals(augmented_schema(projection.schema), check_metadata=True)
 
 
+def test_relaxng_dataset_projects_huge_integer_as_text(tmp_path):
+    value = "9" * 4301
+    schema = compile_element('<data type="integer"><param name="totalDigits">4301</param></data>')
+    projection = RelaxNGRecordProjection(schema, element="doc")
+    result = projection.write_dataset(
+        sources_for(tmp_path, f"<doc>{value}</doc>"), tmp_path / "out"
+    )
+    assert (result.status, result.inputs, result.succeeded, result.failed, result.rows) == (
+        "complete",
+        1,
+        1,
+        0,
+        1,
+    )
+    part = result.destination / "parts" / "part-000001.parquet"
+    rows = pq.read_table(part).to_pylist()
+    assert [row["value"] for row in rows] == [value]
+    assert rows[0][SOURCE_ID] == "source-1"
+    assert rows[0][ROW_INDEX] == 1
+    assert pq.read_schema(part).field("value").type == pa.string()
+
+
 def test_relaxng_dataset_multiple_sources_batches_and_schema_identity(tmp_path):
     schema = item_schema()
     projection = item_projection(schema)

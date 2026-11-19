@@ -48,7 +48,7 @@ from pyxsd.relaxng.projection import (
 )
 from pyxsd.relaxng.schema import RelaxNGSchema
 from pyxsd.relaxng.values import AlternativeValue, _list_token_plan
-from pyxsd.xsd_data_types import Boolean, Integer, QName
+from pyxsd.xsd_data_types import Boolean, Integer, QName, integer_to_decimal
 
 __all__ = [
     "RelaxNGColumnBinding",
@@ -1013,7 +1013,7 @@ def _convert_value(
         return value
     if isinstance(value, int):
         if pa.types.is_string(arrow_shape):
-            return str(value)
+            return integer_to_decimal(value)
         if not (
             pa.types.is_integer(arrow_shape)
             or pa.types.is_floating(arrow_shape)

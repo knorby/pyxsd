@@ -688,6 +688,24 @@ def test_unbounded_and_wide_integer_contracts_fall_back_to_string():
 
 
 @pytest.mark.parametrize("digits", [4301, 5000])
+def test_huge_integer_instances_validate_and_project_as_text(digits):
+    value = "9" * digits
+    for body in (
+        f'<data type="integer"><param name="totalDigits">{digits}</param></data>',
+        '<data type="integer"/>',
+    ):
+        schema = compile_element(body)
+        document = parse(schema, f"<doc>{value}</doc>")
+        assert document.is_valid, document.report
+        projection = RelaxNGRecordProjection(schema, element="doc")
+        assert projection.schema.field("value").type == pa.string()
+        assert projection.table(document).to_pylist() == [{"value": value}]
+
+        explicit = RelaxNGRecordProjection(schema, element="doc", columns={"value": FieldSource()})
+        assert explicit.table(document).to_pylist() == [{"value": value}]
+
+
+@pytest.mark.parametrize("digits", [4301, 5000])
 def test_huge_total_digits_fall_back_without_formatting_the_limit(digits):
     body = integer_body(total_digits=digits)
     schema = compile_element(body)
