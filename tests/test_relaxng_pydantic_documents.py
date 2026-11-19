@@ -786,6 +786,18 @@ def test_to_document_does_not_coerce_non_mapping_child_record_data():
     assert created.is_valid
     assert created.to_string() == '<doc><item a="x">value</item></doc>'
 
+    repeated_schema = compile_element(
+        '<zeroOrMore><element name="item"><optional><attribute name="a"><text/>'
+        "</attribute></optional><text/></element></zeroOrMore>"
+    )
+    repeated_set = registry(repeated_schema)
+    RepeatedRoot = repeated_set.model_for(element="doc")
+    for invalid in ([""], [[]], [[("sub", "x")]], [12]):
+        with pytest.raises(pydantic.ValidationError):
+            RepeatedRoot.model_validate({"item": invalid})
+        with pytest.raises(pydantic.ValidationError):
+            repeated_set.to_document(RepeatedRoot.model_construct(item=invalid))
+
 
 def test_to_document_does_not_transport_qnames_across_scalar_shapes():
     text_schema = compile_element("<text/>")
