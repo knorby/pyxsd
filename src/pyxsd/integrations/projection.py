@@ -5,7 +5,7 @@ from typing import Literal
 
 from . import IntegrationError
 
-__all__ = ["FieldSource"]
+__all__ = ["FieldSource", "field_source_metadata"]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -16,6 +16,8 @@ class FieldSource:
     path: tuple[str, ...] = ()
     attribute: str | None = None
     levels: int = 0
+    datatype: tuple[str, str] | None = None
+    candidate_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.scope not in ("record", "ancestor", "root"):
@@ -37,3 +39,41 @@ class FieldSource:
             or self.attribute.startswith("@")
         ):
             raise IntegrationError("source attribute must be a nonempty expanded name without @")
+        if self.datatype is not None:
+            if (
+                not isinstance(self.datatype, tuple)
+                or len(self.datatype) != 2
+                or not all(isinstance(part, str) for part in self.datatype)
+            ):
+                raise IntegrationError(
+                    "source datatype must be a (library URI, type name) tuple of strings"
+                )
+            if not self.datatype[1]:
+                raise IntegrationError("source datatype type name must be nonempty")
+        if self.candidate_id is not None and (
+            not isinstance(self.candidate_id, str) or not self.candidate_id
+        ):
+            raise IntegrationError("source candidate_id must be a nonempty string")
+        if self.datatype is not None and self.candidate_id is not None:
+            raise IntegrationError("source datatype and candidate_id are mutually exclusive")
+
+
+def field_source_metadata(source: FieldSource) -> dict[str, object]:
+    """Serialize one source without adding unset RELAX NG selectors.
+
+    The leading key order matches the historical ``dataclasses.asdict`` output,
+    so existing XSD ``pyxsd:source`` metadata stays byte-compatible.
+    """
+    if not isinstance(source, FieldSource):
+        raise TypeError("field_source_metadata requires a FieldSource")
+    metadata: dict[str, object] = {
+        "scope": source.scope,
+        "path": source.path,
+        "attribute": source.attribute,
+        "levels": source.levels,
+    }
+    if source.datatype is not None:
+        metadata["datatype"] = source.datatype
+    if source.candidate_id is not None:
+        metadata["candidate_id"] = source.candidate_id
+    return metadata

@@ -13,7 +13,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 try:
     import pyarrow as pa
@@ -25,6 +25,7 @@ except ModuleNotFoundError as exc:
 
 from pyxsd.batch import DocumentSource
 from pyxsd.document import Document
+from pyxsd.relaxng.schema import RelaxNGSchema
 from pyxsd.schema import Schema
 
 from . import IntegrationError
@@ -32,7 +33,10 @@ from ._projection import compile_projection, iter_projected_rows
 from ._shape import ElementShape, ShapeSet, list_item_type, scalar_kind
 from ._values import prepare_document, project
 from .dataset import DatasetResult
-from .projection import FieldSource
+from .projection import FieldSource, field_source_metadata
+
+if TYPE_CHECKING:
+    from pyxsd.relaxng.records import RelaxNGRecordProjection
 
 __all__ = ["RecordProjection", "records"]
 
@@ -206,7 +210,9 @@ class RecordProjection:
                 if column.source.attribute is not None:
                     names = (*names, "@" + column.source.attribute)
                 metadata = _metadata(column.name, names, column.scalar)
-                metadata[b"pyxsd:source"] = json.dumps(asdict(column.source)).encode()
+                metadata[b"pyxsd:source"] = json.dumps(
+                    field_source_metadata(column.source)
+                ).encode()
                 metadata[b"pyxsd:row"] = json.dumps(self._plan.route.path).encode()
                 fields.append(
                     pa.field(
@@ -399,11 +405,15 @@ class RecordProjection:
 
 
 def records(
-    schema: Schema,
+    schema: Schema | RelaxNGSchema,
     *,
     element: str,
     path: tuple[str, ...] = (),
     columns: Mapping[str, FieldSource] | None = None,
-) -> RecordProjection:
+) -> RecordProjection | RelaxNGRecordProjection:
     """Prepare an explicit global/local record projection before any rows exist."""
+    if isinstance(schema, RelaxNGSchema):
+        from pyxsd.relaxng.records import RelaxNGRecordProjection
+
+        return RelaxNGRecordProjection(schema, element=element, path=path, columns=columns)
     return RecordProjection(schema, element=element, path=path, columns=columns)
