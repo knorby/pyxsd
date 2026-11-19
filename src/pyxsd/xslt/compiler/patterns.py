@@ -70,7 +70,7 @@ from pyxsd.xslt.compiler.pattern_syntax import (
     _static_error,
     parse_pattern,
 )
-from pyxsd.xslt.errors import XsltDynamicError, is_budget_alarm
+from pyxsd.xslt.errors import XsltCircularityError, is_budget_alarm
 
 _ELEMENT_AXIS_KINDS = frozenset(
     {NodeKind.ELEMENT, NodeKind.TEXT, NodeKind.COMMENT, NodeKind.PROCESSING_INSTRUCTION}
@@ -411,8 +411,10 @@ class PatternMatcher:
             # Section 5.5.4's masking rule is itself overridden for
             # circularity, and section 9.11 repeats it: a key defined in terms
             # of itself must be reported (XTDE0640), not converted into a
-            # non-match that leaves an empty index behind.
-            if isinstance(exc, XsltDynamicError) and exc.code == "XTDE0640":
+            # non-match that leaves an empty index behind.  Only the engine's
+            # own marker escapes; an unrelated dynamic error that happens to
+            # carry the same code stays masked.
+            if isinstance(exc, XsltCircularityError):
                 raise
             self.statistics.errors_ignored += 1
             result = False

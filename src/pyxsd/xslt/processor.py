@@ -167,6 +167,7 @@ from pyxsd.xslt.compiler.static import (
 )
 from pyxsd.xslt.errors import (
     ERROR_NAMESPACE,
+    XsltCircularityError,
     XsltDynamicError,
     XsltError,
     XsltSerializationError,
@@ -7528,9 +7529,8 @@ class _Invocation(Transformation):
         # The document itself is retained beside the address: Python reuses
         # addresses, and the guard must not collide across documents.
         if self._key_builds.get(key) is document:
-            raise XsltDynamicError(
+            raise XsltCircularityError(
                 f"the key {name!r} is defined in terms of itself",
-                code="XTDE0640",
             )
         self._key_builds[key] = document
         try:

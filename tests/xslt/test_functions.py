@@ -23,7 +23,7 @@ from pyxsd.xdm import XdmAtomic
 from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.packages import PackageResolver
-from pyxsd.xslt.errors import XsltError, XsltStaticError
+from pyxsd.xslt.errors import ERROR_NAMESPACE, XsltError, XsltStaticError
 from pyxsd.xslt.processor import _ABSENT, _document_nodes, _Invocation, _prepare_invocation
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -564,6 +564,51 @@ def test_a_non_circular_pattern_error_is_still_a_non_match() -> None:
     )
     result = transform(source, b'<doc><item id="a"/></doc>', initial_template="main")
     assert result.principal == (XdmAtomic.integer(0),)
+
+
+def test_a_forged_circularity_code_from_a_message_is_masked() -> None:
+    """Only engine-detected circularity overrides the pattern masking rule."""
+    source = _stylesheet(
+        """
+        <xsl:key name="k" match="item[my:forge(.)]" use="@id"/>
+        <xsl:function name="my:forge" as="xs:boolean">
+          <xsl:param name="node"/>
+          <xsl:message terminate="yes" error-code="err:XTDE0640">forged</xsl:message>
+        </xsl:function>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key('k', 'a'))"/>
+        </xsl:template>
+        """,
+        namespaces={"my": MY_NS, "err": ERROR_NAMESPACE},
+    )
+    result = transform(source, b'<doc><item id="a"/></doc>', initial_template="main")
+    # XSLT 3.0 section 5.5.4 masks a non-circular dynamic error even when it
+    # carries the circularity code; the unbuilt index stays empty.
+    assert result.principal == (XdmAtomic.integer(0),)
+
+
+def test_a_forged_circularity_code_outside_a_pattern_is_catchable() -> None:
+    source = _stylesheet(
+        """
+        <xsl:function name="my:forge" as="xs:boolean">
+          <xsl:param name="node"/>
+          <xsl:message terminate="yes" error-code="err:XTDE0640">forged</xsl:message>
+        </xsl:function>
+        <xsl:template name="main">
+          <xsl:try>
+            <xsl:sequence select="my:forge(.)"/>
+            <xsl:catch><caught code="{$err:code}"/></xsl:catch>
+          </xsl:try>
+        </xsl:template>
+        """,
+        namespaces={"my": MY_NS, "err": ERROR_NAMESPACE},
+    )
+    result = transform(source, b"<doc/>", initial_template="main")
+    (caught,) = result.principal
+    assert caught.local_name == "caught"
+    assert [(attribute.name, attribute.string_value) for attribute in caught.attributes] == [
+        ("code", "XTDE0640")
+    ]
 
 
 def _key_invocation(source: bytes) -> _Invocation:
