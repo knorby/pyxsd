@@ -1182,7 +1182,7 @@ def test_repeated_choices_use_required_capacity_per_iteration():
         ("b", "B"),
     ]
     B = registry.model_for(element="doc", path=("b",))
-    with pytest.raises(ValueError, match="do not fit any repeated alternative"):
+    with pytest.raises(ValueError, match="unexpected-element"):
         validate_route_data(route, {"b": [B.model_validate("B")]})
 
 
@@ -1204,6 +1204,160 @@ def test_child_route_alternatives_use_the_same_retry_path():
     model = Root.model_validate(data)
     child = route_to_lexical(route, model).root[0]
     assert [(entry.tag, entry.text) for entry in child] == [("a", "A"), ("b", "B")]
+
+
+def test_repeated_choice_combinations_try_both_iterations():
+    registry, route = registry_and_route(
+        "<group>"
+        "<oneOrMore><choice>"
+        '<group><element name="a"><text/></element><element name="b"><text/></element></group>'
+        '<element name="a"><text/></element>'
+        "</choice></oneOrMore>"
+        '<element name="b"><text/></element>'
+        "</group>"
+    )
+    Root = registry.model_for(element="doc")
+    model = Root.model_validate({"a": ["A1", "A2"], "b": ["B1"]})
+    tree = route_to_lexical(route, model)
+    assert [(child.tag, child.text) for child in tree.root] == [
+        ("a", "A1"),
+        ("a", "A2"),
+        ("b", "B1"),
+    ]
+    assert validate_route_data(route, model)
+
+
+def test_multi_slot_outer_and_repeated_choice_combination():
+    schema = compile_element(
+        "<choice>"
+        "<group><choice>"
+        "<oneOrMore><group>"
+        '<element name="a"><text/></element><element name="b"><text/></element>'
+        "</group></oneOrMore>"
+        "<oneOrMore><group>"
+        '<element name="a"><text/></element><element name="a"><text/></element>'
+        '<element name="a"><text/></element>'
+        "</group></oneOrMore>"
+        "</choice>"
+        '<element name="c"><text/></element></group>'
+        "<group><choice>"
+        "<oneOrMore><group>"
+        '<element name="a"><text/></element><element name="b"><text/></element>'
+        "</group></oneOrMore>"
+        "<oneOrMore><group>"
+        '<element name="b"><text/></element><element name="a"><text/></element>'
+        '<element name="a"><text/></element>'
+        "</group></oneOrMore>"
+        "</choice>"
+        '<element name="c"><text/></element></group>'
+        "</choice>"
+    )
+    Root = models(schema).model_for(element="doc")
+    route = schema.projection.routes[schema.projection.roots[0]]
+    model = Root.model_validate(
+        {
+            "a": ["a1", "a2", "a3", "a4"],
+            "b": ["b1", "b2"],
+            "c": "c1",
+        }
+    )
+    tree = route_to_lexical(route, model)
+    assert [(child.tag, child.text) for child in tree.root] == [
+        ("b", "b1"),
+        ("a", "a1"),
+        ("a", "a2"),
+        ("b", "b2"),
+        ("a", "a3"),
+        ("a", "a4"),
+        ("c", "c1"),
+    ]
+    assert validate_route_data(route, model)
+
+
+def test_repeat_no_progress_stops_without_asserting(monkeypatch):
+    registry, route = registry_and_route(
+        '<oneOrMore><element name="a"><text/></element></oneOrMore>'
+    )
+    A = registry.model_for(element="doc", path=("a",))
+    renderer = _Renderer(
+        route,
+        _route_states(route, {"a": [A.model_validate("A")]}),
+        DatatypeContext(None, {}),
+        normalized=True,
+    )
+    monkeypatch.setattr(renderer, "_remaining", lambda node: 1)
+    root, _ = renderer.render()
+    assert len(root) == 1
+
+
+def test_nullable_repeat_stops_without_asserting_and_reports_native_failure():
+    registry, route = registry_and_route(
+        "<oneOrMore><choice><empty/><group>"
+        '<optional><element name="a"><text/></element></optional>'
+        '<element name="b"><text/></element>'
+        "</group></choice></oneOrMore>"
+    )
+    A = registry.model_for(element="doc", path=("a",))
+    B = registry.model_for(element="doc", path=("b",))
+    with pytest.raises(ValueError) as error:
+        validate_route_data(route, {"a": [A.model_validate("A")]})
+    assert "RELAX NG route" in str(error.value)
+    assert "missing-content" in str(error.value) or "missing-attribute" in str(error.value)
+    assert not isinstance(error.value, AssertionError)
+    assert validate_route_data(
+        route,
+        {"a": [A.model_validate("A")], "b": [B.model_validate("B")]},
+    )
+
+
+def test_model_instance_validation_rechecks_mutated_and_constructed_values():
+    registry, route = registry_and_route('<attribute name="n"><data type="integer"/></attribute>')
+    Root = registry.model_for(element="doc")
+    ordinary = Root.model_validate({"@n": 7})
+    ordinary_dump = ordinary.model_dump(by_alias=True)
+    assert validate_route_data(Root, ordinary)["@n"] == 7
+    ordinary.attr_n = None
+    with pytest.raises(ValueError, match="missing-attribute"):
+        validate_route_data(Root, ordinary)
+    with pytest.raises(ValueError, match="missing-attribute"):
+        validate_route_data(Root, Root.model_construct(attr_n=None))
+    with pytest.raises(ValueError, match="missing-attribute"):
+        validate_route_data(route, Root.model_construct(attr_n=None))
+    assert validate_route_data(Root, {"@n": "7"})["@n"] == 7
+    assert validate_route_data(Root, ordinary_dump)["@n"] == 7
+
+    nested_registry, nested_route = registry_and_route(
+        '<element name="child"><attribute name="n"><data type="integer"/></attribute></element>'
+    )
+    Parent = nested_registry.model_for(element="doc")
+    parent = Parent.model_validate({"child": {"@n": 7}})
+    parent_dump = parent.model_dump(by_alias=True)
+    assert validate_route_data(Parent, parent)
+    parent.child.attr_n = None
+    with pytest.raises(ValueError, match="missing-attribute"):
+        validate_route_data(Parent, parent)
+    assert validate_route_data(
+        nested_route,
+        parent_dump,
+        plan=nested_registry.schema.projection,
+    )
+
+
+def test_choice_search_cap_is_explicit(monkeypatch):
+    registry, route = registry_and_route(
+        "<group>"
+        "<oneOrMore><choice>"
+        '<group><element name="a"><text/></element><element name="b"><text/></element></group>'
+        '<element name="a"><text/></element>'
+        "</choice></oneOrMore>"
+        '<element name="b"><text/></element>'
+        "</group>"
+    )
+    Root = registry.model_for(element="doc")
+    model = Root.model_validate({"a": ["A1", "A2"], "b": ["B1"]})
+    monkeypatch.setattr(adapter, "_CHOICE_SEARCH_LIMIT", 1)
+    with pytest.raises(ValueError, match="bounded builds"):
+        route_to_lexical(route, model)
 
 
 def test_choice_retries_each_eligible_alternative_until_one_accepts():
@@ -1260,6 +1414,8 @@ def test_plan_errors_and_selection_fallback_are_explicit():
             "x",
             DatatypeContext(None, {}),
             ("doc", field_name),
+            slot_path=(),
+            ordinal=0,
         )
 
     choice_registry, choice_route = registry_and_route(
@@ -1272,7 +1428,7 @@ def test_plan_errors_and_selection_fallback_are_explicit():
         states,
         DatatypeContext(None, {}),
         normalized=True,
-        selections={id(choice_route.content.model): 99},
+        decisions={(): 99},
     )
     tree, _ = renderer.render()
     assert outline(tree) == [("a", "x")]

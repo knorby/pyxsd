@@ -26,6 +26,7 @@ checks alone never certify joint route validity.
 
 from __future__ import annotations
 
+import heapq
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -99,6 +100,11 @@ _CHILD_PRESENCE_VALIDATOR = "__pyxsd_relaxng_child_presence__"
 _ROUTE_VALIDATION_VALIDATOR = "__pyxsd_relaxng_route_validation__"
 
 _SCALAR_PATTERNS = (Text, Data, DataExcept, Value, PatternList)
+
+#: Upper bound on reconstructed choice combinations tried before a stable
+#: native finding is reported.  The search is over compiled alternatives only,
+#: never over value or child permutations.
+_CHOICE_SEARCH_LIMIT = 256
 
 #: One JSON Schema description of a schema-static scalar contract.
 ContractMetadata = dict[str, Any]
@@ -592,6 +598,17 @@ class _CountBounds:
     maximums: Mapping[str, int | None]
 
 
+@dataclass(frozen=True)
+class _ChoiceRecord:
+    """One compiled choice decision and its eligible alternative indices."""
+
+    eligible: tuple[int, ...]
+    selected: int
+
+
+SlotPath = tuple[int, ...]
+
+
 def _content_bounds(node: ContentContract, memo: dict[int, _CountBounds]) -> _CountBounds:
     """Compute per-alias bounds without expanding derivations or instances."""
     cached = memo.get(id(node))
@@ -864,14 +881,18 @@ class _Renderer:
         *,
         normalized: bool,
         plan: ProjectionPlan | None = None,
-        selections: Mapping[int, int] | None = None,
+        decisions: Mapping[SlotPath, int] | None = None,
+        recorded: dict[SlotPath, _ChoiceRecord] | None = None,
+        decision_prefix: SlotPath = (),
     ) -> None:
         self.route = route
         self.states = states
         self.context = context
         self.normalized = normalized
         self.plan = plan
-        self.selections = dict(selections or {})
+        self.decisions = dict(decisions or {})
+        self.recorded = recorded if recorded is not None else {}
+        self.decision_prefix = decision_prefix
         self.contexts: dict[int, DatatypeContext] = {}
         self.encoding: dict[str, dict[str, Pattern]] = {}
         self.aliases: dict[int, frozenset[str]] = {}
@@ -934,7 +955,16 @@ class _Renderer:
                     ) from error
         context = _merge_contexts(inherited, tuple(value_contexts), path=path)
         element = ET.Element(name)
-        self._emit(route.content.model, element, states, context, route, path, iteration=False)
+        self._emit(
+            route.content.model,
+            element,
+            states,
+            context,
+            route,
+            path,
+            iteration=False,
+            slot_path=(),
+        )
         leftovers = sorted(alias for alias, state in states.items() if state.remaining > 0)
         if leftovers:
             raise ValueError(
@@ -954,6 +984,7 @@ class _Renderer:
         path: tuple[str, ...],
         *,
         iteration: bool,
+        slot_path: SlotPath,
     ) -> None:
         kind = node.kind
         if kind == "empty" or kind == "notAllowed":
@@ -991,6 +1022,8 @@ class _Renderer:
                         value,
                         context,
                         (*path, alias),
+                        slot_path=slot_path,
+                        ordinal=len(element),
                     )
                 )
             return
@@ -1010,36 +1043,46 @@ class _Renderer:
             state.used += 1
             return
         if kind in ("group", "interleave"):
-            for operand in node.operands:
-                self._emit(operand, element, states, context, route, path, iteration=iteration)
+            for index, operand in enumerate(node.operands):
+                self._emit(
+                    operand,
+                    element,
+                    states,
+                    context,
+                    route,
+                    path,
+                    iteration=iteration,
+                    slot_path=(*slot_path, index),
+                )
             return
         if kind == "repeat":
             body = node.operands[0]
+            iteration_index = 0
             while self._has_remaining(body):
                 before = self._remaining(body)
-                self._emit(body, element, states, context, route, path, iteration=True)
-                assert self._remaining(body) < before
+                self._emit(
+                    body,
+                    element,
+                    states,
+                    context,
+                    route,
+                    path,
+                    iteration=True,
+                    slot_path=(*slot_path, -1, iteration_index),
+                )
+                iteration_index += 1
+                if self._remaining(body) >= before:
+                    break
             return
         if kind == "choice":
+            slot = (*self.decision_prefix, *slot_path)
             if iteration:
-                candidates: list[tuple[int, int]] = []
-                for index, operand in enumerate(node.operands):
-                    bounds = _content_bounds(operand, self.bounds)
-                    if all(
-                        (states[alias].remaining if alias in states else 0) >= minimum
-                        for alias, minimum in bounds.minimums.items()
-                    ):
-                        candidates.append((self._remaining(operand), index))
-                if not candidates:
-                    remaining = _present_counts(node, states)
-                    raise ValueError(
-                        f"RELAX NG route {_route_label(route)} path {'/'.join(path)}: "
-                        f"remaining field counts {sorted(remaining.items())!r} do not fit "
-                        "any repeated alternative"
-                    )
-                chosen: ContentContract | None = node.operands[
-                    max(candidates, key=lambda item: (item[0], -item[1]))[1]
+                scored = [
+                    (self._remaining(operand), index) for index, operand in enumerate(node.operands)
                 ]
+                positive = [index for score, index in scored if score > 0]
+                eligible = positive or list(range(len(node.operands)))
+                default = max(scored, key=lambda item: (item[0], -item[1]))[1]
             else:
                 present = _present_counts(node, states)
                 eligible = [
@@ -1056,12 +1099,22 @@ class _Renderer:
                         f"field counts {sorted(present.items())!r} do not fit any "
                         "compiled alternative"
                     )
-                selected = self.selections.get(id(node), eligible[0])
-                if selected not in eligible:
-                    selected = eligible[0]
-                chosen = node.operands[selected]
-            assert chosen is not None
-            self._emit(chosen, element, states, context, route, path, iteration=iteration)
+                default = eligible[0]
+            selected = self.decisions.get(slot, default)
+            if selected not in eligible:
+                selected = default
+            self.recorded[slot] = _ChoiceRecord(tuple(eligible), selected)
+            chosen = node.operands[selected]
+            self._emit(
+                chosen,
+                element,
+                states,
+                context,
+                route,
+                path,
+                iteration=iteration,
+                slot_path=(*slot_path, selected),
+            )
             return
         raise IntegrationError(
             f"RELAX NG route {_route_label(route)} path {'/'.join(path)}: "
@@ -1075,8 +1128,10 @@ class _Renderer:
         value: Any,
         inherited: DatatypeContext,
         path: tuple[str, ...],
+        *,
+        slot_path: SlotPath,
+        ordinal: int,
     ) -> ET.Element:
-        del name
         child_route: RouteContract
         child_data: Mapping[str, Any]
         normalized: bool
@@ -1119,15 +1174,20 @@ class _Renderer:
                 )
             normalized = False
         _check_route_supported(child_route)
-        tree, contexts = _accepted_route_tree(
+        child_states = _route_states(child_route, child_data)
+        renderer = _Renderer(
             child_route,
-            child_data,
+            child_states,
             inherited,
             normalized=normalized,
             plan=self.plan,
+            decisions=self.decisions,
+            recorded=self.recorded,
+            decision_prefix=(*slot_path, -2, ordinal),
         )
-        self.contexts.update(contexts)
-        return tree
+        element = renderer._element(name, child_route, child_states, inherited, path)
+        self.contexts.update(renderer.contexts)
+        return element
 
 
 def _route_tree(
@@ -1137,7 +1197,8 @@ def _route_tree(
     *,
     normalized: bool,
     plan: ProjectionPlan | None = None,
-    selections: Mapping[int, int] | None = None,
+    decisions: Mapping[SlotPath, int] | None = None,
+    recorded: dict[SlotPath, _ChoiceRecord] | None = None,
 ) -> tuple[ET.Element, dict[int, DatatypeContext]]:
     """Build one complete deterministic element tree for *route*."""
     inherited = context_from_mapping(context)
@@ -1148,7 +1209,9 @@ def _route_tree(
         inherited,
         normalized=normalized,
         plan=plan,
-        selections=selections,
+        decisions=decisions,
+        recorded=recorded,
+        decision_prefix=(),
     ).render()
 
 
@@ -1221,44 +1284,6 @@ def _native_rejection(
     )
 
 
-def _choice_slots(
-    route: RouteContract,
-    data: Mapping[str, Any],
-    memo: dict[int, _CountBounds],
-) -> list[tuple[ContentContract, list[int]]]:
-    """Compiled non-repeat choice alternatives eligible for this data.
-
-    The returned order is the content model's declaration order.  Choices
-    inside a repeat are iteration-scoped and are not retried as a whole.
-    """
-    states = _route_states(route, data)
-    slots: list[tuple[ContentContract, list[int]]] = []
-    seen: set[int] = set()
-
-    def walk(node: ContentContract, in_repeat: bool) -> None:
-        key = id(node)
-        if key in seen:
-            return
-        seen.add(key)
-        if node.kind == "choice" and not in_repeat:
-            present = _present_counts(node, states)
-            eligible = [
-                index
-                for index, operand in enumerate(node.operands)
-                if _bounds_fit(_content_bounds(operand, memo), present)
-            ]
-            if len(eligible) > 1:
-                slots.append((node, eligible))
-        if node.kind == "repeat":
-            walk(node.operands[0], True)
-            return
-        for operand in node.operands:
-            walk(operand, in_repeat)
-
-    walk(route.content.model, False)
-    return slots
-
-
 def _accepted_route_tree(
     route: RouteContract,
     data: Mapping[str, Any],
@@ -1267,17 +1292,28 @@ def _accepted_route_tree(
     normalized: bool,
     plan: ProjectionPlan | None = None,
 ) -> tuple[ET.Element, dict[int, DatatypeContext]]:
-    """Build and natively validate one tree, retrying compiled alternatives.
+    """Build and natively validate one tree with bounded choice enumeration.
 
-    The first eligible alternative in declaration order is used.  If native
-    validation rejects that tree, each other eligible non-repeat alternative is
-    tried once, in declaration order.  Child order is never permuted and no
-    values are dropped; the attempt count is bounded by the compiled operands.
+    Every compiled choice decision, including choices inside repeats and child
+    routes, is recorded with its content path and repeat-iteration index.  The
+    default tree is tried first; then combinations of recorded alternatives are
+    enumerated in deterministic lexicographic order.  Newly discovered nested
+    slots join the enumeration from the build that revealed them.  At most
+    ``_CHOICE_SEARCH_LIMIT`` trees are built.  Child order is never permuted and
+    no values are dropped.
     """
-
-    def attempt(
-        selections: Mapping[int, int],
-    ) -> tuple[tuple[ET.Element, dict[int, DatatypeContext]] | None, ValueError | None]:
+    initial: dict[SlotPath, int] = {}
+    heap: list[tuple[tuple[tuple[SlotPath, int], ...], int, dict[SlotPath, int]]] = [
+        ((), 0, initial)
+    ]
+    seen: set[tuple[tuple[SlotPath, int], ...]] = {()}
+    counter = 0
+    builds = 0
+    first_error: ValueError | None = None
+    first_native: ValueError | None = None
+    while heap and builds < _CHOICE_SEARCH_LIMIT:
+        _, _, decisions = heapq.heappop(heap)
+        recorded: dict[SlotPath, _ChoiceRecord] = {}
         try:
             tree = _route_tree(
                 route,
@@ -1285,27 +1321,42 @@ def _accepted_route_tree(
                 context,
                 normalized=normalized,
                 plan=plan,
-                selections=selections,
+                decisions=decisions,
+                recorded=recorded,
             )
         except ValueError as error:
-            return None, error
-        rejection = _native_rejection(route, tree)
-        if rejection is not None:
-            return None, rejection
-        return tree, None
-
-    tree, error = attempt({})
-    if tree is not None:
-        return tree
-    assert error is not None
-    first_error = error
-    memo: dict[int, _CountBounds] = {}
-    for node, eligible in _choice_slots(route, data, memo):
-        for index in eligible[1:]:
-            tree, _ = attempt({id(node): index})
-            if tree is not None:
+            rejection: ValueError | None = error
+        else:
+            rejection = _native_rejection(route, tree)
+            if rejection is None:
                 return tree
-    raise first_error
+            if first_native is None:
+                first_native = rejection
+        builds += 1
+        if first_error is None:
+            first_error = rejection
+        current = {slot: record.selected for slot, record in recorded.items()}
+        for slot in sorted(recorded):
+            record = recorded[slot]
+            for alternative in record.eligible:
+                if alternative == record.selected:
+                    continue
+                candidate = dict(current)
+                candidate[slot] = alternative
+                signature = tuple(sorted(candidate.items()))
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                heapq.heappush(heap, (signature, counter, candidate))
+                counter += 1
+    assert first_error is not None
+    stable_error = first_native if first_native is not None else first_error
+    if heap:
+        raise ValueError(
+            f"{stable_error}; no accepting choice combination within "
+            f"{_CHOICE_SEARCH_LIMIT} bounded builds"
+        )
+    raise stable_error
 
 
 def _imported_tree(root: ET.Element, contexts: dict[int, DatatypeContext]) -> ImportedTree:
@@ -1346,8 +1397,17 @@ def validate_route_data(
     _check_route_supported(route)
     payload: Mapping[str, Any] | BaseModel = data
     if model_class is not None:
-        if not isinstance(payload, model_class):
-            payload = model_class.model_validate(payload, context=context)
+        if isinstance(payload, model_class):
+            values = _model_values(route, payload)
+            _accepted_route_tree(
+                route,
+                values,
+                context,
+                normalized=True,
+                plan=plan if plan is not None else getattr(model_class, "__relaxng_plan__", None),
+            )
+            return values
+        payload = model_class.model_validate(payload, context=context)
         return _model_values(route, payload)
     if isinstance(payload, BaseModel):
         values = _model_values(route, payload)
