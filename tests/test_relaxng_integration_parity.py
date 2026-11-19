@@ -582,7 +582,7 @@ def test_relaxng_explicit_columns_cover_scalars_attributes_and_repeated_rows(tmp
         <zeroOrMore><element name="item">
           <attribute name="id"><data type="long"/></attribute>
           <optional><element name="label"><data type="string"/></element></optional>
-          <element name="value"><data type="integer"/></element>
+          <element name="value"><data type="int"/></element>
         </element></zeroOrMore>
         """
     )
@@ -604,7 +604,7 @@ def test_relaxng_explicit_columns_cover_scalars_attributes_and_repeated_rows(tmp
     assert projection.schema.names == ["id", "label", "value"]
     assert projection.schema.field("id").type == pa.int64()
     assert projection.schema.field("label").type == pa.string()
-    assert projection.schema.field("value").type == pa.int64()
+    assert projection.schema.field("value").type == pa.int32()
     assert projection.table(document, selector="item").to_pylist() == [
         {"id": 1, "label": "", "value": 10},
         {"id": 2, "label": None, "value": 20},
@@ -631,7 +631,7 @@ def test_relaxng_absent_optional_empty_string_and_fixed_homogeneous_lists():
     pa, _, records = arrow_records()
     optional = compile_element(
         '<optional><attribute name="a"><text/></attribute></optional>'
-        '<optional><element name="value"><data type="integer"/></element></optional>'
+        '<optional><element name="value"><data type="int"/></element></optional>'
     )
     projection = records(
         optional,
@@ -650,18 +650,16 @@ def test_relaxng_absent_optional_empty_string_and_fixed_homogeneous_lists():
         {"value": "hello"}
     ]
 
-    fixed_schema = compile_element('<list><data type="integer"/><data type="integer"/></list>')
+    fixed_schema = compile_element('<list><data type="int"/><data type="int"/></list>')
     fixed = records(fixed_schema, element="doc", columns={"value": FieldSource()})
     fixed_document = parse(fixed_schema, "<doc>1 2</doc>")
     assert list(iter_relaxng_rows(fixed._plan, fixed_document)) == [{"value": (1, 2)}]
     assert fixed.table(fixed_document).to_pylist() == [{"value": [1, 2]}]
     assert fixed.schema.field("value").type == pa.list_(
-        pa.field("item", pa.int64(), nullable=False)
+        pa.field("item", pa.int32(), nullable=False)
     )
 
-    homogeneous_schema = compile_element(
-        '<list><zeroOrMore><data type="integer"/></zeroOrMore></list>'
-    )
+    homogeneous_schema = compile_element('<list><zeroOrMore><data type="int"/></zeroOrMore></list>')
     homogeneous = records(homogeneous_schema, element="doc", columns={"value": FieldSource()})
     assert homogeneous.table(parse(homogeneous_schema, "<doc/>")).to_pylist() == [{"value": []}]
     assert homogeneous.table(parse(homogeneous_schema, "<doc>1 2 3</doc>")).to_pylist() == [
@@ -737,15 +735,54 @@ def test_matched_xsd_and_relaxng_arrow_names_types_and_rows_agree():
     )
 
 
+def test_matched_unbounded_integer_schema_and_arbitrary_precision_rows_agree(tmp_path):
+    pa, pq, records = arrow_records()
+    xsd_schema = compile_schema(
+        '<xs:element name="record"><xs:complexType><xs:sequence>'
+        '<xs:element name="value" type="xs:integer"/>'
+        "</xs:sequence></xs:complexType></xs:element>"
+    )
+    rng_schema = compile_element(
+        '<element name="value"><data type="integer"/></element>',
+        name="record",
+    )
+    xsd_projection = records(xsd_schema, element="record")
+    rng_projection = records(rng_schema, element="record")
+    value = str(2**80)
+    assert xsd_projection.schema.field("value").type == pa.string()
+    assert rng_projection.schema.field("value").type == pa.string()
+    assert (
+        "unbounded integer range"
+        in rng_projection.schema.field("value").metadata[b"pyxsd:arrow_fallback"].decode()
+    )
+    xsd_document = xsd_schema.parse(io.StringIO(f"<record><value>{value}</value></record>"))
+    rng_document = parse(rng_schema, f"<record><value>{value}</value></record>")
+    expected = [{"value": value}]
+    assert xsd_projection.table(xsd_document).to_pylist() == expected
+    assert rng_projection.table(rng_document).to_pylist() == expected
+
+    columns = {"value": FieldSource(path=("value",))}
+    xsd_columns = records(xsd_schema, element="record", columns=columns)
+    rng_columns = records(rng_schema, element="record", columns=columns)
+    assert xsd_columns.schema.field("value").type == rng_columns.schema.field("value").type
+    assert xsd_columns.table(xsd_document).to_pylist() == expected
+    assert rng_columns.table(rng_document).to_pylist() == expected
+
+    destination = tmp_path / "unbounded-integer.parquet"
+    rng_projection.write_parquet(rng_document, destination)
+    assert pq.read_table(destination).to_pylist() == expected
+    assert pq.read_schema(destination).field("value").type == pa.string()
+
+
 def test_candidate_and_datatype_selectors_choose_one_contract():
     _, _, records = arrow_records()
-    schema = compile_element('<choice><data type="integer"/><data type="string"/></choice>')
+    schema = compile_element('<choice><data type="long"/><data type="string"/></choice>')
     document = parse(schema, "<doc>12</doc>")
     route = schema.projection.routes[schema.projection.roots[0]]
     contracts = {contract.type_name: contract for contract in route.content.scalar_contracts}
     identifier = candidate_id(schema._grammar_fingerprint, contracts["string"])
 
-    integer = records(schema, element="doc", columns={"value": FieldSource(datatype=INT)})
+    integer = records(schema, element="doc", columns={"value": FieldSource(datatype=(XSD, "long"))})
     string = records(schema, element="doc", columns={"value": FieldSource(candidate_id=identifier)})
     assert integer.table(document).to_pylist() == [{"value": 12}]
     assert string.table(document).to_pylist() == [{"value": "12"}]
@@ -753,7 +790,7 @@ def test_candidate_and_datatype_selectors_choose_one_contract():
     with pytest.raises(IntegrationError, match="ambiguous; set datatype/candidate_id"):
         records(schema, element="doc", columns={"value": FieldSource()})
     with pytest.raises(IntegrationError, match="mutually exclusive"):
-        FieldSource(datatype=INT, candidate_id=identifier)
+        FieldSource(datatype=(XSD, "long"), candidate_id=identifier)
     with pytest.raises(IntegrationError, match="unknown"):
         records(
             schema,
@@ -768,8 +805,8 @@ def test_joint_incompatibility_nondecodable_and_stale_arrow_inputs_fail_closed()
         """
         <choice>
           <group>
-            <element name="x"><data type="integer"/></element>
-            <element name="y"><data type="integer"/></element>
+            <element name="x"><data type="int"/></element>
+            <element name="y"><data type="int"/></element>
           </group>
           <group>
             <element name="x"><data type="string"/></element>
@@ -782,7 +819,7 @@ def test_joint_incompatibility_nondecodable_and_stale_arrow_inputs_fail_closed()
         schema,
         element="doc",
         columns={
-            "x": FieldSource(path=("x",), datatype=(XSD, "integer")),
+            "x": FieldSource(path=("x",), datatype=(XSD, "int")),
             "y": FieldSource(path=("y",), datatype=(XSD, "string")),
         },
     )
@@ -797,8 +834,8 @@ def test_joint_incompatibility_nondecodable_and_stale_arrow_inputs_fail_closed()
         schema,
         element="doc",
         columns={
-            "x": FieldSource(path=("x",), datatype=(XSD, "integer")),
-            "y": FieldSource(path=("y",), datatype=(XSD, "integer")),
+            "x": FieldSource(path=("x",), datatype=(XSD, "int")),
+            "y": FieldSource(path=("y",), datatype=(XSD, "int")),
         },
     )
     assert compatible.table(parse(schema, "<doc><x>12</x><y>34</y></doc>")).to_pylist() == [
@@ -817,7 +854,7 @@ def test_joint_incompatibility_nondecodable_and_stale_arrow_inputs_fail_closed()
 
     item_schema = compile_element(
         '<zeroOrMore><element name="item">'
-        '<attribute name="id"><data type="integer"/></attribute>'
+        '<attribute name="id"><data type="int"/></attribute>'
         "</element></zeroOrMore>"
     )
     projection = records(

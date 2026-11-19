@@ -522,6 +522,47 @@ def _value_from_candidates(
     return _wrapper(codec, candidates, lexical, context)
 
 
+def _check_atomic_input(contract: ScalarContract, value: object) -> None:
+    """Reject a typed value the contract's generated JSON shape excludes.
+
+    The generated JSON Schema advertises a JSON boolean (plus lexical strings)
+    for ``xs:boolean`` and decimal strings for ``xs:decimal``.  A Python
+    ``int`` is not interchangeable with either: ``1`` is not a boolean and a
+    JSON number is not a decimal lexical form.  Keep runtime acceptance equal
+    to the advertised shape instead of relying on the datatype encoder's
+    coercions.
+    """
+    if contract.library_uri != XSD_LIBRARY:
+        return
+    if contract.type_name == "boolean" and not isinstance(value, (bool, str)):
+        raise ValueError(
+            f"a boolean scalar accepts a boolean or a lexical string, not {type(value).__name__}"
+        )
+    if contract.type_name == "decimal" and not isinstance(value, (str, Decimal)):
+        raise ValueError(
+            f"a decimal scalar accepts a decimal string or Decimal, not {type(value).__name__}"
+        )
+
+
+def _check_input_shape(contract: ScalarContract, pattern: Pattern, value: object) -> None:
+    """Apply the advertised atomic input shape to scalars and list items."""
+    if contract.kind == "atomic":
+        _check_atomic_input(contract, value)
+        return
+    if contract.kind != "list" or not isinstance(value, (list, tuple)):
+        return
+    list_pattern = cast(List, pattern)
+    shape = list_shape(list_pattern)
+    plan = _list_token_plan(list_pattern)
+    if shape == "interpretation" or plan is None:
+        return
+    token_patterns = (
+        plan.patterns if shape == "tuple" else tuple(plan.patterns[0] for _ in range(len(value)))
+    )
+    for token_pattern, item in zip(token_patterns, value, strict=False):
+        _check_atomic_input(scalar_contract(token_pattern), item)
+
+
 def _encode_assignment(
     contract: ScalarContract,
     pattern: Pattern,
@@ -529,6 +570,7 @@ def _encode_assignment(
     context: DatatypeContext,
 ) -> str:
     """Encode one typed assignment without a ``str(value)`` fallback."""
+    _check_input_shape(contract, pattern, value)
     if contract.kind == "list":
         if not _list_items_encodable(cast(List, pattern)):
             raise ValueError(

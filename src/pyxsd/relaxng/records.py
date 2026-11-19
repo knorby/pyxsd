@@ -400,6 +400,46 @@ def _field_metadata(
     return metadata
 
 
+def _integer_arrow(datatype: ScalarDatatype) -> tuple[Any, str | None]:
+    """Cover the declared integer value space with one Arrow integer or string.
+
+    ``xs:integer`` itself has no finite range, so a fixed-width Arrow integer
+    cannot represent every valid value.  The compiled facets (and any bounds
+    the XSD backing class fixes) are intersected, and the narrowest signed or
+    unsigned integer that still covers the result is selected.
+    """
+    pa = _pyarrow()
+    lower = getattr(datatype.xsd_type, "_min", None)
+    upper = getattr(datatype.xsd_type, "_max", None)
+    constraints = datatype.constraints
+    minimum = constraints.min_inclusive
+    if constraints.min_exclusive is not None:
+        exclusive = int(constraints.min_exclusive) + 1
+        minimum = exclusive if minimum is None else max(int(minimum), exclusive)
+    if minimum is not None:
+        lower = int(minimum) if lower is None else max(lower, int(minimum))
+    maximum = constraints.max_inclusive
+    if constraints.max_exclusive is not None:
+        exclusive = int(constraints.max_exclusive) - 1
+        maximum = exclusive if maximum is None else min(int(maximum), exclusive)
+    if maximum is not None:
+        upper = int(maximum) if upper is None else min(upper, int(maximum))
+    if lower is None or upper is None:
+        return (
+            pa.string(),
+            "unbounded integer range; Arrow has no arbitrary-precision integer, using string",
+        )
+    for bits in (8, 16, 32, 64):
+        if lower >= 0 and upper < 2**bits:
+            return getattr(pa, f"uint{bits}")(), None
+        if -(2 ** (bits - 1)) <= lower and upper < 2 ** (bits - 1):
+            return getattr(pa, f"int{bits}")(), None
+    return (
+        pa.string(),
+        f"integer range [{lower}, {upper}] exceeds the 64-bit Arrow integer range; using string",
+    )
+
+
 def _atomic_arrow(contract: ScalarContract, plan: ProjectionPlan) -> tuple[Any, str | None]:
     pa = _pyarrow()
     pattern = plan.encoding_patterns[contract.pattern_identity]
@@ -416,7 +456,7 @@ def _atomic_arrow(contract: ScalarContract, plan: ProjectionPlan) -> tuple[Any, 
     if kind == "bool":
         return pa.bool_(), None
     if kind == "int":
-        return pa.int64(), None
+        return _integer_arrow(datatype)
     if kind == "decimal":
         constraints = getattr(datatype, "constraints", None)
         precision = getattr(constraints, "total_digits", None)
@@ -923,6 +963,8 @@ def _convert_value(
             raise IntegrationError(f"{label}: boolean value cannot fill Arrow {arrow_shape}")
         return value
     if isinstance(value, int):
+        if pa.types.is_string(arrow_shape):
+            return str(value)
         if not (
             pa.types.is_integer(arrow_shape)
             or pa.types.is_floating(arrow_shape)

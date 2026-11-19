@@ -101,6 +101,25 @@ def assert_export_matches(model_class: type[RootModel], instance: RootModel) -> 
     Draft202012Validator(schema).validate(json.loads(instance.model_dump_json()))
 
 
+def assert_validation_schema_agrees(model_class: type[RootModel], value: Any) -> None:
+    """Require the generated validation schema and JSON validation to agree.
+
+    A JSON Schema describes JSON input, so the comparison uses
+    ``model_validate_json``.  Python-mode construction has its own typed-value
+    contract and is asserted separately.
+    """
+    schema = model_class.model_json_schema(mode="validation")
+    Draft202012Validator.check_schema(schema)
+    expected = Draft202012Validator(schema).is_valid(value)
+    try:
+        model_class.model_validate_json(json.dumps(value))
+    except ValidationError:
+        actual = False
+    else:
+        actual = True
+    assert actual is expected, (value, expected, schema)
+
+
 class NonDecodingDatatype(Datatype):
     """A named custom datatype that validates but declares no decoder."""
 
@@ -644,6 +663,94 @@ def test_unique_scalars_use_ordinary_python_values():
     assert excepted.model_validate(6).root == 6
     with pytest.raises(ValidationError):
         excepted.model_validate(5)
+
+
+def test_unique_boolean_and_decimal_inputs_match_the_validation_schema():
+    _, boolean = model_for('<data type="boolean"/>')
+    for value in (1, 0, True, False, "1", "true"):
+        assert_validation_schema_agrees(boolean, value)
+    assert boolean.model_validate(True).root is True
+    assert boolean.model_validate(False).root is False
+    assert boolean.model_validate("1").root is True
+    assert boolean.model_validate("true").root is True
+    assert boolean.model_validate_json("true").root is True
+    assert boolean.model_validate_json('"1"').root is True
+    for value in (1, 0):
+        with pytest.raises(ValidationError):
+            boolean.model_validate(value)
+        with pytest.raises(ValidationError):
+            boolean.model_validate_json(str(value))
+
+    _, decimal = model_for('<data type="decimal"/>')
+    for value in (1, 1.0, "1.5"):
+        assert_validation_schema_agrees(decimal, value)
+    assert decimal.model_validate("1.5").root == Decimal("1.5")
+    assert decimal.model_validate(Decimal("1.5")).root == Decimal("1.5")
+    assert decimal.model_validate_json('"1.5"').root == Decimal("1.5")
+    for value in ("1", "0", "1.0"):
+        with pytest.raises(ValidationError):
+            decimal.model_validate_json(value)
+    with pytest.raises(ValidationError):
+        decimal.model_validate(1)
+    with pytest.raises(ValidationError):
+        decimal.model_validate(1.0)
+
+
+def test_record_and_list_boolean_decimal_inputs_match_the_validation_schema():
+    _, record = model_for(
+        '<attribute name="flag"><data type="boolean"/></attribute>'
+        '<optional><element name="value"><data type="decimal"/></element></optional>'
+    )
+    for value in (
+        {"@flag": True},
+        {"@flag": False},
+        {"@flag": 1},
+        {"@flag": 0},
+        {"@flag": "1"},
+        {"@flag": "true"},
+        {"@flag": True, "value": "1.5"},
+        {"@flag": True, "value": 1},
+        {"@flag": True, "value": 1.0},
+    ):
+        assert_validation_schema_agrees(record, value)
+    assert record.model_validate({"@flag": True, "value": "1.5"}).value.root == Decimal("1.5")
+    assert record.model_validate({"@flag": True, "value": Decimal("1.5")}).value.root == (
+        Decimal("1.5")
+    )
+    with pytest.raises(ValidationError):
+        record.model_validate({"@flag": 1})
+    with pytest.raises(ValidationError):
+        record.model_validate_json('{"@flag": 0}')
+    with pytest.raises(ValidationError):
+        record.model_validate({"@flag": True, "value": 1})
+    with pytest.raises(ValidationError):
+        record.model_validate_json('{"@flag": true, "value": 1.0}')
+
+    _, booleans = model_for('<list><zeroOrMore><data type="boolean"/></zeroOrMore></list>')
+    for value in ([True, False], ["1", "0"], [1, 0], [True, 1]):
+        assert_validation_schema_agrees(booleans, value)
+    assert booleans.model_validate([True, False]).root == [True, False]
+    assert booleans.model_validate_json('["1", "0"]').root == [True, False]
+    assert booleans.model_validate_json("[true, false]").root == [True, False]
+    with pytest.raises(ValidationError):
+        booleans.model_validate([1, 0])
+    with pytest.raises(ValidationError):
+        booleans.model_validate(True)
+    with pytest.raises(ValidationError):
+        booleans.model_validate_json("[1, 0]")
+
+    _, decimals = model_for('<list><zeroOrMore><data type="decimal"/></zeroOrMore></list>')
+    for value in (["1.5", "2"], [1, 2], [1.5, 2], [True]):
+        assert_validation_schema_agrees(decimals, value)
+    assert decimals.model_validate([Decimal("1.5"), Decimal("2")]).root == [
+        Decimal("1.5"),
+        Decimal("2"),
+    ]
+    assert decimals.model_validate_json('["1.5", "2"]').root == [Decimal("1.5"), Decimal("2")]
+    with pytest.raises(ValidationError):
+        decimals.model_validate([1, 2])
+    with pytest.raises(ValidationError):
+        decimals.model_validate_json("[1.5, 2]")
 
 
 def test_unique_lists_use_declared_tuple_and_list_shapes():

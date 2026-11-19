@@ -221,10 +221,10 @@ def test_record_ancestor_root_and_path_scopes():
     assert all(not binding.nullable for binding in plan.columns if binding.name != "code")
     assert bindings["code"].nullable
     assert [binding.arrow_shape for binding in plan.columns] == [
-        pa.int64(),
+        pa.int32(),
         pa.string(),
         pa.string(),
-        pa.int64(),
+        pa.int32(),
         pa.string(),
     ]
 
@@ -438,7 +438,7 @@ def test_unique_ambiguous_datatype_and_candidate_selection():
         columns={"value": FieldSource(datatype=INT)},
     )
     assert selected.columns[0].selected_contract.type_name == "int"
-    assert selected.columns[0].arrow_shape == pa.int64()
+    assert selected.columns[0].arrow_shape == pa.int32()
     with pytest.raises(IntegrationError, match="matches no"):
         compile_relaxng_projection(
             schema,
@@ -520,8 +520,7 @@ def test_candidate_ids_are_grammar_scoped_not_value_scoped():
         ("dateTime", pa.string()),
         ("duration", pa.string()),
         ("boolean", pa.bool_()),
-        ("int", pa.int64()),
-        ("integer", pa.int64()),
+        ("int", pa.int32()),
         ("long", pa.int64()),
         ("double", pa.float64()),
         ("float", pa.float64()),
@@ -546,6 +545,156 @@ def decimal_body(total: int | None = None, fraction: int | None = None) -> str:
     if fraction is not None:
         params += f'<param name="fractionDigits">{fraction}</param>'
     return f'<data type="decimal">{params}</data>'
+
+
+def integer_body(
+    minimum: int | None = None,
+    maximum: int | None = None,
+    *,
+    min_exclusive: int | None = None,
+    max_exclusive: int | None = None,
+) -> str:
+    params = ""
+    if minimum is not None:
+        params += f'<param name="minInclusive">{minimum}</param>'
+    if maximum is not None:
+        params += f'<param name="maxInclusive">{maximum}</param>'
+    if min_exclusive is not None:
+        params += f'<param name="minExclusive">{min_exclusive}</param>'
+    if max_exclusive is not None:
+        params += f'<param name="maxExclusive">{max_exclusive}</param>'
+    return f'<data type="integer">{params}</data>'
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ('<data type="byte"/>', pa.int8()),
+        ('<data type="short"/>', pa.int16()),
+        ('<data type="int"/>', pa.int32()),
+        ('<data type="long"/>', pa.int64()),
+        ('<data type="unsignedByte"/>', pa.uint8()),
+        ('<data type="unsignedShort"/>', pa.uint16()),
+        ('<data type="unsignedInt"/>', pa.uint32()),
+        ('<data type="unsignedLong"/>', pa.uint64()),
+        (integer_body(0, 255), pa.uint8()),
+        (integer_body(0, 256), pa.uint16()),
+        (integer_body(-128, 127), pa.int8()),
+        (integer_body(min_exclusive=-129, max_exclusive=128), pa.int8()),
+        (integer_body(-(2**63), 2**63 - 1), pa.int64()),
+        (integer_body(0, 2**63 - 1), pa.uint64()),
+        (integer_body(0, 2**64 - 1), pa.uint64()),
+        ('<data type="int"><param name="minInclusive">0</param></data>', pa.uint32()),
+        ('<data type="int"><param name="maxExclusive">256</param></data>', pa.int32()),
+        (
+            '<data type="int"><param name="minInclusive">-32768</param>'
+            '<param name="maxExclusive">256</param></data>',
+            pa.int16(),
+        ),
+        ('<data type="long"><param name="minInclusive">0</param></data>', pa.uint64()),
+    ],
+)
+def test_bounded_integer_arrow_shapes_cover_the_declared_range(body, expected):
+    schema = compile_element(body)
+    plan = compile_relaxng_projection(
+        schema, element="doc", path=(), columns={"value": FieldSource()}
+    )
+    assert plan.columns[0].arrow_shape == expected
+    assert plan.columns[0].arrow_fallback is None
+
+
+def test_unbounded_and_wide_integer_contracts_fall_back_to_string():
+    for body, reason in [
+        ('<data type="integer"/>', "unbounded integer range"),
+        (integer_body(0), "unbounded integer range"),
+        (integer_body(maximum=0), "unbounded integer range"),
+        (integer_body(0, 2**64), "exceeds the 64-bit Arrow integer range"),
+        (integer_body(-(2**65), 2**65), "exceeds the 64-bit Arrow integer range"),
+    ]:
+        schema = compile_element(body)
+        plan = compile_relaxng_projection(
+            schema, element="doc", path=(), columns={"value": FieldSource()}
+        )
+        assert plan.columns[0].arrow_shape == pa.string()
+        assert plan.columns[0].arrow_fallback is not None
+        assert reason in plan.columns[0].arrow_fallback
+    projection = RelaxNGRecordProjection(
+        compile_element('<data type="integer"/>'), element="doc", columns={"value": FieldSource()}
+    )
+    assert projection.schema.field("value").type == pa.string()
+    assert (
+        "unbounded integer range"
+        in projection.schema.field("value").metadata[b"pyxsd:arrow_fallback"].decode()
+    )
+
+
+def test_unbounded_integer_values_project_without_overflow(tmp_path):
+    value = str(2**80)
+    schema = compile_element('<element name="value"><data type="integer"/></element>')
+    projection = RelaxNGRecordProjection(schema, element="doc")
+    document = parse(schema, f"<doc><value>{value}</value></doc>")
+    assert projection.schema.field("value").type == pa.string()
+    assert projection.table(document).to_pylist() == [{"value": value}]
+    explicit = RelaxNGRecordProjection(
+        schema, element="doc", columns={"value": FieldSource(path=("value",))}
+    )
+    assert explicit.table(document).to_pylist() == [{"value": value}]
+    destination = tmp_path / "wide.parquet"
+    projection.write_parquet(document, destination)
+    assert pq.read_table(destination).to_pylist() == [{"value": value}]
+    assert pq.read_schema(destination).field("value").type == pa.string()
+
+    repeated = compile_element(
+        '<zeroOrMore><element name="value"><data type="integer"/></element></zeroOrMore>'
+    )
+    repeated_projection = RelaxNGRecordProjection(repeated, element="doc")
+    repeated_document = parse(
+        repeated, f"<doc><value>1</value><value>{value}</value><value>-2</value></doc>"
+    )
+    assert repeated_projection.schema.field("value").type == pa.list_(
+        pa.field("item", pa.string(), nullable=False)
+    )
+    assert (
+        "unbounded integer range"
+        in repeated_projection.schema.field("value").metadata[b"pyxsd:arrow_fallback"].decode()
+    )
+    assert repeated_projection.table(repeated_document).to_pylist() == [
+        {"value": ["1", value, "-2"]}
+    ]
+
+    tokens = compile_element('<list><zeroOrMore><data type="integer"/></zeroOrMore></list>')
+    token_projection = RelaxNGRecordProjection(tokens, element="doc")
+    token_document = parse(tokens, f"<doc>1 {value}</doc>")
+    assert token_projection.schema.field("value").type == pa.list_(
+        pa.field("item", pa.string(), nullable=False)
+    )
+    assert (
+        "unbounded integer range"
+        in token_projection.schema.field("value").metadata[b"pyxsd:arrow_fallback"].decode()
+    )
+    assert token_projection.table(token_document).to_pylist() == [{"value": ["1", value]}]
+
+    attribute = compile_element('<attribute name="value"><data type="integer"/></attribute>')
+    attribute_projection = RelaxNGRecordProjection(attribute, element="doc")
+    attribute_document = parse(attribute, f'<doc value="{value}"/>')
+    assert attribute_projection.schema.field("value").type == pa.string()
+    assert attribute_projection.table(attribute_document).to_pylist() == [{"value": value}]
+
+
+def test_unsigned_long_and_narrow_bounded_integers_round_trip(tmp_path):
+    schema = compile_element(
+        '<element name="big"><data type="unsignedLong"/></element>'
+        f'<element name="small">{integer_body(0, 255)}</element>'
+    )
+    projection = RelaxNGRecordProjection(schema, element="doc")
+    document = parse(schema, f"<doc><big>{2**64 - 1}</big><small>255</small></doc>")
+    assert projection.schema.field("big").type == pa.uint64()
+    assert projection.schema.field("small").type == pa.uint8()
+    expected = [{"big": 2**64 - 1, "small": 255}]
+    assert projection.table(document).to_pylist() == expected
+    destination = tmp_path / "bounded.parquet"
+    projection.write_parquet(document, destination)
+    assert pq.read_table(destination).to_pylist() == expected
 
 
 def test_decimal_arrow_types_use_both_facets_and_fall_back_when_unbounded():
@@ -709,7 +858,8 @@ def test_custom_datatypes_map_by_xsd_backing_type_or_string_fallback():
     plan = compile_relaxng_projection(
         schema, element="doc", path=(), columns={"value": FieldSource()}
     )
-    assert plan.columns[0].arrow_shape == pa.int64()
+    assert plan.columns[0].arrow_shape == pa.string()
+    assert "unbounded integer range" in plan.columns[0].arrow_fallback
     opaque = compile_element(
         '<data type="opaque" datatypeLibrary="urn:opaque"/>',
         datatype_libraries={"urn:opaque": registration(OpaqueDatatypeFactory())},
@@ -739,11 +889,11 @@ def test_custom_datatypes_map_by_xsd_backing_type_or_string_fallback():
     [
         (
             '<list><group><data type="int"/><data type="int"/></group></list>',
-            pa.list_(pa.field("item", pa.int64(), nullable=False)),
+            pa.list_(pa.field("item", pa.int32(), nullable=False)),
         ),
         (
             '<list><zeroOrMore><data type="int"/></zeroOrMore></list>',
-            pa.list_(pa.field("item", pa.int64(), nullable=False)),
+            pa.list_(pa.field("item", pa.int32(), nullable=False)),
         ),
     ],
 )
@@ -821,11 +971,11 @@ def test_default_primitive_schema_and_metadata():
         projection.schema, check_metadata=True
     )
     assert projection.schema.names == ["value"]
-    assert projection.schema.field("value").type == pa.int64()
+    assert projection.schema.field("value").type == pa.int32()
     assert not projection.schema.field("value").nullable
     metadata = projection.schema.field("value").metadata
     assert metadata[b"pyxsd:type"] == b"int"
-    assert metadata[b"pyxsd:arrow"] == b"int64"
+    assert metadata[b"pyxsd:arrow"] == b"int32"
     assert json.loads(metadata[b"pyxsd:contract"])["kind"] == "atomic"
     contract = schema.projection.routes[schema.projection.roots[0]].content.scalar_contracts[0]
     assert (
@@ -860,14 +1010,14 @@ def test_default_record_schema_attributes_scalar_child_and_nested_struct():
     )
     projection = RelaxNGRecordProjection(schema, element="doc")
     assert projection.schema.names == ["version", "amount", "count", "flag", "item"]
-    assert projection.schema.field("version").type == pa.int64()
+    assert projection.schema.field("version").type == pa.int32()
     assert not projection.schema.field("version").nullable
     amount = projection.schema.field("amount").type
     assert amount.field("currency").type == pa.string()
     assert amount.field("$").type == pa.decimal128(30, 0)
     assert projection.schema.field("flag").nullable
     assert projection.schema.field("item").type == pa.list_(
-        pa.field("item", pa.int64(), nullable=False)
+        pa.field("item", pa.int32(), nullable=False)
     )
     assert projection.schema.field("item").nullable
     assert json.loads(projection.schema.field("amount").metadata[b"pyxsd:declaration"]) == [
@@ -897,13 +1047,13 @@ def test_default_nested_and_repeated_structs():
     projection = RelaxNGRecordProjection(schema, element="doc")
     row = projection.schema.field("row").type
     assert isinstance(row, pa.StructType)
-    assert row.field("id").type == pa.int64()
+    assert row.field("id").type == pa.int32()
     assert isinstance(row.field("child").type, pa.StructType)
     assert row.field("child").type.field("value").type == pa.string()
     group = projection.schema.field("group").type
     assert isinstance(group, pa.ListType)
     assert isinstance(group.value_type, pa.StructType)
-    assert group.value_type.field("value").type == pa.int64()
+    assert group.value_type.field("value").type == pa.int32()
 
 
 def test_default_child_nullability_tracks_optional_and_empty_content():
@@ -944,20 +1094,20 @@ def test_default_child_nullability_tracks_optional_and_empty_content():
 def test_repeated_primitive_items_and_optional_lists_are_nullable():
     schema = compile_element(
         """
-        <zeroOrMore><element name="items"><optional><data type="integer"/></optional></element></zeroOrMore>
-        <zeroOrMore><element name="plain"><data type="integer"/></element></zeroOrMore>
-        <oneOrMore><element name="requiredPlain"><data type="integer"/></element></oneOrMore>
+        <zeroOrMore><element name="items"><optional><data type="int"/></optional></element></zeroOrMore>
+        <zeroOrMore><element name="plain"><data type="int"/></element></zeroOrMore>
+        <oneOrMore><element name="requiredPlain"><data type="int"/></element></oneOrMore>
         """
     )
     projection = RelaxNGRecordProjection(schema, element="doc")
     items = projection.schema.field("items")
-    assert items.type == pa.list_(pa.field("item", pa.int64(), nullable=True))
+    assert items.type == pa.list_(pa.field("item", pa.int32(), nullable=True))
     assert items.nullable
     plain = projection.schema.field("plain")
-    assert plain.type == pa.list_(pa.field("item", pa.int64(), nullable=False))
+    assert plain.type == pa.list_(pa.field("item", pa.int32(), nullable=False))
     assert plain.nullable
     required = projection.schema.field("requiredPlain")
-    assert required.type == pa.list_(pa.field("item", pa.int64(), nullable=False))
+    assert required.type == pa.list_(pa.field("item", pa.int32(), nullable=False))
     assert not required.nullable
 
 
@@ -1259,13 +1409,13 @@ def test_explicit_metadata_includes_selectors_contract_candidate_and_arrow():
         schema, element="doc", columns={"value!": FieldSource(datatype=INT)}
     )
     field = projection.schema.field("value!")
-    assert field.type == pa.int64()
+    assert field.type == pa.int32()
     source = json.loads(field.metadata[b"pyxsd:source"])
     assert source["datatype"] == list(INT)
     assert "candidate_id" not in source
     assert json.loads(field.metadata[b"pyxsd:contract"])["type_name"] == "int"
     assert field.metadata[b"pyxsd:candidate"] == plan.columns[0].candidate.encode()
-    assert field.metadata[b"pyxsd:arrow"] == b"int64"
+    assert field.metadata[b"pyxsd:arrow"] == b"int32"
     assert field.metadata[b"pyxsd:row"] == b'["doc"]'
     assert projection.schema.metadata[b"pyxsd:mode"] == b"columns"
 
