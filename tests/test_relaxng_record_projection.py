@@ -1190,20 +1190,12 @@ def test_lazy_pyarrow_import_reports_the_optional_extra(monkeypatch):
         records_module._pyarrow()
 
 
-def test_record_projection_rows_are_explicitly_unimplemented(tmp_path):
+def test_record_projection_write_dataset_is_explicitly_task_7(tmp_path):
     projection = RelaxNGRecordProjection(compile_element("<text/>"), element="doc")
-    with pytest.raises(IntegrationError, match="Task 6"):
-        list(projection.batches(None))
-    with pytest.raises(IntegrationError, match="Task 6"):
-        list(projection._rows(None, None, None))
-    with pytest.raises(IntegrationError, match="Task 6"):
-        projection.table(None)
     destination = tmp_path / "out.parquet"
-    with pytest.raises(IntegrationError, match="Task 6"):
-        projection.write_parquet(None, destination)
-    assert not destination.exists()
-    with pytest.raises(IntegrationError, match="Task 6"):
+    with pytest.raises(IntegrationError, match="Task 7"):
         projection.write_dataset([], destination)
+    assert not destination.exists()
 
 
 def test_projection_and_binding_are_frozen():

@@ -8,9 +8,13 @@ backed row extraction is a separate step.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
+from decimal import Decimal
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -18,15 +22,18 @@ if TYPE_CHECKING:
 from pyxsd.document import Document
 from pyxsd.integrations import IntegrationError
 from pyxsd.integrations._shape import scalar_kind
+from pyxsd.integrations._values import prepare_document
 from pyxsd.integrations.projection import FieldSource, field_source_metadata
-from pyxsd.namespaces import clark, local_name
+from pyxsd.namespaces import clark, local_name, namespace_of
 from pyxsd.relaxng.contracts import (
     ScalarContract,
     candidate_id,
     list_shape,
     scalar_contract,
 )
-from pyxsd.relaxng.datatypes import ScalarDatatype
+from pyxsd.relaxng.datatypes import ScalarDatatype, UnsupportedDatatypeOperation
+from pyxsd.relaxng.errors import AmbiguousValueError
+from pyxsd.relaxng.evidence import CandidateSelection, EvidenceGraph, EvidenceOccurrence
 from pyxsd.relaxng.patterns import List as PatternList
 from pyxsd.relaxng.projection import (
     Cardinality,
@@ -36,17 +43,21 @@ from pyxsd.relaxng.projection import (
     RouteContract,
 )
 from pyxsd.relaxng.schema import RelaxNGSchema
-from pyxsd.relaxng.values import _list_token_plan
+from pyxsd.relaxng.values import AlternativeValue, _list_token_plan
+from pyxsd.xsd_data_types import QName
 
 __all__ = [
     "RelaxNGColumnBinding",
     "RelaxNGProjectionPlan",
     "RelaxNGRecordProjection",
     "compile_relaxng_projection",
+    "iter_relaxng_rows",
 ]
 
-_ROW_EXTRACTION = "RELAX NG row extraction is not implemented by Task 5; Task 6 owns rows"
+_DATASET_EXTRACTION = "RELAX NG dataset writing is not implemented by Task 6; Task 7 owns datasets"
 _MAX_DEFAULT_DEPTH = 256
+_QNAME_TYPES = frozenset({"QName", "NOTATION"})
+_TEMPORAL_TYPES = frozenset({"date", "time", "dateTime", "duration"})
 
 
 def _pyarrow() -> Any:
@@ -58,6 +69,14 @@ def _pyarrow() -> Any:
             raise
         raise ImportError("Install pyxsd[arrow] to use Arrow and Parquet projections") from exc
     return pyarrow_module
+
+
+def _pyarrow_parquet() -> Any:
+    """Import the optional Parquet backend with the same extra-specific error."""
+    _pyarrow()
+    import pyarrow.parquet as pyarrow_parquet
+
+    return pyarrow_parquet
 
 
 @dataclass(frozen=True)
@@ -789,6 +808,594 @@ def compile_relaxng_projection(
     )
 
 
+def _format_path(path: Iterable[str]) -> str:
+    return "/".join(path) or "/"
+
+
+def _route_label(route: RouteContract) -> str:
+    return route.expanded_name or route.route_id
+
+
+def _node_name(node: Any) -> str:
+    return cast(str, node._name_)
+
+
+def _node_route_id(node: Any) -> str | None:
+    """Return the generated projection route of one lexical node, if any."""
+    node_type = type(node)
+    for attribute in ("_relaxng_route_id_", "__relaxng_route_id__"):
+        value = getattr(node_type, attribute, None)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _node_matches_route(node: Any, route: RouteContract) -> bool:
+    """Route identity is generated; only a generic route falls back to names."""
+    actual = _node_route_id(node)
+    if actual is not None:
+        return actual == route.route_id
+    if route.generic_reason is None:
+        return False
+    name = _node_name(node)
+    if route.expanded_name is not None and name != route.expanded_name:
+        return False
+    return route.name_class.contains(namespace_of(name), local_name(name))
+
+
+def _text_sites(graph: EvidenceGraph) -> dict[Any, EvidenceOccurrence]:
+    result: dict[Any, EvidenceOccurrence] = {}
+    for occurrence in graph.occurrences:
+        if occurrence.kind == "text" and occurrence.content_index == 0:
+            result.setdefault(occurrence.element, occurrence)
+    return result
+
+
+def _attribute_sites(graph: EvidenceGraph) -> dict[tuple[Any, str], EvidenceOccurrence]:
+    result: dict[tuple[Any, str], EvidenceOccurrence] = {}
+    for occurrence in graph.occurrences:
+        if occurrence.kind == "attribute" and occurrence.name is not None:
+            result.setdefault((occurrence.element, occurrence.name), occurrence)
+    return result
+
+
+@dataclass
+class _RowContext:
+    """Operation-local indexes and conversion shapes for one document."""
+
+    plan: RelaxNGProjectionPlan
+    document: Any
+    graph: EvidenceGraph
+    text_sites: dict[Any, EvidenceOccurrence]
+    attribute_sites: dict[tuple[Any, str], EvidenceOccurrence]
+    arrow_shapes: dict[str, Any]
+
+
+def _context(plan: RelaxNGProjectionPlan, document: Document) -> _RowContext:
+    graph = cast(EvidenceGraph, cast(Any, document).binding_evidence)
+    return _RowContext(
+        plan,
+        document,
+        graph,
+        _text_sites(graph),
+        _attribute_sites(graph),
+        {},
+    )
+
+
+def _arrow_shape(context: _RowContext, contract: ScalarContract) -> Any:
+    shape = context.arrow_shapes.get(contract.pattern_identity)
+    if shape is None:
+        shape, _ = _contract_arrow(contract, context.plan.schema.projection)
+        context.arrow_shapes[contract.pattern_identity] = shape
+    return shape
+
+
+@dataclass(frozen=True)
+class _SelectedValue:
+    value: Any
+    selection: CandidateSelection | None = None
+
+
+def _convert_value(
+    contract: ScalarContract,
+    value: Any,
+    arrow_shape: Any,
+    label: str,
+) -> Any:
+    """Convert one selected typed value to the compiled Arrow representation."""
+    pa = _pyarrow()
+    if contract.kind == "text":
+        if not isinstance(value, str):
+            raise IntegrationError(
+                f"{label}: text scalar decoded to {type(value).__name__}, not a string"
+            )
+        return str(value)
+    type_name = contract.type_name or ""
+    if type_name in _QNAME_TYPES:
+        if not isinstance(value, QName):
+            raise IntegrationError(f"{label}: {type_name} value lacks scoped QName evidence")
+        try:
+            return value.to_expanded_name(strict=True)
+        except ValueError as exc:
+            raise IntegrationError(
+                f"{label}: {type_name} value {str(value)!r} has no resolvable namespace prefix"
+            ) from exc
+    if type_name in _TEMPORAL_TYPES:
+        lexical = getattr(value, "lexical", None)
+        if callable(lexical):
+            value = lexical()
+        if not isinstance(value, str):
+            raise IntegrationError(f"{label}: {type_name} value has no lexical string")
+        return str(value)
+    if isinstance(value, bool):
+        if not pa.types.is_boolean(arrow_shape):
+            raise IntegrationError(f"{label}: boolean value cannot fill Arrow {arrow_shape}")
+        return value
+    if isinstance(value, int):
+        if not (
+            pa.types.is_integer(arrow_shape)
+            or pa.types.is_floating(arrow_shape)
+            or pa.types.is_decimal(arrow_shape)
+        ):
+            raise IntegrationError(f"{label}: integer value cannot fill Arrow {arrow_shape}")
+        return value
+    if isinstance(value, float):
+        if not (pa.types.is_floating(arrow_shape) or pa.types.is_decimal(arrow_shape)):
+            raise IntegrationError(f"{label}: float value cannot fill Arrow {arrow_shape}")
+        return value
+    if isinstance(value, Decimal):
+        if pa.types.is_string(arrow_shape):
+            return format(value, "f")
+        if not pa.types.is_decimal(arrow_shape):
+            raise IntegrationError(f"{label}: decimal value cannot fill Arrow {arrow_shape}")
+        return value
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        if not pa.types.is_binary(arrow_shape):
+            raise IntegrationError(f"{label}: binary value cannot fill Arrow {arrow_shape}")
+        return bytes(value)
+    if isinstance(value, str):
+        if not pa.types.is_string(arrow_shape):
+            raise IntegrationError(f"{label}: string value cannot fill Arrow {arrow_shape}")
+        return str(value)
+    lexical = getattr(value, "lexical", None)
+    if callable(lexical) and pa.types.is_string(arrow_shape):
+        return str(lexical())
+    raise IntegrationError(
+        f"{label}: typed {type(value).__name__} value cannot be represented as Arrow {arrow_shape}"
+    )
+
+
+def _list_item_contracts(
+    plan: RelaxNGProjectionPlan, contract: ScalarContract
+) -> tuple[str, tuple[ScalarContract, ...]]:
+    pattern = cast(PatternList, plan.schema.projection.encoding_patterns[contract.pattern_identity])
+    shape = list_shape(pattern)
+    token_plan = cast(Any, _list_token_plan(pattern))
+    contracts = tuple(scalar_contract(token) for token in token_plan.patterns)
+    if shape == "tuple":
+        return shape, contracts
+    return shape, (contracts[0],)
+
+
+def _convert_sequence(
+    plan: RelaxNGProjectionPlan,
+    contract: ScalarContract,
+    value: Any,
+    arrow_shape: Any,
+    label: str,
+) -> Any:
+    shape, contracts = _list_item_contracts(plan, contract)
+    item_arrow = cast(Any, arrow_shape).value_type
+    if shape == "tuple":
+        return tuple(
+            _convert_value(item_contract, item, item_arrow, label)
+            for item_contract, item in zip(contracts, value, strict=True)
+        )
+    return [_convert_value(contracts[0], item, item_arrow, label) for item in value]
+
+
+def _selected_alternative(
+    context: _RowContext,
+    value: AlternativeValue,
+    contract: ScalarContract,
+    occurrence: EvidenceOccurrence,
+    arrow_shape: Any,
+    label: str,
+) -> _SelectedValue:
+    identifier = candidate_id(context.plan.grammar_fingerprint, contract)
+    candidate = next(
+        (item for item in value.candidates if item.candidate_id == identifier),
+        None,
+    )
+    if candidate is None:
+        raise IntegrationError(
+            f"{label}: selected candidate {identifier!r} did not survive at this scalar site"
+        )
+    if contract.kind == "text":
+        return _SelectedValue(str(value.lexical), CandidateSelection(occurrence, identifier))
+    if contract.kind == "list":
+        interpretation = value.as_interpretation(identifier)
+        try:
+            decoded = interpretation.as_python()
+        except (AmbiguousValueError, UnsupportedDatatypeOperation, ValueError) as exc:
+            raise IntegrationError(f"{label}: selected whole list is not decodable: {exc}") from exc
+        converted = _convert_sequence(context.plan, contract, decoded, arrow_shape, label)
+        return _SelectedValue(converted, CandidateSelection(occurrence, identifier))
+    if not candidate.decodable:
+        raise IntegrationError(
+            f"{label}: selected candidate {identifier!r} has no datatype decoder"
+        )
+    decoded = value.as_candidate(identifier)
+    return _SelectedValue(
+        _convert_value(contract, decoded, arrow_shape, label),
+        CandidateSelection(occurrence, identifier),
+    )
+
+
+def _read_selected_scalar(
+    context: _RowContext,
+    node: Any,
+    occurrence: EvidenceOccurrence | None,
+    contract: ScalarContract,
+    arrow_shape: Any,
+    *,
+    attribute: str | None,
+    label: str,
+) -> _SelectedValue:
+    """Read only the selected surviving contract at one exact scalar occurrence."""
+    typed_value = node.attribute_value(attribute) if attribute is not None else node.scalar_value()
+    assert typed_value is not None
+    schema_contracts = context.graph.schema_contracts_at(cast(EvidenceOccurrence, occurrence))
+    if len(schema_contracts) == 1 and schema_contracts[0] != contract:
+        raise IntegrationError(
+            f"{label}: current scalar evidence differs from the selected contract"
+        )
+    if isinstance(typed_value, AlternativeValue):
+        return _selected_alternative(
+            context,
+            typed_value,
+            contract,
+            cast(EvidenceOccurrence, occurrence),
+            arrow_shape,
+            label,
+        )
+    if contract.kind == "list":
+        converted = _convert_sequence(context.plan, contract, typed_value, arrow_shape, label)
+    else:
+        converted = _convert_value(contract, typed_value, arrow_shape, label)
+    return _SelectedValue(
+        converted,
+        CandidateSelection(
+            cast(EvidenceOccurrence, occurrence),
+            candidate_id(context.plan.grammar_fingerprint, contract),
+        ),
+    )
+
+
+def _read_element_value(
+    context: _RowContext,
+    node: Any,
+    contract: ScalarContract,
+    *,
+    nullable: bool,
+    label: str,
+) -> _SelectedValue:
+    arrow_shape = _arrow_shape(context, contract)
+    if node.text_value() is None:
+        if contract.kind == "list":
+            return _SelectedValue([])
+        if nullable:
+            return _SelectedValue(None)
+        raise IntegrationError(f"{label}: required scalar content is absent")
+    occurrence = context.text_sites.get(node)
+    return _read_selected_scalar(
+        context,
+        node,
+        occurrence,
+        contract,
+        arrow_shape,
+        attribute=None,
+        label=label,
+    )
+
+
+def _read_attribute_value(
+    context: _RowContext,
+    node: Any,
+    field: FieldContract,
+    contract: ScalarContract,
+    *,
+    label: str,
+) -> _SelectedValue:
+    if node.attribute_lexical(field.expanded_name) is None:
+        return _SelectedValue(None)
+    occurrence = context.attribute_sites.get((node, field.expanded_name))
+    return _read_selected_scalar(
+        context,
+        node,
+        occurrence,
+        contract,
+        _arrow_shape(context, contract),
+        attribute=field.expanded_name,
+        label=label,
+    )
+
+
+def _record_selection(
+    selections: list[tuple[CandidateSelection, str]],
+    selected: _SelectedValue,
+    label: str,
+) -> None:
+    if selected.selection is not None:
+        selections.append((selected.selection, label))
+
+
+def _climb_row(
+    context: _RowContext,
+    row: Any,
+    target: int,
+    source: FieldSource,
+    label: str,
+) -> Any:
+    chain = context.plan.row_chain
+    node = row
+    index = len(chain) - 1
+    while index > target:
+        parent = node.parent
+        if parent is None:
+            raise IntegrationError(
+                f"{label}: source climbs above the configured root "
+                f"{chain[0].expanded_name or chain[0].route_id}"
+            )
+        index -= 1
+        expected = chain[index]
+        if not _node_matches_route(parent, expected):
+            raise IntegrationError(
+                f"{label}: ancestor node does not match row path route {_route_label(expected)}"
+            )
+        node = parent
+    return node
+
+
+def _column_endpoint(
+    context: _RowContext,
+    binding: RelaxNGColumnBinding,
+    row: Any,
+    label: str,
+) -> tuple[Any | None, RouteContract]:
+    chain = context.plan.row_chain
+    source = binding.source
+    if source.scope == "root":
+        target = 0
+    elif source.scope == "ancestor":
+        target = len(chain) - 1 - source.levels
+    else:
+        target = len(chain) - 1
+    node = _climb_row(context, row, target, source, label)
+    route = chain[target]
+    for step in source.path:
+        edge = _child_step(context.plan.schema.projection, route, step, "column path step")
+        matches = [child for child in node.children if _node_name(child) == edge.expanded_name]
+        if not matches:
+            return None, route
+        node = matches[0]
+        route = context.plan.schema.projection.routes[edge.child_route_id]
+    return node, route
+
+
+def _column_value(
+    context: _RowContext,
+    binding: RelaxNGColumnBinding,
+    row: Any,
+) -> _SelectedValue:
+    label = (
+        f"column {binding.name!r} source {binding.source!r} "
+        f"route {_route_label(binding.occurrence_route)} "
+        f"declaration {_format_path(binding.declaration)}"
+    )
+    endpoint, route = _column_endpoint(context, binding, row, label)
+    if endpoint is None:
+        return _SelectedValue(None)
+    if binding.source.attribute is not None:
+        field = _attribute_field(route, binding.source.attribute)
+        return _read_attribute_value(
+            context, endpoint, field, binding.selected_contract, label=label
+        )
+    return _read_element_value(
+        context,
+        endpoint,
+        binding.selected_contract,
+        nullable=binding.nullable,
+        label=label,
+    )
+
+
+def _default_route_value(
+    context: _RowContext,
+    node: Any,
+    route: RouteContract,
+    declaration: tuple[str, ...],
+    selections: list[tuple[CandidateSelection, str]],
+) -> Any:
+    label = f"field {_format_path(declaration)} route {_route_label(route)}"
+    if _is_primitive(route):
+        contract = _single_contract(route.content.scalar_contracts, label)
+        selected = _read_element_value(
+            context,
+            node,
+            contract,
+            nullable=_content_may_be_empty(route.content.model),
+            label=label,
+        )
+        _record_selection(selections, selected, label)
+        return selected.value
+    return _default_record_value(context, node, route, declaration, selections)
+
+
+def _default_record_value(
+    context: _RowContext,
+    node: Any,
+    route: RouteContract,
+    declaration: tuple[str, ...],
+    selections: list[tuple[CandidateSelection, str]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for attribute in route.attributes.values():
+        label = (
+            f"field {_format_path((*declaration, '@' + attribute.expanded_name))} "
+            f"route {_route_label(route)}"
+        )
+        contract = _single_contract(attribute.scalar_contracts, label)
+        selected = _read_attribute_value(context, node, attribute, contract, label=label)
+        result[attribute.alias] = selected.value
+        _record_selection(selections, selected, label)
+    if route.content.scalar_contracts:
+        label = f"field {_format_path((*declaration, '$'))} route {_route_label(route)}"
+        contract = _single_contract(route.content.scalar_contracts, label)
+        selected = _read_element_value(
+            context,
+            node,
+            contract,
+            nullable=_content_may_be_empty(route.content.model),
+            label=label,
+        )
+        result["$"] = selected.value
+        _record_selection(selections, selected, label)
+    grouped: dict[str, list[Any]] = {name: [] for name in route.children}
+    for child in node.children:
+        grouped[_node_name(child)].append(child)
+    for field in route.children.values():
+        label = (
+            f"field {_format_path((*declaration, field.expanded_name))} route {_route_label(route)}"
+        )
+        children = grouped[field.expanded_name]
+        child_route = context.plan.schema.projection.routes[cast(str, field.child_route_id)]
+        if field.cardinality.repeatable:
+            result[field.alias] = [
+                _default_route_value(
+                    context,
+                    child,
+                    child_route,
+                    (*declaration, field.expanded_name),
+                    selections,
+                )
+                for child in children
+            ]
+        elif children:
+            result[field.alias] = _default_route_value(
+                context,
+                children[0],
+                child_route,
+                (*declaration, field.expanded_name),
+                selections,
+            )
+        else:
+            result[field.alias] = None
+    return result
+
+
+def _check_joint(
+    context: _RowContext,
+    selections: list[tuple[CandidateSelection, str]],
+    row_index: int,
+    *,
+    kind: str,
+) -> None:
+    unique: dict[tuple[EvidenceOccurrence, str], CandidateSelection] = {}
+    labels: dict[tuple[EvidenceOccurrence, str], list[str]] = {}
+    for selection, label in selections:
+        key = (selection.occurrence, selection.candidate_id)
+        unique.setdefault(key, selection)
+        labels.setdefault(key, []).append(label)
+    if context.graph.compatible(unique.values()):
+        return
+    names = [name for group in labels.values() for name in group]
+    raise IntegrationError(
+        f"row {row_index} {kind} {', '.join(names)} conflict on the current accepting evidence"
+    )
+
+
+def _row_nodes(
+    plan: RelaxNGProjectionPlan,
+    document: Document,
+    selector: str | None,
+    namespaces: dict[str, str] | None,
+) -> Iterator[tuple[int, Any]]:
+    if selector is None:
+        if len(plan.row_chain) > 1:
+            raise IntegrationError(
+                f"row route {_format_path(plan.row_path)} is local; provide an explicit selector"
+            )
+        candidates = [document.root]
+        description = "document root"
+    else:
+        if not isinstance(selector, str) or not selector:
+            raise IntegrationError("selector must be a nonempty ElementTree path")
+        candidates = document.findall(selector, namespaces=namespaces)
+        description = "selector node"
+    for index, node in enumerate(candidates, 1):
+        if not _node_matches_route(node, plan.route):
+            actual = _node_route_id(node) or _node_name(node)
+            raise IntegrationError(
+                f"row {index} {description} {_node_name(node)!r} route {actual!r} "
+                f"does not match configured row route {_route_label(plan.route)}"
+            )
+        yield index, node
+
+
+def _iter_rows(
+    plan: RelaxNGProjectionPlan,
+    document: Document,
+    selector: str | None,
+    namespaces: dict[str, str] | None,
+) -> Iterator[dict[str, Any]]:
+    context = _context(plan, document)
+    for index, node in _row_nodes(plan, document, selector, namespaces):
+        selections: list[tuple[CandidateSelection, str]] = []
+        if plan.mode == "columns":
+            result: dict[str, Any] = {}
+            for binding in plan.columns:
+                try:
+                    selected = _column_value(context, binding, node)
+                except IntegrationError as exc:
+                    raise IntegrationError(f"row {index}: {exc}") from exc
+                result[binding.name] = selected.value
+                _record_selection(
+                    selections,
+                    selected,
+                    f"column {binding.name!r} source {binding.source!r}",
+                )
+            _check_joint(context, selections, index, kind="selected columns")
+        else:
+            try:
+                value = _default_route_value(context, node, plan.route, plan.row_path, selections)
+            except IntegrationError as exc:
+                raise IntegrationError(f"row {index}: {exc}") from exc
+            result = {"value": value} if _is_primitive(plan.route) else value
+            _check_joint(context, selections, index, kind="selected fields")
+        yield result
+
+
+def iter_relaxng_rows(
+    plan: RelaxNGProjectionPlan,
+    document: Document,
+    *,
+    selector: str | None = None,
+    namespaces: dict[str, str] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Yield Arrow-ready rows from one current, valid, typed document.
+
+    The plan fixes row and column routes; a selector only chooses row nodes
+    that already resolve to the compiled row route.  No row is yielded until
+    every selected candidate survives one joint accepting derivation.
+    """
+    if not isinstance(plan, RelaxNGProjectionPlan):
+        raise IntegrationError("iter_relaxng_rows requires a RelaxNGProjectionPlan")
+    document = prepare_document(plan.schema, document, False)
+    yield from _iter_rows(plan, document, selector, namespaces)
+
+
 def _build_arrow_schema(plan: RelaxNGProjectionPlan) -> pa.Schema:
     pa = _pyarrow()
     if plan.mode == "columns":
@@ -832,7 +1439,7 @@ def _build_arrow_schema(plan: RelaxNGProjectionPlan) -> pa.Schema:
 
 
 class RelaxNGRecordProjection:
-    """A fixed RELAX NG Arrow schema; row extraction belongs to a later task."""
+    """A fixed RELAX NG Arrow schema over current accepting evidence."""
 
     def __init__(
         self,
@@ -846,9 +1453,6 @@ class RelaxNGRecordProjection:
         self._plan = compile_relaxng_projection(schema, element=element, path=path, columns=columns)
         self.schema = _build_arrow_schema(self._plan)
 
-    def _unimplemented(self) -> NoReturn:
-        raise IntegrationError(_ROW_EXTRACTION)
-
     def batches(
         self,
         document: Document,
@@ -858,8 +1462,19 @@ class RelaxNGRecordProjection:
         batch_size: int = 10000,
         revalidate: bool = False,
     ) -> Iterator[Any]:
-        del document, selector, namespaces, batch_size, revalidate
-        self._unimplemented()
+        """Yield bounded row batches, not XML streaming; keep input stable until closed."""
+        if type(batch_size) is not int or batch_size <= 0:
+            raise IntegrationError("batch_size must be a positive integer")
+        document = prepare_document(self._schema, document, revalidate)
+        rows: list[dict[str, Any]] = []
+        index = 0
+        for index, value in enumerate(self._rows(document, selector, namespaces), 1):
+            rows.append(value)
+            if len(rows) == batch_size:
+                yield self._batch(rows, index)
+                rows = []
+        if rows:
+            yield self._batch(rows, index)
 
     def _rows(
         self,
@@ -867,8 +1482,14 @@ class RelaxNGRecordProjection:
         selector: str | None,
         namespaces: dict[str, str] | None,
     ) -> Iterator[dict[str, Any]]:
-        del document, selector, namespaces
-        self._unimplemented()
+        yield from _iter_rows(self._plan, document, selector, namespaces)
+
+    def _batch(self, rows: list[dict[str, Any]], last_row: int) -> Any:
+        pa = _pyarrow()
+        try:
+            return pa.RecordBatch.from_pylist(rows, schema=self.schema)
+        except (pa.ArrowException, ValueError, OverflowError) as exc:
+            raise IntegrationError(f"Arrow batch ending at row {last_row}: {exc}") from exc
 
     def table(
         self,
@@ -878,8 +1499,16 @@ class RelaxNGRecordProjection:
         namespaces: dict[str, str] | None = None,
         revalidate: bool = False,
     ) -> Any:
-        del document, selector, namespaces, revalidate
-        self._unimplemented()
+        """Materialize the selected rows, including a fully typed empty table."""
+        pa = _pyarrow()
+        return pa.Table.from_batches(
+            list(
+                self.batches(
+                    document, selector=selector, namespaces=namespaces, revalidate=revalidate
+                )
+            ),
+            schema=self.schema,
+        )
 
     def write_parquet(
         self,
@@ -891,8 +1520,35 @@ class RelaxNGRecordProjection:
         batch_size: int = 10000,
         revalidate: bool = False,
     ) -> None:
-        del document, destination, selector, namespaces, batch_size, revalidate
-        self._unimplemented()
+        """Atomically replace local paths; borrowed sinks may retain partial output."""
+        if type(batch_size) is not int or batch_size <= 0:
+            raise IntegrationError("batch_size must be a positive integer")
+        document = prepare_document(self._schema, document, revalidate)
+        pq = _pyarrow_parquet()
+        temporary: Path | None = None
+        target: Path | None = None
+        if isinstance(destination, (str, os.PathLike)):
+            target = Path(destination)
+            with tempfile.NamedTemporaryFile(
+                prefix=f".{target.name}.", suffix=".tmp", dir=target.parent, delete=False
+            ) as file:
+                temporary = Path(file.name)
+            sink: Any = str(temporary)
+        else:
+            sink = destination
+        try:
+            with pq.ParquetWriter(
+                sink, self.schema, version="2.6", use_compliant_nested_type=False
+            ) as writer:
+                for batch in self.batches(
+                    document, selector=selector, namespaces=namespaces, batch_size=batch_size
+                ):
+                    writer.write_batch(batch)
+            if target is not None and temporary is not None:
+                os.replace(temporary, target)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def write_dataset(
         self,
@@ -905,4 +1561,4 @@ class RelaxNGRecordProjection:
         errors: Literal["raise", "report"] = "raise",
     ) -> Any:
         del sources, destination, selector, namespaces, batch_size, errors
-        self._unimplemented()
+        raise IntegrationError(_DATASET_EXTRACTION)
