@@ -6,12 +6,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pyxsd import Document, Schema
+from pyxsd import Document, Schema, relaxng
 from pyxsd.binding import ParseModes
+from pyxsd.relaxng import RelaxNGDocument, RelaxNGElement, RelaxNGSchema
 from pyxsd.schema_base import SchemaBase
 
 from .captures import InputResourcePolicy
-from .contracts import ToolFault
+from .config import relaxng_limits_for_mcp
+from .contracts import CompileOptions, SchemaRef, ToolFault
 from .errors import ToolError
 from .execution import ExecutionRequest
 from .transforms import PythonTransformSpec, normalize_transform
@@ -41,7 +43,26 @@ def _apply(
     value = function(document, context, *args, **(kwargs or {}))
     if isinstance(value, Document):
         document = value
+    elif isinstance(value, RelaxNGElement):
+        # The RELAX NG document hook wraps a lexical tree (including a
+        # generated projection subclass) as a stale document. An XSD document
+        # passes the node through, so a cross-language root is rejected here.
+        wrapped = document._document_for_node_result(value)
+        if not isinstance(wrapped, Document):
+            raise ToolError(
+                "invalid_transform_result",
+                "Transform must return Document, bound root, or None",
+            )
+        document = wrapped
     elif isinstance(value, SchemaBase):
+        # Keep the XSD root-callable contract: a bound root becomes the root of
+        # this document. A RELAX NG document has no XSD root; its schema-specific
+        # hook rejects the value instead of adopting foreign semantics.
+        if isinstance(document, RelaxNGDocument):
+            raise ToolError(
+                "invalid_transform_result",
+                "Transform must return Document, bound root, or None",
+            )
         document.root = value
     elif value is not None:
         raise ToolError(
@@ -52,16 +73,48 @@ def _apply(
     return document
 
 
-def execute(request: ExecutionRequest) -> dict[str, Any]:
-    if request.schema_ref.format != "xsd":
+def _reject_relaxng_xsd_options(reference: SchemaRef) -> None:
+    """Keep XSD-only compile inputs out of RELAX NG before any read.
+
+    Preview execution names its schema language explicitly, so a RELAX NG
+    reference with nondefault XSD semantics must fail instead of silently
+    ignoring the caller's requested behavior. This mirrors the cache's
+    compiler dispatch.
+    """
+    options = reference.options
+    defaults = CompileOptions()
+    rejected: list[str] = []
+    if options.binding != defaults.binding:
+        rejected.append("binding")
+    if options.namespaces != defaults.namespaces:
+        rejected.append("namespaces")
+    if options.xsd_version != defaults.xsd_version:
+        rejected.append("xsd_version")
+    if options.namespace_schemas != defaults.namespace_schemas:
+        rejected.append("namespace_schemas")
+    if rejected:
         raise ToolError(
-            "unsupported_capability", "RELAX NG preview transforms are not supported yet"
+            "invalid_argument",
+            "RELAX NG schemas accept only default XSD compile options",
+            details={"format": "relax-ng", "rejected": list(rejected)},
         )
-    spec = normalize_transform(request.transform, request.limits)
-    policy = InputResourcePolicy(capture_from_wire(request.capture), request.limits)
-    options = request.schema_ref.options
-    schema = Schema.compile(
-        "/workspace/" + request.schema_ref.source.path,
+
+
+def _compile_preview_schema(
+    reference: SchemaRef, policy: InputResourcePolicy
+) -> Schema | RelaxNGSchema:
+    """Compile the explicitly named preview language through its public API."""
+    path = "/workspace/" + reference.source.path
+    if reference.format == "relax-ng":
+        _reject_relaxng_xsd_options(reference)
+        return relaxng.compile(
+            path,
+            resource_policy=policy,
+            limits=relaxng_limits_for_mcp(policy.limits),
+        )
+    options = reference.options
+    return Schema.compile(
+        path,
         mode=(ParseModes.LAX if options.binding == "lax" else ParseModes.STRICT).replace(
             namespaces=options.namespaces
         ),
@@ -71,7 +124,27 @@ def execute(request: ExecutionRequest) -> dict[str, Any]:
         },
         resource_policy=policy,
     )
-    document = schema.parse("/workspace/" + request.document.path)
+
+
+def _parse_preview_document(schema: Schema | RelaxNGSchema, path: str) -> Document:
+    """Parse one source document through the schema's public instance method.
+
+    RELAX NG previews use the normal typed public mode. Transform code may
+    rely on generated descriptors and typed values, and typed parsing never
+    changes the boolean verdict. The validation/query worker remains
+    validation-only because it produces verdicts rather than user-visible
+    transformed trees.
+    """
+    if isinstance(schema, RelaxNGSchema):
+        return schema.parse(path, typed=True)
+    return schema.parse(path)
+
+
+def execute(request: ExecutionRequest) -> dict[str, Any]:
+    spec = normalize_transform(request.transform, request.limits)
+    policy = InputResourcePolicy(capture_from_wire(request.capture), request.limits)
+    schema = _compile_preview_schema(request.schema_ref, policy)
+    document = _parse_preview_document(schema, "/workspace/" + request.document.path)
     if document.root is None:
         raise ToolError("unbindable", "Source document has no usable root")
     context = TransformContext(

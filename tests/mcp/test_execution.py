@@ -130,18 +130,6 @@ def test_pipeline_checkpoints_with_limits_disabled_skip_budget_arithmetic(tmp_pa
     assert result.checkpoint_candidates
 
 
-def test_relaxng_preview_transform_is_rejected_before_compilation(tmp_path):
-    schema_ref = SchemaRef(source=FileRef(path="schema.xsd"), format="relax-ng")
-    with pytest.raises(ToolError) as raised:
-        execute(
-            tmp_path,
-            "def transform(document, context):\n    return document\n",
-            schema_ref=schema_ref,
-        )
-    assert raised.value.fault.code == "unsupported_capability"
-    assert raised.value.fault.message == "RELAX NG preview transforms are not supported yet"
-
-
 def test_execution_main_rejects_invalid_request_byte_budgets():
     import argparse
 
