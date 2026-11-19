@@ -57,7 +57,12 @@ pytestmark = pytest.mark.skipif(
 #: ``unicode-version`` dependency that differs from the engine's tables, so
 #: they are not applicable to the 3.0 and 2.0 profiles.  The 1.0 profile
 #: already excluded them through the inherited ``XSLT20+`` spec dependency.
-EXPECTED_CASES = {"xslt30": 8877, "xslt20": 6402, "xslt10": 1978}
+#: The numbering-capability gate is part of selection too: 107 cases declare a
+#: ``combinations_for_numbering`` dependency, and the sequences the engine does
+#: not implement (or does not implement as wide) leave the set — 31 cases for
+#: the 3.0 and 2.0 profiles, 29 for 1.0, whose two Greek cases already excluded
+#: themselves through ``XSLT20+``.
+EXPECTED_CASES = {"xslt30": 8846, "xslt20": 6371, "xslt10": 1949}
 
 #: Total cases in the pinned catalogue, including cases outside every profile.
 EXPECTED_TOTAL = 14601
@@ -135,7 +140,7 @@ def test_unicode_version_gate_selects_exactly_the_version_pinned_cases() -> None
     restored = {case.name for case in select_cases(catalog, cleared)}
     assert restored - selected["xslt30"] == set(gated)
     assert not selected["xslt30"] - restored
-    assert len(restored) == 10457
+    assert len(restored) == 10426
 
     # Unrelated dependencies still exclude a case from a version-cleared profile.
     unsupported = [

@@ -37,7 +37,7 @@ from tests.xslt.environment import build_schema_pool, environment_fingerprint
 from tests.xslt.model import XML_NS, Param, Resource, Source, Stylesheet, TestCase
 from tests.xslt.outcomes import CaseResult
 from tests.xslt.runner import CaseExecutionError, run_cases
-from tests.xslt.selection import XSLT30_NON_STREAMING, FeatureProfile
+from tests.xslt.selection import NUMBERING_SEQUENCES, XSLT30_NON_STREAMING, FeatureProfile
 
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmMap
@@ -158,6 +158,7 @@ def _profile(
             declined_features=declined - features,
             unicode_version=ENGINE_UNICODE_VERSION,
             description=description,
+            numbering_sequences=NUMBERING_SEQUENCES,
         ),
         processor=XsltProcessor(
             language=language,

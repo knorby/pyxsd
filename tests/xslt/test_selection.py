@@ -41,6 +41,7 @@ def case(
     exclusions: Iterable[str] = (),
     unicode_versions: Iterable[str] = (),
     excluded_unicode_versions: Iterable[str] = (),
+    numbering: Iterable[tuple[str, str | None]] = (),
     source_document: bool = False,
     schema_versions: Iterable[str] = (),
 ) -> CatalogCase:
@@ -52,6 +53,9 @@ def case(
     dependencies.extend(Dependency("unicode-version", version) for version in unicode_versions)
     dependencies.extend(
         Dependency("unicode-version", version, False) for version in excluded_unicode_versions
+    )
+    dependencies.extend(
+        Dependency("combinations_for_numbering", value, range=bounds) for value, bounds in numbering
     )
     return CatalogCase(
         name=name,
@@ -341,6 +345,164 @@ def test_version_features_are_derived_from_profile_versions() -> None:
     assert XSLT30_NON_STREAMING.supports("XSD_1.1")
     assert not replace(XSLT30_NON_STREAMING, xpath_version="2.0").supports("XPath_3.1")
     assert not replace(XSLT30_NON_STREAMING, xsd_version="1.0").supports("XSD_1.1")
+
+
+def numbering_profile(sequence: str = "CIRCLED DIGIT ONE") -> FeatureProfile:
+    """A profile declaring one verified numbering sequence range."""
+    return replace(XSLT30_NON_STREAMING, numbering_sequences={sequence: (1, 20)})
+
+
+def test_a_numbering_combination_without_a_declaration_is_not_applicable() -> None:
+    """A profile that declares no optional numbering sequence runs none of them."""
+    bare = FeatureProfile(
+        name="bare",
+        language="3.0",
+        xpath_version="3.1",
+        xsd_version="1.1",
+        features=frozenset(),
+    )
+    gated = case("gated", numbering=(("CIRCLED DIGIT ONE", "1 to 10"),))
+
+    assert bare.numbering_sequences == {}
+    assert inapplicability(gated, bare) is Outcome.NOT_APPLICABLE
+    assert select_cases(catalog(gated), bare) == ()
+
+
+def test_the_shipped_profile_leaves_an_unimplemented_sequence_out() -> None:
+    """Greek numbering is not implemented, so its unbounded request is excluded."""
+    greek = case("greek", numbering=(("GREEK SMALL LETTER ALPHA (ALPHABETIC)", None),))
+
+    assert inapplicability(greek, XSLT30_NON_STREAMING) is Outcome.NOT_APPLICABLE
+
+
+def test_a_declared_numbering_range_admits_contained_requests() -> None:
+    profile = numbering_profile()
+
+    for requested in ("1 to 9", "1 to 10", "1 to 20"):
+        candidate = case(f"admitted-{requested}", numbering=(("CIRCLED DIGIT ONE", requested),))
+        assert inapplicability(candidate, profile) is None, requested
+        assert select_cases(catalog(candidate), profile) == (candidate,)
+
+
+@pytest.mark.parametrize("requested", ["0 to 9", "0 to 20", "1 to 50", "0 to 1000"])
+def test_a_declared_numbering_range_rejects_wider_requests(requested: str) -> None:
+    profile = numbering_profile()
+
+    outside = case(f"outside-{requested}", numbering=(("CIRCLED DIGIT ONE", requested),))
+
+    assert inapplicability(outside, profile) is Outcome.NOT_APPLICABLE
+    assert select_cases(catalog(outside), profile) == ()
+
+
+@pytest.mark.parametrize("requested", [None, "unbounded", "not a range"])
+def test_an_absent_or_unbounded_numbering_request_is_never_covered(
+    requested: str | None,
+) -> None:
+    """Absent means unbounded, and no bounded declaration covers unbounded."""
+    profile = numbering_profile()
+
+    unbounded = case("unbounded", numbering=(("CIRCLED DIGIT ONE", requested),))
+
+    assert inapplicability(unbounded, profile) is Outcome.NOT_APPLICABLE
+
+
+def test_a_declared_sequence_covers_only_its_own_name() -> None:
+    profile = numbering_profile()
+
+    other = case("other", numbering=(("PARENTHESIZED DIGIT ONE", "1 to 9"),))
+
+    assert inapplicability(other, profile) is Outcome.NOT_APPLICABLE
+
+
+def test_every_numbering_dependency_must_be_covered() -> None:
+    profile = numbering_profile()
+
+    both = case(
+        "both",
+        numbering=(("CIRCLED DIGIT ONE", "1 to 9"), ("PARENTHESIZED DIGIT ONE", "1 to 9")),
+    )
+
+    assert inapplicability(both, profile) is Outcome.NOT_APPLICABLE
+
+
+def test_a_negative_numbering_dependency_inverts_the_support_test() -> None:
+    profile = numbering_profile()
+    supported = replace(
+        case("supported"),
+        dependencies=(
+            Dependency("combinations_for_numbering", "CIRCLED DIGIT ONE", False, "1 to 9"),
+        ),
+    )
+    unsupported = replace(
+        case("unsupported"),
+        dependencies=(
+            Dependency("combinations_for_numbering", "PARENTHESIZED DIGIT ONE", False, "1 to 9"),
+        ),
+    )
+
+    assert inapplicability(supported, profile) is Outcome.NOT_APPLICABLE
+    assert inapplicability(unsupported, profile) is None
+    assert select_cases(catalog(unsupported), profile) == (unsupported,)
+
+
+def test_a_numbering_dependency_without_a_sequence_name_is_not_applicable() -> None:
+    nameless = replace(
+        case("nameless"),
+        dependencies=(Dependency("combinations_for_numbering", None, None, "1 to 9"),),
+    )
+
+    assert inapplicability(nameless, numbering_profile()) is Outcome.NOT_APPLICABLE
+
+
+def test_numbering_sequence_declarations_are_validated() -> None:
+    def profile(declaration: dict[str, tuple[int, int]]) -> FeatureProfile:
+        return replace(XSLT30_NON_STREAMING, numbering_sequences=declaration)
+
+    with pytest.raises(ValueError, match="empty"):
+        profile({"": (1, 9)})
+    with pytest.raises(ValueError, match="needs two bounds"):
+        profile({"CIRCLED DIGIT ONE": 20})  # type: ignore[dict-item]
+    with pytest.raises(ValueError, match="CIRCLED"):
+        profile({"CIRCLED DIGIT ONE": (9, 1)})
+    with pytest.raises(ValueError, match="CIRCLED"):
+        profile({"CIRCLED DIGIT ONE": (1, 20.0)})  # type: ignore[dict-item]
+    with pytest.raises(ValueError, match="CIRCLED"):
+        profile({"CIRCLED DIGIT ONE": (1, True)})  # type: ignore[dict-item]
+
+
+def test_numbering_sequence_declarations_are_immutable_and_copied() -> None:
+    declaration = {"CIRCLED DIGIT ONE": (1, 20)}
+
+    profile = replace(XSLT30_NON_STREAMING, numbering_sequences=declaration)
+    declaration["CIRCLED DIGIT ONE"] = (0, 9)
+
+    assert profile.numbering_sequences == {"CIRCLED DIGIT ONE": (1, 20)}
+    with pytest.raises(TypeError):
+        profile.numbering_sequences["DIGIT ONE COMMA"] = (1, 9)  # type: ignore[index]
+
+
+def test_declared_numbering_sequences_are_exercised_by_catalog_cases() -> None:
+    """Every declared range is verified by a case whose request it contains."""
+    from tests.xslt.catalog import load_catalog
+
+    pinned = load_catalog(Path(__file__).parent / "corpus" / "catalog.xml")
+    requests: dict[str, set[str | None]] = {}
+    for item in pinned.cases.values():
+        for dependency in item.dependencies:
+            if dependency.kind == "combinations_for_numbering" and dependency.value:
+                requests.setdefault(dependency.value, set()).add(dependency.range)
+
+    declared = XSLT30_NON_STREAMING.numbering_sequences
+    assert set(declared) <= set(requests)
+    for sequence, (low, high) in declared.items():
+        verified = []
+        for value in requests[sequence]:
+            if value is None or " to " not in value:
+                continue
+            start, end = (int(part) for part in value.split(" to "))
+            if low <= start and high >= end:
+                verified.append(value)
+        assert verified, sequence
 
 
 def test_select_cases_preserves_catalog_order() -> None:

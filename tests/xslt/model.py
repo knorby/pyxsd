@@ -222,14 +222,18 @@ class Environment:
 class Dependency:
     """One child of a ``dependencies`` element.
 
-    ``kind`` is the element's local name; ``value`` and ``satisfied`` retain
-    the corresponding attributes.  ``satisfied`` is ``None`` when the catalog
-    omits it, which means the feature is required in the usual sense.
+    ``kind`` is the element's local name; ``value``, ``satisfied`` and
+    ``range`` retain the corresponding attributes.  ``satisfied`` is ``None``
+    when the catalog omits it, which means the feature is required in the usual
+    sense.  ``range`` is the capability window a
+    ``combinations_for_numbering`` dependency asks for; every other kind leaves
+    it ``None``.
     """
 
     kind: str
     value: str | None = None
     satisfied: bool | None = None
+    range: str | None = None
 
 
 @dataclass(frozen=True)

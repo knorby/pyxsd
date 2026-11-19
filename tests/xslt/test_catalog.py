@@ -375,6 +375,32 @@ def test_catalog_environment_metadata_errors_are_reported(tmp_path: Path) -> Non
     assert "duplicate environment 'dup'" in errors
 
 
+def test_numbering_combination_dependencies_keep_their_range(tmp_path: Path) -> None:
+    path = tmp_path / "test-set.xml"
+    path.write_text(
+        '<test-set xmlns="http://www.w3.org/2012/10/xslt-test-catalog" name="numbering">'
+        '<test-case name="numbering-001">'
+        "<description>Capability-gated numbering.</description>"
+        '<created by="Mini Author" on="2026-01-01"/>'
+        "<dependencies>"
+        '<combinations_for_numbering value="CIRCLED DIGIT ONE" range="1 to 20"/>'
+        '<combinations_for_numbering value="DIGIT ONE COMMA"/>'
+        '<feature value="streaming" satisfied="false"/>'
+        "</dependencies>"
+        '<test><stylesheet file="numbering-001.xsl"/></test>'
+        "<result><assert>true()</assert></result>"
+        "</test-case></test-set>",
+        encoding="utf-8",
+    )
+    dependencies = load_catalog(path).cases["numbering/numbering-001"].dependencies
+
+    assert [(item.kind, item.value, item.range, item.satisfied) for item in dependencies] == [
+        ("combinations_for_numbering", "CIRCLED DIGIT ONE", "1 to 20", None),
+        ("combinations_for_numbering", "DIGIT ONE COMMA", None, None),
+        ("feature", "streaming", None, False),
+    ]
+
+
 def test_unnamed_test_set_is_reported(tmp_path: Path) -> None:
     path = tmp_path / "test-set.xml"
     path.write_text(

@@ -430,6 +430,7 @@ def _parse_dependencies(element: ET.Element) -> tuple[Dependency, ...]:
             kind=local_name(child.tag),
             value=_attribute(child, "value"),
             satisfied=_optional_bool(child.get("satisfied")),
+            range=_attribute(child, "range"),
         )
         for child in dependencies
         if isinstance(child.tag, str) and _in_catalog_namespace(child.tag)
