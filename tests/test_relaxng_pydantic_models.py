@@ -898,7 +898,7 @@ def test_json_schema_and_class_names_are_deterministic_across_registries():
     assert all("pyxsd.relaxng.route/1:" not in cls.__name__ for cls in first._models.values())
 
 
-def test_registry_requires_a_valid_relaxng_schema_and_exposes_only_models():
+def test_registry_requires_a_valid_relaxng_schema_and_exposes_document_conversion():
     invalid = RelaxNGSchema.compile(
         io.StringIO(f'<grammar xmlns="{NS}"><start><ref name="missing"/></start></grammar>')
     )
@@ -906,9 +906,9 @@ def test_registry_requires_a_valid_relaxng_schema_and_exposes_only_models():
         models(invalid)
     with pytest.raises(TypeError, match="RelaxNGSchema"):
         RelaxNGModelSet(object())  # type: ignore[arg-type]
-    assert not hasattr(RelaxNGModelSet, "from_document")
-    assert not hasattr(RelaxNGModelSet, "from_node")
-    assert not hasattr(RelaxNGModelSet, "to_document")
+    assert hasattr(RelaxNGModelSet, "from_document")
+    assert hasattr(RelaxNGModelSet, "from_node")
+    assert hasattr(RelaxNGModelSet, "to_document")
 
 
 def test_clean_field_schema_removes_only_the_internal_none_default():

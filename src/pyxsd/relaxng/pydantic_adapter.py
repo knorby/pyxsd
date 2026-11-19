@@ -28,15 +28,17 @@ from __future__ import annotations
 
 import heapq
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import GenericAlias, MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
 from xml.etree import ElementTree as ET
 
 from pydantic import ValidationInfo
+from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
 from pyxsd.integrations import IntegrationError
+from pyxsd.integrations._values import prepare_document
 from pyxsd.integrations.pydantic import (
     BaseModel,
     ConfigDict,
@@ -48,9 +50,12 @@ from pyxsd.integrations.pydantic import (
     model_validator,
 )
 from pyxsd.namespaces import clark, local_name
+from pyxsd.relaxng.annotations import _alternative_value_at_site
 from pyxsd.relaxng.contracts import ScalarContract, scalar_contract
 from pyxsd.relaxng.datatypes import DatatypeContext, UnsupportedDatatypeOperation
 from pyxsd.relaxng.diagnostics import report_mismatches
+from pyxsd.relaxng.document import RelaxNGDocument
+from pyxsd.relaxng.evidence import EvidenceGraph
 from pyxsd.relaxng.json_values import parse_scalar_tag
 from pyxsd.relaxng.names import ExceptName, Name, NameChoice, NameClass, NsName
 from pyxsd.relaxng.patterns import (
@@ -572,7 +577,13 @@ def _model_values(route: RouteContract, model: BaseModel) -> dict[str, Any]:
     values: dict[str, Any] = {}
     for name, field_info in model_class.model_fields.items():
         alias = field_info.alias or name
-        values[alias] = getattr(model, name)
+        try:
+            values[alias] = getattr(model, name)
+        except AttributeError:
+            raise ValueError(
+                f"RELAX NG route {_route_label(route)} path {alias}: "
+                f"the model instance has no value for field {alias!r}"
+            ) from None
     return values
 
 
@@ -822,6 +833,36 @@ def _merge_contexts(
     return DatatypeContext(base_uri, namespaces)
 
 
+def _shadowed_child_context(
+    inherited: DatatypeContext,
+    route: RouteContract,
+    states: Mapping[str, _FieldState],
+) -> DatatypeContext:
+    """Apply a child element's own namespace/base declarations over its parent.
+
+    XML namespace declarations on a child shadow the same prefix inherited
+    from an ancestor; they are not a conflict.  A child's own scalar context
+    therefore replaces an inherited binding before that child's content is
+    merged.  Two of the child's own contexts that disagree still conflict in
+    :func:`_merge_contexts`, so this only models ancestor shadowing.
+    """
+    scalar_aliases = ("$", *(f"@{attribute}" for attribute in route.attributes))
+    own: dict[str, str] = {}
+    own_base: str | None = None
+    for alias in scalar_aliases:
+        state = states.get(alias)
+        if state is None:
+            continue
+        for value in state.values:
+            for context in _value_contexts(value):
+                own.update(context.namespaces)
+                if own_base is None and context.base_uri is not None:
+                    own_base = context.base_uri
+    namespaces = {prefix: uri for prefix, uri in inherited.namespaces.items() if prefix not in own}
+    namespaces.update(own)
+    return DatatypeContext(own_base if own_base is not None else inherited.base_uri, namespaces)
+
+
 def _encode_scalar_value(
     value: Any,
     contracts: tuple[ScalarContract, ...],
@@ -884,6 +925,7 @@ class _Renderer:
         decisions: Mapping[SlotPath, int] | None = None,
         recorded: dict[SlotPath, _ChoiceRecord] | None = None,
         decision_prefix: SlotPath = (),
+        root_name: str | None = None,
     ) -> None:
         self.route = route
         self.states = states
@@ -893,13 +935,14 @@ class _Renderer:
         self.decisions = dict(decisions or {})
         self.recorded = recorded if recorded is not None else {}
         self.decision_prefix = decision_prefix
+        self.root_name = root_name
         self.contexts: dict[int, DatatypeContext] = {}
         self.encoding: dict[str, dict[str, Pattern]] = {}
         self.aliases: dict[int, frozenset[str]] = {}
         self.bounds: dict[int, _CountBounds] = {}
 
     def render(self) -> tuple[ET.Element, dict[int, DatatypeContext]]:
-        name = self.route.expanded_name or _witness_name(self.route.name_class)
+        name = self.root_name or self.route.expanded_name or _witness_name(self.route.name_class)
         root = self._element(name, self.route, self.states, self.context, (name,))
         return root, self.contexts
 
@@ -1175,17 +1218,18 @@ class _Renderer:
             normalized = False
         _check_route_supported(child_route)
         child_states = _route_states(child_route, child_data)
+        child_inherited = _shadowed_child_context(inherited, child_route, child_states)
         renderer = _Renderer(
             child_route,
             child_states,
-            inherited,
+            child_inherited,
             normalized=normalized,
             plan=self.plan,
             decisions=self.decisions,
             recorded=self.recorded,
             decision_prefix=(*slot_path, -2, ordinal),
         )
-        element = renderer._element(name, child_route, child_states, inherited, path)
+        element = renderer._element(name, child_route, child_states, child_inherited, path)
         self.contexts.update(renderer.contexts)
         return element
 
@@ -1199,6 +1243,7 @@ def _route_tree(
     plan: ProjectionPlan | None = None,
     decisions: Mapping[SlotPath, int] | None = None,
     recorded: dict[SlotPath, _ChoiceRecord] | None = None,
+    root_name: str | None = None,
 ) -> tuple[ET.Element, dict[int, DatatypeContext]]:
     """Build one complete deterministic element tree for *route*."""
     inherited = context_from_mapping(context)
@@ -1212,6 +1257,7 @@ def _route_tree(
         decisions=decisions,
         recorded=recorded,
         decision_prefix=(),
+        root_name=root_name,
     ).render()
 
 
@@ -1248,13 +1294,17 @@ def _native_path(mismatch: Any) -> str:
 def _native_rejection(
     route: RouteContract,
     tree: tuple[ET.Element, dict[int, DatatypeContext]],
+    *,
+    root_name: str | None = None,
 ) -> ValueError | None:
     """Return the first stable native rejection, or ``None`` when accepted.
 
     Each retained pattern is validated with a root name admitted by that
     pattern's own name class.  Fixed route names use the real spelling; open
     merged names use a per-pattern deterministic witness so one assignment's
-    namespace cannot make another valid assignment fail.
+    namespace cannot make another valid assignment fail.  When *root_name* is
+    supplied, that exact caller spelling is validated instead; document
+    creation never substitutes a witness for the requested root.
     """
     if not route.patterns:
         raise IntegrationError(
@@ -1265,7 +1315,10 @@ def _native_rejection(
     first: Any = None
     try:
         for pattern in route.patterns:
-            root_element.tag = route.expanded_name or _witness_name(pattern.name_class)
+            if root_name is not None:
+                root_element.tag = root_name
+            else:
+                root_element.tag = route.expanded_name or _witness_name(pattern.name_class)
             root = _relaxng_root(_imported_tree(root_element, contexts))
             outcome = validate_element_recovering(root, pattern)
             if outcome.valid:
@@ -1291,6 +1344,7 @@ def _accepted_route_tree(
     *,
     normalized: bool,
     plan: ProjectionPlan | None = None,
+    root_name: str | None = None,
 ) -> tuple[ET.Element, dict[int, DatatypeContext]]:
     """Build and natively validate one tree with bounded choice enumeration.
 
@@ -1323,11 +1377,12 @@ def _accepted_route_tree(
                 plan=plan,
                 decisions=decisions,
                 recorded=recorded,
+                root_name=root_name,
             )
         except ValueError as error:
             rejection: ValueError | None = error
         else:
-            rejection = _native_rejection(route, tree)
+            rejection = _native_rejection(route, tree, root_name=root_name)
             if rejection is None:
                 return tree
             if first_native is None:
@@ -1476,6 +1531,245 @@ def _route_after_validator(route: RouteContract) -> Any:
     return validate_route
 
 
+def _route_to_lexical_with_element(
+    route: RouteContract,
+    model: BaseModel | Mapping[str, Any],
+    *,
+    context: object | None,
+    element: str,
+    plan: ProjectionPlan | None = None,
+) -> ImportedTree:
+    """Build one lexical route tree under a caller-supplied concrete root name.
+
+    The tree is first validated against the retained element assignments with
+    that exact name.  If no assignment accepts it, the ordinary compiled tree
+    is still constructed and parsed by the caller, so a grammar mismatch
+    becomes a document report instead of a fabricated acceptance or a witness
+    root.  Conversion and shape errors before that point (for example an
+    unknown model route or leftover field values) still raise.
+    """
+    if isinstance(model, BaseModel):
+        values = _model_values(route, model)
+        normalized = True
+    elif isinstance(model, Mapping):
+        values = dict(model)
+        normalized = False
+    else:
+        raise ValueError(f"RELAX NG route {_route_label(route)}: model data must be a mapping")
+    _check_route_supported(route)
+    try:
+        root, contexts = _accepted_route_tree(
+            route,
+            values,
+            context,
+            normalized=normalized,
+            plan=plan,
+            root_name=element,
+        )
+    except ValueError:
+        root, contexts = _route_tree(
+            route,
+            values,
+            context,
+            normalized=normalized,
+            plan=plan,
+            root_name=element,
+        )
+    return _imported_tree(root, contexts)
+
+
+_MISSING = object()
+
+
+def _node_route_id(node: RelaxNGElement) -> str | None:
+    """Return the generated projection route of one lexical node, if any."""
+    node_type = type(node)
+    for attribute in ("_relaxng_route_id_", "__relaxng_route_id__"):
+        value = getattr(node_type, attribute, None)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _projection_error(route: RouteContract, path: tuple[str, ...], message: str) -> ValueError:
+    return ValueError(
+        f"RELAX NG route {_route_label(route)} path {'/'.join(path) or '/'}: {message}"
+    )
+
+
+def _route_is_root_model(route: RouteContract) -> bool:
+    """Whether this route's generated model is a root scalar model."""
+    return bool(route.content.scalar_contracts and not route.attributes and not route.children)
+
+
+def _typed_snapshot_at(
+    node: RelaxNGElement,
+    *,
+    attribute: str | None = None,
+) -> Any:
+    """Return the complete immutable scalar snapshot at one node position.
+
+    The ordinary scalar accessor runs first so the document's own freshness,
+    validity, and typed-evidence gates decide whether any snapshot exists.
+    The snapshot is then built from the same current witnesses by the shared
+    annotation implementation; this adapter never recomputes or invents a
+    candidate set of its own.
+    """
+    if attribute is None:
+        node.scalar_value()
+    else:
+        node.attribute_value(attribute)
+    snapshot = cast(Any, node.revision._typed_snapshot)
+    evidence = cast(EvidenceGraph, snapshot._evidence)
+    fingerprint = cast(str, snapshot._fingerprint)
+    revision = cast(int, snapshot._revision_id)
+    if attribute is None:
+        occurrence = snapshot._text_sites.get(node)
+    else:
+        occurrence = snapshot._attribute_sites.get((node, attribute))
+    if occurrence is None:  # pragma: no cover - every configured scalar site has an occurrence
+        return None
+    witnesses = evidence.scalar_witnesses_at(occurrence)
+    return _alternative_value_at_site(
+        witnesses,
+        evidence,
+        grammar_fingerprint=fingerprint,
+        revision=revision,
+    )
+
+
+def _scalar_content_value(
+    route: RouteContract,
+    node: RelaxNGElement,
+    path: tuple[str, ...],
+) -> Any:
+    """Project one element's complete typed character-content snapshot.
+
+    Text content is nullable: an absent text node remains absent and becomes
+    ``None``.  Atomic and whole-list contracts cannot be absent, so the
+    accepted empty lexical witness is read through the same complete snapshot
+    rather than inventing a value here.
+    """
+    contracts = route.content.scalar_contracts
+    if node.text_value() is None and all(contract.kind == "text" for contract in contracts):
+        return _MISSING
+    snapshot = _typed_snapshot_at(node)
+    if snapshot is None:
+        if node.text_value() is None and _content_may_be_empty(route.content.model):
+            return _MISSING
+        raise _projection_error(
+            route,
+            (*path, "$"),
+            "element text has no current typed scalar interpretation",
+        )
+    return snapshot
+
+
+def _project_record(
+    plan: ProjectionPlan,
+    route: RouteContract,
+    node: RelaxNGElement,
+    path: tuple[str, ...],
+    *,
+    model_for: Callable[[RouteContract], type[BaseModel]],
+) -> dict[str, Any]:
+    """Build one route's plain model data from current typed node evidence."""
+    data: dict[str, Any] = {}
+    if route.content.scalar_contracts:
+        value = _scalar_content_value(route, node, path)
+        if value is not _MISSING:
+            data["$"] = value
+    for name, attribute_field in route.attributes.items():
+        lexical = node.attribute_lexical(name)
+        if lexical is None:
+            continue
+        alias = "@" + name
+        value = _typed_snapshot_at(node, attribute=name)
+        if value is None:
+            if attribute_field.scalar_contracts:
+                raise _projection_error(
+                    route,
+                    (*path, alias),
+                    "present attribute has no current typed scalar interpretation",
+                )
+            value = lexical
+        data[alias] = value
+    grouped: dict[str, list[Any]] = {name: [] for name in route.children}
+    for child in node._children_:
+        name = child._name_
+        field = route.children.get(name)
+        if field is None:
+            raise _projection_error(
+                route,
+                (*path, name),
+                f"child {name!r} is not admitted by this route",
+            )
+        child_route_id = field.child_route_id
+        if child_route_id is None:
+            raise IntegrationError(
+                f"RELAX NG route {_route_label(route)} path {'/'.join(path)}: "
+                f"child {name!r} has no route identity"
+            )
+        grouped[name].append(
+            _project_node(
+                plan,
+                plan.routes[child_route_id],
+                child,
+                (*path, name),
+                model_for=model_for,
+            )
+        )
+    for name, field in route.children.items():
+        values = grouped[name]
+        if field.cardinality.repeatable:
+            if values or field.cardinality.minimum > 0:
+                data[name] = values
+            continue
+        if not values:
+            if field.cardinality.minimum > 0:
+                raise _projection_error(
+                    route,
+                    (*path, name),
+                    "required child is absent from the typed tree",
+                )
+            continue
+        if len(values) > 1:
+            raise _projection_error(
+                route,
+                (*path, name),
+                f"singular child occurs {len(values)} times",
+            )
+        data[name] = values[0]
+    return data
+
+
+def _project_node(
+    plan: ProjectionPlan,
+    route: RouteContract,
+    node: RelaxNGElement,
+    path: tuple[str, ...],
+    *,
+    model_for: Callable[[RouteContract], type[BaseModel]],
+) -> BaseModel:
+    """Validate and normalize one route's independent model snapshot.
+
+    Nested generated models are validated with their own snapshots and then
+    supplied as instances.  Every scalar position is an immutable complete
+    snapshot carrying its own scoped context, so the surrounding validation
+    needs no single global namespace frame: sibling fields may declare the
+    same prefix with different namespace URIs without leaking to each other.
+    """
+    model_class = model_for(route)
+    node.scalar_value()
+    if not _route_is_root_model(route):
+        data = _project_record(plan, route, node, path, model_for=model_for)
+        return model_class.model_validate(data)
+    value = _scalar_content_value(route, node, path)
+    if value is _MISSING:
+        value = None
+    return model_class.model_validate(value)
+
+
 class RelaxNGModelSet:
     """A compiled-RELAX-NG-schema-scoped registry of route Pydantic models.
 
@@ -1596,6 +1890,173 @@ class RelaxNGModelSet:
             model.model_rebuild(_types_namespace=namespace, raise_errors=True)
         self._models.update(new)
         return self._models[route.route_id]
+
+    def from_document(self, document: Document, *, revalidate: bool = False) -> BaseModel:
+        """Snapshot one valid, current typed RELAX NG document.
+
+        The root route comes from the document root's generated projection
+        class, or from the actual expanded root name for a generic node.  All
+        scalar values, wrappers, and nested model instances are rebuilt from
+        current binding evidence, so the returned model never retains a node,
+        revision, or caller mapping.  ``revalidate=True`` re-parses an
+        independent clone first; without it, a stale typed interpretation is
+        rejected instead of reusing old evidence.
+        """
+        prepared = cast(RelaxNGDocument, prepare_document(self.schema, document, revalidate))
+        root = prepared.root
+        route_id = _node_route_id(root)
+        route = self._plan.routes.get(route_id) if route_id is not None else None
+        if route is None:
+            route = self._resolve(element=root._name_, path=())
+        return _project_node(
+            self._plan,
+            route,
+            root,
+            (root._name_,),
+            model_for=self._model,
+        )
+
+    def from_node(
+        self,
+        node: RelaxNGElement,
+        *,
+        element: str,
+        path: tuple[str, ...] = (),
+    ) -> BaseModel:
+        """Snapshot one current typed occurrence for a start or local route.
+
+        The route is resolved exactly as :meth:`model_for` resolves it.  A
+        generated projection node must carry that same route identity; a
+        generic node is checked against the route's name class.  Projection
+        reads only the requested subtree, so a local snapshot makes no
+        ancestor or sibling claim.
+        """
+        if not isinstance(node, RelaxNGElement):
+            raise IntegrationError("from_node requires a RELAX NG lexical node")
+        route = self._resolve(element=element, path=path)
+        route_id = _node_route_id(node)
+        if route_id is not None and route_id != route.route_id:
+            node_route = self._plan.routes.get(route_id)
+            label = _route_label(node_route) if node_route is not None else route_id
+            raise IntegrationError(
+                f"RELAX NG node {node._name_!r} belongs to route {label}, not {_route_label(route)}"
+            )
+        if route_id is None:
+            uri, local = _parse_name(node._name_, what="node name")
+            if not route.name_class.contains(uri, local):
+                raise IntegrationError(
+                    f"RELAX NG route {(element, *path)}: node {node._name_!r} is not "
+                    "admitted by the selected route's name class"
+                )
+        return _project_node(
+            self._plan,
+            route,
+            node,
+            (element, *path),
+            model_for=self._model,
+        )
+
+    def to_document(
+        self,
+        model: BaseModel,
+        *,
+        route: str | None = None,
+        context: object | None = None,
+        element: str | None = None,
+    ) -> RelaxNGDocument:
+        """Build and parse one lexical document from a validated route model.
+
+        The default route is the model class's own route only when it is an
+        admitted start.  ``route`` may select a start route by ID or exact
+        expanded name; a local route is rejected because a document must
+        validate from the original grammar start.  A fixed start uses its
+        expanded name, while an open name class requires an explicit admitted
+        ``element`` spelling rather than a validation witness.  The model is
+        revalidated before construction, so mutated or ``model_construct``
+        instances cannot produce a document.  Grammar mismatches after a
+        successful conversion are reported by the ordinary parse, never
+        asserted as valid by this method.
+        """
+        if not isinstance(model, BaseModel):
+            raise TypeError("model must be a Pydantic model")
+        model_route = _model_route(type(model))
+        selected = self._select_document_route(model_route, route)
+        root_name = self._document_element(selected, element)
+        model_class = self._model(selected)
+        build_model: BaseModel | Mapping[str, Any]
+        if isinstance(model, model_class):
+            validate_route_data(model_class, model, context=context, plan=self._plan)
+            build_model = model
+        else:
+            values = _model_values(model_route, model)
+            if _route_is_root_model(selected):
+                build_model = model_class.model_validate(values["$"], context=context)
+            else:
+                build_model = model_class.model_validate(values, context=context)
+        tree = _route_to_lexical_with_element(
+            selected,
+            build_model,
+            context=context,
+            element=root_name,
+            plan=self._plan,
+        )
+        return self.schema._parse_imported_tree(tree, format="pyxsd")
+
+    def _select_document_route(
+        self, model_route: RouteContract, selector: str | None
+    ) -> RouteContract:
+        if selector is None:
+            selected = self._plan.routes.get(model_route.route_id)
+            if selected is None:
+                raise IntegrationError(
+                    f"RELAX NG route {_route_label(model_route)}: the model class belongs "
+                    "to another compiled schema"
+                )
+        else:
+            if not isinstance(selector, str) or not selector:
+                raise IntegrationError(
+                    "route must be a compiled route ID or an exact expanded route name"
+                )
+            try:
+                selected = self._plan.resolve_route(selector)
+            except KeyError:
+                raise IntegrationError(
+                    f"RELAX NG route {selector!r}: no such route ID or exact expanded name"
+                ) from None
+            except ValueError as error:
+                raise IntegrationError(str(error)) from None
+        if selected.route_id not in self._plan.roots:
+            raise IntegrationError(
+                f"RELAX NG route {_route_label(selected)} is in local scope and cannot "
+                "produce a document start; to_document requires an admitted start route "
+                "(use from_node for local snapshots)"
+            )
+        return selected
+
+    def _document_element(self, route: RouteContract, element: str | None) -> str:
+        if route.expanded_name is not None:
+            uri, local = _parse_name(route.expanded_name, what="route element")
+            fixed = clark(uri, local)
+            if element is not None:
+                supplied_uri, supplied_local = _parse_name(element, what="element")
+                if clark(supplied_uri, supplied_local) != fixed:
+                    raise IntegrationError(
+                        f"RELAX NG route {_route_label(route)} has fixed start element "
+                        f"{fixed!r}; element {element!r} does not match"
+                    )
+            return fixed
+        if element is None:
+            raise IntegrationError(
+                f"RELAX NG route {_route_label(route)} has an open name class; "
+                "to_document requires an explicit element= spelling admitted by that class"
+            )
+        uri, local = _parse_name(element, what="element")
+        if not route.name_class.contains(uri, local):
+            raise IntegrationError(
+                f"RELAX NG route {_route_label(route)}: element {element!r} is not "
+                "admitted by the route's name class"
+            )
+        return clark(uri, local)
 
     def _build(self, route: RouteContract) -> type[BaseModel]:
         if route.content.scalar_contracts and not route.attributes and not route.children:
