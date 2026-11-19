@@ -127,7 +127,7 @@ def _schema_languages() -> dict[str, JsonValue]:
                 },
                 "comparison": {"structural": False, "corpus": False},
                 "conversion": _conversion_tools(),
-                "projection": {"models": True, "records": False},
+                "projection": {"models": True, "records": True},
             },
         },
     }
@@ -665,6 +665,8 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             element: str,
             data: JsonValue,
             path: tuple[str, ...] = (),
+            namespaces: dict[str, str] | None = None,
+            base_uri: str | None = None,
         ) -> types.CallToolResult:
             """Validate JSON data against a projected declaration's JSON Schema.
 
@@ -678,6 +680,8 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 element=element,
                 path=path,
                 data=data,
+                namespaces={} if namespaces is None else dict(namespaces),
+                base_uri=base_uri,
             )
             return await _invoke(services, lambda: services.models.validate_data(request))
 

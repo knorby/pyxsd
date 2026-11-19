@@ -118,13 +118,24 @@ class ModelOperation(Operation):
     path: tuple[Nonempty, ...] = ()
     action: Literal["inspect", "validate"] = "inspect"
     data: JsonValue = None
+    namespaces: dict[str, str] = Field(default_factory=dict)
+    base_uri: str | None = None
 
 
 class FieldSourceSpec(WireModel):
     scope: Literal["record", "root", "ancestor"] = "record"
     levels: Annotated[int, Field(ge=0)] = 0
-    path: tuple[Nonempty, ...] = ()
+    # MCP arguments arrive as Python lists; tuple items still validate strictly.
+    path: Annotated[tuple[Nonempty, ...], Field(strict=False)] = ()
     attribute: Nonempty | None = None
+    datatype: Annotated[tuple[Nonempty, Nonempty], Field(strict=False)] | None = None
+    candidate_id: Nonempty | None = None
+
+    @model_validator(mode="after")
+    def exclusive_selector(self) -> "FieldSourceSpec":
+        if self.datatype is not None and self.candidate_id is not None:
+            raise ValueError("source datatype and candidate_id are mutually exclusive")
+        return self
 
 
 class RecordsOperation(Operation):

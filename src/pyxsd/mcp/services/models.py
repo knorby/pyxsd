@@ -4,7 +4,7 @@ import secrets
 import time
 from typing import Any, cast
 
-from pydantic import JsonValue, ValidationError
+from pydantic import Field, JsonValue, ValidationError
 
 from ..cache import CompileRequest, SchemaCache, require_complete_schema
 from ..contracts import Nonempty, SchemaRef, ToolEnvelope, WireModel
@@ -33,15 +33,16 @@ class InspectModelRequest(WireModel):
 
 class ValidateDataRequest(InspectModelRequest):
     data: JsonValue
+    namespaces: dict[str, str] = Field(default_factory=dict)
+    base_uri: str | None = None
 
 
 def _model_selection(schema: Any, element: str) -> tuple[str, Any]:
     """Map one user spelling to the model registry's accepted route identity.
 
-    XSD keeps the existing Clark-declaration path.  RELAX NG standalone models
-    start at a start route; a local route ID is a truthful, explicit limitation
-    until selector round trips are available, so it names the start routes that
-    can still be inspected with a ``path``.
+    XSD keeps the existing Clark-declaration path. RELAX NG standalone models
+    select local routes through a start element and ``path``, not through a
+    local route ID.
     """
     from pyxsd.relaxng import RelaxNGSchema
 
@@ -133,7 +134,15 @@ def execute_model(
                 **scope,
             }
         try:
-            value = model.model_validate(operation.data)
+            if isinstance(schema, RelaxNGSchema):
+                context: dict[str, Any] = {}
+                if operation.namespaces:
+                    context["namespaces"] = dict(operation.namespaces)
+                if operation.base_uri is not None:
+                    context["base_uri"] = operation.base_uri
+                value = model.model_validate(operation.data, context={"relaxng": context})
+            else:
+                value = model.model_validate(operation.data)
         except ValidationError as exc:
             errors = exc.errors(include_url=False, include_context=False, include_input=False)
             retained = errors[: cache.limits.collected_issues]
@@ -155,7 +164,13 @@ def execute_model(
         return {
             "valid": True,
             "validation_scope": "projected-data",
-            "value": encode_value(value.model_dump(by_alias=True, exclude_unset=True)),
+            "value": encode_value(
+                value.model_dump(
+                    mode="json" if isinstance(schema, RelaxNGSchema) else "python",
+                    by_alias=True,
+                    exclude_unset=True,
+                )
+            ),
             **scope,
         }
 
@@ -178,6 +193,11 @@ class ModelService(ExplorationService):
                 path=request.path,
                 action="validate" if isinstance(request, ValidateDataRequest) else "inspect",
                 data=request.data if isinstance(request, ValidateDataRequest) else None,
+                **(
+                    request.model_dump(include={"namespaces", "base_uri"}, exclude_unset=True)
+                    if isinstance(request, ValidateDataRequest)
+                    else {}
+                ),
             )
             reply = await self.pool.run(
                 operation,

@@ -318,7 +318,7 @@ def test_capabilities_add_schema_languages_without_changing_old_keys(tmp_path):
                         ],
                         "fidelities": ["strict", "best-effort"],
                     },
-                    "projection": {"models": True, "records": False},
+                    "projection": {"models": True, "records": True},
                 },
             }
 
@@ -1339,8 +1339,10 @@ def test_relaxng_model_failure_guidance_uses_real_route_models(tmp_path):
     anyio.run(scenario)
 
 
-def test_relaxng_records_are_explicitly_unsupported_with_scope(tmp_path):
+def test_relaxng_record_preview_rejects_invalid_document(tmp_path):
     from pyxsd.mcp.services.records import PreviewRecordsRequest, RecordService
+
+    pytest.importorskip("pyarrow")
 
     async def scenario():
         async with harness(tmp_path) as (_, inputs, pool, workspace):
@@ -1359,10 +1361,7 @@ def test_relaxng_records_are_explicitly_unsupported_with_scope(tmp_path):
                         element="{urn:test}doc",
                     )
                 )
-            assert raised.value.fault.code == "unsupported_capability"
-            assert {
-                key: raised.value.fault.details[key] for key in ("format", "validation_scope")
-            } == {"format": "relax-ng", "validation_scope": "unsupported"}
+            assert raised.value.fault.code == "invalid_document"
 
     anyio.run(scenario)
 
@@ -1397,8 +1396,10 @@ def test_relaxng_record_start_selection_and_export_are_explicit():
     assert resolve_projection_element(schema, "doc", scope="start") == root_id
 
 
-def test_relaxng_record_export_is_explicitly_unsupported(tmp_path):
+def test_relaxng_record_export_rejects_invalid_document(tmp_path):
     from pyxsd.mcp.services.records import ExportRecordsRequest, RecordService
+
+    pytest.importorskip("pyarrow")
 
     async def scenario():
         async with harness(tmp_path) as (_, inputs, pool, workspace):
@@ -1417,10 +1418,7 @@ def test_relaxng_record_export_is_explicitly_unsupported(tmp_path):
                         element="{urn:test}doc",
                     )
                 )
-            assert raised.value.fault.code == "unsupported_capability"
-            assert {
-                key: raised.value.fault.details[key] for key in ("format", "validation_scope")
-            } == {"format": "relax-ng", "validation_scope": "unsupported"}
+            assert raised.value.fault.code == "invalid_document"
 
     anyio.run(scenario)
 
