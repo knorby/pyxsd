@@ -3,9 +3,10 @@
 The environment in this module is deliberately independent of the XSLT runtime.
 It owns only the values a compiled XPath expression needs: namespaces and
 variable/function declarations for compilation, plus invocation-local
-variables, functions, key indexes, documents, collections, text resources, and
-stable dynamic values for evaluation.  No live transformation, stylesheet,
-initial template, result builder, or mode is required.
+variables, functions, key indexes, documents, collections, text resources, a
+lazy key lookup for pattern matching, and stable dynamic values for evaluation.
+No live transformation, stylesheet, initial template, result builder, or mode is
+required.
 
 Mappings are copied into read-only views at construction.  Dynamic values that
 must be stable for one invocation/environment, such as the current date/time
@@ -17,7 +18,7 @@ implicit filesystem or network fallback.
 from __future__ import annotations
 
 import datetime as _datetime
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
@@ -26,7 +27,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 from elementpath.datatypes.datetime import Timezone
 
 from pyxsd.xdm.nodes import XdmDocument, XdmNode
-from pyxsd.xdm.values import XdmFunction, XdmItem
+from pyxsd.xdm.values import XdmFunction, XdmItem, XdmSequence
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
     from pyxsd.xdm.schema import SchemaPool
@@ -277,6 +278,17 @@ class ExpressionEnvironment:
     #: its own adapter tree (the pre-Stage-3 behaviour).  ``object`` for the
     #: same reason as ``parser_cache``: this module must not import the engine.
     adapter_registry: object | None = None
+    #: A lazy ``key()`` resource for pattern evaluation:
+    #: ``lookup(context_item, arguments)`` mirrors the XSLT function, builds
+    #: the index on demand, applies the two/three-argument rules, and filters
+    #: to the document the lookup names.  ``None`` means a pattern reads the
+    #: supplied ``key_indexes`` directly (the standalone XPath behaviour).  Not
+    #: a dynamic value: a resource, like ``key_indexes``.  The signature is
+    #: spelled here, rather than imported from the engine, for the same reason
+    #: as ``parser_cache``.
+    key_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         variables = dict(_freeze_mapping(self.variables, "variables"))
@@ -371,6 +383,8 @@ class ExpressionEnvironment:
 
         if self.base_uri is not None and not isinstance(self.base_uri, str):
             raise TypeError("base_uri must be a string or None")
+        if self.key_lookup is not None and not callable(self.key_lookup):
+            raise TypeError("key_lookup must be callable or None")
 
         object.__setattr__(self, "variables", MappingProxyType(variables))
         object.__setattr__(self, "functions", MappingProxyType(functions))

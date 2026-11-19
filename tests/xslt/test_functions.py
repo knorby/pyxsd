@@ -465,6 +465,107 @@ def test_the_same_key_against_another_document_is_not_circular() -> None:
     assert result.principal == (XdmAtomic.string("item"), XdmAtomic.string("x"))
 
 
+def test_a_pattern_key_lookup_selects_the_keyed_nodes() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="b" use="@code"/>
+        <xsl:template match="/">
+          <out><xsl:apply-templates select="doc/a"/></out>
+        </xsl:template>
+        <xsl:template match="a[key('k', @code)]"><hit n="{@code}"/></xsl:template>
+        <xsl:template match="a"><miss n="{@code}"/></xsl:template>
+        """
+    )
+    result = transform(source, b'<doc><a code="x"/><a code="z"/><b code="x"/><b code="w"/></doc>')
+    (out,) = result.principal
+    assert [
+        (
+            child.local_name,
+            [(attribute.name, attribute.string_value) for attribute in child.attributes],
+        )
+        for child in element_children(out)
+    ] == [
+        ("hit", [("n", "x")]),
+        ("miss", [("n", "z")]),
+    ]
+
+
+def test_a_rooted_key_pattern_selects_the_keyed_nodes() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k1" match="b" use="@code"/>
+        <xsl:key name="k2" match="key('k1', 'x')" use="@id"/>
+        <xsl:template match="/">
+          <out n="{count(key('k2', 'id8'))}" code="{key('k2', 'id8')/@code}"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b'<doc><b id="id8" code="x"/><b id="id9" code="y"/></doc>')
+    (out,) = result.principal
+    assert [(attribute.name, attribute.string_value) for attribute in out.attributes] == [
+        ("n", "1"),
+        ("code", "x"),
+    ]
+
+
+def test_a_pattern_key_lookup_uses_the_third_argument_document() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="other" as="document-node()">
+          <xsl:document><b id="id8" code="x"/></xsl:document>
+        </xsl:variable>
+        <xsl:key name="k1" match="b" use="@code"/>
+        <xsl:key name="k2" match="key('k1', 'x', $other)" use="@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key('k2', 'id8', $other))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b'<doc><b id="id8" code="z"/></doc>', initial_template="main")
+    assert result.principal == (XdmAtomic.integer(1),)
+
+
+def test_a_circular_key_inside_a_pattern_predicate_raises_XTDE0640() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item[key('k', @id)]" use="@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key('k', 'a'))"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        transform(source, b'<doc><item id="a"/></doc>', initial_template="main")
+    assert caught.value.code == "XTDE0640"
+
+
+def test_a_circular_key_in_a_rooted_pattern_raises_XTDE0640() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="key('k', 'a')" use="@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key('k', 'a'))"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        transform(source, b'<doc><item id="a"/></doc>', initial_template="main")
+    assert caught.value.code == "XTDE0640"
+
+
+def test_a_non_circular_pattern_error_is_still_a_non_match() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item[1 div 0]" use="@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key('k', 'a'))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b'<doc><item id="a"/></doc>', initial_template="main")
+    assert result.principal == (XdmAtomic.integer(0),)
+
+
 def _key_invocation(source: bytes) -> _Invocation:
     compiled = XsltProcessor().compile(io.BytesIO(source))
     options = _prepare_invocation(

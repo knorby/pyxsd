@@ -98,6 +98,7 @@ from pyxsd.xslt.compiler.packages import (
     PackageResolver,
     compile_package_set,
 )
+from pyxsd.xslt.compiler.pattern_syntax import FunctionArgument
 from pyxsd.xslt.compiler.patterns import (
     CompiledPattern,
     PatternMatcher,
@@ -7358,6 +7359,7 @@ class _Invocation(Transformation):
             base_uri=None,
             parser_cache=self._xpath_cache,
             adapter_registry=self._adapter_registry,
+            key_lookup=self._key_override_for(package_name),
         )
 
     def _decimal_format_objects(
@@ -7642,6 +7644,13 @@ def _pattern_variable_names(pattern: CompiledPattern) -> set[str]:
         if isinstance(value, CompiledPattern):
             for alternative in value.alternatives:
                 visit(alternative)
+            return
+        if isinstance(value, FunctionArgument) and value.kind == "variable":
+            # A rooted doc()/id()/key() pattern argument can only be a literal
+            # or a variable reference.  The pattern environment must bind the
+            # variable, or the rooted base is silently empty.
+            assert value.name is not None
+            names.add(value.name)
             return
         if is_dataclass(value) and not isinstance(value, type):
             for item in fields(value):

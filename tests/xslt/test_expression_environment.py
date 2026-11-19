@@ -323,6 +323,21 @@ def test_environment_validates_its_configuration() -> None:
         ExpressionEnvironment(collections={"urn:x": ("not a node",)})  # type: ignore[dict-item]
 
 
+def test_a_key_lookup_is_a_resource_outside_environment_equality_and_repr() -> None:
+    from dataclasses import replace
+
+    def lookup(context_item: Any, arguments: tuple[XdmSequence, ...]) -> XdmSequence:
+        return ()
+
+    plain = ExpressionEnvironment()
+    resourceful = replace(plain, key_lookup=lookup)
+    assert resourceful.key_lookup is lookup
+    assert resourceful == plain
+    assert "key_lookup" not in repr(resourceful)
+    with pytest.raises(TypeError, match="key_lookup"):
+        ExpressionEnvironment(key_lookup=object())  # type: ignore[arg-type]
+
+
 def test_static_context_is_immutable_and_validated() -> None:
     static = XPathStaticContext(
         namespaces={"m": "urn:test"},

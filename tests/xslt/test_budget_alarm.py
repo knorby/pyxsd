@@ -142,6 +142,21 @@ def test_pattern_failures_remain_non_matches(
     assert matcher.statistics.errors_ignored == 1
 
 
+@pytest.mark.parametrize("alarm", BUDGET_ALARMS)
+def test_a_rooted_pattern_still_propagates_the_budget_alarm(
+    monkeypatch: pytest.MonkeyPatch, alarm: BaseException
+) -> None:
+    """The circularity override never pre-empts the budget alarm."""
+    matcher = _matcher("key('k', 'a')")
+    monkeypatch.setattr("pyxsd.xslt.compiler.patterns._rooted_base", _raise(alarm))
+
+    with pytest.raises(type(alarm)) as caught:
+        matcher.matches(_first_item(), ExpressionEnvironment())
+
+    assert caught.value is alarm
+    assert matcher.statistics.errors_ignored == 0
+
+
 def test_run_case_records_a_pattern_budget_alarm_as_a_timeout(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
