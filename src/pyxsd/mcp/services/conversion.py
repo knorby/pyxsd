@@ -17,9 +17,12 @@ from pyxsd.data_conversion.contracts import (
 )
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
+from pyxsd.relaxng.datatypes import DatatypeRegistrationError, UnsupportedDatatypeError
 from pyxsd.relaxng.document import RelaxNGDocument
+from pyxsd.relaxng.errors import RelaxNGLimitError
 from pyxsd.relaxng.schema import RelaxNGSchema
 from pyxsd.schema import Schema
+from pyxsd.xml_policy import XmlTreeLimitError
 
 from ..cache import CompileRequest, SchemaCache, require_complete_schema
 from ..captures import InputPolicyError
@@ -139,6 +142,14 @@ def _import_document(
             namespaces=operation.namespaces,
             fidelity=operation.fidelity,
         )
+    except (
+        InputPolicyError,
+        XmlTreeLimitError,
+        RelaxNGLimitError,
+        UnsupportedDatatypeError,
+        DatatypeRegistrationError,
+    ) as exc:
+        _schema_fault(exc, cache.limits)
     except PyXSDError as exc:
         _conversion_fault(exc, format=operation.format, limits=cache.limits)
 
@@ -158,7 +169,7 @@ def _page_report(
         "report": data,
         "page": {
             "returned": len(page_issues),
-            "truncated": offset + len(page_issues) < total,
+            "truncated": offset + len(page_issues) < len(issues),
             "total": total,
         },
         "root_present": document.root is not None,

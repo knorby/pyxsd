@@ -99,7 +99,7 @@ from pyxsd.schema_hints import absolute_schema_location_pairs, resolve_schema_hi
 from pyxsd.validation import ValidationReport, require_valid_report
 from pyxsd.version_gates import check_xsd10_vocabulary
 from pyxsd.versioning import apply_conditional_inclusion
-from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
+from pyxsd.xml_policy import XmlLimits, XmlParserPolicy, enforce_tree_limits
 from pyxsd.xsd_data_types import ENTITIES, ENTITY
 
 logger = logging.getLogger(__name__)
@@ -776,6 +776,7 @@ class Schema:
             )
         except PyXSDError as exc:
             raise PyXSDError(f"{exc} (format={format!r})") from None
+        enforce_tree_limits(tree, getattr(self.resource_policy, "tree_limits", None))
         if self.resource_policy is not None:
             # A resource policy refuses arbitrary pre-parsed Element inputs so
             # policy parsing cannot be bypassed.  This tree was built and

@@ -75,7 +75,7 @@ from pyxsd.validation import (
     ValidationReport,
     require_valid_report,
 )
-from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
+from pyxsd.xml_policy import XmlLimits, XmlParserPolicy, enforce_tree_limits
 
 if TYPE_CHECKING:
     from pyxsd.batch import DocumentSource, ParseOutcome
@@ -776,6 +776,7 @@ class RelaxNGSchema:
         """
         from pyxsd.relaxng.json_values import verify_tag_claims
 
+        enforce_tree_limits(tree.root, getattr(self._resource_policy, "tree_limits", None))
         document = self._parse_guarded_instance(
             tree.root,
             xml_policy=None,

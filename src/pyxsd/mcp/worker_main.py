@@ -46,7 +46,7 @@ from pyxsd.relaxng.resources import ResourceDependency
 from pyxsd.schema_base import SchemaBase
 from pyxsd.schema_context import last_components, remember_components
 from pyxsd.source_spans import SourceIndex
-from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
+from pyxsd.xml_policy import XmlLimits, XmlParserPolicy, XmlTreeLimitError
 
 from .cache import (
     CompiledSchema,
@@ -1080,6 +1080,12 @@ def _operational_fault(exc: BaseException, default_code: str, max_bytes: int | N
             code="unsupported_capability",
             message=str(exc)[:max_bytes],
             details={},
+        )
+    if isinstance(exc, XmlTreeLimitError):
+        return ToolFault(
+            code="limit_exceeded",
+            message=str(exc)[:max_bytes],
+            details={"code": "xml_limit"},
         )
     if isinstance(exc, InputPolicyError):
         message = _policy_message(exc)[:max_bytes]

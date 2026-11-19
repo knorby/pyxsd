@@ -11,8 +11,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from xml.etree import ElementTree as ET
 
 from pyxsd.resource_policy import ResourcePolicyError
+
+
+class XmlTreeLimitError(ResourcePolicyError):
+    """A library-built tree exceeded a policy's structural XML budget."""
 
 
 @dataclass(frozen=True)
@@ -40,6 +45,26 @@ class XmlLimits:
                 isinstance(value, bool) or not isinstance(value, int) or value <= 0
             ):
                 raise ValueError(f"{name} must be a positive integer or None")
+
+
+def enforce_tree_limits(root: ET.Element, limits: XmlLimits | None) -> None:
+    """Check library-built start tags without reparsing or changing contexts.
+
+    Trees have no input-byte size. Depth and element counts use the parser's
+    inclusive bounds, with the root at depth one.
+    """
+    if limits is None:
+        return
+    stack = [(root, 1)]
+    count = 0
+    while stack:
+        node, depth = stack.pop()
+        count += 1
+        if limits.max_depth is not None and depth > limits.max_depth:
+            raise XmlTreeLimitError(f"the XML input exceeds max_depth={limits.max_depth}")
+        if limits.max_elements is not None and count > limits.max_elements:
+            raise XmlTreeLimitError(f"the XML input exceeds max_elements={limits.max_elements}")
+        stack.extend((child, depth + 1) for child in reversed(node))
 
 
 @dataclass(frozen=True)
