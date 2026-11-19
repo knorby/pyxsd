@@ -11,7 +11,12 @@ from typing import Any, Literal, cast
 from pydantic import Field, JsonValue
 from pyxsd.schema import Schema
 
-from ..cache import CompileRequest, SchemaCache, require_complete_schema
+from ..cache import (
+    CompileRequest,
+    SchemaCache,
+    require_complete_schema,
+    require_xsd_schema,
+)
 from ..contracts import FileRef, Nonempty, SchemaRef, ToolEnvelope, WireModel
 from ..encoding import encode_value
 from ..errors import ToolError
@@ -118,6 +123,7 @@ def execute_records(
     )
     with cache.acquire(request) as schema:
         require_complete_schema(schema)
+        schema = require_xsd_schema(schema)
         document = schema.parse("/workspace/" + operation.document.path)
         if document.report.error_count or document.root is None:
             raise ToolError("invalid_document", "Record projection requires valid XML")
@@ -183,6 +189,7 @@ def execute_export(
     )
     with cache.acquire(request) as schema:
         require_complete_schema(schema)
+        schema = require_xsd_schema(schema)
         documents = []
         for reference in operation.documents:
             document = schema.parse("/workspace/" + reference.path)

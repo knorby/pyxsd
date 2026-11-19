@@ -24,7 +24,7 @@ from pyxsd.schema_context import last_components, remember_components
 
 from .captures import InputCapture, InputPolicyError, InputResourcePolicy
 from .config import Limits, relaxng_limits_for_mcp
-from .contracts import SchemaRef
+from .contracts import CompileOptions, SchemaRef
 from .errors import ToolError
 from .safe_io import validate_paths
 
@@ -62,6 +62,22 @@ def require_complete_schema(schema: CompiledSchema) -> None:
         )
 
 
+def require_xsd_schema(schema: CompiledSchema) -> Schema:
+    """Narrow a leased schema for a path that still has XSD-only behavior.
+
+    Phase 7 tasks replace these narrow call sites one at a time. Until then a
+    RELAX NG schema is an explicit unsupported capability, never an internal
+    failure or an XSD reinterpretation.
+    """
+    if isinstance(schema, Schema):
+        return schema
+    raise ToolError(
+        "unsupported_capability",
+        "This operation requires an XSD schema",
+        details={"format": "relax-ng"},
+    )
+
+
 @dataclass(frozen=True)
 class CompileRequest:
     capture: InputCapture
@@ -77,14 +93,15 @@ class CompileRequest:
 def _reject_relaxng_xsd_options(request: CompileRequest) -> None:
     """Keep XSD-only compile inputs out of RELAX NG before any read."""
     options = request.schema_ref.options
+    defaults = CompileOptions()
     rejected: list[JsonValue] = []
-    if options.binding != "lax":
+    if options.binding != defaults.binding:
         rejected.append("binding")
-    if options.namespaces != "strict":
+    if options.namespaces != defaults.namespaces:
         rejected.append("namespaces")
-    if options.xsd_version != "1.1":
+    if options.xsd_version != defaults.xsd_version:
         rejected.append("xsd_version")
-    if options.namespace_schemas:
+    if options.namespace_schemas != defaults.namespace_schemas:
         rejected.append("namespace_schemas")
     if request.hints:
         rejected.append("hints")
@@ -99,10 +116,10 @@ def _reject_relaxng_xsd_options(request: CompileRequest) -> None:
 def compile_schema_ref(request: CompileRequest, policy: InputResourcePolicy) -> CompiledSchema:
     """Compile one cache request with the language it explicitly names.
 
-    This is the only compiler dispatch in the MCP integration. RELAX NG reads
-    every resource through *policy* and receives the cache's fixed budgets;
-    it never receives XML parser overrides, custom datatype factories, or the
-    XSD compiler's options.
+    This is the only cached worker compiler dispatch. RELAX NG reads every
+    resource through *policy* and receives the cache's fixed budgets; it never
+    receives XML parser overrides, custom datatype factories, or the XSD
+    compiler's options.
     """
     if request.schema_ref.format == "relax-ng":
         _reject_relaxng_xsd_options(request)
@@ -144,7 +161,7 @@ class _Entry:
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
-def _key(request: CompileRequest) -> str:
+def _key(request: CompileRequest, limits: Limits) -> str:
     refs = [request.schema_ref.source, *request.schema_ref.options.namespace_schemas.values()]
     for ref in refs:
         validate_paths([ref.path])
@@ -153,6 +170,11 @@ def _key(request: CompileRequest) -> str:
         "schema": request.schema_ref.model_dump(mode="json"),
         "hints": request.hints,
         "processor": request.processor_version,
+        # Fixed per cache, but part of the identity a reused entry was built
+        # under. A digest keeps the key bounded and comparable.
+        "limits": hashlib.sha256(
+            json.dumps(limits.model_dump(mode="json"), sort_keys=True).encode()
+        ).hexdigest(),
     }
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
@@ -214,7 +236,7 @@ class SchemaCache:
         previous = last_components()
         entry: _Entry | None = None
         pinned = False
-        key = _key(request)
+        key = _key(request, self.limits)
         try:
             with self._lock:
                 if self._closed:

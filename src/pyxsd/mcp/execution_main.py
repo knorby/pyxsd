@@ -53,6 +53,10 @@ def _apply(
 
 
 def execute(request: ExecutionRequest) -> dict[str, Any]:
+    if request.schema_ref.format != "xsd":
+        raise ToolError(
+            "unsupported_capability", "RELAX NG preview transforms require Phase 7 Task 6"
+        )
     spec = normalize_transform(request.transform, request.limits)
     policy = InputResourcePolicy(capture_from_wire(request.capture), request.limits)
     options = request.schema_ref.options

@@ -12,7 +12,12 @@ from pyxsd.exceptions import PyXSDError
 from pyxsd.introspection import ComponentDescription, describe_schema
 from pyxsd.schema import Schema
 
-from ..cache import CompileRequest, SchemaCache, require_complete_schema
+from ..cache import (
+    CompileRequest,
+    SchemaCache,
+    require_complete_schema,
+    require_xsd_schema,
+)
 from ..contracts import FileRef, Nonempty, SchemaRef, WireModel
 from ..encoding import encode_value
 from ..errors import ToolError
@@ -83,6 +88,8 @@ def execute_comparison(
     with cache.acquire(old_request) as old_schema, cache.acquire(new_request) as new_schema:
         require_complete_schema(old_schema)
         require_complete_schema(new_schema)
+        old_schema = require_xsd_schema(old_schema)
+        new_schema = require_xsd_schema(new_schema)
         old_description, new_description = describe_schema(old_schema), describe_schema(new_schema)
         old_keys = comparison_identity.comparison_keys(
             old_description, "/workspace/" + operation.old_schema.source.path

@@ -50,15 +50,28 @@ A = '<main xmlns="urn:t"><inc><a>x</a></inc></main>'
 B = '<main xmlns="urn:t"><inc><a>y</a></inc></main>'
 DOC_B = "<root-b><value>1</value></root-b>"
 
+RNG_NS = "http://relaxng.org/ns/structure/1.0"
+RNG_MAIN = f"""<grammar xmlns="{RNG_NS}">
+  <include href="part.rng"/>
+  <start><element name="note"><ref name="body"/></element></start>
+</grammar>"""
+RNG_PART = f"""<grammar xmlns="{RNG_NS}">
+  <define name="body"><text/></define>
+</grammar>"""
+RNG_DOC = "<note>hello</note>"
+
 
 def make_tree(root: Path) -> None:
     (root / "schema").mkdir()
     (root / "data").mkdir()
     (root / "schema" / "main.xsd").write_text(MAIN)
     (root / "schema" / "inc.xsd").write_text(INC)
+    (root / "schema" / "main.rng").write_text(RNG_MAIN)
+    (root / "schema" / "part.rng").write_text(RNG_PART)
     (root / "other.xsd").write_text(OTHER)
     (root / "data" / "a.xml").write_text(A)
     (root / "data" / "b.xml").write_text(B)
+    (root / "data" / "relaxng.xml").write_text(RNG_DOC)
     (root / "o.xml").write_text(DOC_B)
 
 
@@ -96,6 +109,25 @@ def main_ref():
 
 def other_ref():
     return SchemaRef(source=FileRef(path="other.xsd"))
+
+
+def relaxng_ref():
+    return SchemaRef(source=FileRef(path="schema/main.rng"), format="relax-ng")
+
+
+def test_source_root_relaxng_discovery_and_validation(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, _inputs, _pool, workspace):
+            envelope = await service.validate_document(
+                ValidateDocumentRequest(
+                    workspace_id=workspace,
+                    document=FileRef(path="data/relaxng.xml"),
+                    schema_ref=relaxng_ref(),
+                )
+            )
+            assert envelope.data["valid"] is True
+
+    anyio.run(scenario)
 
 
 def test_source_root_batch_shared_schema_and_repeated_document(tmp_path):

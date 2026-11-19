@@ -17,6 +17,7 @@ from pyxsd.mcp.cache import (
     SchemaCache,
     compile_schema_ref,
     require_complete_schema,
+    require_xsd_schema,
 )
 from pyxsd.mcp.captures import (
     CaptureFile,
@@ -270,6 +271,10 @@ def test_relaxng_dependency_bytes_invalidate_the_cached_schema(tmp_path):
                 require_complete_schema(replaced)
         assert raised.value.fault.code in {"invalid_schema", "schema_incomplete"}
         assert cache.info().stale == 1
+        with cache.acquire(second) as confirmed:
+            assert confirmed is replaced
+        assert cache.info().stale == 1
+        assert cache.info().hits == 1
     finally:
         cache.close()
 
@@ -356,6 +361,37 @@ def test_unsupported_relaxng_datatype_library_is_explicit(tmp_path):
         assert cache.info().entries == 0
     finally:
         cache.close()
+
+
+def test_require_xsd_schema_narrows_xsd_and_rejects_relaxng(tmp_path):
+    cache = SchemaCache(Limits(enforced=True))
+    try:
+        with cache.acquire(request_of(tmp_path)) as schema:
+            with pytest.raises(ToolError) as raised:
+                require_xsd_schema(schema)
+            assert raised.value.fault.code == "unsupported_capability"
+            assert raised.value.fault.details == {"format": "relax-ng"}
+        xsd_request = request_of(
+            tmp_path / "xsd",
+            schema=XSD,
+            schema_format="xsd",
+            source="root.xsd",
+            document=XSD_DOCUMENT,
+        )
+        with cache.acquire(xsd_request) as xsd_schema:
+            assert require_xsd_schema(xsd_schema) is xsd_schema
+    finally:
+        cache.close()
+
+
+def test_cache_key_covers_the_fixed_limit_configuration(tmp_path):
+    from pyxsd.mcp.cache import _key
+
+    request = request_of(tmp_path)
+    assert _key(request, Limits(enforced=True)) == _key(request, Limits(enforced=True))
+    assert _key(request, Limits(enforced=True)) != _key(
+        request, Limits(enforced=True, relaxng_pattern_nodes=2)
+    )
 
 
 def test_every_relaxng_budget_maps_independently(tmp_path):

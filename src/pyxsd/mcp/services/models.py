@@ -6,7 +6,12 @@ from typing import Any, cast
 
 from pydantic import JsonValue, ValidationError
 
-from ..cache import CompileRequest, SchemaCache, require_complete_schema
+from ..cache import (
+    CompileRequest,
+    SchemaCache,
+    require_complete_schema,
+    require_xsd_schema,
+)
 from ..contracts import Nonempty, SchemaRef, ToolEnvelope, WireModel
 from ..encoding import encode_value
 from ..errors import ToolError
@@ -45,6 +50,7 @@ def execute_model(
     )
     with cache.acquire(request) as schema:
         require_complete_schema(schema)
+        schema = require_xsd_schema(schema)
         # The registry dies with its parent schema's cache entry, never a
         # global model cache or a coordinator-side generated class.
         registry = getattr(schema, "_mcp_projected_models", None)

@@ -22,12 +22,20 @@ from pyxsd.introspection import (
     find_components,
     related_components,
 )
+from pyxsd.relaxng import RelaxNGLimitError
+from pyxsd.relaxng.datatypes import DatatypeRegistrationError, UnsupportedDatatypeError
 from pyxsd.schema_base import SchemaBase
 from pyxsd.schema_context import last_components, remember_components
 from pyxsd.source_spans import SourceIndex
 from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
-from .cache import CompileRequest, SchemaCache, require_complete_schema
+from .cache import (
+    CompileRequest,
+    SchemaCache,
+    _closure_policy,
+    require_complete_schema,
+    require_xsd_schema,
+)
 from .captures import CaptureDependency, InputPolicyError, InputResourcePolicy
 from .config import Limits
 from .contracts import BatchValidationItem, SchemaRef, ToolFault
@@ -190,7 +198,10 @@ def _parse_batch(
                     continue
                 except (FileNotFoundError, InputPolicyError, PyXSDError) as exc:
                     code = "not_found" if _missing_file(exc) else "invalid_xml"
-                    items[index] = _batch_fault(current, code, str(exc), cache)
+                    fault = _operational_fault(exc, code, cache.limits.message_bytes)
+                    items[index] = _batch_fault(
+                        current, fault.code, fault.message, cache, details=fault.details or None
+                    )
                     continue
                 items[index] = _batch_outcome(current, document)
             continue
@@ -205,9 +216,14 @@ def _parse_batch(
                     items[index] = _batch_fault(current, exc.fault.code, exc.fault.message, cache)
                 continue
             except (InputPolicyError, PyXSDError) as exc:
+                fault = _operational_fault(exc, "invalid_schema", cache.limits.message_bytes)
                 for index in indexes:
                     items[index] = _batch_fault(
-                        operation.items[index], "invalid_schema", str(exc), cache
+                        operation.items[index],
+                        fault.code,
+                        fault.message,
+                        cache,
+                        details=fault.details or None,
                     )
                 continue
             for index in indexes:
@@ -216,7 +232,10 @@ def _parse_batch(
                     document = schema.parse("/workspace/" + current.document.path)
                 except (FileNotFoundError, InputPolicyError, PyXSDError) as exc:
                     code = "not_found" if _missing_file(exc) else "invalid_xml"
-                    items[index] = _batch_fault(current, code, str(exc), cache)
+                    fault = _operational_fault(exc, code, cache.limits.message_bytes)
+                    items[index] = _batch_fault(
+                        current, fault.code, fault.message, cache, details=fault.details or None
+                    )
                     continue
                 items[index] = _batch_outcome(current, document)
     return {"items": cast(list[JsonValue], items)}
@@ -393,16 +412,17 @@ def _describe(
             "namespace_probe": cast(JsonValue, probe if probe else None),
         }
     with cache.acquire(request) as schema:
-        description = describe_schema(schema)
+        xsd_schema = require_xsd_schema(schema)
+        description = describe_schema(xsd_schema)
         selected_ids = operation.component_ids or description.roots
         try:
-            selected = [describe_component(schema, item) for item in selected_ids]
+            selected = [describe_component(xsd_schema, item) for item in selected_ids]
         except KeyError as exc:
             raise ToolError("not_found", "Schema component not found") from exc
         if operation.view in ("compact", "full"):
             return {
                 "view": operation.view,
-                "stub": schema.stub(
+                "stub": xsd_schema.stub(
                     compact=operation.view == "compact",
                     component_ids=selected_ids,
                     depth=operation.depth,
@@ -416,7 +436,7 @@ def _describe(
         entry_roots = [
             root
             for root in description.roots
-            if (loc := describe_component(schema, root).location) is not None
+            if (loc := describe_component(xsd_schema, root).location) is not None
             and loc.source == entry_source
         ]
         result: dict[str, JsonValue] = {
@@ -449,13 +469,14 @@ def _find(
         )
     request = _for_schema(operation, operation.schema_ref, processor_version)
     with cache.acquire(request) as schema:
+        xsd_schema = require_xsd_schema(schema)
         try:
             if operation.component_id is not None:
-                seed = describe_component(schema, operation.component_id)
+                seed = describe_component(xsd_schema, operation.component_id)
                 found = (
                     seed,
                     *related_components(
-                        schema,
+                        xsd_schema,
                         operation.component_id,
                         direction=operation.direction,
                         depth=operation.depth,
@@ -463,7 +484,7 @@ def _find(
                 )
             else:
                 found = find_components(
-                    schema,
+                    xsd_schema,
                     text=operation.text,
                     kind=operation.component_kind,
                     namespace=operation.namespace,
@@ -647,8 +668,7 @@ def _execute(
                 processor_version=processor_version,
             )
             with cache.acquire(request) as schema:
-                policy = schema.resource_policy
-                assert isinstance(policy, InputResourcePolicy)
+                policy = _closure_policy(schema)
                 for item in policy.dependencies:
                     dependencies[item.path] = item
         return {
@@ -728,6 +748,37 @@ def _reply(
 def _parser_details(exc: BaseException) -> dict[str, JsonValue]:
     match = _PARSER_POSITION.search(str(exc))
     return {} if match is None else {"line": int(match[1]), "column": int(match[2])}
+
+
+def _operational_fault(exc: BaseException, default_code: str, max_bytes: int | None) -> ToolFault:
+    """Classify a parser-level failure without inventing a document verdict.
+
+    RELAX NG budget exhaustion and unsupported datatype capabilities are
+    operational outcomes. They never become ``invalid_xml``/``invalid_schema``,
+    which would turn an unknown verdict into a semantic one.
+    """
+    if isinstance(exc, RelaxNGLimitError):
+        return ToolFault(
+            code="limit_exceeded",
+            message=str(exc)[:max_bytes],
+            details={
+                "stage": exc.stage,
+                "budget": exc.budget,
+                "configured": exc.configured,
+                "observed": exc.observed,
+            },
+        )
+    if isinstance(exc, (UnsupportedDatatypeError, DatatypeRegistrationError)):
+        return ToolFault(
+            code="unsupported_capability",
+            message=str(exc)[:max_bytes],
+            details={},
+        )
+    return ToolFault(
+        code=default_code,
+        message=str(exc)[:max_bytes],
+        details=_parser_details(exc),
+    )
 
 
 def _byte_budget(value: str) -> int | None:
@@ -811,11 +862,7 @@ def main(argv: list[str] | None = None) -> int:
                     sys.stdout.buffer,
                     operation,
                     role=arguments.role,
-                    fault=ToolFault(
-                        code=code,
-                        message=str(exc)[: config.limits.message_bytes],
-                        details=_parser_details(exc),
-                    ),
+                    fault=_operational_fault(exc, code, config.limits.message_bytes),
                     operations=operations,
                     max_bytes=config.limits.output_bytes,
                 )
