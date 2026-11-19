@@ -1,6 +1,7 @@
 """Stylesheet resource access: a local-only default plus explicit policies."""
 
 import io
+from types import MappingProxyType
 
 import pytest
 from tests.xslt.support import stylesheet, transform
@@ -9,6 +10,7 @@ from pyxsd.resource_policy import ResourceData, ResourcePolicyError, validate_pu
 from pyxsd.xdm import XdmAtomic
 from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xslt import XsltProcessor
+from pyxsd.xslt.compiler.static import SpaceRule
 from pyxsd.xslt.errors import XsltDynamicError
 from pyxsd.xslt.runtime.frames import ExecutionBudget, ExecutionLimits
 from pyxsd.xslt.runtime.resources import DocumentResources
@@ -669,6 +671,104 @@ def test_collection_accepts_an_empty_uri_as_the_default_collection() -> None:
     compiled = XsltProcessor(collection_resolver=resolver).compile(io.BytesIO(source))
     assert compiled.transform().principal_tree.string_value == "11"
     assert seen == [None]
+
+
+def test_collection_members_obey_the_calling_packages_space_rules() -> None:
+    document = _collection_document(b"<doc><a> </a><b> </b></doc>", "urn:doc:one")
+
+    source = stylesheet(
+        '<xsl:strip-space elements="a"/><xsl:preserve-space elements="b"/>'
+        '<xsl:template name="xsl:initial-template"><out>'
+        "<xsl:value-of select=\"string-length(collection('urn:set')//a)\"/>"
+        "<xsl:value-of select=\"string-length(collection('urn:set')//b)\"/>"
+        "</out></xsl:template>"
+    )
+    compiled = XsltProcessor(collection_resolver=lambda uri: (document,)).compile(
+        io.BytesIO(source)
+    )
+    assert compiled.transform().principal_tree.string_value == "01"
+
+
+def test_collection_member_fragments_are_stripped_with_their_document() -> None:
+    document = _collection_document(b"<root><a> </a><keep/></root>", "urn:doc:one")
+
+    source = stylesheet(
+        '<xsl:strip-space elements="a"/>'
+        '<xsl:template name="xsl:initial-template"><out>'
+        "<xsl:value-of select=\"string-length(collection('urn:set')//a)\"/>"
+        "</out></xsl:template>"
+    )
+    compiled = XsltProcessor(collection_resolver=lambda uri: (document.root_element,)).compile(
+        io.BytesIO(source)
+    )
+    assert compiled.transform().principal_tree.string_value == "0"
+
+
+def test_collection_space_rules_follow_the_calling_package() -> None:
+    document = _collection_document(b"<doc><a> </a></doc>", "urn:doc:one")
+    calls: list[str | None] = []
+
+    def resolver(uri: str | None):
+        calls.append(uri)
+        return (document,)
+
+    resources = DocumentResources(
+        {},
+        collection_resolver=resolver,
+        space_rules={
+            "urn:strip": (SpaceRule(("a",), MappingProxyType({}), False, None, None),),
+            "urn:keep": (SpaceRule(("a",), MappingProxyType({}), True, None, None),),
+        },
+    )
+
+    (stripped,) = resources.collection("urn:set", base=None, package="urn:strip")
+    (preserved,) = resources.collection("urn:set", base=None, package="urn:keep")
+
+    assert stripped.root_element.children[0].string_value == ""
+    assert preserved.root_element.children[0].string_value == " "
+    assert calls == ["urn:set", "urn:set"]
+
+
+def test_a_member_without_ignorable_whitespace_keeps_its_identity() -> None:
+    document = _collection_document(b"<doc><a>text</a></doc>", "urn:doc:one")
+    resources = DocumentResources(
+        {},
+        collection_resolver=lambda uri: (document,),
+        space_rules={None: (SpaceRule(("a",), MappingProxyType({}), False, None, None),)},
+    )
+
+    (returned,) = resources.collection("urn:set", base=None)
+
+    assert returned is document
+
+
+def test_one_member_served_by_two_collections_is_one_document() -> None:
+    document = _collection_document(b"<doc><a> </a></doc>", "urn:doc:one")
+    resources = DocumentResources(
+        {},
+        collection_resolver=lambda uri: (document,),
+        space_rules={None: (SpaceRule(("a",), MappingProxyType({}), False, None, None),)},
+    )
+
+    (stripped,) = resources.collection("urn:one", base=None)
+    (repeated,) = resources.collection("urn:two", base=None)
+
+    assert stripped is repeated
+    assert stripped is not document
+
+
+def test_a_member_removed_as_whitespace_is_served_unchanged() -> None:
+    document = _collection_document(b"<doc><a> </a></doc>", "urn:doc:one")
+    text = document.root_element.children[0].children[0]
+    resources = DocumentResources(
+        {},
+        collection_resolver=lambda uri: (text,),
+        space_rules={None: (SpaceRule(("a",), MappingProxyType({}), False, None, None),)},
+    )
+
+    (returned,) = resources.collection("urn:set", base=None)
+
+    assert returned is text
 
 
 def test_collection_resolver_is_validated_at_construction() -> None:
