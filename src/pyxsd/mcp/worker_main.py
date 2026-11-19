@@ -253,7 +253,13 @@ def _parse_batch(
                 try:
                     document = _parse_without_schema(operation, current.document.path, cache)
                 except ToolError as exc:
-                    items[index] = _batch_fault(current, exc.fault.code, exc.fault.message, cache)
+                    items[index] = _batch_fault(
+                        current,
+                        exc.fault.code,
+                        exc.fault.message,
+                        cache,
+                        details=exc.fault.details or None,
+                    )
                     continue
                 items[index] = _batch_outcome(current, document)
             continue

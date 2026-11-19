@@ -65,6 +65,10 @@ HINTED_MALFORMED_DOCUMENT = (
     '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
     'xsi:noNamespaceSchemaLocation="schema.xsd">hi'
 )
+HINTED_ESCAPING_DOCUMENT = (
+    '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+    'xsi:noNamespaceSchemaLocation="/etc/passwd">hi</root>'
+)
 HINTED_XSD_SCHEMA = (
     '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
     '<xs:element name="root" type="xs:string"/></xs:schema>'
@@ -734,6 +738,64 @@ def test_batch_malformed_relaxng_item_stays_invalid_xml(tmp_path):
                 "invalid": 0,
                 "failed": 1,
             }
+
+    anyio.run(scenario)
+
+
+def test_batch_schema_less_faults_preserve_operational_details(tmp_path):
+    async def run_case(name, limits, files):
+        async with harness(tmp_path / name, limits) as (service, inputs, _pool, workspace):
+            await upload(inputs, workspace, files)
+            envelope = await service.validate_documents(
+                ValidateDocumentsRequest(
+                    workspace_id=workspace,
+                    documents=(BatchValidationItem(document=FileRef(path="document.xml")),),
+                )
+            )
+            return envelope.data["results"][0]["fault"]
+
+    async def scenario():
+        instance = await run_case(
+            "instance",
+            Limits(enforced=True, workers=1),
+            {"document.xml": HINTED_MALFORMED_DOCUMENT},
+        )
+        assert instance["code"] == "invalid_xml"
+        assert instance["details"]["line"] >= 1
+        assert instance["details"]["column"] >= 0
+
+        budget = await run_case(
+            "schema-budget",
+            Limits(enforced=True, workers=1, schema_file_bytes=10),
+            {"schema.xsd": HINTED_XSD_SCHEMA, "document.xml": HINTED_DOCUMENT},
+        )
+        assert budget["code"] == "limit_exceeded"
+        assert budget["details"] == {"code": "schema_limit"}
+
+        schema = await run_case(
+            "schema",
+            Limits(enforced=True, workers=1),
+            {"schema.xsd": MALFORMED_XSD_SCHEMA, "document.xml": HINTED_DOCUMENT},
+        )
+        assert schema["code"] == "invalid_schema"
+        assert schema["details"]["line"] >= 1
+        assert schema["details"]["column"] >= 0
+
+        missing = await run_case(
+            "missing-schema",
+            Limits(enforced=True, workers=1),
+            {"document.xml": HINTED_DOCUMENT},
+        )
+        assert missing["code"] == "not_found"
+
+        unadmitted = await run_case(
+            "unadmitted-schema",
+            Limits(enforced=True, workers=1),
+            {"document.xml": HINTED_ESCAPING_DOCUMENT},
+        )
+        assert unadmitted["code"] == "invalid_argument"
+        assert unadmitted["details"] == {"code": "invalid_path"}
+        assert unadmitted["message"] == "Unadmitted resource name"
 
     anyio.run(scenario)
 
