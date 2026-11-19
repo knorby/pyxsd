@@ -301,7 +301,7 @@ def test_fixed_homogeneous_and_empty_lists_keep_their_declared_shapes():
             "unsignedLong",
             (-(2**63), 2**64 - 1),
             pa.string(),
-            "integer range [-9223372036854775808, 18446744073709551615] exceeds",
+            "exceeds the 64-bit Arrow integer range",
         ),
         ("int", "positiveInteger", (-1, 2**80), pa.string(), "unbounded integer range"),
         ("negativeInteger", "int", (-(2**80), 1), pa.string(), "unbounded integer range"),

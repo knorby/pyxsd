@@ -410,7 +410,16 @@ def _integer_bounds(datatype: ScalarDatatype) -> tuple[int | None, int | None]:
     }.get(datatype.xsd_type.name, (None, None))
     constraints = datatype.constraints
     digits = constraints.total_digits
-    digit_limit = 10**digits - 1 if digits is not None else None
+    # A totalDigits value beyond the 64-bit Arrow range only needs a sentinel
+    # wider than uint64: constructing or formatting 10**4301 is both slow and
+    # trips Python's integer-to-string digit limit. Intersecting facets can
+    # still narrow the range to a usable integer type.
+    if digits is None:
+        digit_limit = None
+    elif digits <= 19:
+        digit_limit = 10**digits - 1
+    else:
+        digit_limit = 2**64
     lower_bounds = [
         int(value)
         for value in (
@@ -445,9 +454,7 @@ def _integer_range_arrow(lower: int | None, upper: int | None) -> tuple[Any, str
     if lower is None or upper is None:
         return (
             pa.string(),
-            f"unbounded integer range [{lower if lower is not None else '-inf'}, "
-            f"{upper if upper is not None else '+inf'}]; "
-            "Arrow has no arbitrary-precision integer, using string",
+            "unbounded integer range; Arrow has no arbitrary-precision integer, using string",
         )
     for bits in (8, 16, 32, 64):
         if lower >= 0 and upper < 2**bits:
@@ -456,7 +463,7 @@ def _integer_range_arrow(lower: int | None, upper: int | None) -> tuple[Any, str
             return getattr(pa, f"int{bits}")(), None
     return (
         pa.string(),
-        f"integer range [{lower}, {upper}] exceeds the 64-bit Arrow integer range; using string",
+        "integer range exceeds the 64-bit Arrow integer range; using string",
     )
 
 

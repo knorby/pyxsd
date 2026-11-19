@@ -663,7 +663,7 @@ def test_unbounded_and_wide_integer_contracts_fall_back_to_string():
         (integer_body(maximum=0), "unbounded integer range"),
         (integer_body(0, 2**64), "exceeds the 64-bit Arrow integer range"),
         (integer_body(-(2**65), 2**65), "exceeds the 64-bit Arrow integer range"),
-        (integer_body(total_digits=19), "[-9999999999999999999, 9999999999999999999]"),
+        (integer_body(total_digits=19), "exceeds the 64-bit Arrow integer range"),
         (integer_body(-(2**63) - 1, 0), "exceeds the 64-bit Arrow integer range"),
     ]:
         schema = compile_element(body)
@@ -685,6 +685,31 @@ def test_unbounded_and_wide_integer_contracts_fall_back_to_string():
         "unbounded integer range"
         in projection.schema.field("value").metadata[b"pyxsd:arrow_fallback"].decode()
     )
+
+
+@pytest.mark.parametrize("digits", [4301, 5000])
+def test_huge_total_digits_fall_back_without_formatting_the_limit(digits):
+    body = integer_body(total_digits=digits)
+    schema = compile_element(body)
+    projection = RelaxNGRecordProjection(schema, element="doc")
+    field = projection.schema.field("value")
+    assert field.type == pa.string()
+    assert (
+        "exceeds the 64-bit Arrow integer range" in field.metadata[b"pyxsd:arrow_fallback"].decode()
+    )
+    assert projection.table(parse(schema, "<doc>1</doc>")).to_pylist() == [{"value": "1"}]
+
+    list_schema = compile_element(f"<list>{body}</list>")
+    list_projection = RelaxNGRecordProjection(list_schema, element="doc")
+    list_field = list_projection.schema.field("value")
+    assert list_field.type == pa.list_(pa.field("item", pa.string(), nullable=False))
+    assert (
+        "exceeds the 64-bit Arrow integer range"
+        in list_field.metadata[b"pyxsd:arrow_fallback"].decode()
+    )
+    assert list_projection.table(parse(list_schema, "<doc>1</doc>")).to_pylist() == [
+        {"value": ["1"]}
+    ]
 
 
 def test_unbounded_integer_values_project_without_overflow(tmp_path):
