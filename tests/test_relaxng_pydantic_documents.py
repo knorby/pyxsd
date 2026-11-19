@@ -134,6 +134,19 @@ def test_capture_on_and_off_agree_and_candidate_ids_survive_round_trip():
     assert plain_model.model_dump() == captured_model.model_dump()
     assert str(plain_model.root) == "12"
 
+    list_schema = compile_element(
+        '<list><choice><data type="integer"/><data type="string"/></choice></list>'
+    )
+    list_set = registry(list_schema)
+    list_document = parse(list_schema, "<doc>12</doc>")
+    list_model = list_set.from_document(list_document)
+    document_value = list_document.root.scalar_value()
+    assert isinstance(list_model.root, AlternativeValue)
+    assert tuple(item.candidate_id for item in list_model.root.candidates) == tuple(
+        item.candidate_id for item in document_value.candidates
+    )
+    assert list_set.to_document(list_model).to_string() == "<doc>12</doc>"
+
 
 def test_model_snapshot_is_independent_of_source_mutation():
     schema = compile_element(
