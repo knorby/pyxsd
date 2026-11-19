@@ -59,6 +59,15 @@ class CompileOptions(WireModel):
 class SchemaRef(WireModel):
     source: Annotated[FileRef, Field(description="Entry schema file this reference resolves.")]
     options: CompileOptions = Field(default_factory=CompileOptions)
+    format: Annotated[
+        Literal["xsd", "relax-ng"],
+        Field(
+            description=(
+                "Schema language of the entry file; filenames never select it. "
+                "Omitted requests retain the XSD default."
+            )
+        ),
+    ] = "xsd"
 
 
 class ArtifactRef(WireModel):
