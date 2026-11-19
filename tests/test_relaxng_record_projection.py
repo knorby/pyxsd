@@ -803,6 +803,9 @@ def test_decimal_arrow_types_use_both_facets_and_fall_back_when_unbounded():
     for total, fraction, expected in [
         (30, 0, pa.decimal128(30, 0)),
         (38, 0, pa.decimal128(38, 0)),
+        (38, 20, pa.decimal128(38, 20)),
+        (40, 2, pa.decimal256(40, 2)),
+        (76, 0, pa.decimal256(76, 0)),
         (12, 4, pa.decimal128(12, 4)),
     ]:
         schema = compile_element(decimal_body(total, fraction))
@@ -820,8 +823,7 @@ def test_decimal_arrow_types_use_both_facets_and_fall_back_when_unbounded():
         (None, None, "unbounded decimal"),
         (None, 0, "unbounded decimal"),
         (30, None, "unbounded decimal"),
-        (39, 0, "precision"),
-        (38, 20, "scale"),
+        (77, 0, "precision"),
     ]:
         schema = compile_element(decimal_body(total, fraction))
         plan = compile_relaxng_projection(
@@ -843,6 +845,17 @@ def test_decimal_arrow_types_use_both_facets_and_fall_back_when_unbounded():
         "unbounded decimal"
         in unbounded.schema.field("value").metadata[b"pyxsd:arrow_fallback"].decode()
     )
+
+
+def test_xsd_list_valued_atomics_use_arrow_string_lists():
+    schema = compile_element('<data type="NMTOKENS"/>')
+    plan = compile_relaxng_projection(
+        schema, element="doc", path=(), columns={"value": FieldSource()}
+    )
+    assert plan.columns[0].arrow_shape == pa.list_(pa.field("item", pa.string(), nullable=False))
+    document = parse(schema, "<doc>a b</doc>")
+    projection = RelaxNGRecordProjection(schema, element="doc", columns={"value": FieldSource()})
+    assert projection.table(document).to_pylist() == [{"value": ["a", "b"]}]
 
 
 def test_decimal_list_and_default_layouts_preserve_facet_precision():
@@ -867,13 +880,13 @@ def test_decimal_list_and_default_layouts_preserve_facet_precision():
     )
 
 
-def test_unbounded_datatype_level_list_falls_back_to_string():
+def test_xsd_list_valued_atomics_use_arrow_string_lists_even_when_repeating():
     idrefs = compile_element('<data type="IDREFS"/>')
     plan = compile_relaxng_projection(
         idrefs, element="doc", path=(), columns={"value": FieldSource()}
     )
-    assert plan.columns[0].arrow_shape == pa.string()
-    assert "datatype-level list" in plan.columns[0].arrow_fallback
+    assert plan.columns[0].arrow_shape == pa.list_(pa.field("item", pa.string(), nullable=False))
+    assert plan.columns[0].arrow_fallback is None
 
 
 class UnsupportedBackingFactory(DatatypeFactory):

@@ -814,12 +814,14 @@ def test_value_context_collection_and_conflict_rejection():
             DatatypeContext("urn:a", {}),
             (DatatypeContext("urn:b", {}),),
             path=("doc",),
+            allow_shadow=False,
         )
     with pytest.raises(ValueError, match="conflicting namespace bindings"):
         _merge_contexts(
             DatatypeContext(None, {"p": "urn:a"}),
             (DatatypeContext(None, {"p": "urn:b"}),),
             path=("doc",),
+            allow_shadow=False,
         )
     assert _merge_contexts(
         DatatypeContext("urn:a", {"p": "urn:x"}),
@@ -828,11 +830,19 @@ def test_value_context_collection_and_conflict_rejection():
             DatatypeContext("urn:a", {"p": "urn:x"}),
         ),
         path=("doc",),
+        allow_shadow=False,
     ) == DatatypeContext("urn:a", {"p": "urn:x"})
     assert _merge_contexts(
         DatatypeContext(None, {}),
         (DatatypeContext("urn:b", {}),),
         path=("doc",),
+        allow_shadow=True,
+    ) == DatatypeContext("urn:b", {})
+    assert _merge_contexts(
+        DatatypeContext("urn:a", {}),
+        (DatatypeContext("urn:b", {}),),
+        path=("doc", "b"),
+        allow_shadow=True,
     ) == DatatypeContext("urn:b", {})
     assert context_from_mapping(DatatypeContext("urn:a", {"p": "urn:x"})) == DatatypeContext(
         "urn:a", {"p": "urn:x"}

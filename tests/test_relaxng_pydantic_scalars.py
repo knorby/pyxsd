@@ -1859,6 +1859,18 @@ def test_list_include_exclude_restores_original_wrapper_indices():
     assert len(json.loads(model.model_dump_json(include={"child"}))["child"]) == 2
     assert model.model_dump_json(exclude={"child"}) == "{}"
 
+    three = repeated.model_validate({"child": ["11", "22", "33"]})
+    assert three.model_dump(include={"child": {-1}})["child"][0] is three.child[2].root
+    assert [
+        item is three.child[index].root
+        for index, item in enumerate(three.model_dump(exclude={"child": {-3}})["child"], start=1)
+    ] == [True, True]
+    nested_negative = three.model_dump(include={"child": {-1: True}})["child"]
+    assert nested_negative[0] is three.child[2].root
+    assert three.model_dump(include={"child": {"bad": True, 99: True}})["child"] == []
+    assert _included_indices({"bad": True, 99: True}, 3) == set()
+    assert _excluded_indices({99: True}, 3) == set()
+
     _, nested = model_for(
         '<zeroOrMore><element name="child">'
         '<attribute name="a"><choice><data type="integer"/><data type="string"/></choice>'

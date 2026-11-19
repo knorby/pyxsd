@@ -490,14 +490,18 @@ def _wrapper(
     candidates: tuple[Candidate, ...],
     lexical: str,
     context: DatatypeContext,
+    *,
+    document_evidence: bool = False,
 ) -> AlternativeValue:
-    """Build an immutable standalone alternative snapshot."""
+    """Build an immutable alternative snapshot."""
     return AlternativeValue(
         lexical,
         candidates,
         context,
         codec.grammar_fingerprint,
         STANDALONE_REVISION,
+        (),
+        document_evidence,
     )
 
 
@@ -507,6 +511,8 @@ def _value_from_candidates(
     candidates: tuple[Candidate, ...],
     lexical: str,
     context: DatatypeContext,
+    *,
+    document_evidence: bool = False,
 ) -> Any:
     """Return the stable value form for one recomputed candidate set."""
     if len(contracts) == 1:
@@ -519,7 +525,13 @@ def _value_from_candidates(
             pattern = codec.pattern_for(contract)
             if _round_trips(codec, contract, pattern, candidate.decoded, lexical, context):
                 return candidate.decoded
-    return _wrapper(codec, candidates, lexical, context)
+    return _wrapper(
+        codec,
+        candidates,
+        lexical,
+        context,
+        document_evidence=document_evidence,
+    )
 
 
 def _check_atomic_input(contract: ScalarContract, value: object) -> None:
@@ -890,15 +902,35 @@ def _snapshot_value(
         raise ValueError(
             "scalar snapshot grammar fingerprint does not match this compiled RELAX NG grammar"
         )
-    context = _scoped_context(snapshot.context, supplied, kind="snapshot")
+    context = (
+        snapshot.context
+        if snapshot.document_evidence
+        else _scoped_context(snapshot.context, supplied, kind="snapshot")
+    )
     candidates = _surviving_candidates(codec, contracts, snapshot.lexical, context)
     expected = tuple(candidate.candidate_id for candidate in candidates)
     claimed = tuple(candidate.candidate_id for candidate in snapshot.candidates)
-    if expected != claimed:
-        raise ValueError(
-            "scalar snapshot candidate set does not match the complete recomputed "
-            f"candidates {expected!r}"
-        )
+    if not snapshot.document_evidence:
+        if expected != claimed:
+            raise ValueError(
+                "scalar snapshot candidate set does not match the complete recomputed "
+                f"candidates {expected!r}"
+            )
+    else:
+        # A document snapshot carries the complete set from its own accepting
+        # derivation.  Local contracts can still admit a branch that the rest
+        # of that document excludes, so the snapshot must retain its current
+        # subset; a standalone snapshot above still requires every local
+        # candidate.
+        expected_by_id = {candidate.candidate_id: candidate for candidate in candidates}
+        for candidate in snapshot.candidates:
+            recomputed = expected_by_id.get(candidate.candidate_id)
+            if recomputed is None or recomputed.contract != candidate.contract:
+                raise ValueError(
+                    f"scalar snapshot candidate {candidate.candidate_id!r} is not "
+                    "accepted by the local schema contracts"
+                )
+        candidates = tuple(expected_by_id[candidate_id] for candidate_id in claimed)
     expected_contracts = {candidate.candidate_id: candidate.contract for candidate in candidates}
     for candidate in snapshot.candidates:
         if expected_contracts.get(candidate.candidate_id) != candidate.contract:
@@ -906,7 +938,14 @@ def _snapshot_value(
                 f"scalar snapshot candidate {candidate.candidate_id!r} does not "
                 "carry its recomputed contract"
             )
-    return _value_from_candidates(codec, contracts, candidates, snapshot.lexical, context)
+    return _value_from_candidates(
+        codec,
+        contracts,
+        candidates,
+        snapshot.lexical,
+        context,
+        document_evidence=snapshot.document_evidence,
+    )
 
 
 def _interpretation_value(
@@ -1538,19 +1577,34 @@ def _exclude_field_spec(exclude: Any, key: str, name: str) -> Any:
     return None
 
 
+def _normalized_index(index: int, length: int) -> int | None:
+    if index < 0:
+        index += length
+    return index if 0 <= index < length else None
+
+
 def _included_indices(spec: Any, length: int) -> set[int]:
     if spec is None or spec is True:
         return set(range(length))
     if isinstance(spec, int):
-        return {spec} if 0 <= spec < length else set()
+        index = _normalized_index(spec, length)
+        return {index} if index is not None else set()
     if isinstance(spec, Mapping):
-        return {
-            index
-            for index, value in spec.items()
-            if isinstance(index, int) and 0 <= index < length and value is not False
-        }
+        result: set[int] = set()
+        for index, value in spec.items():
+            if not isinstance(index, int) or value is False:
+                continue
+            normalized = _normalized_index(index, length)
+            if normalized is not None:
+                result.add(normalized)
+        return result
     if isinstance(spec, (set, frozenset, list, tuple)):
-        return {index for index in spec if isinstance(index, int) and 0 <= index < length}
+        return {
+            normalized
+            for index in spec
+            if isinstance(index, int)
+            and (normalized := _normalized_index(index, length)) is not None
+        }
     return set(range(length))
 
 
@@ -1558,21 +1612,32 @@ def _excluded_indices(spec: Any, length: int) -> set[int]:
     if spec is None:
         return set()
     if isinstance(spec, int):
-        return {spec} if 0 <= spec < length else set()
+        index = _normalized_index(spec, length)
+        return {index} if index is not None else set()
     if isinstance(spec, Mapping):
-        return {
-            index
-            for index, value in spec.items()
-            if isinstance(index, int) and 0 <= index < length and value is True
-        }
+        result: set[int] = set()
+        for index, value in spec.items():
+            if not isinstance(index, int) or value is not True:
+                continue
+            normalized = _normalized_index(index, length)
+            if normalized is not None:
+                result.add(normalized)
+        return result
     if isinstance(spec, (set, frozenset, list, tuple)):
-        return {index for index in spec if isinstance(index, int) and 0 <= index < length}
+        return {
+            normalized
+            for index in spec
+            if isinstance(index, int)
+            and (normalized := _normalized_index(index, length)) is not None
+        }
     return set()
 
 
-def _list_item_spec(spec: Any, index: int) -> Any:
+def _list_item_spec(spec: Any, index: int, length: int) -> Any:
     if isinstance(spec, Mapping):
-        return spec.get(index)
+        if index in spec:
+            return spec[index]
+        return spec.get(index - length)
     return None
 
 
@@ -1588,8 +1653,8 @@ def _restore_scalar_list(
     selected -= _excluded_indices(exclude, length)
     restored: list[Any] = []
     for index, dumped in zip(sorted(selected), data, strict=False):
-        item_include = _list_item_spec(include, index)
-        item_exclude = _list_item_spec(exclude, index)
+        item_include = _list_item_spec(include, index, length)
+        item_exclude = _list_item_spec(exclude, index, length)
         restored.append(
             _restore_scalar_wrappers(
                 values[index],

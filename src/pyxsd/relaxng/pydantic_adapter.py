@@ -811,22 +811,33 @@ def _merge_contexts(
     contexts: tuple[DatatypeContext, ...],
     *,
     path: tuple[str, ...],
+    allow_shadow: bool,
 ) -> DatatypeContext:
     """Merge scoped value contexts into the element's inherited frame."""
     namespaces = dict(inherited.namespaces)
+    inherited_prefixes = set(namespaces)
     base_uri = inherited.base_uri
     for context in contexts:
         if context.base_uri is not None:
             if base_uri is None:
                 base_uri = context.base_uri
             elif base_uri != context.base_uri:
-                raise ValueError(
-                    f"RELAX NG route path {'/'.join(path) or '/'}: scalar contexts "
-                    f"declare conflicting base URIs {base_uri!r} and {context.base_uri!r}"
-                )
+                if allow_shadow:
+                    # A child's own xml:base shadows the inherited document
+                    # base; sibling contexts that disagree still fail below.
+                    base_uri = context.base_uri
+                else:
+                    raise ValueError(
+                        f"RELAX NG route path {'/'.join(path) or '/'}: scalar contexts "
+                        f"declare conflicting base URIs {base_uri!r} and {context.base_uri!r}"
+                    )
         for prefix, uri in context.namespaces.items():
             existing = namespaces.get(prefix)
-            if existing is not None and existing != uri:
+            if (
+                existing is not None
+                and existing != uri
+                and not (allow_shadow and prefix in inherited_prefixes)
+            ):
                 raise ValueError(
                     f"RELAX NG route path {'/'.join(path) or '/'}: scalar contexts "
                     f"declare conflicting namespace bindings for {prefix!r}"
@@ -950,7 +961,14 @@ class _Renderer:
 
     def render(self) -> tuple[ET.Element, dict[int, DatatypeContext]]:
         name = self.root_name or self.route.expanded_name or _witness_name(self.route.name_class)
-        root = self._element(name, self.route, self.states, self.context, (name,))
+        root = self._element(
+            name,
+            self.route,
+            self.states,
+            self.context,
+            (name,),
+            is_root=True,
+        )
         return root, self.contexts
 
     def _patterns(self, route: RouteContract) -> dict[str, Pattern]:
@@ -985,6 +1003,8 @@ class _Renderer:
         states: dict[str, _FieldState],
         inherited: DatatypeContext,
         path: tuple[str, ...],
+        *,
+        is_root: bool,
     ) -> ET.Element:
         scalar_states: list[tuple[str, _FieldState]] = []
         if "$" in states:
@@ -1003,7 +1023,12 @@ class _Renderer:
                     raise ValueError(
                         f"RELAX NG route path {'/'.join((*path, alias))}: {error}"
                     ) from error
-        context = _merge_contexts(inherited, tuple(value_contexts), path=path)
+        context = _merge_contexts(
+            inherited,
+            tuple(value_contexts),
+            path=path,
+            allow_shadow=not is_root,
+        )
         element = ET.Element(name)
         self._emit(
             route.content.model,
@@ -1236,7 +1261,14 @@ class _Renderer:
             recorded=self.recorded,
             decision_prefix=(*slot_path, -2, ordinal),
         )
-        element = renderer._element(name, child_route, child_states, child_inherited, path)
+        element = renderer._element(
+            name,
+            child_route,
+            child_states,
+            child_inherited,
+            path,
+            is_root=False,
+        )
         self.contexts.update(renderer.contexts)
         return element
 
@@ -1528,11 +1560,15 @@ def route_to_lexical(
     return _imported_tree(root, contexts)
 
 
-def _route_after_validator(route: RouteContract) -> Any:
+def _route_after_validator(route: RouteContract, *, is_start: bool) -> Any:
     """Build the model-level native route validator for one retained route."""
 
     def validate_route(value: BaseModel, info: ValidationInfo) -> BaseModel:
-        validate_route_data(route, value, context=getattr(info, "context", None))
+        validate_route_data(
+            route,
+            value,
+            context=getattr(info, "context", None) if is_start else None,
+        )
         return value
 
     return validate_route
@@ -1622,11 +1658,9 @@ def _typed_snapshot_at(
     fingerprint = cast(str, snapshot._fingerprint)
     revision = cast(int, snapshot._revision_id)
     if attribute is None:
-        occurrence = snapshot._text_sites.get(node)
+        occurrence = snapshot._text_sites[node]
     else:
-        occurrence = snapshot._attribute_sites.get((node, attribute))
-    if occurrence is None:  # pragma: no cover - every configured scalar site has an occurrence
-        return None
+        occurrence = snapshot._attribute_sites[(node, attribute)]
     witnesses = evidence.scalar_witnesses_at(occurrence)
     return _alternative_value_at_site(
         witnesses,
@@ -1993,6 +2027,7 @@ class RelaxNGModelSet:
         model_class = self._model(selected)
         build_model = model_class.model_validate(
             self._validation_payload(selected, model),
+            context=context,
         )
         tree = _route_to_lexical_with_element(
             selected,
@@ -2048,12 +2083,8 @@ class RelaxNGModelSet:
         for name, field in route.children.items():
             if name not in result:
                 continue
-            child_route_id = field.child_route_id
-            if child_route_id is None:  # pragma: no cover - planner supplies fixed child routes
-                continue
-            child_route = self._plan.routes.get(child_route_id)
-            if child_route is None:  # pragma: no cover - the plan owns every referenced route
-                continue
+            child_route_id = cast(str, field.child_route_id)
+            child_route = self._plan.routes[child_route_id]
             value = result[name]
             if field.cardinality.repeatable and isinstance(value, (list, tuple)):
                 result[name] = [
@@ -2131,6 +2162,8 @@ class RelaxNGModelSet:
             context,
             self._codec.grammar_fingerprint,
             STANDALONE_REVISION,
+            (),
+            True,
         )
 
     @staticmethod
@@ -2147,9 +2180,7 @@ class RelaxNGModelSet:
     def _may_transport_qname_list(self, contracts: tuple[ScalarContract, ...]) -> bool:
         if len(contracts) != 1 or contracts[0].kind != "list":
             return False
-        pattern = self._codec.pattern_for(contracts[0])
-        if not isinstance(pattern, PatternList):  # pragma: no cover - list contract shape
-            return False
+        pattern = cast(PatternList, self._codec.pattern_for(contracts[0]))
         plan = _list_token_plan(pattern)
         if plan is None or not plan.patterns:
             return False
@@ -2247,7 +2278,7 @@ class RelaxNGModelSet:
         root_base: Any = RootModel
         root_validators: dict[str, Any] = {
             _ROUTE_VALIDATION_VALIDATOR: model_validator(mode="after")(
-                _route_after_validator(route)
+                _route_after_validator(route, is_start=route.route_id in self._plan.roots)
             )
         }
         model = create_model(
@@ -2368,7 +2399,7 @@ class RelaxNGModelSet:
         validators: dict[str, Any] = {
             _CHILD_PRESENCE_VALIDATOR: model_validator(mode="before")(validate_children),
             _ROUTE_VALIDATION_VALIDATOR: model_validator(mode="after")(
-                _route_after_validator(route)
+                _route_after_validator(route, is_start=route.route_id in self._plan.roots)
             ),
         }
         model = create_model(

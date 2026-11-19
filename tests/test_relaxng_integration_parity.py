@@ -988,6 +988,7 @@ def test_unsupported_routes_name_representation_or_scope_limits():
         models(generic).model_for(element="doc")
     assert_representation_limit(error.value, "generic", "cannot represent")
 
+    pytest.importorskip("pyarrow")
     recursive = compile_grammar(
         """
         <start><ref name="node"/></start>

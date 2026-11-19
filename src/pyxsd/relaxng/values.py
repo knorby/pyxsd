@@ -349,6 +349,7 @@ class AlternativeValue:
     grammar_fingerprint: str
     revision: int
     interpretations: tuple[ListInterpretation, ...] = ()
+    document_evidence: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.lexical, str):
@@ -359,6 +360,8 @@ class AlternativeValue:
             raise ValueError("the grammar fingerprint must be a nonempty string")
         if not isinstance(self.revision, int) or isinstance(self.revision, bool):
             raise ValueError("the parse revision must be an integer")
+        if not isinstance(self.document_evidence, bool):
+            raise TypeError("document_evidence must be a bool")
         candidates = tuple(self.candidates)
         for item in candidates:
             if not isinstance(item, Candidate):
@@ -433,7 +436,7 @@ class AlternativeValue:
             f"AlternativeValue(lexical={self.lexical!r}, "
             f"candidate_ids={tuple(item.candidate_id for item in self.candidates)!r}, "
             f"context={self.context!r}, grammar_fingerprint={self.grammar_fingerprint!r}, "
-            f"revision={self.revision!r})"
+            f"revision={self.revision!r}, document_evidence={self.document_evidence!r})"
         )
 
     def __str__(self) -> str:
@@ -788,6 +791,7 @@ def alternative_value_from_witnesses(
         grammar_fingerprint,
         revision,
         interpretations,
+        True,
     )
 
 

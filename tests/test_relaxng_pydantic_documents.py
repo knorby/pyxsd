@@ -39,7 +39,7 @@ from pyxsd.relaxng.pydantic_adapter import (  # noqa: E402
     route_to_lexical,
 )
 from pyxsd.relaxng.schema import RelaxNGSchema  # noqa: E402
-from pyxsd.relaxng.values import AlternativeValue  # noqa: E402
+from pyxsd.relaxng.values import AlternativeValue, Candidate  # noqa: E402
 from pyxsd.xsd_data_types import QName, qname_context  # noqa: E402
 
 NS = "http://relaxng.org/ns/structure/1.0"
@@ -76,6 +76,47 @@ def registry(schema: RelaxNGSchema) -> RelaxNGModelSet:
     result = models(schema)
     assert isinstance(result, RelaxNGModelSet)
     return result
+
+
+def test_from_document_keeps_current_candidates_for_a_correlated_branch():
+    schema = compile_element(
+        """
+        <choice>
+          <group><element name="x"><data type="integer"/></element><element name="a"><empty/></element></group>
+          <group><element name="x"><data type="string"/></element><element name="b"><empty/></element></group>
+        </choice>
+        """
+    )
+    model_set = registry(schema)
+    document = parse(schema, "<doc><x>12</x><b/></doc>")
+    model = model_set.from_document(document)
+    wrapper = model.x.root
+    assert isinstance(wrapper, AlternativeValue)
+    assert [candidate.contract.type_name for candidate in wrapper.candidates] == ["string"]
+    created = model_set.to_document(model)
+    assert created.is_valid
+    assert created.to_string() == "<doc><x>12</x><b/></doc>"
+    again = model_set.from_document(created)
+    assert [candidate.contract.type_name for candidate in again.x.root.candidates] == ["string"]
+
+
+def test_document_snapshot_rejects_a_forged_candidate():
+    schema = compile_element('<choice><data type="integer"/><data type="string"/></choice>')
+    model_set = registry(schema)
+    document = parse(schema, "<doc>12</doc>")
+    current = document.root.scalar_value()
+    contract = current.candidates[0].contract
+    forged = AlternativeValue(
+        current.lexical,
+        (Candidate("forged", contract, None, False),),
+        current.context,
+        current.grammar_fingerprint,
+        0,
+        (),
+        True,
+    )
+    with pytest.raises(ValueError, match="not accepted"):
+        model_set.model_for(element="doc").model_validate(forged)
 
 
 def test_document_model_round_trip_preserves_values_and_compiled_order():

@@ -35,7 +35,11 @@ from pyxsd.relaxng.contracts import (
     list_shape,
     scalar_contract,
 )
-from pyxsd.relaxng.datatypes import ScalarDatatype, UnsupportedDatatypeOperation
+from pyxsd.relaxng.datatypes import (
+    XSD_LIBRARY,
+    ScalarDatatype,
+    UnsupportedDatatypeOperation,
+)
 from pyxsd.relaxng.errors import AmbiguousValueError
 from pyxsd.relaxng.evidence import CandidateSelection, EvidenceGraph, EvidenceOccurrence
 from pyxsd.relaxng.patterns import List as PatternList
@@ -61,6 +65,7 @@ __all__ = [
 _MAX_DEFAULT_DEPTH = 256
 _QNAME_TYPES = frozenset({"QName", "NOTATION"})
 _TEMPORAL_TYPES = frozenset({"date", "time", "dateTime", "duration"})
+_XSD_LIST_VALUED = frozenset({"IDREFS", "ENTITIES", "NMTOKENS"})
 
 
 def _pyarrow() -> Any:
@@ -495,27 +500,26 @@ def _atomic_arrow(contract: ScalarContract, plan: ProjectionPlan) -> tuple[Any, 
         scale = getattr(constraints, "fraction_digits", None)
         if precision is None or scale is None:
             return pa.string(), "unbounded decimal precision or scale; using string"
-        if precision > 38:
-            return (
-                pa.string(),
-                f"decimal precision {precision} exceeds Arrow decimal128 precision 38; using string",
-            )
-        if scale > 18:
-            return (
-                pa.string(),
-                f"decimal scale {scale} exceeds supported Arrow scale 18; using string",
-            )
         if not 0 <= scale <= precision:
             return (
                 pa.string(),
                 f"decimal totalDigits {precision} and fractionDigits {scale} are inconsistent; "
                 "using string",
             )
-        return pa.decimal128(precision, scale), None
+        if precision <= 38:
+            return pa.decimal128(precision, scale), None
+        if precision <= 76:
+            return pa.decimal256(precision, scale), None
+        return (
+            pa.string(),
+            f"decimal precision {precision} exceeds Arrow decimal256 precision 76; using string",
+        )
     if kind == "float":
         return pa.float64(), None
     if kind in ("base64", "hex"):
         return pa.binary(), None
+    if contract.library_uri == XSD_LIBRARY and contract.type_name in _XSD_LIST_VALUED:
+        return pa.list_(pa.field("item", pa.string(), nullable=False)), None
     if kind == "list":
         return pa.string(), "datatype-level list values have no static Arrow item type"
     mapping = {
@@ -991,6 +995,12 @@ def _convert_value(
             )
         return str(value)
     type_name = contract.type_name or ""
+    if (
+        pa.types.is_list(arrow_shape)
+        and contract.library_uri == XSD_LIBRARY
+        and type_name in _XSD_LIST_VALUED
+    ):
+        return [str(token) for token in value.tokens]
     if type_name in _QNAME_TYPES:
         if not isinstance(value, QName):
             raise IntegrationError(f"{label}: {type_name} value lacks scoped QName evidence")

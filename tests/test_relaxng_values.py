@@ -1087,6 +1087,18 @@ class TestCandidateAndAlternativeConstruction:
         with pytest.raises(ValueError, match="unique"):
             wrapper((candidate("a"), candidate("a", decoded=2)))
 
+    def test_document_evidence_flag_must_be_boolean(self):
+        with pytest.raises(TypeError, match="document_evidence"):
+            AlternativeValue(
+                "12",
+                (candidate("a"),),
+                CX,
+                "grammar",
+                1,
+                (),
+                "yes",  # type: ignore[arg-type]
+            )
+
     @pytest.mark.parametrize(
         "lexical, context, grammar, revision, error",
         [
