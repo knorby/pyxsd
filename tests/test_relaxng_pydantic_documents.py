@@ -703,6 +703,17 @@ def test_to_document_revalidates_mutated_and_constructed_models():
         model_set.to_document(malformed)
 
 
+def test_nested_malformed_scalar_tag_reports_the_child_path():
+    schema = compile_element('<element name="item"><data type="integer"/></element>')
+    model_set = registry(schema)
+    Root = model_set.model_for(element="doc")
+    Child = model_set.model_for(element="doc", path=("item",))
+    child = Child.model_construct(root={"#value": {}})
+    parent = Root.model_construct(item=child)
+    with pytest.raises(ValueError, match="route path doc/item"):
+        model_set.to_document(parent)
+
+
 def test_to_document_does_not_mutate_model_or_caller_context():
     schema = compile_element(
         '<attribute name="n"><data type="integer"/></attribute><element name="item"><text/></element>'

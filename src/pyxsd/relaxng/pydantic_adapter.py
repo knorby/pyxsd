@@ -837,6 +837,7 @@ def _shadowed_child_context(
     inherited: DatatypeContext,
     route: RouteContract,
     states: Mapping[str, _FieldState],
+    path: tuple[str, ...],
 ) -> DatatypeContext:
     """Apply a child element's own namespace/base declarations over its parent.
 
@@ -854,7 +855,11 @@ def _shadowed_child_context(
         if state is None:
             continue
         for value in state.values:
-            for context in _value_contexts(value):
+            try:
+                contexts = _value_contexts(value)
+            except ValueError as error:
+                raise ValueError(f"RELAX NG route path {'/'.join(path)}: {error}") from error
+            for context in contexts:
                 own.update(context.namespaces)
                 if own_base is None and context.base_uri is not None:
                     own_base = context.base_uri
@@ -1218,7 +1223,7 @@ class _Renderer:
             normalized = False
         _check_route_supported(child_route)
         child_states = _route_states(child_route, child_data)
-        child_inherited = _shadowed_child_context(inherited, child_route, child_states)
+        child_inherited = _shadowed_child_context(inherited, child_route, child_states, path)
         renderer = _Renderer(
             child_route,
             child_states,
