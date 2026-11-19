@@ -48,7 +48,7 @@ from pyxsd.relaxng.projection import (
 )
 from pyxsd.relaxng.schema import RelaxNGSchema
 from pyxsd.relaxng.values import AlternativeValue, _list_token_plan
-from pyxsd.xsd_data_types import QName
+from pyxsd.xsd_data_types import Boolean, Integer, QName
 
 __all__ = [
     "RelaxNGColumnBinding",
@@ -400,34 +400,54 @@ def _field_metadata(
     return metadata
 
 
-def _integer_arrow(datatype: ScalarDatatype) -> tuple[Any, str | None]:
-    """Cover the declared integer value space with one Arrow integer or string.
-
-    ``xs:integer`` itself has no finite range, so a fixed-width Arrow integer
-    cannot represent every valid value.  The compiled facets (and any bounds
-    the XSD backing class fixes) are intersected, and the narrowest signed or
-    unsigned integer that still covers the result is selected.
-    """
-    pa = _pyarrow()
-    lower = getattr(datatype.xsd_type, "_min", None)
-    upper = getattr(datatype.xsd_type, "_max", None)
+def _integer_bounds(datatype: ScalarDatatype) -> tuple[int | None, int | None]:
+    """Intersect backing-class, intrinsic, digit, and facet integer bounds."""
+    intrinsic_lower, intrinsic_upper = {
+        "positiveInteger": (1, None),
+        "nonNegativeInteger": (0, None),
+        "negativeInteger": (None, -1),
+        "nonPositiveInteger": (None, 0),
+    }.get(datatype.xsd_type.name, (None, None))
     constraints = datatype.constraints
-    minimum = constraints.min_inclusive
-    if constraints.min_exclusive is not None:
-        exclusive = int(constraints.min_exclusive) + 1
-        minimum = exclusive if minimum is None else max(int(minimum), exclusive)
-    if minimum is not None:
-        lower = int(minimum) if lower is None else max(lower, int(minimum))
-    maximum = constraints.max_inclusive
-    if constraints.max_exclusive is not None:
-        exclusive = int(constraints.max_exclusive) - 1
-        maximum = exclusive if maximum is None else min(int(maximum), exclusive)
-    if maximum is not None:
-        upper = int(maximum) if upper is None else min(upper, int(maximum))
+    digits = constraints.total_digits
+    digit_limit = 10**digits - 1 if digits is not None else None
+    lower_bounds = [
+        int(value)
+        for value in (
+            getattr(datatype.xsd_type, "_min", None),
+            intrinsic_lower,
+            -digit_limit if digit_limit is not None else None,
+            constraints.min_inclusive,
+            int(constraints.min_exclusive) + 1 if constraints.min_exclusive is not None else None,
+        )
+        if value is not None
+    ]
+    upper_bounds = [
+        int(value)
+        for value in (
+            getattr(datatype.xsd_type, "_max", None),
+            intrinsic_upper,
+            digit_limit,
+            constraints.max_inclusive,
+            int(constraints.max_exclusive) - 1 if constraints.max_exclusive is not None else None,
+        )
+        if value is not None
+    ]
+    return (
+        max(lower_bounds) if lower_bounds else None,
+        min(upper_bounds) if upper_bounds else None,
+    )
+
+
+def _integer_range_arrow(lower: int | None, upper: int | None) -> tuple[Any, str | None]:
+    """Choose the narrowest lossless Arrow integer for an effective range."""
+    pa = _pyarrow()
     if lower is None or upper is None:
         return (
             pa.string(),
-            "unbounded integer range; Arrow has no arbitrary-precision integer, using string",
+            f"unbounded integer range [{lower if lower is not None else '-inf'}, "
+            f"{upper if upper is not None else '+inf'}]; "
+            "Arrow has no arbitrary-precision integer, using string",
         )
     for bits in (8, 16, 32, 64):
         if lower >= 0 and upper < 2**bits:
@@ -438,6 +458,11 @@ def _integer_arrow(datatype: ScalarDatatype) -> tuple[Any, str | None]:
         pa.string(),
         f"integer range [{lower}, {upper}] exceeds the 64-bit Arrow integer range; using string",
     )
+
+
+def _integer_arrow(datatype: ScalarDatatype) -> tuple[Any, str | None]:
+    """Cover the declared integer value space with one Arrow integer or string."""
+    return _integer_range_arrow(*_integer_bounds(datatype))
 
 
 def _atomic_arrow(contract: ScalarContract, plan: ProjectionPlan) -> tuple[Any, str | None]:
@@ -508,15 +533,32 @@ def _contract_arrow(contract: ScalarContract, plan: ProjectionPlan) -> tuple[Any
     plan_tokens = cast(Any, _list_token_plan(cast(PatternList, pattern)))
     item_types: list[Any] = []
     fallbacks: list[str] = []
+    integer_bounds: list[tuple[int | None, int | None]] = []
     for token in plan_tokens.patterns:
         arrow_shape, fallback = _atomic_arrow(scalar_contract(token), plan)
         item_types.append(arrow_shape)
         if fallback is not None:
             fallbacks.append(fallback)
+        datatype = getattr(token, "datatype", None)
+        if (
+            isinstance(datatype, ScalarDatatype)
+            and isinstance(datatype.xsd_type, type)
+            and issubclass(datatype.xsd_type, Integer)
+            and not issubclass(datatype.xsd_type, Boolean)
+        ):
+            integer_bounds.append(_integer_bounds(datatype))
     if not item_types:
         raise IntegrationError("whole-list contract has no scalar token contracts")
+    if integer_bounds and len(integer_bounds) == len(item_types):
+        lowers = [lower for lower, _ in integer_bounds if lower is not None]
+        uppers = [upper for _, upper in integer_bounds if upper is not None]
+        item_type, disclosure = _integer_range_arrow(
+            min(lowers) if len(lowers) == len(integer_bounds) else None,
+            max(uppers) if len(uppers) == len(integer_bounds) else None,
+        )
+        return pa.list_(pa.field("item", item_type, nullable=False)), disclosure
     item_type = item_types[0]
-    if any(candidate != item_type for candidate in item_types[1:]):
+    if integer_bounds or any(candidate != item_type for candidate in item_types[1:]):
         raise IntegrationError(
             "whole-list contract has heterogeneous token types with no static Arrow item type"
         )

@@ -33,6 +33,7 @@ from pyxsd.relaxng.records import (  # noqa: E402
     RelaxNGRecordProjection,
     _content_cannot_match,
     _content_may_be_empty,
+    _integer_bounds,
     _start_route,
     compile_relaxng_projection,
 )
@@ -553,6 +554,8 @@ def integer_body(
     *,
     min_exclusive: int | None = None,
     max_exclusive: int | None = None,
+    type_name: str = "integer",
+    total_digits: int | None = None,
 ) -> str:
     params = ""
     if minimum is not None:
@@ -563,7 +566,9 @@ def integer_body(
         params += f'<param name="minExclusive">{min_exclusive}</param>'
     if max_exclusive is not None:
         params += f'<param name="maxExclusive">{max_exclusive}</param>'
-    return f'<data type="integer">{params}</data>'
+    if total_digits is not None:
+        params += f'<param name="totalDigits">{total_digits}</param>'
+    return f'<data type="{type_name}">{params}</data>'
 
 
 @pytest.mark.parametrize(
@@ -592,6 +597,28 @@ def integer_body(
             pa.int16(),
         ),
         ('<data type="long"><param name="minInclusive">0</param></data>', pa.uint64()),
+        (integer_body(maximum=255, type_name="nonNegativeInteger"), pa.uint8()),
+        (integer_body(maximum=255, type_name="positiveInteger"), pa.uint8()),
+        (integer_body(minimum=-128, type_name="negativeInteger"), pa.int8()),
+        (integer_body(minimum=-128, type_name="nonPositiveInteger"), pa.int8()),
+        (integer_body(max_exclusive=256, type_name="positiveInteger"), pa.uint8()),
+        (integer_body(min_exclusive=-129, type_name="negativeInteger"), pa.int8()),
+        (integer_body(total_digits=2), pa.int8()),
+        (integer_body(total_digits=18), pa.int64()),
+        (integer_body(total_digits=19, type_name="nonNegativeInteger"), pa.uint64()),
+        (integer_body(total_digits=2, type_name="positiveInteger"), pa.uint8()),
+        (integer_body(total_digits=2, type_name="negativeInteger"), pa.int8()),
+        (integer_body(total_digits=2, type_name="byte"), pa.int8()),
+        (integer_body(total_digits=2, type_name="short"), pa.int8()),
+        (integer_body(total_digits=2, type_name="unsignedLong"), pa.uint8()),
+        (integer_body(0, 9, total_digits=2), pa.uint8()),
+        (integer_body(min_exclusive=0, max_exclusive=100, total_digits=2), pa.uint8()),
+        (integer_body(-129, 127), pa.int16()),
+        (integer_body(-128, 128), pa.int16()),
+        (integer_body(0, 65535), pa.uint16()),
+        (integer_body(0, 65536), pa.uint32()),
+        (integer_body(0, 2**32 - 1), pa.uint32()),
+        (integer_body(0, 2**32), pa.uint64()),
     ],
 )
 def test_bounded_integer_arrow_shapes_cover_the_declared_range(body, expected):
@@ -601,6 +628,32 @@ def test_bounded_integer_arrow_shapes_cover_the_declared_range(body, expected):
     )
     assert plan.columns[0].arrow_shape == expected
     assert plan.columns[0].arrow_fallback is None
+    projection = RelaxNGRecordProjection(schema, element="doc", columns={"value": FieldSource()})
+    field = projection.schema.field("value")
+    assert field.type == expected
+    assert field.metadata[b"pyxsd:arrow"] == str(expected).encode()
+    assert b"pyxsd:arrow_fallback" not in field.metadata
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (integer_body(maximum=255, type_name="positiveInteger"), (1, 255)),
+        (integer_body(maximum=255, type_name="nonNegativeInteger"), (0, 255)),
+        (integer_body(minimum=-128, type_name="negativeInteger"), (-128, -1)),
+        (integer_body(minimum=-128, type_name="nonPositiveInteger"), (-128, 0)),
+        (integer_body(total_digits=2), (-99, 99)),
+        (integer_body(-10, 10, total_digits=2), (-10, 10)),
+        (integer_body(-1000, 1000, total_digits=2), (-99, 99)),
+        (integer_body(total_digits=3, type_name="byte"), (-128, 127)),
+        (integer_body(min_exclusive=2**60, max_exclusive=2**60 + 2), (2**60 + 1, 2**60 + 1)),
+    ],
+)
+def test_effective_integer_bounds_intersect_every_declared_limit(body, expected):
+    schema = compile_element(body)
+    contract = schema.projection.routes[schema.projection.roots[0]].content.scalar_contracts[0]
+    datatype = schema.projection.encoding_patterns[contract.pattern_identity].datatype
+    assert _integer_bounds(datatype) == expected
 
 
 def test_unbounded_and_wide_integer_contracts_fall_back_to_string():
@@ -610,6 +663,8 @@ def test_unbounded_and_wide_integer_contracts_fall_back_to_string():
         (integer_body(maximum=0), "unbounded integer range"),
         (integer_body(0, 2**64), "exceeds the 64-bit Arrow integer range"),
         (integer_body(-(2**65), 2**65), "exceeds the 64-bit Arrow integer range"),
+        (integer_body(total_digits=19), "[-9999999999999999999, 9999999999999999999]"),
+        (integer_body(-(2**63) - 1, 0), "exceeds the 64-bit Arrow integer range"),
     ]:
         schema = compile_element(body)
         plan = compile_relaxng_projection(
@@ -618,6 +673,10 @@ def test_unbounded_and_wide_integer_contracts_fall_back_to_string():
         assert plan.columns[0].arrow_shape == pa.string()
         assert plan.columns[0].arrow_fallback is not None
         assert reason in plan.columns[0].arrow_fallback
+        projection = RelaxNGRecordProjection(schema, element="doc")
+        field = projection.schema.field("value")
+        assert field.type == pa.string()
+        assert reason in field.metadata[b"pyxsd:arrow_fallback"].decode()
     projection = RelaxNGRecordProjection(
         compile_element('<data type="integer"/>'), element="doc", columns={"value": FieldSource()}
     )

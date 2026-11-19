@@ -286,6 +286,90 @@ def test_fixed_homogeneous_and_empty_lists_keep_their_declared_shapes():
     assert homogeneous.table(typed(list_schema, "<doc/>")).to_pylist() == [{"value": []}]
 
 
+@pytest.mark.parametrize(
+    ("left", "right", "values", "item_type", "fallback"),
+    [
+        ("int", "long", (-2147483648, 9223372036854775807), pa.int64(), None),
+        ("byte", "short", (-128, 32767), pa.int16(), None),
+        ("unsignedByte", "unsignedShort", (255, 65535), pa.uint16(), None),
+        ("byte", "unsignedByte", (-128, 255), pa.int16(), None),
+        ("int", "unsignedInt", (-2147483648, 4294967295), pa.int64(), None),
+        ("int", "integer", (1, 2**80), pa.string(), "unbounded integer range"),
+        ("integer", "int", (-(2**80), 1), pa.string(), "unbounded integer range"),
+        (
+            "long",
+            "unsignedLong",
+            (-(2**63), 2**64 - 1),
+            pa.string(),
+            "integer range [-9223372036854775808, 18446744073709551615] exceeds",
+        ),
+        ("int", "positiveInteger", (-1, 2**80), pa.string(), "unbounded integer range"),
+        ("negativeInteger", "int", (-(2**80), 1), pa.string(), "unbounded integer range"),
+    ],
+)
+@pytest.mark.parametrize("explicit", [False, True])
+def test_fixed_integer_lists_choose_a_lossless_common_type_and_round_trip(
+    left, right, values, item_type, fallback, explicit, tmp_path
+):
+    schema = compile_element(f'<list><data type="{left}"/><data type="{right}"/></list>')
+    record = RelaxNGRecordProjection(
+        schema, element="doc", columns={"value": FieldSource()} if explicit else None
+    )
+    field = record.schema.field("value")
+    assert field.type == pa.list_(pa.field("item", item_type, nullable=False))
+    assert field.metadata[b"pyxsd:arrow"] == str(field.type).encode()
+    if fallback is None:
+        assert b"pyxsd:arrow_fallback" not in field.metadata
+    else:
+        assert fallback in field.metadata[b"pyxsd:arrow_fallback"].decode()
+    document = typed(schema, f"<doc>{values[0]} {values[1]}</doc>")
+    converted = tuple(str(value) for value in values) if fallback else values
+    assert rows(record, document) == [{"value": converted}]
+    table = record.table(document)
+    assert table.to_pylist() == [{"value": list(converted)}]
+    destination = tmp_path / "integers.parquet"
+    record.write_parquet(document, destination)
+    restored = pq.read_table(destination)
+    assert restored.to_pylist() == table.to_pylist()
+    assert restored.schema.equals(record.schema, check_metadata=True)
+
+
+@pytest.mark.parametrize("other", ["string", "boolean"])
+@pytest.mark.parametrize("integer", ["int", "integer"])
+def test_integer_lists_do_not_coerce_true_heterogeneity_to_strings(integer, other):
+    schema = compile_element(f'<list><data type="{integer}"/><data type="{other}"/></list>')
+    with pytest.raises(IntegrationError, match="no static Arrow item type"):
+        projection(schema, columns={"value": FieldSource()})
+
+
+@pytest.mark.parametrize(
+    ("tokens", "values", "item_type"),
+    [
+        (
+            '<data type="byte"><param name="minInclusive">0</param></data>'
+            '<data type="positiveInteger"><param name="maxInclusive">255</param></data>',
+            (0, 255),
+            pa.uint8(),
+        ),
+        (
+            '<data type="integer"><param name="totalDigits">2</param></data>'
+            '<data type="nonPositiveInteger"><param name="minInclusive">-100</param></data>',
+            (99, -100),
+            pa.int8(),
+        ),
+    ],
+)
+def test_fixed_integer_list_common_type_uses_effective_token_bounds(tokens, values, item_type):
+    schema = compile_element(f"<list>{tokens}</list>")
+    record = projection(schema, columns={"value": FieldSource()})
+    field = record.schema.field("value")
+    assert field.type == pa.list_(pa.field("item", item_type, nullable=False))
+    assert b"pyxsd:arrow_fallback" not in field.metadata
+    document = typed(schema, f"<doc>{values[0]} {values[1]}</doc>")
+    assert rows(record, document) == [{"value": values}]
+    assert record.table(document).to_pylist() == [{"value": list(values)}]
+
+
 def correlated_schema(*, repeated: bool) -> RelaxNGSchema:
     choice = """<choice>
         <group>
