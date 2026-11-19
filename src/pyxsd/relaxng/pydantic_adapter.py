@@ -55,7 +55,7 @@ from pyxsd.relaxng.contracts import ScalarContract, candidate_id, scalar_contrac
 from pyxsd.relaxng.datatypes import XSD_LIBRARY, DatatypeContext, UnsupportedDatatypeOperation
 from pyxsd.relaxng.diagnostics import report_mismatches
 from pyxsd.relaxng.document import RelaxNGDocument
-from pyxsd.relaxng.evidence import EvidenceGraph
+from pyxsd.relaxng.evidence import EvidenceGraph, build_binding_evidence
 from pyxsd.relaxng.json_values import parse_scalar_tag
 from pyxsd.relaxng.names import ExceptName, Name, NameChoice, NameClass, NsName
 from pyxsd.relaxng.patterns import (
@@ -82,6 +82,7 @@ from pyxsd.relaxng.projection import (
     RouteContract,
 )
 from pyxsd.relaxng.pydantic_values import (
+    _MODEL_VALIDATION_DEPTH,
     STANDALONE_REVISION,
     ScalarCodec,
     context_from_mapping,
@@ -1422,6 +1423,11 @@ def _accepted_route_tree(
             rejection: ValueError | None = error
         else:
             rejection = _native_rejection(route, tree, root_name=root_name)
+            if rejection is None and _MODEL_VALIDATION_DEPTH.get() <= 1:
+                try:
+                    _check_joint_claims(route, data, tree, plan=plan)
+                except ValueError as error:
+                    rejection = error
             if rejection is None:
                 return tree
             if first_native is None:
@@ -1451,6 +1457,77 @@ def _accepted_route_tree(
             f"{_CHOICE_SEARCH_LIMIT} bounded builds"
         )
     raise stable_error
+
+
+def _check_joint_claims(
+    route: RouteContract,
+    data: Mapping[str, Any],
+    tree: tuple[ET.Element, dict[int, DatatypeContext]],
+    *,
+    plan: ProjectionPlan | None,
+) -> None:
+    """Check provisional subsets against all accepting native derivations.
+
+    Neither a provenance flag nor a candidate ID selects a native branch.
+    Only exact equality with the current route's complete evidence can
+    discharge a subset assertion. Nested models defer this to their consumer.
+    """
+    root = _relaxng_root(_imported_tree(*tree))
+    claims: list[tuple[RelaxNGElement, str | None, AlternativeValue]] = []
+    pending = [(route, data, root)]
+    while pending:
+        current, values, node = pending.pop()
+        for alias, value in values.items():
+            if (
+                alias not in current.children
+                and isinstance(value, AlternativeValue)
+                and value.document_evidence
+            ):
+                claims.append((node, None if alias == "$" else alias[1:], value))
+        grouped: dict[str, list[RelaxNGElement]] = {}
+        for child in node.children:
+            grouped.setdefault(child._name_, []).append(child)
+        for name, field in current.children.items():
+            if name not in values or values[name] is None:
+                continue
+            items = values[name] if field.cardinality.repeatable else [values[name]]
+            for item, child in zip(items, grouped.get(name, []), strict=True):
+                if isinstance(item, BaseModel):
+                    child_route = _model_route(type(item))
+                    child_values = _model_values(child_route, item)
+                else:
+                    # The renderer has already required a plan and child route
+                    # for every raw child value before constructing this tree.
+                    child_route = cast(ProjectionPlan, plan).routes[cast(str, field.child_route_id)]
+                    child_values = {"$": item} if _route_is_root_model(child_route) else dict(item)
+                pending.append((child_route, child_values, child))
+    if not claims:
+        return
+    pattern: Pattern = route.patterns[0]
+    for alternative in route.patterns[1:]:
+        pattern = Choice(pattern, alternative)
+    evidence = build_binding_evidence(
+        root,
+        pattern,
+        datatype_context=DatatypeContext(root.base_uri, root.namespaces or {}),
+        limits=None,
+    )
+    for node, attribute, claim in claims:
+        actual: set[str] = set()
+        for occurrence in evidence.occurrences:
+            if occurrence.element is node and (
+                (attribute is None and occurrence.kind == "text")
+                or (occurrence.kind == "attribute" and occurrence.name == attribute)
+            ):
+                actual.update(
+                    candidate_id(claim.grammar_fingerprint, scalar_contract(witness.pattern))
+                    for witness in evidence.scalar_witnesses_at(occurrence)
+                )
+        if actual != {candidate.candidate_id for candidate in claim.candidates}:
+            raise ValueError(
+                f"RELAX NG route {_route_label(route)}: scalar candidate set contradicts "
+                "the complete native joint route evidence"
+            )
 
 
 def _imported_tree(root: ET.Element, contexts: dict[int, DatatypeContext]) -> ImportedTree:
@@ -1560,16 +1637,24 @@ def route_to_lexical(
     return _imported_tree(root, contexts)
 
 
-def _route_after_validator(route: RouteContract, *, is_start: bool) -> Any:
-    """Build the model-level native route validator for one retained route."""
+def _route_after_validator(route: RouteContract) -> Any:
+    """Scope nested checks and validate the outer model's joint assertions."""
 
-    def validate_route(value: BaseModel, info: ValidationInfo) -> BaseModel:
-        validate_route_data(
-            route,
-            value,
-            context=getattr(info, "context", None) if is_start else None,
-        )
-        return value
+    def validate_route(
+        value: Any, handler: Callable[[Any], BaseModel], info: ValidationInfo
+    ) -> BaseModel:
+        token = _MODEL_VALIDATION_DEPTH.set(_MODEL_VALIDATION_DEPTH.get() + 1)
+        try:
+            model = handler(value)
+            context = context_from_mapping(getattr(info, "context", None))
+            if _MODEL_VALIDATION_DEPTH.get() > 1:
+                context = _shadowed_child_context(
+                    context, route, _route_states(route, _model_values(route, model)), ()
+                )
+            validate_route_data(route, model, context=context)
+            return model
+        finally:
+            _MODEL_VALIDATION_DEPTH.reset(token)
 
     return validate_route
 
@@ -1791,15 +1876,24 @@ def _project_node(
     needs no single global namespace frame: sibling fields may declare the
     same prefix with different namespace URIs without leaking to each other.
     """
-    model_class = model_for(route)
-    node.scalar_value()
-    if not _route_is_root_model(route):
-        data = _project_record(plan, route, node, path, model_for=model_for)
-        return model_class.model_validate(data)
-    value = _scalar_content_value(route, node, path)
-    if value is _MISSING:
-        value = None
-    return model_class.model_validate(value)
+    depth = _MODEL_VALIDATION_DEPTH.get()
+    token = _MODEL_VALIDATION_DEPTH.set(depth + 1)
+    try:
+        model_class = model_for(route)
+        node.scalar_value()
+        if not _route_is_root_model(route):
+            data = _project_record(plan, route, node, path, model_for=model_for)
+            result = model_class.model_validate(data)
+        else:
+            value = _scalar_content_value(route, node, path)
+            if value is _MISSING:
+                value = None
+            result = model_class.model_validate(value)
+    finally:
+        _MODEL_VALIDATION_DEPTH.reset(token)
+    if depth == 0:
+        validate_route_data(route, result)
+    return result
 
 
 class RelaxNGModelSet:
@@ -2277,9 +2371,7 @@ class RelaxNGModelSet:
         )
         root_base: Any = RootModel
         root_validators: dict[str, Any] = {
-            _ROUTE_VALIDATION_VALIDATOR: model_validator(mode="after")(
-                _route_after_validator(route, is_start=route.route_id in self._plan.roots)
-            )
+            _ROUTE_VALIDATION_VALIDATOR: model_validator(mode="wrap")(_route_after_validator(route))
         }
         model = create_model(
             self._names[route.route_id],
@@ -2398,8 +2490,8 @@ class RelaxNGModelSet:
 
         validators: dict[str, Any] = {
             _CHILD_PRESENCE_VALIDATOR: model_validator(mode="before")(validate_children),
-            _ROUTE_VALIDATION_VALIDATOR: model_validator(mode="after")(
-                _route_after_validator(route, is_start=route.route_id in self._plan.roots)
+            _ROUTE_VALIDATION_VALIDATOR: model_validator(mode="wrap")(
+                _route_after_validator(route)
             ),
         }
         model = create_model(

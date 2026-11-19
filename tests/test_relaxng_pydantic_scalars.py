@@ -151,6 +151,43 @@ class NonDecodingFactory(DatatypeFactory):
         return NonDecodingDatatype()
 
 
+def test_local_and_nested_native_validation_preserve_caller_base_uri():
+    class BaseInteger(NonDecodingDatatype):
+        type_name = "baseInteger"
+        supports_decode = True
+        supports_encode = True
+
+        def allows(self, lexical, context):
+            return context.base_uri == "urn:base" and lexical.isdigit()
+
+        def decode(self, lexical, context):
+            assert self.allows(lexical, context)
+            return int(lexical)
+
+        def encode(self, value, context):
+            lexical = str(value)
+            if not self.allows(lexical, context):
+                raise ValueError("base URI is required")
+            return lexical
+
+    class BaseFactory(DatatypeFactory):
+        def create(self, type_name, parameters, context):
+            return BaseInteger()
+
+    schema = compile_element(
+        '<element name="x"><data datatypeLibrary="urn:test" type="baseInteger"/></element>',
+        datatype_libraries={"urn:test": DatatypeLibraryRegistration(BaseFactory(), "base-v1")},
+    )
+    registry = RelaxNGModelSet(schema)
+    Local = registry.model_for(element="doc", path=("x",))
+    context = {"relaxng": {"base_uri": "urn:base"}}
+    assert Local.model_validate(12, context=context).root == 12
+    Doc = registry.model_for(element="doc")
+    assert Doc.model_validate({"x": 12}, context=context).x.root == 12
+    with pytest.raises(ValidationError):
+        Local.model_validate(12)
+
+
 class UnsupportedDecodingDatatype(NonDecodingDatatype):
     """A declared decoder that reports the operation is unsupported."""
 
@@ -1860,6 +1897,17 @@ def test_list_include_exclude_restores_original_wrapper_indices():
     assert model.model_dump_json(exclude={"child"}) == "{}"
 
     three = repeated.model_validate({"child": ["11", "22", "33"]})
+    all_items = three.model_dump(include={"child": {"__all__": True}})["child"]
+    assert len(all_items) == 3
+    assert all(item is child.root for item, child in zip(all_items, three.child, strict=True))
+    assert three.model_dump(mode="json", include={"child": {"__all__": True}}) == (
+        three.model_dump(mode="json")
+    )
+    assert json.loads(three.model_dump_json(include={"child": {"__all__": True}})) == (
+        three.model_dump(mode="json")
+    )
+    assert three.model_dump(exclude={"child": {"__all__": True}}) == {"child": []}
+    assert three.model_dump(mode="json", exclude={"child": {"__all__": True}}) == {"child": []}
     assert three.model_dump(include={"child": {-1}})["child"][0] is three.child[2].root
     assert [
         item is three.child[index].root
@@ -1886,6 +1934,11 @@ def test_list_include_exclude_restores_original_wrapper_indices():
     assert len(included["child"]) == 1
     assert included["child"][0]["inner"] is nested_model.child[0].inner.root
     assert "@a" not in included["child"][0]
+    all_inner = nested_model.model_dump(include={"child": {"__all__": {"inner"}}})
+    assert [item["inner"] for item in all_inner["child"]] == [
+        child.inner.root for child in nested_model.child
+    ]
+    assert all(set(item) == {"inner"} for item in all_inner["child"])
     excluded = nested_model.model_dump(exclude={"child": {0: {"inner"}}})
     assert len(excluded["child"]) == 2
     assert excluded["child"][0]["@a"] is nested_model.child[0].attr_a
@@ -1908,6 +1961,46 @@ def test_list_include_exclude_restores_original_wrapper_indices():
     both_json = json.loads(nested_model.model_dump_json(include={"child": {0: True}}))
     assert len(both_json["child"]) == 1
     assert {"@a", "inner"} <= set(both_json["child"][0])
+
+
+def test_all_item_filters_merge_with_per_index_nested_filters():
+    _, Model = model_for(
+        '<zeroOrMore><element name="child"><zeroOrMore><element name="inner">'
+        '<choice><data type="integer"/><data type="string"/></choice>'
+        "</element></zeroOrMore></element></zeroOrMore>"
+    )
+    model = Model.model_validate(
+        {"child": [{"inner": ["11", "22", "33"]}, {"inner": ["44", "55", "66"]}]}
+    )
+    include = {"child": {"__all__": {"inner": {0}}, 0: {"inner": {-1}}}}
+    data = model.model_dump(include=include)
+    assert len(data["child"][0]["inner"]) == 2
+    assert data["child"][0]["inner"][0] is model.child[0].inner[0].root
+    assert data["child"][0]["inner"][1] is model.child[0].inner[2].root
+    assert data["child"][1]["inner"][0] is model.child[1].inner[0].root
+    assert [
+        len(item["inner"]) for item in model.model_dump(mode="json", include=include)["child"]
+    ] == [2, 1]
+    for pattern, lengths in (
+        ({"__all__": True, 0: {"inner": {0}}}, [1, 3]),
+        ({"__all__": {"inner": {0}}, 0: True}, [3, 1]),
+    ):
+        dumped = model.model_dump(include={"child": pattern})
+        assert [len(item["inner"]) for item in dumped["child"]] == lengths
+        assert dumped["child"][0]["inner"][0] is model.child[0].inner[0].root
+    exclude = {"child": {"__all__": True, 0: {"inner": {-1}}}}
+    dumped = model.model_dump(exclude=exclude)
+    assert len(dumped["child"]) == 1
+    assert len(dumped["child"][0]["inner"]) == 2
+    assert dumped["child"][0]["inner"][0] is model.child[0].inner[0].root
+    assert dumped["child"][0]["inner"][1] is model.child[0].inner[1].root
+    assert model.model_dump(mode="json", exclude=exclude) == json.loads(
+        model.model_dump_json(exclude=exclude)
+    )
+    last_only = model.model_dump(exclude={"child": {"__all__": True, -1: {"inner": {-1}}}})
+    assert len(last_only["child"]) == 1
+    assert last_only["child"][0]["inner"][0] is model.child[1].inner[0].root
+    assert last_only["child"][0]["inner"][1] is model.child[1].inner[1].root
 
 
 def test_list_schema_minimum_for_one_or_more():

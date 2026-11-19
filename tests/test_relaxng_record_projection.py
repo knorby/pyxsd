@@ -803,10 +803,11 @@ def test_decimal_arrow_types_use_both_facets_and_fall_back_when_unbounded():
     for total, fraction, expected in [
         (30, 0, pa.decimal128(30, 0)),
         (38, 0, pa.decimal128(38, 0)),
-        (38, 20, pa.decimal128(38, 20)),
-        (40, 2, pa.decimal256(40, 2)),
+        (2, 2, pa.decimal128(4, 2)),
+        (38, 20, pa.decimal256(58, 20)),
+        (40, 2, pa.decimal256(42, 2)),
         (76, 0, pa.decimal256(76, 0)),
-        (12, 4, pa.decimal128(12, 4)),
+        (12, 4, pa.decimal128(16, 4)),
     ]:
         schema = compile_element(decimal_body(total, fraction))
         plan = compile_relaxng_projection(
@@ -913,6 +914,38 @@ def test_unsupported_xsd_backing_type_falls_back_to_string():
     )
     assert plan.columns[0].arrow_shape == pa.string()
     assert "unsupported XSD backing type" in plan.columns[0].arrow_fallback
+
+
+def test_custom_xsd_list_backing_has_truthful_string_fallback():
+    from pyxsd.xsd_data_types import Integer, XsdList
+
+    class IntegerTokens(XsdList):
+        name = "integerTokens"
+        itemType = Integer
+
+    class ListFactory(DatatypeFactory):
+        def create(self, type_name, parameters, context):
+            return ScalarDatatype(
+                library_uri="urn:tokens",
+                type_name=type_name,
+                xsd_type=IntegerTokens,
+                parameters=parameters,
+                context=context,
+                constraints=FacetConstraints(),
+                white_space="collapse",
+            )
+
+    schema = compile_element(
+        '<data type="integerTokens" datatypeLibrary="urn:tokens"/>',
+        datatype_libraries={"urn:tokens": registration(ListFactory())},
+    )
+    projection = RelaxNGRecordProjection(schema, element="doc", columns={"value": FieldSource()})
+    field = projection.schema.field("value")
+    assert field.type == pa.string()
+    assert field.metadata[b"pyxsd:arrow_fallback"] == (
+        b"datatype-level list values have no static Arrow item type"
+    )
+    assert projection.table(parse(schema, "<doc>1 2 3</doc>")).to_pylist() == [{"value": "1 2 3"}]
 
 
 class CustomIntegerDatatypeFactory(DatatypeFactory):

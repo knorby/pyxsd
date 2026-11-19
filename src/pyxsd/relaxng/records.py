@@ -506,6 +506,10 @@ def _atomic_arrow(contract: ScalarContract, plan: ProjectionPlan) -> tuple[Any, 
                 f"decimal totalDigits {precision} and fractionDigits {scale} are inconsistent; "
                 "using string",
             )
+        # fractionDigits is an upper bound, not a required fractional part.
+        # A value may use all totalDigits before the point (e.g. 99 for 2/2),
+        # and Arrow appends scale zeroes to its fixed-scale coefficient.
+        precision += scale
         if precision <= 38:
             return pa.decimal128(precision, scale), None
         if precision <= 76:

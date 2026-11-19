@@ -14,15 +14,17 @@ a Python value's type or from one document's easiest branch:
   spelling.  Typed list values are accepted only at a unique statically
   representable list contract.
 
-Every accepted tag or snapshot is treated as an assertion to recheck.  The
-complete candidate set is recomputed from the static contract set, the lexical
-text, and the scoped datatype context; supplied candidate IDs never filter or
-authorize a subset.  Standalone snapshots carry a revision marker that no live
+Every accepted tag or snapshot is treated as an assertion to recheck. Standalone
+annotations require the complete local candidate set. Generated route models
+may provisionally retain a document subset, but must recheck exact equality
+against their complete native joint evidence before returning. Supplied
+candidate IDs never filter or select a native derivation. Standalone snapshots
+carry a revision marker that no live
 document revision can use.  A bare :class:`ListInterpretation` is accepted only
 as one scoped whole-list assertion after grammar/context/contract/candidate
 recomputation; its parse-local token constraint graph is not retained in the
-standalone value.  No process-global registry, mutable caller context, or
-document evidence participates.
+standalone value. No process-global registry or mutable caller context
+participates.
 
 A unique contract returns an ordinary value only when the decoded value can be
 re-encoded to a value-equal lexical form.  Decoder-only contracts return an
@@ -39,6 +41,7 @@ from __future__ import annotations
 import base64
 import inspect
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from decimal import Decimal
 from typing import Annotated, Any, Literal, cast
 
@@ -103,6 +106,10 @@ __all__ = [
 #: Live lexical revisions start at 1, so this marker cannot claim document
 #: authority or become current merely by matching a number.
 STANDALONE_REVISION = 0
+
+# Request-local nesting only: provisional claims are checked against native
+# joint evidence by the outer generated model before it can be returned.
+_MODEL_VALIDATION_DEPTH: ContextVar[int] = ContextVar("relaxng_model_validation_depth", default=0)
 
 _UNDECODABLE = object()
 _UNSET = object()
@@ -910,18 +917,15 @@ def _snapshot_value(
     candidates = _surviving_candidates(codec, contracts, snapshot.lexical, context)
     expected = tuple(candidate.candidate_id for candidate in candidates)
     claimed = tuple(candidate.candidate_id for candidate in snapshot.candidates)
-    if not snapshot.document_evidence:
+    if not snapshot.document_evidence or not _MODEL_VALIDATION_DEPTH.get():
         if expected != claimed:
             raise ValueError(
                 "scalar snapshot candidate set does not match the complete recomputed "
                 f"candidates {expected!r}"
             )
     else:
-        # A document snapshot carries the complete set from its own accepting
-        # derivation.  Local contracts can still admit a branch that the rest
-        # of that document excludes, so the snapshot must retain its current
-        # subset; a standalone snapshot above still requires every local
-        # candidate.
+        # This is a provisional assertion, not authority. The containing model
+        # must compare it to the complete native joint evidence before return.
         expected_by_id = {candidate.candidate_id: candidate for candidate in candidates}
         for candidate in snapshot.candidates:
             recomputed = expected_by_id.get(candidate.candidate_id)
@@ -1011,12 +1015,22 @@ def _tag_value(
     context = _scoped_context(claim.context, supplied, kind="tag")
     candidates = _surviving_candidates(codec, contracts, claim.lexical, context)
     expected = tuple(candidate.candidate_id for candidate in candidates)
-    if claim.candidates != expected:
+    if claim.candidates != expected and not _MODEL_VALIDATION_DEPTH.get():
         raise ValueError(
             "scalar tag candidate set does not match the complete recomputed "
             f"candidates {expected!r}"
         )
-    return _value_from_candidates(codec, contracts, candidates, claim.lexical, context)
+    by_id = {candidate.candidate_id: candidate for candidate in candidates}
+    if any(identifier not in by_id for identifier in claim.candidates):
+        raise ValueError("scalar tag candidate is not accepted by the local schema contracts")
+    return _value_from_candidates(
+        codec,
+        contracts,
+        tuple(by_id[identifier] for identifier in claim.candidates),
+        claim.lexical,
+        context,
+        document_evidence=claim.candidates != expected,
+    )
 
 
 def _validate(
@@ -1590,6 +1604,8 @@ def _included_indices(spec: Any, length: int) -> set[int]:
         index = _normalized_index(spec, length)
         return {index} if index is not None else set()
     if isinstance(spec, Mapping):
+        if "__all__" in spec:
+            return set(range(length))
         result: set[int] = set()
         for index, value in spec.items():
             if not isinstance(index, int) or value is False:
@@ -1615,14 +1631,7 @@ def _excluded_indices(spec: Any, length: int) -> set[int]:
         index = _normalized_index(spec, length)
         return {index} if index is not None else set()
     if isinstance(spec, Mapping):
-        result: set[int] = set()
-        for index, value in spec.items():
-            if not isinstance(index, int) or value is not True:
-                continue
-            normalized = _normalized_index(index, length)
-            if normalized is not None:
-                result.add(normalized)
-        return result
+        return {index for index in range(length) if _list_item_spec(spec, index, length) is True}
     if isinstance(spec, (set, frozenset, list, tuple)):
         return {
             normalized
@@ -1635,10 +1644,23 @@ def _excluded_indices(spec: Any, length: int) -> set[int]:
 
 def _list_item_spec(spec: Any, index: int, length: int) -> Any:
     if isinstance(spec, Mapping):
-        if index in spec:
-            return spec[index]
-        return spec.get(index - length)
+        return _merge_item_specs(spec.get("__all__"), spec.get(index, spec.get(index - length)))
     return None
+
+
+def _merge_item_specs(common: Any, specific: Any) -> Any:
+    """Match Pydantic's union of all-item and per-index filter patterns."""
+    if specific is None:
+        return common
+    if common is None or common is True:
+        return specific
+    if specific is True:
+        return True
+    merged = dict(common) if isinstance(common, Mapping) else dict.fromkeys(common, True)
+    overrides = dict(specific) if isinstance(specific, Mapping) else dict.fromkeys(specific, True)
+    for key, value in overrides.items():
+        merged[key] = _merge_item_specs(merged.get(key), value)
+    return merged
 
 
 def _restore_scalar_list(

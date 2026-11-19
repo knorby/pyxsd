@@ -20,6 +20,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, get_args
 
@@ -41,6 +42,93 @@ from pyxsd.relaxng.values import AlternativeValue
 NS = "http://relaxng.org/ns/structure/1.0"
 XSD = "http://www.w3.org/2001/XMLSchema-datatypes"
 INT = (XSD, "integer")
+
+
+@pytest.mark.parametrize(
+    ("digits", "scale", "lexical", "precision"),
+    [
+        (2, 2, "99", 4),
+        (38, 20, "1234567890123456789", 58),
+        (40, 2, "1" + "0" * 39, 42),
+        (36, 2, "1" + "0" * 35, 38),
+        (37, 2, "1" + "0" * 36, 39),
+        (74, 2, "1" + "0" * 73, 76),
+        (75, 2, "1" + "0" * 74, None),
+    ],
+)
+def test_fixed_scale_decimal_xsd_parity_and_storage(tmp_path, digits, scale, lexical, precision):
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    ds = pytest.importorskip("pyarrow.dataset")
+    from pyxsd.batch import DocumentSource
+    from pyxsd.integrations.arrow import records
+
+    scalar = (
+        f'<data type="decimal"><param name="totalDigits">{digits}</param>'
+        f'<param name="fractionDigits">{scale}</param></data>'
+    )
+    rng = compile_element(scalar)
+    xsd = compile_schema(
+        f'<xs:element name="doc"><xs:simpleType><xs:restriction base="xs:decimal">'
+        f'<xs:totalDigits value="{digits}"/><xs:fractionDigits value="{scale}"/>'
+        "</xs:restriction></xs:simpleType></xs:element>"
+    )
+    columns = {"value": FieldSource()}
+    rng_projection = records(rng, element="doc", columns=columns)
+    xsd_projection = records(xsd, element="doc", columns=columns)
+    expected_type = (
+        pa.string()
+        if precision is None
+        else pa.decimal128(precision, scale)
+        if precision <= 38
+        else pa.decimal256(precision, scale)
+    )
+    assert rng_projection.schema.field("value").type == expected_type
+    assert xsd_projection.schema.field("value").type == expected_type
+    xml = f"<doc>{lexical}</doc>"
+    expected = [{"value": lexical if precision is None else Decimal(lexical)}]
+    for schema, projection in ((rng, rng_projection), (xsd, xsd_projection)):
+        document = schema.parse(io.StringIO(xml))
+        document.require_valid()
+        assert projection.table(document).to_pylist() == expected
+    target = tmp_path / "decimal.parquet"
+    rng_projection.write_parquet(parse(rng, xml), target)
+    assert pq.read_table(target).to_pylist() == expected
+    source = tmp_path / "input.xml"
+    source.write_text(xml)
+    directory = tmp_path / "dataset"
+    rng_projection.write_dataset([DocumentSource("input", source)], directory)
+    assert (
+        ds.dataset(directory, format="parquet", exclude_invalid_files=True)
+        .to_table(columns=["value"])
+        .to_pylist()
+        == expected
+    )
+
+    for body, columns, expected_row in (
+        (
+            f'<attribute name="amount">{scalar}</attribute>',
+            {"value": FieldSource(attribute="amount")},
+            expected,
+        ),
+        (
+            f"<list><oneOrMore>{scalar}</oneOrMore></list>",
+            {"value": FieldSource()},
+            [{"value": [expected[0]["value"]]}],
+        ),
+        (f'<element name="amount">{scalar}</element>', None, [{"amount": expected[0]["value"]}]),
+    ):
+        schema = compile_element(body)
+        projection = records(schema, element="doc", columns=columns)
+        instance = (
+            f'<doc amount="{lexical}"/>'
+            if "attribute" in body
+            else f"<doc><amount>{lexical}</amount></doc>"
+            if "element" in body
+            else xml
+        )
+        assert projection.table(parse(schema, instance)).to_pylist() == expected_row
+
 
 MATCHED_XSD = """
 <xs:element name="record">

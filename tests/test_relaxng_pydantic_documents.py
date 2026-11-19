@@ -78,7 +78,8 @@ def registry(schema: RelaxNGSchema) -> RelaxNGModelSet:
     return result
 
 
-def test_from_document_keeps_current_candidates_for_a_correlated_branch():
+@pytest.mark.parametrize(("marker", "datatype"), [("a", "integer"), ("b", "string")])
+def test_from_document_keeps_current_candidates_for_a_correlated_branch(marker, datatype):
     schema = compile_element(
         """
         <choice>
@@ -88,16 +89,94 @@ def test_from_document_keeps_current_candidates_for_a_correlated_branch():
         """
     )
     model_set = registry(schema)
-    document = parse(schema, "<doc><x>12</x><b/></doc>")
+    document = parse(schema, f"<doc><x>12</x><{marker}/></doc>")
     model = model_set.from_document(document)
     wrapper = model.x.root
     assert isinstance(wrapper, AlternativeValue)
-    assert [candidate.contract.type_name for candidate in wrapper.candidates] == ["string"]
+    assert [candidate.contract.type_name for candidate in wrapper.candidates] == [datatype]
+    Doc = model_set.model_for(element="doc")
+    round_trip = Doc.model_validate_json(model.model_dump_json())
+    assert round_trip.model_dump_json() == model.model_dump_json()
+    other = "b" if marker == "a" else "a"
+    with pytest.raises(pydantic.ValidationError, match="candidate"):
+        Doc.model_validate({"x": wrapper, other: {}})
+    with pytest.raises(pydantic.ValidationError, match="candidate"):
+        Doc.model_validate({"x": model.model_dump(mode="json")["x"], other: {}})
     created = model_set.to_document(model)
     assert created.is_valid
-    assert created.to_string() == "<doc><x>12</x><b/></doc>"
+    assert created.to_string() == f"<doc><x>12</x><{marker}/></doc>"
     again = model_set.from_document(created)
-    assert [candidate.contract.type_name for candidate in again.x.root.candidates] == ["string"]
+    assert [candidate.contract.type_name for candidate in again.x.root.candidates] == [datatype]
+
+
+def test_forged_document_evidence_cannot_select_a_branch():
+    schema = compile_element(
+        '<element name="x"><choice><data type="integer"/><data type="string"/></choice></element>'
+    )
+    model_set = registry(schema)
+    Doc = model_set.model_for(element="doc")
+    model = Doc.model_validate({"x": "12"})
+    snapshot = model.x.root
+    forged = replace(snapshot, candidates=snapshot.candidates[:1], document_evidence=True)
+    with pytest.raises(pydantic.ValidationError, match="candidate"):
+        Doc.model_validate({"x": forged})
+    Local = model_set.model_for(element="doc", path=("x",))
+    with pytest.raises(pydantic.ValidationError, match="candidate"):
+        Local.model_validate(forged)
+    from pydantic import TypeAdapter
+    from pyxsd.relaxng.pydantic_values import ScalarCodec, relaxng_scalar_annotation
+
+    scalar_adapter = TypeAdapter(
+        relaxng_scalar_annotation(
+            Local.__relaxng_route__.content.scalar_contracts,
+            codec=ScalarCodec(schema, schema.projection),
+        )
+    )
+    with pytest.raises(pydantic.ValidationError, match="complete recomputed"):
+        scalar_adapter.validate_python(forged)
+    from pyxsd.relaxng.json_values import scalar_tag
+
+    with pytest.raises(pydantic.ValidationError, match="complete recomputed"):
+        scalar_adapter.validate_python(scalar_tag(forged))
+
+
+def test_joint_snapshot_claims_for_attributes_and_merged_element_assignments():
+    schema = compile_grammar(
+        f"<start><choice>"
+        f'<element name="doc" datatypeLibrary="{XSD}">'
+        '<attribute name="x"><data type="integer"/></attribute><element name="a"><empty/></element>'
+        "</element>"
+        f'<element name="doc" datatypeLibrary="{XSD}">'
+        '<attribute name="x"><data type="string"/></attribute><element name="b"><empty/></element>'
+        "</element>"
+        "</choice></start>"
+    )
+    model_set = registry(schema)
+    Doc = model_set.model_for(element="doc")
+    for marker in ("a", "b"):
+        model = model_set.from_document(parse(schema, f'<doc x="12"><{marker}/></doc>'))
+        assert Doc.model_validate_json(model.model_dump_json()).model_dump_json() == (
+            model.model_dump_json()
+        )
+        opposite = "b" if marker == "a" else "a"
+        with pytest.raises(pydantic.ValidationError, match="candidate"):
+            Doc.model_validate({"@x": model.attr_x, opposite: {}})
+
+
+def test_raw_route_data_rechecks_nested_snapshot_claims_with_a_plan():
+    schema = compile_element(
+        "<choice>"
+        '<group><element name="x"><data type="integer"/></element><element name="a"><empty/></element></group>'
+        '<group><element name="x"><data type="string"/></element><element name="b"><empty/></element></group>'
+        "</choice>"
+    )
+    model_set = registry(schema)
+    model = model_set.from_document(parse(schema, "<doc><x>12</x><a/></doc>"))
+    route = type(model).__relaxng_route__
+    data = {"x": model.x.root, "a": {}}
+    assert adapter.validate_route_data(route, data, plan=schema.projection) == data
+    with pytest.raises(ValueError, match="candidate"):
+        adapter.validate_route_data(route, {"x": model.x.root, "b": {}}, plan=schema.projection)
 
 
 def test_document_snapshot_rejects_a_forged_candidate():
@@ -499,6 +578,9 @@ def test_child_base_uri_shadows_the_inherited_document_base():
     assert created.is_valid
     assert created.root.base_uri == "urn:root"
     assert created.root.children[0].base_uri == "urn:child"
+    Local = model_set.model_for(element="doc", path=("b",))
+    with pytest.raises(pydantic.ValidationError, match="conflicting base URIs"):
+        Local.model_validate(model.b.model_dump(), context={"relaxng": {"base_uri": "urn:other"}})
 
 
 def test_repeated_choice_and_interleave_round_trip():

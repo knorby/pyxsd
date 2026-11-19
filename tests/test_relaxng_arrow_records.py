@@ -136,7 +136,7 @@ def test_unique_scalar_attributes_and_child_columns_are_typed():
         }
     ]
     table = record.table(document)
-    assert table.schema.field("amount").type == pa.decimal128(5, 2)
+    assert table.schema.field("amount").type == pa.decimal128(7, 2)
     assert table.schema.field("when").type == pa.string()
     assert table.to_pylist() == rows(record, document)
 
