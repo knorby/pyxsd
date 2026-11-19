@@ -6,11 +6,12 @@ import io
 import json
 from collections.abc import Mapping
 from dataclasses import FrozenInstanceError, dataclass
-from types import SimpleNamespace
+from decimal import Decimal
 
 import pytest
 
 pa = pytest.importorskip("pyarrow")
+pq = pytest.importorskip("pyarrow.parquet")
 from integration_helpers import compile_schema, parse  # noqa: E402
 from pyxsd.facets import FacetConstraints  # noqa: E402
 from pyxsd.integrations import IntegrationError  # noqa: E402
@@ -21,31 +22,22 @@ from pyxsd.integrations.projection import (  # noqa: E402
     FieldSource,
     field_source_metadata,
 )
-from pyxsd.relaxng.contracts import ScalarContract, candidate_id  # noqa: E402
+from pyxsd.relaxng.contracts import candidate_id  # noqa: E402
 from pyxsd.relaxng.datatypes import (  # noqa: E402
-    DatatypeContext,
     DatatypeFactory,
     DatatypeLibraryRegistration,
     ScalarDatatype,
 )
-from pyxsd.relaxng.names import AnyName, Name  # noqa: E402
-from pyxsd.relaxng.patterns import Data  # noqa: E402
-from pyxsd.relaxng.projection import Cardinality, ContentContract  # noqa: E402
+from pyxsd.relaxng.projection import ContentContract  # noqa: E402
 from pyxsd.relaxng.records import (  # noqa: E402
     RelaxNGRecordProjection,
-    _atomic_arrow,
-    _check_default_route,
-    _child_step,
     _content_cannot_match,
     _content_may_be_empty,
-    _default_record_fields,
-    _resolve_row,
-    _select_contract,
-    _source_endpoint,
     _start_route,
     compile_relaxng_projection,
 )
 from pyxsd.relaxng.schema import RelaxNGSchema  # noqa: E402
+from pyxsd.xsd_data_types import Decimal as XsdDecimal  # noqa: E402
 
 NS = "http://relaxng.org/ns/structure/1.0"
 XSD = "http://www.w3.org/2001/XMLSchema-datatypes"
@@ -531,7 +523,6 @@ def test_candidate_ids_are_grammar_scoped_not_value_scoped():
         ("int", pa.int64()),
         ("integer", pa.int64()),
         ("long", pa.int64()),
-        ("decimal", pa.decimal128(38, 18)),
         ("double", pa.float64()),
         ("float", pa.float64()),
         ("base64Binary", pa.binary()),
@@ -548,42 +539,116 @@ def test_scalar_arrow_types(data_type, expected):
     assert not plan.columns[0].nullable
 
 
-def test_unrepresentable_decimal_and_datatype_level_list_fall_back_to_string():
-    decimal = compile_element('<data type="decimal"><param name="fractionDigits">19</param></data>')
+def decimal_body(total: int | None = None, fraction: int | None = None) -> str:
+    params = ""
+    if total is not None:
+        params += f'<param name="totalDigits">{total}</param>'
+    if fraction is not None:
+        params += f'<param name="fractionDigits">{fraction}</param>'
+    return f'<data type="decimal">{params}</data>'
+
+
+def test_decimal_arrow_types_use_both_facets_and_fall_back_when_unbounded():
+    for total, fraction, expected in [
+        (30, 0, pa.decimal128(30, 0)),
+        (38, 0, pa.decimal128(38, 0)),
+        (12, 4, pa.decimal128(12, 4)),
+    ]:
+        schema = compile_element(decimal_body(total, fraction))
+        plan = compile_relaxng_projection(
+            schema, element="doc", path=(), columns={"value": FieldSource()}
+        )
+        assert plan.columns[0].arrow_shape == expected
+        assert plan.columns[0].arrow_fallback is None
+    thirty = compile_element(decimal_body(30, 0))
     plan = compile_relaxng_projection(
-        decimal, element="doc", path=(), columns={"value": FieldSource()}
+        thirty, element="doc", path=(), columns={"value": FieldSource()}
     )
-    assert plan.columns[0].arrow_shape == pa.string()
-    assert "decimal128" in plan.columns[0].arrow_fallback
+    pa.array([Decimal("9" * 30)], type=plan.columns[0].arrow_shape)
+    for total, fraction, reason in [
+        (None, None, "unbounded decimal"),
+        (None, 0, "unbounded decimal"),
+        (30, None, "unbounded decimal"),
+        (39, 0, "precision"),
+        (38, 20, "scale"),
+    ]:
+        schema = compile_element(decimal_body(total, fraction))
+        plan = compile_relaxng_projection(
+            schema, element="doc", path=(), columns={"value": FieldSource()}
+        )
+        assert plan.columns[0].arrow_shape == pa.string()
+        assert reason in plan.columns[0].arrow_fallback
+    projection = RelaxNGRecordProjection(
+        compile_element(decimal_body(30, 0)),
+        element="doc",
+        columns={"value": FieldSource()},
+    )
+    assert projection.schema.field("value").type == pa.decimal128(30, 0)
+    assert b"pyxsd:arrow_fallback" not in projection.schema.field("value").metadata
+    unbounded = RelaxNGRecordProjection(
+        compile_element(decimal_body()), element="doc", columns={"value": FieldSource()}
+    )
+    assert (
+        "unbounded decimal"
+        in unbounded.schema.field("value").metadata[b"pyxsd:arrow_fallback"].decode()
+    )
+
+
+def test_decimal_list_and_default_layouts_preserve_facet_precision():
+    list_schema = compile_element(
+        "<list><zeroOrMore>" + decimal_body(30, 0) + "</zeroOrMore></list>"
+    )
+    plan = compile_relaxng_projection(
+        list_schema, element="doc", path=(), columns={"value": FieldSource()}
+    )
+    assert plan.columns[0].arrow_shape == pa.list_(
+        pa.field("item", pa.decimal128(30, 0), nullable=False)
+    )
+    default_schema = compile_element('<element name="amount">' + decimal_body(30, 0) + "</element>")
+    projection = RelaxNGRecordProjection(default_schema, element="doc")
+    assert projection.schema.field("amount").type == pa.decimal128(30, 0)
+    unbounded_default = compile_element('<element name="amount">' + decimal_body() + "</element>")
+    unbounded = RelaxNGRecordProjection(unbounded_default, element="doc")
+    assert unbounded.schema.field("amount").type == pa.string()
+    assert (
+        "unbounded decimal"
+        in unbounded.schema.field("amount").metadata[b"pyxsd:arrow_fallback"].decode()
+    )
+
+
+def test_unbounded_datatype_level_list_falls_back_to_string():
     idrefs = compile_element('<data type="IDREFS"/>')
     plan = compile_relaxng_projection(
         idrefs, element="doc", path=(), columns={"value": FieldSource()}
     )
     assert plan.columns[0].arrow_shape == pa.string()
     assert "datatype-level list" in plan.columns[0].arrow_fallback
-    projection = RelaxNGRecordProjection(decimal, element="doc", columns={"value": FieldSource()})
-    assert (
-        "decimal128" in projection.schema.field("value").metadata[b"pyxsd:arrow_fallback"].decode()
-    )
+
+
+class UnsupportedBackingFactory(DatatypeFactory):
+    def create(self, type_name, parameters, context):
+        del type_name
+        return ScalarDatatype(
+            library_uri="urn:weird",
+            type_name="weird",
+            xsd_type=object,
+            parameters=parameters,
+            context=context,
+            constraints=FacetConstraints(),
+            white_space="collapse",
+        )
 
 
 def test_unsupported_xsd_backing_type_falls_back_to_string():
-    datatype = ScalarDatatype(
-        library_uri="urn:weird",
-        type_name="weird",
-        xsd_type=object,
-        parameters=(),
-        context=DatatypeContext(None, {}),
-        constraints=FacetConstraints(),
-        white_space="collapse",
+    schema = compile_element(
+        '<data type="weird" datatypeLibrary="urn:weird"/>',
+        datatype_libraries={"urn:weird": registration(UnsupportedBackingFactory())},
     )
-    contract = ScalarContract("atomic", "urn:weird", "weird", (), (), "identity")
-    arrow, fallback = _atomic_arrow(
-        contract,
-        SimpleNamespace(encoding_patterns={"identity": Data(datatype=datatype)}),
+    plan = compile_relaxng_projection(
+        schema, element="doc", path=(), columns={"value": FieldSource()}
     )
-    assert arrow == pa.string()
-    assert "unsupported XSD backing type" in fallback
+    assert plan.columns[0].arrow_shape == pa.string()
+    assert "unsupported XSD backing type" in plan.columns[0].arrow_fallback
 
 
 class CustomIntegerDatatypeFactory(DatatypeFactory):
@@ -789,7 +854,7 @@ def test_default_record_schema_attributes_scalar_child_and_nested_struct():
         <zeroOrMore><element name="item"><data type="int"/></element></zeroOrMore>
         <element name="amount">
           <attribute name="currency"><text/></attribute>
-          <data type="decimal"/>
+          <data type="decimal"><param name="totalDigits">30</param><param name="fractionDigits">0</param></data>
         </element>
         """
     )
@@ -799,12 +864,12 @@ def test_default_record_schema_attributes_scalar_child_and_nested_struct():
     assert not projection.schema.field("version").nullable
     amount = projection.schema.field("amount").type
     assert amount.field("currency").type == pa.string()
-    assert amount.field("$").type == pa.decimal128(38, 18)
+    assert amount.field("$").type == pa.decimal128(30, 0)
     assert projection.schema.field("flag").nullable
     assert projection.schema.field("item").type == pa.list_(
         pa.field("item", pa.int64(), nullable=False)
     )
-    assert not projection.schema.field("item").nullable
+    assert projection.schema.field("item").nullable
     assert json.loads(projection.schema.field("amount").metadata[b"pyxsd:declaration"]) == [
         "doc",
         "amount",
@@ -839,6 +904,185 @@ def test_default_nested_and_repeated_structs():
     assert isinstance(group, pa.ListType)
     assert isinstance(group.value_type, pa.StructType)
     assert group.value_type.field("value").type == pa.int64()
+
+
+def test_default_child_nullability_tracks_optional_and_empty_content():
+    schema = compile_element(
+        """
+        <element name="required"><data type="integer"/></element>
+        <optional><element name="optional"><data type="integer"/></element></optional>
+        <element name="maybe"><optional><data type="integer"/></optional></element>
+        <element name="text"><text/></element>
+        <element name="choice"><choice><data type="integer"/><empty/></choice></element>
+        <element name="attrs">
+          <attribute name="required"><text/></attribute>
+          <optional><attribute name="optional"><text/></attribute></optional>
+        </element>
+        <element name="nested">
+          <element name="value"><optional><data type="integer"/></optional></element>
+          <element name="struct"><optional><attribute name="optional"><text/></attribute></optional></element>
+        </element>
+        """
+    )
+    projection = RelaxNGRecordProjection(schema, element="doc")
+    assert not projection.schema.field("required").nullable
+    assert projection.schema.field("optional").nullable
+    assert projection.schema.field("maybe").nullable
+    assert projection.schema.field("text").nullable
+    assert projection.schema.field("choice").nullable
+    attributes = projection.schema.field("attrs").type
+    assert not attributes.field("required").nullable
+    assert attributes.field("optional").nullable
+    assert "$" not in attributes.names
+    nested = projection.schema.field("nested").type
+    assert not projection.schema.field("nested").nullable
+    assert nested.field("value").nullable
+    assert not nested.field("struct").nullable
+    assert nested.field("struct").type.field("optional").nullable
+
+
+def test_repeated_primitive_items_and_optional_lists_are_nullable():
+    schema = compile_element(
+        """
+        <zeroOrMore><element name="items"><optional><data type="integer"/></optional></element></zeroOrMore>
+        <zeroOrMore><element name="plain"><data type="integer"/></element></zeroOrMore>
+        <oneOrMore><element name="requiredPlain"><data type="integer"/></element></oneOrMore>
+        """
+    )
+    projection = RelaxNGRecordProjection(schema, element="doc")
+    items = projection.schema.field("items")
+    assert items.type == pa.list_(pa.field("item", pa.int64(), nullable=True))
+    assert items.nullable
+    plain = projection.schema.field("plain")
+    assert plain.type == pa.list_(pa.field("item", pa.int64(), nullable=False))
+    assert plain.nullable
+    required = projection.schema.field("requiredPlain")
+    assert required.type == pa.list_(pa.field("item", pa.int64(), nullable=False))
+    assert not required.nullable
+
+
+def test_default_nullable_child_schema_writes_a_null_parquet_value(tmp_path):
+    schema = compile_element(
+        '<element name="value"><optional><data type="integer"/></optional></element>'
+    )
+    projection = RelaxNGRecordProjection(schema, element="doc")
+    assert projection.schema.field("value").nullable
+    table = pa.Table.from_pylist([{"value": None}], schema=projection.schema)
+    destination = tmp_path / "null.parquet"
+    pq.write_table(table, destination)
+    assert pq.read_table(destination).to_pylist() == [{"value": None}]
+
+
+def nested_element_schema(depth: int) -> RelaxNGSchema:
+    body = '<data type="integer"/>'
+    for index in range(depth - 1, -1, -1):
+        body = f'<element name="n{index}">{body}</element>'
+    return compile_element(body)
+
+
+@pytest.mark.parametrize("depth", [900, 1200])
+def test_deep_default_projection_raises_a_controlled_error(depth):
+    schema = nested_element_schema(depth)
+    with pytest.raises(IntegrationError, match=r"default field path .* nesting exceeds limit"):
+        RelaxNGRecordProjection(schema, element="doc")
+
+
+def test_nested_default_error_names_the_field_path_and_route():
+    schema = compile_element(
+        """
+        <element name="container">
+          <element name="bad">
+            <mixed><element name="x"><text/></element></mixed>
+          </element>
+        </element>
+        """
+    )
+    with pytest.raises(IntegrationError) as error:
+        RelaxNGRecordProjection(schema, element="doc")
+    message = str(error.value)
+    assert "default field path doc/container/bad" in message
+    assert "pyxsd.relaxng.route/1:" in message
+    assert "mixed" in message
+
+
+def test_route_ids_are_stable_arrow_metadata():
+    schema = compile_element('<data type="integer"/>')
+    projection = RelaxNGRecordProjection(schema, element="doc")
+    equivalent = RelaxNGRecordProjection(compile_element('<data type="integer"/>'), element="doc")
+    row_route = projection.schema.metadata[b"pyxsd:row_route"]
+    assert row_route == projection._plan.route.route_id.encode()
+    assert equivalent.schema.metadata[b"pyxsd:row_route"] == row_route
+    assert projection.schema.field("value").metadata[b"pyxsd:column_route"] == row_route
+    columns = RelaxNGRecordProjection(schema, element="doc", columns={"value": FieldSource()})
+    assert columns.schema.metadata[b"pyxsd:row_route"] == row_route
+    assert (
+        columns.schema.field("value").metadata[b"pyxsd:column_route"]
+        == columns._plan.columns[0].occurrence_route.route_id.encode()
+    )
+    assert (
+        columns.schema.field("value").metadata[b"pyxsd:column_route"]
+        == columns._plan.route.route_id.encode()
+    )
+    record = compile_element('<element name="child"><data type="integer"/></element>')
+    record_projection = RelaxNGRecordProjection(record, element="doc")
+    child = record_projection._plan.route.children["child"]
+    assert (
+        record_projection.schema.field("child").metadata[b"pyxsd:column_route"]
+        == child.child_route_id.encode()
+    )
+    assert record_projection.schema.metadata[b"pyxsd:row_route"] == (
+        record_projection._plan.route.route_id.encode()
+    )
+
+
+def test_inconsistent_custom_decimal_facets_fall_back_to_string():
+    class InconsistentDecimalFactory(DatatypeFactory):
+        def create(self, type_name, parameters, context):
+            del type_name, parameters
+            return ScalarDatatype(
+                library_uri="urn:decimal",
+                type_name="inconsistent",
+                xsd_type=XsdDecimal,
+                parameters=(),
+                context=context,
+                constraints=FacetConstraints(total_digits=10, fraction_digits=11),
+                white_space="collapse",
+            )
+
+    schema = compile_element(
+        '<data type="inconsistent" datatypeLibrary="urn:decimal"/>',
+        datatype_libraries={"urn:decimal": registration(InconsistentDecimalFactory())},
+    )
+    plan = compile_relaxng_projection(
+        schema, element="doc", path=(), columns={"value": FieldSource()}
+    )
+    assert plan.columns[0].arrow_shape == pa.string()
+    assert "inconsistent" in plan.columns[0].arrow_fallback
+
+
+def test_custom_datatype_with_malformed_xsd_type_falls_back_to_string():
+    class MalformedFactory(DatatypeFactory):
+        def create(self, type_name, parameters, context):
+            del type_name
+            return ScalarDatatype(
+                library_uri="urn:bad",
+                type_name="weird",
+                xsd_type=42,  # type: ignore[arg-type]
+                parameters=parameters,
+                context=context,
+                constraints=FacetConstraints(),
+                white_space="collapse",
+            )
+
+    schema = compile_element(
+        '<data type="weird" datatypeLibrary="urn:bad"/>',
+        datatype_libraries={"urn:bad": registration(MalformedFactory())},
+    )
+    plan = compile_relaxng_projection(
+        schema, element="doc", path=(), columns={"value": FieldSource()}
+    )
+    assert plan.columns[0].arrow_shape == pa.string()
+    assert "unsupported XSD backing type" in plan.columns[0].arrow_fallback
 
 
 def test_default_recursive_and_empty_routes_fail():
@@ -916,13 +1160,8 @@ def test_default_route_helpers_cover_notallowed_and_impossible_content():
         "group", (not_allowed, ContentContract("choice", (shared, not_allowed)))
     )
     assert not _content_may_be_empty(nested)
-    route = SimpleNamespace(
-        wildcards=(),
-        content=SimpleNamespace(mixed=False, model=not_allowed),
-        generic_reason=None,
-    )
     with pytest.raises(IntegrationError, match="notAllowed"):
-        _check_default_route(route)
+        RelaxNGRecordProjection(compile_element("<notAllowed/>"), element="doc")
 
 
 def test_lazy_pyarrow_import_reports_the_optional_extra(monkeypatch):
@@ -1044,248 +1283,3 @@ def test_explicit_metadata_includes_selectors_contract_candidate_and_arrow():
     source = json.loads(projection.schema.field("value!").metadata[b"pyxsd:source"])
     assert source["candidate_id"] == identifier
     assert "datatype" not in source
-
-
-def test_private_resolution_helpers_cover_ambiguous_and_missing_edges():
-    name = Name(None, "x")
-    plan = SimpleNamespace(
-        routes={
-            "a": SimpleNamespace(
-                expanded_name="x",
-                name_class=name,
-                route_id="a",
-                children={},
-                wildcards=(),
-            ),
-            "b": SimpleNamespace(
-                expanded_name="x",
-                name_class=name,
-                route_id="b",
-                children={},
-                wildcards=(),
-            ),
-        },
-        roots=("a", "b"),
-    )
-    with pytest.raises(IntegrationError, match="several"):
-        _start_route(plan, "x")
-    wildcard_plan = SimpleNamespace(
-        routes={
-            "a": SimpleNamespace(
-                expanded_name=None,
-                name_class=AnyName(),
-                route_id="a",
-                children={},
-                wildcards=(),
-            ),
-            "b": SimpleNamespace(
-                expanded_name=None,
-                name_class=AnyName(),
-                route_id="b",
-                children={},
-                wildcards=(),
-            ),
-        },
-        roots=("a", "b"),
-    )
-    with pytest.raises(IntegrationError, match="wildcard"):
-        _start_route(wildcard_plan, "x")
-    route = SimpleNamespace(
-        children={"x": SimpleNamespace(child_route_id=None)},
-        wildcards=(
-            SimpleNamespace(role="child", name_class=AnyName(), child_route_id="a"),
-            SimpleNamespace(role="child", name_class=AnyName(), child_route_id="b"),
-        ),
-    )
-    with pytest.raises(IntegrationError, match="no compiled child route"):
-        _child_step(plan, route, "x", "step")
-    wildcard_route = SimpleNamespace(
-        children={},
-        wildcards=(
-            SimpleNamespace(role="child", name_class=AnyName(), child_route_id="a"),
-            SimpleNamespace(role="child", name_class=AnyName(), child_route_id="b"),
-        ),
-    )
-    with pytest.raises(IntegrationError, match="several"):
-        _child_step(plan, wildcard_route, "x", "step")
-    missing = SimpleNamespace(children={}, wildcards=())
-    with pytest.raises(IntegrationError, match="unknown"):
-        _child_step(plan, missing, "x", "step")
-
-
-def test_private_resolution_helpers_cover_missing_row_and_wildcard_routes(monkeypatch):
-    import pyxsd.relaxng.records as records_module
-
-    plan = SimpleNamespace(routes={}, roots=("root",))
-    monkeypatch.setattr(records_module, "_start_route", lambda *_: SimpleNamespace(route_id="root"))
-    monkeypatch.setattr(
-        records_module,
-        "_child_step",
-        lambda *_: SimpleNamespace(child_route_id="missing"),
-    )
-    with pytest.raises(IntegrationError, match="no compiled route"):
-        _resolve_row(plan, "doc", ("x",))
-    wildcard_route = SimpleNamespace(
-        children={},
-        wildcards=(SimpleNamespace(role="child", name_class=AnyName(), child_route_id=None),),
-    )
-    with pytest.raises(IntegrationError, match="no compiled child route"):
-        _child_step(SimpleNamespace(routes={}), wildcard_route, "x", "step")
-
-
-def test_private_endpoint_uses_child_contracts_when_route_content_is_empty(monkeypatch):
-    import pyxsd.relaxng.records as records_module
-
-    schema = compile_element('<data type="int"/>')
-    plan = schema.projection
-    contract = plan.routes[plan.roots[0]].content.scalar_contracts[0]
-    route = SimpleNamespace(
-        route_id="row",
-        expanded_name="doc",
-        children={},
-        wildcards=(),
-        content=SimpleNamespace(scalar_contracts=(), mixed=False, model=ContentContract("empty")),
-        generic_reason=None,
-    )
-    edge = SimpleNamespace(scalar_contracts=(contract,), child_route_id="doc")
-    monkeypatch.setattr(records_module, "_resolve_row", lambda *_: (route, (route,), ("doc",)))
-    monkeypatch.setattr(
-        records_module,
-        "_source_endpoint",
-        lambda *_: (route, ("doc",), False, edge),
-    )
-    monkeypatch.setattr(records_module, "_check_endpoint", lambda *_: None)
-    result = compile_relaxng_projection(
-        schema, element="doc", path=(), columns={"value": FieldSource()}
-    )
-    assert result.columns[0].selected_contract == contract
-
-
-def test_private_default_helpers_cover_missing_child_routes_and_unused_fallbacks(monkeypatch):
-    import pyxsd.relaxng.records as records_module
-
-    route = SimpleNamespace(
-        route_id="route",
-        attributes={},
-        children={
-            "x": SimpleNamespace(
-                child_route_id="missing",
-                expanded_name="x",
-                alias="x",
-                cardinality=Cardinality(1, 1),
-            )
-        },
-        content=SimpleNamespace(scalar_contracts=(), model=ContentContract("empty")),
-        wildcards=(),
-        generic_reason=None,
-    )
-    plan = SimpleNamespace(routes={}, encoding_patterns={})
-    with pytest.raises(IntegrationError, match="no route"):
-        _default_record_fields(route, plan, "grammar", ("doc",), ("doc",), ("doc",))
-    route.children["x"] = SimpleNamespace(
-        child_route_id=None, expanded_name="x", alias="x", cardinality=Cardinality(1, 1)
-    )
-    with pytest.raises(IntegrationError, match="no compiled route"):
-        _default_record_fields(route, plan, "grammar", ("doc",), ("doc",), ("doc",))
-    contract = ScalarContract("atomic", XSD, "int", (), (), "identity")
-    monkeypatch.setattr(records_module, "scalar_kind", lambda xsd_type: "mystery")
-    arrow, fallback = _atomic_arrow(
-        contract,
-        SimpleNamespace(
-            encoding_patterns={
-                "identity": Data(
-                    datatype=ScalarDatatype(
-                        library_uri=XSD,
-                        type_name="int",
-                        xsd_type=int,
-                        parameters=(),
-                        context=None,  # type: ignore[arg-type]
-                        constraints=None,  # type: ignore[arg-type]
-                        white_space="collapse",
-                    )
-                )
-            }
-        ),
-    )
-    assert arrow == pa.string()
-    assert "unsupported XSD scalar kind" in fallback
-
-
-def test_private_selection_and_source_helpers_cover_defensive_branches(monkeypatch):
-    import pyxsd.relaxng.records as records_module
-
-    contract = ScalarContract("atomic", XSD, "int", (), (), "identity")
-    with pytest.raises(IntegrationError, match="no static"):
-        _select_contract(FieldSource(), (), grammar_fingerprint="grammar", description="endpoint")
-    with pytest.raises(IntegrationError, match="several"):
-        monkeypatch.setattr(records_module, "candidate_id", lambda *_: "same")
-        _select_contract(
-            FieldSource(candidate_id="same"),
-            (contract, ScalarContract("atomic", XSD, "long", (), (), "other")),
-            grammar_fingerprint="grammar",
-            description="endpoint",
-        )
-
-    source = compile_grammar(
-        f"""
-        <start>
-          <element name="doc" datatypeLibrary="{XSD}">
-            <element name="row"><element name="value"><data type="int"/></element></element>
-          </element>
-        </start>
-        """
-    )
-    plan = source.projection
-    row = plan.routes[plan.roots[0]].children["row"]
-    assert row.child_route_id is not None
-    row_route = plan.routes[row.child_route_id]
-    edge = SimpleNamespace(
-        cardinality=Cardinality(1, 1),
-        child_route_id="missing",
-        expanded_name="value",
-        scalar_contracts=(),
-        field=None,
-    )
-    fake_plan = SimpleNamespace(routes={}, roots=plan.roots)
-    monkeypatch.setattr(
-        records_module, "_resolve_row", lambda *_: (row_route, (row_route,), ("doc", "row"))
-    )
-    with pytest.raises(IntegrationError, match="no compiled route"):
-        _source_endpoint(fake_plan, (row_route,), ("doc", "row"), FieldSource(path=("value",)))
-    assert edge.child_route_id == "missing"
-
-
-def test_private_list_and_primitive_fallbacks(monkeypatch):
-    import pyxsd.relaxng.records as records_module
-
-    contract = ScalarContract("list", "library", "list", (), (), "identity")
-    with pytest.raises(IntegrationError, match="derivable"):
-        monkeypatch.setattr(records_module, "_list_token_plan", lambda *_: None)
-        from pyxsd.relaxng.records import _contract_arrow
-
-        _contract_arrow(
-            contract,
-            SimpleNamespace(
-                encoding_patterns={
-                    "identity": __import__("pyxsd.relaxng.patterns", fromlist=["List"]).List(
-                        Data(
-                            datatype=ScalarDatatype(
-                                library_uri=XSD,
-                                type_name="int",
-                                xsd_type=int,
-                                parameters=(),
-                                context=SimpleNamespace(namespaces={}),  # type: ignore[arg-type]
-                                constraints=SimpleNamespace(
-                                    total_digits=None, fraction_digits=None
-                                ),
-                                white_space="collapse",
-                            )
-                        )
-                    )
-                }
-            ),
-        )
-    contract = ScalarContract("atomic", XSD, "int", (), (), "missing-pattern")
-    arrow, fallback = _atomic_arrow(contract, SimpleNamespace(encoding_patterns={}))
-    assert arrow == pa.string()
-    assert "custom datatype" in fallback

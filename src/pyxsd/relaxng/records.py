@@ -46,6 +46,7 @@ __all__ = [
 ]
 
 _ROW_EXTRACTION = "RELAX NG row extraction is not implemented by Task 5; Task 6 owns rows"
+_MAX_DEFAULT_DEPTH = 256
 
 
 def _pyarrow() -> Any:
@@ -86,9 +87,9 @@ class RelaxNGProjectionPlan:
 
     schema: RelaxNGSchema
     route: RouteContract
-    row_chain: tuple[RouteContract, ...]
     columns: tuple[RelaxNGColumnBinding, ...]
-    default_fields: tuple[Any, ...]
+    row_chain: tuple[RouteContract, ...] = ()
+    default_fields: tuple[Any, ...] = ()
     mode: Literal["columns", "default"] = "columns"
     row_path: tuple[str, ...] = ()
     grammar_fingerprint: str = ""
@@ -127,19 +128,15 @@ def _start_route(plan: ProjectionPlan, element: object) -> RouteContract:
     expanded = clark(uri, local)
     roots = [plan.routes[route_id] for route_id in plan.roots]
     exact = [route for route in roots if route.expanded_name == expanded]
-    if len(exact) == 1:
+    if exact:
         return exact[0]
-    if len(exact) > 1:
-        raise IntegrationError(f"start element {element!r} matches several projection roots")
     wildcard = [
         route
         for route in roots
         if route.expanded_name is None and route.name_class.contains(uri, local)
     ]
-    if len(wildcard) == 1:
+    if wildcard:
         return wildcard[0]
-    if len(wildcard) > 1:
-        raise IntegrationError(f"start element {element!r} matches several wildcard roots")
     raise IntegrationError(f"start element {element!r} is unknown in this RELAX NG grammar")
 
 
@@ -148,13 +145,11 @@ def _child_step(plan: ProjectionPlan, route: RouteContract, spelling: str, what:
     expanded = clark(uri, local)
     field = route.children.get(expanded)
     if field is not None:
-        if field.child_route_id is None:
-            raise IntegrationError(f"child {expanded!r} has no compiled child route")
         return _RouteStep(
             field,
             field.cardinality,
             field.scalar_contracts,
-            field.child_route_id,
+            cast(str, field.child_route_id),
             expanded,
         )
     wildcards = [
@@ -162,19 +157,15 @@ def _child_step(plan: ProjectionPlan, route: RouteContract, spelling: str, what:
         for wildcard in route.wildcards
         if wildcard.role == "child" and wildcard.name_class.contains(uri, local)
     ]
-    if len(wildcards) == 1:
+    if wildcards:
         wildcard = wildcards[0]
-        if wildcard.child_route_id is None:
-            raise IntegrationError(f"child {expanded!r} has no compiled child route")
         return _RouteStep(
             None,
             wildcard.cardinality,
             wildcard.scalar_contracts,
-            wildcard.child_route_id,
+            cast(str, wildcard.child_route_id),
             expanded,
         )
-    if len(wildcards) > 1:
-        raise IntegrationError(f"{what} {spelling!r} matches several child wildcards")
     raise IntegrationError(f"{what} {spelling!r} is unknown at this route")
 
 
@@ -189,9 +180,7 @@ def _resolve_row(
     names = [clark(uri, local)]
     for step in path:
         edge = _child_step(plan, route, step, "row path step")
-        child = plan.routes.get(edge.child_route_id)
-        if child is None:
-            raise IntegrationError(f"row path step {step!r} has no compiled route")
+        child = plan.routes[edge.child_route_id]
         chain.append(child)
         names.append(edge.expanded_name)
         route = child
@@ -203,7 +192,7 @@ def _source_endpoint(
     row_chain: tuple[RouteContract, ...],
     row_names: tuple[str, ...],
     source: FieldSource,
-) -> tuple[RouteContract, tuple[str, ...], bool, _RouteStep | None]:
+) -> tuple[RouteContract, tuple[str, ...], bool]:
     if source.scope == "root":
         index = 0
     elif source.scope == "ancestor":
@@ -215,21 +204,18 @@ def _source_endpoint(
     chain = list(row_chain[: index + 1])
     names = list(row_names[: index + 1])
     nullable = False
-    edge: _RouteStep | None = None
     for step in source.path:
         edge = _child_step(plan, chain[-1], step, "column path step")
         if edge.cardinality.repeatable:
             raise IntegrationError("downward column route is potentially repeated")
-        child = plan.routes.get(edge.child_route_id)
-        if child is None:
-            raise IntegrationError(f"column path step {step!r} has no compiled route")
+        child = plan.routes[edge.child_route_id]
         if any(existing.route_id == child.route_id for existing in chain):
             raise IntegrationError("column path repeats a route already on its chain")
         if edge.cardinality.minimum == 0:
             nullable = True
         chain.append(child)
         names.append(edge.expanded_name)
-    return chain[-1], tuple(names), nullable, edge
+    return chain[-1], tuple(names), nullable
 
 
 def _attribute_field(route: RouteContract, spelling: str) -> FieldContract:
@@ -366,6 +352,7 @@ def _field_metadata(
     candidate: str | None,
     arrow_shape: Any,
     arrow_fallback: str | None,
+    route_id: str,
     source: FieldSource | None = None,
 ) -> dict[bytes, bytes]:
     metadata = {
@@ -376,6 +363,7 @@ def _field_metadata(
             "struct" if contract is None else contract.type_name or contract.kind
         ).encode(),
         b"pyxsd:arrow": str(arrow_shape).encode(),
+        b"pyxsd:column_route": route_id.encode(),
     }
     if contract is not None:
         metadata[b"pyxsd:contract"] = json.dumps(
@@ -392,51 +380,70 @@ def _field_metadata(
 
 def _atomic_arrow(contract: ScalarContract, plan: ProjectionPlan) -> tuple[Any, str | None]:
     pa = _pyarrow()
-    pattern = plan.encoding_patterns.get(contract.pattern_identity)
-    datatype = getattr(pattern, "datatype", None) if pattern is not None else None
+    pattern = plan.encoding_patterns[contract.pattern_identity]
+    datatype = getattr(pattern, "datatype", None)
     if not isinstance(datatype, ScalarDatatype):
         return pa.string(), "custom datatype has no Arrow-compatible XSD backing type"
     try:
         kind = scalar_kind(datatype.xsd_type)
-    except IntegrationError as exc:
-        return pa.string(), f"unsupported XSD backing type: {exc}"
+    except (IntegrationError, TypeError) as exc:
+        return (
+            pa.string(),
+            f"unsupported XSD backing type for {contract.type_name or contract.kind!r}: {exc}",
+        )
     if kind == "bool":
         return pa.bool_(), None
     if kind == "int":
         return pa.int64(), None
     if kind == "decimal":
         constraints = getattr(datatype, "constraints", None)
-        digits = getattr(constraints, "total_digits", None)
+        precision = getattr(constraints, "total_digits", None)
         scale = getattr(constraints, "fraction_digits", None)
-        if (digits is not None and digits > 38) or (scale is not None and scale > 18):
-            return pa.string(), "decimal precision exceeds Arrow decimal128(38, 18)"
-        return pa.decimal128(38, 18), None
+        if precision is None or scale is None:
+            return pa.string(), "unbounded decimal precision or scale; using string"
+        if precision > 38:
+            return (
+                pa.string(),
+                f"decimal precision {precision} exceeds Arrow decimal128 precision 38; using string",
+            )
+        if scale > 18:
+            return (
+                pa.string(),
+                f"decimal scale {scale} exceeds supported Arrow scale 18; using string",
+            )
+        if not 0 <= scale <= precision:
+            return (
+                pa.string(),
+                f"decimal totalDigits {precision} and fractionDigits {scale} are inconsistent; "
+                "using string",
+            )
+        return pa.decimal128(precision, scale), None
     if kind == "float":
         return pa.float64(), None
     if kind in ("base64", "hex"):
         return pa.binary(), None
-    if kind in ("qname", "str"):
-        return pa.string(), None
     if kind == "list":
         return pa.string(), "datatype-level list values have no static Arrow item type"
-    return pa.string(), f"unsupported XSD scalar kind {kind!r}; using string"
+    mapping = {
+        "qname": pa.string(),
+        "str": pa.string(),
+    }
+    return mapping.get(kind, pa.string()), None
 
 
 def _contract_arrow(contract: ScalarContract, plan: ProjectionPlan) -> tuple[Any, str | None]:
     pa = _pyarrow()
     if contract.kind == "text":
         return pa.string(), None
-    pattern = plan.encoding_patterns.get(contract.pattern_identity)
-    if contract.kind != "list" or pattern is None:
+    if contract.kind == "atomic":
         return _atomic_arrow(contract, plan)
+    pattern = plan.encoding_patterns[contract.pattern_identity]
     shape = list_shape(pattern)
     if shape == "interpretation":
         raise IntegrationError(
             "whole-list contract has no schema-static homogeneous or fixed shape"
         )
-    plan_tokens = _list_token_plan(cast(PatternList, pattern))
-    if plan_tokens is None:
-        raise IntegrationError("whole-list contract has no derivable token contract")
+    plan_tokens = cast(Any, _list_token_plan(cast(PatternList, pattern)))
     item_types: list[Any] = []
     fallbacks: list[str] = []
     for token in plan_tokens.patterns:
@@ -468,15 +475,26 @@ def _default_element_shape(
     stack: tuple[str, ...],
 ) -> tuple[Any, ScalarContract | None, str | None, bool]:
     pa = _pyarrow()
+    if len(path) > _MAX_DEFAULT_DEPTH:
+        raise IntegrationError(
+            f"default field path {'/'.join(path)} (route {route.route_id}): "
+            f"nesting exceeds limit {_MAX_DEFAULT_DEPTH}"
+        )
     if route.route_id in stack:
         raise IntegrationError(
-            f"default field path {'/'.join(path)} is recursive; Arrow cannot express "
-            "an infinite struct"
+            f"default field path {'/'.join(path)} (route {route.route_id}): "
+            "route is recursive; Arrow cannot express an infinite struct"
         )
-    _check_default_route(route)
+    try:
+        _check_default_route(route)
+    except IntegrationError as exc:
+        raise IntegrationError(
+            f"default field path {'/'.join(path)} (route {route.route_id}): {exc}"
+        ) from exc
     if _is_primitive(route):
         contract = _single_contract(
-            route.content.scalar_contracts, f"default field path {'/'.join(path)}"
+            route.content.scalar_contracts,
+            f"default field path {'/'.join(path)} (route {route.route_id})",
         )
         arrow_shape, fallback = _contract_arrow(contract, plan)
         return (
@@ -498,10 +516,16 @@ def _default_root_fields(
     row_path: tuple[str, ...],
 ) -> tuple[Any, ...]:
     pa = _pyarrow()
-    _check_default_route(route)
+    try:
+        _check_default_route(route)
+    except IntegrationError as exc:
+        raise IntegrationError(
+            f"default field path {'/'.join(row_path)} (route {route.route_id}): {exc}"
+        ) from exc
     if _is_primitive(route):
         contract = _single_contract(
-            route.content.scalar_contracts, f"default field path {'/'.join(row_path)}"
+            route.content.scalar_contracts,
+            f"default field path {'/'.join(row_path)} (route {route.route_id})",
         )
         arrow_shape, fallback = _contract_arrow(contract, plan)
         return (
@@ -517,6 +541,7 @@ def _default_root_fields(
                     candidate_id(grammar_fingerprint, contract),
                     arrow_shape,
                     fallback,
+                    route_id=route.route_id,
                 ),
             ),
         )
@@ -539,7 +564,8 @@ def _default_record_fields(
     for attribute in route.attributes.values():
         contract = _single_contract(
             attribute.scalar_contracts,
-            f"default attribute {'/'.join((*path, attribute.expanded_name))}",
+            f"default attribute {'/'.join((*path, attribute.expanded_name))} "
+            f"(route {route.route_id})",
         )
         arrow_shape, fallback = _contract_arrow(contract, plan)
         fields.append(
@@ -555,12 +581,14 @@ def _default_record_fields(
                     candidate_id(grammar_fingerprint, contract),
                     arrow_shape,
                     fallback,
+                    route_id=route.route_id,
                 ),
             )
         )
     if route.content.scalar_contracts:
         contract = _single_contract(
-            route.content.scalar_contracts, f"default text path {'/'.join(path)}"
+            route.content.scalar_contracts,
+            f"default text path {'/'.join(path)} (route {route.route_id})",
         )
         arrow_shape, fallback = _contract_arrow(contract, plan)
         fields.append(
@@ -576,26 +604,26 @@ def _default_record_fields(
                     candidate_id(grammar_fingerprint, contract),
                     arrow_shape,
                     fallback,
+                    route_id=route.route_id,
                 ),
             )
         )
     for child in route.children.values():
-        if child.child_route_id is None:
-            raise IntegrationError(f"default child {child.expanded_name!r} has no compiled route")
-        child_route = plan.routes.get(child.child_route_id)
-        if child_route is None:
-            raise IntegrationError(f"default child {child.expanded_name!r} has no route")
+        child_route = plan.routes[cast(str, child.child_route_id)]
         child_path = (*path, child.expanded_name)
-        child_shape, child_contract, child_fallback, _ = _default_element_shape(
+        child_shape, child_contract, child_fallback, child_empty = _default_element_shape(
             child_route, plan, grammar_fingerprint, child_path, row_path, stack
         )
         if child.cardinality.repeatable:
-            data_type = pa.list_(pa.field("item", child_shape, nullable=False))
-            nullable = False
+            item_nullable = child_empty if child_contract is not None else False
+            data_type = pa.list_(pa.field("item", child_shape, nullable=item_nullable))
+            nullable = child.cardinality.minimum == 0
             metadata_shape = data_type
         else:
             data_type = child_shape
-            nullable = child.cardinality.minimum == 0
+            nullable = child.cardinality.minimum == 0 or (
+                child_contract is not None and child_empty
+            )
             metadata_shape = child_shape
         fields.append(
             pa.field(
@@ -614,6 +642,7 @@ def _default_record_fields(
                     ),
                     metadata_shape,
                     child_fallback,
+                    route_id=child_route.route_id,
                 ),
             )
         )
@@ -655,13 +684,7 @@ def _select_contract(
             raise IntegrationError(
                 f"{description}: candidate_id {source.candidate_id!r} is unknown"
             )
-        if len(matches) > 1:
-            raise IntegrationError(
-                f"{description}: candidate_id {source.candidate_id!r} matches several contracts"
-            )
         return matches[0]
-    if not contracts:
-        raise IntegrationError(f"{description} has no static scalar contract")
     if len(contracts) != 1:
         raise IntegrationError(
             f"{description}: {len(contracts)} distinct scalar contracts; "
@@ -703,9 +726,7 @@ def compile_relaxng_projection(
                     raise IntegrationError("output name must be a nonempty string")
                 if not isinstance(source, FieldSource):
                     raise IntegrationError("column source must be a FieldSource")
-                current, names, nullable, edge = _source_endpoint(
-                    plan, row_chain, row_names, source
-                )
+                current, names, nullable = _source_endpoint(plan, row_chain, row_names, source)
                 if source.attribute is not None:
                     attribute = _attribute_field(current, source.attribute)
                     if attribute.cardinality.minimum == 0:
@@ -715,8 +736,6 @@ def compile_relaxng_projection(
                 else:
                     _check_endpoint(current)
                     contracts = _distinct(current.content.scalar_contracts)
-                    if not contracts and edge is not None:
-                        contracts = _distinct(edge.scalar_contracts)
                     if not contracts:
                         raise IntegrationError("selected endpoint has no static scalar contract")
                     nullable = nullable or _content_may_be_empty(current.content.model)
@@ -747,26 +766,26 @@ def compile_relaxng_projection(
                     f"column {name!r} source {source!r} on {'/'.join(row_names)}: {exc}"
                 ) from exc
         return RelaxNGProjectionPlan(
-            schema,
-            route,
-            row_chain,
-            tuple(bindings),
-            (),
-            "columns",
-            row_names,
-            grammar_fingerprint,
+            schema=schema,
+            route=route,
+            columns=tuple(bindings),
+            row_chain=row_chain,
+            default_fields=(),
+            mode="columns",
+            row_path=row_names,
+            grammar_fingerprint=grammar_fingerprint,
         )
     route, row_chain, row_names = _resolve_row(plan, element, path)
     default_fields = _default_root_fields(route, plan, grammar_fingerprint, row_names)
     return RelaxNGProjectionPlan(
-        schema,
-        route,
-        row_chain,
-        (),
-        default_fields,
-        "default",
-        row_names,
-        grammar_fingerprint,
+        schema=schema,
+        route=route,
+        columns=(),
+        row_chain=row_chain,
+        default_fields=default_fields,
+        mode="default",
+        row_path=row_names,
+        grammar_fingerprint=grammar_fingerprint,
     )
 
 
@@ -786,6 +805,7 @@ def _build_arrow_schema(plan: RelaxNGProjectionPlan) -> pa.Schema:
                     binding.candidate,
                     binding.arrow_shape,
                     binding.arrow_fallback,
+                    binding.occurrence_route.route_id,
                     binding.source,
                 ),
             )
@@ -801,6 +821,7 @@ def _build_arrow_schema(plan: RelaxNGProjectionPlan) -> pa.Schema:
             b"pyxsd:mode": plan.mode.encode(),
             b"pyxsd:declaration": json.dumps(list(plan.row_path)).encode(),
             b"pyxsd:row": json.dumps(list(plan.row_path)).encode(),
+            b"pyxsd:row_route": plan.route.route_id.encode(),
             b"pyxsd:grammar": plan.grammar_fingerprint.encode(),
             b"pyxsd:presence": (
                 b"absent optional attributes and empty paths are null; repeated fields are lists"
