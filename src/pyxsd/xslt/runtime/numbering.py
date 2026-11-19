@@ -340,10 +340,13 @@ def _place_marker(
         )
     if counter is not None:
         if node.document_order < 0:
-            # An element-rooted temporary tree that was never finalized has no
-            # document order: every node reports -1, so the incremental walk
-            # cannot place this marker.  Number it with the reference walk,
-            # which does not depend on distinct document positions.
+            # The node's document was never finalized, so it has no document
+            # order and the incremental walk cannot place this marker.  This is
+            # reachable for a detached simple-content node (a text, comment, or
+            # processing-instruction node that is not part of any constructed
+            # tree) and for a tree a caller built without finalizing it.
+            # Number it with the reference walk, which does not depend on
+            # distinct document positions.
             return _place_marker(node, level, matches_count, matches_from, None)
         return counter.count_any(node)
     candidates = _document_order_candidates(node)
@@ -527,11 +530,11 @@ class _AnyCounts:
     ) -> None:
         # A finalized tree has one distinct document position per node
         # (`XdmDocument.parse`, `Builder.finalize`, `Builder.whitespace.strip`),
-        # so a forward walk can place every marker.  A tree that was never
-        # finalized — the element-rooted content `Builder.to_sequence` returns —
-        # reports ``document_order == -1`` on every node, and ``_place_marker``
-        # routes those markers to the reference walk instead of constructing
-        # this class.
+        # so a forward walk can place every marker.  A node whose document was
+        # never finalized — a bare simple-content node such as a detached text
+        # or comment node, or a tree a caller built without finalizing — reports
+        # ``document_order == -1``, and ``_place_marker`` routes those markers
+        # to the reference walk instead of constructing this class.
         self.root = root
         self.walk: Iterator[XdmNode] = iter(_tree_nodes(root))
         self.pending: XdmNode | None = next(self.walk, None)

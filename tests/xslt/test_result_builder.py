@@ -1412,3 +1412,32 @@ def test_copy_attribute_into_an_empty_element_attaches_directly() -> None:
     assert copied.parent is root
     assert root.attributes[0] is copied
     assert copied.string_value == "1"
+
+
+def test_finalize_root_orders_a_parentless_temporary_tree() -> None:
+    factory = _NodeFactory()
+    root = factory.element("a")
+    child = factory.element("b")
+    factory._append(root, child)
+
+    assert factory.finalize_root(root) is root
+    assert root.parent is None
+    assert root.document.children == ()
+    assert root.document.document_order == 0
+    assert root.document_order >= 0
+    assert child.document_order > root.document_order
+
+    # Finalizing the delivered tree again is idempotent: the document keeps its
+    # own base, so the positions do not move or collide with another tree.
+    order = (root.document_order, child.document_order)
+    factory.finalize_root(root)
+    assert (root.document_order, child.document_order) == order
+
+
+def test_finalize_root_rejects_a_non_element_and_a_foreign_element() -> None:
+    factory = _NodeFactory()
+    with pytest.raises(ValueError, match="only an element"):
+        factory.finalize_root(factory.text("text", parent=None))
+    foreign = _NodeFactory().element("a")
+    with pytest.raises(ValueError, match="another document"):
+        factory.finalize_root(foreign)

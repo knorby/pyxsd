@@ -496,6 +496,22 @@ def _document_node_count(document: XdmDocument) -> int:
     return count
 
 
+def _rootless_node_count(root: XdmNode) -> int:
+    """How many child-axis nodes an element-rooted temporary tree holds.
+
+    The tree has no document node above its root, so the count starts at the
+    root and follows the same unit as :func:`_document_node_count`: elements,
+    text, comments, and processing instructions, not attributes or namespaces.
+    """
+    count = 0
+    stack: list[XdmNode] = [root]
+    while stack:
+        node = stack.pop()
+        count += 1
+        stack.extend(node.children)
+    return count
+
+
 class _XdmAdapterRegistry:
     """One transformation's XDM→elementpath adapter trees.
 
@@ -532,6 +548,7 @@ class _XdmAdapterRegistry:
         "_max_nodes",
         "_nodes_built",
         "_reused",
+        "_rootless",
         "nodes",
     )
 
@@ -549,6 +566,10 @@ class _XdmAdapterRegistry:
         #: recycled into another node.
         self.nodes: dict[int, Any] = {}
         self._documents: dict[int, _XdmDocumentAdapter] = {}
+        #: Finalized element-rooted temporary trees, keyed by the identity of
+        #: the document that carries them; the value is the admitted
+        #: child-axis node count.
+        self._rootless: dict[int, int] = {}
         self._max_documents = max_documents
         self._max_nodes = max_nodes
         self._admitted_nodes = 0
@@ -569,6 +590,11 @@ class _XdmAdapterRegistry:
         if adapter is not None:
             self._reused += 1
             return adapter
+        if id(document) in self._rootless:
+            # The document carries a registered element-rooted tree, which is a
+            # different adapter view of the same nodes; adapt the empty
+            # document for this evaluation only.
+            return None
         if document.document_order != 0:
             return None
         if len(self._documents) >= self._max_documents:
@@ -579,6 +605,38 @@ class _XdmAdapterRegistry:
         adapter = _XdmDocumentAdapter(document, self)
         self._documents[id(document)] = adapter
         self.nodes[id(document)] = adapter
+        self._admitted_nodes += count
+        self._built += 1
+        return adapter
+
+    def rootless(self, root: XdmNode) -> Any | None:
+        """The adapter for a finalized element-rooted temporary tree.
+
+        The tree's root has no document parent, so it is not built by
+        :meth:`document`; the root adapter and every descendant are still
+        registered in ``nodes`` and reused by later evaluations.  ``None``
+        means the tree is not registrable: its document order is not finalized,
+        the document already carries another registered view, the document
+        count is exhausted, or admitting the tree would exceed the node budget.
+        """
+        adapter = self.nodes.get(id(root))
+        if adapter is not None:
+            self._reused += 1
+            return adapter
+        document = root.document
+        if document.document_order != 0:
+            return None
+        if id(document) in self._documents or id(document) in self._rootless:
+            return None
+        if len(self._documents) + len(self._rootless) >= self._max_documents:
+            return None
+        count = _rootless_node_count(root)
+        if self._admitted_nodes + count > self._max_nodes:
+            return None
+        adapter = _adapter_node(root, None, self)
+        self.nodes[id(root)] = adapter
+        self._nodes_built += 1
+        self._rootless[id(document)] = count
         self._admitted_nodes += count
         self._built += 1
         return adapter
@@ -611,6 +669,7 @@ class _XdmAdapterRegistry:
         """
         self.nodes.clear()
         self._documents.clear()
+        self._rootless.clear()
         self._admitted_nodes = 0
 
     @property
@@ -625,8 +684,8 @@ class _XdmAdapterRegistry:
 
     @property
     def document_count(self) -> int:
-        """How many adapter trees are currently held."""
-        return len(self._documents)
+        """How many registered document views are currently held."""
+        return len(self._documents) + len(self._rootless)
 
     @property
     def nodes_built(self) -> int:
@@ -833,12 +892,25 @@ class _ValueBridge:
                 return self.adapt_document(cast(XdmDocument, item))
             if item.parent is None:
                 adapter = self._lookup(item)
+                if adapter is None and self._registry is not None:
+                    adapter = self._registry.rootless(item)
                 if adapter is None:
                     adapter = self._adapt_rootless_node(item)
                     self._ephemeral[id(item)] = adapter
                 return adapter
-            self.adapt_document(item.document)
             adapter = self._lookup(item)
+            if (
+                adapter is None
+                and self._registry is not None
+                and item.root.kind is NodeKind.ELEMENT
+            ):
+                # A descendant of a finalized element-rooted temporary tree:
+                # admit the tree through its parentless root before falling
+                # back to a per-evaluation adaptation.
+                adapter = self._registry.rootless(item.root)
+            if adapter is None:
+                self.adapt_document(item.document)
+                adapter = self._lookup(item)
             if adapter is None:
                 # The node's document does not contain it: an element-rooted
                 # temporary tree from a sequence constructor.  Adapt its root

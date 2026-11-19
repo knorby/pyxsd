@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from itertools import count
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
@@ -71,6 +72,17 @@ _CONSTRUCTED_ANNOTATIONS = {
     NodeKind.TEXT: XdmAnnotation("{http://www.w3.org/2001/XMLSchema}untypedAtomic", None),
 }
 _NCNAME = re.compile(r"^[^\W\d][\w.\-]*$", re.UNICODE)
+
+#: Each constructed document receives a disjoint document-order range.  The
+#: stride is far larger than any constructible tree, so a temporary tree's
+#: positions never meet another tree's; only their relative order matters.
+_ORDER_STRIDE = 1 << 32
+_ORDER_SEQUENCE = count(1)
+
+
+def _next_order_base() -> int:
+    """The first document-order position of one newly constructed document."""
+    return next(_ORDER_SEQUENCE) * _ORDER_STRIDE + 1
 
 
 def _dynamic(message: str, code: str) -> XsltDynamicError:
@@ -299,6 +311,7 @@ class _NodeFactory:
                 base_uri=base_uri if base_uri is not None else document_uri,
                 schema_pool=schema_pool,
             )
+            document._order_base = _next_order_base()
         self.document = document
         self._next_id = 1
 
@@ -588,6 +601,7 @@ class _NodeFactory:
             base_uri=source.base_uri,
             schema_pool=getattr(source, "schema_pool", None),
         )
+        document._order_base = _next_order_base()
         factory = _NodeFactory(document=document)
         if deep:
             for child in source.children:
@@ -638,6 +652,25 @@ class _NodeFactory:
     def finalize(self) -> XdmDocument:
         self.document._finalize_document_order()
         return self.document
+
+    def finalize_root(self, root: XdmNode) -> XdmNode:
+        """Finalize one completed element-rooted temporary tree.
+
+        The literal-construction and copy instructions build their element in a
+        factory that never appended it to the factory's document, so the tree
+        has no document node above it and no document order.  The element is
+        complete when this is called: all content and validation defaults are
+        present.  A parentless root keeps its parentless identity (an
+        element-rooted tree's root), while the document node is marked
+        finalized at order 0 so the registry can admit the tree; the element and
+        its descendants are placed in this document's unique order range.
+        """
+        if root.kind is not NodeKind.ELEMENT:
+            raise ValueError("only an element can be a temporary tree's root")
+        if root.document is not self.document:
+            raise ValueError("the root belongs to another document")
+        self.document._finalize_document_order(root)
+        return root
 
     def _append(self, parent: XdmNode, child: XdmNode) -> None:
         child._parent = parent
@@ -1360,6 +1393,12 @@ class ResultBuilder:
         self._factory.finalize()
         self._finalized = True
         return self.root
+
+    def finalize_root(self, root: XdmNode) -> XdmNode:
+        """Finalize *root* as this builder's temporary tree and return it."""
+        self._factory.finalize_root(root)
+        self._finalized = True
+        return root
 
     # -- transactions ------------------------------------------------------
 

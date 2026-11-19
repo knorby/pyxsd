@@ -1204,7 +1204,7 @@ def test_number_counts_once_per_parent_for_a_wide_sibling_list() -> None:
     )
 
 
-def test_number_any_in_an_unfinalized_temporary_tree_keeps_the_reference_answer() -> None:
+def test_number_any_in_an_element_rooted_temporary_tree_uses_the_counter_path() -> None:
     source = stylesheet(
         """
         <xsl:template name="main" match="/">
@@ -1213,14 +1213,33 @@ def test_number_any_in_an_unfinalized_temporary_tree_keeps_the_reference_answer(
         </xsl:template>
         """
     )
-    # The variable holds an element-rooted tree that was never finalized, so
-    # every node reports document_order -1 and the incremental walk cannot
-    # order them. The marker takes the reference walk and keeps its pre-cache
-    # answer instead of raising an internal AssertionError (a KeyError under
-    # PYTHONOPTIMIZE). XSLT 3.0 section 12.3 makes 5 the normative answer;
-    # reaching it needs the tree finalized first (or an identity-based walk),
-    # which belongs to the tree/parser stage.
-    assert text(lambda: transform(source, None, initial_template="main")) == "1"
+    # The variable holds a delivered element-rooted temporary tree.  Delivery
+    # finalizes the tree, so its nodes carry distinct document positions and
+    # the marker runs on the incremental counter path instead of the reference
+    # fallback.  XSLT 3.0 section 12.3 makes 5 the normative answer.
+    assert text(lambda: transform(source, None, initial_template="main")) == "5"
+
+
+def test_number_any_in_an_unfinalized_tree_keeps_the_reference_fallback() -> None:
+    from pyxsd.xslt.runtime.builder import _NodeFactory
+    from pyxsd.xslt.runtime.numbering import NumberingCounter, place_marker
+
+    # A tree that was built but never finalized keeps its pre-cache behavior:
+    # every node reports document_order -1, so the marker takes the reference
+    # walk instead of asserting on the incremental one.
+    factory = _NodeFactory()
+    root = factory.element("a")
+    for name in ("b", "b", "b", "c"):
+        factory._append(root, factory.element(name))
+    assert root.document.document_order == -1
+    selected = root.children[-1]
+
+    def count(node: Any) -> bool:
+        return node.name in {"a", "b", "c"}
+
+    counter = NumberingCounter("any", count, None)
+    assert place_marker(selected, "any", count, None, counter=counter) == (1,)
+    assert place_marker(selected, "any", count, None) == (1,)
 
 
 def test_number_implied_count_follows_each_selected_nodes_name() -> None:

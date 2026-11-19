@@ -364,6 +364,7 @@ class PatternMatcher:
         *,
         statistics: PatternStatistics | None = None,
         strategy: Literal["optimized", "forward"] = "optimized",
+        rootless: bool = False,
     ) -> None:
         if not isinstance(pattern, CompiledPattern):
             raise TypeError("pattern must be a CompiledPattern")
@@ -371,6 +372,7 @@ class PatternMatcher:
             raise ValueError(f"unknown pattern matching strategy {strategy!r}")
         self.pattern = pattern
         self.strategy = strategy
+        self.rootless = rootless
         self.statistics = statistics or PatternStatistics()
         self._environment: ExpressionEnvironment | None = None
         self._matches: dict[tuple[int, object], bool] = {}
@@ -624,7 +626,11 @@ class PatternMatcher:
     ) -> bool:
         if isinstance(step, PostfixStep):  # pragma: no cover - forward plan owns postfix
             return False
-        nodes = _axis_nodes(step, context_node, top)
+        nodes = _axis_nodes(
+            step,
+            context_node,
+            top and (not self.rootless or context_node is item),
+        )
         nodes = tuple(
             node
             for node in nodes

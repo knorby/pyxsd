@@ -4,10 +4,10 @@ An adapter projects one XDM node onto elementpath, and node identity is object
 identity, so two adapters for one node would make ``is``, document order, and
 ``union`` deduplication disagree.  These tests pin the reuse boundary: a
 finalized document is adapted once and reused by every evaluation of one
-transformation; an unfinalized builder tree and every detached temporary tree
-are adapted per evaluation; admission is capped by document count and by a node
-budget and never evicts; and a reused adapter retains no bridge, environment,
-or document-order state beyond the document it projects.
+transformation; an unfinalized builder tree is adapted per evaluation;
+admission is capped by document count and by a node budget and never evicts;
+and a reused adapter retains no bridge, environment, or document-order state
+beyond the document it projects.
 
 No test asserts elapsed time.  Reuse is proved with the registry's own counters
 and adapter identity, never with a wall clock.
@@ -237,10 +237,10 @@ def test_position_and_last_do_not_cross_sequences() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §5.2/§7.3 — temporary trees stay ephemeral; detached descendants are routed
+# §5.2/§7.3 — finalized temporary trees are admitted; detached nodes are routed
 
 
-def test_temporary_tree_minted_mid_transformation_still_adapts(
+def test_a_finalized_temporary_tree_is_registered_once_and_reused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registries = _registry_recorder(monkeypatch)
@@ -275,11 +275,54 @@ def test_temporary_tree_minted_mid_transformation_still_adapts(
         _transform(body, source=None, initial_template="xsl:initial-template") == "3|true|3|1|2|2:1"
     )
 
-    # A temporary tree is never registered: it may still grow and its nodes
-    # have no document order, so the registry must stay empty throughout.
-    assert registries
-    assert all(registry.document_count == 0 for registry in registries)
-    assert all(registry.nodes_built == 0 for registry in registries)
+    # Delivery finalizes the temporary tree, so the registry admits it once and
+    # every later evaluation reuses the same adapter tree.  The budget counts
+    # the tree's child-axis nodes: t and the three b's (the tree has no
+    # document node).
+    assert len(registries) == 1
+    registry = registries[0]
+    assert registry.document_count == 1
+    assert registry.documents_built == 1
+    assert registry.nodes_built > 0
+    assert registry.admitted_nodes == 4
+
+
+def test_a_finalized_rootless_tree_reuses_its_adapters_across_bridges() -> None:
+    from pyxsd.xslt.runtime.builder import _NodeFactory
+
+    factory = _NodeFactory()
+    root = factory.element("t")
+    for _ in range(3):
+        factory._append(root, factory.element("b"))
+    factory.finalize_root(root)
+    assert root.parent is None
+    assert root.document.document_order == 0
+
+    registry = _XdmAdapterRegistry()
+    engine = XPathEngine()
+    static = XPathStaticContext(variable_types={"p": "element()"})
+    compiled = engine.compile("count($p/b)", static)
+
+    first = ExpressionEnvironment(variables={"p": root}, adapter_registry=registry)
+    assert engine.evaluate(compiled, first, focus=Focus.absent()) == (XdmAtomic.integer(3),)
+    built = registry.nodes_built
+    assert built > 0
+    assert registry.document_count == 1
+    assert registry.admitted_nodes == 4
+
+    second = ExpressionEnvironment(variables={"p": root}, adapter_registry=registry)
+    assert engine.evaluate(compiled, second, focus=Focus.absent()) == (XdmAtomic.integer(3),)
+    assert registry.nodes_built == built
+
+    # A descendant delivered without its root still admits the whole tree once.
+    descendant_static = XPathStaticContext(variable_types={"p": "element()"})
+    descendant_compiled = engine.compile("count($p/preceding-sibling::b)", descendant_static)
+    middle = root.children[1]
+    third = ExpressionEnvironment(variables={"p": middle}, adapter_registry=registry)
+    assert engine.evaluate(descendant_compiled, third, focus=Focus.absent()) == (
+        XdmAtomic.integer(1),
+    )
+    assert registry.nodes_built == built
 
 
 def test_a_detached_descendant_is_adapted_from_its_root() -> None:
@@ -293,8 +336,8 @@ def test_a_detached_descendant_is_adapted_from_its_root() -> None:
     """
     from pyxsd.xslt.runtime.builder import _NodeFactory
 
-    # The shape ``literal_element`` builds: an element-rooted tree whose
-    # document was never appended to and never finalized.
+    # A builder tree that was never finalized: an element-rooted tree whose
+    # document was not appended to and not finalized.
     factory = _NodeFactory()
     root = factory.element("t")
     for index in (1, 2, 3):
@@ -568,6 +611,71 @@ def test_node_budget_refuses_at_the_boundary_and_evaluates_through_ephemeral(
     assert registry.documents_built == 2
     assert registry.document_count == 2
     assert registry.admitted_nodes == 6
+
+
+def test_rootless_admission_budgets_and_refusals() -> None:
+    from pyxsd.xslt.runtime.builder import _NodeFactory
+
+    factory = _NodeFactory()
+    root = factory.element("t")
+    factory._append(root, factory.element("b"))
+    factory.finalize_root(root)
+    assert root.document.document_order == 0
+
+    registry = _XdmAdapterRegistry()
+    admitted = registry.rootless(root)
+    assert admitted is not None
+    assert registry.rootless(root) is admitted
+    assert (registry.documents_built, registry.documents_reused) == (1, 1)
+    assert registry.document_count == 1
+    assert registry.admitted_nodes == 2
+    # The same document cannot be held as both an empty document view and a
+    # rootless tree view.
+    assert registry.document(root.document) is None
+    assert registry.document_count == 1
+
+    # A document view admitted first refuses the rootless view of the same
+    # document.
+    document_registry = _XdmAdapterRegistry()
+    assert document_registry.document(root.document) is not None
+    assert document_registry.rootless(root) is None
+    assert document_registry.document_count == 1
+
+    # A second root in an already-registered document is refused: the document
+    # carries one registered view.
+    shared = _NodeFactory()
+    first_root, second_root = shared.element("t"), shared.element("u")
+    shared.document._finalize_document_order(first_root)
+    same_document = _XdmAdapterRegistry()
+    assert same_document.rootless(first_root) is not None
+    assert same_document.rootless(second_root) is None
+
+    # An unfinalized tree is not registrable.
+    unfinalized = _NodeFactory()
+    assert registry.rootless(unfinalized.element("v")) is None
+
+    # The document cap and the node budget refuse, never evict.
+    capped = _XdmAdapterRegistry(max_documents=1)
+    assert capped.rootless(root) is not None
+    other = _NodeFactory()
+    other_root = other.element("w")
+    other.finalize_root(other_root)
+    assert capped.rootless(other_root) is None
+    assert capped.document_count == 1
+
+    exact = _XdmAdapterRegistry(max_nodes=2)
+    assert exact.rootless(root) is not None
+    assert exact.admitted_nodes == 2
+    small = _XdmAdapterRegistry(max_nodes=1)
+    assert small.rootless(root) is None
+    assert small.document_count == 0
+    assert small.admitted_nodes == 0
+
+    # clear() drops the tree view, so it can be admitted again.
+    capped.clear()
+    assert capped.document_count == 0
+    assert capped.admitted_nodes == 0
+    assert capped.rootless(other_root) is not None
 
 
 # ---------------------------------------------------------------------------
