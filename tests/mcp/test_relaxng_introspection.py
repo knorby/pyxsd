@@ -257,7 +257,20 @@ def test_capabilities_add_schema_languages_without_changing_old_keys(tmp_path):
                         "suppressed_count": True,
                     },
                     "comparison": {"structural": True, "corpus": True},
-                    "conversion": {"tools": False},
+                    "conversion": {
+                        "tools": True,
+                        "export_data": True,
+                        "import_data": True,
+                        "document_json_schema": True,
+                        "formats": [
+                            "pyxsd",
+                            "pyxsd-json",
+                            "parker",
+                            "badgerfish",
+                            "jsonml",
+                        ],
+                        "fidelities": ["strict", "best-effort"],
+                    },
                     "projection": {"models": True, "records": True},
                 },
             }
@@ -291,7 +304,20 @@ def test_capabilities_add_schema_languages_without_changing_old_keys(tmp_path):
                         "suppressed_count": True,
                     },
                     "comparison": {"structural": False, "corpus": False},
-                    "conversion": {"tools": False},
+                    "conversion": {
+                        "tools": True,
+                        "export_data": True,
+                        "import_data": True,
+                        "document_json_schema": True,
+                        "formats": [
+                            "pyxsd",
+                            "pyxsd-json",
+                            "parker",
+                            "badgerfish",
+                            "jsonml",
+                        ],
+                        "fidelities": ["strict", "best-effort"],
+                    },
                     "projection": {"models": True, "records": False},
                 },
             }

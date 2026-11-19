@@ -66,8 +66,11 @@ from .worker_protocol import (
     ComparisonOperation,
     DescribeOperation,
     DiscoverOperation,
+    DocumentJsonSchemaOperation,
+    ExportDataOperation,
     ExportOperation,
     FindOperation,
+    ImportDataOperation,
     ModelOperation,
     Operation,
     ParseOperation,
@@ -882,6 +885,8 @@ def _with_request_defaults(operation: Operation, limits: Limits) -> Operation:
         and operation.limit is None
     ):
         updates["limit"] = limits.page_items
+    elif isinstance(operation, ImportDataOperation) and operation.issue_limit is None:
+        updates["issue_limit"] = limits.page_items
     return operation.model_copy(update=updates) if updates else operation
 
 
@@ -905,6 +910,18 @@ def _execute(
         from .services.models import execute_model
 
         return execute_model(operation, cache, processor_version)
+    if isinstance(operation, ExportDataOperation):
+        from .services.conversion import execute_export_data
+
+        return execute_export_data(operation, cache, processor_version)
+    if isinstance(operation, ImportDataOperation):
+        from .services.conversion import execute_import_data
+
+        return execute_import_data(operation, cache, processor_version)
+    if isinstance(operation, DocumentJsonSchemaOperation):
+        from .services.conversion import execute_document_json_schema
+
+        return execute_document_json_schema(operation, cache, processor_version)
     limit = getattr(operation, "issue_limit", getattr(operation, "limit", 1))
     maximum = (
         cache.limits.batch_issue_items

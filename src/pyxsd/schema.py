@@ -35,7 +35,7 @@ from pyxsd.element_representatives.element_representative import (
     componentKind,
 )
 from pyxsd.element_representatives.xsd_type import OWNER_SCHEMA_ATTRIBUTE
-from pyxsd.exceptions import PyXSDError, PyXSDWarning, ValidationError
+from pyxsd.exceptions import PyXSDError, PyXSDWarning, ValidationError  # noqa: F401
 from pyxsd.extensions import Extensions
 from pyxsd.import_visibility import audit_direct_imports
 from pyxsd.instance_binding import bind_instance
@@ -776,6 +776,18 @@ class Schema:
             )
         except PyXSDError as exc:
             raise PyXSDError(f"{exc} (format={format!r})") from None
+        if self.resource_policy is not None:
+            # A resource policy refuses arbitrary pre-parsed Element inputs so
+            # policy parsing cannot be bypassed.  This tree was built and
+            # namespace-recorded here from JSON-compatible data, and reading
+            # it opens no resources, so bind it directly instead of
+            # round-tripping library-built structure through the policy.
+            return self._bind_tree(
+                tree,
+                tree,
+                source_id=source_identifier(tree),
+                declarations=None,
+            )
         return self.parse(tree)
 
     def from_json(

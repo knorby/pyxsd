@@ -15,6 +15,7 @@ import pytest
 
 from pyxsd.data_conversion.contracts import JsonValue
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
+from pyxsd.namespaces import parse_with_namespaces
 from pyxsd.relaxng import RelaxNGDocument, RelaxNGSchema
 from pyxsd.relaxng.json_profile import data_to_relaxng_tree
 from pyxsd.xsd_data_types import QName
@@ -1977,3 +1978,24 @@ XSD_MINIMAL = (
     '<xs:element name="body" type="xs:string"/>'
     "</xs:sequence></xs:complexType></xs:element></xs:schema>"
 )
+
+
+class _NamespaceRecordingPolicy:
+    """Parse in-tree grammar content while recording namespace frames."""
+
+    def read(self, source, *, base, purpose):  # pragma: no cover - never a path
+        raise AssertionError("stream inputs are read directly")
+
+    def parse(self, data, context):
+        return parse_with_namespaces(io.BytesIO(data.content), context)
+
+
+def test_from_data_binds_a_library_tree_under_a_resource_policy() -> None:
+    source = f'<grammar xmlns="{NS}" datatypeLibrary="{XSD}"><start><element name="doc">{INTEGER}</element></start></grammar>'
+    schema = RelaxNGSchema.compile(io.StringIO(source), resource_policy=_NamespaceRecordingPolicy())
+    assert not schema.report.has_errors
+
+    document = schema.from_data({"doc": 4}, format="pyxsd-json")
+
+    assert not document.report.has_errors
+    assert document.to_data(format="pyxsd-json") == {"doc": 4}

@@ -902,7 +902,10 @@ class RelaxNGSchema:
         namespace_context = NamespaceContext()
         xdm_source = None
         element_namespaces: NamespaceContext | None = namespace_context
-        if self._resource_policy is not None:
+        # ``contexts`` marks a library-built imported tree.  It is bound in
+        # place: there is no resource to read, and its recorded namespace and
+        # datatype contexts cannot survive a policy re-parse.
+        if self._resource_policy is not None and contexts is None:
             try:
                 data = read_resource(source, self._resource_policy, purpose="instance")
                 tree = self._resource_policy.parse(data, namespace_context)

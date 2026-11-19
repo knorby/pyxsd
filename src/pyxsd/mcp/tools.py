@@ -15,9 +15,12 @@ from .contracts import (
     ArtifactRef,
     BatchValidationItem,
     DeleteArtifactRequest,
+    DocumentJsonSchemaRequest,
     ExplainIssueRequest,
+    ExportDataRequest,
     FileRef,
     FindComponentsRequest,
+    ImportDataRequest,
     InlineFile,
     InspectSchemaRequest,
     ListArtifactsRequest,
@@ -47,6 +50,18 @@ if TYPE_CHECKING:
     from .server import Services
 
 _PAGE = Page()
+
+
+def _conversion_tools() -> dict[str, JsonValue]:
+    """Advertise only the conversion surface this server actually registers."""
+    return {
+        "tools": True,
+        "export_data": True,
+        "import_data": True,
+        "document_json_schema": True,
+        "formats": list(_FORMAT_NAMES),
+        "fidelities": list(_FIDELITY_NAMES),
+    }
 
 
 def _schema_languages() -> dict[str, JsonValue]:
@@ -83,7 +98,7 @@ def _schema_languages() -> dict[str, JsonValue]:
                     "suppressed_count": True,
                 },
                 "comparison": {"structural": True, "corpus": True},
-                "conversion": {"tools": False},
+                "conversion": _conversion_tools(),
                 "projection": {"models": True, "records": True},
             },
         },
@@ -111,7 +126,7 @@ def _schema_languages() -> dict[str, JsonValue]:
                     "suppressed_count": True,
                 },
                 "comparison": {"structural": False, "corpus": False},
-                "conversion": {"tools": False},
+                "conversion": _conversion_tools(),
                 "projection": {"models": True, "records": False},
             },
         },
@@ -432,6 +447,103 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
         _register(server, "pyxsd_validate_documents", validate_documents, read_only=True)
         _register(server, "pyxsd_query_document", query_document, read_only=True)
         _register(server, "pyxsd_explain_issue", explain_issue, read_only=True)
+
+        async def export_data(
+            workspace_id: str,
+            schema_ref: SchemaRef,
+            document: FileRef,
+            format: str = "pyxsd",
+            fidelity: str = "best-effort",
+            typed: bool = True,
+            always_list: bool = False,
+        ) -> types.CallToolResult:
+            """Export one XML document under a JSON data format contract.
+
+            format is pyxsd (native), pyxsd-json, parker, badgerfish, or jsonml;
+            fidelity is strict or best-effort. typed and always_list are
+            native-only options and must keep their defaults for every other
+            format. The compiled schema and document are leased in a clean
+            worker, and only the JSON-safe data crosses back. Oversized results
+            become retained JSON artifacts under the response budget.
+            """
+            request = ExportDataRequest(
+                workspace_id=workspace_id,
+                schema_ref=schema_ref,
+                document=document,
+                format=format,
+                fidelity=fidelity,
+                typed=typed,
+                always_list=always_list,
+            )
+            return await _invoke(services, lambda: services.conversion.export_data(request))
+
+        async def import_data(
+            workspace_id: str,
+            schema_ref: SchemaRef,
+            data: JsonValue,
+            format: str = "pyxsd-json",
+            element: str | None = None,
+            namespaces: dict[str, str] | None = None,
+            fidelity: str = "strict",
+            page: Page = _PAGE,
+        ) -> types.CallToolResult:
+            """Bind JSON-compatible data through the schema's normal instance parser.
+
+            format is pyxsd (native), pyxsd-json, parker, badgerfish, or jsonml;
+            fidelity is strict or best-effort. element selects or confirms the
+            root with a local, Clark, or EQName spelling. Lexically invalid
+            content is an ordinary validation report; malformed containers,
+            scalars, tags, and non-finite numbers are typed conversion faults.
+            The document itself stays in the worker: only counts and paged
+            issues return.
+            """
+            request = ImportDataRequest(
+                workspace_id=workspace_id,
+                schema_ref=schema_ref,
+                data=data,
+                format=format,
+                element=element,
+                namespaces=namespaces or {},
+                fidelity=fidelity,
+                page=page,
+            )
+            return await _invoke(services, lambda: services.conversion.import_data(request))
+
+        async def document_json_schema(
+            workspace_id: str,
+            schema_ref: SchemaRef,
+            format: str = "pyxsd-json",
+            element: str | None = None,
+            fidelity: str = "strict",
+            typed: bool = True,
+            always_list: bool = False,
+        ) -> types.CallToolResult:
+            """Describe a schema's document data contract as JSON Schema.
+
+            The Draft 2020-12 result matches what pyxsd_export_data produces
+            and pyxsd_import_data accepts for the selected format and root.
+            format is pyxsd (native), pyxsd-json, parker, badgerfish, or jsonml;
+            fidelity is strict or best-effort. typed and always_list are
+            native-only options and must keep their defaults for every other
+            format. This is a structural contract, never full schema validity;
+            x-pyxsd-validation lists what JSON Schema cannot express.
+            """
+            request = DocumentJsonSchemaRequest(
+                workspace_id=workspace_id,
+                schema_ref=schema_ref,
+                format=format,
+                element=element,
+                fidelity=fidelity,
+                typed=typed,
+                always_list=always_list,
+            )
+            return await _invoke(
+                services, lambda: services.conversion.document_json_schema(request)
+            )
+
+        _register(server, "pyxsd_export_data", export_data, read_only=True)
+        _register(server, "pyxsd_import_data", import_data, read_only=True)
+        _register(server, "pyxsd_document_json_schema", document_json_schema, read_only=True)
 
         async def compare_schemas(
             workspace_id: str,

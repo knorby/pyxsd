@@ -152,6 +152,65 @@ class ExportOperation(Operation):
     output_directory: Nonempty = "pending"
 
 
+DataFormat = Literal["pyxsd", "pyxsd-json", "parker", "badgerfish", "jsonml"]
+DataFidelity = Literal["strict", "best-effort"]
+
+
+def _reject_native_options(
+    format: str, typed: bool, always_list: bool, *, json_schema: bool
+) -> None:
+    """Apply the public native-only rule at the worker wire boundary."""
+    if format == "pyxsd":
+        return
+    option = "JSON Schema" if json_schema else "data-export"
+    if not typed:
+        raise ValueError(f"typed is a native-only {option} option")
+    if always_list:
+        raise ValueError(f"always_list is a native-only {option} option")
+
+
+class ExportDataOperation(Operation):
+    kind: Literal["export-data"] = "export-data"
+    schema_ref: SchemaRef
+    document: FileRef
+    format: DataFormat = "pyxsd"
+    fidelity: DataFidelity = "best-effort"
+    typed: bool = True
+    always_list: bool = False
+
+    @model_validator(mode="after")
+    def native_options(self) -> "ExportDataOperation":
+        _reject_native_options(self.format, self.typed, self.always_list, json_schema=False)
+        return self
+
+
+class ImportDataOperation(Operation):
+    kind: Literal["import-data"] = "import-data"
+    schema_ref: SchemaRef
+    data: JsonValue
+    format: DataFormat = "pyxsd-json"
+    element: Nonempty | None = None
+    namespaces: dict[str, str] = Field(default_factory=dict)
+    fidelity: DataFidelity = "strict"
+    issue_offset: Annotated[int, Field(ge=0)] = 0
+    issue_limit: Annotated[int, Field(gt=0)] | None = None
+
+
+class DocumentJsonSchemaOperation(Operation):
+    kind: Literal["document-json-schema"] = "document-json-schema"
+    schema_ref: SchemaRef
+    format: DataFormat = "pyxsd-json"
+    element: Nonempty | None = None
+    fidelity: DataFidelity = "strict"
+    typed: bool = True
+    always_list: bool = False
+
+    @model_validator(mode="after")
+    def native_options(self) -> "DocumentJsonSchemaOperation":
+        _reject_native_options(self.format, self.typed, self.always_list, json_schema=True)
+        return self
+
+
 class ComparisonOperation(Operation):
     kind: Literal["compare-schemas"] = "compare-schemas"
     old_schema: SchemaRef
@@ -170,7 +229,10 @@ CleanOperation = Annotated[
     | ModelOperation
     | RecordsOperation
     | ExportOperation
-    | ComparisonOperation,
+    | ComparisonOperation
+    | ExportDataOperation
+    | ImportDataOperation
+    | DocumentJsonSchemaOperation,
     Field(discriminator="kind"),
 ]
 _OPERATION: TypeAdapter[
@@ -185,6 +247,9 @@ _OPERATION: TypeAdapter[
     | RecordsOperation
     | ExportOperation
     | ComparisonOperation
+    | ExportDataOperation
+    | ImportDataOperation
+    | DocumentJsonSchemaOperation
 ] = TypeAdapter(CleanOperation)
 
 
@@ -295,6 +360,9 @@ def decode_operation(
     | RecordsOperation
     | ExportOperation
     | ComparisonOperation
+    | ExportDataOperation
+    | ImportDataOperation
+    | DocumentJsonSchemaOperation
 ):
     """Decode the closed operation union selected by the coordinator's worker role."""
     _decode_object(frame, max_bytes=max_bytes, expected={"role": role})
