@@ -11,13 +11,16 @@ import json
 import os
 import tempfile
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
     import pyarrow as pa
+
+    from pyxsd.batch import DocumentSource
+    from pyxsd.integrations.dataset import DatasetResult
 
 from pyxsd.document import Document
 from pyxsd.integrations import IntegrationError
@@ -55,7 +58,6 @@ __all__ = [
     "iter_relaxng_rows",
 ]
 
-_DATASET_EXTRACTION = "RELAX NG dataset writing is not implemented by Task 6; Task 7 owns datasets"
 _MAX_DEFAULT_DEPTH = 256
 _QNAME_TYPES = frozenset({"QName", "NOTATION"})
 _TEMPORAL_TYPES = frozenset({"date", "time", "dateTime", "duration"})
@@ -1534,6 +1536,19 @@ class RelaxNGRecordProjection:
         self._plan = compile_relaxng_projection(schema, element=element, path=path, columns=columns)
         self.schema = _build_arrow_schema(self._plan)
 
+    def dataset_metadata(self) -> dict[str, Any]:
+        """Describe the RELAX NG format without XSD-only manifest fields."""
+        return {
+            "schema_format": "relaxng",
+            "schema_version": "1.0",
+            "parse_policy": {
+                "typed": True,
+                "capture": "none",
+                "datatype_fingerprint": self._plan.schema.datatype_fingerprint,
+                "limits": asdict(self._plan.schema.limits),
+            },
+        }
+
     def batches(
         self,
         document: Document,
@@ -1569,7 +1584,7 @@ class RelaxNGRecordProjection:
         pa = _pyarrow()
         try:
             return pa.RecordBatch.from_pylist(rows, schema=self.schema)
-        except (pa.ArrowException, ValueError, OverflowError) as exc:
+        except (pa.ArrowException, OSError, ValueError, OverflowError) as exc:
             raise IntegrationError(f"Arrow batch ending at row {last_row}: {exc}") from exc
 
     def table(
@@ -1633,14 +1648,31 @@ class RelaxNGRecordProjection:
 
     def write_dataset(
         self,
-        sources: Iterable[Any],
-        destination: str | Any,
+        sources: Iterable[DocumentSource],
+        destination: str | os.PathLike[str],
         *,
         selector: str | None = None,
         namespaces: dict[str, str] | None = None,
         batch_size: int = 10000,
         errors: Literal["raise", "report"] = "raise",
-    ) -> Any:
-        """Task 7 owns dataset publishing; this projection only writes rows."""
-        del sources, destination, selector, namespaces, batch_size, errors
-        raise IntegrationError(_DATASET_EXTRACTION)
+    ) -> DatasetResult:
+        """Publish a new local manifested dataset of current typed rows.
+
+        Parsing uses this compiled schema's typed instance protocol so every
+        part is backed by current accepting evidence.  Staging, exclusive
+        publication, provenance columns, and error policy are shared with XSD;
+        never append or overwrite.  The destination parent must exist and have
+        a single writer.
+        """
+        from pyxsd.integrations._dataset import write_dataset as write_projected_dataset
+
+        return write_projected_dataset(
+            self,
+            self._plan.schema,
+            sources,
+            Path(destination),
+            selector=selector,
+            namespaces=namespaces,
+            batch_size=batch_size,
+            errors=errors,
+        )

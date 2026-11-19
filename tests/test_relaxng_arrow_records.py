@@ -685,9 +685,6 @@ def test_parquet_round_trip_borrowed_sink_and_atomic_replacement(tmp_path):
         record.write_parquet(stale, destination, selector="item")
     assert destination.read_bytes() == before
 
-    with pytest.raises(IntegrationError, match="Task 7"):
-        record.write_dataset([], tmp_path / "dataset")
-
 
 def test_float_binary_and_unbounded_decimal_arrow_values(tmp_path):
     schema = compile_element(

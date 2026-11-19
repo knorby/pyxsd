@@ -250,6 +250,13 @@ class RecordProjection:
             },
         )
 
+    def dataset_metadata(self) -> dict[str, Any]:
+        """Return this projection's historical XSD manifest fields unchanged."""
+        return {
+            "xsd_version": str(self._schema._host.processor_version),
+            "parse_policy": asdict(self._schema.mode),
+        }
+
     def batches(
         self,
         document: Document,
@@ -313,7 +320,7 @@ class RecordProjection:
     def _batch(self, rows: list[dict[str, Any]], last_row: int) -> Any:
         try:
             return pa.RecordBatch.from_pylist(rows, schema=self.schema)
-        except (pa.ArrowException, ValueError, OverflowError) as exc:
+        except (pa.ArrowException, OSError, ValueError, OverflowError) as exc:
             raise IntegrationError(f"Arrow batch ending at row {last_row}: {exc}") from exc
 
     def table(

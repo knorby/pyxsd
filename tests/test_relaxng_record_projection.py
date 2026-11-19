@@ -1190,12 +1190,13 @@ def test_lazy_pyarrow_import_reports_the_optional_extra(monkeypatch):
         records_module._pyarrow()
 
 
-def test_record_projection_write_dataset_is_explicitly_task_7(tmp_path):
+def test_record_projection_write_dataset_publishes_an_empty_manifest(tmp_path):
     projection = RelaxNGRecordProjection(compile_element("<text/>"), element="doc")
-    destination = tmp_path / "out.parquet"
-    with pytest.raises(IntegrationError, match="Task 7"):
-        projection.write_dataset([], destination)
-    assert not destination.exists()
+    destination = tmp_path / "out"
+    result = projection.write_dataset([], destination)
+    assert (result.status, result.inputs, result.rows) == ("complete", 0, 0)
+    assert result.manifest == destination / "manifest.json"
+    assert result.manifest.is_file()
 
 
 def test_projection_and_binding_are_frozen():
