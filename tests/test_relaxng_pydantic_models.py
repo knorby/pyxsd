@@ -365,7 +365,7 @@ def test_choice_route_rejects_jointly_impossible_data():
     # tree; the native patterns reject this jointly impossible combination.
     with pytest.raises(pydantic.ValidationError) as error:
         Root.model_validate({"a": "x", "b": "y"})
-    assert "different compiled alternatives" in error.value.errors()[0]["msg"]
+    assert "do not fit any compiled alternative" in error.value.errors()[0]["msg"]
 
 
 def test_child_resolved_before_parent_reuses_the_cached_child_class():

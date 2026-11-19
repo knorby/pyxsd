@@ -356,6 +356,7 @@ def _attach_route(
     target.__relaxng_start__ = scope == "start"
     target.__relaxng_element__ = route.expanded_name
     target.__relaxng_input_order__ = "unordered"
+    target.__relaxng_plan__ = plan
     target.model_dump = model_dump_with_scalar_wrappers
     target.model_dump_json = model_dump_json_with_scalar_wrappers
 
@@ -495,40 +496,52 @@ def _encoding_patterns(route: RouteContract) -> dict[str, Pattern]:
 
 
 def _route_witness_name(route: RouteContract) -> str:
-    """Choose a deterministic concrete name admitted by an open name class.
+    """Choose a deterministic concrete name admitted by an open name class."""
+    try:
+        return _witness_name(route.name_class)
+    except IntegrationError as error:
+        raise IntegrationError(f"RELAX NG route {_route_label(route)}: {error}") from error
 
-    Open-name routes have no single element spelling.  Local standalone
-    validation still needs an expanded name for the fabricated route element,
-    so this witness is internal and is never exposed as a document root.
+
+def _witness_name(name_class: NameClass) -> str:
+    """Choose a deterministic concrete name admitted by *name_class*.
+
+    Open-name routes have no single element spelling.  Native route validation
+    needs a witness admitted by each retained pattern's own name class, so this
+    name is internal and is never exposed as a document root.  Both the
+    namespace and local candidates include one fresh value that no literal
+    name or namespace in the class mentions, so an exclusion cannot trap the
+    choice on a hard-coded spelling.
     """
     mentioned_namespaces: set[str | None] = {None}
     mentioned_locals: set[str] = set()
-    pending: list[NameClass] = [route.name_class]
+    pending: list[NameClass] = [name_class]
     while pending:
-        name_class = pending.pop()
-        if isinstance(name_class, (Name, NsName)):
-            mentioned_namespaces.add(name_class.uri)
-            if isinstance(name_class, Name):
-                mentioned_locals.add(name_class.local)
-        elif isinstance(name_class, NameChoice):
-            pending.extend(reversed(name_class.alternatives))
-        elif isinstance(name_class, ExceptName):
-            pending.extend((name_class.base, name_class.excluded))
-    namespaces = [
-        *sorted({str(uri) for uri in mentioned_namespaces if uri is not None}),
-        "urn:pyxsd:relaxng:route-witness",
-    ]
+        current = pending.pop()
+        if isinstance(current, (Name, NsName)):
+            mentioned_namespaces.add(current.uri)
+            if isinstance(current, Name):
+                mentioned_locals.add(current.local)
+        elif isinstance(current, NameChoice):
+            pending.extend(reversed(current.alternatives))
+        elif isinstance(current, ExceptName):
+            pending.extend((current.base, current.excluded))
+    fresh_namespace = "urn:pyxsd:relaxng:route-witness"
+    while fresh_namespace in mentioned_namespaces:
+        fresh_namespace += "_"
     fresh_local = "pyxsd-route"
     while fresh_local in mentioned_locals:
         fresh_local += "_"
+    namespaces = [
+        *sorted({str(uri) for uri in mentioned_namespaces if uri is not None}),
+        fresh_namespace,
+    ]
     locals_ = [*sorted(mentioned_locals), fresh_local]
     for uri in (None, *namespaces):
         for local in locals_:
-            if route.name_class.contains(uri, local):
+            if name_class.contains(uri, local):
                 return clark(uri, local)
-    raise IntegrationError(
-        f"RELAX NG route {_route_label(route)} has no deterministic witness element name"
-    )
+    raise IntegrationError("a RELAX NG name class has no deterministic witness element name")
 
 
 def _model_route(model_class: type[BaseModel]) -> RouteContract:
@@ -569,6 +582,130 @@ class _FieldState:
     @property
     def remaining(self) -> int:
         return len(self.values) - self.used
+
+
+@dataclass(frozen=True)
+class _CountBounds:
+    """Static per-alias occurrence bounds for one content alternative."""
+
+    minimums: Mapping[str, int]
+    maximums: Mapping[str, int | None]
+
+
+def _content_bounds(node: ContentContract, memo: dict[int, _CountBounds]) -> _CountBounds:
+    """Compute per-alias bounds without expanding derivations or instances."""
+    cached = memo.get(id(node))
+    if cached is not None:
+        return cached
+    kind = node.kind
+    if kind == "scalar":
+        optional = not node.scalar_contracts or any(
+            contract.kind == "text" for contract in node.scalar_contracts
+        )
+        result = _CountBounds({"$": 0 if optional else 1}, {"$": 1})
+    elif kind in ("attribute", "child"):
+        prefix = "@" if kind == "attribute" else ""
+        aliases = {
+            prefix + reference.expanded_name
+            for reference in node.fields
+            if reference.expanded_name is not None
+        }
+        result = _CountBounds(
+            dict.fromkeys(aliases, 1),
+            dict.fromkeys(aliases, 1),
+        )
+    elif kind in ("empty", "notAllowed"):
+        result = _CountBounds({}, {})
+    elif kind in ("group", "interleave"):
+        minimums: dict[str, int] = {}
+        maximums: dict[str, int | None] = {}
+        for operand in node.operands:
+            bounds = _content_bounds(operand, memo)
+            for alias, count in bounds.minimums.items():
+                minimums[alias] = minimums.get(alias, 0) + count
+            for alias, max_count in bounds.maximums.items():
+                previous = maximums.get(alias, 0)
+                if previous is None or max_count is None:
+                    maximums[alias] = None
+                else:
+                    maximums[alias] = previous + max_count
+        result = _CountBounds(minimums, maximums)
+    elif kind == "repeat":
+        repeat_bounds = _content_bounds(node.operands[0], memo)
+        repeat_maximums = {
+            alias: (None if count is None or count > 0 else 0)
+            for alias, count in repeat_bounds.maximums.items()
+        }
+        result = _CountBounds(dict(repeat_bounds.minimums), repeat_maximums)
+    elif kind == "choice":
+        aliases = {
+            alias for operand in node.operands for alias in _content_bounds(operand, memo).minimums
+        } | {
+            alias for operand in node.operands for alias in _content_bounds(operand, memo).maximums
+        }
+        minimums = {}
+        choice_maximums: dict[str, int | None] = {}
+        for alias in aliases:
+            minimums[alias] = min(
+                _content_bounds(operand, memo).minimums.get(alias, 0) for operand in node.operands
+            )
+            counts = [
+                _content_bounds(operand, memo).maximums.get(alias, 0) for operand in node.operands
+            ]
+            choice_maximums[alias] = (
+                None if None in counts else max(cast(int, count) for count in counts)
+            )
+        result = _CountBounds(minimums, choice_maximums)
+    else:
+        result = _CountBounds({}, {})
+    memo[id(node)] = result
+    return result
+
+
+def _bounds_fit(bounds: _CountBounds, counts: Mapping[str, int]) -> bool:
+    """Whether supplied alias counts fit one alternative's static capacity."""
+    aliases = set(bounds.minimums) | set(bounds.maximums) | set(counts)
+    for alias in aliases:
+        supplied = counts.get(alias, 0)
+        if supplied < bounds.minimums.get(alias, 0):
+            return False
+        maximum = bounds.maximums.get(alias, 0)
+        if maximum is not None and supplied > maximum:
+            return False
+    return True
+
+
+def _present_counts(node: ContentContract, states: Mapping[str, _FieldState]) -> dict[str, int]:
+    """The still-unemitted supplied count for every alias in one subtree."""
+    return {
+        alias: states[alias].remaining
+        for alias in _aliases(node)
+        if alias in states and states[alias].remaining
+    }
+
+
+def _aliases(node: ContentContract) -> frozenset[str]:
+    """All canonical aliases referenced by one content contract."""
+    result: set[str] = set()
+    pending = [node]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if current.kind == "scalar":
+            result.add("$")
+        elif current.kind in ("attribute", "child"):
+            prefix = "@" if current.kind == "attribute" else ""
+            result.update(
+                prefix + reference.expanded_name
+                for reference in current.fields
+                if reference.expanded_name is not None
+            )
+        else:
+            pending.extend(current.operands)
+    return frozenset(result)
 
 
 def _route_states(route: RouteContract, data: Mapping[str, Any]) -> dict[str, _FieldState]:
@@ -726,17 +863,22 @@ class _Renderer:
         context: DatatypeContext,
         *,
         normalized: bool,
+        plan: ProjectionPlan | None = None,
+        selections: Mapping[int, int] | None = None,
     ) -> None:
         self.route = route
         self.states = states
         self.context = context
         self.normalized = normalized
+        self.plan = plan
+        self.selections = dict(selections or {})
         self.contexts: dict[int, DatatypeContext] = {}
         self.encoding: dict[str, dict[str, Pattern]] = {}
         self.aliases: dict[int, frozenset[str]] = {}
+        self.bounds: dict[int, _CountBounds] = {}
 
     def render(self) -> tuple[ET.Element, dict[int, DatatypeContext]]:
-        name = self.route.expanded_name or _route_witness_name(self.route)
+        name = self.route.expanded_name or _witness_name(self.route.name_class)
         root = self._element(name, self.route, self.states, self.context, (name,))
         return root, self.contexts
 
@@ -751,20 +893,7 @@ class _Renderer:
         cached = self.aliases.get(id(node))
         if cached is not None:
             return cached
-        result: set[str] = set()
-        if node.kind == "scalar":
-            result.add("$")
-        elif node.kind in ("attribute", "child"):
-            prefix = "@" if node.kind == "attribute" else ""
-            result.update(
-                prefix + reference.expanded_name
-                for reference in node.fields
-                if reference.expanded_name is not None
-            )
-        else:
-            for operand in node.operands:
-                result.update(self._content_aliases(operand))
-        frozen = frozenset(result)
+        frozen = _aliases(node)
         self.aliases[id(node)] = frozen
         return frozen
 
@@ -786,14 +915,23 @@ class _Renderer:
         inherited: DatatypeContext,
         path: tuple[str, ...],
     ) -> ET.Element:
-        scalar_states = [states["$"]] if "$" in states else []
+        scalar_states: list[tuple[str, _FieldState]] = []
+        if "$" in states:
+            scalar_states.append(("$", states["$"]))
         scalar_states.extend(
-            states["@" + attribute] for attribute in route.attributes if "@" + attribute in states
+            ("@" + attribute, states["@" + attribute])
+            for attribute in route.attributes
+            if "@" + attribute in states
         )
         value_contexts: list[DatatypeContext] = []
-        for state in scalar_states:
+        for alias, state in scalar_states:
             for value in state.values:
-                value_contexts.extend(_value_contexts(value))
+                try:
+                    value_contexts.extend(_value_contexts(value))
+                except ValueError as error:
+                    raise ValueError(
+                        f"RELAX NG route path {'/'.join((*path, alias))}: {error}"
+                    ) from error
         context = _merge_contexts(inherited, tuple(value_contexts), path=path)
         element = ET.Element(name)
         self._emit(route.content.model, element, states, context, route, path, iteration=False)
@@ -825,7 +963,8 @@ class _Renderer:
             for reference in node.fields:
                 alias = "@" + cast(str, reference.expanded_name)
                 state = states[alias]
-                assert state.remaining > 0
+                if state.remaining == 0:
+                    continue
                 lexical = _encode_scalar_value(
                     state.values[state.used],
                     node.scalar_contracts,
@@ -882,31 +1021,45 @@ class _Renderer:
                 assert self._remaining(body) < before
             return
         if kind == "choice":
-            present = {
-                alias
-                for alias in self._content_aliases(node)
-                if alias in states and states[alias].remaining
-            }
             if iteration:
-                chosen: ContentContract | None = next(
-                    (operand for operand in node.operands if self._has_remaining(operand)),
-                    node.operands[0],
-                )
-            else:
-                chosen = next(
-                    (
-                        operand
-                        for operand in node.operands
-                        if present <= self._content_aliases(operand)
-                    ),
-                    None,
-                )
-                if chosen is None:
+                candidates: list[tuple[int, int]] = []
+                for index, operand in enumerate(node.operands):
+                    bounds = _content_bounds(operand, self.bounds)
+                    if all(
+                        (states[alias].remaining if alias in states else 0) >= minimum
+                        for alias, minimum in bounds.minimums.items()
+                    ):
+                        candidates.append((self._remaining(operand), index))
+                if not candidates:
+                    remaining = _present_counts(node, states)
                     raise ValueError(
                         f"RELAX NG route {_route_label(route)} path {'/'.join(path)}: "
-                        f"field(s) {sorted(present)!r} belong to different compiled "
-                        "alternatives"
+                        f"remaining field counts {sorted(remaining.items())!r} do not fit "
+                        "any repeated alternative"
                     )
+                chosen: ContentContract | None = node.operands[
+                    max(candidates, key=lambda item: (item[0], -item[1]))[1]
+                ]
+            else:
+                present = _present_counts(node, states)
+                eligible = [
+                    index
+                    for index, operand in enumerate(node.operands)
+                    if _bounds_fit(
+                        _content_bounds(operand, self.bounds),
+                        present,
+                    )
+                ]
+                if not eligible:
+                    raise ValueError(
+                        f"RELAX NG route {_route_label(route)} path {'/'.join(path)}: "
+                        f"field counts {sorted(present.items())!r} do not fit any "
+                        "compiled alternative"
+                    )
+                selected = self.selections.get(id(node), eligible[0])
+                if selected not in eligible:
+                    selected = eligible[0]
+                chosen = node.operands[selected]
             assert chosen is not None
             self._emit(chosen, element, states, context, route, path, iteration=iteration)
             return
@@ -923,22 +1076,58 @@ class _Renderer:
         inherited: DatatypeContext,
         path: tuple[str, ...],
     ) -> ET.Element:
-        if not isinstance(value, BaseModel):
-            raise IntegrationError(
-                f"RELAX NG route path {'/'.join(path)}: nested child data must be "
-                "a generated RELAX NG route model"
-            )
-        child_route = _model_route(type(value))
-        if child_route_id is not None and child_route.route_id != child_route_id:
-            raise IntegrationError(
-                f"RELAX NG route path {'/'.join(path)}: child route "
-                f"{child_route.route_id} does not match field route {child_route_id}"
-            )
-        states = _route_states(child_route, _model_values(child_route, value))
-        renderer = _Renderer(child_route, states, inherited, normalized=True)
-        element = renderer._element(name, child_route, states, inherited, path)
-        self.contexts.update(renderer.contexts)
-        return element
+        del name
+        child_route: RouteContract
+        child_data: Mapping[str, Any]
+        normalized: bool
+        if isinstance(value, BaseModel):
+            child_route = _model_route(type(value))
+            if child_route_id is not None and child_route.route_id != child_route_id:
+                raise IntegrationError(
+                    f"RELAX NG route path {'/'.join(path)}: child route "
+                    f"{child_route.route_id} does not match field route {child_route_id}"
+                )
+            child_data = _model_values(child_route, value)
+            normalized = True
+        else:
+            if self.plan is None:
+                raise ValueError(
+                    f"RELAX NG route path {'/'.join(path)}: nested raw child data "
+                    "requires the compiled projection plan; pass plan=..."
+                )
+            if child_route_id is None:
+                raise IntegrationError(
+                    f"RELAX NG route path {'/'.join(path)}: a child field has no route identity"
+                )
+            raw_child_route = self.plan.routes.get(child_route_id)
+            if raw_child_route is None:
+                raise IntegrationError(
+                    f"RELAX NG route path {'/'.join(path)}: child route "
+                    f"{child_route_id!r} is absent from the supplied projection plan"
+                )
+            child_route = raw_child_route
+            if isinstance(value, Mapping):
+                child_data = dict(value)
+            elif child_route.content.scalar_contracts and not (
+                child_route.attributes or child_route.children
+            ):
+                child_data = {"$": value}
+            else:
+                raise ValueError(
+                    f"RELAX NG route path {'/'.join(path)}: child data must be a "
+                    "mapping for this record route"
+                )
+            normalized = False
+        _check_route_supported(child_route)
+        tree, contexts = _accepted_route_tree(
+            child_route,
+            child_data,
+            inherited,
+            normalized=normalized,
+            plan=self.plan,
+        )
+        self.contexts.update(contexts)
+        return tree
 
 
 def _route_tree(
@@ -947,11 +1136,20 @@ def _route_tree(
     context: object | None,
     *,
     normalized: bool,
+    plan: ProjectionPlan | None = None,
+    selections: Mapping[int, int] | None = None,
 ) -> tuple[ET.Element, dict[int, DatatypeContext]]:
     """Build one complete deterministic element tree for *route*."""
     inherited = context_from_mapping(context)
     states = _route_states(route, data)
-    return _Renderer(route, states, inherited, normalized=normalized).render()
+    return _Renderer(
+        route,
+        states,
+        inherited,
+        normalized=normalized,
+        plan=plan,
+        selections=selections,
+    ).render()
 
 
 def _relaxng_root(tree: ImportedTree) -> RelaxNGElement:
@@ -984,31 +1182,130 @@ def _native_path(mismatch: Any) -> str:
     return "/" + "/".join(parts)
 
 
-def _validate_route_tree(
+def _native_rejection(
     route: RouteContract,
     tree: tuple[ET.Element, dict[int, DatatypeContext]],
-) -> None:
-    """Require at least one route assignment to accept the produced tree."""
+) -> ValueError | None:
+    """Return the first stable native rejection, or ``None`` when accepted.
+
+    Each retained pattern is validated with a root name admitted by that
+    pattern's own name class.  Fixed route names use the real spelling; open
+    merged names use a per-pattern deterministic witness so one assignment's
+    namespace cannot make another valid assignment fail.
+    """
     if not route.patterns:
         raise IntegrationError(
             f"RELAX NG route {_route_label(route)} retains no compiled element patterns"
         )
-    root = _relaxng_root(_imported_tree(*tree))
+    root_element, contexts = tree
+    original_tag = root_element.tag
     first: Any = None
-    for pattern in route.patterns:
-        outcome = validate_element_recovering(root, pattern)
-        if outcome.valid:
-            return
-        if first is None:
-            first = outcome
+    try:
+        for pattern in route.patterns:
+            root_element.tag = route.expanded_name or _witness_name(pattern.name_class)
+            root = _relaxng_root(_imported_tree(root_element, contexts))
+            outcome = validate_element_recovering(root, pattern)
+            if outcome.valid:
+                return None
+            if first is None:
+                first = outcome
+    finally:
+        root_element.tag = original_tag
     report = ValidationReport(diagnostics_complete=False)
     report_mismatches(first, report)
     issue = report.errors[0]
     mismatch = first.mismatches[0]
-    raise ValueError(
+    return ValueError(
         f"RELAX NG route {_route_label(route)} at {_native_path(mismatch)}: "
         f"{issue.code}: {issue.message}"
     )
+
+
+def _choice_slots(
+    route: RouteContract,
+    data: Mapping[str, Any],
+    memo: dict[int, _CountBounds],
+) -> list[tuple[ContentContract, list[int]]]:
+    """Compiled non-repeat choice alternatives eligible for this data.
+
+    The returned order is the content model's declaration order.  Choices
+    inside a repeat are iteration-scoped and are not retried as a whole.
+    """
+    states = _route_states(route, data)
+    slots: list[tuple[ContentContract, list[int]]] = []
+    seen: set[int] = set()
+
+    def walk(node: ContentContract, in_repeat: bool) -> None:
+        key = id(node)
+        if key in seen:
+            return
+        seen.add(key)
+        if node.kind == "choice" and not in_repeat:
+            present = _present_counts(node, states)
+            eligible = [
+                index
+                for index, operand in enumerate(node.operands)
+                if _bounds_fit(_content_bounds(operand, memo), present)
+            ]
+            if len(eligible) > 1:
+                slots.append((node, eligible))
+        if node.kind == "repeat":
+            walk(node.operands[0], True)
+            return
+        for operand in node.operands:
+            walk(operand, in_repeat)
+
+    walk(route.content.model, False)
+    return slots
+
+
+def _accepted_route_tree(
+    route: RouteContract,
+    data: Mapping[str, Any],
+    context: object | None,
+    *,
+    normalized: bool,
+    plan: ProjectionPlan | None = None,
+) -> tuple[ET.Element, dict[int, DatatypeContext]]:
+    """Build and natively validate one tree, retrying compiled alternatives.
+
+    The first eligible alternative in declaration order is used.  If native
+    validation rejects that tree, each other eligible non-repeat alternative is
+    tried once, in declaration order.  Child order is never permuted and no
+    values are dropped; the attempt count is bounded by the compiled operands.
+    """
+
+    def attempt(
+        selections: Mapping[int, int],
+    ) -> tuple[tuple[ET.Element, dict[int, DatatypeContext]] | None, ValueError | None]:
+        try:
+            tree = _route_tree(
+                route,
+                data,
+                context,
+                normalized=normalized,
+                plan=plan,
+                selections=selections,
+            )
+        except ValueError as error:
+            return None, error
+        rejection = _native_rejection(route, tree)
+        if rejection is not None:
+            return None, rejection
+        return tree, None
+
+    tree, error = attempt({})
+    if tree is not None:
+        return tree
+    assert error is not None
+    first_error = error
+    memo: dict[int, _CountBounds] = {}
+    for node, eligible in _choice_slots(route, data, memo):
+        for index in eligible[1:]:
+            tree, _ = attempt({id(node): index})
+            if tree is not None:
+                return tree
+    raise first_error
 
 
 def _imported_tree(root: ET.Element, contexts: dict[int, DatatypeContext]) -> ImportedTree:
@@ -1022,16 +1319,23 @@ def validate_route_data(
     data: Mapping[str, Any] | BaseModel,
     *,
     context: object | None = None,
+    plan: ProjectionPlan | None = None,
 ) -> Mapping[str, Any]:
     """Validate independent data against one route's compiled alternatives.
 
     A :class:`~pyxsd.relaxng.projection.RouteContract` accepts canonical
-    field-alias data whose nested children are generated route models.  A
-    generated route model class also accepts raw mapping input and validates it
-    through Pydantic first, including every nested child.  Validation builds
-    one deterministic lexical tree from the compiled layout and requires at
-    least one retained native element pattern to accept it.  The returned
-    mapping uses canonical aliases and never mutates *data* or *context*.
+    field-alias data.  Nested raw child mappings and scalar children require
+    *plan*, the compiled projection table that resolves each field's child
+    route; nested generated route models need no plan.  A generated route
+    model class accepts raw mapping input and validates it through Pydantic
+    first, including every nested child; its after-validator already performs
+    the native route check, so this entry point returns the normalized aliases
+    without validating the same tree twice.
+
+    Validation builds one deterministic lexical tree from the compiled layout
+    and requires at least one retained native element pattern to accept it.
+    The returned mapping uses canonical aliases and never mutates *data* or
+    *context*.
     """
     model_class: type[BaseModel] | None = None
     if isinstance(route, type) and issubclass(route, BaseModel):
@@ -1041,8 +1345,10 @@ def validate_route_data(
         raise TypeError("route must be a RouteContract or a generated RELAX NG model class")
     _check_route_supported(route)
     payload: Mapping[str, Any] | BaseModel = data
-    if model_class is not None and not isinstance(payload, model_class):
-        payload = model_class.model_validate(payload, context=context)
+    if model_class is not None:
+        if not isinstance(payload, model_class):
+            payload = model_class.model_validate(payload, context=context)
+        return _model_values(route, payload)
     if isinstance(payload, BaseModel):
         values = _model_values(route, payload)
         normalized = True
@@ -1051,8 +1357,13 @@ def validate_route_data(
         normalized = False
     else:
         raise ValueError(f"RELAX NG route {_route_label(route)}: data must be a mapping")
-    tree = _route_tree(route, values, context, normalized=normalized)
-    _validate_route_tree(route, tree)
+    _accepted_route_tree(
+        route,
+        values,
+        context,
+        normalized=normalized,
+        plan=plan,
+    )
     return values
 
 
@@ -1086,7 +1397,12 @@ def route_to_lexical(
             f"RELAX NG route {_route_label(route)} has an open name class; it has "
             "no concrete element name for lexical reconstruction"
         )
-    root, contexts = _route_tree(route, values, context, normalized=normalized)
+    root, contexts = _accepted_route_tree(
+        route,
+        values,
+        context,
+        normalized=normalized,
+    )
     return _imported_tree(root, contexts)
 
 

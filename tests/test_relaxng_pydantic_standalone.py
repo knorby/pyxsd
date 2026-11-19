@@ -15,6 +15,7 @@ from dataclasses import replace
 import pytest
 
 pydantic = pytest.importorskip("pydantic")
+import pyxsd.relaxng.pydantic_adapter as adapter  # noqa: E402
 from integration_helpers import RECORD_SCHEMA, compile_schema  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 from pyxsd.integrations import IntegrationError  # noqa: E402
@@ -31,8 +32,11 @@ from pyxsd.relaxng.projection import (  # noqa: E402
 )
 from pyxsd.relaxng.pydantic_adapter import (  # noqa: E402
     RelaxNGModelSet,
+    _content_bounds,
     _encode_scalar_value,
     _merge_contexts,
+    _Renderer,
+    _route_states,
     _route_witness_name,
     _value_contexts,
     route_to_lexical,
@@ -290,7 +294,11 @@ def test_individually_legal_jointly_invalid_data_is_rejected():
     with pytest.raises(pydantic.ValidationError) as error:
         Root.model_validate({"a": "x", "b": "y"})
     assert "RELAX NG route" in message(error.value)
-    with pytest.raises(ValueError, match="different compiled alternatives"):
+    with pytest.raises(pydantic.ValidationError):
+        Root(**{"a": "x", "b": "y"})
+    with pytest.raises(pydantic.ValidationError):
+        Root.model_validate_json('{"a": "x", "b": "y"}')
+    with pytest.raises(ValueError, match="do not fit any compiled alternative"):
         validate_route_data(
             route,
             {"a": A.model_validate("x"), "b": B.model_validate("y")},
@@ -594,9 +602,14 @@ def test_direct_route_validation_reports_native_findings_and_unsupported_shapes(
         validate_route_data(route, "not-a-mapping")  # type: ignore[arg-type]
     child_registry, child_route = registry_and_route('<element name="child"><text/></element>')
     Child = child_registry.model_for(element="doc", path=("child",))
-    with pytest.raises(IntegrationError, match="nested child data"):
+    with pytest.raises(ValueError, match="requires the compiled projection plan"):
         validate_route_data(child_route, {"child": {"$": "x"}})
     assert validate_route_data(child_route, {"child": Child.model_validate("x")})
+    assert validate_route_data(
+        child_route,
+        {"child": {"$": "x"}},
+        plan=child_registry.schema.projection,
+    ) == {"child": {"$": "x"}}
     other_registry, _other_route = registry_and_route('<attribute name="other"><text/></attribute>')
     Other = other_registry.model_for(element="doc")
     with pytest.raises(IntegrationError, match="does not match requested route"):
@@ -627,7 +640,7 @@ def test_reconstruction_never_permutes_alternatives_to_find_an_accepting_branch(
     route = schema.projection.routes[schema.projection.roots[0]]
     model = Root.model_validate({"b": "B", "c": "C"})
     assert outline(route_to_lexical(route, model).root) == [("b", "B"), ("c", "C")]
-    with pytest.raises(pydantic.ValidationError, match="different compiled alternatives"):
+    with pytest.raises(pydantic.ValidationError, match="do not fit any compiled alternative"):
         Root.model_validate({"a": "A", "c": "C"})
 
 
@@ -899,3 +912,389 @@ def test_child_route_identity_mismatch_is_a_configuration_error():
     other_child = Other.model_validate({"$": "x", "@extra": "value"})
     with pytest.raises(IntegrationError, match="does not match field route"):
         validate_route_data(parent_route, {"child": other_child})
+
+
+def test_choice_alternatives_use_required_fields_and_occurrence_capacity():
+    registry, route = registry_and_route(
+        "<choice>"
+        '<group><element name="a"><text/></element><element name="a"><text/></element></group>'
+        '<oneOrMore><element name="a"><text/></element></oneOrMore>'
+        "</choice>"
+    )
+    Root = registry.model_for(element="doc")
+    for values in (["x"], ["x", "y"], ["x", "y", "z"]):
+        model = Root.model_validate({"a": values})
+        tree = route_to_lexical(route, model)
+        assert [child.text for child in tree.root] == values
+        assert len(tree.root) == len(values)
+
+    attribute_registry, attribute_route = registry_and_route(
+        "<choice>"
+        '<group><attribute name="a"><text/></attribute>'
+        '<element name="b"><text/></element></group>'
+        '<oneOrMore><element name="b"><text/></element></oneOrMore>'
+        "</choice>"
+    )
+    AttributeRoot = attribute_registry.model_for(element="doc")
+    model = AttributeRoot.model_validate({"b": ["x"]})
+    tree = route_to_lexical(attribute_route, model)
+    assert tree.root.attrib == {}
+    assert outline(tree.root) == [("b", "x")]
+    with_attribute = AttributeRoot.model_validate({"@a": "A", "b": ["x"]})
+    assert route_to_lexical(attribute_route, with_attribute).root.attrib == {"a": "A"}
+
+    two_b_registry, two_b_route = registry_and_route(
+        "<choice>"
+        '<group><element name="b"><text/></element><element name="b"><text/></element></group>'
+        '<oneOrMore><element name="b"><text/></element></oneOrMore>'
+        "</choice>"
+    )
+    TwoB = two_b_registry.model_for(element="doc")
+    for values in (["x"], ["x", "y"], ["x", "y", "z"]):
+        model = TwoB.model_validate({"b": values})
+        tree = route_to_lexical(two_b_route, model)
+        assert [child.text for child in tree.root] == values
+        assert len(tree.root) == len(values)
+    with pytest.raises(pydantic.ValidationError) as error:
+        TwoB.model_validate({"b": ["x"], "unexpected": [("not", "a", "value")]})
+    assert all(item["type"] != "assertion_error" for item in error.value.errors())
+
+
+def test_nested_choice_retries_the_outer_compiled_alternative():
+    registry, route = registry_and_route(
+        "<choice>"
+        "<group>"
+        "<choice>"
+        '<element name="a"><text/></element>'
+        '<element name="b"><text/></element>'
+        "</choice>"
+        '<element name="c"><text/></element>'
+        "</group>"
+        "<group>"
+        '<element name="a"><text/></element>'
+        '<element name="b"><text/></element>'
+        '<element name="c"><text/></element>'
+        "</group>"
+        "</choice>"
+    )
+    Root = registry.model_for(element="doc")
+    for data, expected in (
+        ({"a": "A", "b": "B", "c": "C"}, [("a", "A"), ("b", "B"), ("c", "C")]),
+        ({"a": "A", "c": "C"}, [("a", "A"), ("c", "C")]),
+        ({"b": "B", "c": "C"}, [("b", "B"), ("c", "C")]),
+    ):
+        model = Root.model_validate(data)
+        assert outline(route_to_lexical(route, model).root) == expected
+        normalized = validate_route_data(route, model)
+        for key, value in data.items():
+            assert normalized[key].root == value
+
+
+def test_missing_required_attribute_is_a_native_route_error_not_an_assertion():
+    registry, route = registry_and_route('<attribute name="n"><data type="integer"/></attribute>')
+    Root = registry.model_for(element="doc")
+    for data in ({}, {"@n": None}):
+        with pytest.raises(ValueError) as error:
+            validate_route_data(route, data)
+        assert "missing-attribute" in str(error.value)
+        assert "/doc" in str(error.value)
+        assert not isinstance(error.value, AssertionError)
+    constructed = Root.model_construct(attr_n=None)
+    with pytest.raises(ValueError, match="missing-attribute"):
+        route_to_lexical(route, constructed)
+    with pytest.raises(ValueError, match="missing-attribute"):
+        validate_route_data(route, constructed)
+    with pytest.raises(pydantic.ValidationError) as error:
+        Root.model_validate({"@n": None})
+    assert all(item["type"] != "assertion_error" for item in error.value.errors())
+
+
+def test_merged_open_name_patterns_validate_with_per_pattern_witnesses():
+    schema = compile_grammar(
+        "<start><choice>"
+        '<element><nsName ns="urn:a"/><attribute name="pa"><text/></attribute></element>'
+        '<element><nsName ns="urn:b"/><attribute name="pb"><text/></attribute></element>'
+        "</choice></start>"
+    )
+    registry = models(schema)
+    Root = registry.model_for(element="{urn:a}doc")
+    assert Root is registry.model_for(element="{urn:b}doc")
+    route = schema.projection.routes[schema.projection.roots[0]]
+    assert route.expanded_name is None
+    assert len(route.patterns) == 2
+    for data in ({"@pa": "A"}, {"@pb": "B"}):
+        assert Root.model_validate(data).model_dump(by_alias=True) == data
+        assert (
+            Root.model_validate_json(
+                '{"' + next(iter(data)) + '": "' + next(iter(data.values())) + '"}'
+            ).model_dump(by_alias=True)
+            == data
+        )
+        assert validate_route_data(route, data) == data
+    direct_a = Root(**{"@pa": "A"})
+    direct_b = Root(**{"@pb": "B"})
+    assert direct_a.attr_pa == "A"
+    assert direct_b.attr_pb == "B"
+    with pytest.raises(pydantic.ValidationError):
+        Root.model_validate({"@pa": "A", "@pb": "B"})
+
+    mixed_schema = compile_grammar(
+        "<start><choice>"
+        '<element><anyName/><attribute name="x"><text/></attribute></element>'
+        '<element><nsName ns="urn:a"/><attribute name="y"><text/></attribute></element>'
+        "</choice></start>"
+    )
+    Mixed = models(mixed_schema).model_for(element="foo")
+    mixed_route = mixed_schema.projection.routes[mixed_schema.projection.roots[0]]
+    assert Mixed.model_validate({"@x": "X"}).attr_x == "X"
+    assert Mixed.model_validate({"@y": "Y"}).attr_y == "Y"
+    assert validate_route_data(mixed_route, {"@y": "Y"}) == {"@y": "Y"}
+
+
+def test_raw_nested_child_mappings_use_the_plan_and_model_class_does_not_double_validate(
+    monkeypatch,
+):
+    registry, route = registry_and_route(
+        """
+        <element name="child">
+          <element name="inner"><text/></element>
+          <optional><attribute name="k"><text/></attribute></optional>
+        </element>
+        <zeroOrMore><element name="item"><text/></element></zeroOrMore>
+        <element name="leaf"><text/></element>
+        """
+    )
+    Root = registry.model_for(element="doc")
+    plan = registry.schema.projection
+    data = {
+        "child": {"inner": "x", "@k": "v"},
+        "item": ["a", "b"],
+        "leaf": "y",
+    }
+    with pytest.raises(ValueError, match="requires the compiled projection plan"):
+        validate_route_data(route, data)
+    assert validate_route_data(route, data, plan=plan) == data
+    assert validate_route_data(
+        route,
+        {"child": {"inner": "x"}, "leaf": "y"},
+        plan=plan,
+    ) == {"child": {"inner": "x"}, "leaf": "y"}
+    with pytest.raises(ValueError, match="unknown field"):
+        validate_route_data(
+            route,
+            {"child": {"bad": "x"}, "leaf": "y"},
+            plan=plan,
+        )
+    with pytest.raises(ValueError, match="child data must be a mapping"):
+        validate_route_data(
+            route,
+            {"child": "not-a-record", "leaf": "y"},
+            plan=plan,
+        )
+    with pytest.raises(ValueError, match="required content is missing"):
+        validate_route_data(route, {"child": {}, "leaf": "y"}, plan=plan)
+
+    model = Root.model_validate(data)
+    dump = model.model_dump(by_alias=True)
+    assert dump == data
+    assert validate_route_data(Root, dump)["leaf"].root == "y"
+    assert validate_route_data(Root, model)["leaf"].root == "y"
+    assert (
+        Root.model_validate_json(
+            '{"child": {"inner": "x", "@k": "v"}, "item": ["a", "b"], "leaf": "y"}'
+        )
+        == model
+    )
+
+    calls: list[object] = []
+    original = adapter._accepted_route_tree
+
+    def counted(*args, **kwargs):
+        calls.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, "_accepted_route_tree", counted)
+    calls.clear()
+    Root.model_validate(data)
+    direct_calls = len(calls)
+    calls.clear()
+    validate_route_data(Root, data)
+    assert len(calls) == direct_calls
+    assert direct_calls > 0
+
+
+def test_multiple_rejecting_patterns_report_the_first_stable_finding():
+    registry, route = registry_and_route('<attribute name="a"><text/></attribute>')
+    Root = registry.model_for(element="doc")
+    b_schema = compile_element(
+        '<attribute name="a"><text/></attribute><attribute name="b"><text/></attribute>'
+    )
+    c_schema = compile_element(
+        '<attribute name="a"><text/></attribute><attribute name="c"><text/></attribute>'
+    )
+    b_pattern = b_schema.projection.routes[b_schema.projection.roots[0]].patterns[0]
+    c_pattern = c_schema.projection.routes[c_schema.projection.roots[0]].patterns[0]
+    rejected = replace(route, patterns=(b_pattern, c_pattern))
+    model = Root.model_validate({"@a": "A"})
+    first = None
+    for _ in range(2):
+        with pytest.raises(ValueError) as error:
+            validate_route_data(rejected, model)
+        if first is None:
+            first = str(error.value)
+        else:
+            assert str(error.value) == first
+    assert "missing-attribute" in first
+    assert "expected attribute b" in first
+
+
+def test_malformed_tag_encoder_error_includes_the_route_path():
+    registry, route = registry_and_route('<attribute name="v"><text/></attribute>')
+    Root = registry.model_for(element="doc")
+    model = Root.model_construct(attr_v={"#value": {}})
+    with pytest.raises(ValueError) as error:
+        route_to_lexical(route, model)
+    assert "route path doc/@v" in str(error.value)
+
+
+def test_repeated_choices_use_required_capacity_per_iteration():
+    registry, route = registry_and_route(
+        "<oneOrMore><choice>"
+        '<element name="a"><text/></element>'
+        '<group><element name="a"><text/></element><element name="b"><text/></element></group>'
+        "</choice></oneOrMore>"
+    )
+    Root = registry.model_for(element="doc")
+    model = Root.model_validate({"a": ["A"], "b": ["B"]})
+    tree = route_to_lexical(route, model)
+    assert outline(tree.root) == [("a", "A"), ("b", "B")]
+
+    two_registry, two_route = registry_and_route(
+        "<oneOrMore><choice>"
+        '<element name="a"><text/></element>'
+        '<element name="b"><text/></element>'
+        "</choice></oneOrMore>"
+    )
+    Two = two_registry.model_for(element="doc")
+    two = Two.model_validate({"a": ["A"], "b": ["B"]})
+    assert outline(route_to_lexical(two_route, two).root) == [
+        ("a", "A"),
+        ("b", "B"),
+    ]
+    B = registry.model_for(element="doc", path=("b",))
+    with pytest.raises(ValueError, match="do not fit any repeated alternative"):
+        validate_route_data(route, {"b": [B.model_validate("B")]})
+
+
+def test_child_route_alternatives_use_the_same_retry_path():
+    schema = compile_element(
+        "<choice>"
+        '<element name="child"><group><attribute name="kind"><value>one</value></attribute>'
+        '<element name="b"><text/></element><element name="a"><text/></element>'
+        "</group></element>"
+        '<element name="child"><group><attribute name="kind"><value>two</value></attribute>'
+        '<element name="a"><text/></element><element name="b"><text/></element>'
+        "</group></element>"
+        "</choice>"
+        '<element name="sibling"><text/></element>'
+    )
+    Root = models(schema).model_for(element="doc")
+    route = schema.projection.routes[schema.projection.roots[0]]
+    data = {"child": {"@kind": "two", "a": "A", "b": "B"}, "sibling": "S"}
+    model = Root.model_validate(data)
+    child = route_to_lexical(route, model).root[0]
+    assert [(entry.tag, entry.text) for entry in child] == [("a", "A"), ("b", "B")]
+
+
+def test_choice_retries_each_eligible_alternative_until_one_accepts():
+    schema = compile_grammar(
+        "<start><choice>"
+        '<element name="doc"><group><attribute name="kind"><value>one</value></attribute>'
+        '<element name="b"><text/></element><element name="c"><text/></element>'
+        '<element name="a"><text/></element></group></element>'
+        '<element name="doc"><group><attribute name="kind"><value>two</value></attribute>'
+        '<element name="a"><text/></element><element name="c"><text/></element>'
+        '<element name="b"><text/></element></group></element>'
+        '<element name="doc"><group><attribute name="kind"><value>three</value></attribute>'
+        '<element name="b"><text/></element><element name="a"><text/></element>'
+        '<element name="c"><text/></element></group></element>'
+        "</choice></start>"
+    )
+    Root = models(schema).model_for(element="doc")
+    route = schema.projection.routes[schema.projection.roots[0]]
+    assert len(route.patterns) == 3
+    model = Root.model_validate({"@kind": "three", "a": "A", "b": "B", "c": "C"})
+    tree = route_to_lexical(route, model)
+    assert tree.root.attrib == {"kind": "three"}
+    assert outline(tree.root) == [("b", "B"), ("a", "A"), ("c", "C")]
+    assert validate_route_data(route, model)["@kind"].lexical == "three"
+
+    rejected = replace(route, patterns=(NotAllowed(), NotAllowed(), NotAllowed()))
+    with pytest.raises(ValueError, match="not allowed"):
+        route_to_lexical(rejected, model)
+
+
+def test_plan_errors_and_selection_fallback_are_explicit():
+    registry, route = registry_and_route('<element name="child"><text/></element>')
+    empty_plan = replace(registry.schema.projection, routes={})
+    with pytest.raises(IntegrationError, match="absent from the supplied projection plan"):
+        validate_route_data(route, {"child": "x"}, plan=empty_plan)
+
+    field_name = next(iter(route.children))
+    field = route.children[field_name]
+    broken = replace(
+        route,
+        children={field_name: replace(field, child_route_id=None)},
+    )
+    renderer = _Renderer(
+        broken,
+        {},
+        DatatypeContext(None, {}),
+        normalized=False,
+        plan=registry.schema.projection,
+    )
+    with pytest.raises(IntegrationError, match="no route identity"):
+        renderer._child(
+            field_name,
+            None,
+            "x",
+            DatatypeContext(None, {}),
+            ("doc", field_name),
+        )
+
+    choice_registry, choice_route = registry_and_route(
+        '<choice><element name="a"><text/></element><element name="b"><text/></element></choice>'
+    )
+    A = choice_registry.model_for(element="doc", path=("a",))
+    states = _route_states(choice_route, {"a": A.model_validate("x")})
+    renderer = _Renderer(
+        choice_route,
+        states,
+        DatatypeContext(None, {}),
+        normalized=True,
+        selections={id(choice_route.content.model): 99},
+    )
+    tree, _ = renderer.render()
+    assert outline(tree) == [("a", "x")]
+
+
+def test_content_bounds_cover_unbounded_groups_unknown_kinds_and_fresh_namespaces():
+    _registry, route = registry_and_route(
+        "<group>"
+        '<oneOrMore><element name="a"><text/></element></oneOrMore>'
+        '<element name="b"><text/></element>'
+        "</group>"
+    )
+    bounds = _content_bounds(route.content.model, {})
+    assert bounds.maximums["a"] is None
+    assert bounds.maximums["b"] == 1
+    assert _content_bounds(ContentContract("unknown-kind"), {}).minimums == {}
+
+    fresh_exclusion = replace(
+        route,
+        name_class=ExceptName(
+            AnyName(),
+            NsName("urn:pyxsd:relaxng:route-witness"),
+        ),
+    )
+    assert _route_witness_name(fresh_exclusion) == "pyxsd-route"
