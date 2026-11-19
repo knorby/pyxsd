@@ -45,25 +45,13 @@ def _model_selection(schema: Any, element: str) -> tuple[str, Any]:
     """
     from pyxsd.relaxng import RelaxNGSchema
 
-    resolved = resolve_projection_element(schema, element)
+    resolved = resolve_projection_element(schema, element, scope="start")
     if not isinstance(schema, RelaxNGSchema):
         return resolved, None
     plan = schema.projection
     route = plan.routes[resolved]
-    if resolved not in plan.roots:
-        raise ToolError(
-            "unsupported_projection",
-            "RELAX NG standalone model selection requires a start route; "
-            "select a start route and pass local steps in path",
-            details={
-                "format": "relax-ng",
-                "route_id": resolved,
-                "scope": "local",
-                "candidates": cast(JsonValue, sorted(plan.roots)),
-            },
-        )
     if route.expanded_name is not None:
-        return route.expanded_name, route
+        return route.expanded_name, resolved
     if element in plan.routes:
         raise ToolError(
             "unsupported_projection",
@@ -75,7 +63,7 @@ def _model_selection(schema: Any, element: str) -> tuple[str, Any]:
                 "candidates": cast(JsonValue, sorted(plan.roots)),
             },
         )
-    return element, route
+    return element, resolved
 
 
 def _route_scope(model: Any) -> dict[str, JsonValue]:
@@ -118,7 +106,7 @@ def execute_model(
             if registry is None:
                 registry = models(schema)
                 cast(Any, schema)._mcp_projected_models = registry
-        element, _route = _model_selection(schema, operation.element)
+        element, route_id = _model_selection(schema, operation.element)
         try:
             model = registry.model_for(element=element, path=operation.path)
         except IntegrationError as exc:
@@ -130,6 +118,7 @@ def execute_model(
                     element=candidate_element, path=candidate_path
                 ),
                 limits=cache.limits,
+                route_id=route_id,
             )
             raise ToolError(
                 "unsupported_projection",

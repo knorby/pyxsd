@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from pydantic import Field, JsonValue
+from pyxsd.relaxng import RelaxNGSchema
 from pyxsd.schema import Schema
 
 from ..cache import (
@@ -23,7 +24,11 @@ from ..errors import ToolError
 from ..execution import capture_candidate
 from ..inputs import SessionInputs
 from ..output_store import OutputRef, OutputStore
-from ..projection_guidance import candidate_details, resolve_global_element
+from ..projection_guidance import (
+    candidate_details,
+    resolve_global_element,
+    resolve_projection_element,
+)
 from ..worker_protocol import (
     ExportOperation,
     FieldSourceSpec,
@@ -85,8 +90,31 @@ def _record_columns(
     return {name: FieldSource(**source.model_dump()) for name, source in operation.columns.items()}
 
 
+def _record_element(schema: Schema | RelaxNGSchema, element: str) -> str:
+    """Resolve a record start exactly as the chosen schema backend does."""
+    if not isinstance(schema, RelaxNGSchema):
+        return resolve_global_element(schema, element)
+    route_id = resolve_projection_element(schema, element, scope="start")
+    plan = schema.projection
+    route = plan.routes[route_id]
+    if route.expanded_name is not None:
+        return route.expanded_name
+    if element in plan.routes:
+        raise ToolError(
+            "unsupported_projection",
+            "RELAX NG open-name start routes require an explicit element spelling",
+            details={
+                "format": "relax-ng",
+                "route_id": route_id,
+                "scope": "start",
+                "candidates": cast(JsonValue, sorted(plan.roots)),
+            },
+        )
+    return element
+
+
 def _prepare_records(
-    schema: Schema,
+    schema: Schema | RelaxNGSchema,
     operation: RecordsOperation | ExportOperation,
     columns: dict[str, Any] | None,
 ) -> Any:
@@ -94,7 +122,7 @@ def _prepare_records(
 
     return records(
         schema,
-        element=resolve_global_element(schema, operation.element),
+        element=_record_element(schema, operation.element),
         path=operation.path,
         columns=columns,
     )

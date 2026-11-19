@@ -71,6 +71,23 @@ OPEN_ROOT_RNG = (
     f"""<grammar xmlns="{NS}"><start><element><anyName/><empty/></element></start></grammar>"""
 )
 
+NESTED_LOCAL_RNG = f"""<grammar xmlns="{NS}"><start><element name="doc" ns="urn:a">
+  <optional><element name="doc" ns="urn:b"><empty/></element></optional>
+</element></start></grammar>"""
+
+OPEN_PLUS_NAMESPACED_RNG = f"""<grammar xmlns="{NS}"><start><choice>
+  <element><anyName/><empty/></element>
+  <element name="doc" ns="urn:test"><empty/></element>
+</choice></start></grammar>"""
+
+OPEN_WITH_NAMED_CHILD_RNG = f"""<grammar xmlns="{NS}"><start><element>
+  <anyName/><element name="inner" ns="urn:test"><text/></element>
+</element></start></grammar>"""
+
+NO_NAMESPACE_RNG = f"""<grammar xmlns="{NS}"><start><element name="doc">
+  <element name="child"><element name="leaf"><text/></element></element>
+</element></start></grammar>"""
+
 RNG_COMPONENT_FIELDS = {
     "id",
     "kind",
@@ -212,43 +229,71 @@ def test_capabilities_add_schema_languages_without_changing_old_keys(tmp_path):
             assert set(languages) == {"xsd", "relax-ng"}
             assert languages["xsd"] == {
                 "syntax": {"xml": True, "compact": False, "dtd": False},
-                "datatypes": {
-                    "builtin": True,
-                    "xsd": True,
-                    "custom_python_factories": False,
-                    "custom_wire": False,
+                "library": {
+                    "datatypes": {
+                        "builtin": True,
+                        "xsd": True,
+                        "custom_python_factories": False,
+                    },
+                    "typed": True,
+                    "capture": {"pattern_annotations": False, "xdm": True},
+                    "conversion": {
+                        "formats": [
+                            "pyxsd",
+                            "pyxsd-json",
+                            "parker",
+                            "badgerfish",
+                            "jsonml",
+                        ],
+                        "fidelities": ["strict", "best-effort"],
+                        "json_schema": True,
+                    },
                 },
-                "typed": True,
-                "conversion": {
-                    "formats": ["pyxsd", "pyxsd-json", "parker", "badgerfish", "jsonml"],
-                    "fidelities": ["strict", "best-effort"],
-                    "json_schema": True,
-                    "mcp_tools": False,
+                "mcp": {
+                    "datatypes": {"python_factories": False, "custom_wire": False},
+                    "validation": {"typed": True, "capture": False},
+                    "diagnostics": {
+                        "completeness": "not-reported",
+                        "suppressed_count": True,
+                    },
+                    "comparison": {"structural": True, "corpus": True},
+                    "conversion": {"tools": False},
+                    "projection": {"models": True, "records": True},
                 },
-                "capture": {"pattern_annotations": False, "xdm": True},
-                "diagnostics": {"completeness": "not-reported", "suppressed_count": True},
-                "comparison": {"structural": True, "corpus": True},
-                "projection": {"models": True, "records": True},
             }
             assert languages["relax-ng"] == {
                 "syntax": {"xml": True, "compact": False, "dtd": False},
-                "datatypes": {
-                    "builtin": True,
-                    "xsd": True,
-                    "custom_python_factories": False,
-                    "custom_wire": False,
+                "library": {
+                    "datatypes": {
+                        "builtin": True,
+                        "xsd": True,
+                        "custom_python_factories": True,
+                    },
+                    "typed": True,
+                    "capture": {"pattern_annotations": True, "xdm": True},
+                    "conversion": {
+                        "formats": [
+                            "pyxsd",
+                            "pyxsd-json",
+                            "parker",
+                            "badgerfish",
+                            "jsonml",
+                        ],
+                        "fidelities": ["strict", "best-effort"],
+                        "json_schema": True,
+                    },
                 },
-                "typed": True,
-                "conversion": {
-                    "formats": ["pyxsd", "pyxsd-json", "parker", "badgerfish", "jsonml"],
-                    "fidelities": ["strict", "best-effort"],
-                    "json_schema": True,
-                    "mcp_tools": False,
+                "mcp": {
+                    "datatypes": {"python_factories": False, "custom_wire": False},
+                    "validation": {"typed": False, "capture": False},
+                    "diagnostics": {
+                        "completeness": "boolean",
+                        "suppressed_count": True,
+                    },
+                    "comparison": {"structural": False, "corpus": False},
+                    "conversion": {"tools": False},
+                    "projection": {"models": True, "records": False},
                 },
-                "capture": {"pattern_annotations": True, "xdm": True},
-                "diagnostics": {"completeness": "boolean", "suppressed_count": True},
-                "comparison": {"structural": False, "corpus": False},
-                "projection": {"models": True, "records": False},
             }
 
     anyio.run(scenario)
@@ -285,6 +330,39 @@ def test_relaxng_overview_reports_starts_patterns_and_dependencies(tmp_path):
     assert dependency["digest"] == description.dependencies[0].content_sha256
     assert dependency["purpose"] == "schema"
     assert dependency["references"] == 0
+
+
+def test_relaxng_entry_starts_exclude_included_start_routes(tmp_path):
+    included = f'<grammar xmlns="{NS}"><define name="doc"><element name="doc"><empty/></element></define></grammar>'
+    root = f'<grammar xmlns="{NS}"><include href="part.rng"/><start><ref name="doc"/></start></grammar>'
+
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(inputs, workspace, {"schema.rng": root, "part.rng": included})
+            result = await service.inspect_schema(
+                InspectSchemaRequest(
+                    workspace_id=workspace,
+                    schema_ref=SchemaRef(source=FileRef(path="schema.rng"), format="relax-ng"),
+                )
+            )
+            assert result.data["starts"]
+            assert result.data["entry_starts"] == []
+            assert any(item["path"].endswith("part.rng") for item in result.data["dependencies"])
+
+    anyio.run(scenario)
+
+
+def test_relaxng_invalid_grammar_has_no_starts_but_keeps_components(tmp_path):
+    invalid = RNG.replace('<ref name="doc"/>', '<ref name="missing"/>')
+    overview = _worker_run(tmp_path, invalid, DescribeOperation)
+    assert overview["starts"] == []
+    assert overview["entry_starts"] == []
+    assert overview["start_patterns"]
+    assert overview["counts"]["pattern"]
+    selected = _worker_run(tmp_path, invalid, DescribeOperation, component_ids=("grammar",))
+    assert selected["starts"] == []
+    assert [item["id"] for item in selected["components"]] == ["grammar"]
+    assert selected["page"] == {"returned": 1, "truncated": False, "total": 1}
 
 
 def test_relaxng_constraints_page_rng_components_without_xsd_stand_ins(tmp_path):
@@ -600,6 +678,72 @@ def test_relaxng_route_resolution_reports_ambiguity_missing_and_invalid():
     with pytest.raises(ToolError) as invalid_error:
         resolve_projection_element(invalid, "doc")
     assert invalid_error.value.fault.code == "invalid_schema"
+    with pytest.raises(ToolError) as invalid_start:
+        resolve_projection_element(invalid, "doc", scope="start")
+    assert invalid_start.value.fault.code == "invalid_schema"
+
+
+def test_relaxng_start_resolution_matches_model_backend_fallbacks():
+    from pyxsd.mcp.projection_guidance import resolve_projection_element
+
+    nested = _compile(NESTED_LOCAL_RNG)
+    root_id = nested.projection.roots[0]
+    assert resolve_projection_element(nested, "doc", scope="start") == root_id
+    with pytest.raises(ToolError) as all_routes:
+        resolve_projection_element(nested, "doc")
+    assert all_routes.value.fault.code == "invalid_argument"
+    assert set(all_routes.value.fault.details["candidates"]) == {
+        root_id,
+        _route_named(nested, "{urn:b}doc"),
+    }
+
+    open_named = _compile(OPEN_PLUS_NAMESPACED_RNG)
+    open_roots = [
+        route_id
+        for route_id in open_named.projection.roots
+        if open_named.projection.routes[route_id].expanded_name is None
+    ]
+    assert len(open_roots) == 1
+    assert resolve_projection_element(open_named, "doc", scope="start") == open_roots[0]
+
+    open_child = _compile(OPEN_WITH_NAMED_CHILD_RNG)
+    open_child_root = open_child.projection.roots[0]
+    assert open_child.projection.routes[open_child_root].expanded_name is None
+    assert resolve_projection_element(open_child, "inner", scope="start") == open_child_root
+
+    local_id = _route_named(nested, "{urn:b}doc")
+    with pytest.raises(ToolError) as local:
+        resolve_projection_element(nested, local_id, scope="start")
+    assert local.value.fault.code == "unsupported_projection"
+    assert local.value.fault.details["scope"] == "local"
+    assert local.value.fault.details["candidates"] == sorted(nested.projection.roots)
+
+
+def test_relaxng_candidates_use_a_pre_resolved_start_route():
+    from pyxsd.integrations.pydantic import models
+    from pyxsd.mcp.projection_guidance import candidate_details
+
+    schema = _compile(NESTED_LOCAL_RNG)
+    root_id = schema.projection.roots[0]
+    local_id = _route_named(schema, "{urn:b}doc")
+    registry = models(schema)
+    details = candidate_details(
+        schema,
+        element="doc",
+        path=(),
+        prepare=lambda element, path: registry.model_for(element=element, path=path),
+        route_id=root_id,
+    )
+    assert details["element"] == "{urn:a}doc"
+    assert [item["route_id"] for item in details["projection_candidates"]] == [local_id]
+    with pytest.raises(ToolError) as without_anchor:
+        candidate_details(
+            schema,
+            element="doc",
+            path=(),
+            prepare=lambda element, path: registry.model_for(element=element, path=path),
+        )
+    assert without_anchor.value.fault.code == "invalid_argument"
 
 
 def test_relaxng_candidates_are_verified_by_the_model_backend():
@@ -747,6 +891,38 @@ def test_relaxng_route_resolution_handles_ambiguous_exact_expanded_names():
         resolve_projection_element(schema, "{urn:test}doc")
     assert ambiguous.value.fault.code == "invalid_argument"
     assert ambiguous.value.fault.details["candidates"] == sorted([route_id, "duplicate-route"])
+
+
+def test_relaxng_empty_namespace_spellings_match_the_backend():
+    from pyxsd.integrations.pydantic import models
+    from pyxsd.mcp.projection_guidance import candidate_details, resolve_projection_element
+
+    schema = _compile(NO_NAMESPACE_RNG)
+    root_id = schema.projection.roots[0]
+    child_id = _route_named(schema, "child")
+    assert resolve_projection_element(schema, "{}doc") == root_id
+    assert resolve_projection_element(schema, "Q{}doc") == root_id
+    assert resolve_projection_element(schema, "{}doc", scope="start") == root_id
+    assert resolve_projection_element(schema, "{}child") == child_id
+    registry = models(schema)
+    assert resolve_projection_element(schema, "{}doc") == _route_named(
+        schema, registry.model_for(element="{}doc").model_json_schema()["x-pyxsd-element"]
+    )
+    details = candidate_details(
+        schema,
+        element="{}doc",
+        path=("{}child",),
+        prepare=lambda element, path: registry.model_for(element=element, path=path),
+    )
+    assert details["element"] == "doc"
+    assert details["projection_candidates"] == [
+        {
+            "element": "doc",
+            "path": ["child", "leaf"],
+            "repeated": False,
+            "route_id": _route_named(schema, "leaf"),
+        }
+    ]
 
 
 def test_relaxng_candidate_caps_report_truncation_truthfully():
@@ -988,6 +1164,64 @@ def test_relaxng_models_report_start_and_local_route_scope(tmp_path):
     anyio.run(scenario)
 
 
+def test_relaxng_model_start_selection_uses_start_only_semantics(tmp_path):
+    from pyxsd.mcp.services.models import (
+        InspectModelRequest,
+        ModelService,
+        ValidateDataRequest,
+    )
+
+    nested = _compile(NESTED_LOCAL_RNG)
+    open_named = _compile(OPEN_PLUS_NAMESPACED_RNG)
+    open_child = _compile(OPEN_WITH_NAMED_CHILD_RNG)
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {
+                    "nested.rng": NESTED_LOCAL_RNG,
+                    "open.rng": OPEN_PLUS_NAMESPACED_RNG,
+                    "open-child.rng": OPEN_WITH_NAMED_CHILD_RNG,
+                },
+            )
+            service = ModelService(inputs, pool)
+
+            def request(path, element):
+                return InspectModelRequest(
+                    workspace_id=workspace,
+                    schema_ref=SchemaRef(source=FileRef(path=path), format="relax-ng"),
+                    element=element,
+                )
+
+            selected = await service.inspect_model(request("nested.rng", "doc"))
+            assert selected.data["route_scope"] == "start"
+            assert selected.data["route_element"] == "{urn:a}doc"
+            assert selected.data["route_id"] == nested.projection.roots[0]
+            valid = await service.validate_data(
+                ValidateDataRequest(**request("nested.rng", "doc").model_dump(), data={})
+            )
+            assert valid.data["valid"] is True
+            assert valid.data["route_element"] == "{urn:a}doc"
+
+            open_selected = await service.inspect_model(request("open.rng", "doc"))
+            assert open_selected.data["route_scope"] == "start"
+            assert open_selected.data["route_element"] is None
+            assert open_selected.data["route_id"] in open_named.projection.roots
+            open_valid = await service.validate_data(
+                ValidateDataRequest(**request("open.rng", "doc").model_dump(), data={})
+            )
+            assert open_valid.data["valid"] is True
+
+            not_local = await service.inspect_model(request("open-child.rng", "inner"))
+            assert not_local.data["route_scope"] == "start"
+            assert not_local.data["route_element"] is None
+            assert not_local.data["route_id"] == open_child.projection.roots[0]
+
+    anyio.run(scenario)
+
+
 def test_relaxng_model_route_selection_is_explicit_and_bounded(tmp_path):
     from pyxsd.mcp.services.models import InspectModelRequest, ModelService
 
@@ -1096,6 +1330,64 @@ def test_relaxng_records_are_explicitly_unsupported_with_scope(tmp_path):
                         workspace_id=workspace,
                         schema_ref=SchemaRef(source=FileRef(path="schema.rng"), format="relax-ng"),
                         document=FileRef(path="document.xml"),
+                        element="{urn:test}doc",
+                    )
+                )
+            assert raised.value.fault.code == "unsupported_capability"
+            assert {
+                key: raised.value.fault.details[key] for key in ("format", "validation_scope")
+            } == {"format": "relax-ng", "validation_scope": "unsupported"}
+
+    anyio.run(scenario)
+
+
+def test_relaxng_record_start_selection_and_export_are_explicit():
+    from types import SimpleNamespace
+
+    from pyxsd.mcp.projection_guidance import resolve_projection_element
+    from pyxsd.mcp.services.records import _prepare_records, _record_element
+
+    pytest.importorskip("pyarrow")
+    schema = _compile(RNG)
+    root_id = schema.projection.roots[0]
+    local_id = _route_named(schema, "{urn:test}item")
+    assert _record_element(schema, "doc") == "{urn:test}doc"
+    assert _record_element(schema, "{urn:test}doc") == "{urn:test}doc"
+    with pytest.raises(ToolError) as local:
+        _record_element(schema, local_id)
+    assert local.value.fault.code == "unsupported_projection"
+    assert local.value.fault.details["scope"] == "local"
+    assert local.value.fault.details["candidates"] == sorted(schema.projection.roots)
+
+    open_schema = _compile(OPEN_ROOT_RNG)
+    open_id = open_schema.projection.roots[0]
+    with pytest.raises(ToolError) as open_route:
+        _record_element(open_schema, open_id)
+    assert open_route.value.fault.code == "unsupported_projection"
+    assert open_route.value.fault.details["scope"] == "start"
+    assert _record_element(open_schema, "anything") == "anything"
+    projection = _prepare_records(schema, SimpleNamespace(element="doc", path=()), None)
+    assert type(projection).__name__ == "RelaxNGRecordProjection"
+    assert resolve_projection_element(schema, "doc", scope="start") == root_id
+
+
+def test_relaxng_record_export_is_explicitly_unsupported(tmp_path):
+    from pyxsd.mcp.services.records import ExportRecordsRequest, RecordService
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.rng": RNG, "document.xml": "<doc/>"},
+            )
+            service = RecordService(inputs, pool, outputs=inputs.outputs)
+            with pytest.raises(ToolError) as raised:
+                await service.export_records(
+                    ExportRecordsRequest(
+                        workspace_id=workspace,
+                        schema_ref=SchemaRef(source=FileRef(path="schema.rng"), format="relax-ng"),
+                        documents=(FileRef(path="document.xml"),),
                         element="{urn:test}doc",
                     )
                 )

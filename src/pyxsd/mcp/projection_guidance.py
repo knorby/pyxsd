@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from pydantic import JsonValue
 from pyxsd.integrations import IntegrationError
@@ -18,24 +18,79 @@ from .config import Limits
 from .errors import ToolError
 
 
-def resolve_projection_element(schema: Schema | RelaxNGSchema, element: str) -> str:
+def resolve_projection_element(
+    schema: Schema | RelaxNGSchema,
+    element: str,
+    *,
+    scope: Literal["route", "start"] = "route",
+) -> str:
     """Resolve an element spelling to the backend's route identity.
 
     XSD keeps :func:`resolve_global_element` behavior exactly: inspection IDs
     and unambiguous global names become Clark declaration names.  RELAX NG
     resolves a route ID, Clark name, EQName, or unambiguous local name to a
-    projection route ID.  Language comes only from the compiled schema object,
-    never from the spelling.
+    projection route ID.  ``scope="start"`` matches the model/record backend's
+    start-only rules: only start routes are considered, local-name fallback is
+    applied only there, and a local route ID is an explicit error.  Language
+    comes only from the compiled schema object, never from the spelling.
 
     Ambiguous and missing RELAX NG names raise typed errors carrying candidate
-    route IDs.  An invalid RELAX NG compilation has no projection routes, so
-    resolution reports that directly instead of inventing an XSD declaration.
+    route IDs; start scope reports only start route IDs.  An invalid RELAX NG
+    compilation has no projection routes, so resolution reports that directly
+    instead of inventing an XSD declaration.
     """
     if isinstance(schema, Schema):
         return resolve_global_element(schema, element)
     if not isinstance(schema, RelaxNGSchema):
         raise TypeError("resolve_projection_element requires a compiled schema")
+    if scope == "start":
+        return _resolve_relaxng_start_route(schema, element)
     return _resolve_relaxng_route(schema, element)
+
+
+def _resolve_relaxng_start_route(schema: RelaxNGSchema, element: str) -> str:
+    """Resolve exactly as the standalone model/record start selector does."""
+    if schema.report.has_errors:
+        raise ToolError(
+            "invalid_schema",
+            "RELAX NG start resolution requires a valid schema",
+            details={"format": "relax-ng"},
+        )
+    plan = schema.projection
+    selector = _eqname_to_clark(element)
+    if selector in plan.routes:
+        if selector in plan.roots:
+            return selector
+        raise ToolError(
+            "unsupported_projection",
+            "RELAX NG start selection requires a start route; pass local steps in path",
+            details={
+                "format": "relax-ng",
+                "route_id": selector,
+                "scope": "local",
+                "candidates": cast(JsonValue, sorted(plan.roots)),
+            },
+        )
+    uri, local = _split_route_spelling(selector)
+    matches = sorted(
+        route_id for route_id in plan.roots if plan.routes[route_id].name_class.contains(uri, local)
+    )
+    if not matches and uri is None:
+        matches = sorted(
+            route_id
+            for route_id in plan.roots
+            if (expanded := plan.routes[route_id].expanded_name) is not None
+            and expanded.rsplit("}", 1)[-1] == local
+        )
+    if len(matches) > 1:
+        raise ToolError(
+            "invalid_argument",
+            "RELAX NG start route name is ambiguous; pass a Clark name",
+            details={"candidates": cast(JsonValue, matches)},
+        )
+    if not matches:
+        raise _missing_relaxng_route(plan)
+    return matches[0]
 
 
 def _resolve_relaxng_route(schema: RelaxNGSchema, element: str) -> str:
@@ -98,18 +153,23 @@ def _missing_relaxng_route(plan: ProjectionPlan) -> ToolError:
 
 
 def _eqname_to_clark(value: str) -> str:
-    """Convert a Clark-style EQName spelling to Clark notation; keep the rest."""
-    return "{" + value[2:] if value.startswith("Q{") else value
+    """Convert an EQName spelling to Clark notation, including empty namespaces."""
+    if value.startswith("Q{"):
+        value = "{" + value[2:]
+    if value.startswith("{"):
+        uri, separator, local = value[1:].partition("}")
+        if separator and not uri and local and "{" not in local and "}" not in local:
+            return local
+    return value
 
 
 def _split_route_spelling(value: str) -> tuple[str | None, str]:
-    """Split a local, Clark, or EQName spelling without resolving prefixes."""
-    if value.startswith(("Q{", "{")):
-        body = value[2:] if value.startswith("Q{") else value[1:]
-        uri, separator, local = body.partition("}")
+    """Split a Clark spelling without resolving prefixes; empty means no namespace."""
+    if value.startswith("{"):
+        uri, separator, local = value[1:].partition("}")
         if not separator or not local or "{" in local or "}" in local:
             return None, value
-        return uri, local
+        return uri or None, local
     return None, value
 
 
@@ -174,6 +234,7 @@ def candidate_details(
     path: tuple[str, ...],
     prepare: Callable[[str, tuple[str, ...]], object],
     limits: Limits | None = None,
+    route_id: str | None = None,
 ) -> dict[str, JsonValue]:
     """Search descendants of one route with the caller's real projection backend.
 
@@ -182,10 +243,17 @@ def candidate_details(
     search, so an empty candidate list never overstates what was searched.
     XSD traverses declaration particles; RELAX NG traverses projection routes
     and their child contracts.  Neither path reads the other language's model.
+    A caller that already resolved a RELAX NG start route passes ``route_id`` so
+    guidance cannot re-resolve a local-name spelling to a different local route.
     """
     if isinstance(schema, RelaxNGSchema):
         return _relaxng_candidate_details(
-            schema, element=element, path=path, prepare=prepare, limits=limits
+            schema,
+            element=element,
+            path=path,
+            prepare=prepare,
+            limits=limits,
+            route_id=route_id,
         )
     return _xsd_candidate_details(
         schema, element=element, path=path, prepare=prepare, limits=limits
@@ -286,6 +354,7 @@ def _relaxng_candidate_details(
     path: tuple[str, ...],
     prepare: Callable[[str, tuple[str, ...]], object],
     limits: Limits | None = None,
+    route_id: str | None = None,
 ) -> dict[str, JsonValue]:
     """Search RELAX NG projection-route children with the caller's backend.
 
@@ -295,8 +364,8 @@ def _relaxng_candidate_details(
     from an admitted start.  Only exact child routes are traversed: a wildcard
     child has no single retry spelling, so it is not offered as a candidate.
     """
-    resolved = resolve_projection_element(schema, element)
     plan = schema.projection
+    resolved = route_id if route_id is not None else resolve_projection_element(schema, element)
     route = plan.routes[resolved]
     start_element, base_path = _relaxng_candidate_base(plan, route, element)
     details: dict[str, JsonValue] = {

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 from mcp import types
 from pydantic import ConfigDict, Field, JsonValue
+from pyxsd.data_conversion.contracts import _FIDELITY_NAMES, _FORMAT_NAMES
 
 from .. import __version__
 from .contracts import (
@@ -47,56 +48,74 @@ if TYPE_CHECKING:
 
 _PAGE = Page()
 
-_CONVERSION_FORMATS: tuple[str, ...] = (
-    "pyxsd",
-    "pyxsd-json",
-    "parker",
-    "badgerfish",
-    "jsonml",
-)
-_CONVERSION_FIDELITIES: tuple[str, ...] = ("strict", "best-effort")
-
 
 def _schema_languages() -> dict[str, JsonValue]:
-    """Advertise implemented per-language contracts, never a single JSON flag.
+    """Advertise implemented per-language contracts with explicit scopes.
 
-    The conversion list names library-level formats; ``mcp_tools`` stays false
-    until the shared conversion tools land, so clients cannot mistake library
-    support for a registered wire tool.  Python datatype factories and custom
-    library registrations are deliberately not claimed: no MCP wire field
-    accepts them.
+    ``library`` describes the public Python schema library; ``mcp`` describes
+    what this server's tools actually expose.  In particular, RELAX NG typed
+    instances and pattern capture exist in the library, while MCP validation
+    parses lexical trees only.  Python datatype factories are a library
+    capability and are never accepted through MCP wire options.
     """
-    common: dict[str, JsonValue] = {
-        "syntax": {"xml": True, "compact": False, "dtd": False},
-        "datatypes": {
-            "builtin": True,
-            "xsd": True,
-            "custom_python_factories": False,
-            "custom_wire": False,
+    return {
+        "xsd": {
+            "syntax": {"xml": True, "compact": False, "dtd": False},
+            "library": {
+                "datatypes": {
+                    "builtin": True,
+                    "xsd": True,
+                    "custom_python_factories": False,
+                },
+                "typed": True,
+                "capture": {"pattern_annotations": False, "xdm": True},
+                "conversion": {
+                    "formats": list(_FORMAT_NAMES),
+                    "fidelities": list(_FIDELITY_NAMES),
+                    "json_schema": True,
+                },
+            },
+            "mcp": {
+                "datatypes": {"python_factories": False, "custom_wire": False},
+                "validation": {"typed": True, "capture": False},
+                "diagnostics": {
+                    "completeness": "not-reported",
+                    "suppressed_count": True,
+                },
+                "comparison": {"structural": True, "corpus": True},
+                "conversion": {"tools": False},
+                "projection": {"models": True, "records": True},
+            },
         },
-        "typed": True,
-        "conversion": {
-            "formats": list(_CONVERSION_FORMATS),
-            "fidelities": list(_CONVERSION_FIDELITIES),
-            "json_schema": True,
-            "mcp_tools": False,
+        "relax-ng": {
+            "syntax": {"xml": True, "compact": False, "dtd": False},
+            "library": {
+                "datatypes": {
+                    "builtin": True,
+                    "xsd": True,
+                    "custom_python_factories": True,
+                },
+                "typed": True,
+                "capture": {"pattern_annotations": True, "xdm": True},
+                "conversion": {
+                    "formats": list(_FORMAT_NAMES),
+                    "fidelities": list(_FIDELITY_NAMES),
+                    "json_schema": True,
+                },
+            },
+            "mcp": {
+                "datatypes": {"python_factories": False, "custom_wire": False},
+                "validation": {"typed": False, "capture": False},
+                "diagnostics": {
+                    "completeness": "boolean",
+                    "suppressed_count": True,
+                },
+                "comparison": {"structural": False, "corpus": False},
+                "conversion": {"tools": False},
+                "projection": {"models": True, "records": False},
+            },
         },
     }
-    xsd: dict[str, JsonValue] = {
-        **common,
-        "capture": {"pattern_annotations": False, "xdm": True},
-        "diagnostics": {"completeness": "not-reported", "suppressed_count": True},
-        "comparison": {"structural": True, "corpus": True},
-        "projection": {"models": True, "records": True},
-    }
-    relaxng: dict[str, JsonValue] = {
-        **common,
-        "capture": {"pattern_annotations": True, "xdm": True},
-        "diagnostics": {"completeness": "boolean", "suppressed_count": True},
-        "comparison": {"structural": False, "corpus": False},
-        "projection": {"models": True, "records": False},
-    }
-    return {"xsd": xsd, "relax-ng": relaxng}
 
 
 def capability_data(services: "Services") -> dict[str, JsonValue]:
