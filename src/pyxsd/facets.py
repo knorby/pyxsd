@@ -170,8 +170,9 @@ def _short_value(value: Any) -> str:
     """A bounded diagnostic rendering that never hits int-string limits."""
     if isinstance(value, int) and not isinstance(value, bool):
         text = integer_to_decimal(value)
-        if len(text) > 80:
-            return f"{text[:40]}...({len(text)} digits)"
+        digits = text[1:] if text.startswith("-") else text
+        if len(digits) > 80:
+            return f"{text[:40]}...({len(digits)} digits)"
         return text
     return repr(value)
 

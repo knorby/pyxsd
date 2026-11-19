@@ -1234,7 +1234,10 @@ def _integer_value(val: str | int) -> int:
         sign = -1 if collapsed.startswith("-") else 1
         digits = collapsed.lstrip("+-")
         return sign * _integer_from_digits(digits)
-    return val
+    # Derived classes inspect the sign of the converted integer, not a
+    # fractional input such as 0.9, which would otherwise pass a positive
+    # check and then truncate to zero.
+    return int(val)
 
 
 class Integer(int, XsdDataType):

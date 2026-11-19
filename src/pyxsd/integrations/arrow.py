@@ -27,6 +27,7 @@ from pyxsd.batch import DocumentSource
 from pyxsd.document import Document
 from pyxsd.relaxng.schema import RelaxNGSchema
 from pyxsd.schema import Schema
+from pyxsd.xsd_data_types import integer_to_decimal
 
 from . import IntegrationError
 from ._projection import compile_projection, iter_projected_rows
@@ -155,7 +156,7 @@ def _scalar_row(cls: type, data_type: Any, value: Any) -> Any:
         item = list_item_type(cls)
         return [_scalar_row(item, data_type.value_type, v) for v in value]
     if pa.types.is_string(data_type) and isinstance(value, (int, Decimal)):
-        return format(value, "f") if isinstance(value, Decimal) else str(value)
+        return format(value, "f") if isinstance(value, Decimal) else integer_to_decimal(value)
     return value
 
 

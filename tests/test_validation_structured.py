@@ -278,6 +278,9 @@ def test_total_digits_handles_values_beyond_the_int_string_limit(digits):
         FacetConstraints(total_digits=digits - 1).check(value)
     assert f"has {digits} digits" in str(raised.value)
     assert f"...({digits} digits)" in str(raised.value)
+    with pytest.raises(TypeError) as negative:
+        FacetConstraints(total_digits=digits - 1).check(Integer("-" + "9" * digits))
+    assert f"...({digits} digits)" in str(negative.value)
 
 
 def test_enumeration_constraint_prefers_typed_values_to_comparison_keys():

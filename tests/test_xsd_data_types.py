@@ -99,6 +99,11 @@ class TestPositiveInteger:
         with pytest.raises(TypeError):
             PositiveInteger(-3)
 
+    def test_fractional_inputs_are_checked_after_integer_conversion(self):
+        for value in (0.9, -0.9):
+            with pytest.raises(TypeError):
+                PositiveInteger(value)
+
     def test_name_attribute(self):
         assert PositiveInteger.name == "positiveInteger"
 
@@ -122,6 +127,11 @@ class TestNegativeInteger:
     def test_zero_is_invalid(self):
         with pytest.raises(TypeError):
             NegativeInteger("0")
+
+    def test_fractional_inputs_are_checked_after_integer_conversion(self):
+        for value in (0.9, -0.9):
+            with pytest.raises(TypeError):
+                NegativeInteger(value)
 
     def test_name_attribute(self):
         assert NegativeInteger.name == "negativeInteger"
