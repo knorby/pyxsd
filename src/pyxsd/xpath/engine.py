@@ -597,7 +597,7 @@ class _XdmAdapterRegistry:
             return None
         if document.document_order != 0:
             return None
-        if len(self._documents) >= self._max_documents:
+        if self.document_count >= self._max_documents:
             return None
         count = _document_node_count(document)
         if self._admitted_nodes + count > self._max_nodes:

@@ -678,6 +678,26 @@ def test_rootless_admission_budgets_and_refusals() -> None:
     assert capped.rootless(other_root) is not None
 
 
+def test_the_document_cap_counts_both_registry_views() -> None:
+    from pyxsd.xslt.runtime.builder import _NodeFactory
+
+    factory = _NodeFactory()
+    root = factory.element("t")
+    factory.finalize_root(root)
+
+    # A rootless view at the cap refuses a second document view.
+    rootless_first = _XdmAdapterRegistry(max_documents=1)
+    assert rootless_first.rootless(root) is not None
+    assert rootless_first.document(_document(b"<a/>")) is None
+    assert rootless_first.document_count == 1
+
+    # A document view at the cap refuses a second rootless view, unchanged.
+    document_first = _XdmAdapterRegistry(max_documents=1)
+    assert document_first.document(_document(b"<a/>")) is not None
+    assert document_first.rootless(root) is None
+    assert document_first.document_count == 1
+
+
 # ---------------------------------------------------------------------------
 # §3.2 — a reused adapter pins no evaluation state
 
