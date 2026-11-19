@@ -443,7 +443,7 @@ def _inventory(schema: RelaxNGSchema) -> dict[str, dict[str, JsonValue]]:
         "projection:",
         {k: _name(r.name_class) for k, r in plan.routes.items()},
         {
-            k: cast(JsonValue, sorted(patterns.identity(p) for p in r.patterns))
+            k: cast(JsonValue, sorted({patterns.identity(p) for p in r.patterns}))
             for k, r in plan.routes.items()
         },
     )

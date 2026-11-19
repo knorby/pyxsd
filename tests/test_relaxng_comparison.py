@@ -330,6 +330,29 @@ def test_definitions_and_projection_ignore_equivalent_assignment_pool_sharing():
     assert_empty(compare_relaxng_structure(schema(old), schema(new)))
 
 
+def same_name_route_body():
+    return (
+        '<element name="a">'
+        f'<element name="a">{qname_value("p")}</element>'
+        f'<element name="a">{qname_value("q")}</element>'
+        "</element>"
+    )
+
+
+def test_same_name_route_anchors_ignore_duplicate_canonical_patterns():
+    old = same_name_route_body()
+    new = old.replace("xmlns:p=", "xmlns:q=").replace(">p:x<", ">q:x<")
+    assert_empty(compare_relaxng_structure(schema(old), schema(new)))
+
+
+def test_same_name_route_anchors_keep_genuine_pattern_changes():
+    old = same_name_route_body()
+    changed = old.replace(qname_value("p"), "<value>other</value>")
+    result = compare_relaxng_structure(schema(old), schema(changed))
+    assert sum(result["totals"].values())
+    assert any(result["categories"]["projections"].values())
+
+
 def test_equivalent_ordered_child_occurrences_are_not_collapsed():
     once = f'<element name="a">{qname_value("q")}</element>'
     twice = f'<element name="a">{qname_value("p")}</element>{once}'
