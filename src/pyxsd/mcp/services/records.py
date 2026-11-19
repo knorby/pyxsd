@@ -58,6 +58,23 @@ class ExportRecordsRequest(WireModel):
     format: Literal["parquet", "dataset"] = "parquet"
 
 
+def _require_record_schema(schema: Any) -> Schema:
+    """Keep record selectors XSD-only and state that scope explicitly.
+
+    RELAX NG records, including selector round trips, are not exposed through
+    this wire path yet.  Returning projected rows with an invented whole-XML
+    scope would overstate them, so the unsupported outcome names its scope.
+    """
+    try:
+        return require_xsd_schema(schema)
+    except ToolError as exc:
+        raise ToolError(
+            "unsupported_capability",
+            "RELAX NG record projection is not available in this build",
+            details={"format": "relax-ng", "validation_scope": "unsupported"},
+        ) from exc
+
+
 def _record_columns(
     operation: RecordsOperation | ExportOperation,
 ) -> dict[str, Any] | None:
@@ -123,7 +140,7 @@ def execute_records(
     )
     with cache.acquire(request) as schema:
         require_complete_schema(schema)
-        schema = require_xsd_schema(schema)
+        schema = _require_record_schema(schema)
         document = schema.parse("/workspace/" + operation.document.path)
         if document.report.error_count or document.root is None:
             raise ToolError("invalid_document", "Record projection requires valid XML")
@@ -189,7 +206,7 @@ def execute_export(
     )
     with cache.acquire(request) as schema:
         require_complete_schema(schema)
-        schema = require_xsd_schema(schema)
+        schema = _require_record_schema(schema)
         documents = []
         for reference in operation.documents:
             document = schema.parse("/workspace/" + reference.path)

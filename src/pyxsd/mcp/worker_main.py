@@ -27,6 +27,22 @@ from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import NamespaceContext
 from pyxsd.relaxng import RelaxNGElement, RelaxNGLimitError, RelaxNGSchema
 from pyxsd.relaxng.datatypes import DatatypeRegistrationError, UnsupportedDatatypeError
+from pyxsd.relaxng.introspection import (
+    RelaxNGComponentDescription,
+)
+from pyxsd.relaxng.introspection import (
+    describe_component as relaxng_describe_component,
+)
+from pyxsd.relaxng.introspection import (
+    describe_schema as relaxng_describe_schema,
+)
+from pyxsd.relaxng.introspection import (
+    find_components as relaxng_find_components,
+)
+from pyxsd.relaxng.introspection import (
+    related_components as relaxng_related_components,
+)
+from pyxsd.relaxng.resources import ResourceDependency
 from pyxsd.schema_base import SchemaBase
 from pyxsd.schema_context import last_components, remember_components
 from pyxsd.source_spans import SourceIndex
@@ -71,6 +87,9 @@ _EXTERNAL_XPATH = re.compile(
     r"(?:doc|document|collection|uri-collection|json-doc|unparsed-text|unparsed-text-lines)\s*\("
 )
 _PARSER_POSITION = re.compile(r"line (\d+), column (\d+)")
+_RELAXNG_COMPONENT_KINDS = frozenset(
+    {"grammar", "define", "pattern", "name-class", "datatype", "route", "resource"}
+)
 
 
 def _read_frame(stream: BinaryIO, max_bytes: int | None) -> bytes:
@@ -451,6 +470,154 @@ def _namespace_probe(
     return probe
 
 
+def _relaxng_origin_order(origin: object) -> tuple[str, str, tuple[tuple[str, int], ...], str]:
+    """Order authored origins deterministically without object identity."""
+    location = getattr(origin, "location", None)
+    if location is None:
+        return (getattr(origin, "source_id", ""), "", (), "")
+    return (
+        getattr(origin, "source_id", ""),
+        location.source or "",
+        tuple((step.name, step.index) for step in location.path),
+        location.attribute or "",
+    )
+
+
+def _relaxng_component_json(component: RelaxNGComponentDescription) -> dict[str, JsonValue]:
+    """Expose only RELAX NG component fields, never XSD declaration stand-ins."""
+    return {
+        "id": component.id,
+        "kind": component.kind,
+        "name": component.name,
+        "namespace": component.namespace,
+        "location": encode_value(component.location),
+        "origins": [
+            {
+                "source_id": origin.source_id,
+                "location": encode_value(origin.location),
+            }
+            for origin in sorted(component.origins, key=_relaxng_origin_order)
+        ],
+        "owner_id": component.owner_id,
+        "pattern_kind": component.pattern_kind,
+        "name_class": component.name_class,
+        "datatype_library": component.datatype_library,
+        "datatype_name": component.datatype_name,
+        "datatype_parameters": [[name, value] for name, value in component.datatype_parameters],
+        "synthetic": component.synthetic,
+    }
+
+
+def _relaxng_dependency_json(dependency: ResourceDependency) -> dict[str, JsonValue]:
+    """Summarize one canonical resource without inventing file sizes."""
+    return {
+        "path": dependency.canonical_id,
+        "digest": dependency.content_sha256,
+        "purpose": dependency.purpose,
+        "references": len(dependency.references),
+    }
+
+
+def _relaxng_start_ids(schema: RelaxNGSchema) -> list[str]:
+    """Return stable start-route IDs; an invalid grammar has no routes."""
+    return [] if schema.report.has_errors else list(schema.projection.roots)
+
+
+def _describe_relaxng(operation: DescribeOperation, schema: RelaxNGSchema) -> dict[str, JsonValue]:
+    """Describe starts, patterns, datatypes, routes, and dependencies truthfully."""
+    description = relaxng_describe_schema(schema)
+    if operation.view in ("compact", "full"):
+        try:
+            stub = schema.stub(
+                compact=operation.view == "compact",
+                component_ids=operation.component_ids or None,
+                depth=operation.depth,
+            )
+        except KeyError as exc:
+            raise ToolError("not_found", "Schema component not found") from exc
+        return {"view": operation.view, "stub": stub}
+    starts = _relaxng_start_ids(schema)
+    by_id = {component.id: component for component in description.components}
+    entry_source = "/workspace/" + operation.schema_ref.source.path
+    entry_starts = [
+        route_id
+        for route_id in starts
+        if (component := by_id.get(route_id)) is not None
+        and component.location is not None
+        and component.location.source == entry_source
+    ]
+    result: dict[str, JsonValue] = {
+        "view": operation.view,
+        "starts": cast(JsonValue, starts),
+        "entry_starts": cast(JsonValue, entry_starts),
+        "start_patterns": cast(JsonValue, list(description.start_ids)),
+        "counts": cast(
+            JsonValue,
+            dict(sorted(Counter(item.kind for item in description.components).items())),
+        ),
+        "dependencies": cast(
+            JsonValue,
+            [_relaxng_dependency_json(item) for item in description.dependencies],
+        ),
+    }
+    if operation.view == "constraints" or operation.component_ids:
+        selected_ids = operation.component_ids or tuple(starts)
+        try:
+            selected = [relaxng_describe_component(schema, item) for item in selected_ids]
+        except KeyError as exc:
+            raise ToolError("not_found", "Schema component not found") from exc
+        page = selected[
+            operation.offset : None
+            if operation.limit is None
+            else operation.offset + operation.limit
+        ]
+        result["components"] = cast(JsonValue, [_relaxng_component_json(item) for item in page])
+        result["page"] = _page(len(selected), operation.offset, len(page))
+    return result
+
+
+def _find_relaxng(operation: FindOperation, schema: RelaxNGSchema) -> dict[str, JsonValue]:
+    """Search the compiled RELAX NG inventory with XSD-compatible paging."""
+    try:
+        if operation.component_id is not None:
+            seed = relaxng_describe_component(schema, operation.component_id)
+            found = (
+                seed,
+                *relaxng_related_components(
+                    schema,
+                    operation.component_id,
+                    direction=operation.direction,
+                    depth=operation.depth,
+                ),
+            )
+        else:
+            found = relaxng_find_components(
+                schema,
+                text=operation.text,
+                kind=operation.component_kind,
+                namespace=operation.namespace,
+            )
+    except KeyError as exc:
+        raise ToolError("not_found", "Schema component not found") from exc
+    if operation.name is not None:
+        if "{" in operation.name:
+            found = tuple(item for item in found if item.name == operation.name)
+        else:
+            found = tuple(
+                item
+                for item in found
+                if item.name == operation.name
+                or (item.name is not None and item.name.endswith("}" + operation.name))
+            )
+    page = found[
+        operation.offset : None if operation.limit is None else operation.offset + operation.limit
+    ]
+    return {
+        "components": cast(JsonValue, [_relaxng_component_json(item) for item in page]),
+        "page": _page(len(found), operation.offset, len(page)),
+    }
+
+
 def _describe(
     operation: DescribeOperation, cache: SchemaCache, processor_version: str
 ) -> dict[str, JsonValue]:
@@ -470,6 +637,8 @@ def _describe(
             "namespace_probe": cast(JsonValue, probe if probe else None),
         }
     with cache.acquire(request) as schema:
+        if isinstance(schema, RelaxNGSchema):
+            return _describe_relaxng(operation, schema)
         xsd_schema = require_xsd_schema(schema)
         description = describe_schema(xsd_schema)
         selected_ids = operation.component_ids or description.roots
@@ -518,15 +687,28 @@ def _describe(
 def _find(
     operation: FindOperation, cache: SchemaCache, processor_version: str
 ) -> dict[str, JsonValue]:
-    from pyxsd.introspection import COMPONENT_KINDS
+    if operation.schema_ref.format == "relax-ng":
+        if (
+            operation.component_kind is not None
+            and operation.component_kind not in _RELAXNG_COMPONENT_KINDS
+        ):
+            raise ToolError(
+                "invalid_argument",
+                "Unknown RELAX NG component kind; expected one of: "
+                + ", ".join(sorted(_RELAXNG_COMPONENT_KINDS)),
+            )
+    else:
+        from pyxsd.introspection import COMPONENT_KINDS
 
-    if operation.component_kind is not None and operation.component_kind not in COMPONENT_KINDS:
-        raise ToolError(
-            "invalid_argument",
-            "Unknown component kind; expected one of: " + ", ".join(sorted(COMPONENT_KINDS)),
-        )
+        if operation.component_kind is not None and operation.component_kind not in COMPONENT_KINDS:
+            raise ToolError(
+                "invalid_argument",
+                "Unknown component kind; expected one of: " + ", ".join(sorted(COMPONENT_KINDS)),
+            )
     request = _for_schema(operation, operation.schema_ref, processor_version)
     with cache.acquire(request) as schema:
+        if isinstance(schema, RelaxNGSchema):
+            return _find_relaxng(operation, schema)
         xsd_schema = require_xsd_schema(schema)
         try:
             if operation.component_id is not None:

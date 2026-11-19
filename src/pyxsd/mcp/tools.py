@@ -47,6 +47,57 @@ if TYPE_CHECKING:
 
 _PAGE = Page()
 
+_CONVERSION_FORMATS: tuple[str, ...] = (
+    "pyxsd",
+    "pyxsd-json",
+    "parker",
+    "badgerfish",
+    "jsonml",
+)
+_CONVERSION_FIDELITIES: tuple[str, ...] = ("strict", "best-effort")
+
+
+def _schema_languages() -> dict[str, JsonValue]:
+    """Advertise implemented per-language contracts, never a single JSON flag.
+
+    The conversion list names library-level formats; ``mcp_tools`` stays false
+    until the shared conversion tools land, so clients cannot mistake library
+    support for a registered wire tool.  Python datatype factories and custom
+    library registrations are deliberately not claimed: no MCP wire field
+    accepts them.
+    """
+    common: dict[str, JsonValue] = {
+        "syntax": {"xml": True, "compact": False, "dtd": False},
+        "datatypes": {
+            "builtin": True,
+            "xsd": True,
+            "custom_python_factories": False,
+            "custom_wire": False,
+        },
+        "typed": True,
+        "conversion": {
+            "formats": list(_CONVERSION_FORMATS),
+            "fidelities": list(_CONVERSION_FIDELITIES),
+            "json_schema": True,
+            "mcp_tools": False,
+        },
+    }
+    xsd: dict[str, JsonValue] = {
+        **common,
+        "capture": {"pattern_annotations": False, "xdm": True},
+        "diagnostics": {"completeness": "not-reported", "suppressed_count": True},
+        "comparison": {"structural": True, "corpus": True},
+        "projection": {"models": True, "records": True},
+    }
+    relaxng: dict[str, JsonValue] = {
+        **common,
+        "capture": {"pattern_annotations": True, "xdm": True},
+        "diagnostics": {"completeness": "boolean", "suppressed_count": True},
+        "comparison": {"structural": False, "corpus": False},
+        "projection": {"models": True, "records": False},
+    }
+    return {"xsd": xsd, "relax-ng": relaxng}
+
 
 def capability_data(services: "Services") -> dict[str, JsonValue]:
     settings = services.settings
@@ -71,6 +122,7 @@ def capability_data(services: "Services") -> dict[str, JsonValue]:
                 "available": services.arrow_available,
             },
         },
+        "schema_languages": _schema_languages(),
     }
 
 

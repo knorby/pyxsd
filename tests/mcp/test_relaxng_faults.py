@@ -209,14 +209,16 @@ def test_batch_unsupported_library_does_not_contaminate_other_item(tmp_path):
     anyio.run(scenario)
 
 
-def test_xsd_only_inspection_rejects_relaxng_explicitly(tmp_path):
+def test_inspection_serves_relaxng_instead_of_rejecting(tmp_path):
     async def scenario():
         async with harness(tmp_path) as (service, inputs, _pool, workspace):
             await upload(inputs, workspace, {"schema.rng": VALID_SCHEMA})
-            with pytest.raises(ToolError) as raised:
-                await service.inspect_schema(
-                    InspectSchemaRequest(workspace_id=workspace, schema_ref=relaxng_ref())
-                )
-            assert raised.value.fault.code == "unsupported_capability"
+            inspected = await service.inspect_schema(
+                InspectSchemaRequest(workspace_id=workspace, schema_ref=relaxng_ref())
+            )
+            assert inspected.data["starts"]
+            assert inspected.data["start_patterns"]
+            assert "target_namespace" not in inspected.data
+            assert "roots" not in inspected.data
 
     anyio.run(scenario)
