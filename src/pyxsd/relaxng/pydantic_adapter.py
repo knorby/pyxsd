@@ -166,15 +166,16 @@ def _route_metadata(plan: ProjectionPlan, route: RouteContract, layout: str) -> 
     start = route.route_id in plan.roots
     if start:
         validation = (
-            "unordered projected data for this start route; Task 3/4 reconstruct "
-            "canonical lexical XML from the retained compiled route; use "
-            "RelaxNGDocument validation for XML validity"
+            "unordered projected data for this start route; document conversion "
+            "reconstructs canonical lexical XML from the retained compiled route; "
+            "use RelaxNGDocument validation for XML validity"
         )
     else:
         validation = (
             "unordered local route content only; ancestor and sibling constraints "
-            "are not validated; Task 3/4 reconstruct canonical lexical XML from the "
-            "retained compiled route; use RelaxNGDocument validation for XML validity"
+            "are not validated; document conversion reconstructs canonical lexical "
+            "XML from the retained compiled route; use RelaxNGDocument validation "
+            "for XML validity"
         )
     return {
         "x-pyxsd-route": route.route_id,

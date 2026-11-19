@@ -33,6 +33,11 @@ def prepare_document(
     capture still converts because binding evidence is independent of the
     optional annotation table.
     """
+    if not isinstance(schema, Schema):
+        from pyxsd.relaxng.schema import RelaxNGSchema
+
+        if not isinstance(schema, RelaxNGSchema):
+            raise TypeError("prepare_document requires a compiled XSD or RELAX NG schema")
     if document.schema is not schema:
         raise IntegrationError("document belongs to another compiled schema")
     schema.require_valid()
@@ -46,10 +51,7 @@ def prepare_document(
 
     from pyxsd.relaxng.document import RelaxNGDocument
     from pyxsd.relaxng.errors import StaleInterpretationError
-    from pyxsd.relaxng.schema import RelaxNGSchema
 
-    if not isinstance(schema, RelaxNGSchema):
-        raise TypeError("prepare_document requires a compiled XSD or RELAX NG schema")
     if not isinstance(document, RelaxNGDocument):
         raise IntegrationError("document is not a RELAX NG document for this schema")
     if revalidate:
