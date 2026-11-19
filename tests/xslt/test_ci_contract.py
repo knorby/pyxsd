@@ -938,7 +938,16 @@ def test_check_and_write_baseline_refuse_a_filter(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = _two_family_repo(tmp_path)
+    _write_baseline(
+        root,
+        "xslt30",
+        {"gate/case-001": "fail", "gate/case-002": "fail", "other/other-001": "fail"},
+    )
+    # The baseline is valid and complete here, so pre-change ``--check`` exits 0
+    # and the only reason these arms exit 2 is the narrowing refusal.
     target = _baseline_path(root)
+    assert _run(["--profile", "xslt30", "--check"], root) == 0
+    capsys.readouterr()
 
     assert _run(["--profile", "xslt30", "--check", "--filter", "gate/case-001"], root) == 2
     error = capsys.readouterr().err
@@ -948,13 +957,15 @@ def test_check_and_write_baseline_refuse_a_filter(
     error = capsys.readouterr().err
     assert "--check" in error and "--limit" in error and "cannot be narrowed" in error
 
+    never = tmp_path / "never" / "xslt30.toml"
     assert (
-        _run(["--profile", "xslt30", "--write-baseline", str(target), "--filter", "gate/"], root)
+        _run(["--profile", "xslt30", "--write-baseline", str(never), "--filter", "gate/"], root)
         == 2
     )
     error = capsys.readouterr().err
     assert "--write-baseline" in error and "--filter" in error
-    assert not target.exists()
+    assert not never.exists()
+    assert target.exists()
 
     census = tmp_path / "census.json"
     assert _run(["--profile", "xslt30", "--census", str(census), "--limit", "0"], root) == 2
@@ -965,6 +976,50 @@ def test_check_and_write_baseline_refuse_a_filter(
     assert _run(["--profile", "xslt30", "--filter", "gate/"], root) == 2
     error = capsys.readouterr().err
     assert "--filter" in error and "--census" in error
+
+
+def test_an_empty_filter_token_is_refused_before_any_catalog_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "bare-repo"
+    root.mkdir()
+    target = tmp_path / "census.json"
+
+    assert _run(["--profile", "xslt30", "--census", str(target), "--filter", ""], root) == 2
+    error = capsys.readouterr().err
+    assert "token '' is empty" in error
+    # The catalog error would say "cannot read XSLT catalog"; argument parsing
+    # must refuse before the corpus is consulted at all.
+    assert "catalog" not in error
+    assert not target.exists()
+
+
+def test_flag_help_and_docstring_name_every_refused_host(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        report_xslt.parse_args(["--help"])
+    help_output = capsys.readouterr().out
+
+    def description(flag: str) -> str:
+        start = help_output.index(f"\n  {flag}")
+        end = help_output.find("\n  --", start + 1)
+        return " ".join(help_output[start : end if end != -1 else len(help_output)].split())
+
+    def names(segment: str, host: str) -> bool:
+        """True when *host* appears; argparse may wrap a long flag mid-hyphen."""
+        return host.replace(" ", "") in "".join(segment.split())
+
+    filter_help = description("--filter")
+    for host in ("--check", "--write-baseline", "plain run"):
+        assert names(filter_help, host)
+    skip_help = description("--skip-timeouts")
+    for host in ("--check", "--enforce", "--write-baseline", "--list-only", "plain run"):
+        assert names(skip_help, host)
+
+    docstring = " ".join(report_xslt.__doc__.split())
+    assert "a plain run has no slice to compare or report" in docstring
+    assert "a plain run has no census to report it" in docstring
 
 
 def test_filtered_enforce_announces_the_slice_and_compares_only_it(

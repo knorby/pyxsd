@@ -45,7 +45,8 @@ a token that matches no case is an error.  The matcher is verbatim and
 case-sensitive: no substring, glob, or regex form survives.  A partial census
 records what it measured in a ``selection`` block.  ``--check`` validates the
 whole baseline and ``--write-baseline`` writes the whole profile, so both refuse
-to be narrowed.
+to be narrowed; a plain run has no slice to compare or report, so it refuses the
+flag too.
 
 ``--skip-timeouts`` (census only) drops exactly the rows the matching baseline
 records as ``timeout`` -- never a family list and never a gap or failure row --
@@ -53,13 +54,20 @@ after checking that the baseline records this run's profile, corpus pin, and
 budget.  The census names those rows in a ``skipped`` section that carries no
 outcome, signature, message, or total, so a row the run did not execute cannot
 be read as a verdict.  ``--enforce`` and ``--check`` must measure every recorded
-timeout row, ``--write-baseline`` records a complete profile, and
-``--list-only`` runs nothing, so all four refuse the flag.
+timeout row, ``--write-baseline`` records a complete profile, ``--list-only``
+runs nothing, and a plain run has no census to report it, so all five refuse the
+flag.
 
 The milestone and baseline-moving instruments cannot be narrowed at all:
 milestone boundaries and every baseline-moving commit run the full, unfiltered
 census and --check on all three profiles (xslt30, xslt20, xslt10); never
 --filter and never --skip-timeouts.
+
+Fast mode has a second, non-mechanical half: any diff touching src/,
+tests/xslt/suite.py, or tests/xslt/environment.py runs every affected family
+without --skip-timeouts, because such a change can move any case's verdict or
+its cost.  A skip census always records ``selection.skip_timeouts`` and the
+skipped names, so a development run cannot hide which rows it left unmeasured.
 
 ``--include-gated`` measures, in addition, the cases the profile's selection
 excludes because they declare a ``unicode-version`` dependency the engine's
@@ -207,7 +215,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "census, enforce, or list-only: select cases by token; a token ending in "
             "'/' is a family prefix, any other token is an exact case id; refused with "
-            "--check and --write-baseline"
+            "--check, --write-baseline, and a plain run"
         ),
     )
     parser.add_argument(
@@ -216,7 +224,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "census only: skip the cases the matching baseline records as timeout "
             "(profile, corpus, and budget must match); refused with --check, "
-            "--enforce, --write-baseline, and --list-only"
+            "--enforce, --write-baseline, --list-only, and a plain run"
         ),
     )
     parser.add_argument(
@@ -453,6 +461,10 @@ def baseline_identity_problem(
 
 def run_corpus(args: argparse.Namespace, repo_root: Path) -> int:
     profile = SUITE_PROFILES[args.profile]
+    # Argument parsing for the token list is argument-level: an empty token is
+    # refused even in a checkout whose pinned corpus is not initialized yet.
+    # The zero-match check needs the catalog and stays below it.
+    tokens = parse_filter_tokens(args.filter)
     try:
         catalog = catalog_for(repo_root)
     except (CatalogError, OSError) as exc:
@@ -470,7 +482,6 @@ def run_corpus(args: argparse.Namespace, repo_root: Path) -> int:
         gated_cases = tuple(
             case for case in select_cases(catalog, cleared) if case.name not in selected
         )
-    tokens = parse_filter_tokens(args.filter)
     if tokens:
         # Zero-match is decided over the full candidate set the run would
         # consider, before skipping or limiting: a gated-only family needs

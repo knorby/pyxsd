@@ -983,6 +983,10 @@ def test_an_engine_touching_change_runs_affected_families_unskipped(
     rule = report_xslt.HONESTY_RULES[1]
     for phrase in ("src/", "tests/xslt/suite.py", "tests/xslt/environment.py", "--skip-timeouts"):
         assert phrase in rule
+    # The module docstring references both honesty rules, not only rule 0.
+    docstring = " ".join(report_xslt.__doc__.split())
+    for phrase in ("tests/xslt/suite.py", "tests/xslt/environment.py", "without --skip-timeouts"):
+        assert phrase in docstring
 
     root = _three_case_repo(tmp_path)
     _write_baseline(
