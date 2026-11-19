@@ -227,6 +227,8 @@ class ComparisonOperation(Operation):
     old_schema: SchemaRef
     new_schema: SchemaRef
     corpus: tuple[FileRef, ...] = ()
+    #: Distinguishes an empty selected/glob corpus from no corpus evidence at all.
+    corpus_requested: bool = False
 
 
 CleanOperation = Annotated[
