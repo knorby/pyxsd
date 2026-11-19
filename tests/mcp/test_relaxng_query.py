@@ -432,3 +432,67 @@ def test_source_indexing_uses_the_worker_budgets(tmp_path):
             worker_main._source_index(operation, cache)
     finally:
         cache.close()
+
+
+def test_query_classifies_schema_and_instance_failures(tmp_path):
+    malformed_schema = (
+        f'<grammar xmlns="{NS}"><start><element name="root"><text/></element></start>'
+    )
+
+    async def scenario():
+        async with harness(tmp_path / "schema") as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.rng": malformed_schema, "document.xml": DOCUMENT},
+            )
+            with pytest.raises(ToolError) as raised:
+                await ask(service, workspace, xpath="/root/item")
+            assert raised.value.fault.code == "invalid_schema"
+            assert raised.value.fault.code not in {"invalid_xml", "limit_exceeded"}
+
+        async with harness(
+            tmp_path / "schema-budget",
+            Limits(enforced=True, workers=1, schema_file_bytes=10),
+        ) as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.rng": RNG_SCHEMA, "document.xml": DOCUMENT},
+            )
+            with pytest.raises(ToolError) as raised:
+                await ask(service, workspace, xpath="/root/item")
+            assert raised.value.fault.code == "limit_exceeded"
+            assert raised.value.fault.details["code"] == "schema_limit"
+
+        async with harness(
+            tmp_path / "instance-budget",
+            Limits(enforced=True, workers=1, xml_elements=2),
+        ) as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.rng": RNG_SCHEMA, "document.xml": DOCUMENT},
+            )
+            with pytest.raises(ToolError) as raised:
+                await ask(service, workspace, xpath="/root/item")
+            assert raised.value.fault.code == "limit_exceeded"
+            assert raised.value.fault.code not in {"invalid_xml", "invalid_schema"}
+            assert raised.value.fault.details["code"] == "xml_limit"
+            assert raised.value.fault.message == "XML depth or element limit exceeded"
+
+        async with harness(tmp_path / "instance") as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {
+                    "schema.rng": RNG_SCHEMA,
+                    "document.xml": '<root><item id="a">lead',
+                },
+            )
+            with pytest.raises(ToolError) as raised:
+                await ask(service, workspace, xpath="/root/item")
+            assert raised.value.fault.code == "invalid_xml"
+            assert raised.value.fault.code not in {"invalid_schema", "limit_exceeded"}
+
+    anyio.run(scenario)

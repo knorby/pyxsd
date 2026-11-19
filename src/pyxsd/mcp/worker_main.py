@@ -7,7 +7,8 @@ import re
 import sys
 from collections import Counter
 from contextlib import ExitStack
-from typing import BinaryIO, Literal, cast
+from typing import BinaryIO, Literal, NoReturn, cast
+from xml.etree import ElementTree as ET
 
 from elementpath.exceptions import ElementPathError
 
@@ -23,6 +24,7 @@ from pyxsd.introspection import (
     related_components,
 )
 from pyxsd.locations import IssueLocation
+from pyxsd.namespaces import NamespaceContext
 from pyxsd.relaxng import RelaxNGElement, RelaxNGLimitError, RelaxNGSchema
 from pyxsd.relaxng.datatypes import DatatypeRegistrationError, UnsupportedDatatypeError
 from pyxsd.schema_base import SchemaBase
@@ -103,21 +105,69 @@ def _schema_parse(schema: CompiledSchema, path: str) -> Document:
     return schema.parse(path)
 
 
+def _instance_read_error(
+    operation: ParseOperation | QueryOperation | BatchParseOperation,
+    path: str,
+    cache: SchemaCache,
+) -> BaseException | None:
+    """Re-read only the instance to classify a hinted parse failure.
+
+    ``pyxsd.parse`` reads the instance before it resolves and compiles the
+    instance's schema hint, but reports both stages as ``PyXSDError``. When
+    that combined call fails, this preflight parse runs only when needed: if
+    the instance itself is unreadable or malformed, the failure is an instance
+    outcome; otherwise the hint's schema stage owns it.
+    """
+    policy = InputResourcePolicy(capture_from_wire(operation.capture), cache.limits)
+    try:
+        data = policy.read(path, base=None, purpose="instance")
+        policy.parse(data, NamespaceContext())
+    except (FileNotFoundError, InputPolicyError, PyXSDError, ET.ParseError) as exc:
+        return exc
+    return None
+
+
+def _parse_without_schema(
+    operation: ParseOperation | QueryOperation | BatchParseOperation,
+    document_path: str,
+    cache: SchemaCache,
+) -> Document:
+    """Parse an instance through its own schema-location hint.
+
+    Schema discovery/compilation failures are schema-acquisition outcomes;
+    only an independent instance read/parse failure proves an instance error.
+    """
+    policy = InputResourcePolicy(capture_from_wire(operation.capture), cache.limits)
+    path = "/workspace/" + document_path
+    try:
+        document = parse_document(
+            path,
+            mode=ParseModes.LAX_NAMESPACED,
+            resource_policy=policy,
+        )
+    except (FileNotFoundError, InputPolicyError, PyXSDError, ET.ParseError) as exc:
+        instance_error = _instance_read_error(operation, path, cache)
+        if instance_error is not None:
+            code = "not_found" if _missing_file(instance_error) else "invalid_xml"
+            _raise_operational(instance_error, code, cache.limits.message_bytes)
+        code = "not_found" if _missing_file(exc) else "invalid_schema"
+        _raise_operational(exc, code, cache.limits.message_bytes)
+    require_complete_schema(document.schema)
+    return document
+
+
 def _parse(
     operation: ParseOperation | QueryOperation, cache: SchemaCache, processor_version: str
 ) -> Document:
     if operation.schema_ref is None:
-        policy = InputResourcePolicy(capture_from_wire(operation.capture), cache.limits)
-        document = parse_document(
-            "/workspace/" + operation.document.path,
-            mode=ParseModes.LAX_NAMESPACED,
-            resource_policy=policy,
-        )
-        require_complete_schema(document.schema)
-        return document
+        return _parse_without_schema(operation, operation.document.path, cache)
     request = _for_schema(operation, operation.schema_ref, processor_version)
-    with cache.acquire(request) as schema:
-        require_complete_schema(schema)
+    with ExitStack() as stack:
+        try:
+            schema = stack.enter_context(cache.acquire(request))
+            require_complete_schema(schema)
+        except (InputPolicyError, PyXSDError) as exc:
+            _raise_operational(exc, "invalid_schema", cache.limits.message_bytes)
         return _schema_parse(schema, "/workspace/" + operation.document.path)
 
 
@@ -201,22 +251,9 @@ def _parse_batch(
             for index in indexes:
                 current = operation.items[index]
                 try:
-                    policy = InputResourcePolicy(capture_from_wire(operation.capture), cache.limits)
-                    document = parse_document(
-                        "/workspace/" + current.document.path,
-                        mode=ParseModes.LAX_NAMESPACED,
-                        resource_policy=policy,
-                    )
-                    require_complete_schema(document.schema)
+                    document = _parse_without_schema(operation, current.document.path, cache)
                 except ToolError as exc:
                     items[index] = _batch_fault(current, exc.fault.code, exc.fault.message, cache)
-                    continue
-                except (FileNotFoundError, InputPolicyError, PyXSDError) as exc:
-                    code = "not_found" if _missing_file(exc) else "invalid_xml"
-                    fault = _operational_fault(exc, code, cache.limits.message_bytes)
-                    items[index] = _batch_fault(
-                        current, fault.code, fault.message, cache, details=fault.details or None
-                    )
                     continue
                 items[index] = _batch_outcome(current, document)
             continue
@@ -797,12 +834,30 @@ def _parser_details(exc: BaseException) -> dict[str, JsonValue]:
     return {} if match is None else {"line": int(match[1]), "column": int(match[2])}
 
 
+def _policy_message(exc: InputPolicyError) -> str:
+    """Strip the policy code prefix; the code is carried separately."""
+    return str(exc).partition(": ")[2] or str(exc)
+
+
+def _raise_operational(exc: BaseException, default_code: str, max_bytes: int | None) -> NoReturn:
+    """Raise the typed fault for an operational parser/resource failure."""
+    fault = _operational_fault(exc, default_code, max_bytes)
+    raise ToolError(
+        fault.code,
+        fault.message,
+        retryable=fault.retryable,
+        details=fault.details,
+    ) from exc
+
+
 def _operational_fault(exc: BaseException, default_code: str, max_bytes: int | None) -> ToolFault:
     """Classify a parser-level failure without inventing a document verdict.
 
     RELAX NG budget exhaustion and unsupported datatype capabilities are
-    operational outcomes. They never become ``invalid_xml``/``invalid_schema``,
-    which would turn an unknown verdict into a semantic one.
+    operational outcomes. Resource-policy budgets and changed or invalid
+    capture paths are operational too. None of them may become
+    ``invalid_xml``/``invalid_schema``, which would turn an unknown verdict
+    into a semantic one.
     """
     if isinstance(exc, RelaxNGLimitError):
         return ToolFault(
@@ -821,6 +876,26 @@ def _operational_fault(exc: BaseException, default_code: str, max_bytes: int | N
             message=str(exc)[:max_bytes],
             details={},
         )
+    if isinstance(exc, InputPolicyError):
+        message = _policy_message(exc)[:max_bytes]
+        if exc.code in ("schema_limit", "xml_limit"):
+            return ToolFault(
+                code="limit_exceeded",
+                message=message,
+                details={"code": exc.code},
+            )
+        if exc.code == "source_changed":
+            return ToolFault(
+                code="not_found" if default_code == "not_found" else "source_changed",
+                message=message,
+                details={"code": exc.code},
+            )
+        if exc.code == "invalid_path":
+            return ToolFault(
+                code="invalid_argument",
+                message=message,
+                details={"code": exc.code},
+            )
     return ToolFault(
         code=default_code,
         message=str(exc)[:max_bytes],
@@ -900,11 +975,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
             except (InputPolicyError, PyXSDError) as exc:
                 operations += 1
-                code = (
-                    "invalid_xml"
-                    if isinstance(operation, (ParseOperation, QueryOperation))
-                    else "invalid_schema"
-                )
+                if isinstance(operation, (ParseOperation, QueryOperation)):
+                    code = "not_found" if _missing_file(exc) else "invalid_xml"
+                else:
+                    code = "invalid_schema"
                 _reply_fault(
                     sys.stdout.buffer,
                     operation,

@@ -18,7 +18,7 @@ from pyxsd import __version__
 from pyxsd.mcp import cache as cache_module
 from pyxsd.mcp import worker_main
 from pyxsd.mcp.cache import SchemaCache
-from pyxsd.mcp.captures import CaptureFile, InputCapture
+from pyxsd.mcp.captures import CaptureFile, InputCapture, InputPolicyError
 from pyxsd.mcp.config import Limits, relaxng_limits_for_mcp
 from pyxsd.mcp.contracts import (
     BatchValidationItem,
@@ -26,6 +26,7 @@ from pyxsd.mcp.contracts import (
     Page,
     SchemaRef,
     ValidateDocumentRequest,
+    ValidateDocumentsRequest,
 )
 from pyxsd.mcp.errors import ToolError
 from pyxsd.mcp.worker_protocol import BatchParseOperation, ParseOperation
@@ -53,6 +54,25 @@ INVALID_DOCUMENT = (
 )
 MALFORMED_DOCUMENT = '<root><item id="1"><value>1</value>'
 MISMATCH_DOCUMENT = "<root><wrong/></root>"
+MALFORMED_RNG_SCHEMA = (
+    f'<grammar xmlns="{NS}"><start><element name="root"><text/></element></start>'
+)
+HINTED_DOCUMENT = (
+    '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+    'xsi:noNamespaceSchemaLocation="schema.xsd">hi</root>'
+)
+HINTED_MALFORMED_DOCUMENT = (
+    '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+    'xsi:noNamespaceSchemaLocation="schema.xsd">hi'
+)
+HINTED_XSD_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:element name="root" type="xs:string"/></xs:schema>'
+)
+MALFORMED_XSD_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:element name="root" type="xs:string"/>'
+)
 
 XSD_SCHEMA = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <xs:element name="root">
@@ -509,3 +529,238 @@ def test_xsd_report_wire_is_unchanged(tmp_path):
     assert list(report) == ["issues", "counts", "suppressed_count"]
     assert "diagnostics_complete" not in report
     assert json.dumps(report, separators=(",", ":")) == XSD_REPORT_WIRE
+
+
+def test_malformed_relaxng_schema_is_invalid_schema_in_validation(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.rng": MALFORMED_RNG_SCHEMA, "valid.xml": VALID_DOCUMENT},
+            )
+            with pytest.raises(ToolError) as raised:
+                await service.validate_document(
+                    ValidateDocumentRequest(
+                        workspace_id=workspace,
+                        document=FileRef(path="valid.xml"),
+                        schema_ref=relaxng_ref(),
+                    )
+                )
+            fault = raised.value.fault
+            assert fault.code == "invalid_schema"
+            assert fault.code not in {"invalid_xml", "limit_exceeded"}
+            assert "schema file" in fault.message
+            assert fault.details["line"] >= 1
+            assert fault.details["column"] >= 0
+
+    anyio.run(scenario)
+
+
+def test_relaxng_schema_file_budget_is_limit_exceeded(tmp_path):
+    async def scenario():
+        limits = Limits(enforced=True, workers=1, schema_file_bytes=10)
+        async with harness(tmp_path, limits) as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.rng": RNG_SCHEMA, "valid.xml": VALID_DOCUMENT},
+            )
+            with pytest.raises(ToolError) as raised:
+                await service.validate_document(
+                    ValidateDocumentRequest(
+                        workspace_id=workspace,
+                        document=FileRef(path="valid.xml"),
+                        schema_ref=relaxng_ref(),
+                    )
+                )
+            fault = raised.value.fault
+            assert fault.code == "limit_exceeded"
+            assert fault.code not in {"invalid_xml", "invalid_schema"}
+            assert fault.details["code"] == "schema_limit"
+            assert fault.message == "Resource byte limit exceeded"
+
+    anyio.run(scenario)
+
+
+def test_schema_less_hints_classify_schema_and_instance_failures(tmp_path):
+    async def scenario():
+        async with harness(tmp_path / "bad-schema") as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.xsd": MALFORMED_XSD_SCHEMA, "document.xml": HINTED_DOCUMENT},
+            )
+            with pytest.raises(ToolError) as raised:
+                await service.validate_document(
+                    ValidateDocumentRequest(
+                        workspace_id=workspace,
+                        document=FileRef(path="document.xml"),
+                    )
+                )
+            assert raised.value.fault.code == "invalid_schema"
+
+        async with harness(tmp_path / "bad-document") as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {
+                    "schema.xsd": HINTED_XSD_SCHEMA,
+                    "document.xml": HINTED_MALFORMED_DOCUMENT,
+                },
+            )
+            with pytest.raises(ToolError) as raised:
+                await service.validate_document(
+                    ValidateDocumentRequest(
+                        workspace_id=workspace,
+                        document=FileRef(path="document.xml"),
+                    )
+                )
+            assert raised.value.fault.code == "invalid_xml"
+            assert raised.value.fault.code not in {"invalid_schema", "limit_exceeded"}
+
+        async with harness(
+            tmp_path / "schema-budget",
+            Limits(enforced=True, workers=1, schema_file_bytes=10),
+        ) as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.xsd": HINTED_XSD_SCHEMA, "document.xml": HINTED_DOCUMENT},
+            )
+            with pytest.raises(ToolError) as raised:
+                await service.validate_document(
+                    ValidateDocumentRequest(
+                        workspace_id=workspace,
+                        document=FileRef(path="document.xml"),
+                    )
+                )
+            assert raised.value.fault.code == "limit_exceeded"
+            assert raised.value.fault.details["code"] == "schema_limit"
+
+        async with harness(tmp_path / "missing-schema") as (service, inputs, _pool, workspace):
+            await upload(inputs, workspace, {"document.xml": HINTED_DOCUMENT})
+            with pytest.raises(ToolError) as raised:
+                await service.validate_document(
+                    ValidateDocumentRequest(
+                        workspace_id=workspace,
+                        document=FileRef(path="document.xml"),
+                    )
+                )
+            assert raised.value.fault.code == "not_found"
+            assert raised.value.fault.code not in {"invalid_xml", "invalid_schema"}
+
+    anyio.run(scenario)
+
+
+def test_positive_diagnostics_budget_batch_reports_incomplete(tmp_path):
+    async def scenario():
+        limits = Limits(enforced=True, workers=1, relaxng_diagnostics=1)
+        async with harness(tmp_path, limits) as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.rng": RNG_SCHEMA, "invalid.xml": INVALID_DOCUMENT},
+            )
+            envelope = await service.validate_documents(
+                ValidateDocumentsRequest(
+                    workspace_id=workspace,
+                    documents=(
+                        BatchValidationItem(
+                            document=FileRef(path="invalid.xml"),
+                            schema_ref=relaxng_ref(),
+                        ),
+                    ),
+                )
+            )
+            result = envelope.data["results"][0]
+            assert result["valid"] is False
+            assert result["fault"] is None
+            reference = result["report"]
+            report = json.loads(
+                await service.outputs.read(reference["id"], offset=0, length=reference["size"])
+            )
+            assert report["counts"] == {"error": 3, "warning": 0}
+            assert len(report["issues"]) == 1
+            assert report["suppressed_count"] == 2
+            assert report["diagnostics_complete"] is False
+            assert envelope.data["summary"] == {
+                "total": 1,
+                "valid": 0,
+                "invalid": 1,
+                "failed": 0,
+            }
+
+    anyio.run(scenario)
+
+
+def test_batch_malformed_relaxng_item_stays_invalid_xml(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {
+                    "schema.rng": RNG_SCHEMA,
+                    "schema.xsd": XSD_SCHEMA,
+                    "malformed.xml": MALFORMED_DOCUMENT,
+                    "xsd.xml": "<root><value>2</value></root>",
+                },
+            )
+            envelope = await service.validate_documents(
+                ValidateDocumentsRequest(
+                    workspace_id=workspace,
+                    documents=(
+                        BatchValidationItem(
+                            document=FileRef(path="malformed.xml"),
+                            schema_ref=relaxng_ref(),
+                        ),
+                        BatchValidationItem(
+                            document=FileRef(path="xsd.xml"),
+                            schema_ref=xsd_ref(),
+                        ),
+                    ),
+                )
+            )
+            malformed, valid = envelope.data["results"]
+            assert malformed["valid"] is None
+            assert malformed["fault"]["code"] == "invalid_xml"
+            assert malformed["fault"]["code"] not in {"invalid_schema", "limit_exceeded"}
+            assert valid["valid"] is True
+            assert valid["fault"] is None
+            assert envelope.data["summary"] == {
+                "total": 2,
+                "valid": 1,
+                "invalid": 0,
+                "failed": 1,
+            }
+
+    anyio.run(scenario)
+
+
+def test_policy_codes_map_to_operational_faults():
+    changed = worker_main._operational_fault(
+        InputPolicyError("source_changed", "Captured resource disappeared"),
+        "invalid_xml",
+        None,
+    )
+    assert changed.code == "source_changed"
+    assert changed.message == "Captured resource disappeared"
+    assert changed.details == {"code": "source_changed"}
+
+    unadmitted = worker_main._operational_fault(
+        InputPolicyError("invalid_path", "Unadmitted resource name"),
+        "invalid_schema",
+        None,
+    )
+    assert unadmitted.code == "invalid_argument"
+    assert unadmitted.message == "Unadmitted resource name"
+    assert unadmitted.details == {"code": "invalid_path"}
+
+    dangerous = worker_main._operational_fault(
+        InputPolicyError("dangerous_xml", "DTD/entities/external references are forbidden"),
+        "invalid_xml",
+        None,
+    )
+    assert dangerous.code == "invalid_xml"
+    assert "dangerous_xml" in dangerous.message
