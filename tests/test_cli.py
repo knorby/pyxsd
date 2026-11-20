@@ -41,6 +41,17 @@ def test_version_flag(capsys):
     assert "PyXSD" in capsys.readouterr().out
 
 
+def test_help_keeps_the_schema_aliases(capsys):
+    """The new language option does not rename the existing schema flags."""
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--help"])
+    assert excinfo.value.code == 0
+    out = capsys.readouterr().out
+    assert "--schema-language {xsd,relax-ng}" in out
+    for alias in ("--inputXsd", "--schema", "--overlayClassesFile"):
+        assert alias in out
+
+
 def test_parsed_output_flag(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     stage_fixture(tmp_path, "inventory")
@@ -157,6 +168,14 @@ def test_missing_schema_raises(tmp_path, monkeypatch, capsys):
         main(["-i", "instance.xml", "-o", "/dev/null"])
     assert excinfo.value.code == 1
     assert "no schema file" in capsys.readouterr().err
+
+
+def test_schema_language_xsd_keeps_the_hint_workflow(tmp_path, monkeypatch, capsys):
+    """Explicit XSD selection leaves the existing CLI behavior unchanged."""
+    monkeypatch.chdir(tmp_path)
+    stage_fixture(tmp_path, "inventory")
+    main(["-i", "instance.xml", "--schema-language", "xsd", "-o", "/dev/null", "--strict"])
+    assert capsys.readouterr().err == ""
 
 
 def test_transform_call_and_file_conflict(tmp_path, monkeypatch):

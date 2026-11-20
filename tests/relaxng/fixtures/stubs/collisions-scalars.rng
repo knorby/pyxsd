@@ -1,0 +1,15 @@
+<element xmlns="http://relaxng.org/ns/structure/1.0"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema-datatypes"
+         datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"
+         name="type">
+  <group>
+    <attribute name="list"><text/></attribute>
+    <attribute name="str"><text/></attribute>
+    <attribute name="bool"><text/></attribute>
+    <attribute name="bytes"><text/></attribute>
+    <attribute name="tuple"><text/></attribute>
+    <list>
+      <oneOrMore><data type="int"/></oneOrMore>
+    </list>
+  </group>
+</element>

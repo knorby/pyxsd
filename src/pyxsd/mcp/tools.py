@@ -8,15 +8,19 @@ from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 from mcp import types
 from pydantic import ConfigDict, Field, JsonValue
+from pyxsd.data_conversion.contracts import _FIDELITY_NAMES, _FORMAT_NAMES
 
 from .. import __version__
 from .contracts import (
     ArtifactRef,
     BatchValidationItem,
     DeleteArtifactRequest,
+    DocumentJsonSchemaRequest,
     ExplainIssueRequest,
+    ExportDataRequest,
     FileRef,
     FindComponentsRequest,
+    ImportDataRequest,
     InlineFile,
     InspectSchemaRequest,
     ListArtifactsRequest,
@@ -48,6 +52,87 @@ if TYPE_CHECKING:
 _PAGE = Page()
 
 
+def _conversion_tools() -> dict[str, JsonValue]:
+    """Advertise only the conversion surface this server actually registers."""
+    return {
+        "tools": True,
+        "export_data": True,
+        "import_data": True,
+        "document_json_schema": True,
+        "formats": list(_FORMAT_NAMES),
+        "fidelities": list(_FIDELITY_NAMES),
+    }
+
+
+def _schema_languages() -> dict[str, JsonValue]:
+    """Advertise implemented per-language contracts with explicit scopes.
+
+    ``library`` describes the public Python schema library; ``mcp`` describes
+    what this server's tools actually expose.  In particular, RELAX NG typed
+    instances and pattern capture exist in the library, while MCP validation
+    parses lexical trees only.  Python datatype factories are a library
+    capability and are never accepted through MCP wire options.
+    """
+    return {
+        "xsd": {
+            "syntax": {"xml": True, "compact": False, "dtd": False},
+            "library": {
+                "datatypes": {
+                    "builtin": True,
+                    "xsd": True,
+                    "custom_python_factories": False,
+                },
+                "typed": True,
+                "capture": {"pattern_annotations": False, "xdm": True},
+                "conversion": {
+                    "formats": list(_FORMAT_NAMES),
+                    "fidelities": list(_FIDELITY_NAMES),
+                    "json_schema": True,
+                },
+            },
+            "mcp": {
+                "datatypes": {"python_factories": False, "custom_wire": False},
+                "validation": {"typed": True, "capture": False},
+                "diagnostics": {
+                    "completeness": "not-reported",
+                    "suppressed_count": True,
+                },
+                "comparison": {"structural": True, "corpus": True},
+                "conversion": _conversion_tools(),
+                "projection": {"models": True, "records": True},
+            },
+        },
+        "relax-ng": {
+            "syntax": {"xml": True, "compact": False, "dtd": False},
+            "library": {
+                "datatypes": {
+                    "builtin": True,
+                    "xsd": True,
+                    "custom_python_factories": True,
+                },
+                "typed": True,
+                "capture": {"pattern_annotations": True, "xdm": True},
+                "conversion": {
+                    "formats": list(_FORMAT_NAMES),
+                    "fidelities": list(_FIDELITY_NAMES),
+                    "json_schema": True,
+                },
+            },
+            "mcp": {
+                "datatypes": {"python_factories": False, "custom_wire": False},
+                "validation": {"typed": False, "capture": False},
+                "diagnostics": {
+                    "completeness": "boolean",
+                    "suppressed_count": True,
+                },
+                "comparison": {"structural": True, "corpus": True},
+                "conversion": _conversion_tools(),
+                "projection": {"models": True, "records": True},
+            },
+        },
+    }
+
+
 def capability_data(services: "Services") -> dict[str, JsonValue]:
     settings = services.settings
     return {
@@ -71,6 +156,7 @@ def capability_data(services: "Services") -> dict[str, JsonValue]:
                 "available": services.arrow_available,
             },
         },
+        "schema_languages": _schema_languages(),
     }
 
 
@@ -362,6 +448,103 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
         _register(server, "pyxsd_query_document", query_document, read_only=True)
         _register(server, "pyxsd_explain_issue", explain_issue, read_only=True)
 
+        async def export_data(
+            workspace_id: str,
+            schema_ref: SchemaRef,
+            document: FileRef,
+            format: str = "pyxsd",
+            fidelity: str = "best-effort",
+            typed: bool = True,
+            always_list: bool = False,
+        ) -> types.CallToolResult:
+            """Export one XML document under a JSON data format contract.
+
+            format is pyxsd (native), pyxsd-json, parker, badgerfish, or jsonml;
+            fidelity is strict or best-effort. typed and always_list are
+            native-only options and must keep their defaults for every other
+            format. The compiled schema and document are leased in a clean
+            worker, and only the JSON-safe data crosses back. Oversized results
+            become retained JSON artifacts under the response budget.
+            """
+            request = ExportDataRequest(
+                workspace_id=workspace_id,
+                schema_ref=schema_ref,
+                document=document,
+                format=format,
+                fidelity=fidelity,
+                typed=typed,
+                always_list=always_list,
+            )
+            return await _invoke(services, lambda: services.conversion.export_data(request))
+
+        async def import_data(
+            workspace_id: str,
+            schema_ref: SchemaRef,
+            data: JsonValue,
+            format: str = "pyxsd-json",
+            element: str | None = None,
+            namespaces: dict[str, str] | None = None,
+            fidelity: str = "strict",
+            page: Page = _PAGE,
+        ) -> types.CallToolResult:
+            """Bind JSON-compatible data through the schema's normal instance parser.
+
+            format is pyxsd (native), pyxsd-json, parker, badgerfish, or jsonml;
+            fidelity is strict or best-effort. element selects or confirms the
+            root with a local, Clark, or EQName spelling. Lexically invalid
+            content is an ordinary validation report; malformed containers,
+            scalars, tags, and non-finite numbers are typed conversion faults.
+            The document itself stays in the worker: only counts and paged
+            issues return.
+            """
+            request = ImportDataRequest(
+                workspace_id=workspace_id,
+                schema_ref=schema_ref,
+                data=data,
+                format=format,
+                element=element,
+                namespaces=namespaces or {},
+                fidelity=fidelity,
+                page=page,
+            )
+            return await _invoke(services, lambda: services.conversion.import_data(request))
+
+        async def document_json_schema(
+            workspace_id: str,
+            schema_ref: SchemaRef,
+            format: str = "pyxsd-json",
+            element: str | None = None,
+            fidelity: str = "strict",
+            typed: bool = True,
+            always_list: bool = False,
+        ) -> types.CallToolResult:
+            """Describe a schema's document data contract as JSON Schema.
+
+            The Draft 2020-12 result matches what pyxsd_export_data produces
+            and pyxsd_import_data accepts for the selected format and root.
+            format is pyxsd (native), pyxsd-json, parker, badgerfish, or jsonml;
+            fidelity is strict or best-effort. typed and always_list are
+            native-only options and must keep their defaults for every other
+            format. This is a structural contract, never full schema validity;
+            x-pyxsd-validation lists what JSON Schema cannot express.
+            """
+            request = DocumentJsonSchemaRequest(
+                workspace_id=workspace_id,
+                schema_ref=schema_ref,
+                format=format,
+                element=element,
+                fidelity=fidelity,
+                typed=typed,
+                always_list=always_list,
+            )
+            return await _invoke(
+                services, lambda: services.conversion.document_json_schema(request)
+            )
+
+        _register(server, "pyxsd_export_data", export_data, read_only=True)
+        _register(server, "pyxsd_import_data", import_data, read_only=True)
+        _register(server, "pyxsd_document_json_schema", document_json_schema, read_only=True)
+
         async def compare_schemas(
             workspace_id: str,
             old_schema: SchemaRef,
@@ -482,6 +665,8 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             element: str,
             data: JsonValue,
             path: tuple[str, ...] = (),
+            namespaces: dict[str, str] | None = None,
+            base_uri: str | None = None,
         ) -> types.CallToolResult:
             """Validate JSON data against a projected declaration's JSON Schema.
 
@@ -495,6 +680,8 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 element=element,
                 path=path,
                 data=data,
+                namespaces={} if namespaces is None else dict(namespaces),
+                base_uri=base_uri,
             )
             return await _invoke(services, lambda: services.models.validate_data(request))
 

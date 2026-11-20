@@ -1,0 +1,10 @@
+# The pinned catalogs contain no compact-syntax or DTD Compatibility cases.
+# Core and XSD 1.0 datatype schema and instance assertions are release-required,
+# so every case keeps its catalog profile and needs no explicit exclusion entry.
+# Any future entry here must name the feature its cases actually depend on.
+#
+# The RELAX NG XSD datatype adapter follows XSD 1.0, not the XSD compiler's
+# default XSD 1.1 loader profile.  The pinned catalog asserts the XSD 1.1-only
+# +INF float/double spellings are invalid (xsdtest-float-01/invalid-3 and
+# xsdtest-double-01/invalid-3); they are never asserted valid.  This is a
+# library-profile boundary, not an exclusion.

@@ -15,18 +15,30 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 
+from pydantic import JsonValue
 from pyxsd import Schema
+from pyxsd import relaxng as relaxng_compiler
 from pyxsd.binding import ParseModes
+from pyxsd.relaxng import RelaxNGSchema
 from pyxsd.schema_context import last_components, remember_components
 
 from .captures import InputCapture, InputPolicyError, InputResourcePolicy
-from .config import Limits
-from .contracts import SchemaRef
+from .config import Limits, relaxng_limits_for_mcp
+from .contracts import CompileOptions, SchemaRef
 from .errors import ToolError
 from .safe_io import validate_paths
 
+CompiledSchema = Schema | RelaxNGSchema
 
-def require_complete_schema(schema: Schema) -> None:
+
+def _closure_policy(schema: CompiledSchema) -> InputResourcePolicy:
+    """Return the worker policy that owns a leased schema's closure."""
+    policy = schema.resource_policy if isinstance(schema, Schema) else schema._resource_policy
+    assert isinstance(policy, InputResourcePolicy)
+    return policy
+
+
+def require_complete_schema(schema: CompiledSchema) -> None:
     """Fail closed when a leased schema's closure or report is unusable.
 
     A dependency recorded without a digest means the compiled closure is
@@ -34,8 +46,7 @@ def require_complete_schema(schema: Schema) -> None:
     the compiled schema itself is invalid. Warnings alone never fail here.
     Introspection-only callers may skip this check to diagnose broken schemas.
     """
-    policy = schema.resource_policy
-    assert isinstance(policy, InputResourcePolicy)
+    policy = _closure_policy(schema)
     missing = [dep.path for dep in policy.dependencies if dep.digest is None]
     if missing:
         raise ToolError(
@@ -51,6 +62,22 @@ def require_complete_schema(schema: Schema) -> None:
         )
 
 
+def require_xsd_schema(schema: CompiledSchema) -> Schema:
+    """Narrow a leased schema for a path that still has XSD-only behavior.
+
+    Phase 7 tasks replace these narrow call sites one at a time. Until then a
+    RELAX NG schema is an explicit unsupported capability, never an internal
+    failure or an XSD reinterpretation.
+    """
+    if isinstance(schema, Schema):
+        return schema
+    raise ToolError(
+        "unsupported_capability",
+        "This operation requires an XSD schema",
+        details={"format": "relax-ng"},
+    )
+
+
 @dataclass(frozen=True)
 class CompileRequest:
     capture: InputCapture
@@ -61,6 +88,56 @@ class CompileRequest:
     def __post_init__(self) -> None:
         # Frozen wire models still contain mutable mappings. Own a private copy.
         object.__setattr__(self, "schema_ref", self.schema_ref.model_copy(deep=True))
+
+
+def _reject_relaxng_xsd_options(request: CompileRequest) -> None:
+    """Keep XSD-only compile inputs out of RELAX NG before any read."""
+    options = request.schema_ref.options
+    defaults = CompileOptions()
+    rejected: list[JsonValue] = []
+    if options.binding != defaults.binding:
+        rejected.append("binding")
+    if options.namespaces != defaults.namespaces:
+        rejected.append("namespaces")
+    if options.xsd_version != defaults.xsd_version:
+        rejected.append("xsd_version")
+    if options.namespace_schemas != defaults.namespace_schemas:
+        rejected.append("namespace_schemas")
+    if request.hints:
+        rejected.append("hints")
+    if rejected:
+        raise ToolError(
+            "invalid_argument",
+            "RELAX NG schemas accept only default XSD compile options",
+            details={"format": "relax-ng", "rejected": rejected},
+        )
+
+
+def compile_schema_ref(request: CompileRequest, policy: InputResourcePolicy) -> CompiledSchema:
+    """Compile one cache request with the language it explicitly names.
+
+    This is the only cached worker compiler dispatch. RELAX NG reads every
+    resource through *policy* and receives the cache's fixed budgets; it never
+    receives XML parser overrides, custom datatype factories, or the XSD
+    compiler's options.
+    """
+    if request.schema_ref.format == "relax-ng":
+        _reject_relaxng_xsd_options(request)
+        return relaxng_compiler.compile(
+            "/workspace/" + request.schema_ref.source.path,
+            resource_policy=policy,
+            limits=relaxng_limits_for_mcp(policy.limits),
+        )
+    options = request.schema_ref.options
+    mode = ParseModes.LAX if options.binding == "lax" else ParseModes.STRICT
+    return Schema.compile(
+        "/workspace/" + request.schema_ref.source.path,
+        mode=mode.replace(namespaces=options.namespaces),
+        xsd_version=options.xsd_version,
+        namespace_schemas={k: "/workspace/" + v.path for k, v in options.namespace_schemas.items()},
+        schema_location_pairs=[(ns, path) for ns, path in request.hints],
+        resource_policy=policy,
+    )
 
 
 @dataclass(frozen=True)
@@ -76,7 +153,7 @@ class CacheInfo:
 
 @dataclass
 class _Entry:
-    schema: Schema
+    schema: CompiledSchema
     policy: InputResourcePolicy
     last_used: float
     pins: int = 0
@@ -84,7 +161,7 @@ class _Entry:
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
-def _key(request: CompileRequest) -> str:
+def _key(request: CompileRequest, limits: Limits) -> str:
     refs = [request.schema_ref.source, *request.schema_ref.options.namespace_schemas.values()]
     for ref in refs:
         validate_paths([ref.path])
@@ -93,6 +170,11 @@ def _key(request: CompileRequest) -> str:
         "schema": request.schema_ref.model_dump(mode="json"),
         "hints": request.hints,
         "processor": request.processor_version,
+        # Fixed per cache, but part of the identity a reused entry was built
+        # under. A digest keeps the key bounded and comparable.
+        "limits": hashlib.sha256(
+            json.dumps(limits.model_dump(mode="json"), sort_keys=True).encode()
+        ).hexdigest(),
     }
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
@@ -147,26 +229,14 @@ class SchemaCache:
 
     def _compile(self, request: CompileRequest) -> _Entry:
         policy = InputResourcePolicy(request.capture, self.limits)
-        options = request.schema_ref.options
-        mode = ParseModes.LAX if options.binding == "lax" else ParseModes.STRICT
-        schema = Schema.compile(
-            "/workspace/" + request.schema_ref.source.path,
-            mode=mode.replace(namespaces=options.namespaces),
-            xsd_version=options.xsd_version,
-            namespace_schemas={
-                k: "/workspace/" + v.path for k, v in options.namespace_schemas.items()
-            },
-            schema_location_pairs=[(ns, path) for ns, path in request.hints],
-            resource_policy=policy,
-        )
-        return _Entry(schema, policy, self.clock())
+        return _Entry(compile_schema_ref(request, policy), policy, self.clock())
 
     @contextmanager
-    def acquire(self, request: CompileRequest) -> Iterator[Schema]:
+    def acquire(self, request: CompileRequest) -> Iterator[CompiledSchema]:
         previous = last_components()
         entry: _Entry | None = None
         pinned = False
-        key = _key(request)
+        key = _key(request, self.limits)
         try:
             with self._lock:
                 if self._closed:

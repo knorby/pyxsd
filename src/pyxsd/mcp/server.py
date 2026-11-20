@@ -12,6 +12,7 @@ from .output_store import OutputStore
 from .previews import PreviewService
 from .resources import register_resources
 from .services.comparison import ComparisonService
+from .services.conversion import ConversionService
 from .services.exploration import ExplorationService
 from .services.models import ModelService
 from .services.records import RecordService
@@ -45,6 +46,7 @@ class Services:
                 self.inputs, self.pool, outputs=self.outputs, audit=audit
             )
             self.models = ModelService(self.inputs, self.pool, outputs=self.outputs)
+            self.conversion = ConversionService(self.inputs, self.pool, outputs=self.outputs)
             self.records = RecordService(
                 self.inputs,
                 self.pool,

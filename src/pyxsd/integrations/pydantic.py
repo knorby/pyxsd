@@ -14,7 +14,7 @@ import re
 from dataclasses import asdict
 from decimal import Decimal
 from types import GenericAlias
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, overload
 
 try:
     from pydantic import (
@@ -46,7 +46,11 @@ from ._values import (
     value_equal,
 )
 
-__all__ = ["ModelSet", "models"]
+if TYPE_CHECKING:
+    from pyxsd.relaxng.pydantic_adapter import RelaxNGModelSet
+    from pyxsd.relaxng.schema import RelaxNGSchema
+
+__all__ = ["ModelSet", "clean_field_schema", "models"]
 
 
 def _scalar_input(cls: type, value: Any) -> Any:
@@ -270,9 +274,13 @@ def _before(shape: ElementShape, aliases: dict[str, str]) -> Any:
     return validate
 
 
-def _field_schema(schema: dict[str, Any]) -> None:
-    # A missing optional non-nillable field has an internal None placeholder,
-    # not a nullable input/default in the JSON Schema contract.
+def clean_field_schema(schema: dict[str, Any]) -> None:
+    """Remove the internal ``None`` placeholder from one field schema.
+
+    A missing optional non-nillable field has an internal ``None`` default in
+    the model, but that is not a nullable input/default in the JSON Schema
+    contract.  XSD and RELAX NG schema hooks share this exact cleanup.
+    """
     if schema.get("default", object()) is None:
         schema.pop("default")
 
@@ -406,7 +414,7 @@ class ModelSet:
             def model_schema(description: dict[str, Any]) -> None:
                 description.update(metadata)
                 for property_schema in description.get("properties", {}).values():
-                    _field_schema(property_schema)
+                    clean_field_schema(property_schema)
 
             validators = {"xml_contract": model_validator(mode="before")(_before(shape, aliases))}
             model = create_model(
@@ -436,6 +444,27 @@ class ModelSet:
         return model.model_validate(project(shape, node, explicit=True))
 
 
-def models(schema: Schema) -> ModelSet:
-    """Create a model registry without requiring instance XML."""
-    return ModelSet(schema)
+@overload
+def models(schema: Schema) -> ModelSet: ...
+
+
+@overload
+def models(schema: RelaxNGSchema) -> RelaxNGModelSet: ...
+
+
+def models(schema: Schema | RelaxNGSchema) -> ModelSet | RelaxNGModelSet:
+    """Create a model registry without requiring instance XML.
+
+    A compiled XSD schema still returns the existing :class:`ModelSet`.  A
+    compiled RELAX NG schema returns its route registry; the RELAX NG adapter
+    is imported lazily so XSD-only use never imports RELAX NG projection code.
+    """
+    if isinstance(schema, Schema):
+        return ModelSet(schema)
+    from pyxsd.relaxng.schema import RelaxNGSchema
+
+    if isinstance(schema, RelaxNGSchema):
+        from pyxsd.relaxng.pydantic_adapter import RelaxNGModelSet
+
+        return RelaxNGModelSet(schema)
+    raise TypeError("models() requires a compiled XSD or RELAX NG schema")

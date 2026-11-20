@@ -6,6 +6,7 @@ from decimal import Decimal
 import pytest
 
 from integration_helpers import RECORD_SCHEMA, compile_schema, parse
+from pyxsd.integrations.projection import FieldSource
 
 pa = pytest.importorskip("pyarrow")
 pq = pytest.importorskip("pyarrow.parquet")
@@ -95,6 +96,31 @@ def test_exact_unbounded_integer_decimal_binary_temporal_and_lists():
             "tokens": [[1, 2], [3]],
         }
     ]
+
+
+def test_huge_integer_values_project_as_text_without_the_int_string_limit():
+    value = "9" * 4301
+    schema = compile_schema("""<xs:simpleType name="Big"><xs:restriction base="xs:integer">
+    <xs:totalDigits value="4301"/></xs:restriction></xs:simpleType>
+    <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="bounded" type="Big"/><xs:element name="unbounded" type="xs:integer"/>
+    </xs:sequence></xs:complexType></xs:element>""")
+    document = parse(
+        schema, f"<root><bounded>{value}</bounded><unbounded>{value}</unbounded></root>"
+    )
+    projection = records(schema)
+    assert projection.table(document).to_pylist() == [{"bounded": value, "unbounded": value}]
+    from pyxsd.integrations.arrow import records as arrow_records
+
+    explicit = arrow_records(
+        schema,
+        element="root",
+        columns={
+            "bounded": FieldSource(path=("bounded",)),
+            "unbounded": FieldSource(path=("unbounded",)),
+        },
+    )
+    assert explicit.table(document).to_pylist() == [{"bounded": value, "unbounded": value}]
 
 
 def test_nil_complex_attributes_and_nullable_list_items_survive_parquet(tmp_path):

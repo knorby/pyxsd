@@ -2,7 +2,7 @@
 
 ```{eval-rst}
 .. meta::
-   :description: Look up pyxsd Schema and Document APIs, JSON data conversion and JSON Schema, XML queries, validation errors, batches, and introspection.
+   :description: Look up pyxsd XSD and RELAX NG schema APIs, document APIs, JSON data conversion and JSON Schema, XML queries, validation errors, batches, and introspection.
 ```
 
 Use {doc}`quickstart` for a complete first example. This page documents public
@@ -51,6 +51,33 @@ Common schema entry points; full signatures and contracts below.
 .. autofunction:: pyxsd.schema.parse
 ```
 
+## RELAX NG
+
+RELAX NG has a separate compiler and document type; it is not an XSD mode and
+does not appear in `pyxsd.compile` or `Schema`. `pyxsd.relaxng.compile(source,
+*, datatype_libraries=None, resource_policy=None, xml_policy=None,
+xml_limits=None, limits=None)` returns a `RelaxNGSchema`, and
+`RelaxNGSchema.parse(xml, *, xml_policy=None, xml_limits=None, typed=True,
+capture="none", capture_xdm=False, limits=None)` returns a
+`RelaxNGDocument`. The schema also provides `stub`, `from_data`, `from_json`,
+`json_schema`, `projection`, `projection_classes`, `dependencies`,
+`require_valid`, and `iter_parse`. The document provides `to_dict`,
+`to_data`, `to_json`, `annotations`, `revalidate`, `locate`, `write`,
+`to_string`, `to_xdm`, `xpath`, `walk`, and `transform`.
+
+Scalar alternatives use `AlternativeValue`; correlated list assignments use
+`ListInterpretation`; pattern capture returns `NodeAnnotations`. Datatype
+protocols and custom-library registrations live in `pyxsd.relaxng.datatypes`.
+Grammar introspection lives in `pyxsd.relaxng.introspection`, structural
+comparison in `pyxsd.relaxng.comparison.compare_relaxng_structure`, budget
+declarations in `RelaxNGLimits`, and RELAX NG-specific exceptions in
+`pyxsd.relaxng.errors`.
+
+See {doc}`relax-ng` for compilation, validation and recovery, typed access,
+alternatives and lists, annotations, all five data formats, JSON Schema,
+stubs and introspection, integrations, comparison, CLI/MCP, resources, and
+deliberate exclusions.
+
 ## XDM values and document transforms
 
 `Document.to_xdm()` exposes the stored tree as XDM nodes, and
@@ -59,7 +86,7 @@ Common schema entry points; full signatures and contracts below.
 ```{eval-rst}
 .. autoclass:: pyxsd.xdm.nodes.XdmDocument
 
-.. autoclass:: pyxsd.xdm.errors.XdmInputError
+.. autoexception:: pyxsd.xdm.errors.XdmInputError
 
 .. autoclass:: pyxsd.document_transform.DocumentTransform
 ```
@@ -338,6 +365,9 @@ locations do.
 
 See {doc}`transforms/using` for return and revalidation behavior and
 {doc}`transforms/class` for `Transform`, `Displayer`, `iter_tree`, and built-ins.
+
+`Document.transform()` dispatches a `DocumentTransform` before treating a
+callable as a root transform.
 
 `doc.transform(ToData(...))` uses the same options and defaults as
 `Document.to_data()`. `ToData` is also available through the CLI transform

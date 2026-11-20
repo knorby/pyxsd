@@ -13,7 +13,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 try:
     import pyarrow as pa
@@ -25,14 +25,19 @@ except ModuleNotFoundError as exc:
 
 from pyxsd.batch import DocumentSource
 from pyxsd.document import Document
+from pyxsd.relaxng.schema import RelaxNGSchema
 from pyxsd.schema import Schema
+from pyxsd.xsd_data_types import integer_to_decimal
 
 from . import IntegrationError
 from ._projection import compile_projection, iter_projected_rows
 from ._shape import ElementShape, ShapeSet, list_item_type, scalar_kind
 from ._values import prepare_document, project
 from .dataset import DatasetResult
-from .projection import FieldSource
+from .projection import FieldSource, field_source_metadata
+
+if TYPE_CHECKING:
+    from pyxsd.relaxng.records import RelaxNGRecordProjection
 
 __all__ = ["RecordProjection", "records"]
 
@@ -151,7 +156,7 @@ def _scalar_row(cls: type, data_type: Any, value: Any) -> Any:
         item = list_item_type(cls)
         return [_scalar_row(item, data_type.value_type, v) for v in value]
     if pa.types.is_string(data_type) and isinstance(value, (int, Decimal)):
-        return format(value, "f") if isinstance(value, Decimal) else str(value)
+        return format(value, "f") if isinstance(value, Decimal) else integer_to_decimal(value)
     return value
 
 
@@ -206,7 +211,9 @@ class RecordProjection:
                 if column.source.attribute is not None:
                     names = (*names, "@" + column.source.attribute)
                 metadata = _metadata(column.name, names, column.scalar)
-                metadata[b"pyxsd:source"] = json.dumps(asdict(column.source)).encode()
+                metadata[b"pyxsd:source"] = json.dumps(
+                    field_source_metadata(column.source)
+                ).encode()
                 metadata[b"pyxsd:row"] = json.dumps(self._plan.route.path).encode()
                 fields.append(
                     pa.field(
@@ -243,6 +250,13 @@ class RecordProjection:
                 b"pyxsd:exactness": b"numerical value; temporal strings; no original lexical provenance",
             },
         )
+
+    def dataset_metadata(self) -> dict[str, Any]:
+        """Return this projection's historical XSD manifest fields unchanged."""
+        return {
+            "xsd_version": str(self._schema._host.processor_version),
+            "parse_policy": asdict(self._schema.mode),
+        }
 
     def batches(
         self,
@@ -307,7 +321,7 @@ class RecordProjection:
     def _batch(self, rows: list[dict[str, Any]], last_row: int) -> Any:
         try:
             return pa.RecordBatch.from_pylist(rows, schema=self.schema)
-        except (pa.ArrowException, ValueError, OverflowError) as exc:
+        except (pa.ArrowException, OSError, ValueError, OverflowError) as exc:
             raise IntegrationError(f"Arrow batch ending at row {last_row}: {exc}") from exc
 
     def table(
@@ -399,11 +413,15 @@ class RecordProjection:
 
 
 def records(
-    schema: Schema,
+    schema: Schema | RelaxNGSchema,
     *,
     element: str,
     path: tuple[str, ...] = (),
     columns: Mapping[str, FieldSource] | None = None,
-) -> RecordProjection:
+) -> RecordProjection | RelaxNGRecordProjection:
     """Prepare an explicit global/local record projection before any rows exist."""
+    if isinstance(schema, RelaxNGSchema):
+        from pyxsd.relaxng.records import RelaxNGRecordProjection
+
+        return RelaxNGRecordProjection(schema, element=element, path=path, columns=columns)
     return RecordProjection(schema, element=element, path=path, columns=columns)

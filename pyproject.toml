@@ -105,7 +105,12 @@ include = [
 ]
 # The pinned upstream corpora are checkout-only validation inputs, not part of
 # the published source. Keep archive contents independent of submodule state.
-exclude = ["tests/xsts/corpus/**", "tests/xslt/corpus/**", "tests/xpath/corpus/**"]
+exclude = [
+    "tests/xsts/corpus/**",
+    "tests/xslt/corpus/**",
+    "tests/xpath/corpus/**",
+    "tests/relaxng/corpus/**",
+]
 
 [tool.ruff]
 target-version = "py311"
@@ -113,7 +118,12 @@ line-length = 100
 src = ["src", "tests", "examples"]
 # Pinned upstream corpora are checkout-only test inputs, not this project's
 # source; some contain Python 2 samples and intentionally unusual fixtures.
-extend-exclude = ["tests/xsts/corpus", "tests/xslt/corpus", "tests/xpath/corpus"]
+extend-exclude = [
+    "tests/xsts/corpus",
+    "tests/xslt/corpus",
+    "tests/xpath/corpus",
+    "tests/relaxng/corpus",
+]
 
 [tool.ruff.lint]
 select = [
@@ -196,7 +206,7 @@ disallow_incomplete_defs = true
 [[tool.mypy.overrides]]
 # PyArrow does not ship typing metadata; Pydantic is absent in base-only
 # environments. This affects third-party imports, not our own module checks.
-module = ["pyarrow", "pyarrow.*", "pydantic", "anyio", "anyio.*"]
+module = ["pyarrow", "pyarrow.*", "pydantic", "pydantic.*", "anyio", "anyio.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]
@@ -205,7 +215,15 @@ branch = true
 
 # Base CI measures the core and dependency-free projection. Dedicated adapter
 # and MCP jobs include optional modules through their own coverage configurations.
-omit = ["*/pyxsd/integrations/pydantic.py", "*/pyxsd/integrations/arrow.py", "*/pyxsd/integrations/_dataset.py", "*/pyxsd/mcp/*"]
+omit = [
+    "*/pyxsd/integrations/pydantic.py",
+    "*/pyxsd/integrations/arrow.py",
+    "*/pyxsd/integrations/_dataset.py",
+    "*/pyxsd/relaxng/pydantic_adapter.py",
+    "*/pyxsd/relaxng/pydantic_values.py",
+    "*/pyxsd/relaxng/records.py",
+    "*/pyxsd/mcp/*",
+]
 
 [tool.coverage.report]
 show_missing = true

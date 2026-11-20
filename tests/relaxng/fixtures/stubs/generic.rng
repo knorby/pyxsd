@@ -1,0 +1,13 @@
+<element xmlns="http://relaxng.org/ns/structure/1.0"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema-datatypes"
+         name="doc">
+  <group>
+    <element name="bad">
+      <choice>
+        <data type="integer" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"/>
+        <element name="nested"><empty/></element>
+      </choice>
+    </element>
+    <element name="good"><text/></element>
+  </group>
+</element>

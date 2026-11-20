@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import warnings
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 
 import pytest
@@ -70,6 +70,7 @@ import pyxsd
 from pyxsd.data_conversion.contracts import JsonValue, json_pointer
 from pyxsd.data_conversion.import_data import data_to_element, json_to_data
 from pyxsd.exceptions import PyXSDError, PyXSDWarning, ValidationError
+from pyxsd.namespaces import parse_with_namespaces
 from pyxsd.xsi import XSI_NAMESPACE, XSI_NIL, XSI_TYPE
 
 XSI_TYPE_EQNAME = "Q{urn:example}Ext"
@@ -4306,3 +4307,34 @@ def test_badgerfish_rejects_a_name_at_multiple_sequence_positions():
     assert imported.root is not None
     assert [child._name_ for child in imported.root._children_] == ["b", "a"]
     imported.require_valid()
+
+
+class _NamespaceRecordingPolicy:
+    """Parse in-tree schema/instance content while recording namespaces."""
+
+    def read(self, source, *, base, purpose):  # pragma: no cover - never a path
+        raise AssertionError("stream inputs are read directly")
+
+    def parse(self, data, context):
+        return parse_with_namespaces(BytesIO(data.content), context)
+
+
+def test_from_data_binds_a_library_tree_under_a_resource_policy():
+    policy_schema = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="count" type="xs:int"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+    schema = pyxsd.Schema.compile(
+        StringIO(policy_schema),
+        mode=pyxsd.ParseModes.LAX,
+        resource_policy=_NamespaceRecordingPolicy(),
+    )
+    assert not schema.report.has_errors
+
+    imported = schema.from_data({"root": [{"count": 4}]}, format="pyxsd-json")
+
+    imported.require_valid()
+    assert imported.to_data(format="pyxsd-json") == {"root": [{"count": 4}]}
+    assert "<count>4</count>" in imported.to_string()

@@ -9,14 +9,19 @@ from __future__ import annotations
 
 import os
 import weakref
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import IO, Final, Literal, Protocol, cast
+from typing import IO, TYPE_CHECKING, Final, Literal, Protocol, cast
 from xml.etree import ElementTree as ET
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import NamespaceContext
 from pyxsd.validation import ValidationReport
+
+if TYPE_CHECKING:
+    from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 #: Why a resource is being read.
 #:
@@ -98,6 +103,52 @@ def source_identifier(source: object) -> str | None:
         else getattr(source, "name", None)
     )
     return name if isinstance(name, str) else None
+
+
+def is_root_read_source(source: object) -> bool:
+    """Whether *source* is an explicit path whose first policy read is the root.
+
+    An anonymous stream has no implicit base, so a policy compilation entered
+    for it must still let its dependencies authorize local-to-remote loading.
+    """
+    return isinstance(source, (str, os.PathLike))
+
+
+@contextmanager
+def policy_compilation(policy: ResourcePolicy | None, *, root_read: bool) -> Iterator[None]:
+    """Enter a policy's optional per-compilation closure scope.
+
+    :class:`~pyxsd.remote.RemoteResourcePolicy` advertises the hook through the
+    private ``_pyxsd_compilation_scope`` capability marker, not through the
+    public ``compilation()`` method's spelling, so a custom policy may define
+    an unrelated ``compilation`` attribute without breaking compilation. A
+    policy that wants the same per-compilation state publishes the marker
+    itself. ``root_read`` is false for an anonymous stream schema, whose
+    dependencies must still authorize local-to-remote loading.
+    """
+    enter = getattr(policy, "_pyxsd_compilation_scope", None)
+    if enter is None:
+        yield
+    else:
+        with enter(root_read=root_read):
+            yield
+
+
+def reject_parser_override(
+    resource_policy: ResourcePolicy | None,
+    xml_policy: XmlParserPolicy | None,
+    xml_limits: XmlLimits | None,
+) -> None:
+    """Refuse parser arguments that a trusted ResourcePolicy would swallow.
+
+    Shared by every schema compiler so a policy/parser combination is rejected
+    identically, before any input is read.
+    """
+    if resource_policy is not None and (xml_policy is not None or xml_limits is not None):
+        raise ValueError(
+            "xml_policy and xml_limits cannot be combined with resource_policy: "
+            "ResourcePolicy.parse() is trusted application code"
+        )
 
 
 def read_resource(

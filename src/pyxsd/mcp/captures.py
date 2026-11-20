@@ -13,6 +13,7 @@ from defusedxml.common import DefusedXmlException
 from pyxsd.namespaces import NamespaceContext
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.validation import ValidationReport
+from pyxsd.xml_policy import XmlLimits
 
 from .config import Limits
 from .errors import ToolError
@@ -82,6 +83,11 @@ class InputResourcePolicy:
             max_issues=self.limits.collected_issues,
             max_message_bytes=self.limits.message_bytes,
         )
+
+    @property
+    def tree_limits(self) -> XmlLimits:
+        """Apply structural budgets to library imports, which have no input bytes."""
+        return XmlLimits(max_depth=self.limits.xml_depth, max_elements=self.limits.xml_elements)
 
     @property
     def dependencies(self) -> tuple[CaptureDependency, ...]:

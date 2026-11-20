@@ -216,6 +216,7 @@ def test_corpus_classifies_every_file_and_separates_impact_from_evidence(tmp_pat
                 "malformed": 1,
                 "unbindable": 1,
                 "skipped": 0,
+                "unknown": 0,
             }
             assert corpus_result["regressions"] == ["regressed.xml"]
             assert corpus_result["resolutions"] == ["resolved.xml"]
@@ -319,6 +320,7 @@ def test_corpus_glob_empty_match_reports_zero_evidence(tmp_path):
                 "malformed": 0,
                 "unbindable": 0,
                 "skipped": 0,
+                "unknown": 0,
             }
 
     anyio.run(scenario)

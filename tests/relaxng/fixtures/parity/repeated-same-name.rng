@@ -1,0 +1,11 @@
+<element xmlns="http://relaxng.org/ns/structure/1.0"
+         name="doc">
+  <group>
+    <element name="a">
+      <attribute name="x"><text/></attribute>
+    </element>
+    <element name="a">
+      <attribute name="y"><text/></attribute>
+    </element>
+  </group>
+</element>

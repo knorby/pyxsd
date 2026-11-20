@@ -1,0 +1,20 @@
+<element xmlns="http://relaxng.org/ns/structure/1.0"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema-datatypes"
+         datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"
+         name="type">
+  <group>
+    <element name="list"><empty/></element>
+    <element name="str"><empty/></element>
+    <element name="bool"><empty/></element>
+    <element name="bytes"><empty/></element>
+    <element name="tuple"><empty/></element>
+    <element name="Item"><empty/></element>
+    <element name="RelaxNGElement"><empty/></element>
+    <element name="generic">
+      <choice>
+        <data type="integer"/>
+        <element name="nested"><empty/></element>
+      </choice>
+    </element>
+  </group>
+</element>

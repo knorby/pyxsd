@@ -81,6 +81,11 @@ def compile_projection(
                 raise IntegrationError("output name must be a nonempty string")
             if not isinstance(source, FieldSource):
                 raise IntegrationError("column source must be a FieldSource")
+            if source.datatype is not None or source.candidate_id is not None:
+                raise IntegrationError(
+                    "datatype and candidate_id selectors are only supported by "
+                    "RELAX NG record projections"
+                )
             if not row_shapes:
                 row_shapes = tuple(guard(route.path[: i + 1]) for i in range(len(route.path)))
             start = 0 if source.scope == "root" else len(path)

@@ -29,8 +29,11 @@ from .worker_protocol import (
     ComparisonOperation,
     DescribeOperation,
     DiscoverOperation,
+    DocumentJsonSchemaOperation,
+    ExportDataOperation,
     ExportOperation,
     FindOperation,
+    ImportDataOperation,
     ModelOperation,
     Operation,
     ParseOperation,
@@ -292,6 +295,9 @@ class WorkerPool:
                     RecordsOperation,
                     ExportOperation,
                     ComparisonOperation,
+                    ExportDataOperation,
+                    ImportDataOperation,
+                    DocumentJsonSchemaOperation,
                 ),
             )
             or operation.role != "clean"

@@ -59,6 +59,15 @@ class CompileOptions(WireModel):
 class SchemaRef(WireModel):
     source: Annotated[FileRef, Field(description="Entry schema file this reference resolves.")]
     options: CompileOptions = Field(default_factory=CompileOptions)
+    format: Annotated[
+        Literal["xsd", "relax-ng"],
+        Field(
+            description=(
+                "Schema language of the entry file; filenames never select it. "
+                "Omitted requests retain the XSD default."
+            )
+        ),
+    ] = "xsd"
 
 
 class ArtifactRef(WireModel):
@@ -163,6 +172,95 @@ class QueryDocumentRequest(WireModel):
     namespaces: dict[str, str] = Field(default_factory=dict)
     result: Literal["summary", "subtree"] = "summary"
     page: Page = Field(default_factory=Page)
+
+
+class ExportDataRequest(WireModel):
+    workspace_id: Nonempty
+    schema_ref: SchemaRef
+    document: FileRef
+    format: Annotated[
+        str,
+        Field(
+            description=(
+                "Data format contract: pyxsd (native), pyxsd-json, parker, badgerfish, or jsonml."
+            )
+        ),
+    ] = "pyxsd"
+    fidelity: Annotated[
+        str,
+        Field(description="Representation fidelity: strict or best-effort."),
+    ] = "best-effort"
+    typed: Annotated[
+        bool,
+        Field(description="Native-only typed scalar export; must be true for other formats."),
+    ] = True
+    always_list: Annotated[
+        bool,
+        Field(description="Native-only list policy; must be false for other formats."),
+    ] = False
+
+
+class ImportDataRequest(WireModel):
+    workspace_id: Nonempty
+    schema_ref: SchemaRef
+    data: JsonValue
+    format: Annotated[
+        str,
+        Field(
+            description=(
+                "Data format contract: pyxsd (native), pyxsd-json, parker, badgerfish, or jsonml."
+            )
+        ),
+    ] = "pyxsd-json"
+    element: Annotated[
+        Nonempty | None,
+        Field(
+            description=(
+                "Optional root selection as a local, Clark, or EQName spelling; required "
+                "for root-absorbed formats when the schema admits more than one name."
+            )
+        ),
+    ] = None
+    namespaces: dict[str, str] = Field(default_factory=dict)
+    fidelity: Annotated[
+        str,
+        Field(description="Representation fidelity: strict or best-effort."),
+    ] = "strict"
+    page: Page = Field(default_factory=Page)
+
+
+class DocumentJsonSchemaRequest(WireModel):
+    workspace_id: Nonempty
+    schema_ref: SchemaRef
+    format: Annotated[
+        str,
+        Field(
+            description=(
+                "Data format contract: pyxsd (native), pyxsd-json, parker, badgerfish, or jsonml."
+            )
+        ),
+    ] = "pyxsd-json"
+    element: Annotated[
+        Nonempty | None,
+        Field(
+            description=(
+                "Optional root selection as a local, Clark, or EQName spelling; omitted "
+                "describes every concrete global root."
+            )
+        ),
+    ] = None
+    fidelity: Annotated[
+        str,
+        Field(description="Representation fidelity: strict or best-effort."),
+    ] = "strict"
+    typed: Annotated[
+        bool,
+        Field(description="Native-only typed scalar contract; must be true for other formats."),
+    ] = True
+    always_list: Annotated[
+        bool,
+        Field(description="Native-only list contract; must be false for other formats."),
+    ] = False
 
 
 class ExplainIssueRequest(WireModel):

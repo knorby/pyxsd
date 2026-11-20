@@ -7,7 +7,8 @@ import re
 import sys
 from collections import Counter
 from contextlib import ExitStack
-from typing import BinaryIO, Literal, cast
+from typing import BinaryIO, Literal, NoReturn, cast
+from xml.etree import ElementTree as ET
 
 from elementpath.exceptions import ElementPathError
 
@@ -22,12 +23,39 @@ from pyxsd.introspection import (
     find_components,
     related_components,
 )
+from pyxsd.locations import IssueLocation
+from pyxsd.namespaces import NamespaceContext
+from pyxsd.relaxng import RelaxNGElement, RelaxNGLimitError, RelaxNGSchema
+from pyxsd.relaxng.datatypes import DatatypeRegistrationError, UnsupportedDatatypeError
+from pyxsd.relaxng.introspection import (
+    RelaxNGComponentDescription,
+)
+from pyxsd.relaxng.introspection import (
+    describe_component as relaxng_describe_component,
+)
+from pyxsd.relaxng.introspection import (
+    describe_schema as relaxng_describe_schema,
+)
+from pyxsd.relaxng.introspection import (
+    find_components as relaxng_find_components,
+)
+from pyxsd.relaxng.introspection import (
+    related_components as relaxng_related_components,
+)
+from pyxsd.relaxng.resources import ResourceDependency
 from pyxsd.schema_base import SchemaBase
 from pyxsd.schema_context import last_components, remember_components
 from pyxsd.source_spans import SourceIndex
-from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
+from pyxsd.xml_policy import XmlLimits, XmlParserPolicy, XmlTreeLimitError
 
-from .cache import CompileRequest, SchemaCache, require_complete_schema
+from .cache import (
+    CompiledSchema,
+    CompileRequest,
+    SchemaCache,
+    _closure_policy,
+    require_complete_schema,
+    require_xsd_schema,
+)
 from .captures import CaptureDependency, InputPolicyError, InputResourcePolicy
 from .config import Limits
 from .contracts import BatchValidationItem, SchemaRef, ToolFault
@@ -38,8 +66,11 @@ from .worker_protocol import (
     ComparisonOperation,
     DescribeOperation,
     DiscoverOperation,
+    DocumentJsonSchemaOperation,
+    ExportDataOperation,
     ExportOperation,
     FindOperation,
+    ImportDataOperation,
     ModelOperation,
     Operation,
     ParseOperation,
@@ -59,6 +90,9 @@ _EXTERNAL_XPATH = re.compile(
     r"(?:doc|document|collection|uri-collection|json-doc|unparsed-text|unparsed-text-lines)\s*\("
 )
 _PARSER_POSITION = re.compile(r"line (\d+), column (\d+)")
+_RELAXNG_COMPONENT_KINDS = frozenset(
+    {"grammar", "define", "pattern", "name-class", "datatype", "route", "resource"}
+)
 
 
 def _read_frame(stream: BinaryIO, max_bytes: int | None) -> bytes:
@@ -80,22 +114,83 @@ def _for_schema(
     )
 
 
+def _schema_parse(schema: CompiledSchema, path: str) -> Document:
+    """Parse one instance through the schema's public, language-native method.
+
+    MCP validation and queries need only the lexical tree and the verdict.
+    RELAX NG therefore parses with ``typed=False``: evidence and pattern
+    capture are never computed, while names, attributes, text, and source
+    occurrences stay available. XSD parsing keeps its existing semantics.
+    """
+    if isinstance(schema, RelaxNGSchema):
+        return schema.parse(path, typed=False)
+    return schema.parse(path)
+
+
+def _instance_read_error(
+    operation: ParseOperation | QueryOperation | BatchParseOperation,
+    path: str,
+    cache: SchemaCache,
+) -> BaseException | None:
+    """Re-read only the instance to classify a hinted parse failure.
+
+    ``pyxsd.parse`` reads the instance before it resolves and compiles the
+    instance's schema hint, but reports both stages as ``PyXSDError``. When
+    that combined call fails, this preflight parse runs only when needed: if
+    the instance itself is unreadable or malformed, the failure is an instance
+    outcome; otherwise the hint's schema stage owns it.
+    """
+    policy = InputResourcePolicy(capture_from_wire(operation.capture), cache.limits)
+    try:
+        data = policy.read(path, base=None, purpose="instance")
+        policy.parse(data, NamespaceContext())
+    except (FileNotFoundError, InputPolicyError, PyXSDError, ET.ParseError) as exc:
+        return exc
+    return None
+
+
+def _parse_without_schema(
+    operation: ParseOperation | QueryOperation | BatchParseOperation,
+    document_path: str,
+    cache: SchemaCache,
+) -> Document:
+    """Parse an instance through its own schema-location hint.
+
+    Schema discovery/compilation failures are schema-acquisition outcomes;
+    only an independent instance read/parse failure proves an instance error.
+    """
+    policy = InputResourcePolicy(capture_from_wire(operation.capture), cache.limits)
+    path = "/workspace/" + document_path
+    try:
+        document = parse_document(
+            path,
+            mode=ParseModes.LAX_NAMESPACED,
+            resource_policy=policy,
+        )
+    except (FileNotFoundError, InputPolicyError, PyXSDError, ET.ParseError) as exc:
+        instance_error = _instance_read_error(operation, path, cache)
+        if instance_error is not None:
+            code = "not_found" if _missing_file(instance_error) else "invalid_xml"
+            _raise_operational(instance_error, code, cache.limits.message_bytes)
+        code = "not_found" if _missing_file(exc) else "invalid_schema"
+        _raise_operational(exc, code, cache.limits.message_bytes)
+    require_complete_schema(document.schema)
+    return document
+
+
 def _parse(
     operation: ParseOperation | QueryOperation, cache: SchemaCache, processor_version: str
 ) -> Document:
     if operation.schema_ref is None:
-        policy = InputResourcePolicy(capture_from_wire(operation.capture), cache.limits)
-        document = parse_document(
-            "/workspace/" + operation.document.path,
-            mode=ParseModes.LAX_NAMESPACED,
-            resource_policy=policy,
-        )
-        require_complete_schema(document.schema)
-        return document
+        return _parse_without_schema(operation, operation.document.path, cache)
     request = _for_schema(operation, operation.schema_ref, processor_version)
-    with cache.acquire(request) as schema:
-        require_complete_schema(schema)
-        return schema.parse("/workspace/" + operation.document.path)
+    with ExitStack() as stack:
+        try:
+            schema = stack.enter_context(cache.acquire(request))
+            require_complete_schema(schema)
+        except (InputPolicyError, PyXSDError) as exc:
+            _raise_operational(exc, "invalid_schema", cache.limits.message_bytes)
+        return _schema_parse(schema, "/workspace/" + operation.document.path)
 
 
 def _page(total: int, offset: int, returned: int) -> dict[str, JsonValue]:
@@ -178,19 +273,15 @@ def _parse_batch(
             for index in indexes:
                 current = operation.items[index]
                 try:
-                    policy = InputResourcePolicy(capture_from_wire(operation.capture), cache.limits)
-                    document = parse_document(
-                        "/workspace/" + current.document.path,
-                        mode=ParseModes.LAX_NAMESPACED,
-                        resource_policy=policy,
-                    )
-                    require_complete_schema(document.schema)
+                    document = _parse_without_schema(operation, current.document.path, cache)
                 except ToolError as exc:
-                    items[index] = _batch_fault(current, exc.fault.code, exc.fault.message, cache)
-                    continue
-                except (FileNotFoundError, InputPolicyError, PyXSDError) as exc:
-                    code = "not_found" if _missing_file(exc) else "invalid_xml"
-                    items[index] = _batch_fault(current, code, str(exc), cache)
+                    items[index] = _batch_fault(
+                        current,
+                        exc.fault.code,
+                        exc.fault.message,
+                        cache,
+                        details=exc.fault.details or None,
+                    )
                     continue
                 items[index] = _batch_outcome(current, document)
             continue
@@ -205,18 +296,26 @@ def _parse_batch(
                     items[index] = _batch_fault(current, exc.fault.code, exc.fault.message, cache)
                 continue
             except (InputPolicyError, PyXSDError) as exc:
+                fault = _operational_fault(exc, "invalid_schema", cache.limits.message_bytes)
                 for index in indexes:
                     items[index] = _batch_fault(
-                        operation.items[index], "invalid_schema", str(exc), cache
+                        operation.items[index],
+                        fault.code,
+                        fault.message,
+                        cache,
+                        details=fault.details or None,
                     )
                 continue
             for index in indexes:
                 current = operation.items[index]
                 try:
-                    document = schema.parse("/workspace/" + current.document.path)
+                    document = _schema_parse(schema, "/workspace/" + current.document.path)
                 except (FileNotFoundError, InputPolicyError, PyXSDError) as exc:
                     code = "not_found" if _missing_file(exc) else "invalid_xml"
-                    items[index] = _batch_fault(current, code, str(exc), cache)
+                    fault = _operational_fault(exc, code, cache.limits.message_bytes)
+                    items[index] = _batch_fault(
+                        current, fault.code, fault.message, cache, details=fault.details or None
+                    )
                     continue
                 items[index] = _batch_outcome(current, document)
     return {"items": cast(list[JsonValue], items)}
@@ -374,6 +473,154 @@ def _namespace_probe(
     return probe
 
 
+def _relaxng_origin_order(origin: object) -> tuple[str, str, tuple[tuple[str, int], ...], str]:
+    """Order authored origins deterministically without object identity."""
+    location = getattr(origin, "location", None)
+    if location is None:
+        return (getattr(origin, "source_id", ""), "", (), "")
+    return (
+        getattr(origin, "source_id", ""),
+        location.source or "",
+        tuple((step.name, step.index) for step in location.path),
+        location.attribute or "",
+    )
+
+
+def _relaxng_component_json(component: RelaxNGComponentDescription) -> dict[str, JsonValue]:
+    """Expose only RELAX NG component fields, never XSD declaration stand-ins."""
+    return {
+        "id": component.id,
+        "kind": component.kind,
+        "name": component.name,
+        "namespace": component.namespace,
+        "location": encode_value(component.location),
+        "origins": [
+            {
+                "source_id": origin.source_id,
+                "location": encode_value(origin.location),
+            }
+            for origin in sorted(component.origins, key=_relaxng_origin_order)
+        ],
+        "owner_id": component.owner_id,
+        "pattern_kind": component.pattern_kind,
+        "name_class": component.name_class,
+        "datatype_library": component.datatype_library,
+        "datatype_name": component.datatype_name,
+        "datatype_parameters": [[name, value] for name, value in component.datatype_parameters],
+        "synthetic": component.synthetic,
+    }
+
+
+def _relaxng_dependency_json(dependency: ResourceDependency) -> dict[str, JsonValue]:
+    """Summarize one canonical resource without inventing file sizes."""
+    return {
+        "path": dependency.canonical_id,
+        "digest": dependency.content_sha256,
+        "purpose": dependency.purpose,
+        "references": len(dependency.references),
+    }
+
+
+def _relaxng_start_ids(schema: RelaxNGSchema) -> list[str]:
+    """Return stable start-route IDs; an invalid grammar has no routes."""
+    return [] if schema.report.has_errors else list(schema.projection.roots)
+
+
+def _describe_relaxng(operation: DescribeOperation, schema: RelaxNGSchema) -> dict[str, JsonValue]:
+    """Describe starts, patterns, datatypes, routes, and dependencies truthfully."""
+    description = relaxng_describe_schema(schema)
+    if operation.view in ("compact", "full"):
+        try:
+            stub = schema.stub(
+                compact=operation.view == "compact",
+                component_ids=operation.component_ids or None,
+                depth=operation.depth,
+            )
+        except KeyError as exc:
+            raise ToolError("not_found", "Schema component not found") from exc
+        return {"view": operation.view, "stub": stub}
+    starts = _relaxng_start_ids(schema)
+    by_id = {component.id: component for component in description.components}
+    entry_source = "/workspace/" + operation.schema_ref.source.path
+    entry_starts = [
+        route_id
+        for route_id in starts
+        if (component := by_id.get(route_id)) is not None
+        and component.location is not None
+        and component.location.source == entry_source
+    ]
+    result: dict[str, JsonValue] = {
+        "view": operation.view,
+        "starts": cast(JsonValue, starts),
+        "entry_starts": cast(JsonValue, entry_starts),
+        "start_patterns": cast(JsonValue, list(description.start_ids)),
+        "counts": cast(
+            JsonValue,
+            dict(sorted(Counter(item.kind for item in description.components).items())),
+        ),
+        "dependencies": cast(
+            JsonValue,
+            [_relaxng_dependency_json(item) for item in description.dependencies],
+        ),
+    }
+    if operation.view == "constraints" or operation.component_ids:
+        selected_ids = operation.component_ids or tuple(starts)
+        try:
+            selected = [relaxng_describe_component(schema, item) for item in selected_ids]
+        except KeyError as exc:
+            raise ToolError("not_found", "Schema component not found") from exc
+        page = selected[
+            operation.offset : None
+            if operation.limit is None
+            else operation.offset + operation.limit
+        ]
+        result["components"] = cast(JsonValue, [_relaxng_component_json(item) for item in page])
+        result["page"] = _page(len(selected), operation.offset, len(page))
+    return result
+
+
+def _find_relaxng(operation: FindOperation, schema: RelaxNGSchema) -> dict[str, JsonValue]:
+    """Search the compiled RELAX NG inventory with XSD-compatible paging."""
+    try:
+        if operation.component_id is not None:
+            seed = relaxng_describe_component(schema, operation.component_id)
+            found = (
+                seed,
+                *relaxng_related_components(
+                    schema,
+                    operation.component_id,
+                    direction=operation.direction,
+                    depth=operation.depth,
+                ),
+            )
+        else:
+            found = relaxng_find_components(
+                schema,
+                text=operation.text,
+                kind=operation.component_kind,
+                namespace=operation.namespace,
+            )
+    except KeyError as exc:
+        raise ToolError("not_found", "Schema component not found") from exc
+    if operation.name is not None:
+        if "{" in operation.name:
+            found = tuple(item for item in found if item.name == operation.name)
+        else:
+            found = tuple(
+                item
+                for item in found
+                if item.name == operation.name
+                or (item.name is not None and item.name.endswith("}" + operation.name))
+            )
+    page = found[
+        operation.offset : None if operation.limit is None else operation.offset + operation.limit
+    ]
+    return {
+        "components": cast(JsonValue, [_relaxng_component_json(item) for item in page]),
+        "page": _page(len(found), operation.offset, len(page)),
+    }
+
+
 def _describe(
     operation: DescribeOperation, cache: SchemaCache, processor_version: str
 ) -> dict[str, JsonValue]:
@@ -393,16 +640,19 @@ def _describe(
             "namespace_probe": cast(JsonValue, probe if probe else None),
         }
     with cache.acquire(request) as schema:
-        description = describe_schema(schema)
+        if isinstance(schema, RelaxNGSchema):
+            return _describe_relaxng(operation, schema)
+        xsd_schema = require_xsd_schema(schema)
+        description = describe_schema(xsd_schema)
         selected_ids = operation.component_ids or description.roots
         try:
-            selected = [describe_component(schema, item) for item in selected_ids]
+            selected = [describe_component(xsd_schema, item) for item in selected_ids]
         except KeyError as exc:
             raise ToolError("not_found", "Schema component not found") from exc
         if operation.view in ("compact", "full"):
             return {
                 "view": operation.view,
-                "stub": schema.stub(
+                "stub": xsd_schema.stub(
                     compact=operation.view == "compact",
                     component_ids=selected_ids,
                     depth=operation.depth,
@@ -416,7 +666,7 @@ def _describe(
         entry_roots = [
             root
             for root in description.roots
-            if (loc := describe_component(schema, root).location) is not None
+            if (loc := describe_component(xsd_schema, root).location) is not None
             and loc.source == entry_source
         ]
         result: dict[str, JsonValue] = {
@@ -440,22 +690,36 @@ def _describe(
 def _find(
     operation: FindOperation, cache: SchemaCache, processor_version: str
 ) -> dict[str, JsonValue]:
-    from pyxsd.introspection import COMPONENT_KINDS
+    if operation.schema_ref.format == "relax-ng":
+        if (
+            operation.component_kind is not None
+            and operation.component_kind not in _RELAXNG_COMPONENT_KINDS
+        ):
+            raise ToolError(
+                "invalid_argument",
+                "Unknown RELAX NG component kind; expected one of: "
+                + ", ".join(sorted(_RELAXNG_COMPONENT_KINDS)),
+            )
+    else:
+        from pyxsd.introspection import COMPONENT_KINDS
 
-    if operation.component_kind is not None and operation.component_kind not in COMPONENT_KINDS:
-        raise ToolError(
-            "invalid_argument",
-            "Unknown component kind; expected one of: " + ", ".join(sorted(COMPONENT_KINDS)),
-        )
+        if operation.component_kind is not None and operation.component_kind not in COMPONENT_KINDS:
+            raise ToolError(
+                "invalid_argument",
+                "Unknown component kind; expected one of: " + ", ".join(sorted(COMPONENT_KINDS)),
+            )
     request = _for_schema(operation, operation.schema_ref, processor_version)
     with cache.acquire(request) as schema:
+        if isinstance(schema, RelaxNGSchema):
+            return _find_relaxng(operation, schema)
+        xsd_schema = require_xsd_schema(schema)
         try:
             if operation.component_id is not None:
-                seed = describe_component(schema, operation.component_id)
+                seed = describe_component(xsd_schema, operation.component_id)
                 found = (
                     seed,
                     *related_components(
-                        schema,
+                        xsd_schema,
                         operation.component_id,
                         direction=operation.direction,
                         depth=operation.depth,
@@ -463,7 +727,7 @@ def _find(
                 )
             else:
                 found = find_components(
-                    schema,
+                    xsd_schema,
                     text=operation.text,
                     kind=operation.component_kind,
                     namespace=operation.namespace,
@@ -496,6 +760,36 @@ def _find(
 _SOURCE_UNAVAILABLE = "The occurrence has no addressable original source bytes"
 
 
+def _structural_node(node: object) -> bool:
+    """Whether a query result is a document node rather than a scalar value.
+
+    XSD binds generated :class:`~pyxsd.schema_base.SchemaBase` instances;
+    RELAX NG keeps its lexical :class:`~pyxsd.relaxng.tree.RelaxNGElement`
+    tree, including any generated projection subclasses. Both are structural
+    nodes with source occurrences; neither requires the other's schema model.
+    """
+    return isinstance(node, (SchemaBase, RelaxNGElement))
+
+
+def _node_text(node: SchemaBase | RelaxNGElement) -> object:
+    """Return the node's lexical element text or its bound XSD value pieces.
+
+    RELAX NG exposes leading character data through lexical access, never
+    through a typed alternative. XSD keeps its existing list of bound values.
+    """
+    if isinstance(node, RelaxNGElement):
+        return node.text_value()
+    return getattr(node, "_value_", None)
+
+
+def _node_location(document: Document, node: SchemaBase | RelaxNGElement) -> IssueLocation | None:
+    """Return the node's exact source occurrence under its own schema model."""
+    if isinstance(node, RelaxNGElement):
+        return node.source_location
+    provenance = document._provenance
+    return provenance.bound_location(node) if provenance is not None else None
+
+
 def _source_index(operation: QueryOperation, cache: SchemaCache) -> SourceIndex:
     """Index the operation document's captured bytes once, under the MCP budget."""
     policy = InputResourcePolicy(capture_from_wire(operation.capture), cache.limits)
@@ -517,14 +811,13 @@ def _source_index(operation: QueryOperation, cache: SchemaCache) -> SourceIndex:
 
 
 def _node_summary(
-    document: Document, node: SchemaBase, index: SourceIndex | None
+    document: Document, node: SchemaBase | RelaxNGElement, index: SourceIndex | None
 ) -> dict[str, JsonValue]:
     result: dict[str, JsonValue] = {"name": getattr(node, "_name_", None)}
-    provenance = document._provenance
-    location = provenance.bound_location(node) if provenance is not None else None
+    location = _node_location(document, node)
     result["location"] = encode_value(location)
     if index is None:
-        result["text"] = encode_value(getattr(node, "_value_", None))
+        result["text"] = encode_value(_node_text(node))
         return result
     span = None if location is None else index.span(location.path)
     result["encoding"] = "base64"
@@ -563,11 +856,14 @@ def _query(
             else operation.offset + operation.limit
         ]
         results: JsonValue
-        if all(isinstance(item, SchemaBase) for item in page):
+        if all(_structural_node(item) for item in page):
             index = (
                 _source_index(operation, cache) if operation.result == "subtree" and page else None
             )
-            results = [_node_summary(document, item, index) for item in page]
+            results = [
+                _node_summary(document, cast(SchemaBase | RelaxNGElement, item), index)
+                for item in page
+            ]
         else:
             results = encode_value(page)
         return {"results": results, "page": _page(len(value), operation.offset, len(page))}
@@ -589,6 +885,8 @@ def _with_request_defaults(operation: Operation, limits: Limits) -> Operation:
         and operation.limit is None
     ):
         updates["limit"] = limits.page_items
+    elif isinstance(operation, ImportDataOperation) and operation.issue_limit is None:
+        updates["issue_limit"] = limits.page_items
     return operation.model_copy(update=updates) if updates else operation
 
 
@@ -612,6 +910,18 @@ def _execute(
         from .services.models import execute_model
 
         return execute_model(operation, cache, processor_version)
+    if isinstance(operation, ExportDataOperation):
+        from .services.conversion import execute_export_data
+
+        return execute_export_data(operation, cache, processor_version)
+    if isinstance(operation, ImportDataOperation):
+        from .services.conversion import execute_import_data
+
+        return execute_import_data(operation, cache, processor_version)
+    if isinstance(operation, DocumentJsonSchemaOperation):
+        from .services.conversion import execute_document_json_schema
+
+        return execute_document_json_schema(operation, cache, processor_version)
     limit = getattr(operation, "issue_limit", getattr(operation, "limit", 1))
     maximum = (
         cache.limits.batch_issue_items
@@ -647,8 +957,7 @@ def _execute(
                 processor_version=processor_version,
             )
             with cache.acquire(request) as schema:
-                policy = schema.resource_policy
-                assert isinstance(policy, InputResourcePolicy)
+                policy = _closure_policy(schema)
                 for item in policy.dependencies:
                     dependencies[item.path] = item
         return {
@@ -730,6 +1039,81 @@ def _parser_details(exc: BaseException) -> dict[str, JsonValue]:
     return {} if match is None else {"line": int(match[1]), "column": int(match[2])}
 
 
+def _policy_message(exc: InputPolicyError) -> str:
+    """Strip the policy code prefix; the code is carried separately."""
+    return str(exc).partition(": ")[2] or str(exc)
+
+
+def _raise_operational(exc: BaseException, default_code: str, max_bytes: int | None) -> NoReturn:
+    """Raise the typed fault for an operational parser/resource failure."""
+    fault = _operational_fault(exc, default_code, max_bytes)
+    raise ToolError(
+        fault.code,
+        fault.message,
+        retryable=fault.retryable,
+        details=fault.details,
+    ) from exc
+
+
+def _operational_fault(exc: BaseException, default_code: str, max_bytes: int | None) -> ToolFault:
+    """Classify a parser-level failure without inventing a document verdict.
+
+    RELAX NG budget exhaustion and unsupported datatype capabilities are
+    operational outcomes. Resource-policy budgets and changed or invalid
+    capture paths are operational too. None of them may become
+    ``invalid_xml``/``invalid_schema``, which would turn an unknown verdict
+    into a semantic one.
+    """
+    if isinstance(exc, RelaxNGLimitError):
+        return ToolFault(
+            code="limit_exceeded",
+            message=str(exc)[:max_bytes],
+            details={
+                "stage": exc.stage,
+                "budget": exc.budget,
+                "configured": exc.configured,
+                "observed": exc.observed,
+            },
+        )
+    if isinstance(exc, (UnsupportedDatatypeError, DatatypeRegistrationError)):
+        return ToolFault(
+            code="unsupported_capability",
+            message=str(exc)[:max_bytes],
+            details={},
+        )
+    if isinstance(exc, XmlTreeLimitError):
+        return ToolFault(
+            code="limit_exceeded",
+            message=str(exc)[:max_bytes],
+            details={"code": "xml_limit"},
+        )
+    if isinstance(exc, InputPolicyError):
+        message = _policy_message(exc)[:max_bytes]
+        if exc.code in ("schema_limit", "xml_limit"):
+            return ToolFault(
+                code="limit_exceeded",
+                message=message,
+                details={"code": exc.code},
+            )
+        if exc.code == "source_changed":
+            return ToolFault(
+                code="not_found" if default_code == "not_found" else "source_changed",
+                message=message,
+                details={"code": exc.code},
+            )
+        if exc.code == "invalid_path":
+            return ToolFault(
+                code="invalid_argument",
+                message=message,
+                details={"code": exc.code},
+            )
+    return ToolFault(
+        code=default_code,
+        message=str(exc)[:max_bytes],
+        details=_parser_details(exc),
+    )
+
+
 def _byte_budget(value: str) -> int | None:
     if value == "unlimited":
         return None
@@ -802,20 +1186,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
             except (InputPolicyError, PyXSDError) as exc:
                 operations += 1
-                code = (
-                    "invalid_xml"
-                    if isinstance(operation, (ParseOperation, QueryOperation))
-                    else "invalid_schema"
-                )
+                if isinstance(operation, (ParseOperation, QueryOperation)):
+                    code = "not_found" if _missing_file(exc) else "invalid_xml"
+                else:
+                    code = "invalid_schema"
                 _reply_fault(
                     sys.stdout.buffer,
                     operation,
                     role=arguments.role,
-                    fault=ToolFault(
-                        code=code,
-                        message=str(exc)[: config.limits.message_bytes],
-                        details=_parser_details(exc),
-                    ),
+                    fault=_operational_fault(exc, code, config.limits.message_bytes),
                     operations=operations,
                     max_bytes=config.limits.output_bytes,
                 )

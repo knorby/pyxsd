@@ -20,7 +20,7 @@ from pyxsd.mcp.contracts import FileRef, SchemaRef
 from pyxsd.mcp.errors import ToolError
 
 
-def execute(tmp_path, source, *, limits=None, timeout=10):
+def execute(tmp_path, source, *, limits=None, timeout=10, schema_ref=None):
     from pyxsd.mcp.execution import TrustedLocalExecution
     from pyxsd.mcp.transforms import normalize_transform
 
@@ -29,11 +29,12 @@ def execute(tmp_path, source, *, limits=None, timeout=10):
     snapshot = make_snapshot(snapshot_root)
     limits = limits or Limits(enforced=True)
     runtime = TrustedLocalExecution(tmp_path / "output", limits)
+    schema_ref = schema_ref or SchemaRef(source=FileRef(path="schema.xsd"))
 
     async def scenario():
         return await runtime.run(
             snapshot,
-            SchemaRef(source=FileRef(path="schema.xsd")),
+            schema_ref,
             FileRef(path="document.xml"),
             normalize_transform(
                 source if isinstance(source, dict) else {"kind": "python", "source": source}, limits

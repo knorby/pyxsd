@@ -50,6 +50,16 @@ DEFAULTS = {
     "path_segments": 128,
     "path_segment_bytes": 255,
     "io_chunk_bytes": 65536,
+    "relaxng_pattern_nodes": 1_000_000,
+    "relaxng_derivative_states": 1_000_000,
+    "relaxng_memo_entries": 1_000_000,
+    "relaxng_evidence_states": 1_000_000,
+    "relaxng_evidence_edges": 1_000_000,
+    "relaxng_scalar_witnesses": 1_000_000,
+    "relaxng_binding_summaries": 1_000_000,
+    "relaxng_capture_entries": 10_000,
+    "relaxng_projection_routes": 10_000,
+    "relaxng_diagnostics": 10_000,
 }
 
 

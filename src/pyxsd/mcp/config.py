@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Literal, Self
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pyxsd.relaxng.limits import RelaxNGLimits
 
 from .contracts import PositiveBudget, WireModel
 
@@ -55,6 +56,18 @@ class Limits(WireModel):
     path_segments: ResourceBudget = 128
     path_segment_bytes: ResourceBudget = 255
     io_chunk_bytes: ResourceBudget = 65536
+    # RELAX NG work budgets exhaust independently; the capture and diagnostic
+    # budgets bound retained records instead of raising.
+    relaxng_pattern_nodes: ResourceBudget = 1_000_000
+    relaxng_derivative_states: ResourceBudget = 1_000_000
+    relaxng_memo_entries: ResourceBudget = 1_000_000
+    relaxng_evidence_states: ResourceBudget = 1_000_000
+    relaxng_evidence_edges: ResourceBudget = 1_000_000
+    relaxng_scalar_witnesses: ResourceBudget = 1_000_000
+    relaxng_binding_summaries: ResourceBudget = 1_000_000
+    relaxng_capture_entries: ResourceBudget = 10_000
+    relaxng_projection_routes: ResourceBudget = 10_000
+    relaxng_diagnostics: ResourceBudget = 10_000
 
     @field_validator("*", mode="after")
     @classmethod
@@ -80,6 +93,28 @@ class Limits(WireModel):
         ):
             raise ValueError("corpus_files must not exceed corpus_max_files")
         return self
+
+
+def relaxng_limits_for_mcp(limits: Limits) -> RelaxNGLimits:
+    """Map the server's fixed budgets onto the RELAX NG compiler declaration.
+
+    Every RELAX NG unit is mapped independently. Disabled server limits become
+    ``None`` (unlimited) through :class:`Limits` normalization, and the
+    capture and diagnostic fields keep their truncation semantics rather than
+    becoming work budgets.
+    """
+    return RelaxNGLimits(
+        max_pattern_nodes=limits.relaxng_pattern_nodes,
+        max_derivative_states=limits.relaxng_derivative_states,
+        max_memo_entries=limits.relaxng_memo_entries,
+        max_evidence_states=limits.relaxng_evidence_states,
+        max_evidence_edges=limits.relaxng_evidence_edges,
+        max_scalar_witnesses=limits.relaxng_scalar_witnesses,
+        max_binding_summaries=limits.relaxng_binding_summaries,
+        max_capture_entries=limits.relaxng_capture_entries,
+        max_projection_routes=limits.relaxng_projection_routes,
+        max_diagnostics=limits.relaxng_diagnostics,
+    )
 
 
 class Settings(WireModel):

@@ -10,6 +10,7 @@ import pytest
 import pyxsd
 from pyxsd.facets import FacetConstraints
 from pyxsd.validation import IssueSeverity, ValidationIssue, ValidationReport
+from pyxsd.xsd_data_types import Integer
 
 
 def test_bounded_report_keeps_error_state():
@@ -249,6 +250,37 @@ def test_serialized_details_preserve_safe_numbers_and_large_integer_precision():
         "text": "caf\u00e9",
         "empty": [],
     }
+
+
+@pytest.mark.parametrize("digits", [4301, 5000])
+def test_xsd_accepts_integer_values_beyond_the_int_string_limit(digits):
+    value = "9" * digits
+    schema = pyxsd.compile(
+        StringIO(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:simpleType name="Big"><xs:restriction base="xs:integer">'
+            f'<xs:totalDigits value="{digits}"/>'
+            "</xs:restriction></xs:simpleType>"
+            '<xs:element name="doc" type="Big"/>'
+            "</xs:schema>"
+        )
+    )
+    schema.require_valid()
+    document = schema.parse(StringIO(f"<doc>{value}</doc>"))
+    assert document.is_valid, document.report
+
+
+@pytest.mark.parametrize("digits", [4301, 5000])
+def test_total_digits_handles_values_beyond_the_int_string_limit(digits):
+    value = Integer("9" * digits)
+    FacetConstraints(total_digits=digits).check(value)
+    with pytest.raises(TypeError) as raised:
+        FacetConstraints(total_digits=digits - 1).check(value)
+    assert f"has {digits} digits" in str(raised.value)
+    assert f"...({digits} digits)" in str(raised.value)
+    with pytest.raises(TypeError) as negative:
+        FacetConstraints(total_digits=digits - 1).check(Integer("-" + "9" * digits))
+    assert f"...({digits} digits)" in str(negative.value)
 
 
 def test_enumeration_constraint_prefers_typed_values_to_comparison_keys():

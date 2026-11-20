@@ -1,0 +1,17 @@
+<element xmlns="http://relaxng.org/ns/structure/1.0"
+         name="doc">
+  <optional>
+    <attribute name="maybe">
+      <data type="boolean" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"/>
+    </attribute>
+  </optional>
+  <optional>
+    <element name="single"><empty/></element>
+  </optional>
+  <zeroOrMore>
+    <element name="many"><empty/></element>
+  </zeroOrMore>
+  <oneOrMore>
+    <element name="requiredMany"><empty/></element>
+  </oneOrMore>
+</element>

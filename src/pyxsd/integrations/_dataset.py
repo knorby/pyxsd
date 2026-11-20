@@ -9,26 +9,42 @@ import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Iterable
-from dataclasses import asdict
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal, Protocol
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from pyxsd import __version__
-from pyxsd.batch import BatchParseError, DocumentSource, ParseOutcome
-from pyxsd.schema import Schema
+from pyxsd.batch import BatchParseError, DocumentSource, ParseOutcome, iter_parse
 
 from . import IntegrationError
 from .dataset import DatasetExportError, DatasetResult
 
-if TYPE_CHECKING:
-    from .arrow import RecordProjection
-
 SOURCE_ID = "__pyxsd_source_id"
 ROW_INDEX = "__pyxsd_row_index"
+
+
+class DatasetProjection(Protocol):
+    """The narrow projection surface shared by XSD and RELAX NG datasets."""
+
+    schema: Any
+
+    def batches(
+        self,
+        document: Any,
+        *,
+        selector: str | None = None,
+        namespaces: dict[str, str] | None = None,
+        batch_size: int = 10000,
+    ) -> Iterator[Any]:
+        """Yield fixed-schema record batches for one parsed document."""
+        ...
+
+    def dataset_metadata(self) -> dict[str, Any]:
+        """Return JSON-safe schema-format manifest fields."""
+        ...
 
 
 def publish(staging: Path, destination: Path) -> None:
@@ -108,7 +124,7 @@ def entry_snapshot(
 
 
 def _write_part(
-    projection: RecordProjection,
+    projection: DatasetProjection,
     outcome: ParseOutcome,
     ordinal: int,
     staging: Path,
@@ -140,10 +156,11 @@ def _write_part(
                 except IntegrationError as exc:
                     # The existing batch adapter wraps Arrow failures. Invalid
                     # values/types are expected projection errors; allocation,
-                    # capacity and unsupported backend faults must still abort.
-                    backend_fault = isinstance(exc.__cause__, pa.ArrowException) and not isinstance(
-                        exc.__cause__, (pa.ArrowInvalid, pa.ArrowTypeError)
-                    )
+                    # I/O, capacity and unsupported backend faults must abort.
+                    cause = exc.__cause__
+                    backend_fault = isinstance(
+                        cause, (pa.ArrowException, OSError)
+                    ) and not isinstance(cause, (pa.ArrowInvalid, pa.ArrowTypeError))
                     if errors == "raise" or backend_fault:
                         raise DatasetExportError(
                             str(exc),
@@ -184,8 +201,7 @@ def _metadata_snapshot(metadata: dict[bytes, bytes] | None) -> list[dict[str, st
 
 
 def _manifest(
-    projection: RecordProjection,
-    schema: Schema,
+    projection: DatasetProjection,
     result: DatasetResult,
     entries: list[dict[str, Any]],
     selector: str | None,
@@ -195,8 +211,7 @@ def _manifest(
         "format_version": 1,
         "status": result.status,
         "versions": {"pyxsd": __version__, "pyarrow": pa.__version__},
-        "xsd_version": str(schema._host.processor_version),
-        "parse_policy": asdict(schema.mode),
+        **projection.dataset_metadata(),
         "projection": {
             "row_route": json.loads(projection.schema.metadata[b"pyxsd:declaration"]),
             "schema_metadata": _metadata_snapshot(projection.schema.metadata),
@@ -219,8 +234,8 @@ def _manifest(
 
 
 def write_dataset(
-    projection: RecordProjection,
-    schema: Schema,
+    projection: DatasetProjection,
+    schema: Any,
     sources: Iterable[DocumentSource],
     destination: Path,
     *,
@@ -249,7 +264,9 @@ def write_dataset(
     staging = None
     source_id = None
     stage = "staging"
-    outcomes = schema.iter_parse(sources, errors=errors)
+    # The shared batch sequence is used directly so RELAX NG parses typed
+    # documents with evidence; XSD's Schema.iter_parse is this same call.
+    outcomes = iter_parse(schema, sources, errors=errors)
     entries = []
     try:
         staging = Path(
@@ -314,7 +331,7 @@ def write_dataset(
         stage = "manifest"
         with (staging / "manifest.json").open("w", encoding="utf-8") as file:
             json.dump(
-                _manifest(projection, schema, result, entries, selector, namespaces),
+                _manifest(projection, result, entries, selector, namespaces),
                 file,
                 ensure_ascii=True,
                 allow_nan=False,

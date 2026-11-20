@@ -33,6 +33,47 @@ def test_discovery_and_absent_reads_leave_project_untouched(tmp_path):
     anyio.run(scenario)
 
 
+def test_relaxng_capture_compile_and_validation_leave_state_absent(tmp_path):
+    from pyxsd import __version__
+    from pyxsd.mcp.cache import CompileRequest, SchemaCache, require_complete_schema
+    from pyxsd.mcp.contracts import FileRef, InlineFile, SchemaRef
+    from pyxsd.relaxng import RelaxNGSchema
+
+    schema = (
+        '<grammar xmlns="http://relaxng.org/ns/structure/1.0"><start>'
+        '<element name="root"><text/></element></start></grammar>'
+    )
+    document = "<root>hello</root>"
+
+    async def scenario():
+        settings = Settings(project_root=tmp_path, limits=Limits(enforced=True))
+        async with Services(settings) as services:
+            workspace = await services.inputs.create()
+            await services.inputs.put_files(
+                workspace.id,
+                [
+                    InlineFile(path="root.rng", text=schema),
+                    InlineFile(path="document.xml", text=document),
+                ],
+            )
+            ref = SchemaRef(source=FileRef(path="root.rng"), format="relax-ng")
+            async with services.inputs.operation_capture(
+                workspace.id, (ref, FileRef(path="document.xml"))
+            ) as capture:
+                cache = SchemaCache(settings.limits)
+                try:
+                    request = CompileRequest(capture, ref, (), __version__)
+                    with cache.acquire(request) as compiled:
+                        require_complete_schema(compiled)
+                        assert isinstance(compiled, RelaxNGSchema)
+                        assert compiled.parse("/workspace/document.xml").is_valid
+                finally:
+                    cache.close()
+            assert not (tmp_path / ".pyxsd").exists()
+
+    anyio.run(scenario)
+
+
 def test_source_exclusion_preserves_safe_directory_symlink_faults(tmp_path):
     from pyxsd.mcp.contracts import FileRef
 

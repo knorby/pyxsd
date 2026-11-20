@@ -76,6 +76,16 @@ class TestInteger:
         assert result == 6
         assert type(result) is int
 
+    @pytest.mark.parametrize("digits", [4301, 5000])
+    def test_huge_lexical_values_do_not_use_the_int_string_limit(self, digits):
+        text = "9" * digits
+        value = Integer(text)
+        assert value == 10**digits - 1
+        assert str(value) == text
+        assert str(Integer("-" + text)) == "-" + text
+        assert str(PositiveInteger(text)) == text
+        assert str(NonNegativeInteger(text)) == text
+
 
 class TestPositiveInteger:
     def test_valid(self):
@@ -88,6 +98,11 @@ class TestPositiveInteger:
     def test_negative_is_invalid(self):
         with pytest.raises(TypeError):
             PositiveInteger(-3)
+
+    def test_fractional_inputs_are_checked_after_integer_conversion(self):
+        for value in (0.9, -0.9):
+            with pytest.raises(TypeError):
+                PositiveInteger(value)
 
     def test_name_attribute(self):
         assert PositiveInteger.name == "positiveInteger"
@@ -112,6 +127,11 @@ class TestNegativeInteger:
     def test_zero_is_invalid(self):
         with pytest.raises(TypeError):
             NegativeInteger("0")
+
+    def test_fractional_inputs_are_checked_after_integer_conversion(self):
+        for value in (0.9, -0.9):
+            with pytest.raises(TypeError):
+                NegativeInteger(value)
 
     def test_name_attribute(self):
         assert NegativeInteger.name == "negativeInteger"

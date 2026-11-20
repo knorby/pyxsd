@@ -20,11 +20,14 @@ repos:
         # Digest-pinned upstream documents must remain byte-for-byte unchanged.
         # The packaged W3C stylesheet schemas are provenance-hashed and only
         # their local schemaLocation identifiers may differ from upstream.
-        exclude: ^(tests/fixtures/healthcare/hl7-(discharge-summary|ccd-with-issues)\.xml|src/pyxsd/xslt/resources/.*\.xsd)$
+        exclude: ^(tests/fixtures/healthcare/hl7-(discharge-summary|ccd-with-issues)\.xml|src/pyxsd/xslt/resources/.*\.xsd|tests/relaxng/corpus/.*)$
       - id: mixed-line-ending
         args: [--fix=lf]
+        # Pinned corpus files are provenance-hashed; altering line endings
+        # would invalidate SHA256SUMS.
+        exclude: ^tests/relaxng/corpus/.*$
       - id: end-of-file-fixer
-        exclude: ^src/pyxsd/xslt/resources/.*\.xsd$
+        exclude: ^(src/pyxsd/xslt/resources/.*\.xsd|tests/relaxng/corpus/.*)$
       - id: check-merge-conflict
       - id: check-case-conflict
       - id: check-symlinks

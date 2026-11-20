@@ -1,0 +1,37 @@
+<r:grammar xmlns:r="http://relaxng.org/ns/structure/1.0"
+           xmlns:p="urn:example:p"
+           ns="urn:example:inherited">
+  <r:start>
+    <r:element name="p:root">
+      <r:group>
+        <r:attribute name="plain"><r:text/></r:attribute>
+        <r:attribute name="p:marked"><r:empty/></r:attribute>
+        <r:attribute name="named" ns="urn:example:attribute"><r:empty/></r:attribute>
+        <r:element name="child" xmlns="urn:example:default">
+          <r:element name="inner" xmlns="">
+            <r:value type="QName">p:thing</r:value>
+          </r:element>
+        </r:element>
+        <r:element name="unqualified" ns="">
+          <r:element>
+            <r:choice>
+              <r:name ns="urn:example:a">first</r:name>
+              <r:nsName>
+                <r:except>
+                  <r:name ns="">second</r:name>
+                </r:except>
+              </r:nsName>
+            </r:choice>
+            <r:empty/>
+          </r:element>
+        </r:element>
+        <r:element>
+          <r:anyName>
+            <r:except><r:nsName ns="urn:example:excluded"/></r:except>
+          </r:anyName>
+          <r:text/>
+        </r:element>
+      </r:group>
+    </r:element>
+  </r:start>
+</r:grammar>

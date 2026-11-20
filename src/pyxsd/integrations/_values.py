@@ -4,25 +4,71 @@ from __future__ import annotations
 
 import base64
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pyxsd import xsd_data_types as xd
 from pyxsd.document import Document
+from pyxsd.exceptions import PyXSDError
 from pyxsd.schema import Schema
 
 from . import IntegrationError
 from ._shape import ElementShape, list_item_type, particle_elements, scalar_kind
 
+if TYPE_CHECKING:
+    from pyxsd.relaxng.document import RelaxNGDocument
+    from pyxsd.relaxng.schema import RelaxNGSchema
 
-def prepare_document(schema: Schema, document: Document, revalidate: bool) -> Document:
+
+def prepare_document(
+    schema: Schema | RelaxNGSchema,
+    document: Document | RelaxNGDocument,
+    revalidate: bool,
+) -> Document | RelaxNGDocument:
+    """Return current evidence for one XSD or RELAX NG document.
+
+    XSD keeps its existing snapshot semantics.  RELAX NG documents carry their
+    own typed guard: revalidation is explicit, a stale typed interpretation is
+    never projected, and validation-only or invalid typed documents fail before
+    any conversion reads a scalar.  A valid typed parse without pattern
+    capture still converts because binding evidence is independent of the
+    optional annotation table.
+    """
+    if not isinstance(schema, Schema):
+        from pyxsd.relaxng.schema import RelaxNGSchema
+
+        if not isinstance(schema, RelaxNGSchema):
+            raise TypeError("prepare_document requires a compiled XSD or RELAX NG schema")
     if document.schema is not schema:
         raise IntegrationError("document belongs to another compiled schema")
     schema.require_valid()
+    if isinstance(schema, Schema):
+        if revalidate:
+            document = document.revalidate()
+        document.require_valid()
+        if document.root is None:
+            raise IntegrationError("document has no bound root")
+        return document
+
+    from pyxsd.relaxng.document import RelaxNGDocument
+    from pyxsd.relaxng.errors import StaleInterpretationError
+
+    if not isinstance(document, RelaxNGDocument):
+        raise IntegrationError("document is not a RELAX NG document for this schema")
     if revalidate:
         document = document.revalidate()
-    document.require_valid()
     if document.root is None:
         raise IntegrationError("document has no bound root")
+    if not document.typed:
+        raise PyXSDError(
+            "RELAX NG document conversion requires a typed parse; pass typed=True "
+            "when parsing (a validation-only document carries no scalar evidence)"
+        )
+    if not document.interpretations_current:
+        raise StaleInterpretationError(
+            "the RELAX NG typed interpretation is stale; call revalidate() before "
+            "document conversion"
+        )
+    document.require_valid()
     return document
 
 

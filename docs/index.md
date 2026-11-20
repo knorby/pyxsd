@@ -4,15 +4,16 @@
 
 ```{eval-rst}
 .. meta::
-   :description: Validate XML against XSD in Python, query and edit bound objects, inspect validation reports, and export records with pyxsd.
+   :description: Validate XML against XSD or native RELAX NG in Python, query and edit bound objects, inspect validation reports, and export records with pyxsd.
 ```
 
-pyxsd validates XML against XSD and binds documents to Python objects.
-The schema supplies the classes at runtime, so you can query, extend, and
-transform typed data without maintaining generated Python source. Read
-{doc}`why-pyxsd` for the strengths of this approach and when to choose it.
-Start with {doc}`quickstart` to parse, query, edit, and save a document with
-supplied inputs. For a runnable custom transform, follow {doc}`demo`.
+pyxsd validates XML against XSD and native RELAX NG 1.0 and binds documents
+to Python objects. The schema supplies the classes at runtime, so you can
+query, extend, and transform typed data without maintaining generated Python
+source. Read {doc}`why-pyxsd` for the strengths of this approach and when to
+choose it. Start with {doc}`quickstart` to parse, query, edit, and save a
+document with supplied inputs. For a runnable custom transform, follow
+{doc}`demo`.
 
 (release-specific-sources)=
 
@@ -24,6 +25,8 @@ the matching tag in the [repository](https://github.com/knorby/pyxsd/tags).
 
 - Inspect errors and their source occurrences: {doc}`validation`.
 - Understand namespaces and retained data: {doc}`binding` and {doc}`data-model`.
+- Use native RELAX NG schemas, alternatives, and grammar introspection:
+  {doc}`relax-ng`.
 - Process several files: {doc}`batch`.
 - Export Pydantic models, Arrow tables, or Parquet: {doc}`integrations`.
 - Find an application workflow: {doc}`data-workflows` or {doc}`rendering-examples`.
@@ -59,6 +62,7 @@ binding
 schema-resolution
 data-model
 validation
+relax-ng
 transforms/index
 batch
 extensions

@@ -88,3 +88,21 @@ def test_cli_to_dict_outputs_json(tmp_path, capsys):
     main(["-i", str(instance), "-s", str(schema), "-t", "ToDict()"])
 
     assert json.loads(capsys.readouterr().out) == {"@a": 1, "item": [1, 2], "note": "hi"}
+
+
+def test_bound_to_dict_uses_lexical_attributes_for_slotted_relaxng_nodes():
+    from pyxsd.dict_export import bound_to_dict
+    from pyxsd.relaxng import RelaxNGSchema
+
+    namespace = "http://relaxng.org/ns/structure/1.0"
+    schema = RelaxNGSchema.compile(
+        StringIO(
+            f'<grammar xmlns="{namespace}"><start><element name="doc">'
+            '<attribute name="lang"><text/></attribute>'
+            '<mixed><zeroOrMore><element name="item"><text/></element></zeroOrMore></mixed>'
+            "</element></start></grammar>"
+        )
+    )
+    document = schema.parse(StringIO('<doc lang="en">a<item>x</item>b</doc>'))
+
+    assert bound_to_dict(document.root) == {"@lang": "en", "item": "x", "$": "ab"}

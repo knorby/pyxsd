@@ -181,6 +181,8 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest --cov --cov-branch --cov-report=xml --cov-report=term-missing --ignore=tests/mcp
+        env:
+          PYXSD_RUN_RELAXNG: "1"
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v7

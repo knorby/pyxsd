@@ -75,6 +75,7 @@ from pyxsd.xsd_data_types import (
     _ws_remove,
     _ws_replace,
     _year_month_duration_key,
+    integer_to_decimal,
     xsd_comparable_key,
 )
 
@@ -141,10 +142,15 @@ def decimal_digits(value: Any) -> tuple[int, int]:
     (including trailing zeros contributed by a positive exponent) and the
     digits after the point for ``fractionDigits``.
     """
+    if isinstance(value, int) and not isinstance(value, bool):
+        # Decimal.normalize() rounds to the ambient context, which makes a
+        # 4,301-digit integer look like 1E+4301. Integer totalDigits is
+        # simply the canonical digit count.
+        return (len(integer_to_decimal(value).lstrip("-")), 0)
     try:
         number = decimal.Decimal(str(value)).normalize()
     except (decimal.InvalidOperation, ValueError) as exc:
-        raise TypeError(f"cannot count digits of {value!r}") from exc
+        raise TypeError(f"cannot count digits of {_short_value(value)}") from exc
     sign, digits, exponent = number.as_tuple()
     del sign
     if not isinstance(exponent, int):
@@ -158,6 +164,17 @@ def decimal_digits(value: Any) -> tuple[int, int]:
         total += exponent
     fraction = max(0, -exponent)
     return total, fraction
+
+
+def _short_value(value: Any) -> str:
+    """A bounded diagnostic rendering that never hits int-string limits."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        text = integer_to_decimal(value)
+        digits = text[1:] if text.startswith("-") else text
+        if len(digits) > 80:
+            return f"{text[:40]}...({len(digits)} digits)"
+        return text
+    return repr(value)
 
 
 def _value_length(value: Any) -> int:
@@ -288,18 +305,18 @@ class FacetConstraints:
         actual = len(items) if items is not None else _value_length(value)
         if self.length is not None and actual != self.length:
             raise FacetViolation(
-                f"facet 'length' violated: {value!r} has {actual} items, expected {self.length}",
+                f"facet 'length' violated: {_short_value(value)} has {actual} items, expected {self.length}",
                 ConstraintInfo("length", self.length, actual),
             )
         if self.min_length is not None and actual < self.min_length:
             raise FacetViolation(
-                f"facet 'minLength' violated: {value!r} has {actual} items, "
+                f"facet 'minLength' violated: {_short_value(value)} has {actual} items, "
                 f"minimum {self.min_length}",
                 ConstraintInfo("minLength", self.min_length, actual),
             )
         if self.max_length is not None and actual > self.max_length:
             raise FacetViolation(
-                f"facet 'maxLength' violated: {value!r} has {actual} items, "
+                f"facet 'maxLength' violated: {_short_value(value)} has {actual} items, "
                 f"maximum {self.max_length}",
                 ConstraintInfo("maxLength", self.max_length, actual),
             )
@@ -316,28 +333,30 @@ class FacetConstraints:
         try:
             if self.min_inclusive is not None and actual < self.min_inclusive:
                 raise FacetViolation(
-                    f"facet 'minInclusive' violated: {value!r} is below {self.min_inclusive!r}",
+                    f"facet 'minInclusive' violated: {_short_value(value)} is below {self.min_inclusive!r}",
                     ConstraintInfo("minInclusive", self.min_inclusive, actual),
                 )
             if self.min_exclusive is not None and actual <= self.min_exclusive:
                 raise FacetViolation(
-                    f"facet 'minExclusive' violated: {value!r} is not above {self.min_exclusive!r}",
+                    f"facet 'minExclusive' violated: {_short_value(value)} is not above {self.min_exclusive!r}",
                     ConstraintInfo("minExclusive", self.min_exclusive, actual),
                 )
             if self.max_inclusive is not None and actual > self.max_inclusive:
                 raise FacetViolation(
-                    f"facet 'maxInclusive' violated: {value!r} is above {self.max_inclusive!r}",
+                    f"facet 'maxInclusive' violated: {_short_value(value)} is above {self.max_inclusive!r}",
                     ConstraintInfo("maxInclusive", self.max_inclusive, actual),
                 )
             if self.max_exclusive is not None and actual >= self.max_exclusive:
                 raise FacetViolation(
-                    f"facet 'maxExclusive' violated: {value!r} is not below {self.max_exclusive!r}",
+                    f"facet 'maxExclusive' violated: {_short_value(value)} is not below {self.max_exclusive!r}",
                     ConstraintInfo("maxExclusive", self.max_exclusive, actual),
                 )
         except FacetViolation:
             raise
         except TypeError as exc:
-            raise TypeError(f"facet bound comparison failed for {value!r}: {exc}") from exc
+            raise TypeError(
+                f"facet bound comparison failed for {_short_value(value)}: {exc}"
+            ) from exc
 
     def _check_digits(self, value: Any) -> None:
         if self.total_digits is None and self.fraction_digits is None:
@@ -345,13 +364,13 @@ class FacetConstraints:
         total, fraction = decimal_digits(value)
         if self.total_digits is not None and total > self.total_digits:
             raise FacetViolation(
-                f"facet 'totalDigits' violated: {value!r} has {total} digits, "
+                f"facet 'totalDigits' violated: {_short_value(value)} has {total} digits, "
                 f"maximum {self.total_digits}",
                 ConstraintInfo("totalDigits", self.total_digits, total),
             )
         if self.fraction_digits is not None and fraction > self.fraction_digits:
             raise FacetViolation(
-                f"facet 'fractionDigits' violated: {value!r} has {fraction} "
+                f"facet 'fractionDigits' violated: {_short_value(value)} has {fraction} "
                 f"fraction digits, maximum {self.fraction_digits}",
                 ConstraintInfo("fractionDigits", self.fraction_digits, fraction),
             )
@@ -376,7 +395,7 @@ class FacetConstraints:
             return
         if xsd_comparable_key(value) not in self.enumerations:
             raise FacetViolation(
-                f"facet 'enumeration' violated: {value!r} is not one of the allowed values",
+                f"facet 'enumeration' violated: {_short_value(value)} is not one of the allowed values",
                 ConstraintInfo("enumeration", self.enumeration_values or self.enumerations, value),
             )
 

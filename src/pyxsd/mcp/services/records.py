@@ -9,16 +9,28 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from pydantic import Field, JsonValue
+from pyxsd.exceptions import PyXSDError
+from pyxsd.relaxng import RelaxNGSchema
+from pyxsd.relaxng.errors import StaleInterpretationError
 from pyxsd.schema import Schema
 
-from ..cache import CompileRequest, SchemaCache, require_complete_schema
+from ..cache import (
+    CompileRequest,
+    SchemaCache,
+    require_complete_schema,
+)
+from ..captures import InputPolicyError
 from ..contracts import FileRef, Nonempty, SchemaRef, ToolEnvelope, WireModel
 from ..encoding import encode_value
 from ..errors import ToolError
 from ..execution import capture_candidate
 from ..inputs import SessionInputs
 from ..output_store import OutputRef, OutputStore
-from ..projection_guidance import candidate_details, resolve_global_element
+from ..projection_guidance import (
+    candidate_details,
+    resolve_global_element,
+    resolve_projection_element,
+)
 from ..worker_protocol import (
     ExportOperation,
     FieldSourceSpec,
@@ -60,11 +72,37 @@ def _record_columns(
         return None
     from pyxsd.integrations.projection import FieldSource
 
-    return {name: FieldSource(**source.model_dump()) for name, source in operation.columns.items()}
+    return {
+        name: FieldSource(**source.model_dump(exclude_none=True))
+        for name, source in operation.columns.items()
+    }
+
+
+def _record_element(schema: Schema | RelaxNGSchema, element: str) -> str:
+    """Resolve a record start exactly as the chosen schema backend does."""
+    if not isinstance(schema, RelaxNGSchema):
+        return resolve_global_element(schema, element)
+    route_id = resolve_projection_element(schema, element, scope="start")
+    plan = schema.projection
+    route = plan.routes[route_id]
+    if route.expanded_name is not None:
+        return route.expanded_name
+    if element in plan.routes:
+        raise ToolError(
+            "unsupported_projection",
+            "RELAX NG open-name start routes require an explicit element spelling",
+            details={
+                "format": "relax-ng",
+                "route_id": route_id,
+                "scope": "start",
+                "candidates": cast(JsonValue, sorted(plan.roots)),
+            },
+        )
+    return element
 
 
 def _prepare_records(
-    schema: Schema,
+    schema: Schema | RelaxNGSchema,
     operation: RecordsOperation | ExportOperation,
     columns: dict[str, Any] | None,
 ) -> Any:
@@ -72,14 +110,14 @@ def _prepare_records(
 
     return records(
         schema,
-        element=resolve_global_element(schema, operation.element),
+        element=_record_element(schema, operation.element),
         path=operation.path,
         columns=columns,
     )
 
 
 def _unsupported_projection(
-    schema: Schema,
+    schema: Schema | RelaxNGSchema,
     operation: RecordsOperation | ExportOperation,
     exc: Exception,
     cache: SchemaCache,
@@ -99,10 +137,40 @@ def _unsupported_projection(
     return ToolError("unsupported_projection", message, details=details)
 
 
-def _records_default(schema: Schema, element: str, path: tuple[str, ...]) -> Any:
+def _records_default(schema: Schema | RelaxNGSchema, element: str, path: tuple[str, ...]) -> Any:
     from pyxsd.integrations.arrow import records
 
     return records(schema, element=element, path=path, columns=None)
+
+
+def _record_scope(schema: Schema | RelaxNGSchema, projection: Any) -> dict[str, JsonValue]:
+    """Expose the row route without certifying whole-XML validity."""
+    if not isinstance(schema, RelaxNGSchema):
+        return {}
+    route_id = projection.schema.metadata[b"pyxsd:row_route"].decode()
+    route = schema.projection.routes[route_id]
+    return {
+        "validation_scope": "projected-data",
+        "route_scope": "start" if route_id in schema.projection.roots else "local",
+        "route_id": route_id,
+        "route_element": route.expanded_name,
+        "whole_xml_validity": False,
+    }
+
+
+def _parse_record_document(schema: Schema | RelaxNGSchema, path: str, cache: SchemaCache) -> Any:
+    """Keep RELAX NG XML parse failures distinct from schema and budget faults."""
+    if not isinstance(schema, RelaxNGSchema):
+        return schema.parse("/workspace/" + path)
+    try:
+        return schema.parse("/workspace/" + path)
+    except (InputPolicyError, PyXSDError) as exc:
+        from ..worker_main import _operational_fault
+
+        fault = _operational_fault(exc, "invalid_xml", cache.limits.message_bytes)
+        raise ToolError(
+            fault.code, fault.message, retryable=fault.retryable, details=fault.details
+        ) from exc
 
 
 def execute_records(
@@ -118,7 +186,7 @@ def execute_records(
     )
     with cache.acquire(request) as schema:
         require_complete_schema(schema)
-        document = schema.parse("/workspace/" + operation.document.path)
+        document = _parse_record_document(schema, operation.document.path, cache)
         if document.report.error_count or document.root is None:
             raise ToolError("invalid_document", "Record projection requires valid XML")
         columns = _record_columns(operation)
@@ -147,7 +215,7 @@ def execute_records(
                 if cap is not None and not operation.exact_count and count > cap:
                     complete = False
                     break
-        except IntegrationError as exc:
+        except (IntegrationError, StaleInterpretationError) as exc:
             raise ToolError(
                 "unsupported_projection", str(exc)[: cache.limits.message_bytes]
             ) from exc
@@ -158,6 +226,7 @@ def execute_records(
             "truncated": count > len(rows),
             "declaration_path": list(operation.path),
             "selector": operation.selector,
+            **_record_scope(schema, projection),
         }
 
 
@@ -185,7 +254,7 @@ def execute_export(
         require_complete_schema(schema)
         documents = []
         for reference in operation.documents:
-            document = schema.parse("/workspace/" + reference.path)
+            document = _parse_record_document(schema, reference.path, cache)
             if document.report.error_count or document.root is None:
                 raise ToolError(
                     "invalid_document",
@@ -237,8 +306,12 @@ def execute_export(
                     namespaces=operation.namespaces,
                     errors="raise",
                 )
-            return {"format": operation.format, "row_count": row_count}
-        except IntegrationError as exc:
+            return {
+                "format": operation.format,
+                "row_count": row_count,
+                **_record_scope(schema, projection),
+            }
+        except (IntegrationError, StaleInterpretationError) as exc:
             raise ToolError(
                 "unsupported_projection", str(exc)[: cache.limits.message_bytes]
             ) from exc

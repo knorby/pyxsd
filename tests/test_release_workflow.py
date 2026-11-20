@@ -49,6 +49,16 @@ def test_reusable_workflow_concurrency_does_not_cancel_the_release():
     assert len(groups) == len(set(groups))
 
 
+def test_core_coverage_gate_runs_relaxng_without_changing_the_xsts_environment():
+    steps = _workflow("ci.yml")["jobs"]["test"]["steps"]
+    coverage = next(step for step in steps if step.get("name") == "Run tests with coverage")
+    assert "pytest --cov --cov-branch" in coverage["run"]
+    assert coverage["env"]["PYXSD_RUN_RELAXNG"] == "1"
+    xsts = next(step for step in steps if step.get("name") == "Run the XSD Test Suite")
+    assert xsts["env"]["PYXSD_RUN_XSTS"] == "1"
+    assert "PYXSD_RUN_RELAXNG" not in xsts["env"]
+
+
 def test_registry_publication_is_separate_from_github_and_uses_oidc():
     jobs = _workflow("release.yml")["jobs"]
     registry = jobs["mcp-registry"]

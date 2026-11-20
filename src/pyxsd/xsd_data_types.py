@@ -1199,6 +1199,45 @@ class DayTimeDuration(Duration):
 # ---------------------------------------------------------------------------
 
 _INT_LEXICAL = re.compile(r"[-+]?[0-9]+")
+_INT_CHUNK = 1_000_000_000
+
+
+def _integer_from_digits(digits: str) -> int:
+    """Parse decimal digits without triggering Python's int-string guard."""
+    value = 0
+    for start in range(0, len(digits), 9):
+        chunk = digits[start : start + 9]
+        value = value * 10 ** len(chunk) + int(chunk)
+    return value
+
+
+def integer_to_decimal(value: int) -> str:
+    """Render an integer without Python's finite int-to-string limit."""
+    if value == 0:
+        return "0"
+    sign = "-" if value < 0 else ""
+    remaining = abs(value)
+    chunks: list[int] = []
+    while remaining:
+        remaining, chunk = divmod(remaining, _INT_CHUNK)
+        chunks.append(chunk)
+    text = str(chunks[-1]) + "".join(f"{chunk:09d}" for chunk in reversed(chunks[:-1]))
+    return sign + text
+
+
+def _integer_value(val: str | int) -> int:
+    if isinstance(val, str):
+        # Integer derives from token: collapse whitespace first.
+        collapsed = _ws_collapse(val)
+        if _INT_LEXICAL.fullmatch(collapsed) is None:
+            raise TypeError(f"Not a valid integer: {val!r}")
+        sign = -1 if collapsed.startswith("-") else 1
+        digits = collapsed.lstrip("+-")
+        return sign * _integer_from_digits(digits)
+    # Derived classes inspect the sign of the converted integer, not a
+    # fractional input such as 0.9, which would otherwise pass a positive
+    # check and then truncate to zero.
+    return int(val)
 
 
 class Integer(int, XsdDataType):
@@ -1207,13 +1246,10 @@ class Integer(int, XsdDataType):
     name = "integer"
 
     def __new__(cls, val: str | int) -> Self:
-        if isinstance(val, str):
-            # Integer derives from token: collapse whitespace first.
-            collapsed = _ws_collapse(val)
-            if _INT_LEXICAL.fullmatch(collapsed) is None:
-                raise TypeError(f"Not a valid integer: {val!r}")
-            return super().__new__(cls, collapsed)
-        return super().__new__(cls, val)
+        return super().__new__(cls, _integer_value(val))
+
+    def __str__(self) -> str:
+        return integer_to_decimal(int(self))
 
 
 class _BoundedInteger(Integer):
@@ -1236,8 +1272,8 @@ class PositiveInteger(Integer):
 
     name = "positiveInteger"
 
-    def __new__(cls, val: str) -> Self:
-        if int(val) <= 0:
+    def __new__(cls, val: str | int) -> Self:
+        if _integer_value(val) <= 0:
             raise TypeError(f"Not a valid PositiveInteger: {val!r}")
         return super().__new__(cls, val)
 
@@ -1247,8 +1283,8 @@ class NonNegativeInteger(Integer):
 
     name = "nonNegativeInteger"
 
-    def __new__(cls, val: str) -> Self:
-        if int(val) < 0:
+    def __new__(cls, val: str | int) -> Self:
+        if _integer_value(val) < 0:
             raise TypeError(f"Not a valid NonNegativeInteger: {val!r}")
         return super().__new__(cls, val)
 
@@ -1258,8 +1294,8 @@ class NegativeInteger(Integer):
 
     name = "negativeInteger"
 
-    def __new__(cls, val: str) -> Self:
-        if int(val) >= 0:
+    def __new__(cls, val: str | int) -> Self:
+        if _integer_value(val) >= 0:
             raise TypeError(f"Not a valid NegativeInteger: {val!r}")
         return super().__new__(cls, val)
 
@@ -1269,8 +1305,8 @@ class NonPositiveInteger(Integer):
 
     name = "nonPositiveInteger"
 
-    def __new__(cls, val: str) -> Self:
-        if int(val) > 0:
+    def __new__(cls, val: str | int) -> Self:
+        if _integer_value(val) > 0:
             raise TypeError(f"Not a valid NonPositiveInteger: {val!r}")
         return super().__new__(cls, val)
 

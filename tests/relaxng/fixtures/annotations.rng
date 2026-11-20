@@ -1,0 +1,17 @@
+<grammar xmlns="http://relaxng.org/ns/structure/1.0"
+         xmlns:a="urn:example:annotation"
+         a:note="root"
+         xml:lang="en">
+  <a:documentation>Top</a:documentation>
+  <start>
+    <element name="doc" a:mark="yes">
+      <a:annotation>
+        <a:payload>inner</a:payload>
+        <define name="not-a-definition"><empty/></define>
+        <bogus/>
+      </a:annotation>
+      <empty/>
+      <a:aside>after</a:aside>
+    </element>
+  </start>
+</grammar>

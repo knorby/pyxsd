@@ -22,6 +22,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
 
 from pyxsd._diagnostic_encoding import encode_number
+from pyxsd.exceptions import ValidationError
 from pyxsd.locations import ConstraintInfo, IssueLocation, LocationPrecision, PathStep
 
 if TYPE_CHECKING:
@@ -118,6 +119,21 @@ def _bounded_message(message: str, max_bytes: int | None) -> str:
     return prefix + "..."
 
 
+def _merge_diagnostics_complete(left: bool | None, right: bool | None) -> bool | None:
+    """Merge two completeness contributions exactly.
+
+    ``False`` dominates every pair, including ``False + None``, because an
+    incomplete contribution cannot be repaired by an unspecified or complete
+    one.  Two known complete reports stay complete, and any unspecified
+    contribution keeps the merged value unspecified rather than upgrading it.
+    """
+    if left is False or right is False:
+        return False
+    if left is True and right is True:
+        return True
+    return None
+
+
 class ValidationReport:
     """An ordered collection of validation issues.
 
@@ -125,10 +141,20 @@ class ValidationReport:
     from it gets a fresh instance report, and the document's merged
     report presents both phases in order. The binding machinery fills
     the reports in as it walks the schema and instance documents.
+
+    ``diagnostics_complete`` is ``None`` for the existing XSD contract.
+    RELAX NG reports set it to a boolean so callers can distinguish a
+    complete diagnostic report from one whose retained issue details were
+    suppressed by a retention budget.  Merged reports apply the documented
+    dominance rule.
     """
 
     def __init__(
-        self, *, max_issues: int | None = None, max_message_bytes: int | None = None
+        self,
+        *,
+        max_issues: int | None = None,
+        max_message_bytes: int | None = None,
+        diagnostics_complete: bool | None = None,
     ) -> None:
         if max_issues is not None and (type(max_issues) is not int or max_issues < 0):
             raise ValueError("max_issues must be a non-negative integer or None")
@@ -136,8 +162,11 @@ class ValidationReport:
             type(max_message_bytes) is not int or max_message_bytes < 0
         ):
             raise ValueError("max_message_bytes must be a non-negative integer or None")
+        if diagnostics_complete is not None and type(diagnostics_complete) is not bool:
+            raise TypeError("diagnostics_complete must be a bool or None")
         self._max_issues = max_issues
         self._max_message_bytes = max_message_bytes
+        self._diagnostics_complete = diagnostics_complete
         self._issues: list[ValidationIssue] = []
         self._error_count = 0
         self._warning_count = 0
@@ -219,6 +248,23 @@ class ValidationReport:
                 issue if message == issue.message else replace(issue, message=message)
             )
 
+    def _tighten_issue_retention(self, maximum: int | None) -> None:
+        """Lower the retained-issue budget without replacing an existing bound.
+
+        Findings already over the new bound are dropped; their counts remain,
+        so :attr:`suppressed_count` continues to expose the incomplete report.
+        This is retention only and never changes a verdict.
+        """
+        if maximum is None:
+            return
+        self._max_issues = maximum if self._max_issues is None else min(maximum, self._max_issues)
+        del self._issues[self._max_issues :]
+
+    def _set_diagnostics_complete(self, value: bool) -> None:
+        """Set a known completeness value unless an incomplete one dominates."""
+        if self._diagnostics_complete is not False:
+            self._diagnostics_complete = value
+
     @contextmanager
     def _at(
         self, location: IssueLocation | None, precision: LocationPrecision = "exact"
@@ -249,10 +295,25 @@ class ValidationReport:
         # Snapshot both before extending: self-extension is supported too.
         issues = tuple(other._issues)
         errors, warnings = other.error_count, other.warning_count
+        completeness = other._diagnostics_complete
         for issue in issues:
             self._retain(issue)
         self._error_count += errors
         self._warning_count += warnings
+        self._diagnostics_complete = _merge_diagnostics_complete(
+            self._diagnostics_complete, completeness
+        )
+
+    @property
+    def diagnostics_complete(self) -> bool | None:
+        """Whether retained diagnostics are complete, or ``None`` when unspecified.
+
+        ``None`` preserves the XSD wire contract.  RELAX NG reports set a
+        boolean from actual retention: suppressed findings make it false.  A
+        merge can never upgrade unspecified evidence or override an incomplete
+        contribution.
+        """
+        return self._diagnostics_complete
 
     @property
     def error_count(self) -> int:
@@ -274,8 +335,10 @@ class ValidationReport:
 
         Unsupported detail values raise TypeError rather than falling back to a
         potentially lossy or executable object's string representation.
+        ``diagnostics_complete`` appears only when the report specifies it, so
+        legacy XSD report JSON keeps its exact shape.
         """
-        return {
+        payload: dict[str, object] = {
             "issues": [
                 {
                     "severity": issue.severity.value,
@@ -293,6 +356,9 @@ class ValidationReport:
             "counts": {"error": self.error_count, "warning": self.warning_count},
             "suppressed_count": self.suppressed_count,
         }
+        if self._diagnostics_complete is not None:
+            payload["diagnostics_complete"] = self._diagnostics_complete
+        return payload
 
     def to_json(self) -> str:
         """Serialize :meth:`to_dict` deterministically without optional packages."""
@@ -338,6 +404,20 @@ class ValidationReport:
         lines = [header]
         lines.extend(f"  {issue.format()}" for issue in self._issues)
         return "\n".join(lines)
+
+
+def require_valid_report(report: ValidationReport) -> None:
+    """Raise :class:`~pyxsd.exceptions.ValidationError` when *report* has errors.
+
+    The shared ``require_valid()`` implementation for compiled schema types, so
+    the message shape and attached report cannot drift between them.
+    """
+    if report.has_errors:
+        raise ValidationError(
+            f"the schema is not valid: {report.error_count} error(s); "
+            "inspect ValidationError.report",
+            report,
+        )
 
 
 def _diagnostic_value(value: object) -> object:

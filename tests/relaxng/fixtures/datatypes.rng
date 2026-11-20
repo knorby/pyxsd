@@ -1,0 +1,24 @@
+<grammar xmlns="http://relaxng.org/ns/structure/1.0">
+  <start>
+    <element name="doc" datatypeLibrary="urn:example:datatypes">
+      <group>
+        <attribute name="count">
+          <data type="integer">
+            <param name="minInclusive"> 1 </param>
+          </data>
+        </attribute>
+        <interleave>
+          <value type="token"> fixed </value>
+          <element name="inner" datatypeLibrary="">
+            <value>raw</value>
+          </element>
+          <data type="decimal">
+            <except>
+              <value type="decimal">0</value>
+            </except>
+          </data>
+        </interleave>
+      </group>
+    </element>
+  </start>
+</grammar>

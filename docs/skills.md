@@ -6,15 +6,16 @@ environment without the optional MCP dependencies installed.
 
 ## Packaged skills
 
-- **pyxsd-cli** — use the command line without MCP: validate XML, control streams
-  and outputs, run trusted transforms, and emit full or compact schema stubs.
+- **pyxsd-cli** — use the command line without MCP: validate XSD or RELAX NG
+  XML, control streams and outputs, run trusted transforms, and emit full or
+  compact schema stubs.
 - **pyxsd-development** — build Python bindings from XML Schemas: compile once,
   parse many, repair exact occurrences, and revalidate fresh.
 - **pyxsd-xml-doctor** — diagnose XML validation failures: read constraint
   evidence, fix the exact occurrence, and revalidate the whole document.
-- **pyxsd-mcp** — drive pyxsd through MCP: session inputs, validation with exact
-  occurrences, direct comparisons, transform previews, exports, and retained
-  local outputs.
+- **pyxsd-mcp** — drive pyxsd through MCP: session inputs, XSD or RELAX NG
+  validation with exact occurrences, direct comparisons, transform previews,
+  data conversion, exports, and retained local outputs.
 
 ## Using skills
 
@@ -61,14 +62,16 @@ export_skill("pyxsd-xml-doctor", destination_dir)
 ```
 
 Skill bodies teach the workflows the test suite actually verifies: validating
-from the CLI with explicit output and exit-status rules, compiling a schema once
-and parsing many documents, locating the exact repeated-node occurrence an issue
-points at, repairing it, and revalidating the whole document fresh (a stale
+from the CLI with explicit output and exit-status rules, selecting XSD or
+RELAX NG with `--schema-language`, compiling a schema once and parsing many
+documents, locating the exact repeated-node occurrence an issue points at,
+repairing it, and revalidating the whole document fresh (a stale
 `require_valid` verdict describes the old bytes). The CLI skill works without
 optional dependencies and routes structured or occurrence-level work to Python
 or MCP. The MCP skill covers local stdio session inputs, cursor-paginated issues,
-direct results, schema comparison, transform previews, retained output artifacts, and
-how each falls back to the Python/CLI workflow when the server is not installed.
+direct results, schema comparison, transform previews, data conversion, retained
+output artifacts, and how each falls back to the Python/CLI workflow when the
+server is not installed.
 
 ## Evaluation status
 

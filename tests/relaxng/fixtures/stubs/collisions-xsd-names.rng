@@ -1,0 +1,24 @@
+<element xmlns="http://relaxng.org/ns/structure/1.0"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema-datatypes"
+         datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"
+         name="annotations">
+  <group>
+    <element name="Int">
+      <data type="int"/>
+    </element>
+    <element name="String">
+      <data type="string"/>
+    </element>
+    <element name="Decimal">
+      <data type="decimal"/>
+    </element>
+    <element name="QName">
+      <data type="QName"/>
+    </element>
+    <element name="holder">
+      <attribute name="value">
+        <data type="int"/>
+      </attribute>
+    </element>
+  </group>
+</element>

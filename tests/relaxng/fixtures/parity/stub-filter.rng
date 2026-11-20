@@ -1,0 +1,6 @@
+<element xmlns="http://relaxng.org/ns/structure/1.0"
+         name="doc">
+  <element name="outer">
+    <element name="inner"><text/></element>
+  </element>
+</element>
