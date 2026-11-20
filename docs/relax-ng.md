@@ -856,7 +856,7 @@ gaps in the matrix above:
 - **Compact syntax.** Only RELAX NG XML syntax is implemented. A filename
   extension never selects compact syntax.
 - **DTD Compatibility and direct DTD coverage.** RELAX NG DTD Compatibility is
-  not implemented, and there is no synthesized defaulting or ID/IDREF
+  outside this profile, and there is no synthesized defaulting or ID/IDREF
   cross-reference layer. Existing DTD-related preprocessing is preserved but
   is not comprehensive DTD coverage. There are no synthesized defaults in the
   RELAX NG profile.

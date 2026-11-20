@@ -46,10 +46,13 @@ ExportResult: TypeAlias = Any
 
 
 class RelaxNGUnsupportedAdapterError(PyXSDError):
-    """A requested RELAX NG export format has no concrete adapter."""
+    """A requested RELAX NG export format has no registered adapter."""
 
     def __init__(self, format: FormatName) -> None:
-        super().__init__(f"RELAX NG data export adapter for format {format!r} is not implemented")
+        super().__init__(
+            f"no RELAX NG data export adapter is registered for format {format!r}; "
+            "the compiled schema has no projection contract for it"
+        )
         self.format = format
 
 

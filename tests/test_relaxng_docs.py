@@ -170,38 +170,140 @@ def test_exclusions_custom_library_scope_and_local_model_scope_are_explicit():
         assert phrase in text, phrase
 
 
-def test_no_positive_xsd_translation_or_xsi_semantics_claims():
-    text = " ".join(page_text().split())
-    negated = re.compile(
-        r"\b(?:no|not|never|neither|without|cannot|can't|doesn't|don't|isn't|aren't|rejects?|excludes?|rather than)\b",
+_NEGATED = re.compile(
+    r"\b(?:no|not|never|neither|nor|without|cannot|can't|doesn't|don't|isn't|aren't|"
+    r"rejects?|excludes?|rather than|instead of|outside)\b",
+    re.IGNORECASE,
+)
+_CONTINUATION = re.compile(
+    r"^(?:(?:and|or|nor|but)\s+)?"
+    r"(?:invent|adds?|add(?:ed)?|emits?|emit(?:ted)?|produces?|produced?|generates?|"
+    r"generated?|converts?|converted?|maps?|mapped?|honou?rs?|honou?red?|respects?|"
+    r"supports?|uses?|applies?|translates?|treats?|routes?|selects?|dispatches?|"
+    r"requests?|synthesi[sz]es?|creates?|injects?|supplies?|defaults?)\b",
+    re.IGNORECASE,
+)
+_CLAIMS = {
+    "XSD translation": re.compile(
+        r"\b(?:translat|convert|emit|produc|generat|map)\w*\b.*\bXSD\b.*\bRELAX NG\b|"
+        r"\bXSD\b.*\b(?:translat|convert|emit|produc|generat|map)\w*\b.*\bRELAX NG\b|"
+        r"\bRELAX NG\b.*\b(?:translat|convert|emit|produc|generat|map)\w*\b.*\bXSD\b",
         re.IGNORECASE,
-    )
-    claims = {
-        "XSD translation": re.compile(
-            r"\btranslat\w*\b.*\bRELAX NG\b|\bRELAX NG\b.*\btranslat\w*\b",
-            re.IGNORECASE,
-        ),
-        "global declarations": re.compile(r"\bglobal declarations?\b", re.IGNORECASE),
-        "xsi semantics": re.compile(
-            r"\bxsi:(?:type|nil)\b.*\b(?:select|dispatch|request|default|apply|applies|"
-            r"synthesi[sz]e|create)\b|"
-            r"\b(?:select|dispatch|request|default|apply|applies|synthesi[sz]e|create)\b"
-            r".*\bxsi:(?:type|nil)\b",
-            re.IGNORECASE,
-        ),
-        "synthesized defaults": re.compile(
-            r"\bdefaults?\b.*\b(?:synthesized|applied|supplied|injected)\b",
-            re.IGNORECASE,
-        ),
-    }
-    failures = []
-    for sentence in re.split(r"(?<=[.!?;])\s+", text):
-        if negated.search(sentence):
+    ),
+    "global declarations": re.compile(r"\bglobal declarations?\b", re.IGNORECASE),
+    "xsi semantics": re.compile(
+        r"\bxsi:(?:type|nil)\b.*\b(?:select|dispatch|request|default|apply|applies|"
+        r"synthesi[sz]e|create|honou?rs?|respects?|supports?|uses?|treats?)\b|"
+        r"\b(?:select|dispatch|request|default|apply|applies|synthesi[sz]e|create|"
+        r"honou?rs?|respects?|supports?|uses?|treats?)\b.*\bxsi:(?:type|nil)\b",
+        re.IGNORECASE,
+    ),
+    "synthesized defaults": re.compile(
+        r"\bdefaults?\b.*\b(?:synthesized|applied|supplied|injected)\b",
+        re.IGNORECASE,
+    ),
+}
+
+
+def claim_clauses(markdown: str) -> list[list[str]]:
+    """Split prose into independently evaluated claim units.
+
+    A table cell is its own unit, so a negation in one cell cannot excuse a
+    positive claim in another.  Each prose line becomes one or more sentences,
+    then semicolon/comma clauses.  Fenced code is skipped: it is executable
+    documentation, not a prose claim.
+    """
+    units: list[list[str]] = []
+    paragraph: list[str] = []
+
+    def flush() -> None:
+        if not paragraph:
+            return
+        prose = " ".join(paragraph)
+        paragraph.clear()
+        for sentence in re.split(r"(?<=[.!?])\s+", prose):
+            clauses = [
+                clause.strip() for clause in re.split(r"(?:;|,)\s+", sentence) if clause.strip()
+            ]
+            if clauses:
+                units.append(clauses)
+
+    in_fence = False
+    for raw in markdown.splitlines():
+        line = raw.strip()
+        if line.startswith("```"):
+            flush()
+            in_fence = not in_fence
             continue
-        for label, pattern in claims.items():
-            if pattern.search(sentence):
-                failures.append((label, sentence))
-    assert not failures, failures
+        if in_fence:
+            continue
+        if not line:
+            flush()
+            continue
+        if line.startswith("#"):
+            flush()
+            units.append([line.lstrip("#").strip()])
+            continue
+        if line.startswith("|"):
+            flush()
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if all(set(cell) <= {"-", ":", " "} for cell in cells):
+                continue
+            units.extend([cell] for cell in cells if cell)
+            continue
+        if re.match(r"^(?:[-*+]|\d+\.)\s+", line):
+            flush()
+        paragraph.append(re.sub(r"^(?:[-*+]|\d+\.)\s+", "", line))
+    flush()
+    return units
+
+
+def negative_claim_failures(markdown: str) -> list[tuple[str, str]]:
+    """Every unnegated positive XSD-translation or xsi-semantics claim."""
+    failures: list[tuple[str, str]] = []
+    for clauses in claim_clauses(markdown):
+        previous_negated = False
+        for clause in clauses:
+            local = bool(_NEGATED.search(clause))
+            inherited = previous_negated and bool(_CONTINUATION.search(clause))
+            negated = local or inherited
+            if not negated:
+                for label, pattern in _CLAIMS.items():
+                    if pattern.search(clause):
+                        failures.append((label, clause))
+            previous_negated = negated
+    return failures
+
+
+def test_no_positive_xsd_translation_or_xsi_semantics_claims():
+    assert not negative_claim_failures(page_text())
+
+
+def test_negative_claim_check_scopes_negation_to_rows_cells_and_clauses():
+    # A negation in another cell of the same row must not excuse this claim.
+    row = (
+        "| Compile, parse, revalidate, batch | no translation | "
+        "Adds global declarations for every root |"
+    )
+    failures = negative_claim_failures(row)
+    assert failures == [("global declarations", "Adds global declarations for every root")]
+
+    # A sentence-scoped negation must not hide a later positive claim.
+    assert negative_claim_failures(
+        "pyxsd does not translate RELAX NG into XSD, and pyxsd emits XSD from RELAX NG."
+    ) == [("XSD translation", "and pyxsd emits XSD from RELAX NG.")]
+    assert negative_claim_failures("pyxsd emits XSD from RELAX NG") == [
+        ("XSD translation", "pyxsd emits XSD from RELAX NG")
+    ]
+    assert negative_claim_failures("pyxsd honors xsi:type on RELAX NG documents") == [
+        ("xsi semantics", "pyxsd honors xsi:type on RELAX NG documents")
+    ]
+
+    # The real matrix row still passes when the fallback clause is negated.
+    assert not negative_claim_failures(
+        "| Data/JSON import | All five import formats | "
+        "Start-pattern roots instead of global declarations |"
+    )
 
 
 PUBLIC_OBJECT_NAMES = (
@@ -462,12 +564,7 @@ def test_documented_integration_names_exist():
         assert hasattr(projection, name), name
 
 
-def _ambiguous_schema():
-    from pyxsd import relaxng
-
-    return relaxng.compile(
-        StringIO(
-            f"""<grammar xmlns="{RNG_NS}">
+AMBIGUOUS_SCHEMA = f"""<grammar xmlns="{RNG_NS}">
   <start>
     <element name="value">
       <choice>
@@ -477,5 +574,54 @@ def _ambiguous_schema():
     </element>
   </start>
 </grammar>"""
-        )
+
+
+def _ambiguous_schema():
+    from pyxsd import relaxng
+
+    return relaxng.compile(StringIO(AMBIGUOUS_SCHEMA))
+
+
+def test_ambiguous_native_to_data_transform_stays_lexical_without_a_tag(tmp_path):
+    """The CLI's native ToData() path never fabricates RELAX NG scalar tags.
+
+    ``RelaxNGDocument.to_data(typed=True)`` is the typed schema-directed API
+    and tags ambiguous values.  The ordinary ``ToData()`` transform walks the
+    lexical tree, so an ambiguous scalar must remain its lexical text with no
+    ``#value`` object inventing candidate metadata.
+    """
+    from pyxsd.transforms import ToData
+
+    document = _ambiguous_schema().parse(StringIO("<value>12</value>"))
+    exported = document.transform(ToData())
+    assert exported == {"$": "12"}
+    assert "#value" not in json.dumps(exported)
+
+    (tmp_path / "value.rng").write_text(AMBIGUOUS_SCHEMA + "\n", encoding="utf-8")
+    (tmp_path / "value.xml").write_text("<value>12</value>\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pyxsd",
+            "-i",
+            "value.xml",
+            "-s",
+            "value.rng",
+            "--schema-language",
+            "relax-ng",
+            "-t",
+            "ToData()",
+            "-o",
+            "data.json",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
     )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads((tmp_path / "data.json").read_text(encoding="utf-8"))
+    assert payload == {"$": "12"}
+    assert "#value" not in json.dumps(payload)

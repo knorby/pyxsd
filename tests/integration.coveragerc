@@ -1,5 +1,9 @@
 [run]
-source = pyxsd.integrations
+source =
+    pyxsd.integrations
+    pyxsd.relaxng.pydantic_adapter
+    pyxsd.relaxng.pydantic_values
+    pyxsd.relaxng.records
 branch = True
 patch = subprocess
 

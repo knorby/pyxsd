@@ -48,10 +48,10 @@ jobs:
               PYARROW=22.0.0
               PYDANTIC=2.12.5
             fi
-            uv pip install "${WHEEL}[pydantic,arrow]" "pyarrow==$PYARROW" "pydantic==$PYDANTIC" 'pytest>=8.4' 'pytest-cov>=7'
+            uv pip install "${WHEEL}[pydantic,arrow]" "pyarrow==$PYARROW" "pydantic==$PYDANTIC" 'pytest>=8.4' 'pytest-cov>=7' 'jsonschema>=4.25'
             .venv/bin/python -c "import importlib.metadata as m; assert (m.version('pydantic'), m.version('pyarrow')) == ('$PYDANTIC', '$PYARROW')"
           else
-            uv pip install "${WHEEL}[pydantic,arrow]" 'pytest>=8.4' 'pytest-cov>=7'
+            uv pip install "${WHEEL}[pydantic,arrow]" 'pytest>=8.4' 'pytest-cov>=7' 'jsonschema>=4.25'
           fi
       - name: Test installed adapters and separate branch coverage
         run: >-
@@ -65,7 +65,14 @@ jobs:
           tests/test_analytics_examples.py tests/test_order_assessment_example.py
           tests/test_data_workflows_docs.py
           tests/test_dataset_records.py tests/test_arrow_dataset.py tests/test_dataset_example.py
-          --cov=pyxsd.integrations --cov-config=tests/integration.coveragerc
+          tests/test_relaxng_pydantic_models.py tests/test_relaxng_pydantic_scalars.py
+          tests/test_relaxng_pydantic_standalone.py tests/test_relaxng_pydantic_documents.py
+          tests/test_relaxng_arrow_records.py tests/test_relaxng_record_projection.py
+          tests/test_relaxng_datasets.py tests/test_relaxng_integration_parity.py
+          tests/test_relaxng_docs.py
+          --cov=pyxsd.integrations --cov=pyxsd.relaxng.pydantic_adapter
+          --cov=pyxsd.relaxng.pydantic_values --cov=pyxsd.relaxng.records
+          --cov-config=tests/integration.coveragerc
           --cov-branch --cov-report=xml --cov-report=term-missing
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
@@ -136,7 +143,7 @@ jobs:
           if [ -n "$EXTRAS" ]; then
             WHEEL="${WHEEL}[$EXTRAS]"
           fi
-          uv pip install "$WHEEL" 'pytest>=8.4'
+          uv pip install "$WHEEL" 'pytest>=8.4' 'jsonschema>=4.25'
       - name: Verify base and independently installed extras
         run: >-
           .venv/bin/python -m pytest -q
@@ -149,3 +156,8 @@ jobs:
           tests/test_analytics_examples.py tests/test_order_assessment_example.py
           tests/test_data_workflows_docs.py
           tests/test_dataset_records.py tests/test_arrow_dataset.py tests/test_dataset_example.py
+          tests/test_relaxng_pydantic_models.py tests/test_relaxng_pydantic_scalars.py
+          tests/test_relaxng_pydantic_standalone.py tests/test_relaxng_pydantic_documents.py
+          tests/test_relaxng_arrow_records.py tests/test_relaxng_record_projection.py
+          tests/test_relaxng_datasets.py tests/test_relaxng_integration_parity.py
+          tests/test_relaxng_docs.py

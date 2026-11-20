@@ -215,7 +215,15 @@ branch = true
 
 # Base CI measures the core and dependency-free projection. Dedicated adapter
 # and MCP jobs include optional modules through their own coverage configurations.
-omit = ["*/pyxsd/integrations/pydantic.py", "*/pyxsd/integrations/arrow.py", "*/pyxsd/integrations/_dataset.py", "*/pyxsd/mcp/*"]
+omit = [
+    "*/pyxsd/integrations/pydantic.py",
+    "*/pyxsd/integrations/arrow.py",
+    "*/pyxsd/integrations/_dataset.py",
+    "*/pyxsd/relaxng/pydantic_adapter.py",
+    "*/pyxsd/relaxng/pydantic_values.py",
+    "*/pyxsd/relaxng/records.py",
+    "*/pyxsd/mcp/*",
+]
 
 [tool.coverage.report]
 show_missing = true

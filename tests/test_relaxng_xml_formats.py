@@ -699,7 +699,9 @@ def test_unsupported_adapter_error_remains_an_explicit_type() -> None:
     error = RelaxNGUnsupportedAdapterError("parker")
 
     assert error.format == "parker"
-    assert "not implemented" in str(error)
+    assert "no RELAX NG data export adapter is registered" in str(error)
+    assert "projection contract" in str(error)
+    assert "not implemented" not in str(error)
 
 
 def test_root_route_helper_keeps_the_required_and_lexical_modes() -> None:
