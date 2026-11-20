@@ -90,6 +90,37 @@ class TestLexicalShape:
         assert tree.text_value() == "line one\nline two"
         assert tree._value_ == ["line one\nline two"]
 
+    def test_element_only_marker_is_false_for_leading_text(self):
+        tree, _ = _from_xml("<r>a<c/></r>")
+
+        assert tree._elementOnly_ is False
+
+    def test_element_only_marker_is_false_for_any_child_tail(self):
+        tree, _ = _from_xml("<r><c/> tail <c/>end</r>")
+
+        assert tree._elementOnly_ is False
+
+    def test_element_only_marker_is_true_without_text_or_tails(self):
+        tree, _ = _from_xml("<r><c/><c/></r>")
+        empty, _ = _from_xml("<r/>")
+
+        assert tree._elementOnly_ is True
+        assert empty._elementOnly_ is True
+
+    def test_element_only_marker_tracks_text_and_tail_edits(self):
+        tree, _ = _from_xml("<r><c/></r>")
+        child = tree.children[0]
+
+        assert tree._elementOnly_ is True
+        tree.set_text("")
+        assert tree._elementOnly_ is False
+        tree.clear_text()
+        assert tree._elementOnly_ is True
+        child.set_tail("")
+        assert tree._elementOnly_ is False
+        child.clear_tail()
+        assert tree._elementOnly_ is True
+
     def test_iter_content_omits_absent_text(self):
         tree, _ = _from_xml("<r><c/></r>")
         child = tree.children[0]

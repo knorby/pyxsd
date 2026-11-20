@@ -9,6 +9,7 @@ schema requires an explicit ``-s``.  Parsed output, transforms, reports, and
 from __future__ import annotations
 
 import io
+import json
 import sys
 from pathlib import Path
 
@@ -126,18 +127,50 @@ def test_mixed_content_parsed_output_keeps_text_and_tails(
     assert parsed.read_text(encoding="utf-8") == INSTANCE
 
 
-def test_ordinary_transform_writes_xml_without_branding(
+def test_print_data_preserves_mixed_content(
+    rng_files: tuple[Path, Path],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    schema, instance = rng_files
+    printed = tmp_path / "printed.xml"
+    final = tmp_path / "final.xml"
+
+    main(
+        [
+            *_relaxng_args(schema, instance),
+            "-t",
+            f'PrintData("{printed}")',
+            "-o",
+            str(final),
+        ]
+    )
+
+    assert printed.read_text(encoding="utf-8") == INSTANCE + "\n"
+    assert final.read_text(encoding="utf-8") == INSTANCE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_print_data_stdout_and_final_output_are_exact(
     rng_files: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
     schema, instance = rng_files
 
     main([*_relaxng_args(schema, instance), "-t", "PrintData()"])
 
-    captured = capsys.readouterr()
-    assert "<doc" in captured.out
-    assert "<item>x</item>" in captured.out
-    assert "pyxsd" not in captured.out
-    assert captured.err == ""
+    assert capsys.readouterr().out == INSTANCE + "\n" + INSTANCE
+
+
+def test_to_dict_preserves_mixed_content(
+    rng_files: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema, instance = rng_files
+
+    main([*_relaxng_args(schema, instance), "-t", "ToDict()"])
+
+    assert json.loads(capsys.readouterr().out) == {"item": "x", "$": "ab"}
 
 
 def test_transform_returning_root_keeps_mixed_content(
@@ -160,14 +193,14 @@ def test_transform_returning_root_keeps_mixed_content(
 def test_transform_file_and_output_file(rng_files: tuple[Path, Path], tmp_path: Path) -> None:
     schema, instance = rng_files
     transform_file = tmp_path / "transforms.txt"
-    transform_file.write_text("PrintData()\n", encoding="utf-8")
+    printed = tmp_path / "printed.xml"
+    transform_file.write_text(f'PrintData("{printed}")\n', encoding="utf-8")
     output = tmp_path / "out.xml"
 
     main([*_relaxng_args(schema, instance), "-T", str(transform_file), "-o", str(output)])
 
-    text = output.read_text(encoding="utf-8")
-    assert "<doc" in text
-    assert "<item>x</item>" in text
+    assert printed.read_text(encoding="utf-8") == INSTANCE + "\n"
+    assert output.read_text(encoding="utf-8") == INSTANCE
 
 
 def test_relaxng_ignores_instance_schema_hints(
@@ -214,12 +247,14 @@ def test_stdin_input_and_stdout_transform(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     schema, _instance = rng_files
+    printed = tmp_path / "printed.xml"
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "stdin", _FakeStdin(INSTANCE))
 
-    main([*_relaxng_args(schema), "-t", "PrintData()"])
+    main([*_relaxng_args(schema), "-t", f'PrintData("{printed}")'])
 
-    assert "<doc" in capsys.readouterr().out
+    assert capsys.readouterr().out == INSTANCE
+    assert printed.read_text(encoding="utf-8") == INSTANCE + "\n"
     assert not (tmp_path / "stdin.xml").exists()
 
 

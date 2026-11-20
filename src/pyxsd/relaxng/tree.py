@@ -330,6 +330,21 @@ class RelaxNGElement:
         return tuple(self._children_)
 
     @property
+    def _elementOnly_(self) -> bool:
+        """Whether this element's content is element-only.
+
+        Mixed content is present when the element has leading character data
+        or any child carries a tail.  The generic XML writer and dict exporter
+        use this narrow marker to preserve ordered text and tails; an
+        element-only node keeps their legacy block layout and tail-ignoring
+        export.  The answer is computed from the current lexical stores, so
+        text and tail edits update it without extra bookkeeping.
+        """
+        if self._value_ is not None:
+            return False
+        return all(child._tail_ is None for child in self._children_)
+
+    @property
     def attributes(self) -> Mapping[str, str]:
         """A read-only view of the expanded attribute store."""
         return MappingProxyType(self._attribs_)

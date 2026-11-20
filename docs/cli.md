@@ -60,6 +60,7 @@ transform output selection (`-o`/`-d`), stdin/stdout, quiet/verbose logging, and
 `--strict` exit status. A transform that relies on XSD-only typing remains
 XSD-specific. The CLI does not expose RELAX NG conversion, data-model, or record
 commands.
+
 Given an instance document and a RELAX NG schema supplied by the caller:
 
 ```bash
@@ -98,9 +99,10 @@ the validation workflow.
 
 Unreadable schemas, failed compilation, and unwritable output exit `1`.
 Recoverable schema findings do not prevent emission, and `--strict` has no
-effect in this mode. Use `Schema.require_valid()` through the Python API if
-schema findings must stop generation. See {doc}`stubs` for consumption and
-annotation limits rather than treating a stub as a validity verdict.
+effect in this mode. Use `Schema.require_valid()` for XSD or
+`RelaxNGSchema.require_valid()` for RELAX NG through the Python API if schema
+findings must stop generation. See {doc}`stubs` for consumption and annotation
+limits rather than treating a stub as a validity verdict.
 
 ## Examples
 
