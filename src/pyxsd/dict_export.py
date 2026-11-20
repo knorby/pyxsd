@@ -72,9 +72,11 @@ def _export_node(node: Any, *, typed: bool, always_list: bool) -> Any:
     result: dict[str, Any] = {}
     for key, raw in attribs.items():
         if typed:
-            # A declared attribute's typed value lives in the instance
-            # dictionary; a wildcard attribute has only its lexical form.
-            typed_value = node.__dict__.get(key)
+            # A declared XSD attribute's typed value lives in the instance
+            # dictionary. A slotted node (RELAX NG) and a wildcard attribute
+            # have only the recorded lexical form.
+            instance_values = getattr(node, "__dict__", None)
+            typed_value = None if instance_values is None else instance_values.get(key)
             result["@" + key] = raw if typed_value is None else typed_value
         else:
             result["@" + key] = raw

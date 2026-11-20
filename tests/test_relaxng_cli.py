@@ -34,6 +34,19 @@ SCHEMA = f"""<grammar xmlns="{RNG_NS}">
 INSTANCE = "<doc>a<item>x</item>b</doc>"
 INVALID_INSTANCE = "<doc><item>x</item><surprise/></doc>"
 
+ATTRIBUTED_SCHEMA = f"""<grammar xmlns="{RNG_NS}">
+  <start>
+    <element name="doc">
+      <attribute name="lang"><text/></attribute>
+      <mixed>
+        <zeroOrMore><element name="item"><text/></element></zeroOrMore>
+      </mixed>
+    </element>
+  </start>
+</grammar>"""
+
+ATTRIBUTED_INSTANCE = '<doc lang="en">a<item>x</item>b</doc>'
+
 
 class _FakeStdin:
     """A non-tty stdin stand-in, matching the XSD CLI tests."""
@@ -171,6 +184,19 @@ def test_to_dict_preserves_mixed_content(
     main([*_relaxng_args(schema, instance), "-t", "ToDict()"])
 
     assert json.loads(capsys.readouterr().out) == {"item": "x", "$": "ab"}
+
+
+def test_to_dict_uses_lexical_attributes_on_relaxng(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema = tmp_path / "schema.rng"
+    schema.write_text(ATTRIBUTED_SCHEMA, encoding="utf-8")
+    instance = tmp_path / "instance.xml"
+    instance.write_text(ATTRIBUTED_INSTANCE, encoding="utf-8")
+
+    main([*_relaxng_args(schema, instance), "-t", "ToDict()"])
+
+    assert json.loads(capsys.readouterr().out) == {"@lang": "en", "item": "x", "$": "ab"}
 
 
 def test_transform_returning_root_keeps_mixed_content(
