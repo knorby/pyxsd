@@ -348,10 +348,29 @@ locations do.
 .. autoclass:: pyxsd.locations.NodeLookup
 ```
 
+## XDM views
+
+`Document.to_xdm()` returns an independent XDM document view when capture was
+requested. A view is revision-checked against the bound tree; it is not an XSD
+schema-annotation interface.
+
+```{eval-rst}
+.. autoclass:: pyxsd.xdm.nodes.XdmDocument
+
+.. autoexception:: pyxsd.xdm.errors.XdmInputError
+```
+
 ## Transforms
 
 See {doc}`transforms/using` for return and revalidation behavior and
 {doc}`transforms/class` for `Transform`, `Displayer`, `iter_tree`, and built-ins.
+
+`Document.transform()` dispatches a `DocumentTransform` before treating a
+callable as a root transform.
+
+```{eval-rst}
+.. autoclass:: pyxsd.document_transform.DocumentTransform
+```
 
 `doc.transform(ToData(...))` uses the same options and defaults as
 `Document.to_data()`. `ToData` is also available through the CLI transform

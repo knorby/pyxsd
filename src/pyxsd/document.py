@@ -251,7 +251,7 @@ class Document:
           becomes the root of a new document against the same schema —
           or anything else, including ``None``, which is returned
           unchanged. The schema-specific node check is the narrow
-          :meth:`_document_for_node_result` hook: XSD wraps a bound
+          ``_document_for_node_result`` hook: XSD wraps a bound
           ``SchemaBase`` root, while RELAX NG wraps its lexical
           ``RelaxNGElement`` tree. When a transform mutates the tree in
           place and returns ``None``, the original document remains
