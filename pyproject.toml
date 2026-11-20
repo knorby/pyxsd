@@ -67,6 +67,9 @@ dev = [
     "types-defusedxml>=0.7.0.20260504",
     # Draft 2020-12 validator for the generated JSON Schemas; tests only.
     "jsonschema>=4.25",
+    # The conformance contract parses workflow YAML directly, so it must be
+    # declared here rather than inherited through pre-commit.
+    "pyyaml>=6",
 ]
 docs = [
     "sphinx>=8.2",
@@ -100,14 +103,17 @@ include = [
     "README.md",
     "pyproject.toml",
 ]
-# The pinned upstream corpus is a checkout-only validation input, not part of
+# The pinned upstream corpora are checkout-only validation inputs, not part of
 # the published source. Keep archive contents independent of submodule state.
-exclude = ["tests/xsts/corpus/**"]
+exclude = ["tests/xsts/corpus/**", "tests/xslt/corpus/**", "tests/xpath/corpus/**"]
 
 [tool.ruff]
 target-version = "py311"
 line-length = 100
 src = ["src", "tests", "examples"]
+# Pinned upstream corpora are checkout-only test inputs, not this project's
+# source; some contain Python 2 samples and intentionally unusual fixtures.
+extend-exclude = ["tests/xsts/corpus", "tests/xslt/corpus", "tests/xpath/corpus"]
 
 [tool.ruff.lint]
 select = [
@@ -168,6 +174,8 @@ module = [
     "pyxsd.validation",
     "pyxsd.version_gates",
     "pyxsd.xpath_api",
+    "pyxsd.xpath.*",
+    "pyxsd.xslt.*",
     "pyxsd.exceptions",
     "pyxsd.xsi",
     "pyxsd.compositors",

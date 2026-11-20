@@ -1,0 +1,1685 @@
+"""Immutable schema pool and elementpath adapters over pyxsd declarations.
+
+A compiled package's :class:`SchemaPool` owns the schemas imported by a
+stylesheet: their target namespaces, global types/elements/attributes,
+substitution groups, and atomic-type constructors.  It is a composition of
+already-compiled :class:`pyxsd.schema.Schema` objects, not a second schema
+model; no ``xmlschema`` object, generated Python source, network access, or
+streaming is involved.
+
+:class:`PyxsdSchemaProxy` adapts pyxsd's element/type representatives to
+elementpath's schema protocols.  The adapters expose the facts XPath static
+analysis needs (type variety, primitive root type, list item type, union
+members, derivation, attributes, and model groups) while constructors and
+values stay pyxsd objects.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any, Literal, cast
+
+from pyxsd import xsd_data_types as xsd
+from pyxsd.namespaces import XML_NS, XSD_NS, XSI_NS, clark, local_name, namespace_of
+from pyxsd.xdm.annotations import (
+    builtin_type_classes,
+    id_kind_for,
+    schema_type_name,
+)
+from pyxsd.xdm.values import XdmAtomic, XdmFunction, XdmSequence, as_xdm
+
+__all__ = [
+    "AtomicConstructor",
+    "PyxsdAttribute",
+    "PyxsdAttributeGroup",
+    "PyxsdElement",
+    "PyxsdGroup",
+    "PyxsdSchemaProxy",
+    "PyxsdType",
+    "SchemaPool",
+]
+
+_XSD_VERSION_NAMES = frozenset({"1.0", "1.1"})
+_INJECTED_NAMESPACES = frozenset({XML_NS, XSI_NS, "http://www.w3.org/1999/xlink"})
+_ELEMENT_KINDS = frozenset({"Element"})
+_TYPE_KINDS = frozenset({"SimpleType", "ComplexType"})
+_ATTRIBUTE_KINDS = frozenset({"Attribute"})
+_SPECIAL_ROOT_NAMES = frozenset(
+    {"anySimpleType", "anyAtomicType", "ID", "IDREF", "ENTITY", "NMTOKEN", "QName", "NOTATION"}
+)
+_PRIMITIVE_ROOT_NAMES = {
+    "normalizedString": "string",
+    "token": "string",
+    "language": "string",
+    "Name": "string",
+    "NCName": "string",
+    "integer": "decimal",
+    "nonPositiveInteger": "decimal",
+    "negativeInteger": "decimal",
+    "long": "decimal",
+    "int": "decimal",
+    "short": "decimal",
+    "byte": "decimal",
+    "nonNegativeInteger": "decimal",
+    "unsignedLong": "decimal",
+    "unsignedInt": "decimal",
+    "unsignedShort": "decimal",
+    "unsignedByte": "decimal",
+    "positiveInteger": "decimal",
+    "dateTimeStamp": "dateTime",
+    "yearMonthDuration": "duration",
+    "dayTimeDuration": "duration",
+}
+_STRING_LIST_ROOTS = (
+    (xsd.IDREFS, xsd.IDREF),
+    (xsd.ENTITIES, xsd.ENTITY),
+    (xsd.NMTOKENS, xsd.NMTOKEN),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class AtomicConstructor:
+    """A one-argument constructor for an atomic schema type.
+
+    ``arity`` is one; :meth:`invoke` follows the XDM function-item call
+    convention (an iterable of argument sequences) and atomizes through the
+    same explicit seam as the value layer.
+    """
+
+    name: str
+    type: PyxsdType
+
+    @property
+    def arity(self) -> int:
+        return 1
+
+    def __call__(self, value: Any) -> Any:
+        return self.type.cast(value)
+
+    def cast(self, value: Any) -> Any:
+        return self.type.cast(value)
+
+    def invoke(self, arguments: Iterable[Any], environment: Any = None) -> XdmSequence:
+        """Invoke with XDM argument sequences."""
+        del environment
+        if isinstance(arguments, (str, bytes, bytearray, memoryview)) or not isinstance(
+            arguments, Iterable
+        ):
+            raise TypeError("constructor arguments must be an iterable of XDM sequences")
+        values = tuple(as_xdm(argument) for argument in arguments)
+        if len(values) != 1:
+            raise TypeError(f"constructor {self.name} expects exactly one argument")
+        item = values[0]
+        if len(item) != 1 or not isinstance(item[0], XdmAtomic):
+            raise TypeError("an atomic constructor requires one atomic value")
+        return as_xdm(self.cast(item[0].lexical))
+
+    def as_function(self) -> XdmFunction:
+        """Return this constructor as an XDM function item."""
+        return XdmFunction(
+            lambda arguments, environment, closure: self.invoke(arguments),
+            arity=1,
+            name=self.name,
+        )
+
+
+class PyxsdType:
+    """One pyxsd generated or built-in XSD type under elementpath protocols."""
+
+    __slots__ = (
+        "_attributes",
+        "_er",
+        "_is_builtin",
+        "_model_group",
+        "_name",
+        "_pool",
+        "_proxy",
+        "_type_class",
+    )
+
+    def __init__(
+        self,
+        pool: SchemaPool,
+        type_class: Any,
+        *,
+        er: Any = None,
+        proxy: PyxsdSchemaProxy | None = None,
+        name: str | None = None,
+        is_builtin: bool = False,
+    ) -> None:
+        self._pool = pool
+        self._proxy = proxy
+        self._type_class = type_class
+        self._er = er
+        self._name = schema_type_name(type_class) if name is None else name
+        self._is_builtin = is_builtin
+        self._attributes: PyxsdAttributeGroup | None = None
+        self._model_group: PyxsdGroup | None = None
+
+    @property
+    def schema(self) -> PyxsdSchemaProxy | None:
+        return self._proxy
+
+    @property
+    def name(self) -> str | None:
+        return self._name
+
+    @property
+    def local_name(self) -> str | None:
+        return None if self._name is None else local_name(self._name)
+
+    @property
+    def is_builtin(self) -> bool:
+        return self._is_builtin
+
+    @property
+    def parent(self) -> PyxsdSchemaProxy | None:
+        return self._proxy
+
+    @property
+    def ref(self) -> None:
+        return None
+
+    @property
+    def xsd_version(self) -> str:
+        return self._pool.xsd_version
+
+    @property
+    def maps(self) -> SchemaPool:
+        return self._pool
+
+    def is_matching(self, name: str | None, default_namespace: str | None = None) -> bool:
+        if name is None or self._name is None:
+            return False
+        if name == self._name:
+            return True
+        if name.startswith("{"):
+            return False
+        if ":" in name:
+            expanded = self._proxy.expand_name(name) if self._proxy is not None else None
+            return expanded == self._name
+        if name != local_name(self._name):
+            return False
+        namespace = namespace_of(self._name)
+        return default_namespace is None or default_namespace == namespace
+
+    # -- variety and content ---------------------------------------------------
+
+    @property
+    def _variety(self) -> str:
+        type_class = self._type_class
+        if issubclass(type_class, xsd.AnyType):
+            return "complex"
+        if getattr(type_class, "_unionMembers", None):
+            return "union"
+        if issubclass(type_class, xsd.XsdList) or any(
+            issubclass(type_class, list_class) for list_class, _ in _STRING_LIST_ROOTS
+        ):
+            return "list"
+        if getattr(type_class, "_contentKind_", None) == "complex":
+            return "complex"
+        return "atomic"
+
+    def is_simple(self) -> bool:
+        return self._variety != "complex"
+
+    def _simple_content_class(self) -> Any:
+        content = getattr(self._type_class, "_simpleContentType_", None)
+        return content if isinstance(content, type) else None
+
+    def is_empty(self) -> bool:
+        if self.is_simple():
+            return True
+        if self._simple_content_class() is not None:
+            return False
+        model = getattr(self._type_class, "_contentModel_", None)
+        if model is None:
+            return bool(getattr(self._type_class, "_elementOnly_", False))
+        return not getattr(model, "children", ())
+
+    def has_simple_content(self) -> bool:
+        if self.is_simple():
+            return True
+        return self._simple_content_class() is not None
+
+    def has_mixed_content(self) -> bool:
+        return (
+            not self.is_simple()
+            and not getattr(self._type_class, "_elementOnly_", False)
+            and self._simple_content_class() is None
+        )
+
+    def is_element_only(self) -> bool:
+        return (
+            not self.is_simple()
+            and bool(getattr(self._type_class, "_elementOnly_", False))
+            and self._simple_content_class() is None
+        )
+
+    def is_atomic(self) -> bool:
+        return self._variety == "atomic"
+
+    def is_list(self) -> bool:
+        return self._variety == "list"
+
+    def is_union(self) -> bool:
+        return self._variety == "union"
+
+    def is_key(self) -> bool:
+        return id_kind_for(self._type_class) == "ID"
+
+    def is_qname(self) -> bool:
+        return self._has_builtin_base("QName")
+
+    def is_notation(self) -> bool:
+        return self._has_builtin_base("NOTATION")
+
+    def _has_builtin_base(self, name: str) -> bool:
+        target = getattr(xsd, name, None)
+        return (
+            isinstance(target, type)
+            and isinstance(self._type_class, type)
+            and issubclass(self._type_class, target)
+        )
+
+    # -- derivation ------------------------------------------------------------
+
+    @property
+    def root_type(self) -> PyxsdType:
+        variety = self._variety
+        if variety == "complex":
+            root = self._pool.get_type(clark(XSD_NS, "anyType"))
+            assert root is not None
+            return root
+        if variety == "union":
+            return self
+        if variety == "list":
+            item_class = self._list_item_class()
+            assert item_class is not None
+            return self._pool.type_for_class(item_class).root_type
+        builtins = builtin_type_classes()
+        for base in self._type_class.__mro__:
+            local = base.__dict__.get("name")
+            if isinstance(local, str) and builtins.get(local) is base:
+                return self._primitive_root(cast(type[Any], base))
+        return self  # pragma: no cover - atomic types inherit a builtin
+
+    def _primitive_root(self, builtin: type[Any]) -> PyxsdType:
+        name = builtin.__dict__.get("name")
+        assert isinstance(name, str)
+        if name in _SPECIAL_ROOT_NAMES:
+            return self._pool.type_for_class(builtin)
+        primitive = _PRIMITIVE_ROOT_NAMES.get(name, name)
+        adapter = self._pool.get_type(clark(XSD_NS, primitive))
+        assert adapter is not None
+        return adapter
+
+    def _list_item_class(self) -> Any:
+        for list_class, item_class in _STRING_LIST_ROOTS:
+            if issubclass(self._type_class, list_class):
+                return item_class
+        item = getattr(self._type_class, "itemType", None)
+        return item if isinstance(item, type) else None
+
+    @property
+    def simple_type(self) -> PyxsdType | None:
+        if self.is_simple():
+            return self
+        content = self._simple_content_class()
+        if content is None:
+            return None
+        return self._pool.type_for_class(content)
+
+    @property
+    def model_group(self) -> PyxsdGroup | None:
+        if self.is_simple() or getattr(self._type_class, "_contentModel_", None) is None:
+            return None
+        if self._model_group is None:
+            self._model_group = PyxsdGroup(self)
+        return self._model_group
+
+    @property
+    def attributes(self) -> PyxsdAttributeGroup:
+        if self._attributes is None:
+            self._attributes = PyxsdAttributeGroup(self)
+        return self._attributes
+
+    # -- validation and construction ------------------------------------------
+
+    def is_valid(
+        self,
+        obj: Any,
+        use_defaults: bool = True,
+        namespaces: Mapping[str, str] | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> bool:
+        del use_defaults, args, kwargs
+        if self.is_simple():
+            try:
+                self._cast(obj, namespaces)
+            except (TypeError, ValueError):
+                return False
+            return True
+        return isinstance(obj, self._type_class)
+
+    def validate(
+        self,
+        obj: Any,
+        use_defaults: bool = True,
+        namespaces: Mapping[str, str] | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        if not self.is_valid(obj, use_defaults, namespaces, *args, **kwargs):
+            raise ValueError(f"{obj!r} is not valid for {self._name or 'the anonymous type'}")
+
+    def decode(
+        self,
+        obj: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        del args
+        if self.is_simple():
+            return self._cast(obj, kwargs.get("namespaces"))
+        return obj
+
+    def cast(self, value: Any, namespaces: Mapping[str, str] | None = None) -> Any:
+        if self.is_simple():
+            return self._cast(value, namespaces)
+        return value
+
+    def _cast(self, value: Any, namespaces: Mapping[str, str] | None = None) -> Any:
+        del namespaces
+        if isinstance(value, self._type_class) and not isinstance(value, list):
+            return value
+        constructor: Any = self._type_class
+        return constructor(value)
+
+    def __repr__(self) -> str:
+        return f"PyxsdType({self._name!r})"
+
+
+class PyxsdAttribute:
+    """One pyxsd attribute declaration under elementpath protocols."""
+
+    __slots__ = ("_er", "_name", "_parent", "_pool", "_proxy", "_type")
+
+    def __init__(
+        self,
+        pool: SchemaPool,
+        er: Any,
+        proxy: PyxsdSchemaProxy | None,
+        *,
+        name: str | None = None,
+        parent: Any = None,
+    ) -> None:
+        self._pool = pool
+        self._er = er
+        self._proxy = proxy
+        self._name = name if name is not None else _instance_name(er, proxy, is_attribute=True)
+        self._parent = parent
+        self._type = pool.type_for_declaration(er)
+
+    @property
+    def name(self) -> str | None:
+        return self._name
+
+    @property
+    def tag(self) -> str | None:
+        return self._name
+
+    @property
+    def attrib(self) -> Mapping[Any, Any]:
+        return MappingProxyType({})
+
+    @property
+    def text(self) -> None:
+        return None
+
+    @property
+    def tail(self) -> None:
+        return None
+
+    @property
+    def type(self) -> PyxsdType | None:
+        return self._type
+
+    @property
+    def parent(self) -> Any:
+        return self._parent
+
+    @property
+    def ref(self) -> None:
+        return None
+
+    @property
+    def xsd_version(self) -> str:
+        return self._pool.xsd_version
+
+    @property
+    def maps(self) -> SchemaPool:
+        return self._pool
+
+    def is_matching(self, name: str | None, default_namespace: str | None = None) -> bool:
+        if name is None or self._name is None:
+            return False
+        if name == self._name:
+            return True
+        if name.startswith("{"):
+            return False
+        return name == local_name(self._name)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.attrib.get(key, default)
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(())
+
+    def __len__(self) -> int:
+        return 0
+
+    def __hash__(self) -> int:
+        return id(self)
+
+
+class PyxsdAttributeGroup:
+    """The declared attribute uses of one complex type."""
+
+    __slots__ = ("_by_expanded", "_entries", "_type")
+
+    def __init__(self, type_adapter: PyxsdType) -> None:
+        self._type = type_adapter
+        entries: dict[str, PyxsdAttribute] = {}
+        expanded: dict[str, PyxsdAttribute] = {}
+        for descriptor in _attribute_descriptors(type_adapter._type_class):
+            adapter = PyxsdAttribute(
+                type_adapter._pool,
+                descriptor,
+                type_adapter.schema,
+                name=descriptor.name,
+                parent=type_adapter,
+            )
+            entries[descriptor.name] = adapter
+            expanded[
+                _instance_name(descriptor, type_adapter.schema, is_attribute=True)
+                or descriptor.name
+            ] = adapter
+        self._entries = MappingProxyType(entries)
+        self._by_expanded = MappingProxyType(expanded)
+
+    def get(self, key: str | None, default: Any = None) -> Any:
+        if key is None:
+            return default
+        found = self._entries.get(key)
+        if found is None:
+            found = self._by_expanded.get(key)
+        return default if found is None else found
+
+    def items(self):
+        return self._entries.items()
+
+    def __contains__(self, key: object) -> bool:
+        return isinstance(key, str) and (key in self._entries or key in self._by_expanded)
+
+    def __getitem__(self, key: str) -> PyxsdAttribute:
+        adapter = self.get(key)
+        if adapter is None:
+            raise KeyError(key)
+        return adapter
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._entries)
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    @property
+    def parent(self) -> PyxsdType:
+        return self._type
+
+    @property
+    def xsd_version(self) -> str:
+        return self._type.xsd_version
+
+    @property
+    def maps(self) -> SchemaPool:
+        return self._type.maps
+
+    def is_matching(self, name: str | None, default_namespace: str | None = None) -> bool:
+        return self.get(name) is not None
+
+
+class PyxsdGroup:
+    """The element particles of one complex type under elementpath protocols."""
+
+    __slots__ = ("_elements", "_type")
+
+    def __init__(self, type_adapter: PyxsdType) -> None:
+        self._type = type_adapter
+        pool = type_adapter._pool
+        self._elements = tuple(
+            pool._shared_element(
+                type_adapter.schema,
+                descriptor,
+                name=_instance_name(descriptor, type_adapter.schema),
+            )
+            for descriptor in _element_descriptors(type_adapter._type_class)
+        )
+
+    def iter_elements(self) -> Iterator[PyxsdElement]:
+        return iter(self._elements)
+
+    @property
+    def name(self) -> None:
+        return None
+
+    @property
+    def parent(self) -> PyxsdType:
+        return self._type
+
+    @property
+    def ref(self) -> None:
+        return None
+
+    @property
+    def xsd_version(self) -> str:
+        return self._type.xsd_version
+
+    @property
+    def maps(self) -> SchemaPool:
+        return self._type.maps
+
+    def is_matching(self, name: str | None, default_namespace: str | None = None) -> bool:
+        return any(element.is_matching(name, default_namespace) for element in self._elements)
+
+
+class PyxsdElement:
+    """One pyxsd element declaration under elementpath's element protocol.
+
+    The element graph is materialised lazily and memoised per
+    :class:`SchemaPool` (see :meth:`SchemaPool._shared_element`), so a
+    self-recursive or mutually recursive content model yields a finite graph
+    whose cycle is a real object cycle -- the declaration that references
+    itself is the same adapter -- rather than a tree cut at an arbitrary
+    depth.  One level of children is resolved on first use and cached.
+    """
+
+    __slots__ = ("_attrib", "_children", "_er", "_name", "_pool", "_proxy", "_type")
+
+    def __init__(
+        self,
+        pool: SchemaPool,
+        er: Any,
+        proxy: PyxsdSchemaProxy | None,
+        *,
+        name: str | None = None,
+    ) -> None:
+        self._pool = pool
+        self._er = er
+        self._proxy = proxy
+        self._name = name if name is not None else _instance_name(er, proxy)
+        self._type = pool.type_for_declaration(er)
+        self._children: tuple[PyxsdElement, ...] | None = None
+        self._attrib = self._type.attributes if self._type is not None else None
+
+    @property
+    def name(self) -> str | None:
+        return self._name
+
+    @property
+    def tag(self) -> str | None:
+        return self._name
+
+    @property
+    def attrib(self) -> Any:
+        if self._attrib is not None:
+            return self._attrib
+        return MappingProxyType({})
+
+    @property
+    def children(self) -> tuple[PyxsdElement, ...]:
+        """The element particles of this declaration's type.
+
+        Resolved on first access and cached. A recursive content model
+        reaches this declaration again through the pool's identity memo, so
+        the cycle is representable instead of truncated.
+        """
+        children = self._children
+        if children is None:
+            children = self._resolve_children()
+            self._children = children
+        return children
+
+    def _resolve_children(self) -> tuple[PyxsdElement, ...]:
+        if self._type is None:
+            return ()
+        pool = self._pool
+        proxy = self._proxy
+        return tuple(
+            pool._shared_element(proxy, descriptor, name=_instance_name(descriptor, proxy))
+            for descriptor in _element_descriptors(self._type._type_class)
+        )
+
+    @property
+    def text(self) -> None:
+        return None
+
+    @property
+    def tail(self) -> None:
+        return None
+
+    @property
+    def type(self) -> PyxsdType | None:
+        return self._type
+
+    @property
+    def parent(self) -> PyxsdSchemaProxy | None:
+        return self._proxy
+
+    @property
+    def ref(self) -> None:
+        return None
+
+    @property
+    def xsd_version(self) -> str:
+        return self._pool.xsd_version
+
+    @property
+    def maps(self) -> SchemaPool:
+        return self._pool
+
+    @property
+    def nillable(self) -> bool:
+        """Whether the declaration admits ``xsi:nil="true"``."""
+        is_nillable = getattr(self._er, "isNillable", None)
+        return bool(is_nillable()) if callable(is_nillable) else False
+
+    @property
+    def abstract(self) -> bool:
+        """Whether the declaration may only appear through a substitute."""
+        is_abstract = getattr(self._er, "isAbstract", None)
+        return bool(is_abstract()) if callable(is_abstract) else False
+
+    @property
+    def block(self) -> str | None:
+        """The declaration's effective ``block`` attribute value."""
+        get_block = getattr(self._er, "getBlock", None)
+        return get_block() if callable(get_block) else None
+
+    def is_matching(self, name: str | None, default_namespace: str | None = None) -> bool:
+        if self._name is None or name is None:
+            return False
+        if name == self._name:
+            return True
+        if name.startswith("{"):
+            return False
+        if ":" in name:
+            expanded = self._proxy.expand_name(name) if self._proxy is not None else None
+            return expanded == self._name
+        if name != local_name(self._name):
+            return False
+        namespace = namespace_of(self._name)
+        return default_namespace is None or namespace == default_namespace
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.attrib.get(key, default)
+
+    def __iter__(self) -> Iterator[PyxsdElement]:
+        return iter(self.children)
+
+    def iter(self, tag: str | None = None) -> Iterator[PyxsdElement]:
+        """Yield this declaration and its reachable descendants.
+
+        A recursive content model makes the graph cyclic; the walk follows a
+        declaration at most once per branch, so iteration terminates for
+        every schema. A declaration reached again through a different branch
+        (a shared reference, not a cycle) still appears under each branch.
+        """
+        yield from self._iter_branch(tag, ())
+
+    def _iter_branch(self, tag: str | None, ancestors: tuple[int, ...]) -> Iterator[PyxsdElement]:
+        if tag is None or tag == "*" or tag == self._name:
+            yield self
+        path = (*ancestors, id(self))
+        for child in self.children:
+            if id(child) in path:
+                # The child closes a cycle: it is already on this branch, so
+                # it was yielded when the branch entered it. Following it
+                # again would repeat the branch forever.
+                continue
+            yield from child._iter_branch(tag, path)
+
+    def find(self, path: str, namespaces: Mapping[str, str] | None = None) -> PyxsdElement | None:
+        del namespaces
+        wanted = path[2:] if path.startswith("./") else path
+        for child in self.children:
+            if child.is_matching(wanted):
+                return child
+        return None
+
+    def __len__(self) -> int:
+        return len(self.children)
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def is_valid(self, obj: Any, *args: Any, **kwargs: Any) -> bool:
+        if self._type is None:
+            return False
+        return self._type.is_valid(obj, *args, **kwargs)
+
+    def validate(self, obj: Any, *args: Any, **kwargs: Any) -> None:
+        if self._type is None:
+            raise ValueError("the element declaration has no resolved type")
+        self._type.validate(obj, *args, **kwargs)
+
+    def decode(self, obj: Any, *args: Any, **kwargs: Any) -> Any:
+        if self._type is None:
+            return obj
+        return self._type.decode(obj, *args, **kwargs)
+
+
+class PyxsdSchemaProxy:
+    """One compiled pyxsd schema under elementpath's schema protocol."""
+
+    __slots__ = ("_base_element", "_namespaces", "_pool", "_schema")
+
+    def __init__(
+        self,
+        schema: Any,
+        pool: SchemaPool,
+        *,
+        xsd_version: str | None = None,
+        base_element: PyxsdElement | None = None,
+    ) -> None:
+        del xsd_version
+        self._schema = schema
+        self._pool = pool
+        self._base_element = base_element
+        self._namespaces: dict[str, str] = {}
+
+    @property
+    def schema(self) -> PyxsdSchemaProxy:
+        return self
+
+    @property
+    def pool(self) -> SchemaPool:
+        return self._pool
+
+    @property
+    def target_namespace(self) -> str | None:
+        return getattr(self._schema, "target_namespace", None)
+
+    @property
+    def base_element(self) -> PyxsdElement | None:
+        return self._base_element
+
+    @property
+    def name(self) -> str | None:
+        return self.target_namespace
+
+    @property
+    def tag(self) -> str:
+        return clark(XSD_NS, "schema")
+
+    @property
+    def attrib(self) -> Mapping[Any, Any]:
+        return MappingProxyType({})
+
+    @property
+    def text(self) -> None:
+        return None
+
+    @property
+    def tail(self) -> None:
+        return None
+
+    @property
+    def maps(self) -> SchemaPool:
+        return self._pool
+
+    @property
+    def validity(self) -> str:
+        report = getattr(self._schema, "report", None)
+        return "invalid" if report is not None and report.has_errors else "valid"
+
+    @property
+    def validation_attempted(self) -> str:
+        return "full" if self.validity == "valid" else "partial"
+
+    def is_fully_valid(self) -> bool:
+        return self.validity == "valid" and self.validation_attempted == "full"
+
+    @property
+    def xsd_version(self) -> str:
+        return getattr(self._schema, "xsd_version", self._pool.xsd_version)
+
+    def is_assertion_based(self) -> bool:
+        return False
+
+    def is_matching(self, name: str | None, default_namespace: str | None = None) -> bool:
+        del default_namespace
+        return name is None or name == "" or name == self.target_namespace
+
+    def __iter__(self) -> Iterator[PyxsdElement]:
+        return iter(self._pool.elements_for(self))
+
+    def iter(self, tag: str | None = None) -> Iterator[PyxsdElement]:
+        for element in self:
+            if tag is None or tag == "*" or tag == element.name:
+                yield element
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.attrib.get(key, default)
+
+    def __len__(self) -> int:
+        return len(self._pool.elements_for(self))
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def find(
+        self, path: str, namespaces: Mapping[str, str] | None = None
+    ) -> PyxsdElement | PyxsdSchemaProxy | None:
+        if path in (".", "./"):
+            return self
+        wanted = path[2:] if path.startswith("./") else path
+        expanded = self.expand_name(wanted, namespaces)
+        if (
+            expanded == wanted
+            and not expanded.startswith("{")
+            and self.target_namespace is not None
+        ):
+            expanded = clark(self.target_namespace, wanted)
+        element = self._pool.get_element(expanded or wanted)
+        if element is not None and element.parent is self:
+            return element
+        return None
+
+    def get_type(self, qname: str) -> PyxsdType | None:
+        return self._pool.get_type(self.expand_name(qname))
+
+    def get_attribute(self, qname: str) -> PyxsdAttribute | None:
+        return self._pool.get_attribute(self.expand_name(qname))
+
+    def get_element(self, qname: str) -> PyxsdElement | None:
+        return self._pool.get_element(self.expand_name(qname))
+
+    def get_substitution_group(self, qname: str) -> frozenset[PyxsdElement] | None:
+        return self._pool.get_substitution_group(self.expand_name(qname))
+
+    def iter_atomic_types(self) -> Iterator[PyxsdType]:
+        for type_adapter in self._pool.imported_types_for(self):
+            if type_adapter.is_atomic() and type_adapter.name is not None:
+                yield type_adapter
+
+    def bind_parser(self, parser: Any) -> None:
+        """Bind *parser* to this proxy and register imported constructors."""
+        self._namespaces = dict(getattr(parser, "namespaces", None) or {})
+        if getattr(parser, "schema", None) is not self:
+            parser.schema = self
+        from elementpath.namespaces import get_prefixed_name
+
+        for type_adapter in self.iter_atomic_types():
+            assert type_adapter.name is not None
+            symbol = get_prefixed_name(type_adapter.name, self._namespaces)
+            if ":" not in symbol or symbol.startswith("{"):
+                continue
+            if symbol not in parser.symbol_table:
+                parser.schema_constructor(type_adapter.name)
+
+    def get_context(self) -> Any:
+        from elementpath.xpath_context import XPathSchemaContext
+
+        return XPathSchemaContext(
+            root=cast(Any, self),
+            item=cast(Any, self._base_element),
+            schema=cast(Any, self),
+        )
+
+    def cast_as(self, obj: Any, type_qname: str) -> Any:
+        type_adapter = self.get_type(type_qname)
+        if type_adapter is None:
+            raise KeyError(type_qname)
+        return type_adapter.cast(obj, self._namespaces)
+
+    def is_instance(self, obj: Any, type_qname: str) -> bool:
+        type_adapter = self.get_type(type_qname)
+        if type_adapter is None:
+            raise KeyError(type_qname)
+        return type_adapter.is_valid(obj, namespaces=self._namespaces)
+
+    def expand_name(self, name: str, namespaces: Mapping[str, str] | None = None) -> str:
+        """Expand a Clark name or prefixed QName using the bound namespaces."""
+        if name.startswith("{"):
+            return name
+        if ":" not in name:
+            return name
+        prefix, local = name.split(":", 1)
+        bindings = self._namespaces if namespaces is None else namespaces
+        uri = bindings.get(prefix)
+        if uri is None:
+            raise KeyError(f"unknown namespace prefix {prefix!r}")
+        return clark(uri, local)
+
+    def __repr__(self) -> str:
+        return f"PyxsdSchemaProxy({self.target_namespace!r})"
+
+
+class _MergedSchemaProxy:
+    """One namespace composed from more than one compiled schema document."""
+
+    __slots__ = ("_members", "_namespaces", "_pool")
+
+    def __init__(self, members: tuple[PyxsdSchemaProxy, ...], pool: SchemaPool) -> None:
+        self._members = members
+        self._pool = pool
+        self._namespaces: dict[str, str] = {}
+
+    @property
+    def members(self) -> tuple[PyxsdSchemaProxy, ...]:
+        return self._members
+
+    @property
+    def schema(self) -> _MergedSchemaProxy:
+        return self
+
+    @property
+    def pool(self) -> SchemaPool:
+        return self._pool
+
+    @property
+    def target_namespace(self) -> str | None:
+        return self._members[0].target_namespace
+
+    @property
+    def base_element(self) -> PyxsdElement | None:
+        return None
+
+    @property
+    def name(self) -> str | None:
+        return self.target_namespace
+
+    @property
+    def tag(self) -> str:
+        return clark(XSD_NS, "schema")
+
+    @property
+    def attrib(self) -> Mapping[Any, Any]:
+        return MappingProxyType({})
+
+    @property
+    def text(self) -> None:
+        return None
+
+    @property
+    def tail(self) -> None:
+        return None
+
+    @property
+    def maps(self) -> SchemaPool:
+        return self._pool
+
+    @property
+    def validity(self) -> str:
+        return "valid" if all(member.validity == "valid" for member in self._members) else "invalid"
+
+    @property
+    def validation_attempted(self) -> str:
+        return (
+            "full"
+            if all(member.validation_attempted == "full" for member in self._members)
+            else "partial"
+        )
+
+    def is_fully_valid(self) -> bool:
+        return all(member.is_fully_valid() for member in self._members)
+
+    @property
+    def xsd_version(self) -> str:
+        return self._pool.xsd_version
+
+    def is_assertion_based(self) -> bool:
+        return False
+
+    def is_matching(self, name: str | None, default_namespace: str | None = None) -> bool:
+        return any(member.is_matching(name, default_namespace) for member in self._members)
+
+    def __iter__(self) -> Iterator[PyxsdElement]:
+        return iter(self._pool.elements_for(self))
+
+    def iter(self, tag: str | None = None) -> Iterator[PyxsdElement]:
+        for element in self:
+            if tag is None or tag == "*" or tag == element.name:
+                yield element
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.attrib.get(key, default)
+
+    def __len__(self) -> int:
+        return len(self._pool.elements_for(self))
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def find(
+        self, path: str, namespaces: Mapping[str, str] | None = None
+    ) -> PyxsdElement | _MergedSchemaProxy | None:
+        if path in (".", "./"):
+            return self
+        wanted = path[2:] if path.startswith("./") else path
+        expanded = self.expand_name(wanted, namespaces)
+        if (
+            expanded == wanted
+            and not expanded.startswith("{")
+            and self.target_namespace is not None
+        ):
+            expanded = clark(self.target_namespace, wanted)
+        element = self._pool.get_element(expanded or wanted)
+        if element is not None and element.parent in self._members:
+            return element
+        return None
+
+    def get_type(self, qname: str) -> PyxsdType | None:
+        return self._pool.get_type(self.expand_name(qname))
+
+    def get_attribute(self, qname: str) -> PyxsdAttribute | None:
+        return self._pool.get_attribute(self.expand_name(qname))
+
+    def get_element(self, qname: str) -> PyxsdElement | None:
+        return self._pool.get_element(self.expand_name(qname))
+
+    def get_substitution_group(self, qname: str) -> frozenset[PyxsdElement] | None:
+        return self._pool.get_substitution_group(self.expand_name(qname))
+
+    def iter_atomic_types(self) -> Iterator[PyxsdType]:
+        for type_adapter in self._pool.imported_types_for(self):
+            if type_adapter.is_atomic() and type_adapter.name is not None:
+                yield type_adapter
+
+    def bind_parser(self, parser: Any) -> None:
+        """Bind *parser* to the merged namespace and register constructors."""
+        self._namespaces = dict(getattr(parser, "namespaces", None) or {})
+        if getattr(parser, "schema", None) is not self:
+            parser.schema = self
+        from elementpath.namespaces import get_prefixed_name
+
+        for type_adapter in self.iter_atomic_types():
+            assert type_adapter.name is not None
+            symbol = get_prefixed_name(type_adapter.name, self._namespaces)
+            if ":" not in symbol or symbol.startswith("{"):
+                continue
+            if symbol not in parser.symbol_table:
+                parser.schema_constructor(type_adapter.name)
+
+    def get_context(self) -> Any:
+        from elementpath.xpath_context import XPathSchemaContext
+
+        return XPathSchemaContext(root=cast(Any, self), item=None, schema=cast(Any, self))
+
+    def cast_as(self, obj: Any, type_qname: str) -> Any:
+        type_adapter = self.get_type(type_qname)
+        if type_adapter is None:
+            raise KeyError(type_qname)
+        return type_adapter.cast(obj, self._namespaces)
+
+    def is_instance(self, obj: Any, type_qname: str) -> bool:
+        type_adapter = self.get_type(type_qname)
+        if type_adapter is None:
+            raise KeyError(type_qname)
+        return type_adapter.is_valid(obj, namespaces=self._namespaces)
+
+    def expand_name(self, name: str, namespaces: Mapping[str, str] | None = None) -> str:
+        if name.startswith("{"):
+            return name
+        if ":" not in name:
+            return name
+        prefix, local = name.split(":", 1)
+        bindings = self._namespaces if namespaces is None else namespaces
+        uri = bindings.get(prefix)
+        if uri is None:
+            raise KeyError(f"unknown namespace prefix {prefix!r}")
+        return clark(uri, local)
+
+    def __repr__(self) -> str:
+        return f"MergedSchemaProxy({self.target_namespace!r}, {len(self._members)} schemas)"
+
+
+class SchemaPool:
+    """An immutable composition of compiled pyxsd schemas.
+
+    ``types``, ``elements``, ``attributes``, ``substitution_groups``,
+    ``constructors``, and ``schemas`` are read-only mappings built once in
+    ``__init__``.  Built-in XSD types are always available; imported named
+    atomic types gain constructor functions.
+
+    ``_graph_cache`` is rooted by ``id()``: each key pairs the id of a
+    package-local proxy with the id of a declaration, and the compiled
+    schemas own both for as long as the pool exists. No id can therefore
+    be recycled while its entry is live, and no entry outlives its key.
+    The lazy caches are filled without a lock; use one pool from one
+    thread at a time (separate pools are independent, and one compiled
+    ``Schema`` may not be parsed concurrently).
+    """
+
+    _schemas: dict[str | None, PyxsdSchemaProxy | _MergedSchemaProxy]
+    _schema_groups: dict[str | None, tuple[PyxsdSchemaProxy, ...]]
+    _types: dict[str, PyxsdType]
+    _elements: dict[str, PyxsdElement]
+    _attributes: dict[str, PyxsdAttribute]
+    _substitution_groups: dict[str, frozenset[PyxsdElement]]
+    _constructors: dict[str, AtomicConstructor]
+
+    __slots__ = (
+        "_attributes",
+        "_constructors",
+        "_element_cache",
+        "_elements",
+        "_graph_cache",
+        "_schema_groups",
+        "_schemas",
+        "_substitution_groups",
+        "_type_cache",
+        "_types",
+        "_xsd_version",
+    )
+
+    def __init__(
+        self,
+        schemas: Iterable[Any] = (),
+        *,
+        xsd_version: str = "1.1",
+        merge_namespaces: bool = False,
+    ) -> None:
+        if xsd_version not in _XSD_VERSION_NAMES:
+            raise ValueError(f"unsupported xsd_version {xsd_version!r}")
+        self._xsd_version = xsd_version
+        self._type_cache: dict[int, PyxsdType] = {}
+        self._element_cache: dict[int, PyxsdElement] = {}
+        # Element adapters by (proxy identity, declaration identity): the
+        # memo that makes a recursive content model a finite graph. It stays
+        # writable after construction because children resolve lazily.
+        self._graph_cache: dict[tuple[int, int], PyxsdElement] = {}
+        self._schemas: dict[str | None, PyxsdSchemaProxy | _MergedSchemaProxy] = {}
+        self._schema_groups: dict[str | None, tuple[PyxsdSchemaProxy, ...]] = {}
+        self._types: dict[str, PyxsdType] = {}
+        self._elements: dict[str, PyxsdElement] = {}
+        self._attributes: dict[str, PyxsdAttribute] = {}
+        self._substitution_groups: dict[str, frozenset[PyxsdElement]] = {}
+        self._constructors: dict[str, AtomicConstructor] = {}
+
+        for name, type_class in builtin_type_classes().items():
+            adapter = PyxsdType(
+                self,
+                type_class,
+                name=clark(XSD_NS, name),
+                is_builtin=True,
+            )
+            assert adapter.name is not None
+            self._types[adapter.name] = adapter
+            self._type_cache[id(type_class)] = adapter
+            if adapter.is_atomic():
+                self._constructors[adapter.name] = AtomicConstructor(adapter.name, adapter)
+
+        for schema in schemas:
+            proxy = PyxsdSchemaProxy(schema, self, xsd_version=xsd_version)
+            namespace = proxy.target_namespace
+            members = self._schema_groups.get(namespace, ())
+            if members:
+                if not merge_namespaces:
+                    raise ValueError(f"duplicate schema namespace {namespace!r}")
+                if any(member._schema is schema for member in members):
+                    continue
+                source = getattr(schema, "source", None)
+                if source is not None and any(
+                    getattr(member._schema, "source", None) == source for member in members
+                ):
+                    continue
+            self._schema_groups[namespace] = (*members, proxy)
+            self._schemas[namespace] = (
+                proxy if not members else _MergedSchemaProxy(self._schema_groups[namespace], self)
+            )
+            self._register_schema(proxy)
+
+        # The slots stay dict-typed for the private registration helpers;
+        # after construction they hold read-only mapping proxies.
+        self._schemas = cast(
+            dict[str | None, PyxsdSchemaProxy | _MergedSchemaProxy],
+            MappingProxyType(dict(self._schemas)),
+        )
+        self._schema_groups = cast(
+            dict[str | None, tuple[PyxsdSchemaProxy, ...]],
+            MappingProxyType(dict(self._schema_groups)),
+        )
+        self._types = cast(dict[str, PyxsdType], MappingProxyType(dict(self._types)))
+        self._elements = cast(dict[str, PyxsdElement], MappingProxyType(dict(self._elements)))
+        self._attributes = cast(dict[str, PyxsdAttribute], MappingProxyType(dict(self._attributes)))
+        self._substitution_groups = cast(
+            dict[str, frozenset[PyxsdElement]],
+            MappingProxyType(dict(self._substitution_groups)),
+        )
+        self._constructors = cast(
+            dict[str, AtomicConstructor], MappingProxyType(dict(self._constructors))
+        )
+
+    @classmethod
+    def from_imports(
+        cls,
+        paths: Iterable[Any],
+        *,
+        xsd_version: str = "1.1",
+        resource_policy: Any = None,
+        merge_namespaces: bool = False,
+        namespace_context: Any = None,
+    ) -> SchemaPool:
+        """Compile each imported schema source and compose them.
+
+        *paths* may contain paths, readable streams, or already-parsed
+        ``Element`` trees.  Every source is compiled by pyxsd under
+        *xsd_version* and the supplied explicit *resource_policy*; no
+        second schema engine or serialized-text recovery is involved.
+        """
+        if xsd_version not in _XSD_VERSION_NAMES:
+            raise ValueError(f"unsupported xsd_version {xsd_version!r}")
+        from pyxsd.schema import Schema
+
+        version = cast(Literal["1.0", "1.1"], xsd_version)
+        schemas = [
+            Schema.compile(
+                path,
+                xsd_version=version,
+                resource_policy=resource_policy,
+                namespace_context=namespace_context,
+            )
+            for path in paths
+        ]
+        return cls(
+            schemas,
+            xsd_version=xsd_version,
+            merge_namespaces=merge_namespaces,
+        )
+
+    @classmethod
+    def from_schema(cls, schema: Any) -> SchemaPool:
+        """Compose one already-compiled schema."""
+        return cls([schema], xsd_version=getattr(schema, "xsd_version", "1.1"))
+
+    @property
+    def xsd_version(self) -> str:
+        return self._xsd_version
+
+    @property
+    def schemas(self) -> Mapping[str | None, PyxsdSchemaProxy | _MergedSchemaProxy]:
+        return self._schemas
+
+    @property
+    def schema_groups(self) -> Mapping[str | None, tuple[PyxsdSchemaProxy, ...]]:
+        """Every compiled schema document grouped by its target namespace."""
+        return self._schema_groups
+
+    @property
+    def raw_schemas(self) -> tuple[Any, ...]:
+        """The compiled pyxsd schemas in composition order."""
+        return tuple(
+            member._schema for members in self._schema_groups.values() for member in members
+        )
+
+    @property
+    def types(self) -> Mapping[str, PyxsdType]:
+        return self._types
+
+    @property
+    def elements(self) -> Mapping[str, PyxsdElement]:
+        return self._elements
+
+    @property
+    def attributes(self) -> Mapping[str, PyxsdAttribute]:
+        return self._attributes
+
+    @property
+    def substitution_groups(self) -> Mapping[str, frozenset[PyxsdElement]]:
+        return self._substitution_groups
+
+    @property
+    def constructors(self) -> Mapping[str, AtomicConstructor]:
+        return self._constructors
+
+    def proxy(self, namespace: str | None = None) -> PyxsdSchemaProxy | _MergedSchemaProxy | None:
+        return self._schemas.get(namespace)
+
+    def schema_for_element(self, qname: str | None) -> Any:
+        """Return the compiled schema that declares *qname*, or ``None``."""
+        element = self.get_element(qname)
+        if element is None:
+            return None
+        proxy = element.parent
+        return getattr(proxy, "_schema", None)
+
+    def schema_for_type(self, qname: str | None) -> Any:
+        """Return the compiled schema that declares *qname*, or ``None``."""
+        adapter = self.get_type(qname)
+        if adapter is None or adapter.schema is None:
+            return None
+        return getattr(adapter.schema, "_schema", None)
+
+    def get_type(self, qname: str | None) -> PyxsdType | None:
+        return _lookup(self._types, qname)
+
+    def get_element(self, qname: str | None) -> PyxsdElement | None:
+        return _lookup(self._elements, qname)
+
+    def get_attribute(self, qname: str | None) -> PyxsdAttribute | None:
+        return _lookup(self._attributes, qname)
+
+    def get_substitution_group(self, qname: str | None) -> frozenset[PyxsdElement] | None:
+        if qname is None:
+            return None
+        return self._substitution_groups.get(qname)
+
+    def constructor(self, qname: str) -> AtomicConstructor:
+        constructor = self._constructors.get(qname)
+        if constructor is None:
+            resolved = self.get_type(qname)
+            if resolved is not None:
+                constructor = self._constructors.get(resolved.name or "")
+        if constructor is None:
+            raise KeyError(qname)
+        return constructor
+
+    # -- registration ----------------------------------------------------------
+
+    def type_for_class(self, type_class: Any) -> PyxsdType:
+        adapter = self._type_cache.get(id(type_class))
+        if adapter is not None:
+            return adapter
+        name = schema_type_name(type_class)
+        if name is not None:
+            canonical = self._types.get(name)
+            if canonical is not None:
+                self._type_cache[id(type_class)] = canonical
+                return canonical
+        adapter = PyxsdType(self, type_class)
+        self._type_cache[id(type_class)] = adapter
+        return adapter
+
+    def type_for_declaration(self, declaration: Any) -> PyxsdType | None:
+        getter = getattr(declaration, "getType", None)
+        if getter is None:
+            return None
+        try:
+            type_class = getter()
+        except Exception:
+            return None
+        if not isinstance(type_class, type):
+            return None
+        return self.type_for_class(type_class)
+
+    def elements_for(
+        self, proxy: PyxsdSchemaProxy | _MergedSchemaProxy
+    ) -> tuple[PyxsdElement, ...]:
+        members = proxy.members if isinstance(proxy, _MergedSchemaProxy) else (proxy,)
+        return tuple(element for element in self._elements.values() if element.parent in members)
+
+    def imported_types_for(
+        self, proxy: PyxsdSchemaProxy | _MergedSchemaProxy
+    ) -> tuple[PyxsdType, ...]:
+        members = set(proxy.members) if isinstance(proxy, _MergedSchemaProxy) else {proxy}
+        return tuple(
+            type_adapter
+            for type_adapter in self._types.values()
+            if not type_adapter.is_builtin and type_adapter.schema in members
+        )
+
+    def _register_schema(self, proxy: PyxsdSchemaProxy) -> None:
+        schema = proxy._schema
+        entries = [
+            entry
+            for values in getattr(schema, "components", {}).values()
+            for entry in values
+            if entry.isGlobalDeclaration()
+        ]
+        # Types precede declarations so every named type has its canonical
+        # adapter before an element or attribute references it.
+        for entry in entries:
+            if type(entry).__name__ in _TYPE_KINDS:
+                self._register_type(proxy, entry)
+        for entry in entries:
+            kind = type(entry).__name__
+            if kind in _ELEMENT_KINDS:
+                self._register_element(proxy, entry)
+            elif kind in _ATTRIBUTE_KINDS and entry.getNamespace() not in _INJECTED_NAMESPACES:
+                self._register_attribute(proxy, entry)
+        schema_entries = getattr(schema, "components", {}).get("schema") or ()
+        schema_er = next(iter(schema_entries), None)
+        substitution_groups = getattr(schema_er, "substitutionGroups", {}) or {}
+        for head_name, members in substitution_groups.items():
+            head = self._elements.get(head_name)
+            if head is None or head.parent is not proxy:
+                continue
+            adapters = frozenset(
+                element
+                for member in members
+                if (element := self._element_for_er(proxy, member, global_declaration=True))
+                is not None
+            )
+            if adapters:
+                self._substitution_groups[head_name] = adapters
+
+    def _register_type(self, proxy: PyxsdSchemaProxy, er: Any) -> None:
+        name = schema_type_name_for_er(er, proxy._schema)
+        if name is None:
+            return
+        type_class = self._class_for_er(proxy._schema, er)
+        if type_class is None:  # pragma: no cover - compiled global types have classes
+            return
+        adapter = PyxsdType(self, type_class, er=er, proxy=proxy, name=name)
+        existing = self._types.get(name)
+        if existing is not None:
+            existing_proxy = existing.schema
+            existing_schema = None if existing_proxy is None else existing_proxy._schema
+            if existing.schema is not proxy and _component_origin(
+                existing_schema, existing._er
+            ) != _component_origin(proxy._schema, er):
+                raise ValueError(
+                    f"conflicting type definition {name!r} in namespace {proxy.target_namespace!r}"
+                )
+            self._type_cache[id(type_class)] = existing
+            return
+        self._types[name] = adapter
+        self._type_cache[id(type_class)] = adapter
+        if adapter.is_atomic():
+            self._constructors.setdefault(name, AtomicConstructor(name, adapter))
+
+    def _register_element(self, proxy: PyxsdSchemaProxy, er: Any) -> None:
+        adapter = self._element_for_er(proxy, er, global_declaration=True)
+        if adapter is not None and adapter.name is not None:
+            existing = self._elements.get(adapter.name)
+            if existing is not None:
+                existing_proxy = existing.parent
+                existing_schema = None if existing_proxy is None else existing_proxy._schema
+                if existing.parent is not proxy and _component_origin(
+                    existing_schema, existing._er
+                ) != _component_origin(proxy._schema, er):
+                    raise ValueError(
+                        f"conflicting element declaration {adapter.name!r} in namespace "
+                        f"{proxy.target_namespace!r}"
+                    )
+                return
+            self._elements[adapter.name] = adapter
+
+    def _register_attribute(self, proxy: PyxsdSchemaProxy, er: Any) -> None:
+        name = er.expandedName or er.name
+        if name is None:
+            return
+        existing = self._attributes.get(name)
+        if existing is not None:
+            existing_schema = getattr(existing.parent, "_schema", None)
+            if existing.parent is not proxy and _component_origin(
+                existing_schema, existing._er
+            ) != _component_origin(proxy._schema, er):
+                raise ValueError(
+                    f"conflicting attribute declaration {name!r} in namespace "
+                    f"{proxy.target_namespace!r}"
+                )
+            return
+        self._attributes[name] = PyxsdAttribute(self, er, proxy, name=name, parent=proxy)
+
+    def _element_for_er(
+        self, proxy: PyxsdSchemaProxy, er: Any, *, global_declaration: bool
+    ) -> PyxsdElement | None:
+        adapter = self._element_cache.get(id(er))
+        if adapter is not None:
+            return adapter
+        name = er.expandedName or er.name if global_declaration else _instance_name(er, proxy)
+        if name is None:
+            return None
+        adapter = self._shared_element(proxy, er, name=name)
+        self._element_cache[id(er)] = adapter
+        return adapter
+
+    def _shared_element(
+        self,
+        proxy: PyxsdSchemaProxy | None,
+        er: Any,
+        *,
+        name: str | None = None,
+    ) -> PyxsdElement:
+        """Return this pool's single element adapter for *er* under *proxy*.
+
+        Element identity is memoised for the pool's lifetime, so a content
+        model that references a declaration already on the build path
+        returns that adapter instead of descending forever; the resulting
+        cycle is the same object. The proxy is a package-local
+        ``PyxsdSchemaProxy`` here, so its identity is stable for as long as
+        the pool and the memo entry stays valid.
+        """
+        key = (id(proxy), id(er))
+        adapter = self._graph_cache.get(key)
+        if adapter is None:
+            adapter = PyxsdElement(self, er, proxy, name=name)
+            self._graph_cache[key] = adapter
+        return adapter
+
+    @staticmethod
+    def _class_for_er(schema: Any, er: Any) -> Any:
+        classes = getattr(schema, "classes", {})
+        key = getattr(er, "expandedName", None) or getattr(er, "name", None)
+        if key is not None and key in classes:
+            return classes[key]
+        return None  # pragma: no cover - compiled global types have classes
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+
+
+def _component_origin(schema: Any, er: Any) -> Any:
+    """Return the source document that authored one declaration.
+
+    Two separately compiled schemas can expose the same imported component;
+    that is a diamond, not a conflict.  The declaration origin distinguishes
+    "same document reached twice" from "two documents disagree".  An
+    anonymous schema source (an inline ``Element``) is identified by its
+    compiled schema object, so two distinct inline documents never look like
+    a diamond.
+    """
+    origins = getattr(schema, "declaration_origins", None)
+    element = getattr(er, "xsdElement", None)
+    if origins is not None and element is not None:
+        location = origins.get(element)
+        source = getattr(location, "source", None)
+        if source is not None:
+            return _canonical_origin(source)
+    source = getattr(schema, "source", None)
+    if source is not None:
+        from xml.etree import ElementTree as ET
+
+        if isinstance(source, ET.Element):
+            return ("inline", _element_signature(source))
+        return _canonical_origin(source)
+    return ("anonymous", id(schema))
+
+
+def _canonical_origin(source: Any) -> Any:
+    """Canonicalize a local declaration source so symlinked paths compare equal."""
+    if not isinstance(source, str):
+        return source
+    from pathlib import Path
+
+    from pyxsd.resource_refs import classify_resource
+
+    if classify_resource(source).kind != "local":
+        return source
+    try:
+        return str(Path(source).resolve())
+    except OSError:  # pragma: no cover - unresolvable path stays distinct
+        return source
+
+
+def _element_signature(element: Any) -> Any:
+    """A structural identity for an inline schema source tree."""
+    from xml.etree import ElementTree as ET
+
+    if not isinstance(element, ET.Element):
+        return id(element)
+    return (
+        element.tag,
+        tuple(sorted(element.attrib.items())),
+        element.text or "",
+        tuple(_element_signature(child) for child in element),
+    )
+
+
+def _lookup(mapping: Mapping[str, Any], qname: str | None) -> Any:
+    if qname is None:
+        return None
+    return mapping.get(qname)
+
+
+def schema_type_name_for_er(er: Any, schema: Any) -> str | None:
+    """Return the global type's Clark name, or ``None`` for an anonymous type."""
+    name = getattr(er, "name", None)
+    if not isinstance(name, str) or not name or "|" in name:
+        return None
+    namespace = getattr(er, "getNamespace", lambda: None)()
+    if namespace is None:
+        namespace = getattr(schema, "target_namespace", None)
+    return clark(namespace, name)
+
+
+def _instance_name(
+    er: Any, proxy: PyxsdSchemaProxy | None, *, is_attribute: bool = False
+) -> str | None:
+    method = er.expandedInstanceName
+    parser = getattr(proxy._schema, "_host", None) if proxy is not None else None
+    try:
+        return method(is_attribute=is_attribute, parser=parser)
+    except Exception:  # pragma: no cover - unresolved refs fall back below
+        return getattr(er, "expandedName", None) or getattr(er, "name", None)
+
+
+def _element_descriptors(type_class: Any) -> tuple[Any, ...]:
+    collector = getattr(type_class, "_getElements", None)
+    if collector is None:
+        return ()
+    try:
+        instance: Any = object.__new__(type_class)
+    except TypeError:
+        return ()
+    return tuple(collector(instance))
+
+
+def _attribute_descriptors(type_class: Any) -> tuple[Any, ...]:
+    descriptors: dict[str, Any] = {}
+    for klass in reversed(type_class.__mro__):
+        for key in klass.__dict__.get("_attributeNames_", ()):
+            descriptor = klass.__dict__[key]
+            descriptors[descriptor.name] = descriptor
+    return tuple(descriptors.values())

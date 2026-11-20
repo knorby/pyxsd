@@ -1,0 +1,601 @@
+"""Behavioral tests for the mandatory constructed-node instruction family.
+
+``xsl:comment``, ``xsl:processing-instruction``, and ``xsl:namespace`` compile
+and execute outside the processor: this module drives real compilations and
+checks the constructed nodes, their attachment, and every assigned static or
+dynamic error code.
+"""
+
+from __future__ import annotations
+
+import ast
+import inspect
+import io
+from typing import Any
+
+import pytest
+from tests.xslt.support import stylesheet
+
+import pyxsd.xslt.processor as processor_module
+from pyxsd.xdm.nodes import NodeKind, XdmNode
+from pyxsd.xslt import XsltProcessor
+from pyxsd.xslt.compiler.constructors import (
+    CONSTRUCTOR_INSTRUCTION_COMPILERS,
+    compile_comment,
+    compile_namespace,
+    compile_processing_instruction,
+)
+from pyxsd.xslt.compiler.instructions import instruction_name
+from pyxsd.xslt.compiler.plans import (
+    _CommentPlan,
+    _NamespacePlan,
+    _ProcessingInstructionPlan,
+)
+from pyxsd.xslt.errors import XsltError
+from pyxsd.xslt.runtime.constructors import (
+    CONSTRUCTOR_PLAN_EXECUTORS,
+    execute_comment,
+    execute_namespace,
+    execute_processing_instruction,
+)
+
+XML_NS = "http://www.w3.org/XML/1998/namespace"
+XMLNS_NS = "http://www.w3.org/2000/xmlns/"
+
+
+def _compile(body: str, *, version: str = "3.0", **kwargs: Any) -> Any:
+    return XsltProcessor(**kwargs).compile(
+        io.BytesIO(stylesheet(body, version=version, declare_xs=False))
+    )
+
+
+def _transform(body: str, *, version: str = "3.0", **kwargs: Any) -> Any:
+    return _compile(body, version=version, **kwargs).transform(
+        initial_template="main", delivery="document"
+    )
+
+
+def _error_code(body: str, *, version: str = "3.0", **kwargs: Any) -> str | None:
+    with pytest.raises(XsltError) as caught:
+        _compile(body, version=version, **kwargs).transform(
+            initial_template="main", delivery="document"
+        )
+    return caught.value.code
+
+
+def _comments(node: XdmNode) -> tuple[XdmNode, ...]:
+    return tuple(child for child in node.children if child.kind is NodeKind.COMMENT)
+
+
+def _pis(node: XdmNode) -> tuple[XdmNode, ...]:
+    return tuple(child for child in node.children if child.kind is NodeKind.PROCESSING_INSTRUCTION)
+
+
+# ---------------------------------------------------------------------------
+# xsl:comment
+
+
+def test_comment_value_comes_from_content_select_and_string_conversion() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out>
+            <xsl:comment>content</xsl:comment>
+            <xsl:comment select="1 + 1"/>
+            <xsl:comment select="(1, 'two')"/>
+            <xsl:comment select="()"/>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert [comment.string_value for comment in _comments(out)] == [
+        "content",
+        "2",
+        "1 two",
+        "",
+    ]
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?><out><!--content--><!--2--><!--1 two--><!----></out>'
+    )
+
+
+def test_comment_text_nodes_merge_without_a_separator() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out>
+            <xsl:comment>
+              <xsl:value-of select="'a'"/>
+              <xsl:value-of select="'b'"/>
+            </xsl:comment>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert [comment.string_value for comment in _comments(out)] == ["ab"]
+
+
+def test_comment_content_is_sanitized_per_the_spec() -> None:
+    # XSLT 3.0 11.8 requires a space after -- and after a trailing -.  The
+    # specification assigns no dynamic error code to comment content.
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out><xsl:comment>a--b-</xsl:comment></out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert [comment.string_value for comment in _comments(out)] == ["a- -b- "]
+
+
+# ---------------------------------------------------------------------------
+# xsl:processing-instruction
+
+
+def test_processing_instruction_uses_literal_avt_and_namespaced_names() -> None:
+    result = _transform(
+        """
+        <xsl:template xmlns:xslt="http://www.w3.org/1999/XSL/Transform" name="main">
+          <out>
+            <xsl:processing-instruction name="pi">data</xsl:processing-instruction>
+            <xsl:processing-instruction name="{concat('tar', 'get')}" select="'from select'"/>
+            <xslt:processing-instruction name="literal">namespaced</xslt:processing-instruction>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert [(pi.target, pi.string_value) for pi in _pis(out)] == [
+        ("pi", "data"),
+        ("target", "from select"),
+        ("literal", "namespaced"),
+    ]
+
+
+def test_processing_instruction_strips_leading_spaces_and_sanitizes_terminator() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out><xsl:processing-instruction name="pi">  value?&gt;</xsl:processing-instruction></out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert [pi.string_value for pi in _pis(out)] == ["value? >"]
+
+
+def test_processing_instruction_select_and_empty_comment_keep_their_values() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out>
+            <xsl:processing-instruction name="pi" select="()"/>
+            <xsl:comment select="()"/>
+          </out>
+        </xsl:template>
+        """
+    )
+    out = result.principal_tree.root_element
+    assert [pi.string_value for pi in _pis(out)] == [""]
+    assert [comment.string_value for comment in _comments(out)] == [""]
+    assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><out><?pi?><!----></out>')
+
+
+def test_processing_instruction_atomic_values_keep_the_space_separator() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out><xsl:processing-instruction name="pi" select="(1, 2)"/></out>
+        </xsl:template>
+        """
+    )
+    out = result.principal_tree.root_element
+    assert _pis(out)[0].string_value == "1 2"
+
+
+def test_processing_instruction_target_from_avt_is_validated() -> None:
+    assert (
+        _error_code(
+            """
+            <xsl:template name="main">
+              <xsl:processing-instruction name="{concat('x', 'ml')}">x</xsl:processing-instruction>
+            </xsl:template>
+            """
+        )
+        == "XTDE0890"
+    )
+
+
+# ---------------------------------------------------------------------------
+# xsl:namespace
+
+
+def test_namespace_binds_prefixes_and_the_default_namespace() -> None:
+    result = _transform(
+        """
+        <xsl:template xmlns:x="urn:x" exclude-result-prefixes="x" name="main">
+          <xsl:element name="x:out">
+            <xsl:namespace name="p" select="'urn:p'"/>
+            <xsl:namespace name="">urn:default</xsl:namespace>
+            <xsl:text>value</xsl:text>
+          </xsl:element>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    prefix_node = out.namespace_node("p")
+    default_node = out.namespace_node("")
+    assert prefix_node is not None
+    assert prefix_node.namespace_binding == "urn:p"
+    assert default_node is not None
+    assert default_node.namespace_binding == "urn:default"
+    serialized = result.serialize()
+    assert 'xmlns:p="urn:p"' in serialized
+    assert 'xmlns="urn:default"' in serialized
+
+
+def test_namespace_node_precedes_comment_and_element_content() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out>
+            <xsl:namespace name="p" select="'urn:p'"/>
+            <xsl:comment>before</xsl:comment>
+            <child/>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert [child.kind for child in out.children] == [
+        NodeKind.COMMENT,
+        NodeKind.ELEMENT,
+    ]
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?><out xmlns:p="urn:p"><!--before--><child/></out>'
+    )
+
+
+def test_namespace_after_other_content_uses_the_attachment_error() -> None:
+    assert (
+        _error_code(
+            """
+            <xsl:template name="main">
+              <out>
+                <xsl:comment>first</xsl:comment>
+                <xsl:namespace name="p" select="'urn:p'"/>
+              </out>
+            </xsl:template>
+            """
+        )
+        == "XTDE0410"
+    )
+
+
+def test_namespace_expands_an_avt_name_and_an_atomic_value_sequence() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out>
+            <xsl:namespace name="{concat('n', 's')}">urn:<xsl:value-of select="'p'"/></xsl:namespace>
+            <xsl:text>x</xsl:text>
+          </out>
+        </xsl:template>
+        """
+    )
+    out = result.principal_tree.root_element
+    node = out.namespace_node("ns")
+    assert node is not None
+    assert node.namespace_binding == "urn:p"
+
+
+def test_namespace_with_empty_prefix_requires_a_namespaced_parent() -> None:
+    assert (
+        _error_code(
+            """
+            <xsl:template name="main">
+              <out><xsl:namespace name="" select="'urn:default'"/></out>
+            </xsl:template>
+            """
+        )
+        == "XTDE0440"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Document order, nesting, and sequence constructors
+
+
+def test_constructed_nodes_keep_document_order_around_elements() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out>
+            <xsl:comment>before</xsl:comment>
+            <xsl:processing-instruction name="pi">middle</xsl:processing-instruction>
+            <child/>
+            <xsl:comment>after</xsl:comment>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert [child.kind for child in out.children] == [
+        NodeKind.COMMENT,
+        NodeKind.PROCESSING_INSTRUCTION,
+        NodeKind.ELEMENT,
+        NodeKind.COMMENT,
+    ]
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<out><!--before--><?pi middle?><child/><!--after--></out>"
+    )
+
+
+def test_constructors_work_inside_a_sequence_constructor() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <xsl:sequence>
+            <xsl:comment select="'from sequence'"/>
+          </xsl:sequence>
+        </xsl:template>
+        """
+    )
+
+    tree = result.principal_tree
+    assert [child.kind for child in tree.children] == [NodeKind.COMMENT]
+    assert tree.children[0].string_value == "from sequence"
+
+
+def test_constructors_nest_inside_xsl_element_and_literal_result_elements() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <xsl:element name="outer">
+            <xsl:comment select="'outer comment'"/>
+            <literal>
+              <xsl:processing-instruction name="inner">nested</xsl:processing-instruction>
+            </literal>
+          </xsl:element>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert out.children[0].kind is NodeKind.COMMENT
+    literal = out.children[1]
+    assert literal.kind is NodeKind.ELEMENT
+    assert [pi.target for pi in _pis(literal)] == ["inner"]
+
+
+def test_raw_delivery_returns_a_constructed_leaf_node() -> None:
+    principal = (
+        _compile('<xsl:template name="main"><xsl:comment select="\'c\'"/></xsl:template>')
+        .transform(initial_template="main", delivery="raw")
+        .principal
+    )
+    assert len(principal) == 1
+    assert isinstance(principal[0], XdmNode)
+    assert principal[0].kind is NodeKind.COMMENT
+    assert principal[0].string_value == "c"
+
+
+# ---------------------------------------------------------------------------
+# Static errors
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        ("<xsl:comment select=\"'x'\">content</xsl:comment>", "XTSE0940"),
+        (
+            "<xsl:comment select=\"'x'\"><xsl:fallback/></xsl:comment>",
+            "XTSE0940",
+        ),
+        (
+            '<xsl:processing-instruction name="pi" select="\'x\'">content'
+            "</xsl:processing-instruction>",
+            "XTSE0880",
+        ),
+        (
+            '<xsl:namespace name="p" select="\'urn:p\'">content</xsl:namespace>',
+            "XTSE0910",
+        ),
+        ('<xsl:namespace name="p"/>', "XTSE0910"),
+        (
+            '<xsl:namespace name="p"><xsl:fallback/></xsl:namespace>',
+            "XTSE0910",
+        ),
+        ("<xsl:processing-instruction/>", "XTSE0010"),
+        ("<xsl:namespace/>", "XTSE0010"),
+    ],
+)
+def test_static_constructor_errors(body: str, code: str) -> None:
+    assert _error_code(f'<xsl:template name="main">{body}</xsl:template>') == code
+
+
+def test_namespace_accepts_fallback_content_with_select() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out>
+            <xsl:namespace name="p" select="'urn:p'"><xsl:fallback/></xsl:namespace>
+            <xsl:text>value</xsl:text>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?><out xmlns:p="urn:p">value</out>'
+    )
+
+
+def test_comment_allows_whitespace_only_content_with_select() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out><xsl:comment select="'value'" xml:space="preserve">   </xsl:comment></out>
+        </xsl:template>
+        """
+    )
+
+    assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><out><!--value--></out>')
+
+
+def test_comment_select_rejects_an_invalid_expression() -> None:
+    assert (
+        _error_code('<xsl:template name="main"><xsl:comment select="+"/></xsl:template>')
+        == "XPST0003"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dynamic errors
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        (
+            '<xsl:processing-instruction name="42">x</xsl:processing-instruction>',
+            "XTDE0890",
+        ),
+        (
+            '<xsl:processing-instruction name="xml">x</xsl:processing-instruction>',
+            "XTDE0890",
+        ),
+        (
+            '<xsl:processing-instruction name="XmL">x</xsl:processing-instruction>',
+            "XTDE0890",
+        ),
+        ('<xsl:namespace name="xmlns" select="\'urn:p\'"/>', "XTDE0920"),
+        ('<xsl:namespace name="23" select="\'urn:p\'"/>', "XTDE0920"),
+        (f'<xsl:namespace name="p" select="\'{XMLNS_NS}\'"/>', "XTDE0905"),
+        ('<xsl:namespace name="p" select="\'\'"/>', "XTDE0930"),
+        ('<xsl:namespace name="xml" select="\'urn:x\'"/>', "XTDE0925"),
+        (f'<xsl:namespace name="other" select="\'{XML_NS}\'"/>', "XTDE0925"),
+    ],
+)
+def test_dynamic_constructor_errors(body: str, code: str) -> None:
+    assert _error_code(f'<xsl:template name="main"><out>{body}</out></xsl:template>') == code
+
+
+def test_the_xml_prefix_binds_the_xml_namespace() -> None:
+    result = _transform(
+        f"""
+        <xsl:template name="main">
+          <out>
+            <xsl:namespace name="xml" select="'{XML_NS}'"/>
+            <xsl:text>x</xsl:text>
+          </out>
+        </xsl:template>
+        """
+    )
+    out = result.principal_tree.root_element
+    assert out.namespace_node("xml") is not None
+
+
+def test_xsd_10_profiles_reject_an_invalid_anyuri() -> None:
+    assert (
+        _error_code(
+            '<xsl:template name="main"><out><xsl:namespace name="p">'
+            "####</xsl:namespace></out></xsl:template>",
+            version="2.0",
+            language="2.0",
+            xpath="2.0",
+            xsd_version="1.0",
+        )
+        == "XTDE0905"
+    )
+
+
+def test_xsd_10_profiles_accept_a_valid_anyuri() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out><xsl:namespace name="p">urn:p</xsl:namespace></out>
+        </xsl:template>
+        """,
+        version="2.0",
+        language="2.0",
+        xpath="2.0",
+        xsd_version="1.0",
+    )
+    assert result.serialize().endswith('<out xmlns:p="urn:p"/>')
+
+
+def test_xsd_11_profiles_accept_every_string_as_anyuri() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out><xsl:namespace name="p">####</xsl:namespace></out>
+        </xsl:template>
+        """
+    )
+    out = result.principal_tree.root_element
+    node = out.namespace_node("p")
+    assert node is not None
+    assert node.namespace_binding == "####"
+
+
+# ---------------------------------------------------------------------------
+# Structural regression
+
+
+def test_constructors_live_outside_the_processor() -> None:
+    assert compile_comment.__module__ == "pyxsd.xslt.compiler.constructors"
+    assert compile_processing_instruction.__module__ == "pyxsd.xslt.compiler.constructors"
+    assert compile_namespace.__module__ == "pyxsd.xslt.compiler.constructors"
+    assert execute_comment.__module__ == "pyxsd.xslt.runtime.constructors"
+    assert execute_processing_instruction.__module__ == "pyxsd.xslt.runtime.constructors"
+    assert execute_namespace.__module__ == "pyxsd.xslt.runtime.constructors"
+    assert not hasattr(processor_module, "_compile_comment")
+    assert not hasattr(processor_module, "_compile_processing_instruction")
+    assert not hasattr(processor_module, "_compile_namespace")
+    source = inspect.getsource(processor_module)
+    assert "_compile_comment" not in source
+    assert "_compile_processing_instruction" not in source
+    assert "_compile_namespace" not in source
+    assert "_CommentPlan" not in source
+    assert "_ProcessingInstructionPlan" not in source
+    assert "_NamespacePlan" not in source
+    functions = {
+        node.name
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+    assert not functions & {
+        "_compile_comment",
+        "_compile_processing_instruction",
+        "_compile_namespace",
+    }
+
+
+def test_constructor_families_are_registered_declaratively() -> None:
+    assert dict(CONSTRUCTOR_INSTRUCTION_COMPILERS) == {
+        instruction_name("comment"): compile_comment,
+        instruction_name("processing-instruction"): compile_processing_instruction,
+        instruction_name("namespace"): compile_namespace,
+    }
+    assert dict(CONSTRUCTOR_PLAN_EXECUTORS) == {
+        _CommentPlan: execute_comment,
+        _ProcessingInstructionPlan: execute_processing_instruction,
+        _NamespacePlan: execute_namespace,
+    }
+    compiled = _compile('<xsl:template name="main"><xsl:comment>x</xsl:comment></xsl:template>')
+    assert set(CONSTRUCTOR_PLAN_EXECUTORS) <= set(compiled.plan_executors)
+    for name, compiler in CONSTRUCTOR_INSTRUCTION_COMPILERS.items():
+        assert processor_module._INSTRUCTION_COMPILERS[name] is compiler

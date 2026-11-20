@@ -51,6 +51,19 @@ Common schema entry points; full signatures and contracts below.
 .. autofunction:: pyxsd.schema.parse
 ```
 
+## XDM values and document transforms
+
+`Document.to_xdm()` exposes the stored tree as XDM nodes, and
+`Document.transform()` runs a schema-bound document transform.
+
+```{eval-rst}
+.. autoclass:: pyxsd.xdm.nodes.XdmDocument
+
+.. autoclass:: pyxsd.xdm.errors.XdmInputError
+
+.. autoclass:: pyxsd.document_transform.DocumentTransform
+```
+
 ## Querying a document
 
 Common document entry points; full signatures and contracts are in the

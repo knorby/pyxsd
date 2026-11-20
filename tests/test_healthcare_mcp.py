@@ -162,7 +162,11 @@ def test_valid_document_needs_no_report_or_query():
 
 
 def test_real_stdio_doctor_preserves_source_and_inspects_occurrence(cda):
-    pytest.importorskip("mcp")
+    # ``tests/mcp`` resolves as a namespace package when the repository root is
+    # on ``sys.path``, so ``importorskip("mcp")`` can succeed without the SDK.
+    # Guard the client surface the example actually uses.
+    if not hasattr(pytest.importorskip("mcp"), "Client"):
+        pytest.skip("the MCP SDK is not installed")
     from examples.healthcare.bad_data_doctor.doctor import run
     from tests.healthcare_support import document_path
 

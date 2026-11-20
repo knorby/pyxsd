@@ -20,9 +20,20 @@ from pyxsd.derivation import (
 )
 from pyxsd.extensions import run_validation_hooks
 from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
-from pyxsd.schema_context import current_context, source_location, source_scoped
+from pyxsd.schema_context import (
+    current_context,
+    overridden_parser_host,
+    source_location,
+    source_scoped,
+)
 from pyxsd.validation import IssueSeverity, report_or_log
 from pyxsd.wildcards import NAMESPACE_ANY, WildcardSpec
+from pyxsd.xdm.annotations import (
+    capture_attribute_occurrence,
+    capture_element_occurrence,
+    capture_remaining_attributes,
+    occurrence_capture_active,
+)
 from pyxsd.xsd_data_types import (
     AnySimpleType,
     AnyType,
@@ -59,6 +70,18 @@ def _source_location(node, *, attribute=None):
             return replace(location, attribute=attribute)
         return location
     return None
+
+
+def _annotation_namespaces(cls, element) -> dict[str, str] | None:
+    """In-scope prefix bindings for resolving ``xsi:type`` evidence."""
+    parser = cls._parserHost()
+    namespace_context = getattr(parser, "namespaceContext", None)
+    if namespace_context is None:  # pragma: no cover - generated classes have a host
+        return None
+    try:
+        return namespace_context.bindings_for(element)
+    except Exception:  # pragma: no cover - binding context records parsed elements
+        return None
 
 
 def _mode_for(cls) -> BindingPolicy:
@@ -377,7 +400,11 @@ class SchemaBase:
         owning schema (hand-written overlay bases, or classes built
         before their compile finished).
         """
-        return getattr(getattr(cls, "schema", None), "_host", None)
+        schema = getattr(cls, "schema", None)
+        override = overridden_parser_host(schema)
+        if override is not None:
+            return override
+        return getattr(schema, "_host", None)
 
     @classmethod
     def _report_error(cls, message, *, code, element=None, **diagnostic):
@@ -495,7 +522,7 @@ class SchemaBase:
         return None
 
     @classmethod
-    def _checkWildcardAttribute(cls, attr, value, spec, parser) -> bool:
+    def _checkWildcardAttribute(cls, attr, value, spec, parser, *, elementTag=None) -> bool:
         """Checks a wildcard-matched attribute against ``processContents``.
 
         Returns ``False`` when the attribute should be dropped (an error
@@ -515,19 +542,59 @@ class SchemaBase:
                     f"no declaration found for attribute '{local}' required by a strict wildcard",
                     code="wildcard-no-declaration",
                     element=cls.__name__,
+                    location=_source_location(elementTag, attribute=attr),
                 )
+                if occurrence_capture_active():
+                    capture_attribute_occurrence(
+                        elementTag,
+                        attr,
+                        value=value,
+                        wildcard=spec,
+                        validation_attempted="none",
+                    )
                 return False
+            if occurrence_capture_active():
+                capture_attribute_occurrence(
+                    elementTag,
+                    attr,
+                    value=value,
+                    wildcard=spec,
+                    validation_attempted="partial",
+                )
             return True
+        actual_type = None
         try:
             declaration.host = parser
-            declaration.getType()(value)
+            actual_type = declaration.getType()
+            actual_type(value)
         except Exception as e:
             cls._report_error(
                 f"attribute '{local}' has an invalid value: {e}",
                 code=getattr(e, "code", "value"),
                 element=cls.__name__,
+                location=_source_location(elementTag, attribute=attr),
             )
+            if occurrence_capture_active():
+                capture_attribute_occurrence(
+                    elementTag,
+                    attr,
+                    governing_declaration=declaration,
+                    actual_type=actual_type,
+                    value=value,
+                    wildcard=spec,
+                    validation_attempted="full",
+                )
             return False
+        if occurrence_capture_active():
+            capture_attribute_occurrence(
+                elementTag,
+                attr,
+                governing_declaration=declaration,
+                actual_type=actual_type,
+                value=value,
+                wildcard=spec,
+                validation_attempted="full",
+            )
         return True
 
     @classmethod
@@ -585,6 +652,15 @@ class SchemaBase:
                     subInstance = subElCls.makeInstanceFromTag(subElement)
                     cls._bindTail(subInstance, subElement)
                     instance._children_.append(subInstance)
+                    if occurrence_capture_active():
+                        capture_element_occurrence(
+                            subElement,
+                            xsi_type_namespaces=_annotation_namespaces(cls, subElement),
+                            actual_type=subElCls,
+                            validation_attempted="full",
+                            wildcard=spec,
+                            bound=subInstance,
+                        )
                     return
         cls._bindWildcardChild(instance, subElement, spec)
 
@@ -606,6 +682,14 @@ class SchemaBase:
             subInstance = cls.makeGenericInstance(subElement)
             cls._bindTail(subInstance, subElement)
             instance._children_.append(subInstance)
+            if occurrence_capture_active():
+                capture_element_occurrence(
+                    subElement,
+                    xsi_type_namespaces=_annotation_namespaces(cls, subElement),
+                    actual_type=None,
+                    validation_attempted="none",
+                    bound=subInstance,
+                )
             return
         if spec.process_contents == "skip":
             # Skipped content has no governing type definition and takes
@@ -614,6 +698,15 @@ class SchemaBase:
             subInstance = cls.makeGenericInstance(subElement, skipped=True)
             cls._bindTail(subInstance, subElement)
             instance._children_.append(subInstance)
+            if occurrence_capture_active():
+                capture_element_occurrence(
+                    subElement,
+                    xsi_type_namespaces=_annotation_namespaces(cls, subElement),
+                    actual_type=None,
+                    validation_attempted="none",
+                    wildcard=spec,
+                    bound=subInstance,
+                )
             return
         local = local_name(subElement.tag)
         uri = namespace_of(subElement.tag)
@@ -627,12 +720,21 @@ class SchemaBase:
                     code="abstract-element",
                     element=cls.__name__,
                 )
+                if occurrence_capture_active():
+                    capture_element_occurrence(
+                        subElement,
+                        xsi_type_namespaces=_annotation_namespaces(cls, subElement),
+                        governing_declaration=descriptor,
+                        actual_type=None,
+                        validation_attempted="none",
+                        wildcard=spec,
+                    )
                 return
             descriptor.host = parser
             subElCls = cls._classForChild(descriptor, subElement)
             if subElCls is not None:
                 cls._checkDynamicEDC(instance, subElement, subElCls, descriptor, memberHeadMap)
-                cls._addChildInstance(instance, subElement, subElCls, descriptor)
+                cls._addChildInstance(instance, subElement, subElCls, descriptor, wildcard=spec)
                 return
         if spec.process_contents == "lax":
             governing = None
@@ -642,6 +744,15 @@ class SchemaBase:
             subInstance = cls.makeGenericInstance(subElement)
             cls._bindTail(subInstance, subElement)
             instance._children_.append(subInstance)
+            if occurrence_capture_active():
+                capture_element_occurrence(
+                    subElement,
+                    xsi_type_namespaces=_annotation_namespaces(cls, subElement),
+                    actual_type=None,
+                    validation_attempted="partial",
+                    wildcard=spec,
+                    bound=subInstance,
+                )
             return
         if xsi.xsi_type_name(subElement) is not None:
             # A strict wildcard admits an undeclared child whose
@@ -660,6 +771,15 @@ class SchemaBase:
                     subInstance._nil_ = False
                     cls._bindTail(subInstance, subElement)
                     instance._children_.append(subInstance)
+                    if occurrence_capture_active():
+                        capture_element_occurrence(
+                            subElement,
+                            xsi_type_namespaces=_annotation_namespaces(cls, subElement),
+                            actual_type=governing,
+                            validation_attempted="full",
+                            wildcard=spec,
+                            bound=subInstance,
+                        )
                 # The xsi:type handled the child (an invalid lexical
                 # value was already reported); do not also demand a
                 # declaration.
@@ -672,6 +792,15 @@ class SchemaBase:
         subInstance = cls.makeGenericInstance(subElement)
         cls._bindTail(subInstance, subElement)
         instance._children_.append(subInstance)
+        if occurrence_capture_active():
+            capture_element_occurrence(
+                subElement,
+                xsi_type_namespaces=_annotation_namespaces(cls, subElement),
+                actual_type=None,
+                validation_attempted="none",
+                wildcard=spec,
+                bound=subInstance,
+            )
 
     @classmethod
     def _checkDynamicEDC(
@@ -911,6 +1040,8 @@ class SchemaBase:
         """
         tagsUsed = instance.getAttributesFromTag(elementTag)
         instance.checkAttributes(tagsUsed, elementTag)
+        if occurrence_capture_active():
+            capture_remaining_attributes(elementTag)
 
     def getAttributesFromTag(self, elementTag):
         """Adds attributes to the ``_attribs_`` dictionary in the
@@ -997,6 +1128,18 @@ class SchemaBase:
                 else:
                     usedAttributes.append(instanceKey)
                 self._attribs_[instanceKey] = elementTag.attrib[instanceKey]
+                if occurrence_capture_active():
+                    # ``__set__`` resolved the same type and stored the
+                    # converted value already, so neither lookup can fail
+                    # here after a successful assignment.
+                    capture_attribute_occurrence(
+                        elementTag,
+                        instanceKey,
+                        governing_declaration=descriptor,
+                        actual_type=descriptor.getType(),
+                        value=descriptor.__get__(self, type(self)),
+                        validation_attempted="full",
+                    )
             # Attribute wildcard (xs:anyAttribute) pass-through. In legacy
             # namespace mode every undeclared attribute is accepted raw; in
             # strict mode the type's effective wildcard must admit the
@@ -1032,7 +1175,16 @@ class SchemaBase:
                                 "by the attribute wildcard",
                                 code="wildcard-namespace",
                                 element=cls.__name__,
+                                location=_source_location(elementTag, attribute=attr),
                             )
+                            if occurrence_capture_active():
+                                capture_attribute_occurrence(
+                                    elementTag,
+                                    attr,
+                                    value=value,
+                                    wildcard=spec,
+                                    validation_attempted="none",
+                                )
                             rejected.add(attr)
                             continue
                         if spec.process_contents == "skip":
@@ -1041,8 +1193,27 @@ class SchemaBase:
                             # identity-constraint fields do not see it
                             # (XSD 1.1 §3.3.4.2, idZ015).
                             skipped.add(attr)
-                        elif not self._checkWildcardAttribute(attr, value, spec, parser):
+                            if occurrence_capture_active():
+                                capture_attribute_occurrence(
+                                    elementTag,
+                                    attr,
+                                    value=value,
+                                    wildcard=spec,
+                                    validation_attempted="none",
+                                )
+                        elif not self._checkWildcardAttribute(
+                            attr, value, spec, parser, elementTag=elementTag
+                        ):
                             continue
+                    elif occurrence_capture_active():
+                        # Legacy mode admits undeclared attributes raw;
+                        # the wildcard configuration was not consulted.
+                        capture_attribute_occurrence(
+                            elementTag,
+                            attr,
+                            value=value,
+                            validation_attempted="none",
+                        )
                     self._attribs_[attr] = value
                     usedAttributes.append(attr)
                 if rejected:
@@ -1507,6 +1678,8 @@ class SchemaBase:
         aggregate=False,
         leader=None,
         binding=None,
+        substitution_group_head=None,
+        wildcard=None,
     ):
         """Builds and stores the instance for one matched child element.
 
@@ -1573,6 +1746,19 @@ class SchemaBase:
             subInstance._nil_ = True
             cls._bindTail(subInstance, subElement)
             instance._children_.append(subInstance)
+            if occurrence_capture_active():
+                capture_element_occurrence(
+                    subElement,
+                    xsi_type_namespaces=_annotation_namespaces(cls, subElement),
+                    governing_declaration=descriptor,
+                    actual_type=subElCls,
+                    nilled=nilled,
+                    validation_attempted="full",
+                    wildcard=wildcard,
+                    substitution_group_head=substitution_group_head,
+                    repeated=aggregate,
+                    bound=subInstance,
+                )
             return None
         if not isComplex:
             if nilled:
@@ -1622,6 +1808,19 @@ class SchemaBase:
                     # carries no hook and costs one ``getattr``.
                     if isinstance(subInstance, subElCls):
                         run_validation_hooks(subInstance)
+            if occurrence_capture_active():
+                capture_element_occurrence(
+                    subElement,
+                    xsi_type_namespaces=_annotation_namespaces(cls, subElement),
+                    governing_declaration=descriptor,
+                    actual_type=subElCls,
+                    nilled=nilled,
+                    validation_attempted="full",
+                    wildcard=wildcard,
+                    substitution_group_head=substitution_group_head,
+                    repeated=aggregate,
+                    bound=subInstance,
+                )
             return None
 
         forcedText = None
@@ -1642,6 +1841,19 @@ class SchemaBase:
         subInstance._nil_ = nilled
         cls._bindTail(subInstance, subElement)
         instance._children_.append(subInstance)
+        if occurrence_capture_active():
+            capture_element_occurrence(
+                subElement,
+                xsi_type_namespaces=_annotation_namespaces(cls, subElement),
+                governing_declaration=descriptor,
+                actual_type=subElCls,
+                nilled=nilled,
+                validation_attempted="full",
+                wildcard=wildcard,
+                substitution_group_head=substitution_group_head,
+                repeated=aggregate,
+                bound=subInstance,
+            )
         if (
             not nilled
             and getattr(subElCls, "_simpleContentType_", None) is not None
@@ -1709,6 +1921,8 @@ class SchemaBase:
         explicit use accepts it (open045) — and the ``xmlns`` spellings are
         namespace declarations, never instance attributes.
         """
+        if occurrence_capture_active():
+            capture_remaining_attributes(subElement)
         for attr in subElement.attrib:
             if "xmlns" in attr:
                 continue
@@ -1719,6 +1933,7 @@ class SchemaBase:
                 "schema and was not parsed",
                 code="unexpected-attribute",
                 element=subElementName,
+                location=_source_location(subElement, attribute=attr),
             )
 
     @classmethod
@@ -2039,7 +2254,14 @@ class SchemaBase:
                 # The member declaration supplies the value constraints
                 # (nillable, default, fixed, identity); the head's
                 # particle supplied the occurrence match.
-                cls._addChildInstance(instance, subElement, subElCls, memberER)
+                cls._addChildInstance(
+                    instance,
+                    subElement,
+                    subElCls,
+                    memberER,
+                    substitution_group_head=getattr(headDescriptor, "expandedName", None)
+                    or headDescriptor.name,
+                )
                 return True
         return False
 
@@ -2440,6 +2662,15 @@ class SchemaBase:
             instance._skipped_ = True
         cls.addValueTo(instance, elementTag)
         instance._children_ = []
+        if occurrence_capture_active():
+            capture_remaining_attributes(elementTag)
+            capture_element_occurrence(
+                elementTag,
+                xsi_type_namespaces=_annotation_namespaces(cls, elementTag),
+                actual_type=None,
+                validation_attempted="none",
+                bound=instance,
+            )
         for child in elementTag:
             subInstance = cls.makeGenericInstance(child, skipped=skipped)
             cls._bindTail(subInstance, child)

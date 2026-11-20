@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="http://www.w3.org/2012/10/xslt-test-catalog" test-suite="broken">
+  <test-set name="broken" file="broken/broken-test-set.xml"/>
+</catalog>

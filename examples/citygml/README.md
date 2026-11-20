@@ -114,8 +114,6 @@ findings; adding `require_valid()` would stop it. Findings include:
   GML 3.1.1, including geometry types derived by
   extension inside restrictions of `AbstractGeometryType` (and similar
   `metaDataProperty`/`description` sequence mismatches).
-- `unknown-attributeRef` — `gml:uom` referenced from
-  `CoordinateSystemAxisType` cannot be resolved in GML 3.1.1.
 
 Instance findings, including content-order errors, are available on
 `document.report`. These describe this processor and configuration, not a

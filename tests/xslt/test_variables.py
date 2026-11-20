@@ -1,0 +1,584 @@
+"""Variable and parameter scope, laziness, and lexical binding behavior."""
+
+from __future__ import annotations
+
+import io
+from collections.abc import Callable
+from functools import partial
+from pathlib import Path
+from typing import Any
+
+import pytest
+from tests.xslt.support import element_children
+from tests.xslt.support import stylesheet as _stylesheet
+
+from pyxsd.xdm import XdmAtomic
+from pyxsd.xslt import XsltProcessor
+from pyxsd.xslt.compiler.packages import PackageResolver
+from pyxsd.xslt.errors import XsltError, XsltStaticError
+
+XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
+XSD_NS = "http://www.w3.org/2001/XMLSchema"
+MY_NS = "urn:my"
+
+stylesheet = partial(_stylesheet, namespaces={"my": MY_NS})
+
+
+def transform(
+    source: bytes,
+    input_source: bytes | None = None,
+    *,
+    compile_parameters: dict[str, Any] | None = None,
+    delivery: str = "document",
+    **options: Any,
+):
+    compiled = XsltProcessor().compile(io.BytesIO(source), static_parameters=compile_parameters)
+    if input_source is None:
+        return compiled.transform(delivery=delivery, **options)
+    return compiled.transform(source=input_source, delivery=delivery, **options)
+
+
+def error_code(call: Callable[[], object]) -> str | None:
+    with pytest.raises(XsltError) as caught:
+        call()
+    return caught.value.code
+
+
+def test_global_static_and_local_variable_scope() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="g" select="'global'"/>
+        <xsl:param name="s" static="yes" select="'static-default'"/>
+        <xsl:template name="shadow">
+          <xsl:variable name="g" select="'local'"/>
+          <xsl:value-of select="$g"/>
+        </xsl:template>
+        <xsl:template name="main">
+          <xsl:value-of select="$g"/><xsl:text>|</xsl:text>
+          <xsl:value-of select="$s"/><xsl:text>|</xsl:text>
+          <xsl:call-template name="shadow"/><xsl:text>|</xsl:text>
+          <xsl:value-of select="$g"/>
+        </xsl:template>
+        """
+    )
+    result = transform(
+        source,
+        compile_parameters={"s": "static-value"},
+        initial_template="main",
+        parameters={"s": "runtime-value"},
+    )
+    assert result.principal_tree.string_value == "global|static-value|local|global"
+
+
+def test_local_variable_value_forms_and_coercion() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="tree"><a>text</a></xsl:variable>
+          <xsl:variable name="items" as="element()*"><b/><c/></xsl:variable>
+          <xsl:variable name="typed" as="xs:integer" select="'9'"/>
+          <xsl:variable name="plain"/>
+          <xsl:sequence select="name($tree/*), count($items), $typed instance of xs:integer,
+                                string-length($plain)"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, initial_template="main", delivery="raw")
+    assert result.principal == (
+        XdmAtomic.string("a"),
+        XdmAtomic.integer(2),
+        XdmAtomic.boolean(True),
+        XdmAtomic.integer(0),
+    )
+
+
+STYLESHEET_WITH_UNUSED_MISSING_VARIABLE = stylesheet(
+    """
+    <xsl:template name="unused">
+      <xsl:value-of select="$missing"/>
+    </xsl:template>
+    <xsl:template name="main"><out/></xsl:template>
+    """
+)
+
+
+def test_unused_template_variable_is_a_static_error() -> None:
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(STYLESHEET_WITH_UNUSED_MISSING_VARIABLE)
+    assert caught.value.code == "XPST0008"
+
+
+def test_local_variable_scope_ends_with_its_sequence_constructor() -> None:
+    scoped = stylesheet(
+        """
+        <xsl:template name="main">
+          <out><xsl:variable name="x" select="1"/><xsl:value-of select="$x"/></out>
+        </xsl:template>
+        """
+    )
+    result = transform(scoped, initial_template="main")
+    assert element_children(result.principal_tree)[0].string_value == "1"
+
+    escaped = stylesheet(
+        """
+        <xsl:template name="main">
+          <out><xsl:variable name="x" select="1"/><xsl:value-of select="$x"/></out>
+          <xsl:value-of select="$x"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(escaped)
+    assert caught.value.code == "XPST0008"
+
+
+def test_local_variables_are_visible_only_after_declaration() -> None:
+    early = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:value-of select="$x"/>
+          <xsl:variable name="x" select="1"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(early)
+    assert caught.value.code == "XPST0008"
+
+
+def test_forward_global_references_are_lazy_and_circularity_is_reported() -> None:
+    forward = stylesheet(
+        """
+        <xsl:variable name="a" select="$b + 1"/>
+        <xsl:variable name="b" select="41"/>
+        <xsl:template name="main"><xsl:sequence select="$a"/></xsl:template>
+        """
+    )
+    assert transform(forward, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.integer(42),
+    )
+
+    circular = stylesheet(
+        """
+        <xsl:variable name="a" select="$b"/>
+        <xsl:variable name="b" select="$a"/>
+        <xsl:template name="main"><xsl:value-of select="$a"/></xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(circular, initial_template="main")) == "XTDE0640"
+
+
+def test_included_module_globals_are_statically_visible(tmp_path: Path) -> None:
+    included = tmp_path / "included.xsl"
+    included.write_text(
+        stylesheet('<xsl:variable name="from_lib" select="1"/>').decode(),
+        encoding="utf-8",
+    )
+    principal = tmp_path / "principal.xsl"
+    principal.write_text(
+        stylesheet(
+            """
+            <xsl:include href="included.xsl"/>
+            <xsl:template name="unused">
+              <xsl:value-of select="$from_lib"/>
+            </xsl:template>
+            <xsl:template name="main"><out/></xsl:template>
+            """
+        ).decode(),
+        encoding="utf-8",
+    )
+    XsltProcessor().compile(principal)
+
+    broken = tmp_path / "broken.xsl"
+    broken.write_text(
+        stylesheet(
+            """
+            <xsl:template name="unused">
+              <xsl:value-of select="$missing"/>
+            </xsl:template>
+            """
+        ).decode(),
+        encoding="utf-8",
+    )
+    principal.write_text(
+        stylesheet('<xsl:include href="broken.xsl"/>').decode(),
+        encoding="utf-8",
+    )
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(principal)
+    assert caught.value.code == "XPST0008"
+
+
+def test_used_package_globals_are_statically_visible() -> None:
+    library = (
+        f'<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:lib="urn:library" '
+        'name="urn:library" package-version="1.0" version="3.0">'
+        '<xsl:variable name="lib:g" select="1" visibility="public"/>'
+        "</xsl:package>"
+    )
+    principal = (
+        f'<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:lib="urn:library" '
+        'name="urn:principal" version="3.0">'
+        '<xsl:use-package name="urn:library" package-version="1.0">'
+        '<xsl:accept component="variable" names="lib:g" visibility="public"/>'
+        "</xsl:use-package>"
+        '<xsl:template name="unused"><xsl:value-of select="$lib:g"/></xsl:template>'
+        '<xsl:template name="main"><out/></xsl:template>'
+        "</xsl:package>"
+    )
+    resolver = PackageResolver.from_sources(library)
+    XsltProcessor(resolver=resolver).compile(io.BytesIO(principal.encode()))
+
+
+def test_map_constructor_values_are_statically_checked() -> None:
+    forms = {
+        "select": """
+            <xsl:template name="unused">
+              <xsl:sequence select="map {'a': $missing}"/>
+            </xsl:template>
+        """,
+        "avt": """
+            <xsl:template name="unused">
+              <out x="{map {'a': $missing}}"/>
+            </xsl:template>
+        """,
+        "tvt": """
+            <xsl:template name="unused">
+              <out xsl:expand-text="yes">{map {'a': $missing}}</out>
+            </xsl:template>
+        """,
+        "pattern": """<xsl:template match="item[map {'a': $missing}]"/>""",
+    }
+    for label, body in forms.items():
+        with pytest.raises(XsltStaticError) as caught:
+            XsltProcessor().compile(stylesheet(body))
+        assert caught.value.code == "XPST0008", label
+
+    XsltProcessor().compile(
+        stylesheet(
+            """
+            <xsl:variable name="missing" select="1"/>
+            <xsl:template name="unused">
+              <xsl:sequence select="map {'a': $missing}"/>
+            </xsl:template>
+            """
+        )
+    )
+
+
+def test_local_eqname_variable_and_parameter_declarations() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="Q{v}var" select="1"/>
+        <xsl:template match="/">
+          <out v="{$Q{v}var}">
+            <xsl:apply-templates select="*">
+              <xsl:with-param name="Q{}mod" select="*"/>
+            </xsl:apply-templates>
+          </out>
+        </xsl:template>
+        <xsl:template match="*">
+          <xsl:param name="Q{}mod"/>
+          <xsl:apply-templates>
+            <xsl:with-param name="Q{}mod" select="$Q{}mod"/>
+          </xsl:apply-templates>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b"<doc><item/></doc>")
+    out = element_children(result.principal_tree)[0]
+    attribute = out.attribute("v")
+    assert attribute is not None
+    assert attribute.string_value == "1"
+
+
+def test_local_eqname_parameter_forms() -> None:
+    source = stylesheet(
+        """
+        <xsl:function name="my:identity" as="xs:string">
+          <xsl:param name="Q{urn:q}f" as="xs:string"/>
+          <xsl:sequence select="$Q{urn:q}f"/>
+        </xsl:function>
+        <xsl:template name="named">
+          <xsl:param name="Q{urn:q}t" select="'t'"/>
+          <xsl:sequence select="$Q{urn:q}t"/>
+        </xsl:template>
+        <xsl:template name="main">
+          <xsl:variable name="Q{urn:q}v" select="'v'"/>
+          <xsl:iterate select="1">
+            <xsl:param name="Q{urn:q}i" select="'i'"/>
+            <xsl:on-completion
+              select="concat($Q{urn:q}v, my:identity('f'), $Q{urn:q}i, '|')"/>
+            <xsl:next-iteration/>
+          </xsl:iterate>
+          <xsl:call-template name="named"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b"<doc/>", initial_template="main")
+    assert "".join(result.principal_tree.string_value.split()) == "vfi|t"
+
+
+def test_private_package_variables_are_not_statically_visible() -> None:
+    library = (
+        f'<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:lib="urn:library" '
+        'name="urn:library" package-version="1.0" version="3.0">'
+        '<xsl:variable name="lib:priv" select="1" visibility="private"/>'
+        '<xsl:variable name="lib:pub" select="2" visibility="public"/>'
+        "</xsl:package>"
+    )
+
+    def principal(reference: str) -> bytes:
+        return (
+            f'<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:lib="urn:library" '
+            'name="urn:principal" version="3.0">'
+            '<xsl:use-package name="urn:library" package-version="1.0">'
+            '<xsl:accept component="variable" names="lib:pub" visibility="public"/>'
+            "</xsl:use-package>"
+            '<xsl:template name="unused">'
+            f'<xsl:value-of select="${reference}"/>'
+            "</xsl:template>"
+            "</xsl:package>"
+        ).encode()
+
+    resolver = PackageResolver.from_sources(library)
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor(resolver=resolver).compile(io.BytesIO(principal("lib:priv")))
+    assert caught.value.code == "XPST0008"
+
+    XsltProcessor(resolver=resolver).compile(io.BytesIO(principal("lib:pub")))
+
+
+def test_variable_select_and_content_are_mutually_exclusive() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="x" select="1"><a/></xsl:variable>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(io.BytesIO(source))
+    assert caught.value.code == "XTSE0620"
+
+    missing_name = stylesheet('<xsl:template name="main"><xsl:variable select="1"/></xsl:template>')
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(io.BytesIO(missing_name))
+    assert caught.value.code == "XTSE0010"
+
+
+def test_tunnel_parameters_flow_through_builtin_rules() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:apply-templates select="/*">
+            <xsl:with-param name="t" select="'tunnel'" tunnel="yes"/>
+          </xsl:apply-templates>
+        </xsl:template>
+        <xsl:template match="doc/item">
+          <xsl:param name="t" tunnel="yes" select="'missing'"/>
+          <xsl:value-of select="$t"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b"<doc><item/></doc>", initial_template="main")
+    assert result.principal_tree.string_value == "tunnel"
+
+
+def test_non_tunnel_parameters_do_not_cross_intermediate_named_templates() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="outer">
+          <xsl:param name="p" select="'outer'"/>
+          <xsl:call-template name="middle">
+            <xsl:with-param name="p" select="$p"/>
+          </xsl:call-template>
+        </xsl:template>
+        <xsl:template name="middle">
+          <xsl:call-template name="inner"/>
+        </xsl:template>
+        <xsl:template name="inner">
+          <xsl:param name="p" select="'default'"/>
+          <xsl:value-of select="$p"/>
+        </xsl:template>
+        <xsl:template name="main"><xsl:call-template name="outer"/></xsl:template>
+        """
+    )
+    result = transform(source, initial_template="main")
+    assert result.principal_tree.string_value == "default"
+
+
+def test_next_match_and_apply_imports_accept_lexical_and_tunnel_parameters() -> None:
+    source = stylesheet(
+        """
+        <xsl:template match="item" priority="2">
+          <xsl:param name="p" select="'top'"/>
+          <xsl:value-of select="$p"/>
+          <xsl:next-match>
+            <xsl:with-param name="p" select="'next'"/>
+            <xsl:with-param name="t" select="'tunnel'" tunnel="yes"/>
+          </xsl:next-match>
+        </xsl:template>
+        <xsl:template match="item" priority="1">
+          <xsl:param name="p" select="'missing'"/>
+          <xsl:param name="t" tunnel="yes" select="'missing'"/>
+          <xsl:value-of select="$p"/><xsl:text>:</xsl:text>
+          <xsl:value-of select="$t"/>
+        </xsl:template>
+        <xsl:template match="/"><xsl:apply-templates select="/*/item"/></xsl:template>
+        """
+    )
+    result = transform(source, b"<doc><item/></doc>")
+    assert result.principal_tree.string_value == "topnext:tunnel"
+
+
+def test_iteration_parameters_are_statically_visible_in_body_and_completion() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1 to 2">
+            <xsl:param name="total" select="0"/>
+            <xsl:on-completion select="$total"/>
+            <xsl:next-iteration>
+              <xsl:with-param name="total" select="$total + ."/>
+            </xsl:next-iteration>
+          </xsl:iterate>
+        </xsl:template>
+        """
+    )
+    result = transform(source, initial_template="main", delivery="raw")
+    assert result.principal == (XdmAtomic.integer(3),)
+
+
+def test_iteration_parameters_are_not_visible_in_their_select() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="$total">
+            <xsl:param name="total" select="0"/>
+            <xsl:sequence select="$total"/>
+          </xsl:iterate>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(source)
+    assert caught.value.code == "XPST0008"
+
+
+def test_parameter_after_content_inside_construction_is_reported() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <out><literal/><xsl:param name="p"/></out>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(source, initial_template="main")) == "XTDE0000"
+
+
+def test_nested_sequence_without_select_is_evaluated_in_construction() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <out><xsl:sequence><xsl:sequence select="1"/></xsl:sequence></out>
+        </xsl:template>
+        """
+    )
+    result = transform(source, initial_template="main")
+    assert element_children(result.principal_tree)[0].string_value == "1"
+
+
+def test_required_parameter_without_a_value_is_reported() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:param name="required" required="yes"/>
+          <xsl:value-of select="$required"/>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(source, initial_template="main")) == "XTDE0700"
+
+
+def test_forward_global_reference_through_content_and_function_body() -> None:
+    content = stylesheet(
+        """
+        <xsl:variable name="a"><xsl:value-of select="$b"/></xsl:variable>
+        <xsl:variable name="b" select="'B'"/>
+        <xsl:template name="main"><xsl:value-of select="$a"/></xsl:template>
+        """
+    )
+    assert transform(content, initial_template="main").principal_tree.string_value == "B"
+
+    function = stylesheet(
+        """
+        <xsl:variable name="a" select="my:get()"/>
+        <xsl:variable name="b" select="'B'"/>
+        <xsl:function name="my:get" as="xs:string">
+          <xsl:sequence select="$b"/>
+        </xsl:function>
+        <xsl:template name="main"><xsl:value-of select="$a"/></xsl:template>
+        """
+    )
+    assert transform(function, initial_template="main").principal_tree.string_value == "B"
+
+
+def test_unused_broken_global_is_not_evaluated() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="broken" select="error()"/>
+        <xsl:template name="main"><out/></xsl:template>
+        """
+    )
+    result = transform(source, initial_template="main")
+    assert element_children(result.principal_tree)[0].local_name == "out"
+
+
+def test_lazy_global_reference_scan_is_expression_aware() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="broken" select="error()"/>
+        <xsl:template name="main">
+          <xsl:value-of select="if (false()) then $broken else 'ok'"/>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="'$broken'"/>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="(: $broken :) 'comment'"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        transform(source, initial_template="main").principal_tree.string_value
+        == "ok|$broken|comment"
+    )
+
+
+def test_local_variable_scope_ends_at_sequence_and_choose() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="x" select="'global'"/>
+        <xsl:variable name="y" select="'global'"/>
+        <xsl:template name="main">
+          <xsl:sequence>
+            <xsl:variable name="x" select="'local'"/>
+            <xsl:value-of select="$x"/>
+          </xsl:sequence>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="$x"/>
+          <xsl:text>|</xsl:text>
+          <xsl:choose>
+            <xsl:when test="true()">
+              <xsl:variable name="y" select="'branch'"/>
+              <xsl:value-of select="$y"/>
+            </xsl:when>
+          </xsl:choose>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="$y"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        transform(source, initial_template="main").principal_tree.string_value
+        == "local|global|branch|global"
+    )

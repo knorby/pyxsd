@@ -23,6 +23,7 @@ coverage.xml
 .codegraph/
 .serena/
 .superpowers/
+AGENTS.local.md
 
 # Conformance schema corpus (downloaded on demand)
 tests/conformance/.cache/

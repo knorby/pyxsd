@@ -1,0 +1,198 @@
+name: xslt
+
+# One job per language profile, each on every supported Python version.  The
+# 3.0 job measures the default processor; the 2.0 and 1.0 jobs construct their
+# native XsltProcessor identities, so a profile's verdicts never describe a
+# version attribute on the 3.0 engine.  The jobs share the pinned xslt30-test
+# checkout but never share a baseline.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".gitmodules"
+      - ".github/workflows/xslt.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "src/pyxsd/xdm/**"
+      - "src/pyxsd/xpath/**"
+      - "src/pyxsd/xslt/**"
+      - "tests/report_xslt.py"
+      - "tests/test_xslt_suite.py"
+      - "tests/xslt/**"
+
+permissions:
+  contents: read
+
+jobs:
+  xslt30:
+    # Manual runs only for now: the baselines were re-established on a
+    # different machine shape and the four-worker budget is not yet proven on
+    # CI runners.  Delete this condition to re-enable pull-request gating.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # The regex and Unicode families are exercised with a real per-case
+    # budget; four workers on a standard runner need the headroom.
+    timeout-minutes: 90
+    concurrency:
+      group: xslt-xslt30-${{ github.ref }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Resolve the pinned xslt30-test corpus commit
+        id: corpus
+        run: echo "sha=$(git rev-parse HEAD:tests/xslt/corpus)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the xslt30-test corpus submodule
+        uses: actions/cache@v6
+        with:
+          path: |
+            tests/xslt/corpus
+            .git/modules/tests/xslt/corpus
+          key: xslt30-test-${{ runner.os }}-${{ steps.corpus.outputs.sha }}
+
+      - name: Check out the xslt30-test corpus
+        run: git submodule update --init --depth 1 tests/xslt/corpus
+
+      - name: Sync environment
+        run: uv sync --group dev --python ${{ matrix.python-version }}
+
+      - name: Check the checked-in XSLT 3.0 baseline and report
+        run: uv run python tests/report_xslt.py --profile xslt30 --check --json > xslt-report-xslt30.json
+
+      - name: Run the XSLT 3.0 conformance suite
+        run: uv run pytest tests/test_xslt_suite.py -q
+        env:
+          PYXSD_RUN_XSLT: "1"
+          PYXSD_XSLT_PROFILE: xslt30
+          PYXSD_XSLT_TIMEOUT: "5"
+          PYXSD_XSLT_JOBS: "4"
+
+      - name: Upload the XSLT 3.0 report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xslt-report-xslt30-${{ matrix.python-version }}
+          path: xslt-report-xslt30.json
+          if-no-files-found: ignore
+
+  xslt20:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    concurrency:
+      group: xslt-xslt20-${{ github.ref }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Resolve the pinned xslt30-test corpus commit
+        id: corpus
+        run: echo "sha=$(git rev-parse HEAD:tests/xslt/corpus)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the xslt30-test corpus submodule
+        uses: actions/cache@v6
+        with:
+          path: |
+            tests/xslt/corpus
+            .git/modules/tests/xslt/corpus
+          key: xslt30-test-${{ runner.os }}-${{ steps.corpus.outputs.sha }}
+
+      - name: Check out the xslt30-test corpus
+        run: git submodule update --init --depth 1 tests/xslt/corpus
+
+      - name: Sync environment
+        run: uv sync --group dev --python ${{ matrix.python-version }}
+
+      - name: Check the checked-in XSLT 2.0 baseline and report
+        run: uv run python tests/report_xslt.py --profile xslt20 --check --json > xslt-report-xslt20.json
+
+      - name: Run the native XSLT 2.0 conformance suite
+        run: uv run pytest tests/test_xslt_suite.py -q
+        env:
+          PYXSD_RUN_XSLT: "1"
+          PYXSD_XSLT_PROFILE: xslt20
+          PYXSD_XSLT_TIMEOUT: "5"
+          PYXSD_XSLT_JOBS: "4"
+
+      - name: Upload the XSLT 2.0 report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xslt-report-xslt20-${{ matrix.python-version }}
+          path: xslt-report-xslt20.json
+          if-no-files-found: ignore
+
+  xslt10:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: xslt-xslt10-${{ github.ref }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Resolve the pinned xslt30-test corpus commit
+        id: corpus
+        run: echo "sha=$(git rev-parse HEAD:tests/xslt/corpus)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the xslt30-test corpus submodule
+        uses: actions/cache@v6
+        with:
+          path: |
+            tests/xslt/corpus
+            .git/modules/tests/xslt/corpus
+          key: xslt30-test-${{ runner.os }}-${{ steps.corpus.outputs.sha }}
+
+      - name: Check out the xslt30-test corpus
+        run: git submodule update --init --depth 1 tests/xslt/corpus
+
+      - name: Sync environment
+        run: uv sync --group dev --python ${{ matrix.python-version }}
+
+      - name: Check the checked-in XSLT 1.0 baseline and report
+        run: uv run python tests/report_xslt.py --profile xslt10 --check --json > xslt-report-xslt10.json
+
+      - name: Run the native XSLT 1.0 conformance suite
+        run: uv run pytest tests/test_xslt_suite.py -q
+        env:
+          PYXSD_RUN_XSLT: "1"
+          PYXSD_XSLT_PROFILE: xslt10
+          PYXSD_XSLT_TIMEOUT: "5"
+          PYXSD_XSLT_JOBS: "4"
+
+      - name: Upload the XSLT 1.0 report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xslt-report-xslt10-${{ matrix.python-version }}
+          path: xslt-report-xslt10.json
+          if-no-files-found: ignore

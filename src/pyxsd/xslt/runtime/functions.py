@@ -1,0 +1,1949 @@
+"""XSLT-defined XPath functions and the per-evaluation context bridge.
+
+An :class:`XsltContextBridge` is an immutable view of the dynamic state that
+the XSLT layer adds to one XPath evaluation.  It captures the instruction's
+current item, current group/grouping key, current merge group/key, regex
+captures, static namespaces, package scope, expression base URI, and the
+invocation-local caches owned by a :class:`Transformation`.
+
+The bridge never stores state on a parser class or in a process-global
+"current transformation" slot.  Each expression evaluation builds a fresh
+bridge, and every stylesheet-style function call starts with the context
+components cleared as XSLT 3.0 section 5.3.4 requires.  Features whose runtime
+family lands in a later task are represented by their genuine absent state:
+``current-group`` outside a grouping instruction raises ``XTDE1061``,
+``current-merge-group`` raises ``XTDE3480``, and an accumulator name that is
+not declared raises ``XTDE3340`` rather than returning a fabricated value.
+
+The module also owns the static surface shared with the compiler: the XSLT
+function declarations legal for an effective profile, the supported system
+properties, and the names of XSLT elements for ``element-available``.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from decimal import Decimal
+from functools import lru_cache
+from types import MappingProxyType
+from typing import Any, cast
+from urllib.parse import urljoin, urlsplit
+
+from elementpath.datatypes import QName
+from elementpath.helpers import is_ncname
+from elementpath.xpath1 import XPath1Parser
+from elementpath.xpath2 import XPath2Parser
+from elementpath.xpath3 import XPath31Parser
+
+from pyxsd import __version__
+from pyxsd.namespaces import local_name as _local_name
+from pyxsd.namespaces import namespace_of as _namespace_of
+from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
+from pyxsd.xdm.annotations import builtin_type_classes
+from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
+from pyxsd.xpath.environment import Focus, FunctionArity
+from pyxsd.xpath.functions import ContextFunction
+from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltSerializationError
+from pyxsd.xslt.runtime.numbering import DecimalFormat, format_number
+from pyxsd.xslt.serialization import SerializationParameters, Serializer
+
+__all__ = [
+    "ABSENT",
+    "IMPLEMENTED_XSLT_ELEMENTS",
+    "SYSTEM_PROPERTIES",
+    "XSLT_FUNCTION_ARITIES",
+    "XsltContextBridge",
+    "xslt_function_declarations",
+]
+
+XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
+XSD_NS = "http://www.w3.org/2001/XMLSchema"
+FN_NS = "http://www.w3.org/2005/xpath-functions"
+
+
+#: Marker for an absent dynamic component.  An absent component is never the
+#: same thing as an empty sequence.
+class _Absent:
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostic convenience
+        return "ABSENT"
+
+
+ABSENT = _Absent()
+
+#: System properties required by XSLT 3.0 plus the processor's XPath profile.
+#: Keys are the canonical lexical ``xsl:*`` names used by static preprocessing.
+SYSTEM_PROPERTIES: Mapping[str, str] = MappingProxyType(
+    {
+        "xsl:version": "3.0",
+        "xsl:vendor": "pyxsd",
+        "xsl:vendor-url": "https://pyxsd.knorby.com",
+        "xsl:product-name": "pyxsd",
+        "xsl:product-version": __version__,
+        "xsl:is-schema-aware": "yes",
+        "xsl:supports-serialization": "yes",
+        "xsl:supports-backwards-compatibility": "yes",
+        "xsl:supports-namespace-axis": "yes",
+        "xsl:supports-streaming": "no",
+        "xsl:supports-dynamic-evaluation": "yes",
+        "xsl:supports-higher-order-functions": "yes",
+        "xsl:xpath-version": "3.1",
+        "xsl:xsd-version": "1.1",
+    }
+)
+
+#: Elements whose implementation exists in this execution slice.  XSLT 3.0
+#: section 24.2.2 defines element-available() as true only for implemented
+#: elements, so specification-only names stay out of this set.
+IMPLEMENTED_XSLT_ELEMENTS = frozenset(
+    {
+        "accept",
+        "accumulator",
+        "accumulator-rule",
+        "analyze-string",
+        "apply-imports",
+        "apply-templates",
+        "assert",
+        "attribute",
+        "attribute-set",
+        "break",
+        "call-template",
+        "choose",
+        "decimal-format",
+        "evaluate",
+        "expose",
+        "fallback",
+        "for-each",
+        "for-each-group",
+        "fork",
+        "function",
+        "if",
+        "import",
+        "include",
+        "iterate",
+        "key",
+        "map",
+        "map-entry",
+        "matching-substring",
+        "merge",
+        "merge-action",
+        "merge-key",
+        "merge-source",
+        "mode",
+        "next-iteration",
+        "next-match",
+        "non-matching-substring",
+        "number",
+        "on-completion",
+        "on-empty",
+        "on-non-empty",
+        "otherwise",
+        "output",
+        "override",
+        "package",
+        "param",
+        "perform-sort",
+        "preserve-space",
+        "result-document",
+        "sequence",
+        "sort",
+        "source-document",
+        "strip-space",
+        "stylesheet",
+        "template",
+        "text",
+        "transform",
+        "try",
+        "catch",
+        "use-package",
+        "value-of",
+        "variable",
+        "when",
+        "where-populated",
+        "with-param",
+    }
+)
+
+#: XSLT 3.0 additions unavailable to a 2.0-versioned module.
+_XSLT_3_ONLY_ELEMENTS = frozenset(
+    {
+        "accept",
+        "accumulator",
+        "accumulator-rule",
+        "assert",
+        "break",
+        "context-item",
+        "evaluate",
+        "expose",
+        "fork",
+        "global-context-item",
+        "iterate",
+        "map",
+        "map-entry",
+        "matching-substring",
+        "merge",
+        "merge-action",
+        "merge-key",
+        "merge-source",
+        "mode",
+        "next-iteration",
+        "on-completion",
+        "on-empty",
+        "on-non-empty",
+        "override",
+        "package",
+        "source-document",
+        "stream",
+        "try",
+        "catch",
+        "use-package",
+        "where-populated",
+    }
+)
+
+#: XSLT 2.0 additions unavailable to a 1.0-versioned module.
+_XSLT_2_ONLY_ELEMENTS = frozenset(
+    {
+        "analyze-string",
+        "character-map",
+        "document",
+        "for-each-group",
+        "function",
+        "import-schema",
+        "matching-substring",
+        "next-match",
+        "non-matching-substring",
+        "perform-sort",
+        "result-document",
+        "sequence",
+        "sort",
+    }
+)
+
+
+def xslt_element_available(name: str, version: str) -> bool:
+    """Whether the XSLT-namespace element *name* is implemented for *version*."""
+    if name not in IMPLEMENTED_XSLT_ELEMENTS:
+        return False
+    if _version_at_least(version, "3.0"):
+        return True
+    if name in _XSLT_3_ONLY_ELEMENTS:
+        return False
+    if _version_at_least(version, "2.0"):
+        return True
+    return name not in _XSLT_2_ONLY_ELEMENTS
+
+
+#: XSLT-defined function signatures used by static preprocessing availability.
+XSLT_FUNCTION_ARITIES: Mapping[str, FunctionArity] = MappingProxyType(
+    {
+        "available-system-properties": 0,
+        "accumulator-after": 1,
+        "accumulator-before": 1,
+        "current": 0,
+        "current-group": 0,
+        "current-grouping-key": 0,
+        "current-merge-group": (0, 1),
+        "current-merge-key": 0,
+        "document": (1, 2),
+        "element-available": 1,
+        "format-number": (2, 3),
+        "function-available": (1, 2),
+        "key": (2, 3),
+        "regex-group": 1,
+        "system-property": 1,
+        "type-available": 1,
+        "unparsed-entity-uri": (1, 2),
+    }
+)
+
+_FUNCTION_MINIMUM_VERSION: Mapping[str, str] = MappingProxyType(
+    {
+        "available-system-properties": "3.0",
+        "accumulator-after": "3.0",
+        "accumulator-before": "3.0",
+        "current": "1.0",
+        "current-group": "2.0",
+        "current-grouping-key": "2.0",
+        "current-merge-group": "3.0",
+        "current-merge-key": "3.0",
+        "document": "1.0",
+        "element-available": "1.0",
+        "format-number": "1.0",
+        "function-available": "1.0",
+        "regex-group": "2.0",
+        "system-property": "1.0",
+        "type-available": "2.0",
+        "unparsed-entity-uri": "1.0",
+    }
+)
+
+_PROFILE_VERSIONS = frozenset({"1.0", "2.0", "3.0", "3.1"})
+
+#: Lexical names of functions that need the XSLT bridge rather than the
+#: continuation machine's static host-function table.
+XSLT_CONTEXT_FUNCTION_NAMES = frozenset(f"fn:{local}" for local in _FUNCTION_MINIMUM_VERSION)
+
+
+def _profile_version(version: str) -> str:
+    if not isinstance(version, str) or version not in _PROFILE_VERSIONS:
+        raise ValueError(f"unsupported XSLT version {version!r}")
+    return version
+
+
+def _version_at_least(version: str, minimum: str) -> bool:
+    return Decimal(version) >= Decimal(minimum)
+
+
+def _declaration_arity(local: str, version: str) -> FunctionArity:
+    if local == "document":
+        return 1 if version == "1.0" else (1, 2)
+    if local == "format-number":
+        return 2 if version == "1.0" else (2, 3)
+    if local == "function-available":
+        return 1 if version == "1.0" else (1, 2)
+    if local == "unparsed-entity-uri":
+        return (1, 2) if _version_at_least(version, "3.0") else 1
+    return XSLT_FUNCTION_ARITIES[local]
+
+
+def xslt_function_declarations(version: str) -> Mapping[str, FunctionArity]:
+    """Return the XSLT function declarations legal for *version*.
+
+    Keys are lexical QNames in the standard function namespace because every
+    static context binds ``fn``.  Functions native to the XPath 3.1 parser
+    (``key``, ``generate-id``, ``format-number``) are deliberately absent in
+    the 3.0 profile; in 1.0/2.0 profiles the XPath 2.0 parser has no native
+    symbol, so the bridge declares them explicitly.  The remaining 2.0 date
+    and time formatting functions (``format-date`` and friends) have no
+    implementation in this engine behind the 3.1 parser, so they stay
+    undeclared and ``function-available`` reports them false.
+    """
+    effective = _profile_version(version)
+    declarations: dict[str, FunctionArity] = {}
+    for local, minimum in _FUNCTION_MINIMUM_VERSION.items():
+        if not _version_at_least(effective, minimum):
+            continue
+        declarations[f"fn:{local}"] = _declaration_arity(local, effective)
+    if not _version_at_least(effective, "3.0"):
+        # XSLT 1.0/2.0 require these functions but the XPath 2.0 parser has no
+        # native symbol for them; the bridge supplies both implementations.
+        declarations["fn:key"] = 2 if effective == "1.0" else (2, 3)
+        declarations["fn:generate-id"] = (0, 1)
+    return MappingProxyType(declarations)
+
+
+# ---------------------------------------------------------------------------
+# Name expansion and availability tables
+
+
+def _expand_name(
+    value: str,
+    namespaces: Mapping[str, str],
+    *,
+    default_namespace: str | None,
+    code: str,
+    label: str,
+) -> str:
+    """Expand one EQName or lexical QName, reporting XSLT's dynamic error."""
+    if not isinstance(value, str) or not value:
+        raise XsltDynamicError(f"the {label} must be a non-empty EQName", code=code)
+    if value.startswith("Q{"):
+        close = value.find("}")
+        if close < 0:
+            raise XsltDynamicError(f"invalid EQName {value!r} for {label}", code=code)
+        namespace_uri = value[2:close]
+        local = value[close + 1 :]
+        if not is_ncname(local):
+            raise XsltDynamicError(f"invalid EQName {value!r} for {label}", code=code)
+        return f"{{{namespace_uri}}}{local}" if namespace_uri else local
+    prefix, separator, local = value.partition(":")
+    if separator:
+        if not is_ncname(prefix) or not is_ncname(local):
+            raise XsltDynamicError(f"invalid QName {value!r} for {label}", code=code)
+        uri = namespaces.get(prefix)
+        if uri is None:
+            raise XsltDynamicError(
+                f"the namespace prefix {prefix!r} is not bound for {label}",
+                code=code,
+            )
+        return f"{{{uri}}}{local}"
+    if not is_ncname(value):
+        raise XsltDynamicError(f"invalid QName {value!r} for {label}", code=code)
+    return f"{{{default_namespace}}}{value}" if default_namespace else value
+
+
+def _arity_matches(spec: FunctionArity | None, arity: int | None) -> bool:
+    if spec is None:
+        return False
+    if arity is None:
+        return True
+    if isinstance(spec, int):
+        return arity == spec
+    minimum, maximum = spec
+    return minimum <= arity and (maximum is None or arity <= maximum)
+
+
+@lru_cache(maxsize=4)
+def _native_function_arities(version: str) -> Mapping[str, FunctionArity]:
+    """One parser surface's statically known function signatures."""
+    parser = (
+        XPath1Parser()
+        if version == "1.0"
+        else XPath2Parser()
+        if version == "2.0"
+        else XPath31Parser()
+    )
+    table: dict[str, FunctionArity] = {}
+    for symbol, token in parser.symbol_table.items():
+        nargs = getattr(token, "nargs", None)
+        if nargs is None:
+            continue
+        label = str(getattr(token, "label", ""))
+        if "function" not in label:
+            continue
+        namespace = getattr(token, "namespace", None)
+        if namespace is None:
+            if label == "constructor function":
+                continue
+            namespace = FN_NS
+        expanded = symbol if symbol.startswith("{") else f"{{{namespace}}}{symbol}"
+        table[expanded] = nargs
+    return MappingProxyType(table)
+
+
+def xslt_function_arities(version: str) -> Mapping[str, FunctionArity]:
+    """Expanded-name arity map for XSLT functions available in *version*."""
+    effective = _profile_version(version)
+    table = {
+        f"{{{FN_NS}}}{name.partition(':')[2]}": arity
+        for name, arity in xslt_function_declarations(effective).items()
+    }
+    if _version_at_least(effective, "3.0"):
+        # Native XPath functions that XSLT defines additional semantics for.
+        table[f"{{{FN_NS}}}key"] = (2, 3)
+        table[f"{{{FN_NS}}}generate-id"] = (0, 1)
+    return MappingProxyType(table)
+
+
+@lru_cache(maxsize=4)
+def _declared_arities(version: str) -> Mapping[str, FunctionArity]:
+    return xslt_function_arities(version)
+
+
+# ---------------------------------------------------------------------------
+# The bridge
+
+
+def _freeze_sequence(value: object, label: str) -> XdmSequence:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise TypeError(f"{label} must be an XDM sequence")
+    if not all(isinstance(item, XdmItem) for item in value):
+        raise TypeError(f"{label} must contain XDM items")
+    return tuple(value)
+
+
+def _freeze_merge_group(value: object) -> Mapping[str, XdmSequence]:
+    if not isinstance(value, Mapping):
+        raise TypeError("current_merge_group must be a mapping of source names")
+    group: dict[str, XdmSequence] = {}
+    for source, nodes in value.items():
+        if not isinstance(source, str):
+            raise TypeError("current_merge_group source names must be strings")
+        group[source] = _freeze_sequence(nodes, "current_merge_group")
+    return MappingProxyType(group)
+
+
+def _freeze_strings(value: object, label: str) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise TypeError(f"{label} must be a sequence of strings")
+    if not all(isinstance(item, str) for item in value):
+        raise TypeError(f"{label} must contain strings")
+    return tuple(value)
+
+
+@dataclass(frozen=True)
+class XsltContextBridge:
+    """One evaluation's immutable view of the XSLT dynamic context."""
+
+    transformation: Any
+    package_name: str | None = None
+    focus: Focus = field(default_factory=Focus.absent)
+    current_item: XdmItem | None = None
+    group: XdmSequence | _Absent = ABSENT
+    grouping_key: XdmSequence | _Absent = ABSENT
+    merge_group: Mapping[str, XdmSequence] | _Absent = ABSENT
+    merge_sources: tuple[str, ...] = ()
+    merge_key: XdmSequence | _Absent = ABSENT
+    regex_captures: tuple[str, ...] | _Absent = ABSENT
+    decimal_formats: Mapping[str | None, DecimalFormat] = field(default_factory=dict)
+    namespaces: Mapping[str, str] = field(default_factory=dict)
+    default_namespace: str | None = None
+    base_uri: str | None = None
+    xpath_version: str = "3.1"
+    xslt_version: str | None = None
+    key_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence] | None = None
+    extension_functions: frozenset[tuple[str, int]] = frozenset()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.focus, Focus):
+            raise TypeError("focus must be a Focus")
+        if self.current_item is not None and not isinstance(self.current_item, XdmItem):
+            raise TypeError("current_item must be an XDM item or None")
+        if not isinstance(self.group, _Absent):
+            object.__setattr__(self, "group", _freeze_sequence(self.group, "current_group"))
+        if not isinstance(self.grouping_key, _Absent):
+            object.__setattr__(
+                self,
+                "grouping_key",
+                _freeze_sequence(self.grouping_key, "current_grouping_key"),
+            )
+        if not isinstance(self.merge_group, _Absent):
+            object.__setattr__(
+                self,
+                "merge_group",
+                _freeze_merge_group(self.merge_group),
+            )
+        if not isinstance(self.merge_key, _Absent):
+            object.__setattr__(
+                self,
+                "merge_key",
+                _freeze_sequence(self.merge_key, "current_merge_key"),
+            )
+        if not isinstance(self.regex_captures, _Absent):
+            object.__setattr__(
+                self, "regex_captures", _freeze_strings(self.regex_captures, "regex_groups")
+            )
+        if not isinstance(self.decimal_formats, Mapping):
+            raise TypeError("decimal_formats must be a mapping")
+        formats: dict[str | None, DecimalFormat] = {}
+        for name, decimal_format in self.decimal_formats.items():
+            if name is not None and not isinstance(name, str):
+                raise TypeError("decimal format names must be strings or None")
+            if not isinstance(decimal_format, DecimalFormat):
+                raise TypeError("decimal_formats must map to DecimalFormat values")
+            formats[name] = decimal_format
+        object.__setattr__(self, "decimal_formats", MappingProxyType(formats))
+        if not isinstance(self.namespaces, Mapping):
+            raise TypeError("namespaces must be a mapping")
+        namespaces: dict[str, str] = {}
+        for prefix, uri in self.namespaces.items():
+            if not isinstance(prefix, str) or not isinstance(uri, str):
+                raise TypeError("namespaces must map strings to strings")
+            namespaces[prefix] = uri
+        object.__setattr__(self, "namespaces", MappingProxyType(namespaces))
+        if self.merge_sources:
+            object.__setattr__(
+                self,
+                "merge_sources",
+                _freeze_strings(self.merge_sources, "current_merge_sources"),
+            )
+        elif not isinstance(self.merge_group, _Absent):
+            object.__setattr__(
+                self,
+                "merge_sources",
+                tuple(self.merge_group),
+            )
+        if self.base_uri is not None and not isinstance(self.base_uri, str):
+            raise TypeError("base_uri must be a string or None")
+        if self.package_name is not None and not isinstance(self.package_name, str):
+            raise TypeError("package_name must be a string or None")
+        if self.key_lookup is not None and not callable(self.key_lookup):
+            raise TypeError("key_lookup must be callable or None")
+        declared = frozenset(self.extension_functions)
+        for name, arity in declared:
+            if not isinstance(name, str) or not name:
+                raise TypeError("extension function names must be non-empty strings")
+            if isinstance(arity, bool) or not isinstance(arity, int) or arity < 0:
+                raise TypeError("extension function arities must be non-negative integers")
+        object.__setattr__(self, "extension_functions", declared)
+        object.__setattr__(self, "xpath_version", self._effective_xpath_version())
+        if self.xslt_version is None:
+            object.__setattr__(
+                self,
+                "xslt_version",
+                {"1.0": "1.0", "2.0": "2.0"}.get(self.xpath_version, "3.0"),
+            )
+        else:
+            object.__setattr__(self, "xslt_version", _profile_version(self.xslt_version))
+
+    def _effective_xpath_version(self) -> str:
+        # 3.0 and 3.1 profiles share XPath 3.1's function surface here; the
+        # native parser table still carries the exact version's signatures.
+        if self.xpath_version not in ("1.0", "2.0", "3.0", "3.1"):
+            raise ValueError(f"unsupported XPath version {self.xpath_version!r}")
+        return self.xpath_version
+
+    @property
+    def version(self) -> str:
+        """The effective XSLT profile used for availability decisions."""
+        assert self.xslt_version is not None
+        return self.xslt_version
+
+    # -- immutable state transitions ---------------------------------------
+
+    def cleared_for_call(self) -> XsltContextBridge:
+        """Clear every XSLT context component for a function invocation."""
+        return replace(
+            self,
+            focus=Focus.absent(),
+            current_item=None,
+            group=ABSENT,
+            grouping_key=ABSENT,
+            merge_group=ABSENT,
+            merge_sources=(),
+            merge_key=ABSENT,
+            regex_captures=ABSENT,
+        )
+
+    def with_group(
+        self,
+        group: XdmSequence,
+        grouping_key: XdmSequence | _Absent = ABSENT,
+    ) -> XsltContextBridge:
+        return replace(self, group=group, grouping_key=grouping_key)
+
+    def with_merge_group(
+        self,
+        group: Mapping[str, XdmSequence],
+        key: XdmSequence | _Absent,
+        *,
+        sources: tuple[str, ...] = (),
+    ) -> XsltContextBridge:
+        return replace(
+            self,
+            merge_group=group,
+            merge_sources=sources,
+            merge_key=key,
+        )
+
+    def with_regex_groups(self, groups: tuple[str, ...]) -> XsltContextBridge:
+        return replace(self, regex_captures=groups)
+
+    # -- XSLT-defined functions --------------------------------------------
+
+    def function_overrides(self) -> Mapping[str, ContextFunction]:
+        """Function implementations legal for this evaluation's profile."""
+        legal = {name.partition(":")[2] for name in xslt_function_declarations(self.version)}
+        table: dict[str, ContextFunction] = {
+            f"{{{FN_NS}}}current": ContextFunction(self._direct_current, self._dynamic_current),
+            f"{{{FN_NS}}}document": ContextFunction(self._document_function),
+            f"{{{FN_NS}}}doc": ContextFunction(self._doc_function),
+            f"{{{FN_NS}}}unparsed-text": ContextFunction(self._unparsed_text_function),
+            f"{{{FN_NS}}}unparsed-text-lines": ContextFunction(self._unparsed_text_lines_function),
+            f"{{{FN_NS}}}collection": ContextFunction(self._collection_function),
+            f"{{{FN_NS}}}uri-collection": ContextFunction(self._uri_collection_function),
+            f"{{{FN_NS}}}json-doc": ContextFunction(self._json_doc_function),
+            f"{{{FN_NS}}}system-property": ContextFunction(self._system_property_function),
+            f"{{{FN_NS}}}function-available": ContextFunction(self._function_available_function),
+            f"{{{FN_NS}}}element-available": ContextFunction(self._element_available_function),
+            f"{{{FN_NS}}}unparsed-entity-uri": ContextFunction(self._unparsed_entity_uri_function),
+            f"{{{FN_NS}}}generate-id": ContextFunction(self._generate_id_function),
+            f"{{{FN_NS}}}error": ContextFunction(self._error_function),
+            f"{{{FN_NS}}}format-number": ContextFunction(
+                self._direct_format_number, self._dynamic_format_number
+            ),
+            f"{{{FN_NS}}}serialize": ContextFunction(
+                self._serialize_function, self._serialize_function
+            ),
+            f"{{{FN_NS}}}transform": ContextFunction(
+                self._transform_function, self._transform_function
+            ),
+        }
+        if "type-available" in legal:
+            table[f"{{{FN_NS}}}type-available"] = ContextFunction(self._type_available_function)
+        if "available-system-properties" in legal:
+            table[f"{{{FN_NS}}}available-system-properties"] = ContextFunction(
+                self._available_system_properties_function
+            )
+        if "current-group" in legal:
+            table[f"{{{FN_NS}}}current-group"] = ContextFunction(
+                self._direct_current_group, self._dynamic_current_group
+            )
+        if "current-grouping-key" in legal:
+            table[f"{{{FN_NS}}}current-grouping-key"] = ContextFunction(
+                self._direct_current_grouping_key, self._dynamic_current_grouping_key
+            )
+        if "regex-group" in legal:
+            table[f"{{{FN_NS}}}regex-group"] = ContextFunction(
+                self._direct_regex_group, self._dynamic_regex_group
+            )
+        if "current-merge-group" in legal:
+            table[f"{{{FN_NS}}}current-merge-group"] = ContextFunction(
+                self._direct_current_merge_group, self._dynamic_current_merge_group
+            )
+        if "current-merge-key" in legal:
+            table[f"{{{FN_NS}}}current-merge-key"] = ContextFunction(
+                self._direct_current_merge_key, self._dynamic_current_merge_key
+            )
+        if "accumulator-before" in legal:
+            table[f"{{{FN_NS}}}accumulator-before"] = ContextFunction(
+                self._direct_accumulator_before
+            )
+        if "accumulator-after" in legal:
+            table[f"{{{FN_NS}}}accumulator-after"] = ContextFunction(self._direct_accumulator_after)
+        if self.key_lookup is not None:
+            table[f"{{{FN_NS}}}key"] = ContextFunction(self._direct_key, self._dynamic_key)
+        return MappingProxyType(table)
+
+    def _serialize_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """Serialize with the shared serializer and its own error codes.
+
+        With one argument the effective serialization parameters are the
+        unnamed ``xsl:output`` declaration, including its resolved character
+        maps.  With two, the map supplies the parameters directly; a key is a
+        string or QName (compared by local name) and a value is converted to
+        the ``xsl:output`` attribute vocabulary.
+        """
+        del context_item
+        if len(arguments) == 2:
+            attributes = _serialization_parameter_map(arguments[1])
+        else:
+            transformation = self.transformation
+            attributes = dict(getattr(transformation, "output_attributes", None) or {})
+            attributes["character_maps"] = getattr(transformation, "character_maps", ())
+        parameters = SerializationParameters.from_attributes(
+            {**_SERIALIZATION_DEFAULTS, **attributes}
+        )
+        return (XdmAtomic.string(Serializer.serialize(arguments[0], parameters)),)
+
+    def _transform_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """Run one nested transformation under this one's policy snapshot.
+
+        The option map and the whole nested pipeline live in
+        :mod:`pyxsd.xslt.nested`; this bridge method only supplies the outer
+        transformation and the calling expression's static base URI.  The
+        import is deferred because the nested module reaches the processor
+        layer that imports this bridge.
+        """
+        del context_item
+        from pyxsd.xslt.nested import invoke_nested_transform
+
+        options = arguments[0]
+        if len(options) != 1 or not isinstance(options[0], XdmMap):
+            raise XsltDynamicError(
+                "transform() requires a single options map",
+                code="FOXT0002",
+            )
+        return invoke_nested_transform(
+            self.transformation,
+            options[0],
+            base_uri=self.base_uri,
+        )
+
+    def _error_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """Raise one coded dynamic error, preserving the optional value.
+
+        The underlying XPath engine evaluates ``fn:error`` but discards its
+        third argument.  This invocation-local override keeps the exact value
+        sequence so ``$err:value`` can expose it to a matching ``xsl:catch``.
+        """
+        del context_item
+        code = "FOER0000"
+        description: str | None = None
+        value: XdmSequence = ()
+        if arguments:
+            first = arguments[0]
+            if first:
+                if len(first) != 1 or not isinstance(first[0], XdmAtomic):
+                    raise XsltDynamicError(
+                        "the first argument to error() must be an xs:QName",
+                        code="XPTY0004",
+                    )
+                qname = first[0].value
+                if not isinstance(qname, QName):
+                    raise XsltDynamicError(
+                        "the first argument to error() must be an xs:QName",
+                        code="XPTY0004",
+                    )
+                uri = qname.uri or ""
+                code = f"Q{{{uri}}}{qname.local_name}"
+        if len(arguments) > 1:
+            second = arguments[1]
+            if second:
+                if len(second) != 1 or not isinstance(second[0], XdmAtomic):
+                    raise XsltDynamicError(
+                        "the second argument to error() must be a string",
+                        code="XPTY0004",
+                    )
+                description = second[0].lexical
+        if len(arguments) > 2:
+            value = arguments[2]
+        raise XsltDynamicError(
+            description or "",
+            code=code,
+            description=description,
+            has_description=description is not None,
+            value=value,
+        )
+
+    def current(self) -> XdmItem:
+        """The instruction-level current item, never a predicate focus item."""
+        if self.current_item is None:
+            raise XsltDynamicError(
+                "current() requires a context item for the containing expression",
+                code="XTDE1360",
+            )
+        return self.current_item
+
+    def current_group(self) -> XdmSequence:
+        if isinstance(self.group, _Absent):
+            raise XsltDynamicError(
+                "current-group() is not inside an xsl:for-each-group instruction",
+                code="XTDE1061",
+            )
+        return tuple(self.group)
+
+    def current_grouping_key(self) -> XdmSequence:
+        if isinstance(self.grouping_key, _Absent):
+            raise XsltDynamicError(
+                "current-grouping-key() is not inside a grouped xsl:for-each-group",
+                code="XTDE1071",
+            )
+        return tuple(self.grouping_key)
+
+    def current_merge_group(self, source: str | None = None) -> XdmSequence:
+        if isinstance(self.merge_group, _Absent):
+            raise XsltDynamicError(
+                "current-merge-group() is not inside an xsl:merge instruction",
+                code="XTDE3480",
+            )
+        if source is None:
+            return tuple(
+                item for name in self.merge_sources for item in self.merge_group.get(name, ())
+            )
+        if source not in self.merge_group:
+            raise XsltDynamicError(
+                f"the merge source {source!r} is not part of the current merge group",
+                code="XTDE3490",
+            )
+        return tuple(self.merge_group[source])
+
+    def current_merge_key(self) -> XdmSequence:
+        if isinstance(self.merge_key, _Absent):
+            raise XsltDynamicError(
+                "current-merge-key() is not inside an xsl:merge instruction",
+                code="XTDE3510",
+            )
+        return tuple(self.merge_key)
+
+    def regex_group(self, number: int) -> str:
+        if (
+            isinstance(self.regex_captures, _Absent)
+            or number < 0
+            or number >= len(self.regex_captures)
+        ):
+            return ""
+        return self.regex_captures[number]
+
+    def generate_id(self, item: XdmItem) -> str:
+        return self.transformation.generated_id(item)
+
+    def system_property(self, name: str) -> str:
+        expanded = _expand_name(
+            name,
+            self.namespaces,
+            default_namespace=None,
+            code="XTDE1390",
+            label="system property name",
+        )
+        if _namespace_of(expanded) != XSLT_NS:
+            return ""
+        # The language profile owns the version-shaped properties; its empty
+        # answers fall through to this processor's vendor table.  A bridge
+        # host without a language profile keeps the vendor table answers.
+        profile_for = getattr(self.transformation, "profile_for", None)
+        local = _local_name(expanded)
+        if callable(profile_for):
+            # The expanded name is already resolved, so the answer cannot
+            # depend on which prefix the stylesheet bound to the XSLT
+            # namespace.  A lexical name here would let a non-``xsl`` prefix
+            # bypass the profile's version-shaped answers.  A native XSLT 1.0
+            # profile also owns the absence of properties it does not define,
+            # so it never falls through to the 3.0 vendor table except for the
+            # vendor identity properties XSLT 1.0 itself requires.
+            profile = profile_for()
+            profile_answer = profile.system_property(expanded)
+            if profile_answer:
+                return profile_answer
+            if profile.legacy:
+                if local in ("vendor", "vendor-url", "product-name", "product-version"):
+                    return SYSTEM_PROPERTIES.get(f"xsl:{local}", "")
+                return ""
+        if local == "supports-dynamic-evaluation":
+            return "yes" if self._dynamic_evaluation_enabled() else "no"
+        return SYSTEM_PROPERTIES.get(f"xsl:{local}", "")
+
+    def _dynamic_evaluation_enabled(self) -> bool:
+        stylesheet = getattr(self.transformation, "stylesheet", None)
+        processor = getattr(stylesheet, "processor", None)
+        options = getattr(processor, "static_options", {})
+        if not isinstance(options, Mapping):
+            return True
+        value = options.get("dynamic-evaluation", True)
+        if not isinstance(value, bool):
+            raise XsltDynamicError(
+                "the dynamic-evaluation static option must be a boolean",
+                code="XTDE0030",
+            )
+        return value
+
+    def function_available(self, name: str, arity: int | None = None) -> bool:
+        expanded = _expand_name(
+            name,
+            self.namespaces,
+            default_namespace=FN_NS,
+            code="XTDE1400",
+            label="function name",
+        )
+        namespace = _namespace_of(expanded)
+        local = _local_name(expanded)
+        if namespace == XSD_NS:
+            return local in builtin_type_classes() and arity in (None, 1)
+        declared = _declared_arities(self.version).get(expanded)
+        if declared is None:
+            # Availability remains keyed to the declared profile surface.  A
+            # 3.0 processor still evaluates these expressions with XPath 3.1,
+            # but the compatibility profile keeps its historical availability
+            # answer (for example, no random-number-generator under 2.0).
+            native_version = (
+                "3.1"
+                if _version_at_least(self.version, "3.0")
+                else "1.0"
+                if self.version == "1.0"
+                else "2.0"
+            )
+            declared = _native_function_arities(native_version).get(expanded)
+        if _arity_matches(declared, arity):
+            return True
+        if arity is None:
+            if any(function_name == expanded for function_name, _ in self.extension_functions):
+                return True
+        elif (expanded, arity) in self.extension_functions:
+            return True
+        package = self._package()
+        if package is not None:
+            for component in package.components.values():
+                if (
+                    component.kind == "function"
+                    and component.name == expanded
+                    and not component.hidden
+                    and not component.abstract
+                    and (arity is None or component.arity == arity)
+                ):
+                    return True
+        return False
+
+    def element_available(self, name: str) -> bool:
+        expanded = _expand_name(
+            name,
+            self.namespaces,
+            default_namespace=self.default_namespace,
+            code="XTDE1440",
+            label="element name",
+        )
+        if _namespace_of(expanded) != XSLT_NS:
+            return False
+        local = _local_name(expanded)
+        if local == "evaluate" and not self._dynamic_evaluation_enabled():
+            return False
+        return xslt_element_available(local, self.version)
+
+    def type_available(self, name: str) -> bool:
+        expanded = _expand_name(
+            name,
+            self.namespaces,
+            default_namespace=self.default_namespace,
+            code="XTDE1428",
+            label="type name",
+        )
+        namespace = _namespace_of(expanded)
+        local = _local_name(expanded)
+        pool = self._schema_pool()
+        if pool is not None and pool.get_type(expanded) is not None:
+            return True
+        if namespace == XSD_NS:
+            return local in builtin_type_classes()
+        return False
+
+    def available_system_properties(self) -> XdmSequence:
+        return tuple(as_xdm(QName(XSLT_NS, name))[0] for name in SYSTEM_PROPERTIES)
+
+    def document(
+        self,
+        uri_sequence: XdmSequence | str,
+        node: XdmNode | None = None,
+    ) -> XdmSequence:
+        """Resolve URI references using the XSLT document() argument rules."""
+        if isinstance(uri_sequence, str):
+            uri_sequence = (XdmAtomic.string(uri_sequence),)
+        base_node_uri = None if node is None else node.base_uri
+        resolved: dict[int, XdmDocument] = {}
+        for item in uri_sequence:
+            if isinstance(item, XdmNode):
+                base = base_node_uri if node is not None else item.base_uri
+                for atomic in item.typed_value:
+                    if not isinstance(atomic, XdmAtomic):  # pragma: no cover - XDM invariant
+                        raise XsltDynamicError(
+                            "document() node atomization must yield atomic values",
+                            code="XPTY0004",
+                        )
+                    document = self._resolve_document_or_recover(_document_uri(atomic), base)
+                    if document is not None:
+                        resolved[id(document)] = document
+                continue
+            if not isinstance(item, XdmAtomic):
+                raise XsltDynamicError(
+                    "document() requires atomic values or nodes",
+                    code="XPTY0004",
+                )
+            base = base_node_uri if node is not None else self.base_uri
+            document = self._resolve_document_or_recover(_document_uri(item), base)
+            if document is not None:
+                resolved[id(document)] = document
+        return tuple(sorted(resolved.values(), key=lambda document: document.document_order))
+
+    def _resolve_document_or_recover(self, uri: str, base: str | None) -> XdmDocument | None:
+        """Resolve one URI, applying only an explicitly selected recovery rule."""
+        try:
+            return self._resolve_document(uri, base)
+        except XsltDynamicError as exc:
+            recover = getattr(self.transformation, "recover", None)
+            if not callable(recover) or exc.code is None or not recover(exc, exc.code):
+                raise
+            if str(exc.code).rsplit(":", 1)[-1] == "XTDE1160":
+                return self._resolve_document(uri.split("#", 1)[0], base)
+            return None
+
+    def _resolve_document(self, uri: str, base: str | None) -> XdmDocument:
+        if "#" in uri:
+            raise XsltDynamicError(
+                f"document fragment identifiers are not resolved for {uri!r}",
+                code="XTDE1160",
+            )
+        if urlsplit(uri).scheme:
+            target = uri
+        elif base is None:
+            raise XsltDynamicError(
+                f"the relative document URI {uri!r} has no base URI",
+                code="XTDE1162",
+            )
+        else:
+            target = urljoin(base, uri)
+        documents = getattr(self.transformation, "documents", {})
+        resources = getattr(self.transformation, "document_resources", None)
+        if resources is None:
+            document = documents.get(target)
+            if isinstance(document, XdmDocument):
+                self._allow_all_accumulators(document)
+                return document
+        module_document = self._stylesheet_document(target)
+        if module_document is not None:
+            self._allow_all_accumulators(module_document)
+            return module_document
+        if resources is not None:
+            document = resources.resolve(
+                target,
+                base=None,
+                schema_pool=self._schema_pool(),
+                input_type_annotations=self._input_type_annotations(),
+                package=self.package_name,
+            )
+            self._allow_all_accumulators(document)
+            return document
+        raise XsltDynamicError(
+            f"the document {uri!r} is not available to this transformation",
+            code="FODC0002",
+        )
+
+    def _allow_all_accumulators(self, document: XdmDocument) -> None:
+        manager = getattr(self.transformation, "accumulators", None)
+        if manager is not None:
+            manager.allow_all(document)
+
+    def unparsed_entity_uri(self, name: str, node: XdmItem | None = None) -> str:
+        del name
+        if node is None:
+            raise XsltDynamicError(
+                "unparsed-entity-uri requires a context node",
+                code="XPDY0002",
+            )
+        if not isinstance(node, XdmNode):
+            raise XsltDynamicError(
+                "unparsed-entity-uri requires a node",
+                code="XPTY0004",
+            )
+        if not isinstance(node.document, XdmDocument):  # pragma: no cover - XDM invariant
+            raise XsltDynamicError(
+                "unparsed-entity-uri requires a node in a document",
+                code="XTDE1370",
+            )
+        # The XDM data model exposes no unparsed entities, so every name maps to
+        # the zero-length xs:anyURI rather than an invented system identifier.
+        return ""
+
+    def accumulator_before(
+        self,
+        name: str,
+        context_item: XdmItem | None = None,
+    ) -> XdmSequence:
+        return self._accumulator_value(name, "before", context_item)
+
+    def accumulator_after(
+        self,
+        name: str,
+        context_item: XdmItem | None = None,
+    ) -> XdmSequence:
+        return self._accumulator_value(name, "after", context_item)
+
+    def _accumulator_value(
+        self,
+        name: str,
+        phase: str,
+        context_item: XdmItem | None,
+    ) -> XdmSequence:
+        expanded = _expand_name(
+            name,
+            self.namespaces,
+            default_namespace=None,
+            code="XTDE3340",
+            label="accumulator name",
+        )
+        manager = getattr(self.transformation, "accumulators", None)
+        if manager is None:
+            raise XsltError(
+                "accumulator evaluation is not available for this transformation",
+                code=None,
+            )
+        definition = manager.definition(self.package_name, expanded)
+        if definition is None:
+            raise XsltDynamicError(
+                f"the accumulator {name!r} is not declared in this package",
+                code="XTDE3340",
+            )
+        node = context_item if context_item is not None else self.focus.item
+        if node is None:
+            raise XsltDynamicError(
+                "an accumulator value requires a context item",
+                code="XTDE3350",
+            )
+        return manager.value(definition, node, phase)
+
+    # -- package and resource helpers --------------------------------------
+
+    def _invocation_resources(self, label: object, *, code: str) -> Any:
+        """Return the invocation-local resource resolver or report absence."""
+        resources = getattr(self.transformation, "document_resources", None)
+        if resources is None:
+            raise XsltDynamicError(
+                f"the resource {label!r} is not available to this transformation",
+                code=code,
+            )
+        return resources
+
+    def _package(self) -> Any:
+        stylesheet = getattr(self.transformation, "stylesheet", None)
+        packages = getattr(stylesheet, "_packages", {})
+        return packages.get(self.package_name) or getattr(stylesheet, "package", None)
+
+    def _schema_pool(self) -> Any:
+        stylesheet = getattr(self.transformation, "stylesheet", None)
+        pools = getattr(stylesheet, "_package_schema_pools", {})
+        return pools.get(self.package_name, getattr(stylesheet, "schema_pool", None))
+
+    def _input_type_annotations(self) -> str:
+        package = self._package()
+        value = getattr(package, "input_type_annotations", None)
+        return value or "unspecified"
+
+    def _stylesheet_document(self, uri: str) -> XdmDocument | None:
+        package = self._package()
+        modules = () if package is None else package.modules
+        for module in modules:
+            if module.uri == uri or module.raw.base_uri == uri:
+                return module.document
+        return None
+
+    # -- callback adapters --------------------------------------------------
+
+    def _direct_current(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item, arguments
+        return (self.current(),)
+
+    def _dynamic_current(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item, arguments
+        raise XsltDynamicError(
+            "current() called as a function item has no current item",
+            code="XTDE1360",
+        )
+
+    def _direct_current_group(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item, arguments
+        return self.current_group()
+
+    def _dynamic_current_group(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item, arguments
+        raise XsltDynamicError(
+            "current-group() called as a function item has no current group",
+            code="XTDE1061",
+        )
+
+    def _direct_current_grouping_key(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item, arguments
+        return self.current_grouping_key()
+
+    def _dynamic_current_grouping_key(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item, arguments
+        raise XsltDynamicError(
+            "current-grouping-key() called as a function item has no current group",
+            code="XTDE1071",
+        )
+
+    def _direct_current_merge_group(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        source = _single_string(arguments, 0) if arguments else None
+        return self.current_merge_group(source)
+
+    def _dynamic_current_merge_group(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item, arguments
+        raise XsltDynamicError(
+            "current-merge-group() called as a function item has no merge group",
+            code="XTDE3480",
+        )
+
+    def _direct_current_merge_key(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item, arguments
+        return self.current_merge_key()
+
+    def _dynamic_current_merge_key(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item, arguments
+        raise XsltDynamicError(
+            "current-merge-key() called as a function item has no merge key",
+            code="XTDE3510",
+        )
+
+    def _direct_regex_group(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        number = _single_integer(arguments, 0)
+        return (XdmAtomic.string(self.regex_group(number)),)
+
+    def _dynamic_regex_group(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        _single_integer(arguments, 0)
+        return (XdmAtomic.string(""),)
+
+    def _direct_format_number(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        return self._format_number_function(arguments)
+
+    def _dynamic_format_number(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        return self._format_number_function(arguments)
+
+    def _format_number_function(self, arguments: tuple[XdmSequence, ...]) -> XdmSequence:
+        value_sequence = arguments[0]
+        if len(value_sequence) > 1:
+            raise XsltDynamicError(
+                "format-number requires at most one numeric value",
+                code="XPTY0004",
+            )
+        value = value_sequence[0] if value_sequence else None
+        picture = _single_string(arguments, 1)
+        name: str | None = None
+        if len(arguments) > 2 and arguments[2]:
+            name = _single_string(arguments, 2)
+        formats = self.decimal_formats or {None: DecimalFormat()}
+        return (XdmAtomic.string(format_number(value, picture, name, formats, self.namespaces)),)
+
+    def _document_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        uri_sequence = arguments[0] if arguments else ()
+        node: XdmNode | None = None
+        if len(arguments) > 1:
+            node = _single_node(arguments[1], "document() second argument")
+        return self.document(uri_sequence, node)
+
+    def _doc_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        sequence = arguments[0]
+        if not sequence:
+            return ()
+        atomized: list[XdmAtomic] = []
+        for item in sequence:
+            if isinstance(item, XdmNode):
+                atomized.extend(cast("tuple[XdmAtomic, ...]", item.typed_value))
+            elif isinstance(item, XdmAtomic):
+                atomized.append(item)
+            else:
+                raise XsltDynamicError(
+                    "doc() requires a string, an untyped node, or an empty sequence",
+                    code="XPTY0004",
+                )
+        if not atomized:
+            return ()
+        if len(atomized) != 1:
+            raise XsltDynamicError(
+                "doc() requires at most one URI after atomization",
+                code="XPTY0004",
+            )
+        uri = _document_uri(atomized[0])
+        document = self._resolve_document_or_recover(uri, self.base_uri)
+        if document is None:
+            raise XsltDynamicError(
+                f"the document {uri!r} is not available to this transformation",
+                code="FODC0002",
+            )
+        return (document,)
+
+    def _unparsed_text_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        uri, encoding = _text_arguments(arguments)
+        if uri is None:
+            return ()
+        resources = self._invocation_resources(uri, code="FOUT1170")
+        text = resources.read_text(uri, base=self.base_uri, encoding=encoding)
+        return (XdmAtomic.string(text),)
+
+    def _unparsed_text_lines_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        uri, encoding = _text_arguments(arguments)
+        if uri is None:
+            return ()
+        resources = self._invocation_resources(uri, code="FOUT1170")
+        lines = resources.read_text_lines(uri, base=self.base_uri, encoding=encoding)
+        return tuple(XdmAtomic.string(line) for line in lines)
+
+    def _collection_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        uri = _optional_string(arguments, 0)
+        resources = self._invocation_resources(
+            uri if uri is not None else "default collection", code="FODC0002"
+        )
+        return resources.collection(uri, base=self.base_uri, package=self.package_name)
+
+    def _uri_collection_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        uri = _optional_string(arguments, 0)
+        resources = self._invocation_resources(
+            uri if uri is not None else "default collection", code="FODC0002"
+        )
+        return tuple(
+            XdmAtomic.any_uri(value)
+            for value in resources.collection_uris(
+                uri, base=self.base_uri, package=self.package_name
+            )
+        )
+
+    def _json_doc_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        uri = _optional_string(arguments, 0)
+        if uri is None:
+            return ()
+        _json_doc_options(arguments)
+        resources = self._invocation_resources(uri, code="FOUT1170")
+        text = resources.read_text(uri, base=self.base_uri)
+        value = _parse_json_document(text)
+        return () if value is None else (value,)
+
+    def _system_property_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        return (XdmAtomic.string(self.system_property(_single_string(arguments, 0))),)
+
+    def _function_available_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        name = _single_string(arguments, 0)
+        arity = _single_integer(arguments, 1) if len(arguments) > 1 else None
+        return (XdmAtomic.boolean(self.function_available(name, arity)),)
+
+    def _element_available_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        return (XdmAtomic.boolean(self.element_available(_single_string(arguments, 0))),)
+
+    def _type_available_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        return (XdmAtomic.boolean(self.type_available(_single_string(arguments, 0))),)
+
+    def _generate_id_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        if not arguments:
+            item = context_item
+            if item is None:
+                raise XsltDynamicError(
+                    "generate-id() requires a context node",
+                    code="XPDY0002",
+                )
+        else:
+            value = arguments[0]
+            if len(value) > 1:
+                raise XsltDynamicError(
+                    "generate-id requires at most one node",
+                    code="XPTY0004",
+                )
+            if not value:
+                return (XdmAtomic.string(""),)
+            item = value[0]
+        if not isinstance(item, XdmNode):
+            raise XsltDynamicError(
+                "generate-id requires a node",
+                code="XPTY0004",
+            )
+        return (XdmAtomic.string(self.generate_id(item)),)
+
+    def _available_system_properties_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item, arguments
+        return self.available_system_properties()
+
+    def _unparsed_entity_uri_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        name = _single_string(arguments, 0)
+        target: XdmItem | None = context_item
+        if len(arguments) > 1:
+            target = _single_node(arguments[1], "unparsed-entity-uri() second argument")
+        return (XdmAtomic.any_uri(self.unparsed_entity_uri(name, target)),)
+
+    def _direct_accumulator_before(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        return self.accumulator_before(_single_string(arguments, 0), context_item)
+
+    def _direct_accumulator_after(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        return self.accumulator_after(_single_string(arguments, 0), context_item)
+
+    def _direct_key(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        assert self.key_lookup is not None
+        return self.key_lookup(context_item, arguments)
+
+    def _dynamic_key(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        assert self.key_lookup is not None
+        del context_item
+        return self.key_lookup(None, arguments)
+
+
+def _document_uri(item: XdmAtomic) -> str:
+    local = item.type_name.partition("}")[2] if item.type_name.startswith("{") else item.type_name
+    if local not in ("string", "anyURI", "untypedAtomic"):
+        raise XsltDynamicError(
+            "document() argument items must be strings, anyURIs, or nodes",
+            code="XPTY0004",
+        )
+    return item.lexical
+
+
+def _text_arguments(arguments: tuple[XdmSequence, ...]) -> tuple[str | None, str | None]:
+    """Return the optional URI and encoding of one text-resource call."""
+    return _optional_string(arguments, 0), _optional_string(arguments, 1)
+
+
+def _optional_string(arguments: tuple[XdmSequence, ...], index: int) -> str | None:
+    """Return one optional string argument, mapping an empty sequence to None."""
+    if index >= len(arguments) or not arguments[index]:
+        return None
+    return _single_string(arguments, index)
+
+
+_SERIALIZATION_NS = "http://www.w3.org/2010/xslt-xquery-serialization"
+_SERIALIZATION_PARAMETERS_NAME = f"{{{_SERIALIZATION_NS}}}serialization-parameters"
+
+#: F&O 3.1 section 14.7.3 fixes the map-form defaults.  Every parameter other
+#: than ``omit-xml-declaration`` agrees with ``SerializationParameters``; this
+#: table supplies the one difference for all forms, including the absent and
+#: element forms where the defaults are implementation-defined.
+_SERIALIZATION_DEFAULTS: dict[str, str] = {"omit-xml-declaration": "yes"}
+_SERIALIZATION_STRING_LOCALS = frozenset({"string", "untypedAtomic", "anyURI"})
+_SERIALIZATION_BOOLEAN_PARAMETERS = frozenset(
+    {
+        "allow-duplicate-names",
+        "byte-order-mark",
+        "escape-uri-attributes",
+        "include-content-type",
+        "indent",
+        "omit-xml-declaration",
+        "standalone",
+        "undeclare-prefixes",
+    }
+)
+_SERIALIZATION_STRING_PARAMETERS = frozenset(
+    {
+        "doctype-public",
+        "doctype-system",
+        "encoding",
+        "item-separator",
+        "media-type",
+        "normalization-form",
+        "version",
+    }
+)
+_SERIALIZATION_METHOD_PARAMETERS = frozenset({"method", "json-node-output-method"})
+_SERIALIZATION_QNAME_LIST_PARAMETERS = frozenset({"cdata-section-elements", "suppress-indentation"})
+_SERIALIZATION_DECIMAL_PARAMETERS = frozenset({"html-version"})
+_SERIALIZATION_PARAMETER_NAMES = frozenset(
+    {
+        *_SERIALIZATION_BOOLEAN_PARAMETERS,
+        *_SERIALIZATION_STRING_PARAMETERS,
+        *_SERIALIZATION_METHOD_PARAMETERS,
+        *_SERIALIZATION_QNAME_LIST_PARAMETERS,
+        *_SERIALIZATION_DECIMAL_PARAMETERS,
+        "use-character-maps",
+    }
+)
+
+
+def _serialization_local(item: XdmAtomic) -> str:
+    return item.type_name.rpartition("}")[2]
+
+
+def _serialization_type_error(name: str) -> XsltDynamicError:
+    return XsltDynamicError(
+        f"the serialize parameter {name!r} has the wrong type",
+        code="XPTY0004",
+    )
+
+
+def _serialization_single_atomic(name: str, sequence: XdmSequence) -> XdmAtomic:
+    if len(sequence) != 1 or not isinstance(sequence[0], XdmAtomic):
+        raise _serialization_type_error(name)
+    return sequence[0]
+
+
+def _serialization_qname_parts(item: XdmAtomic) -> tuple[str, str] | None:
+    """The (namespace URI, local name) of one QName value, or None if unresolved."""
+    value = item.value
+    local = getattr(value, "_local_", None)
+    if isinstance(local, str) and getattr(value, "_resolved_", False):
+        return (getattr(value, "_uri_", None) or ""), local
+    local_name = getattr(value, "local_name", None)
+    if isinstance(local_name, str):
+        return (getattr(value, "namespace", None) or ""), local_name
+    _, separator, local = str(value).rpartition(":")
+    if not separator:
+        return "", local
+    return None
+
+
+def _serialization_qname_token(item: XdmAtomic) -> str:
+    parts = _serialization_qname_parts(item)
+    if parts is None:
+        raise XsltSerializationError(
+            f"cannot resolve the QName value {item.lexical!r}",
+            code="SEPM0016",
+        )
+    uri, local = parts
+    return f"Q{{{uri}}}{local}" if uri else local
+
+
+def _serialization_parameter(name: str, sequence: XdmSequence) -> str | tuple[str, ...] | None:
+    """Convert one map value to the ``xsl:output`` attribute vocabulary.
+
+    An empty sequence selects the declared default and is not an error.
+    """
+    if not sequence:
+        return None
+    if name in _SERIALIZATION_BOOLEAN_PARAMETERS:
+        item = _serialization_single_atomic(name, sequence)
+        if _serialization_local(item) != "boolean":
+            raise _serialization_type_error(name)
+        return "yes" if bool(item.value) else "no"
+    if name in _SERIALIZATION_STRING_PARAMETERS:
+        item = _serialization_single_atomic(name, sequence)
+        if _serialization_local(item) not in _SERIALIZATION_STRING_LOCALS:
+            raise _serialization_type_error(name)
+        return item.lexical
+    if name in _SERIALIZATION_METHOD_PARAMETERS:
+        item = _serialization_single_atomic(name, sequence)
+        local = _serialization_local(item)
+        if local in ("QName", "NOTATION"):
+            parts = _serialization_qname_parts(item)
+            if parts is None:
+                raise XsltSerializationError(
+                    f"cannot resolve the QName serialization method {item.lexical!r}",
+                    code="SEPM0016",
+                )
+            uri, method = parts
+            if uri:
+                raise XsltSerializationError(
+                    "implementation-defined serialization methods are not supported",
+                    code="SEPM0016",
+                )
+            return method
+        if local not in _SERIALIZATION_STRING_LOCALS:
+            raise _serialization_type_error(name)
+        return item.lexical
+    if name in _SERIALIZATION_QNAME_LIST_PARAMETERS:
+        tokens: list[str] = []
+        for member in sequence:
+            if not isinstance(member, XdmAtomic) or _serialization_local(member) not in (
+                "QName",
+                "NOTATION",
+            ):
+                raise _serialization_type_error(name)
+            tokens.append(_serialization_qname_token(member))
+        return tuple(tokens)
+    item = _serialization_single_atomic(name, sequence)
+    value = item.value
+    if isinstance(value, bool) or not isinstance(value, (int, Decimal)):
+        raise _serialization_type_error(name)
+    return item.lexical
+
+
+def _serialization_character_maps(sequence: XdmSequence) -> tuple[tuple[str, str], ...] | None:
+    """Convert a ``use-character-maps`` map value into serializer pairs."""
+    if not sequence:
+        return None
+    if len(sequence) != 1 or not isinstance(sequence[0], XdmMap):
+        raise _serialization_type_error("use-character-maps")
+    pairs: list[tuple[str, str]] = []
+    for key, value in sequence[0].entries:
+        if _serialization_local(key) not in _SERIALIZATION_STRING_LOCALS:
+            raise _serialization_type_error("use-character-maps")
+        if len(value) != 1 or not isinstance(value[0], XdmAtomic):
+            raise _serialization_type_error("use-character-maps")
+        if _serialization_local(value[0]) not in _SERIALIZATION_STRING_LOCALS:
+            raise _serialization_type_error("use-character-maps")
+        pairs.append((key.lexical, value[0].lexical))
+    return tuple(pairs)
+
+
+def _serialization_map_attributes(mapping: XdmMap) -> dict[str, Any]:
+    """Convert one serialize parameter map to attribute values."""
+    attributes: dict[str, Any] = {}
+    for key, value in mapping.entries:
+        if _serialization_local(key) in ("QName", "NOTATION"):
+            raise XsltSerializationError(
+                "standard serialization parameters use xs:string keys",
+                code="SEPM0016",
+            )
+        name = key.lexical
+        if name == "use-character-maps":
+            pairs = _serialization_character_maps(value)
+            if pairs is not None:
+                attributes["character_maps"] = pairs
+            continue
+        if name not in _SERIALIZATION_PARAMETER_NAMES:
+            raise XsltSerializationError(
+                f"unknown serialization parameter {name!r}",
+                code="SEPM0016",
+            )
+        converted = _serialization_parameter(name, value)
+        if converted is not None:
+            attributes[name] = converted
+    return attributes
+
+
+def _serialization_attribute_value(element: XdmNode, local: str) -> str | None:
+    for attribute in element.attributes:
+        if attribute.local_name == local and not attribute.namespace_uri:
+            return attribute.string_value
+    return None
+
+
+def _serialization_character_map_elements(element: XdmNode) -> tuple[tuple[str, str], ...]:
+    pairs: list[tuple[str, str]] = []
+    for child in element.children:
+        if (
+            child.kind is not NodeKind.ELEMENT
+            or child.namespace_uri != _SERIALIZATION_NS
+            or child.local_name != "character-map"
+        ):
+            continue
+        character = _serialization_attribute_value(child, "character")
+        replacement = _serialization_attribute_value(child, "map-string")
+        if character is None or replacement is None:
+            raise XsltSerializationError(
+                "an output:character-map requires character and map-string",
+                code="SEPM0016",
+            )
+        pairs.append((character, replacement))
+    return tuple(pairs)
+
+
+def _serialization_element_attributes(element: XdmNode) -> dict[str, Any]:
+    attributes: dict[str, Any] = {}
+    for child in element.children:
+        if child.kind is not NodeKind.ELEMENT or child.namespace_uri != _SERIALIZATION_NS:
+            continue
+        name = child.local_name or ""
+        if name == "use-character-maps":
+            attributes["character_maps"] = _serialization_character_map_elements(child)
+            continue
+        value = _serialization_attribute_value(child, "value")
+        if value is None:
+            raise XsltSerializationError(
+                f"the serialization parameter {name!r} requires a value attribute",
+                code="SEPM0016",
+            )
+        if name not in _SERIALIZATION_PARAMETER_NAMES:
+            raise XsltSerializationError(
+                f"unknown serialization parameter {name!r}",
+                code="SEPM0016",
+            )
+        attributes[name] = value
+    return attributes
+
+
+def _serialization_parameter_map(params: XdmSequence) -> dict[str, Any]:
+    """Read the second serialize argument as a map or parameter element."""
+    if not params:
+        return {}
+    if len(params) == 1 and isinstance(params[0], XdmMap):
+        return _serialization_map_attributes(params[0])
+    if len(params) == 1 and isinstance(params[0], XdmNode):
+        node = params[0]
+        if node.kind is NodeKind.DOCUMENT:
+            elements = [child for child in node.children if child.kind is NodeKind.ELEMENT]
+            if len(elements) == 1:
+                node = elements[0]
+        if node.kind is NodeKind.ELEMENT and node.name == _SERIALIZATION_PARAMETERS_NAME:
+            return _serialization_element_attributes(node)
+    raise XsltDynamicError(
+        "the second argument to serialize() must be a map or an "
+        "output:serialization-parameters element",
+        code="XPTY0004",
+    )
+
+
+def _json_doc_options(arguments: tuple[XdmSequence, ...]) -> None:
+    """Validate json-doc's optional options map without implementing entries."""
+    if len(arguments) < 2 or not arguments[1]:
+        return
+    options = arguments[1]
+    if len(options) != 1 or not isinstance(options[0], XdmMap):
+        raise XsltDynamicError("json-doc options must be a single map", code="XPTY0004")
+    if options[0].size:
+        raise XsltDynamicError(
+            "json-doc options are not supported by this processor",
+            code="FOJS0005",
+        )
+
+
+def _parse_json_document(text: str) -> XdmItem | None:
+    """Parse JSON text into one XDM value under the XPath 3.1 mapping rules."""
+    try:
+        value = json.loads(
+            text,
+            object_pairs_hook=_first_json_member,
+            parse_constant=_reject_json_constant,
+        )
+    except ValueError as exc:
+        raise XsltDynamicError(
+            "the JSON document is not valid JSON",
+            code="FOJS0001",
+            cause=exc,
+        ) from exc
+    return _json_value_to_xdm(value)
+
+
+def _first_json_member(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Apply the default ``use-first`` duplicate-member rule."""
+    members: dict[str, object] = {}
+    for key, value in pairs:
+        members.setdefault(key, value)
+    return members
+
+
+def _reject_json_constant(value: str) -> None:
+    """Reject NaN and the infinities outside JSON's number grammar."""
+    raise ValueError(f"non-finite JSON number {value!r}")
+
+
+def _json_member(value: object) -> XdmSequence:
+    """Convert one array member or object value into an XDM sequence."""
+    item = _json_value_to_xdm(value)
+    return () if item is None else (item,)
+
+
+def _json_value_to_xdm(value: object) -> XdmItem | None:
+    """Convert one decoded JSON value, mapping ``null`` to the empty sequence."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return XdmAtomic.boolean(value)
+    if isinstance(value, (int, float)):
+        try:
+            number = float(value)
+        except OverflowError:
+            number = math.inf if value > 0 else -math.inf
+        return XdmAtomic.double(number)
+    if isinstance(value, str):
+        return XdmAtomic.string(value)
+    if isinstance(value, list):
+        return XdmArray(_json_member(member) for member in value)
+    if isinstance(value, dict):
+        return XdmMap(
+            (XdmAtomic.string(key), _json_member(member)) for key, member in value.items()
+        )
+    raise TypeError(f"{type(value).__name__} is not a JSON value")  # pragma: no cover
+
+
+def _single_node(sequence: XdmSequence, label: str) -> XdmNode:
+    if len(sequence) != 1 or not isinstance(sequence[0], XdmNode):
+        raise XsltDynamicError(
+            f"{label} must be a single node",
+            code="XPTY0004",
+        )
+    return sequence[0]
+
+
+def _single_string(arguments: tuple[XdmSequence, ...], index: int) -> str:
+    if index >= len(arguments) or len(arguments[index]) != 1:
+        raise XsltDynamicError(
+            "the function argument must be a single atomic value",
+            code="XPTY0004",
+        )
+    item = arguments[index][0]
+    if not isinstance(item, XdmAtomic):
+        raise XsltDynamicError(
+            "the function argument must be an atomic value",
+            code="XPTY0004",
+        )
+    return item.lexical
+
+
+def _single_integer(arguments: tuple[XdmSequence, ...], index: int) -> int:
+    lexical = _single_string(arguments, index).strip()
+    try:
+        return int(lexical)
+    except ValueError as exc:
+        raise XsltDynamicError(
+            "the function argument must be an integer",
+            code="XPTY0004",
+        ) from exc
