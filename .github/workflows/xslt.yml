@@ -5,20 +5,12 @@ name: xslt
 # native XsltProcessor identities, so a profile's verdicts never describe a
 # version attribute on the 3.0 engine.  The jobs share the pinned xslt30-test
 # checkout but never share a baseline.
+# Dispatch-only for now: the conformance baselines were re-established on a
+# different machine shape, so the four-worker budget has not yet been proven on
+# CI runners.  Re-add the pull_request trigger (with the previous path filters)
+# after the next conformance stability pass.
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - ".gitmodules"
-      - ".github/workflows/xslt.yml"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "src/pyxsd/xdm/**"
-      - "src/pyxsd/xpath/**"
-      - "src/pyxsd/xslt/**"
-      - "tests/report_xslt.py"
-      - "tests/test_xslt_suite.py"
-      - "tests/xslt/**"
 
 permissions:
   contents: read
