@@ -501,6 +501,38 @@ def test_corpus_commit_reads_the_pinned_revision(
     assert corpus_commit() == ""
 
 
+def test_corpus_commit_prefers_an_initialized_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    corpus = (catalog_module.REPO_ROOT / catalog_module.CORPUS_PATH).resolve()
+
+    def fake(arguments: list[str]) -> str:
+        if "--show-toplevel" in arguments:
+            return str(corpus)
+        if arguments[-1].startswith("HEAD:"):
+            raise AssertionError("an initialized checkout must not read the gitlink")
+        return "c" * 40
+
+    monkeypatch.setattr(catalog_module, "_git_revision", fake)
+    assert corpus_commit() == "c" * 40
+
+
+def test_corpus_commit_ignores_a_superproject_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty submodule directory must not lend the superproject's commit."""
+
+    def fake(arguments: list[str]) -> str:
+        if "--show-toplevel" in arguments:
+            return str(catalog_module.REPO_ROOT)
+        if arguments[-1].startswith("HEAD:"):
+            return "d" * 40
+        return "e" * 40
+
+    monkeypatch.setattr(catalog_module, "_git_revision", fake)
+    assert corpus_commit() == "d" * 40
+
+
 def test_git_revision_rejects_non_sha_output(monkeypatch: pytest.MonkeyPatch) -> None:
     class Completed:
         stdout = "not-a-sha\n"

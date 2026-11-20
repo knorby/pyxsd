@@ -30,6 +30,11 @@ from pyxsd.xslt.errors import XsltError
 
 CORPUS = Path(__file__).parent / "corpus"
 
+pytestmark = pytest.mark.skipif(
+    not (CORPUS / "catalog.xml").is_file(),
+    reason="XSLT corpus is not checked out",
+)
+
 #: Cases whose entry point and instruction subset this slice executes.
 SELECTED = {
     "package-version/package-version-001": frozenset({"string"}),

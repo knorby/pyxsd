@@ -681,9 +681,15 @@ def corpus_commit() -> str:
     gitlink recorded by the superproject so identity survives a checkout that
     has not initialized the corpus.  An exported tree without git yields ``""``.
     """
-    checkout = _git_revision(["-C", str(REPO_ROOT / CORPUS_PATH), "rev-parse", "HEAD"])
-    if checkout:
-        return checkout
+    corpus = (REPO_ROOT / CORPUS_PATH).resolve()
+    top = _git_revision(["-C", str(corpus), "rev-parse", "--show-toplevel"])
+    # An uninitialized submodule directory is empty, so ``git -C`` resolves the
+    # superproject instead.  Only trust the checkout when the corpus path is
+    # itself a repository's top level; otherwise use the recorded gitlink.
+    if top and Path(top).resolve() == corpus:
+        checkout = _git_revision(["-C", str(corpus), "rev-parse", "HEAD"])
+        if checkout:
+            return checkout
     return _git_revision(["rev-parse", f"HEAD:{CORPUS_PATH}"])
 
 
