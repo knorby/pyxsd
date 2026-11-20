@@ -375,6 +375,32 @@ def test_catalog_environment_metadata_errors_are_reported(tmp_path: Path) -> Non
     assert "duplicate environment 'dup'" in errors
 
 
+def test_numbering_combination_dependencies_keep_their_range(tmp_path: Path) -> None:
+    path = tmp_path / "test-set.xml"
+    path.write_text(
+        '<test-set xmlns="http://www.w3.org/2012/10/xslt-test-catalog" name="numbering">'
+        '<test-case name="numbering-001">'
+        "<description>Capability-gated numbering.</description>"
+        '<created by="Mini Author" on="2026-01-01"/>'
+        "<dependencies>"
+        '<combinations_for_numbering value="CIRCLED DIGIT ONE" range="1 to 20"/>'
+        '<combinations_for_numbering value="DIGIT ONE COMMA"/>'
+        '<feature value="streaming" satisfied="false"/>'
+        "</dependencies>"
+        '<test><stylesheet file="numbering-001.xsl"/></test>'
+        "<result><assert>true()</assert></result>"
+        "</test-case></test-set>",
+        encoding="utf-8",
+    )
+    dependencies = load_catalog(path).cases["numbering/numbering-001"].dependencies
+
+    assert [(item.kind, item.value, item.range, item.satisfied) for item in dependencies] == [
+        ("combinations_for_numbering", "CIRCLED DIGIT ONE", "1 to 20", None),
+        ("combinations_for_numbering", "DIGIT ONE COMMA", None, None),
+        ("feature", "streaming", None, False),
+    ]
+
+
 def test_unnamed_test_set_is_reported(tmp_path: Path) -> None:
     path = tmp_path / "test-set.xml"
     path.write_text(
@@ -473,6 +499,38 @@ def test_corpus_commit_reads_the_pinned_revision(
     monkeypatch.setattr(catalog_module, "_git_revision", real_revision)
     monkeypatch.setattr(catalog_module, "REPO_ROOT", tmp_path)
     assert corpus_commit() == ""
+
+
+def test_corpus_commit_prefers_an_initialized_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    corpus = (catalog_module.REPO_ROOT / catalog_module.CORPUS_PATH).resolve()
+
+    def fake(arguments: list[str]) -> str:
+        if "--show-toplevel" in arguments:
+            return str(corpus)
+        if arguments[-1].startswith("HEAD:"):
+            raise AssertionError("an initialized checkout must not read the gitlink")
+        return "c" * 40
+
+    monkeypatch.setattr(catalog_module, "_git_revision", fake)
+    assert corpus_commit() == "c" * 40
+
+
+def test_corpus_commit_ignores_a_superproject_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty submodule directory must not lend the superproject's commit."""
+
+    def fake(arguments: list[str]) -> str:
+        if "--show-toplevel" in arguments:
+            return str(catalog_module.REPO_ROOT)
+        if arguments[-1].startswith("HEAD:"):
+            return "d" * 40
+        return "e" * 40
+
+    monkeypatch.setattr(catalog_module, "_git_revision", fake)
+    assert corpus_commit() == "d" * 40
 
 
 def test_git_revision_rejects_non_sha_output(monkeypatch: pytest.MonkeyPatch) -> None:

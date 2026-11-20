@@ -8,6 +8,8 @@ instruction serializes a node or reparses it to cross an internal boundary.
 from __future__ import annotations
 
 import pytest
+from tests.xslt.support import stylesheet as _stylesheet
+from tests.xslt.support import transform as _transform
 
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap
 from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmDocument, XdmNode
@@ -509,3 +511,119 @@ def test_literal_result_from_instruction_accepts_explicit_evaluated_attributes()
     )
     element = _require_element(construct_instruction(instruction)[0])
     assert element.attributes[0].string_value == "evaluated"
+
+
+# ---------------------------------------------------------------------------
+# Delivered element-rooted temporary trees
+#
+# The instruction-level home: these tests cross the actual expression boundary
+# with ``delivery="raw"``, so they observe the trees a variable binding
+# delivers, not a builder's internal state.
+
+
+def _delivered_trees(body: str) -> tuple[XdmNode, ...]:
+    result = _transform(
+        _stylesheet(body),
+        None,
+        delivery="raw",
+        initial_template="main",
+    )
+    return tuple(item for item in result.principal if isinstance(item, XdmNode))
+
+
+def test_a_delivered_element_rooted_sequence_is_finalized_per_tree() -> None:
+    trees = _delivered_trees(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="x" as="element()*">
+            <a><x/></a><b><x/></b><c><x/></c>
+          </xsl:variable>
+          <xsl:sequence select="$x"/>
+        </xsl:template>"""
+    )
+    assert [tree.name for tree in trees] == ["a", "b", "c"]
+    assert all(tree.parent is None for tree in trees)
+    assert all(tree.document.children == () for tree in trees)
+    assert len({tree.document for tree in trees}) == 3
+    positions = [[node.document_order for node in (tree, *tree.descendants)] for tree in trees]
+    assert all(order >= 0 for tree_positions in positions for order in tree_positions)
+    assert all(len(set(tree_positions)) == len(tree_positions) for tree_positions in positions)
+    # Construction (sequence) order gives each tree its own increasing range.
+    assert max(positions[0]) < min(positions[1])
+    assert max(positions[1]) < min(positions[2])
+
+
+def test_two_temporary_tree_sequences_never_share_positions_or_identity() -> None:
+    trees = _delivered_trees(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="x" as="element()*"><a><x/></a><b><x/></b></xsl:variable>
+          <xsl:variable name="y" as="element()*"><c><y/></c><d><y/></d></xsl:variable>
+          <xsl:sequence select="$x, $y"/>
+        </xsl:template>"""
+    )
+    assert [tree.name for tree in trees] == ["a", "b", "c", "d"]
+    documents = [tree.document for tree in trees]
+    assert len({id(document) for document in documents}) == 4
+    positions = [node.document_order for tree in trees for node in (tree, *tree.descendants)]
+    assert len(set(positions)) == len(positions)
+    assert positions == sorted(positions)
+
+
+def test_repeated_construction_keeps_union_and_axis_order_stable() -> None:
+    result = _transform(
+        _stylesheet(
+            """
+            <xsl:template name="main">
+              <out>
+                <xsl:for-each select="1 to 200">
+                  <xsl:variable name="x" as="element()*">
+                    <a><v/></a><b><v/></b><c><v/></c>
+                  </xsl:variable>
+                  <xsl:for-each select="$x | $x//node()">
+                    <xsl:value-of select="name()"/><xsl:text> </xsl:text>
+                  </xsl:for-each>
+                  <xsl:text>|</xsl:text>
+                </xsl:for-each>
+              </out>
+            </xsl:template>"""
+        ),
+        None,
+        initial_template="main",
+    )
+    chunks = result.principal_tree.string_value.split("|")[:-1]
+    assert len(chunks) == 200
+    assert set(chunks) == {"a v b v c v "}
+
+
+def test_preceding_axes_in_delivered_temporary_trees_are_tree_local() -> None:
+    result = _transform(
+        _stylesheet(
+            """
+            <xsl:template name="main">
+              <xsl:variable name="x" as="element()*">
+                <a><v/><v/></a><b><v/></b><c><v/></c>
+              </xsl:variable>
+              <out>
+                <xsl:for-each select="$x//v">
+                  <xsl:value-of
+                      select="concat(count(preceding::*), ':', count(preceding-sibling::*), ';')"/>
+                </xsl:for-each>
+              </out>
+            </xsl:template>"""
+        ),
+        None,
+        initial_template="main",
+    )
+    # a's first v has no preceding element (a is an ancestor); the second v has
+    # the first v preceding it and as its preceding sibling.  b's and c's v
+    # belong to different trees, so nothing from a precedes them.
+    assert result.principal_tree.string_value == "0:0;1:1;0:0;0:0;"
+
+
+def test_a_copy_instruction_delivers_a_finalized_element_tree() -> None:
+    source = _xml(b"<root a='1'><child/></root>").root_element
+    copied = _require_element(construct_instruction(CopyInstruction(source))[0])
+    assert copied.parent is None
+    assert copied.document.document_order == 0
+    assert all(node.document_order >= 0 for node in (copied, *copied.descendants))

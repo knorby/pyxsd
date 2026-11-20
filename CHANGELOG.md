@@ -11,6 +11,18 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ## [Unreleased]
 
+### Added
+
+- A native XSLT transformation engine covering XSLT 1.0, 2.0, and 3.0
+  (non-streaming): templates, modes, keys, attribute sets, `xsl:number`
+  formatting, result documents, packages, and the XPath 3.1 function library.
+- A conformance harness with per-profile baselines (`tests/xslt/baselines/`),
+  family/exact `--filter` slices, `--skip-timeouts` fast censuses, and a
+  self-describing partial-census format.
+- Value-level parser and XDM-adapter reuse within a transformation, a
+  process-scoped cache for elementpath's regex translation, and one-pass
+  `xsl:number` sibling counting.
+
 ## [1.4.0] - 2026-11-08
 
 ### Added

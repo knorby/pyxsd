@@ -194,8 +194,9 @@ def test_installed_unicode_version_participates_in_the_key(
 def test_invalid_pattern_is_not_cached() -> None:
     """An invalid pattern raises on every call and never occupies an entry.
 
-    ``lru_cache`` does not store exceptions, which keeps today's traceback and
-    ``__cause__`` behaviour intact; a cached exception would change it.
+    ``lru_cache`` does not store exceptions, so the class, message, and
+    ``__cause__`` chain are unchanged; the wrapper does add its own frames to
+    the traceback.  A cached exception would change the chain, not just frames.
     """
     before = _counts()
 

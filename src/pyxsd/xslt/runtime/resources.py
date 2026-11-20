@@ -26,7 +26,10 @@ from pyxsd.xdm.document import DocumentValidationError, parse_typed_document
 from pyxsd.xdm.nodes import XdmDocument, XdmNode
 from pyxsd.xslt.errors import XsltDynamicError, is_budget_alarm
 from pyxsd.xslt.runtime.frames import ExecutionBudget, resource_error
-from pyxsd.xslt.runtime.whitespace import apply_source_space_rules
+from pyxsd.xslt.runtime.whitespace import (
+    apply_source_space_rules,
+    apply_source_space_rules_to_members,
+)
 
 if TYPE_CHECKING:
     from pyxsd.xslt.compiler.static import SpaceRule
@@ -170,7 +173,10 @@ class DocumentResources:
             XdmDocument,
         ] = {}
         self._texts: dict[tuple[str, str | None], str] = {}
-        self._collections: dict[str | None, tuple[XdmNode, ...]] = {}
+        self._collections: dict[tuple[str | None, str | None], tuple[XdmNode, ...]] = {}
+        #: The space-filtered copy of each collection member document, per
+        #: package: one package's declarations produce one copy per source.
+        self._collection_spaces: dict[str | None, dict[XdmDocument, XdmDocument]] = {}
 
     def resolve(
         self,
@@ -354,16 +360,28 @@ class DocumentResources:
             lines.pop()
         return tuple(lines)
 
-    def collection(self, uri: str | None, *, base: str | None) -> tuple[XdmNode, ...]:
+    def collection(
+        self,
+        uri: str | None,
+        *,
+        base: str | None,
+        package: str | None = None,
+    ) -> tuple[XdmNode, ...]:
         """Return one application-supplied collection, cached per invocation.
 
         ``uri`` is ``None`` for the default collection.  A missing resolver and
         an empty named collection are both ``FODC0002``; an empty default
         collection is a valid empty sequence.  The resolver is application
         data, not a byte-resource policy, so it never reads a file or network.
+
+        XSLT 3.0 section 4.4 strips the whitespace of every document that
+        supplies a member, using the declarations of the package that called
+        ``fn:collection``.  The filtered copy belongs to this invocation, so
+        two collections that serve the same member observe one tree.
         """
         target = None if uri is None else resolve_document_uri(uri, base)
-        cached = self._collections.get(target)
+        key = (target, package)
+        cached = self._collections.get(key)
         if cached is not None:
             return cached
         resolver = self.collection_resolver
@@ -382,13 +400,26 @@ class DocumentResources:
                 f"the collection {target!r} is not available to this transformation",
                 code="FODC0002",
             )
-        self._collections[target] = items
+        rules = self.space_rules.get(package, ())
+        if rules:
+            items = apply_source_space_rules_to_members(
+                items,
+                rules=rules,
+                filtered=self._collection_spaces.setdefault(package, {}),
+            )
+        self._collections[key] = items
         return items
 
-    def collection_uris(self, uri: str | None, *, base: str | None) -> tuple[str, ...]:
+    def collection_uris(
+        self,
+        uri: str | None,
+        *,
+        base: str | None,
+        package: str | None = None,
+    ) -> tuple[str, ...]:
         """Return the document URI of every item in one collection."""
         uris: list[str] = []
-        for item in self.collection(uri, base=base):
+        for item in self.collection(uri, base=base, package=package):
             document_uri = item.owner_document_uri
             if document_uri is None:
                 raise XsltDynamicError(

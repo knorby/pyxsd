@@ -653,3 +653,33 @@ def test_grounded_resources_filter_caller_documents_by_package() -> None:
     assert parsed.resolve("urn:caller", base=None).string_value == ""
     assert registry["urn:caller"] is caller
     assert text_values(caller) == before
+
+
+def test_collection_member_space_rules_skip_non_source_and_empty_inputs() -> None:
+    from pyxsd.xslt.runtime.whitespace import apply_source_space_rules_to_members
+
+    source = XdmDocument.parse(b"<doc><a> </a></doc>")
+    strip = SpaceRule(
+        elements=("a",),
+        namespaces={},
+        preserve=False,
+        module=None,
+        base_uri=None,
+    )
+
+    # No declarations, no members, and a member outside a source document are
+    # all outside the policy; a source document without a memo is filtered.
+    assert apply_source_space_rules_to_members((source,), rules=()) == (source,)
+    assert apply_source_space_rules_to_members((), rules=(strip,)) == ()
+    parentless = XdmNode(
+        NodeKind.ELEMENT,
+        document=source,
+        node_id=100,
+        source_name=source.source_name,
+        source_index=source.source_index,
+        name="a",
+    )
+    assert apply_source_space_rules_to_members((parentless,), rules=(strip,)) == (parentless,)
+    (filtered,) = apply_source_space_rules_to_members((source,), rules=(strip,))
+    assert filtered is not source
+    assert filtered.string_value == ""

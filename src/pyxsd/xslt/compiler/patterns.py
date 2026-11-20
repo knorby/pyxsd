@@ -70,7 +70,7 @@ from pyxsd.xslt.compiler.pattern_syntax import (
     _static_error,
     parse_pattern,
 )
-from pyxsd.xslt.errors import is_budget_alarm
+from pyxsd.xslt.errors import XsltCircularityError, is_budget_alarm
 
 _ELEMENT_AXIS_KINDS = frozenset(
     {NodeKind.ELEMENT, NodeKind.TEXT, NodeKind.COMMENT, NodeKind.PROCESSING_INSTRUCTION}
@@ -364,6 +364,7 @@ class PatternMatcher:
         *,
         statistics: PatternStatistics | None = None,
         strategy: Literal["optimized", "forward"] = "optimized",
+        rootless: bool = False,
     ) -> None:
         if not isinstance(pattern, CompiledPattern):
             raise TypeError("pattern must be a CompiledPattern")
@@ -371,6 +372,7 @@ class PatternMatcher:
             raise ValueError(f"unknown pattern matching strategy {strategy!r}")
         self.pattern = pattern
         self.strategy = strategy
+        self.rootless = rootless
         self.statistics = statistics or PatternStatistics()
         self._environment: ExpressionEnvironment | None = None
         self._matches: dict[tuple[int, object], bool] = {}
@@ -407,6 +409,14 @@ class PatternMatcher:
             # not a pattern failure: converting it would cancel the caller's
             # bound on the work and let the match continue unbounded.
             if is_budget_alarm(exc):
+                raise
+            # Section 5.5.4's masking rule is itself overridden for
+            # circularity, and section 9.11 repeats it: a key defined in terms
+            # of itself must be reported (XTDE0640), not converted into a
+            # non-match that leaves an empty index behind.  Only the engine's
+            # own marker escapes; an unrelated dynamic error that happens to
+            # carry the same code stays masked.
+            if isinstance(exc, XsltCircularityError):
                 raise
             self.statistics.errors_ignored += 1
             result = False
@@ -616,7 +626,11 @@ class PatternMatcher:
     ) -> bool:
         if isinstance(step, PostfixStep):  # pragma: no cover - forward plan owns postfix
             return False
-        nodes = _axis_nodes(step, context_node, top)
+        nodes = _axis_nodes(
+            step,
+            context_node,
+            top and (not self.rootless or context_node is item),
+        )
         nodes = tuple(
             node
             for node in nodes
@@ -994,6 +1008,13 @@ def _rooted_base(
                 return ()
             root = node.root
         return _id_nodes(root, tokens)
+    lookup = environment.key_lookup
+    if lookup is not None:
+        # The invocation's lazy lookup owns index construction, the
+        # two/three-argument rules, and the top-document filter; its result is
+        # returned unchanged so a pattern key() orders and filters nodes
+        # exactly like the same call in an expression.
+        return cast(tuple[XdmNode, ...], lookup(focus, tuple(arguments)))
     nodes = _key_nodes(arguments, environment)
     if len(arguments) == 2:
         root = focus.root
@@ -1133,6 +1154,7 @@ def _evaluate(
         base_uri=environment.base_uri,
         parser_cache=environment.parser_cache,
         adapter_registry=environment.adapter_registry,
+        key_lookup=environment.key_lookup,
     )
     return XPathEngine(expression.version).evaluate(expression, local, focus=focus)
 

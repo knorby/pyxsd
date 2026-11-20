@@ -98,6 +98,7 @@ from pyxsd.xslt.compiler.packages import (
     PackageResolver,
     compile_package_set,
 )
+from pyxsd.xslt.compiler.pattern_syntax import FunctionArgument
 from pyxsd.xslt.compiler.patterns import (
     CompiledPattern,
     PatternMatcher,
@@ -166,6 +167,7 @@ from pyxsd.xslt.compiler.static import (
 )
 from pyxsd.xslt.errors import (
     ERROR_NAMESPACE,
+    XsltCircularityError,
     XsltDynamicError,
     XsltError,
     XsltSerializationError,
@@ -5786,6 +5788,10 @@ class _Invocation(Transformation):
         super().__init__(stylesheet, options, limits=limits, shared=shared)
         self._mode_dispatchers: dict[tuple[str | None, str | None], RuleDispatcher] = {}
         self._pattern_environments: dict[int, ExpressionEnvironment] = {}
+        #: Key indexes currently under construction, keyed like the completed
+        #: cache and holding the document beside its address (XSLT 3.0
+        #: section 9.11 circularity guard).
+        self._key_builds: dict[tuple[int, str | None, str], XdmDocument] = {}
         self._numbering: NumberingCache | None = None
         self._numbering_counters: dict[object, tuple[_NumberPlan, NumberingCounter | None]] = {}
         self._xpath_cache = XPathParserCache()
@@ -7354,6 +7360,7 @@ class _Invocation(Transformation):
             base_uri=None,
             parser_cache=self._xpath_cache,
             adapter_registry=self._adapter_registry,
+            key_lookup=self._key_override_for(package_name),
         )
 
     def _decimal_format_objects(
@@ -7515,33 +7522,47 @@ class _Invocation(Transformation):
         cached = self.key_indexes.get(key)
         if cached is not None and self.key_index_documents.get(id(document)) is document:
             return cached
-        index: dict[Any, list[XdmNode]] = {}
-        for definition in definitions:
-            matcher = PatternMatcher(definition.match)
-            environment = self._pattern_environment_for(definition.match, definition.owner)
-            for node in _document_nodes(document):
-                if not matcher.matches(node, environment):
-                    continue
-                with self._group_scope(None, None), self._merge_scope(None, None, ()):
-                    values = self._evaluate(
-                        definition.use,
-                        EvaluationContext(
-                            focus=Focus.singleton(node),
-                            package_name=package_name,
-                        ),
-                    )
-                atomics = _key_atomics(values)
-                if definition.composite:
-                    composite_key = tuple(_key_value(value) for value in atomics)
-                    index.setdefault(composite_key, []).append(node)
-                    continue
-                for value in atomics:
-                    index.setdefault(_key_value(value), []).append(node)
-                    index.setdefault(value.lexical, []).append(node)
-        frozen = MappingProxyType({value: tuple(nodes) for value, nodes in index.items()})
-        self.key_indexes[key] = frozen
-        self.key_index_documents[id(document)] = document
-        return frozen
+        # XSLT 3.0 section 9.11: a key defined in terms of itself is a
+        # circularity, and executing the participating instructions makes it a
+        # dynamic error (XTDE0640).  A completed index is cached above, so a
+        # re-entrant build for the same key and document can only be a cycle.
+        # The document itself is retained beside the address: Python reuses
+        # addresses, and the guard must not collide across documents.
+        if self._key_builds.get(key) is document:
+            raise XsltCircularityError(
+                f"the key {name!r} is defined in terms of itself",
+            )
+        self._key_builds[key] = document
+        try:
+            index: dict[Any, list[XdmNode]] = {}
+            for definition in definitions:
+                matcher = PatternMatcher(definition.match)
+                environment = self._pattern_environment_for(definition.match, definition.owner)
+                for node in _document_nodes(document):
+                    if not matcher.matches(node, environment):
+                        continue
+                    with self._group_scope(None, None), self._merge_scope(None, None, ()):
+                        values = self._evaluate(
+                            definition.use,
+                            EvaluationContext(
+                                focus=Focus.singleton(node),
+                                package_name=package_name,
+                            ),
+                        )
+                    atomics = _key_atomics(values)
+                    if definition.composite:
+                        composite_key = tuple(_key_value(value) for value in atomics)
+                        index.setdefault(composite_key, []).append(node)
+                        continue
+                    for value in atomics:
+                        index.setdefault(_key_value(value), []).append(node)
+                        index.setdefault(value.lexical, []).append(node)
+            frozen = MappingProxyType({value: tuple(nodes) for value, nodes in index.items()})
+            self.key_indexes[key] = frozen
+            self.key_index_documents[id(document)] = document
+            return frozen
+        finally:
+            del self._key_builds[key]
 
     def _invoke_component_callable(
         self,
@@ -7623,6 +7644,13 @@ def _pattern_variable_names(pattern: CompiledPattern) -> set[str]:
         if isinstance(value, CompiledPattern):
             for alternative in value.alternatives:
                 visit(alternative)
+            return
+        if isinstance(value, FunctionArgument) and value.kind == "variable":
+            # A rooted doc()/id()/key() pattern argument can only be a literal
+            # or a variable reference.  The pattern environment must bind the
+            # variable, or the rooted base is silently empty.
+            assert value.name is not None
+            names.add(value.name)
             return
         if is_dataclass(value) and not isinstance(value, type):
             for item in fields(value):

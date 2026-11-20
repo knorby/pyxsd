@@ -689,6 +689,8 @@ def construct_instruction(instruction: ConstructionInstruction) -> XdmSequence:
                     schema_pool=instruction.schema_pool,
                     operation="copy",
                 )
+        if copied.kind is NodeKind.ELEMENT:
+            builder.finalize_root(copied)
         return (copied,)
     if isinstance(instruction, DocumentInstruction):
         return _construct_document(
@@ -1185,6 +1187,7 @@ def literal_element(
         type_name=plan.type_name,
         schema_pool=invocation._package_schema_pool(context.package_name),
     )
+    factory.finalize_root(element)
     return element
 
 
@@ -1341,6 +1344,8 @@ def copy_value(
         schema_pool=pool,
         operation="copy",
     )
+    if clone.kind is NodeKind.ELEMENT:
+        factory.finalize_root(clone)
     return (clone,)
 
 
@@ -1374,7 +1379,8 @@ def copy_of_value(
             result.append(item)
             continue
         check_copy_type(item, plan.type_name, pool)
-        clone = _NodeFactory().clone(
+        factory = _NodeFactory()
+        clone = factory.clone(
             item,
             parent=None,
             deep=True,
@@ -1405,6 +1411,8 @@ def copy_of_value(
             schema_pool=pool,
             operation="copy-of",
         )
+        if clone.kind is NodeKind.ELEMENT:
+            factory.finalize_root(clone)
         result.append(clone)
     return tuple(result)
 
@@ -1679,7 +1687,15 @@ def number_matcher(
             return candidate.kind is kind and candidate.name == name
 
         return implied
-    matcher = PatternMatcher(pattern)
+    matcher = PatternMatcher(
+        pattern,
+        # An element-rooted temporary tree has no document node above its root,
+        # so a top-level pattern step's parent context is itself a parentless
+        # element.  The top-axis adjustment belongs to the candidate, not to
+        # that parent; without it a count pattern cannot match a descendant of
+        # the temporary tree.  Template matching keeps its existing behavior.
+        rootless=selected.root.kind is NodeKind.ELEMENT,
+    )
     environment = invocation._pattern_environment_for(
         pattern,
         context.package_name,

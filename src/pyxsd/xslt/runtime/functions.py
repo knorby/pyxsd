@@ -1411,7 +1411,7 @@ class XsltContextBridge:
         resources = self._invocation_resources(
             uri if uri is not None else "default collection", code="FODC0002"
         )
-        return resources.collection(uri, base=self.base_uri)
+        return resources.collection(uri, base=self.base_uri, package=self.package_name)
 
     def _uri_collection_function(
         self,
@@ -1424,7 +1424,10 @@ class XsltContextBridge:
             uri if uri is not None else "default collection", code="FODC0002"
         )
         return tuple(
-            XdmAtomic.any_uri(value) for value in resources.collection_uris(uri, base=self.base_uri)
+            XdmAtomic.any_uri(value)
+            for value in resources.collection_uris(
+                uri, base=self.base_uri, package=self.package_name
+            )
         )
 
     def _json_doc_function(

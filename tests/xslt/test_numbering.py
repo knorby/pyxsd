@@ -1082,6 +1082,141 @@ def test_exponent_picture_pads_mandatory_fractional_digits() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Decimal tokens beyond a trailing digit one, and Unicode numbering sequences
+
+
+def test_an_all_digit_token_is_decimal_with_its_own_zero_digit() -> None:
+    from pyxsd.xslt.runtime.numbering import format_place_marker
+
+    # A token whose characters are all decimal digits names a decimal family:
+    # the zero digit is the token's digit of value zero and the width is the
+    # token length, so the zero itself carries grouping (XSLT 3.0 section 12.4).
+    assert format_place_marker([0], "0") == "0"
+    assert format_place_marker([5], "00") == "05"
+    assert format_place_marker([1234], "0", grouping_separator=",", grouping_size="3") == "1,234"
+    assert format_place_marker([0], "\u0660") == "\u0660"
+    assert format_place_marker([5], "\u0660\u0661") == "\u0660\u0665"
+    # A lone digit one of a family still derives its zero from its value.
+    assert format_place_marker([5], "\u0661") == "\u0665"
+    assert format_place_marker([9], "1") == "9"
+    # A token with no zero digit of its own is not a decimal family token.
+    assert format_place_marker([5], "21") == "5"
+
+
+def test_multiple_decimal_families_keep_grouping_and_zero_tokens() -> None:
+    from pyxsd.xslt.runtime.numbering import format_place_marker
+
+    # The shape of catalog case number-0111: an ASCII one, an ASCII zero, and an
+    # Arabic-Indic zero, all formatting the same number in their own family.
+    assert (
+        format_place_marker(
+            [1234, 1234, 1234],
+            "[1(0)(\u0660)]",
+            grouping_separator=":",
+            grouping_size="3",
+        )
+        == "[1:234(1:234)(\u0661:\u0662\u0663\u0664)]"
+    )
+
+
+def test_a_single_numeric_token_formats_as_its_contiguous_codepoint_run() -> None:
+    from pyxsd.xslt.runtime.numbering import format_place_marker
+
+    # XSLT 3.0 section 12.4: any other format token names a numbering sequence
+    # in which the token represents one.  CIRCLED DIGIT ONE starts a run of
+    # twenty characters, so values one to twenty are the run's codepoints.
+    assert format_place_marker([1], "\u2460") == "\u2460"
+    assert format_place_marker([2], "\u2460") == "\u2461"
+    assert format_place_marker([20], "\u2460") == "\u2473"
+    # Beyond the run the processor uses the format token "1".
+    assert format_place_marker([21], "\u2460") == "21"
+    assert format_place_marker([0], "\u2460") == "0"
+
+
+def test_a_number_letter_token_formats_as_its_codepoint_run() -> None:
+    from pyxsd.xslt.runtime.numbering import format_place_marker
+
+    # ``Nl`` is a format-token category too (XSLT 3.0 section 12.4 lists Nd, Nl,
+    # No, Lu, Ll, Lt, Lm, Lo), so a lone Roman numeral one starts the run
+    # U+2160..U+216B and value 13 falls back to the format token "1".
+    assert format_place_marker([1], "\u2160") == "\u2160"
+    assert format_place_marker([12], "\u2160") == "\u216b"
+    assert format_place_marker([13], "\u2160") == "13"
+    # ROMAN NUMERAL FIFTY is not a token representing one, so it names no run.
+    assert format_place_marker([5], "\u216c") == "5"
+
+
+def test_a_numbering_sequence_zero_needs_an_adjacent_zero_glyph() -> None:
+    from pyxsd.xslt.runtime.numbering import format_place_marker
+
+    # SUBSCRIPT ONE is preceded by SUBSCRIPT ZERO, so zero is in the run.
+    assert format_place_marker([0], "\u2081") == "\u2080"
+    assert format_place_marker([9], "\u2081") == "\u2089"
+    assert format_place_marker([10], "\u2081") == "10"
+    # CIRCLED DIGIT ONE is preceded by an unassigned codepoint, so it is not.
+    assert format_place_marker([0], "\u2460") == "0"
+
+
+def test_a_non_contiguous_or_non_unit_token_is_not_a_sequence() -> None:
+    from pyxsd.xslt.runtime.numbering import format_place_marker
+
+    # OLD ITALIC NUMERAL ONE is a run of one: the next codepoint is FIVE.
+    assert format_place_marker([1], "\U00010320") == "\U00010320"
+    assert format_place_marker([2], "\U00010320") == "2"
+    # TIBETAN DIGIT HALF ONE has numeric value one half, not one.
+    assert format_place_marker([1], "\u0f2a") == "1"
+    # Only a single character can start a sequence.
+    assert format_place_marker([1], "\u2460\u2460") == "1"
+    # An ideograph with numeric value one is a letter, not a number, so the
+    # contiguous rule does not claim it.
+    assert format_place_marker([1], "\u4e00") == "1"
+    # A value far past the codespace still has a decimal fallback.
+    assert format_place_marker([10**21], "\u2460") == "1000000000000000000000"
+
+
+def test_every_declared_numbering_range_is_what_the_engine_formats() -> None:
+    """The profile's numbering declaration is exactly the measured behaviour.
+
+    XSLT 3.0 section 12.4 lets an implementation choose an implementation-defined
+    range for a numbering sequence, and requires the format token ``1`` outside
+    it.  The declared range must therefore be the run the formatter really
+    produces: a sequence character inside the range, the decimal fallback one
+    value past either end.
+    """
+    import unicodedata
+
+    from tests.xslt.selection import XSLT30_NON_STREAMING
+
+    from pyxsd.xslt.runtime.numbering import format_place_marker
+
+    for sequence, (low, high) in XSLT30_NON_STREAMING.numbering_sequences.items():
+        token = unicodedata.lookup(sequence)
+        for value in (low, high):
+            expected = chr(ord(token) + value - 1)
+            assert format_place_marker([value], token) == expected, (sequence, value)
+        assert format_place_marker([high + 1], token) == str(high + 1), sequence
+        if low > 1:
+            assert format_place_marker([low - 1], token) == str(low - 1), sequence
+
+
+def test_number_uses_a_contiguous_sequence_through_the_instruction() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:number value="(1, 2, 21)" format="&#x2460;"/>
+          <xsl:text>|</xsl:text>
+          <xsl:number value="(1, 3)" format="&#x2474;"/>
+        </xsl:template>
+        """
+    )
+    # U+2460 CIRCLED DIGIT ONE runs to twenty; U+2474 PARENTHESIZED DIGIT ONE
+    # runs to twenty as well, and the values inside each run are its codepoints.
+    assert text(lambda: transform(source, None, initial_template="main")) == (
+        "\u2460.\u2461.21|\u2474.\u2476"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Counting once per parent and the per-instruction counting state
 
 
@@ -1204,7 +1339,7 @@ def test_number_counts_once_per_parent_for_a_wide_sibling_list() -> None:
     )
 
 
-def test_number_any_in_an_unfinalized_temporary_tree_keeps_the_reference_answer() -> None:
+def test_number_any_in_an_element_rooted_temporary_tree_uses_the_counter_path() -> None:
     source = stylesheet(
         """
         <xsl:template name="main" match="/">
@@ -1213,14 +1348,33 @@ def test_number_any_in_an_unfinalized_temporary_tree_keeps_the_reference_answer(
         </xsl:template>
         """
     )
-    # The variable holds an element-rooted tree that was never finalized, so
-    # every node reports document_order -1 and the incremental walk cannot
-    # order them. The marker takes the reference walk and keeps its pre-cache
-    # answer instead of raising an internal AssertionError (a KeyError under
-    # PYTHONOPTIMIZE). XSLT 3.0 section 12.3 makes 5 the normative answer;
-    # reaching it needs the tree finalized first (or an identity-based walk),
-    # which belongs to the tree/parser stage.
-    assert text(lambda: transform(source, None, initial_template="main")) == "1"
+    # The variable holds a delivered element-rooted temporary tree.  Delivery
+    # finalizes the tree, so its nodes carry distinct document positions and
+    # the marker runs on the incremental counter path instead of the reference
+    # fallback.  XSLT 3.0 section 12.3 makes 5 the normative answer.
+    assert text(lambda: transform(source, None, initial_template="main")) == "5"
+
+
+def test_number_any_in_an_unfinalized_tree_keeps_the_reference_fallback() -> None:
+    from pyxsd.xslt.runtime.builder import _NodeFactory
+    from pyxsd.xslt.runtime.numbering import NumberingCounter, place_marker
+
+    # A tree that was built but never finalized keeps its pre-cache behavior:
+    # every node reports document_order -1, so the marker takes the reference
+    # walk instead of asserting on the incremental one.
+    factory = _NodeFactory()
+    root = factory.element("a")
+    for name in ("b", "b", "b", "c"):
+        factory._append(root, factory.element(name))
+    assert root.document.document_order == -1
+    selected = root.children[-1]
+
+    def count(node: Any) -> bool:
+        return node.name in {"a", "b", "c"}
+
+    counter = NumberingCounter("any", count, None)
+    assert place_marker(selected, "any", count, None, counter=counter) == (1,)
+    assert place_marker(selected, "any", count, None) == (1,)
 
 
 def test_number_implied_count_follows_each_selected_nodes_name() -> None:

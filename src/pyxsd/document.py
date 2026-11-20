@@ -239,6 +239,7 @@ class Document:
     def transform(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Document | Any:
         """Applies *fn* to the document.
 
+
         A :class:`~pyxsd.document_transform.DocumentTransform` is
         dispatched first: ``fn.transform_document(self)`` runs the whole
         document through it and the returned document is passed through

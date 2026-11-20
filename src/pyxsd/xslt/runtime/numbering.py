@@ -340,10 +340,13 @@ def _place_marker(
         )
     if counter is not None:
         if node.document_order < 0:
-            # An element-rooted temporary tree that was never finalized has no
-            # document order: every node reports -1, so the incremental walk
-            # cannot place this marker.  Number it with the reference walk,
-            # which does not depend on distinct document positions.
+            # The node's document was never finalized, so it has no document
+            # order and the incremental walk cannot place this marker.  This is
+            # reachable for a detached simple-content node (a text, comment, or
+            # processing-instruction node that is not part of any constructed
+            # tree) and for a tree a caller built without finalizing it.
+            # Number it with the reference walk, which does not depend on
+            # distinct document positions.
             return _place_marker(node, level, matches_count, matches_from, None)
         return counter.count_any(node)
     candidates = _document_order_candidates(node)
@@ -527,11 +530,11 @@ class _AnyCounts:
     ) -> None:
         # A finalized tree has one distinct document position per node
         # (`XdmDocument.parse`, `Builder.finalize`, `Builder.whitespace.strip`),
-        # so a forward walk can place every marker.  A tree that was never
-        # finalized — the element-rooted content `Builder.to_sequence` returns —
-        # reports ``document_order == -1`` on every node, and ``_place_marker``
-        # routes those markers to the reference walk instead of constructing
-        # this class.
+        # so a forward walk can place every marker.  A node whose document was
+        # never finalized — a bare simple-content node such as a detached text
+        # or comment node, or a tree a caller built without finalizing — reports
+        # ``document_order == -1``, and ``_place_marker`` routes those markers
+        # to the reference walk instead of constructing this class.
         self.root = root
         self.walk: Iterator[XdmNode] = iter(_tree_nodes(root))
         self.pending: XdmNode | None = next(self.walk, None)
@@ -740,6 +743,11 @@ def _format_token(
         if ordinal:
             result += _ordinal_suffix(number)
         return result
+    sequence = _sequence_token(token, number)
+    if sequence is not None:
+        # A contiguous numbering sequence is its own representation of the
+        # number; grouping, ordinal suffixes and letter-value do not apply to it.
+        return sequence
     if token in ("A", "a"):
         if letter_value == "traditional":
             roman = _roman(number)
@@ -773,21 +781,37 @@ def _format_token(
 
 
 def _decimal_token(token: str) -> tuple[str, int] | None:
-    try:
-        last = unicodedata.digit(token[-1])
-    except (TypeError, ValueError):
-        return None
-    if last != 1:
-        return None
-    for character in token[:-1]:
+    """The zero digit and width of a decimal format token, or ``None``.
+
+    A token is decimal in two cases.  If every character is a decimal digit
+    (Unicode category ``Nd``) and some character has value zero, the zero digit
+    is the first such character and the width is the token length: ``0``, ``00``
+    and ``10`` are decimal, as are their Arabic-Indic counterparts, and each
+    groups and pads like any other decimal token; the zero character names the
+    digit family.  Otherwise a token is decimal only under the XSLT 3.0 section
+    12.4 rule — a trailing digit one whose preceding characters are all zero —
+    and derives its zero digit from that trailing one, which is what keeps
+    ``1``, ``01`` and a lone Arabic-Indic one byte-identical to the older
+    implementation.
+
+    An all-``Nd`` token with no zero character that is not that value-1 shape
+    (``21``, ``23``, ``99``) is another numbering sequence, so it falls through
+    to the ``1`` fallback rather than padding.  Two zero characters of different
+    families in one token are not rejected: the first one names the family,
+    which XSLT leaves implementation-defined where F&O would raise FODF1310.
+    """
+    values: list[int] = []
+    for character in token:
         try:
-            value = unicodedata.digit(character)
+            values.append(unicodedata.decimal(character))
         except (TypeError, ValueError):
             return None
-        if value != 0:
-            return None
-    zero_digit = chr(ord(token[-1]) - 1)
-    return zero_digit, len(token)
+    for character, value in zip(token, values, strict=True):
+        if value == 0:
+            return character, len(token)
+    if values[-1] != 1 or any(value != 0 for value in values[:-1]):
+        return None
+    return chr(ord(token[-1]) - 1), len(token)
 
 
 def _decimal_number(number: int, zero_digit: str, width: int) -> str:
@@ -796,6 +820,57 @@ def _decimal_number(number: int, zero_digit: str, width: int) -> str:
     if len(text) < width:
         text = "0" * (width - len(text)) + text
     return "".join(digits[int(character)] for character in text)
+
+
+#: Unicode categories whose characters name a numbering sequence by their
+#: numeric value: ``No`` (number, other) and ``Nl`` (number, letter).
+_SEQUENCE_CATEGORIES = frozenset({"No", "Nl"})
+
+#: The last codepoint, so a sequence lookup never leaves the codespace.
+_MAX_CODEPOINT = 0x10FFFF
+
+
+def _character_numeric_value(character: str) -> float | None:
+    try:
+        return unicodedata.numeric(character)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sequence_token(token: str, number: int) -> str | None:
+    """The numbering-sequence character for *number*, or ``None``.
+
+    XSLT 3.0 section 12.4: any other format token indicates a numbering
+    sequence in which that token represents the number 1.  A single character
+    with numeric value 1 in the ``No`` or ``Nl`` category starts a contiguous
+    codepoint run: value *n* is the *n - 1* codepoints above the token, while
+    that codepoint's numeric value is *n* and its category is unchanged.  Value
+    zero needs the codepoint immediately below the token to have numeric value
+    zero, which is how a family with a zero glyph is recognised without a table
+    of families.
+
+    ``None`` covers both a token that names no sequence and a value beyond the
+    run: section 12.4 then requires the format token ``1``, which is what the
+    caller falls back to.
+    """
+    if len(token) != 1 or _character_numeric_value(token) != 1:
+        return None
+    category = unicodedata.category(token)
+    if category not in _SEQUENCE_CATEGORIES:
+        return None
+    codepoint = ord(token)
+    if number == 0:
+        preceding = chr(codepoint - 1)
+        return preceding if _character_numeric_value(preceding) == 0 else None
+    offset = codepoint + number - 1
+    if offset > _MAX_CODEPOINT:
+        return None
+    candidate = chr(offset)
+    if unicodedata.category(candidate) != category:
+        return None
+    if _character_numeric_value(candidate) != number:
+        return None
+    return candidate
 
 
 def _group_digits(text: str, separator: str, size: int) -> str:

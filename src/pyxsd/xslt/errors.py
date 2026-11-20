@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, cast, overload
+from typing import TYPE_CHECKING, Any, cast, overload
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation
@@ -467,6 +467,20 @@ class XsltDynamicError(XsltError):
         return self.allow_catch and super().catchable
 
 
+class XsltCircularityError(XsltDynamicError):
+    """An engine-detected circularity, reported as ``XTDE0640``.
+
+    XSLT 3.0 section 5.5.4 makes a dynamic error during pattern evaluation a
+    non-match, but requires a circularity to be reported even there.  This
+    marker distinguishes the engine's own circularity from an unrelated
+    dynamic error that happens to carry the same code (for example a forged
+    ``xsl:message`` code), which the masking rule still covers.
+    """
+
+    def __init__(self, message: str, **kwargs: Any) -> None:
+        super().__init__(message, code="XTDE0640", **kwargs)
+
+
 class XsltSerializationError(XsltError):
     """A serialization error, distinct from the transformation's dynamic phase.
 
@@ -554,6 +568,7 @@ def is_budget_alarm(error: BaseException) -> bool:
 __all__ = [
     "ERROR_NAMESPACE",
     "IMPLEMENTATION_BUDGET_CODE",
+    "XsltCircularityError",
     "XsltDynamicError",
     "XsltError",
     "XsltInspectionError",

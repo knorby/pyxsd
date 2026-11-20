@@ -402,33 +402,42 @@ def test_a_rewritten_collection_member_is_not_shared_with_another_case(
     assert suite._COMPILED == {}
 
 
-def test_a_collection_member_arrives_without_whitespace_stripping(
+def test_a_collection_member_obeys_the_stylesheet_space_rules(
     tmp_path: Path,
 ) -> None:
-    """Pin the accidental pass of ``collection-005``: members are not stripped.
+    """A resolver member is stripped or preserved by the calling package.
 
-    The engine hands resolver members to the caller as supplied, so
-    ``xsl:strip-space`` in the stylesheet is not applied to them.  A corpus case
-    that expects stripped member text therefore passes only by accident; the
-    engine gap is tracked separately, and this assertion keeps that pass from
-    being mistaken for working space handling.
+    The same member text is selected for stripping in one stylesheet and left
+    alone in the other, so neither answer can come from the parser's default
+    whitespace handling.  This is the discriminating check that
+    ``collection-005`` only approximated before the member path applied the
+    package's declarations.
     """
-    _write(tmp_path, "docs.xml", "<doc><a> </a></doc>")
+    _write(tmp_path, "docs.xml", "<doc><a> </a><b> </b></doc>")
     _sheet(
         tmp_path,
-        "main.xsl",
-        '<xsl:strip-space elements="a"/>'
+        "stripped.xsl",
+        '<xsl:strip-space elements="a"/><xsl:preserve-space elements="b"/>'
         '<xsl:template name="main"><out>'
         "<xsl:value-of select=\"string-length(collection('docs')//a)\"/>"
+        "<xsl:value-of select=\"string-length(collection('docs')//b)\"/>"
         "</out></xsl:template>",
     )
-    case = _case(
+    _sheet(
         tmp_path,
-        "main.xsl",
-        collections=(Collection(uri="docs", sources=(_member("docs.xml", "docs.xml"),)),),
+        "preserved.xsl",
+        '<xsl:template name="main"><out>'
+        "<xsl:value-of select=\"string-length(collection('docs')//a)\"/>"
+        "<xsl:value-of select=\"string-length(collection('docs')//b)\"/>"
+        "</out></xsl:template>",
     )
+    collections = (Collection(uri="docs", sources=(_member("docs.xml", "docs.xml"),)),)
 
-    assert suite.execute_case(case, PROFILE).xml == "<out>1</out>"
+    stripped = _case(tmp_path, "stripped.xsl", collections=collections)
+    preserved = _case(tmp_path, "preserved.xsl", collections=collections)
+
+    assert suite.execute_case(stripped, PROFILE).xml == "<out>01</out>"
+    assert suite.execute_case(preserved, PROFILE).xml == "<out>11</out>"
 
 
 def test_an_unused_collection_declaration_does_not_stop_the_case(tmp_path: Path) -> None:

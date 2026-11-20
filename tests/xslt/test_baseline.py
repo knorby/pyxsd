@@ -310,6 +310,24 @@ def test_load_baseline_rejects_incomplete_documents(tmp_path: Path) -> None:
         load_baseline(bad_value)
 
 
+@pytest.mark.parametrize("verdict", ["skipped", "bogus"])
+def test_load_baseline_refuses_a_verdict_outside_the_outcome_vocabulary(
+    verdict: str, tmp_path: Path
+) -> None:
+    """``skipped`` is not a verdict: a row no run measured cannot be recorded."""
+    path = tmp_path / f"{verdict}.toml"
+    path.write_text(
+        "[meta]\nschema = 1\ncorpus = 'rev'\nprofile = 'xslt30'\n"
+        f"[cases]\n'gate/case-001' = '{verdict}'\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="not a verdict") as caught:
+        load_baseline(path)
+
+    assert "gate/case-001" in str(caught.value)
+
+
 def test_report_rejects_unnamed_duplicate_cases_and_unknown_formats(tmp_path: Path) -> None:
     import pytest
 

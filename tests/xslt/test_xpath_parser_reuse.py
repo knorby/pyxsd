@@ -394,6 +394,34 @@ def test_parser_cache_separates_schema_pools_and_function_tables_by_values() -> 
     assert cache.buckets_built == 8
 
 
+def test_default_and_lexically_named_none_decimal_formats_key_apart() -> None:
+    """``None`` and the QName ``"None"`` are distinct keys, not one key."""
+    engine = XPathEngine()
+    compiled = engine.compile("format-number(-1, '0')", XPathStaticContext())
+    bang_is_default = {None: {"minus-sign": "!"}, "None": {"minus-sign": "-"}}
+    dash_is_default = {None: {"minus-sign": "-"}, "None": {"minus-sign": "!"}}
+    cache = XPathParserCache()
+    environments = [
+        ExpressionEnvironment(decimal_formats=formats, parser_cache=cache)
+        for formats in (bang_is_default, dash_is_default)
+    ]
+
+    cached = [
+        engine.evaluate(compiled, environment, focus=Focus.absent())[0].lexical
+        for environment in environments
+    ]
+    uncached = [
+        engine.evaluate(compiled, replace(environment, parser_cache=None), focus=Focus.absent())[
+            0
+        ].lexical
+        for environment in environments
+    ]
+
+    assert cached == uncached == ["!1", "-1"]
+    assert cache.bucket_count == 2
+    assert cache.buckets_built == 2
+
+
 # ---------------------------------------------------------------------------
 # §5 — lifetime: one cache per transformation, never process-global
 
@@ -707,8 +735,24 @@ def test_parser_key_lists_every_static_component() -> None:
     assert key[9] == "urn:collation"
     assert key[10] == "1.1"
     assert key[11] == "3.0"
-    assert key[12] == (("None", (("decimal-separator", "."),)),)
+    assert key[12] == (((True, ""), (("decimal-separator", "."),)),)
     assert key[13] == frozenset()
+
+    tagged = _parser_key(
+        "3.1",
+        True,
+        static,
+        ExpressionEnvironment(
+            decimal_formats={
+                "None": {"zero-digit": "0"},
+                None: {"decimal-separator": "."},
+            }
+        ),
+    )
+    assert tagged[12] == (
+        ((False, "None"), (("zero-digit", "0"),)),
+        ((True, ""), (("decimal-separator", "."),)),
+    )
 
     unordered = XPathStaticContext(namespaces={"a": "urn:a", "b": "urn:b"})
     assert _parser_key("3.1", False, unordered, ExpressionEnvironment()) == _parser_key(

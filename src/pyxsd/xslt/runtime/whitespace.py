@@ -25,7 +25,7 @@ from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 if TYPE_CHECKING:
     from pyxsd.xslt.compiler.static import SpaceRule
 
-__all__ = ["apply_source_space_rules"]
+__all__ = ["apply_source_space_rules", "apply_source_space_rules_to_members"]
 
 _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 _XML_WHITESPACE = frozenset(" \t\r\n")
@@ -312,3 +312,60 @@ def apply_source_space_rules(
     if not selected:
         return document
     return _filtered_clone(document, selected)
+
+
+def apply_source_space_rules_to_members(
+    members: Sequence[XdmNode],
+    *,
+    rules: Sequence[SpaceRule],
+    filtered: dict[XdmDocument, XdmDocument] | None = None,
+) -> tuple[XdmNode, ...]:
+    """Apply *rules* to the documents holding *members* and return the members.
+
+    XSLT 3.0 section 4.4 includes any document containing a node returned by
+    ``fn:collection`` among the source documents whose whitespace is stripped.
+    A member is served from the copy of its document, so a fragment member maps
+    to the same node in that copy and two members of one document observe one
+    tree.  *filtered* memoizes each document's copy across collections of one
+    invocation so serving the same member twice keeps its identity.
+
+    A member whose root is not a source document (a constructed or otherwise
+    rootless tree) is outside the stripping policy and is returned unchanged.
+    A whitespace-only text member selected for removal is also returned
+    unchanged: the collection is application data, so a declared member is
+    never silently dropped from the sequence.
+    """
+    if not rules or not members:
+        return tuple(members)
+    compiled: dict[XdmDocument, XdmDocument] = {} if filtered is None else filtered
+    served: list[XdmNode] = []
+    for member in members:
+        root = member.root
+        if not isinstance(root, XdmDocument):
+            served.append(member)
+            continue
+        copy = compiled.get(root)
+        if copy is None:
+            copy = apply_source_space_rules(root, rules=rules)
+            compiled[root] = copy
+        if copy is root:
+            served.append(member)
+        elif member is root:
+            served.append(copy)
+        else:
+            copied = _node_with_id(copy, member.node_id)
+            served.append(member if copied is None else copied)
+    return tuple(served)
+
+
+def _node_with_id(document: XdmDocument, node_id: int) -> XdmNode | None:
+    """The node of *document* carrying *node_id*, or ``None`` when removed."""
+    stack: list[XdmNode] = [document]
+    while stack:
+        node = stack.pop()
+        if node.node_id == node_id:
+            return node
+        stack.extend(node.attributes)
+        stack.extend(node.namespace_nodes)
+        stack.extend(reversed(node.children))
+    return None

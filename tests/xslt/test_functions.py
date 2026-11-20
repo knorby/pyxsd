@@ -23,8 +23,8 @@ from pyxsd.xdm import XdmAtomic
 from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.packages import PackageResolver
-from pyxsd.xslt.errors import XsltError, XsltStaticError
-from pyxsd.xslt.processor import _document_nodes
+from pyxsd.xslt.errors import ERROR_NAMESPACE, XsltError, XsltStaticError
+from pyxsd.xslt.processor import _ABSENT, _document_nodes, _Invocation, _prepare_invocation
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
@@ -365,6 +365,297 @@ def test_key_error_arms_composite_keys_and_function_values() -> None:
         )
         == "FOTY0013"
     )
+
+
+def test_a_self_referential_key_definition_raises_XTDE0640() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="key('k', @id)"/>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key('k', 'a'))"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        transform(source, b'<doc><item id="a"/></doc>', initial_template="main")
+    assert caught.value.code == "XTDE0640"
+    assert "'k'" in str(caught.value)
+
+
+def test_mutually_recursive_key_definitions_raise_XTDE0640() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k1" match="item" use="key('k2', @id)"/>
+        <xsl:key name="k2" match="item" use="key('k1', @id)"/>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key('k1', 'a'))"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        transform(source, b'<doc><item id="a"/></doc>', initial_template="main")
+    assert caught.value.code == "XTDE0640"
+    # The lookup starts from k1, so k1 is the definition that closes the cycle.
+    assert "'k1'" in str(caught.value)
+
+
+def test_a_non_circular_key_chain_still_evaluates() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k2" match="item" use="@code"/>
+        <xsl:key name="k1" match="item" use="concat('p', key('k2', @code)/@code)"/>
+        <xsl:template name="main">
+          <xsl:sequence select="string(key('k1', 'px')/@id), count(key('k1', 'pz'))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(
+        source,
+        b'<doc><item id="a" code="x"/><item id="b" code="y"/></doc>',
+        initial_template="main",
+    )
+    assert result.principal == (XdmAtomic.string("a"), XdmAtomic.integer(0))
+
+
+def test_a_second_lookup_reuses_the_completed_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builds: list[str] = []
+    original = _Invocation._key_index
+
+    def counting(self, definitions, document, package_name):
+        key = (id(document), package_name, definitions[0].name)
+        cached = self.key_indexes.get(key)
+        if cached is None or self.key_index_documents.get(id(document)) is not document:
+            builds.append(definitions[0].name)
+        return original(self, definitions, document, package_name)
+
+    monkeypatch.setattr(_Invocation, "_key_index", counting)
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key('k', 'a')), count(key('k', 'b'))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(
+        source,
+        b'<doc><item id="a"/><item id="b"/></doc>',
+        initial_template="main",
+    )
+    assert result.principal == (XdmAtomic.integer(1), XdmAtomic.integer(1))
+    assert builds == ["k"]
+
+
+def test_the_same_key_against_another_document_is_not_circular() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="other" as="document-node()">
+          <xsl:document><x id="a"/></xsl:document>
+        </xsl:variable>
+        <xsl:key name="k" match="item | x"
+                 use="if (exists(self::x)) then @id else key('k', @id, $other)/@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="local-name(key('k', 'a')), local-name(key('k', 'a', $other))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b'<doc><item id="a"/></doc>', initial_template="main")
+    assert result.principal == (XdmAtomic.string("item"), XdmAtomic.string("x"))
+
+
+def test_a_pattern_key_lookup_selects_the_keyed_nodes() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="b" use="@code"/>
+        <xsl:template match="/">
+          <out><xsl:apply-templates select="doc/a"/></out>
+        </xsl:template>
+        <xsl:template match="a[key('k', @code)]"><hit n="{@code}"/></xsl:template>
+        <xsl:template match="a"><miss n="{@code}"/></xsl:template>
+        """
+    )
+    result = transform(source, b'<doc><a code="x"/><a code="z"/><b code="x"/><b code="w"/></doc>')
+    (out,) = result.principal
+    assert [
+        (
+            child.local_name,
+            [(attribute.name, attribute.string_value) for attribute in child.attributes],
+        )
+        for child in element_children(out)
+    ] == [
+        ("hit", [("n", "x")]),
+        ("miss", [("n", "z")]),
+    ]
+
+
+def test_a_rooted_key_pattern_selects_the_keyed_nodes() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k1" match="b" use="@code"/>
+        <xsl:key name="k2" match="key('k1', 'x')" use="@id"/>
+        <xsl:template match="/">
+          <out n="{count(key('k2', 'id8'))}" code="{key('k2', 'id8')/@code}"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b'<doc><b id="id8" code="x"/><b id="id9" code="y"/></doc>')
+    (out,) = result.principal
+    assert [(attribute.name, attribute.string_value) for attribute in out.attributes] == [
+        ("n", "1"),
+        ("code", "x"),
+    ]
+
+
+def test_a_pattern_key_lookup_uses_the_third_argument_document() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="other" as="document-node()">
+          <xsl:document><b id="id8" code="x"/></xsl:document>
+        </xsl:variable>
+        <xsl:key name="k1" match="b" use="@code"/>
+        <xsl:key name="k2" match="key('k1', 'x', $other)" use="@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key('k2', 'id8', $other))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b'<doc><b id="id8" code="z"/></doc>', initial_template="main")
+    assert result.principal == (XdmAtomic.integer(1),)
+
+
+def test_a_circular_key_inside_a_pattern_predicate_raises_XTDE0640() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item[key('k', @id)]" use="@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key('k', 'a'))"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        transform(source, b'<doc><item id="a"/></doc>', initial_template="main")
+    assert caught.value.code == "XTDE0640"
+
+
+def test_a_circular_key_in_a_rooted_pattern_raises_XTDE0640() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="key('k', 'a')" use="@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key('k', 'a'))"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltError) as caught:
+        transform(source, b'<doc><item id="a"/></doc>', initial_template="main")
+    assert caught.value.code == "XTDE0640"
+
+
+def test_a_non_circular_pattern_error_is_still_a_non_match() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item[1 div 0]" use="@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key('k', 'a'))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b'<doc><item id="a"/></doc>', initial_template="main")
+    assert result.principal == (XdmAtomic.integer(0),)
+
+
+def test_a_forged_circularity_code_from_a_message_is_masked() -> None:
+    """Only engine-detected circularity overrides the pattern masking rule."""
+    source = _stylesheet(
+        """
+        <xsl:key name="k" match="item[my:forge(.)]" use="@id"/>
+        <xsl:function name="my:forge" as="xs:boolean">
+          <xsl:param name="node"/>
+          <xsl:message terminate="yes" error-code="err:XTDE0640">forged</xsl:message>
+        </xsl:function>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key('k', 'a'))"/>
+        </xsl:template>
+        """,
+        namespaces={"my": MY_NS, "err": ERROR_NAMESPACE},
+    )
+    result = transform(source, b'<doc><item id="a"/></doc>', initial_template="main")
+    # XSLT 3.0 section 5.5.4 masks a non-circular dynamic error even when it
+    # carries the circularity code; the unbuilt index stays empty.
+    assert result.principal == (XdmAtomic.integer(0),)
+
+
+def test_a_forged_circularity_code_outside_a_pattern_is_catchable() -> None:
+    source = _stylesheet(
+        """
+        <xsl:function name="my:forge" as="xs:boolean">
+          <xsl:param name="node"/>
+          <xsl:message terminate="yes" error-code="err:XTDE0640">forged</xsl:message>
+        </xsl:function>
+        <xsl:template name="main">
+          <xsl:try>
+            <xsl:sequence select="my:forge(.)"/>
+            <xsl:catch><caught code="{$err:code}"/></xsl:catch>
+          </xsl:try>
+        </xsl:template>
+        """,
+        namespaces={"my": MY_NS, "err": ERROR_NAMESPACE},
+    )
+    result = transform(source, b"<doc/>", initial_template="main")
+    (caught,) = result.principal
+    assert caught.local_name == "caught"
+    assert [(attribute.name, attribute.string_value) for attribute in caught.attributes] == [
+        ("code", "XTDE0640")
+    ]
+
+
+def _key_invocation(source: bytes) -> _Invocation:
+    compiled = XsltProcessor().compile(io.BytesIO(source))
+    options = _prepare_invocation(
+        compiled,
+        source=_ABSENT,
+        parameters=None,
+        global_context_item=_ABSENT,
+        initial_match_selection=_ABSENT,
+        template_parameters=None,
+        tunnel_parameters=None,
+        initial_template="main",
+        initial_mode=None,
+        initial_function=None,
+        initial_function_arguments=(),
+        output_uri=None,
+        delivery="raw",
+    )
+    return _Invocation(compiled, options)
+
+
+def test_a_failed_key_build_leaves_no_guard() -> None:
+    failing = XsltProcessor().compile(
+        io.BytesIO(
+            stylesheet(
+                """
+                <xsl:key name="k" match="item" use="error()"/>
+                <xsl:template name="main"><out/></xsl:template>
+                """
+            )
+        )
+    )
+    invocation = _key_invocation(
+        stylesheet(
+            """
+            <xsl:key name="k" match="item" use="@id"/>
+            <xsl:template name="main"><out/></xsl:template>
+            """
+        )
+    )
+    document = XdmDocument.parse(b'<doc><item id="a"/></doc>')
+    with pytest.raises(XsltError):
+        invocation._key_index(failing._keys[None], document, None)
+    index = invocation._key_index(invocation.stylesheet._keys[None], document, None)
+    assert {node.local_name for node in index["a"]} == {"item"}
+    assert invocation._key_builds == {}
 
 
 def test_environment_function_overrides_are_validated_and_contextual() -> None:

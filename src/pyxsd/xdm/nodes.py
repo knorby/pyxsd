@@ -456,7 +456,7 @@ class XdmNode(XdmItem):
 class XdmDocument(XdmNode):
     """An XDM document node holding one parsed XML document."""
 
-    __slots__ = ("_root_element", "_schema_pool")
+    __slots__ = ("_order_base", "_root_element", "_schema_pool")
 
     def __init__(
         self,
@@ -480,6 +480,14 @@ class XdmDocument(XdmNode):
         )
         self._root_element: XdmNode | None = None
         self._schema_pool = schema_pool
+        #: The document-order position of the first node below the document
+        #: node.  Parsed documents and the final result tree use the ordinary
+        #: one-based order.  A temporary tree constructed during a
+        #: transformation is assigned a distinct, larger base by its builder,
+        #: so two temporary trees never share a position: their relative order
+        #: is the order in which their documents were created, never a shared
+        #: position range or an allocation address.
+        self._order_base = 1
 
     @classmethod
     def parse(
@@ -553,9 +561,17 @@ class XdmDocument(XdmNode):
     def root_element(self) -> XdmNode:
         return cast(XdmNode, self._root_element)
 
-    def _finalize_document_order(self) -> None:
-        order = 0
-        stack: list[XdmNode] = [self]
+    def _finalize_document_order(self, root: XdmNode | None = None) -> None:
+        """Place *root* (or this document's children) in this document's order.
+
+        The document node is position 0 so that a finalized document is still
+        recognisable by the adapter registry.  *root* names an element-rooted
+        temporary tree whose root has no document parent; the tree is walked
+        from that root without making the document its parent.
+        """
+        self._document_order = 0
+        order = self._order_base
+        stack: list[XdmNode] = list(reversed(self._children)) if root is None else [root]
         while stack:
             node = stack.pop()
             node._document_order = order

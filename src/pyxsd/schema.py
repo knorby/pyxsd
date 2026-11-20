@@ -35,7 +35,7 @@ from pyxsd.element_representatives.element_representative import (
     componentKind,
 )
 from pyxsd.element_representatives.xsd_type import OWNER_SCHEMA_ATTRIBUTE
-from pyxsd.exceptions import PyXSDError, PyXSDWarning, ValidationError  # noqa: F401
+from pyxsd.exceptions import PyXSDError, PyXSDWarning
 from pyxsd.extensions import Extensions
 from pyxsd.import_visibility import audit_direct_imports
 from pyxsd.instance_binding import bind_instance

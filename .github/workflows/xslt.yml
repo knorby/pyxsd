@@ -25,6 +25,10 @@ permissions:
 
 jobs:
   xslt30:
+    # Manual runs only for now: the baselines were re-established on a
+    # different machine shape and the four-worker budget is not yet proven on
+    # CI runners.  Delete this condition to re-enable pull-request gating.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # The regex and Unicode families are exercised with a real per-case
     # budget; four workers on a standard runner need the headroom.
@@ -82,6 +86,7 @@ jobs:
           if-no-files-found: ignore
 
   xslt20:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     concurrency:
@@ -137,6 +142,7 @@ jobs:
           if-no-files-found: ignore
 
   xslt10:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:

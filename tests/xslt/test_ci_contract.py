@@ -22,6 +22,7 @@ import pytest
 import yaml
 from tests import report_xslt
 from tests.xslt import baseline as baseline_module
+from tests.xslt import census as census_module
 from tests.xslt import environment as environment_module
 from tests.xslt import report
 from tests.xslt import suite as suite_module
@@ -108,6 +109,28 @@ GATE_TEST_SET = """\
 </test-set>
 """
 
+TWO_FAMILY_CATALOG = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="http://www.w3.org/2012/10/xslt-test-catalog">
+  <test-set name="gate" file="gate/_gate-test-set.xml"/>
+  <test-set name="other" file="other/_other-test-set.xml"/>
+</catalog>
+"""
+
+OTHER_TEST_SET = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<test-set xmlns="http://www.w3.org/2012/10/xslt-test-catalog" name="other">
+  <environment name="other-env">
+    <source role="."><content><![CDATA[<doc/>]]></content></source>
+  </environment>
+  <test-case name="other-001">
+    <environment ref="other-env"/>
+    <test><stylesheet file="other-001.xsl"/></test>
+    <result><assert-xml><![CDATA[<out>right</out>]]></assert-xml></result>
+  </test-case>
+</test-set>
+"""
+
 GATE_CASE = """\
   <test-case name="{name}">
     <environment ref="gate-env"/>
@@ -151,6 +174,18 @@ def _fixture_repo(tmp_path: Path, names: tuple[str, ...] = ("case-001",)) -> Pat
     return root
 
 
+def _two_family_repo(tmp_path: Path) -> Path:
+    """A synthetic repo with ``gate/`` (two cases) and ``other/`` (one case)."""
+    root = _fixture_repo(tmp_path, names=("case-001", "case-002"))
+    corpus = root / "tests" / "xslt" / "corpus"
+    (corpus / "catalog.xml").write_text(TWO_FAMILY_CATALOG, encoding="utf-8")
+    other = corpus / "other"
+    other.mkdir()
+    (other / "_other-test-set.xml").write_text(OTHER_TEST_SET, encoding="utf-8")
+    (other / "other-001.xsl").write_text(SHEET, encoding="utf-8")
+    return root
+
+
 def _baseline_path(root: Path, profile: str = "xslt30") -> Path:
     return root / "tests" / "xslt" / "baselines" / f"{profile}.toml"
 
@@ -174,6 +209,12 @@ def _write_baseline(root: Path, profile: str, cases: dict[str, str], **meta: obj
 
 def _run(argv: list[str], root: Path) -> int:
     return report_xslt.run(argv, repo_root=root)
+
+
+def _run_census(root: Path, target: Path, argv: tuple[str, ...] = ()) -> dict:
+    """Write a census by argv and return the parsed document."""
+    assert _run(["--profile", "xslt30", "--census", str(target), *argv], root) == 0
+    return json.loads(target.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +371,9 @@ def test_check_reads_neither_the_clock_nor_the_run(
     )
 
 
-def test_check_rejects_profile_corpus_and_case_set_drift(tmp_path: Path) -> None:
+def test_check_rejects_profile_corpus_and_case_set_drift(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     root = _fixture_repo(tmp_path)
     path = _write_baseline(root, "xslt30", {"gate/case-001": "fail"})
     assert _run(["--profile", "xslt30", "--check"], root) == 0
@@ -355,8 +398,11 @@ def test_check_rejects_profile_corpus_and_case_set_drift(tmp_path: Path) -> None
     )
     assert _run(["--profile", "xslt30", "--check"], root) == 1
 
+    # A verdict outside the Outcome vocabulary is a refusal to read the
+    # baseline, like a missing [meta] table: exit 2, not report drift.
     baseline_module.write_baseline(path, replace(recorded, cases={"gate/case-001": "bogus"}))
-    assert _run(["--profile", "xslt30", "--check"], root) == 1
+    assert _run(["--profile", "xslt30", "--check"], root) == 2
+    assert "not a verdict" in capsys.readouterr().err
 
 
 def test_check_rejects_a_timeout_budget_change(
@@ -419,7 +465,7 @@ def test_check_reports_a_missing_baseline_and_runs_need_the_catalog(tmp_path: Pa
 
 
 def test_write_baseline_refuses_an_incomplete_slice(tmp_path: Path) -> None:
-    root = _fixture_repo(tmp_path)
+    root = _two_family_repo(tmp_path)
     target = _baseline_path(root)
     assert (
         _run(
@@ -430,12 +476,13 @@ def test_write_baseline_refuses_an_incomplete_slice(tmp_path: Path) -> None:
     )
     assert (
         _run(
-            ["--profile", "xslt30", "--filter", "case", "--write-baseline", str(target)],
+            ["--profile", "xslt30", "--filter", "gate/", "--write-baseline", str(target)],
             root,
         )
         == 2
     )
     assert _run(["--profile", "xslt30", "--enforce", "--write-baseline", str(target)], root) == 2
+    assert not target.exists()
 
 
 def test_write_baseline_is_byte_stable_after_an_independent_read(tmp_path: Path) -> None:
@@ -853,3 +900,313 @@ def test_conformance_workflow_reacts_to_dependency_lock_changes() -> None:
     workflow = _workflow()
     triggers = workflow.get("on", workflow.get(True, {}))
     assert "uv.lock" in triggers["pull_request"]["paths"]
+
+
+# ---------------------------------------------------------------------------
+# Development loop: family-filtered slices and the honesty rules
+
+
+def test_filter_tokens_match_family_prefixes_and_exact_ids(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _two_family_repo(tmp_path)
+    for argv, expected in (
+        # A trailing "/" selects the family; anything else is an exact id.
+        (["--filter", "gate/"], 2),
+        (["--filter", "gate/case-002"], 1),
+        (["--filter", "gate/case-001,other/other-001"], 2),
+        # Tokens are stripped and de-duplicated, order preserved.
+        (["--filter", "gate/, gate/"], 2),
+        (["--filter", " gate/case-001 , other/other-001 "], 2),
+    ):
+        assert _run(["--profile", "xslt30", "--list-only", *argv], root) == 0
+        assert f"{expected} cases would run under profile xslt30" in capsys.readouterr().out
+
+    # A prefix that is not a token (no trailing "/") is an exact id.
+    assert _run(["--profile", "xslt30", "--list-only", "--filter", "gate/case-00"], root) == 2
+    assert "gate/case-00" in capsys.readouterr().err
+
+    document = _run_census(root, tmp_path / "census.json", ("--filter", "gate/,gate/case-001"))
+    assert document["selection"]["filters"] == ["gate/", "gate/case-001"]
+    assert [case["name"] for case in document["cases"]] == ["gate/case-001", "gate/case-002"]
+
+    collapsed = _run_census(root, tmp_path / "collapsed.json", ("--filter", "gate/, gate/"))
+    assert collapsed["selection"]["filters"] == ["gate/"]
+
+
+def test_check_and_write_baseline_refuse_a_filter(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _two_family_repo(tmp_path)
+    _write_baseline(
+        root,
+        "xslt30",
+        {"gate/case-001": "fail", "gate/case-002": "fail", "other/other-001": "fail"},
+    )
+    # The baseline is valid and complete here, so pre-change ``--check`` exits 0
+    # and the only reason these arms exit 2 is the narrowing refusal.
+    target = _baseline_path(root)
+    assert _run(["--profile", "xslt30", "--check"], root) == 0
+    capsys.readouterr()
+
+    assert _run(["--profile", "xslt30", "--check", "--filter", "gate/case-001"], root) == 2
+    error = capsys.readouterr().err
+    assert "--check" in error and "--filter" in error and "cannot be narrowed" in error
+
+    assert _run(["--profile", "xslt30", "--check", "--limit", "1"], root) == 2
+    error = capsys.readouterr().err
+    assert "--check" in error and "--limit" in error and "cannot be narrowed" in error
+
+    never = tmp_path / "never" / "xslt30.toml"
+    assert (
+        _run(["--profile", "xslt30", "--write-baseline", str(never), "--filter", "gate/"], root)
+        == 2
+    )
+    error = capsys.readouterr().err
+    assert "--write-baseline" in error and "--filter" in error
+    assert not never.exists()
+    assert target.exists()
+
+    census = tmp_path / "census.json"
+    assert _run(["--profile", "xslt30", "--census", str(census), "--limit", "0"], root) == 2
+    assert "--limit must be at least 1, got 0" in capsys.readouterr().err
+    assert not census.exists()
+
+    # A plain run has no mode to compare or report a slice.
+    assert _run(["--profile", "xslt30", "--filter", "gate/"], root) == 2
+    error = capsys.readouterr().err
+    assert "--filter" in error and "--census" in error
+
+
+def test_an_empty_filter_token_is_refused_before_any_catalog_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "bare-repo"
+    root.mkdir()
+    target = tmp_path / "census.json"
+
+    assert _run(["--profile", "xslt30", "--census", str(target), "--filter", ""], root) == 2
+    error = capsys.readouterr().err
+    assert "token '' is empty" in error
+    # The catalog error would say "cannot read XSLT catalog"; argument parsing
+    # must refuse before the corpus is consulted at all.
+    assert "catalog" not in error
+    assert not target.exists()
+
+
+def test_flag_help_and_docstring_name_every_refused_host(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        report_xslt.parse_args(["--help"])
+    help_output = capsys.readouterr().out
+
+    def description(flag: str) -> str:
+        start = help_output.index(f"\n  {flag}")
+        end = help_output.find("\n  --", start + 1)
+        return " ".join(help_output[start : end if end != -1 else len(help_output)].split())
+
+    def names(segment: str, host: str) -> bool:
+        """True when *host* appears; argparse may wrap a long flag mid-hyphen."""
+        return host.replace(" ", "") in "".join(segment.split())
+
+    filter_help = description("--filter")
+    for host in ("--check", "--write-baseline", "plain run"):
+        assert names(filter_help, host)
+    skip_help = description("--skip-timeouts")
+    for host in ("--check", "--enforce", "--write-baseline", "--list-only", "plain run"):
+        assert names(skip_help, host)
+
+    docstring = " ".join(report_xslt.__doc__.split())
+    assert "a plain run has no slice to compare or report" in docstring
+    assert "a plain run has no census to report it" in docstring
+
+
+def test_filtered_enforce_announces_the_slice_and_compares_only_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _two_family_repo(tmp_path)
+    target = _write_baseline(root, "xslt30", {"gate/case-001": "fail"})
+
+    # The whole-baseline gate still names both out-of-slice additions.
+    assert _run(["--profile", "xslt30", "--enforce"], root) == 2
+    error = capsys.readouterr().err
+    assert "[added] gate/case-002" in error
+    assert "[added] other/other-001" in error
+
+    assert _run(["--profile", "xslt30", "--enforce", "--filter", "gate/case-001"], root) == 0
+    assert "enforcing 1 of 1 cases" in capsys.readouterr().err
+
+    sheet = root / "tests" / "xslt" / "corpus" / "gate" / "case-001.xsl"
+    sheet.write_text(RIGHT_SHEET, encoding="utf-8")
+    assert _run(["--profile", "xslt30", "--enforce", "--filter", "gate/case-001"], root) == 2
+    assert "[improvement] gate/case-001" in capsys.readouterr().err
+
+    # An out-of-slice removal disappears: it was never enforced.
+    _write_baseline(root, "xslt30", {"gate/case-001": "fail", "other/other-001": "pass"})
+    sheet.write_text(SHEET, encoding="utf-8")
+    assert _run(["--profile", "xslt30", "--enforce", "--filter", "gate/case-001"], root) == 0
+    error = capsys.readouterr().err
+    assert "enforcing 1 of 2 cases" in error
+    assert "other/other-001" not in error
+
+    # A slice member absent from the baseline is added, not ignored.
+    _write_baseline(root, "xslt30", {"other/other-001": "pass"})
+    assert _run(["--profile", "xslt30", "--enforce", "--filter", "gate/case-001"], root) == 2
+    assert "[added] gate/case-001" in capsys.readouterr().err
+
+    # A limited enforce is the same kind of slice.
+    _write_baseline(root, "xslt30", {"gate/case-001": "fail"})
+    assert _run(["--profile", "xslt30", "--enforce", "--limit", "1"], root) == 0
+    assert "enforcing 1 of 1 cases" in capsys.readouterr().err
+
+    # The profile/corpus/budget preflight survives the slice.
+    recorded = baseline_module.load_baseline(target)
+    baseline_module.write_baseline(
+        target, replace(recorded, meta={**recorded.meta, "corpus": "deadbeef"})
+    )
+    assert _run(["--profile", "xslt30", "--enforce", "--filter", "gate/case-001"], root) == 2
+    assert "deadbeef" in capsys.readouterr().err
+
+
+def test_skip_timeouts_is_accepted_only_for_census(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _two_family_repo(tmp_path)
+    _write_baseline(root, "xslt30", {"gate/case-001": "timeout"})
+
+    document = _run_census(root, tmp_path / "census.json", ("--skip-timeouts",))
+    assert document["skipped"]["cases"] == ["gate/case-001"]
+    assert document["selection"]["skip_timeouts"] is True
+    assert [case["name"] for case in document["cases"]] == [
+        "gate/case-002",
+        "other/other-001",
+    ]
+
+    for argv, host in (
+        (["--enforce"], "--enforce"),
+        (["--check"], "--check"),
+        (["--write-baseline", str(tmp_path / "baseline.toml")], "--write-baseline"),
+        (["--list-only"], "--list-only"),
+        ([], "plain run"),
+    ):
+        assert _run(["--profile", "xslt30", *argv, "--skip-timeouts"], root) == 2
+        error = capsys.readouterr().err
+        assert "--skip-timeouts" in error
+        assert host in error
+        assert "only valid with --census" in error
+    assert not (tmp_path / "baseline.toml").exists()
+
+    # A missing baseline is a refusal to read, before any case runs.
+    missing_census = tmp_path / "missing.json"
+    argv = [
+        "--profile",
+        "xslt30",
+        "--census",
+        str(missing_census),
+        "--skip-timeouts",
+        "--baseline",
+        str(tmp_path / "absent.toml"),
+    ]
+    assert _run(argv, root) == 2
+    assert "error:" in capsys.readouterr().err
+    assert not missing_census.exists()
+
+
+@pytest.mark.parametrize("dimension", ["profile", "corpus", "budget", "missing-budget"])
+def test_skip_timeouts_refuses_a_baseline_of_another_identity(
+    dimension: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _two_family_repo(tmp_path)
+    path = _write_baseline(root, "xslt30", {"gate/case-001": "timeout"})
+    recorded = baseline_module.load_baseline(path)
+    if dimension == "profile":
+        meta = {**recorded.meta, "profile": "xslt20"}
+        expected = "profile"
+    elif dimension == "corpus":
+        meta = {**recorded.meta, "corpus": "deadbeef"}
+        expected = "corpus"
+    elif dimension == "budget":
+        meta = {**recorded.meta, "timeout_seconds": 10}
+        expected = "timeout budget"
+    else:
+        meta = {key: value for key, value in recorded.meta.items() if key != "timeout_seconds"}
+        expected = "timeout budget"
+    baseline_module.write_baseline(path, replace(recorded, meta=meta))
+
+    target = tmp_path / "census.json"
+    assert _run(["--profile", "xslt30", "--census", str(target), "--skip-timeouts"], root) == 2
+    assert expected in capsys.readouterr().err
+    assert not target.exists()
+
+
+def test_a_partial_census_describes_its_selection(tmp_path: Path) -> None:
+    root = _two_family_repo(tmp_path)
+
+    filtered = _run_census(root, tmp_path / "filtered.json", ("--filter", "gate/case-002"))
+    assert filtered["selection"] == {
+        "filters": ["gate/case-002"],
+        "limit": None,
+        "skip_timeouts": False,
+        "available": 3,
+        "matched": 1,
+        "selected": 1,
+    }
+
+    limited = _run_census(root, tmp_path / "limited.json", ("--limit", "1"))
+    assert limited["selection"]["limit"] == 1
+    assert limited["selection"]["filters"] == []
+    assert (limited["selection"]["matched"], limited["selection"]["selected"]) == (3, 1)
+    assert [case["name"] for case in limited["cases"]] == ["gate/case-001"]
+
+    both = _run_census(root, tmp_path / "both.json", ("--filter", "gate/", "--limit", "1"))
+    assert both["selection"] == {
+        "filters": ["gate/"],
+        "limit": 1,
+        "skip_timeouts": False,
+        "available": 3,
+        "matched": 2,
+        "selected": 1,
+    }
+
+    full = _run_census(root, tmp_path / "full.json")
+    assert "selection" not in full
+    assert "skipped" not in full
+
+    # The metadata cannot lie about how many rows were measured.
+    with pytest.raises(ValueError, match="measured"):
+        census_module.build_census(
+            (CaseResult.passed("a"),),
+            profile="xslt30",
+            corpus="pinned",
+            timeout_seconds=5.0,
+            selection=census_module.Selection(available=1, matched=1, selected=2),
+        )
+
+
+def test_milestone_runs_are_unfiltered_on_all_three_profiles(tmp_path: Path) -> None:
+    rules = report_xslt.HONESTY_RULES
+    assert len(rules) == 2
+    assert all(rule.strip() for rule in rules)
+    milestone, engine_touching = rules
+    for profile in ("xslt30", "xslt20", "xslt10"):
+        assert profile in milestone
+    assert "--filter" in milestone
+    assert "--skip-timeouts" in milestone
+    assert "--skip-timeouts" in engine_touching
+    docstring = " ".join(report_xslt.__doc__.split())
+    assert "never --filter and never --skip-timeouts" in docstring
+
+    # The mechanical half: the milestone instruments refuse narrowing.
+    root = _two_family_repo(tmp_path)
+    assert _run(["--profile", "xslt30", "--check", "--filter", "gate/"], root) == 2
+    assert _run(["--profile", "xslt30", "--enforce", "--skip-timeouts"], root) == 2
+
+    commands = [step.get("run", "") for job in _workflow()["jobs"].values() for step in _steps(job)]
+    checks = [command for command in commands if "report_xslt.py" in command]
+    for profile in ("xslt30", "xslt20", "xslt10"):
+        assert any(f"--profile {profile} --check" in command for command in checks)
+    for command in checks:
+        assert "--filter" not in command
+        assert "--skip-timeouts" not in command
+        assert "--limit" not in command
