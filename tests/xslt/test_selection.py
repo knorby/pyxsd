@@ -31,6 +31,11 @@ from tests.xslt.selection import (
     select_cases,
 )
 
+#: The pinned W3C corpus, when its submodule is checked out.  Jobs that do not
+#: fetch it (the main CI test job fetches only the XSTS corpus) skip the tests
+#: that read this catalog rather than failing on a missing file.
+CORPUS = Path(__file__).parent / "corpus"
+
 
 def case(
     name: str = "case-001",
@@ -481,11 +486,12 @@ def test_numbering_sequence_declarations_are_immutable_and_copied() -> None:
         profile.numbering_sequences["DIGIT ONE COMMA"] = (1, 9)  # type: ignore[index]
 
 
+@pytest.mark.skipif(not (CORPUS / "catalog.xml").is_file(), reason="XSLT corpus not checked out")
 def test_declared_numbering_sequences_are_exercised_by_catalog_cases() -> None:
     """Every declared range is verified by a case whose request it contains."""
     from tests.xslt.catalog import load_catalog
 
-    pinned = load_catalog(Path(__file__).parent / "corpus" / "catalog.xml")
+    pinned = load_catalog(CORPUS / "catalog.xml")
     requests: dict[str, set[str | None]] = {}
     for item in pinned.cases.values():
         for dependency in item.dependencies:

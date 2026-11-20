@@ -18,7 +18,7 @@ an implementation choose ·implementation-defined·, so grading one version
 against a case that pins another has no conformance meaning.
 
 A ``combinations_for_numbering`` dependency is a capability declaration, not a
-version: XSLT 3.0 §12.3 makes a numbering sequence beyond its listed tokens
+version: XSLT 3.0 §12.4 makes a numbering sequence beyond its listed tokens
 ·implementation-defined·, and the catalog's ``range`` says how much of one
 sequence a case asks the processor to support.  A profile declares the
 sequences it implements and the inclusive range each one covers; a case is
@@ -103,7 +103,7 @@ class FeatureProfile:
     merely not implemented yet.  Both collections are normalised to immutable
     frozensets.
 
-    ``numbering_sequences`` declares the optional XSLT 3.0 §12.3 numbering
+    ``numbering_sequences`` declares the optional XSLT 3.0 §12.4 numbering
     sequences the profile implements, each mapped to the inclusive range of
     values it supports.  It is empty by default — a profile claims no optional
     sequence it has not verified — and :func:`inapplicability` excludes a case
@@ -329,7 +329,7 @@ _XSLT30_FEATURES = frozenset(
     }
 )
 
-#: Optional XSLT 3.0 section 12.3 numbering sequences this engine implements.
+#: Optional XSLT 3.0 section 12.4 numbering sequences this engine implements.
 #:
 #: A single character whose numeric value is 1 in the ``No``/``Nl`` categories
 #: names a contiguous codepoint run, and each entry is the inclusive range that

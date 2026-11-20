@@ -1090,7 +1090,7 @@ def test_an_all_digit_token_is_decimal_with_its_own_zero_digit() -> None:
 
     # A token whose characters are all decimal digits names a decimal family:
     # the zero digit is the token's digit of value zero and the width is the
-    # token length, so the zero itself carries grouping (XSLT 3.0 section 12.3).
+    # token length, so the zero itself carries grouping (XSLT 3.0 section 12.4).
     assert format_place_marker([0], "0") == "0"
     assert format_place_marker([5], "00") == "05"
     assert format_place_marker([1234], "0", grouping_separator=",", grouping_size="3") == "1,234"
@@ -1122,7 +1122,7 @@ def test_multiple_decimal_families_keep_grouping_and_zero_tokens() -> None:
 def test_a_single_numeric_token_formats_as_its_contiguous_codepoint_run() -> None:
     from pyxsd.xslt.runtime.numbering import format_place_marker
 
-    # XSLT 3.0 section 12.3: any other format token names a numbering sequence
+    # XSLT 3.0 section 12.4: any other format token names a numbering sequence
     # in which the token represents one.  CIRCLED DIGIT ONE starts a run of
     # twenty characters, so values one to twenty are the run's codepoints.
     assert format_place_marker([1], "\u2460") == "\u2460"
@@ -1131,6 +1131,19 @@ def test_a_single_numeric_token_formats_as_its_contiguous_codepoint_run() -> Non
     # Beyond the run the processor uses the format token "1".
     assert format_place_marker([21], "\u2460") == "21"
     assert format_place_marker([0], "\u2460") == "0"
+
+
+def test_a_number_letter_token_formats_as_its_codepoint_run() -> None:
+    from pyxsd.xslt.runtime.numbering import format_place_marker
+
+    # ``Nl`` is a format-token category too (XSLT 3.0 section 12.4 lists Nd, Nl,
+    # No, Lu, Ll, Lt, Lm, Lo), so a lone Roman numeral one starts the run
+    # U+2160..U+216B and value 13 falls back to the format token "1".
+    assert format_place_marker([1], "\u2160") == "\u2160"
+    assert format_place_marker([12], "\u2160") == "\u216b"
+    assert format_place_marker([13], "\u2160") == "13"
+    # ROMAN NUMERAL FIFTY is not a token representing one, so it names no run.
+    assert format_place_marker([5], "\u216c") == "5"
 
 
 def test_a_numbering_sequence_zero_needs_an_adjacent_zero_glyph() -> None:
@@ -1164,7 +1177,7 @@ def test_a_non_contiguous_or_non_unit_token_is_not_a_sequence() -> None:
 def test_every_declared_numbering_range_is_what_the_engine_formats() -> None:
     """The profile's numbering declaration is exactly the measured behaviour.
 
-    XSLT 3.0 section 12.3 lets an implementation choose an implementation-defined
+    XSLT 3.0 section 12.4 lets an implementation choose an implementation-defined
     range for a numbering sequence, and requires the format token ``1`` outside
     it.  The declared range must therefore be the run the formatter really
     produces: a sequence character inside the range, the decimal fallback one

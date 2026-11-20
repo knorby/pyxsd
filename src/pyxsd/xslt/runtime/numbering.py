@@ -783,14 +783,22 @@ def _format_token(
 def _decimal_token(token: str) -> tuple[str, int] | None:
     """The zero digit and width of a decimal format token, or ``None``.
 
-    A token whose characters are all decimal digits — Unicode category ``Nd`` —
-    is decimal: its zero digit is the token's own digit of value zero and its
-    width is the token length, so a lone ``0`` or Arabic-Indic zero groups and
-    pads like any other decimal token.  A token with no zero digit of its own
-    is decimal only under the XSLT 3.0 section 12.3 rule — a trailing digit one
-    whose preceding digits are all zero — and derives its zero digit from that
-    trailing one.  Anything else is another numbering sequence, or no format
-    token at all.
+    A token is decimal in two cases.  If every character is a decimal digit
+    (Unicode category ``Nd``) and some character has value zero, the zero digit
+    is the first such character and the width is the token length: ``0``, ``00``
+    and ``10`` are decimal, as are their Arabic-Indic counterparts, and each
+    groups and pads like any other decimal token; the zero character names the
+    digit family.  Otherwise a token is decimal only under the XSLT 3.0 section
+    12.4 rule — a trailing digit one whose preceding characters are all zero —
+    and derives its zero digit from that trailing one, which is what keeps
+    ``1``, ``01`` and a lone Arabic-Indic one byte-identical to the older
+    implementation.
+
+    An all-``Nd`` token with no zero character that is not that value-1 shape
+    (``21``, ``23``, ``99``) is another numbering sequence, so it falls through
+    to the ``1`` fallback rather than padding.  Two zero characters of different
+    families in one token are not rejected: the first one names the family,
+    which XSLT leaves implementation-defined where F&O would raise FODF1310.
     """
     values: list[int] = []
     for character in token:
@@ -832,7 +840,7 @@ def _character_numeric_value(character: str) -> float | None:
 def _sequence_token(token: str, number: int) -> str | None:
     """The numbering-sequence character for *number*, or ``None``.
 
-    XSLT 3.0 section 12.3: any other format token indicates a numbering
+    XSLT 3.0 section 12.4: any other format token indicates a numbering
     sequence in which that token represents the number 1.  A single character
     with numeric value 1 in the ``No`` or ``Nl`` category starts a contiguous
     codepoint run: value *n* is the *n - 1* codepoints above the token, while
@@ -842,7 +850,7 @@ def _sequence_token(token: str, number: int) -> str | None:
     of families.
 
     ``None`` covers both a token that names no sequence and a value beyond the
-    run: section 12.3 then requires the format token ``1``, which is what the
+    run: section 12.4 then requires the format token ``1``, which is what the
     caller falls back to.
     """
     if len(token) != 1 or _character_numeric_value(token) != 1:
