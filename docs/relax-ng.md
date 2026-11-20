@@ -828,12 +828,12 @@ uses the shared sequential batch orchestration and parses each item
 validation-only, so batch documents are generic; see {doc}`batch` for source
 lifetimes and error policies.
 
-## Release capability matrix
+## Capability summary
 
-The following matrix is the release contract. Each row names the XSD-facing
-capability, the required RELAX NG behavior, and the legitimate difference.
+The table summarizes what RELAX NG supports and where its behavior differs from
+XSD.
 
-| XSD-facing capability | Required RELAX NG behavior | Legitimate difference |
+| Capability | RELAX NG support | Difference from XSD |
 | --- | --- | --- |
 | Compile, parse, revalidate, batch | Equivalent lifecycle, source handling, bounded diagnostic recovery, and visible completeness | Separate compiler and explicit schema association |
 | Mutable document and writers | One lexical tree, synchronized descriptors, XPath, transforms, XDM, and serialization | No XSD infoset changes; revision-scoped interpretation evidence |
@@ -850,16 +850,12 @@ capability, the required RELAX NG behavior, and the legitimate difference.
 
 ## Deliberate exclusions
 
-These are accepted profile boundaries, not unfinished work and not excuses for
-gaps in the matrix above:
-
 - **Compact syntax.** Only RELAX NG XML syntax is implemented. A filename
   extension never selects compact syntax.
 - **DTD Compatibility and direct DTD coverage.** RELAX NG DTD Compatibility is
-  outside this profile, and there is no synthesized defaulting or ID/IDREF
-  cross-reference layer. Existing DTD-related preprocessing is preserved but
-  is not comprehensive DTD coverage. There are no synthesized defaults in the
-  RELAX NG profile.
+  not supported. There are no synthesized defaults or ID/IDREF cross-reference
+  checks from that profile. Existing DTD-related preprocessing is not full DTD
+  support.
 - **NVDL.** Compound-document dispatch is not part of this implementation.
 - **Schema-aware XSLT and XPath typing.** Ordinary XPath reads the bound tree,
   but schema-aware XPath and schema-aware XSLT features remain XSD-only and do

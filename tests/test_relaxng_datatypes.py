@@ -33,6 +33,7 @@ from pyxsd.relaxng.datatypes import (
     UnsupportedDatatypeError,
     UnsupportedDatatypeOperation,
     XsdDatatypeFactory,
+    datatype_supports_encode,
     resolve_datatype_selector,
 )
 from pyxsd.relaxng.patterns import Data, Text, Value, choice
@@ -241,6 +242,18 @@ class TestBuiltinLibrary:
 
 
 class TestSelectorsAndRegistry:
+    def test_explicit_encoder_capability_declarations_in_core(self):
+        class DeclaredEncoder(OpaqueDatatype):
+            supports_encode = True
+
+        class UndeclaredEncoder(OpaqueDatatype):
+            def encode(self, value, context):
+                return str(value)
+
+        assert datatype_supports_encode(OpaqueDatatype()) is False
+        assert datatype_supports_encode(DeclaredEncoder()) is True
+        assert datatype_supports_encode(UndeclaredEncoder()) is False
+
     def test_string_selector_names_the_builtin_library(self):
         assert resolve_datatype_selector("string") == (BUILTIN_LIBRARY, "string")
 

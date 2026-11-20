@@ -42,6 +42,22 @@ MATRIX_ROWS = (
 OPTIONAL_MARKER = "requires the pydantic and arrow extras"
 
 
+def test_api_reference_preserves_shared_xdm_section() -> None:
+    markdown = (ROOT / "docs" / "api.md").read_text(encoding="utf-8")
+    heading = "## XDM values and document transforms"
+    assert heading in markdown
+    assert markdown.index(heading) < markdown.index("## Querying a document")
+    section = markdown.split(heading, 1)[1].split("\n## ", 1)[0]
+    for name in (
+        "pyxsd.xdm.nodes.XdmDocument",
+        "pyxsd.xdm.errors.XdmInputError",
+        "pyxsd.document_transform.DocumentTransform",
+    ):
+        directive = rf"^\.\. auto(?:class|exception):: {re.escape(name)}$"
+        assert re.search(directive, section, re.MULTILINE), name
+        assert len(re.findall(directive, markdown, re.MULTILINE)) == 1, name
+
+
 def page_text() -> str:
     assert PAGE.is_file(), "docs/relax-ng.md must describe the RELAX NG capability"
     return PAGE.read_text(encoding="utf-8")
@@ -65,7 +81,7 @@ def fenced_blocks(markdown: str, language: str) -> list[str]:
 
 
 def release_section(markdown: str) -> str:
-    return markdown.split("## Release capability matrix", 1)[1].split("\n## ", 1)[0]
+    return markdown.split("## Capability summary", 1)[1].split("\n## ", 1)[0]
 
 
 def run_python_blocks(blocks: list[str], tmp_path: Path) -> dict[str, object]:

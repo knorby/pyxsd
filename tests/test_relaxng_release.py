@@ -1386,6 +1386,15 @@ def test_integration_coverage_config_measures_relaxng_optional_modules() -> None
     assert parser["report"].getfloat("fail_under") == 92.0
 
 
+def test_codecov_requires_full_patch_coverage() -> None:
+    config = yaml.safe_load((ROOT / "codecov.yml").read_text(encoding="utf-8"))
+    status = config["coverage"]["status"]
+    patch = status["patch"]["default"]
+    assert patch.get("target") == "100%"
+    assert patch["threshold"] == "0%"
+    assert status["project"]["default"]["informational"] is True
+
+
 def test_base_coverage_omits_only_the_optional_relaxng_modules() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     run = project["tool"]["coverage"]["run"]

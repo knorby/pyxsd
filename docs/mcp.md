@@ -7,9 +7,9 @@
 
 pyxsd can run as a local [Model Context Protocol](https://modelcontextprotocol.io/)
 server. MCP clients can load schema and XML inputs for a session, explore compiled
-XSD or RELAX NG schemas, validate XML, follow diagnostics to exact source occurrences, run bounded
-XPath queries, transform XML, convert document data, compare schemas, export records, and read retained
-output files.
+XSD or RELAX NG schemas, validate XML, and follow diagnostics to exact source
+occurrences. Clients can also run bounded XPath queries, transform XML, convert
+document data, compare schemas, export records, and read retained outputs.
 
 The server is **stdio-only** and runs beside the MCP client. Execution is disabled
 by default. Local transformation previews require an explicit opt-in and run with
@@ -246,13 +246,11 @@ internally. The capability metadata
 `diagnostics_complete` and `suppressed_count` fields. A truncated report stays
 invalid.
 
-Structural comparison is same-language; an XSD-to-RELAX NG structural section
-is explicitly **not comparable**, not an empty diff. Corpus impact is separate
-and validates documents under both schemas regardless of language. Built-in and
-XSD datatype libraries work over the wire; application-supplied Python factories
-are Python-only, and MCP never accepts executable factory code. XSD-only
-compile options are rejected before input is read. See {doc}`relax-ng` for the
-public capability contract and deliberate exclusions.
+Structural comparison requires two schemas in the same language. A mixed pair
+reports **not comparable** for structure but still validates the corpus against
+both schemas. MCP supports the built-in and XSD datatype libraries; custom
+factories are available only through Python. MCP rejects XSD-only compile options
+before reading the input. See {doc}`relax-ng` for details.
 
 ## Tool catalog
 

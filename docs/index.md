@@ -7,7 +7,7 @@
    :description: Validate XML against XSD or native RELAX NG in Python, query and edit bound objects, inspect validation reports, and export records with pyxsd.
 ```
 
-pyxsd validates XML against XSD and native RELAX NG 1.0, and binds documents
+pyxsd validates XML against XSD and native RELAX NG 1.0 and binds documents
 to Python objects. The schema supplies the classes at runtime, so you can
 query, extend, and transform typed data without maintaining generated Python
 source. Read {doc}`why-pyxsd` for the strengths of this approach and when to

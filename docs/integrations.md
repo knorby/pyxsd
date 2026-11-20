@@ -332,9 +332,8 @@ statuses, manifest version 1, failure cleanup and local publication guarantees.
 For XSD schemas, the integrations support element-only sequence/all content,
 non-repeating composite groups, optional nested records, repeated child
 elements, simple single-element choice branches, attributes, defaults/fixed
-values, simple content, and declaration-driven nil shells. Optional groups retain mandatory
-member relationships; a required choice does not become unrelated optional
-fields.
+values, simple content, and declaration-driven nil shells. Optional groups
+retain their required members, and required choices remain required.
 
 Reachable repeated composite groups, complex choices, ambiguous same-name
 positions, mixed/wildcard/open content, heterogeneous unions, recursive
