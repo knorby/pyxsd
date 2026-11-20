@@ -2,13 +2,13 @@
 
 ```{eval-rst}
 .. meta::
-   :description: Run pyxsd as a local MCP server to inspect XSD schemas, validate XML, follow diagnostics, and retain bounded output artifacts.
+   :description: Run pyxsd as a local MCP server to inspect XSD or RELAX NG schemas, validate XML, follow diagnostics, convert data, compare schemas, and retain bounded output artifacts.
 ```
 
 pyxsd can run as a local [Model Context Protocol](https://modelcontextprotocol.io/)
 server. MCP clients can load schema and XML inputs for a session, explore compiled
-schemas, validate XML, follow diagnostics to exact source occurrences, run bounded
-XPath queries, transform XML, compare schemas, export records, and read retained
+XSD or RELAX NG schemas, validate XML, follow diagnostics to exact source occurrences, run bounded
+XPath queries, transform XML, convert document data, compare schemas, export records, and read retained
 output files.
 
 The server is **stdio-only** and runs beside the MCP client. Execution is disabled
@@ -222,6 +222,35 @@ standalone hash of the schema closure. It can change when an instance or unrelat
 uploaded file changes. Use the per-source digest for document identity; do not
 infer a schema revision from a changed capture fingerprint alone.
 
+## RELAX NG schemas
+
+Set `SchemaRef.format` to `"relax-ng"`; filenames never select a language.
+RELAX NG has no instance schema-location hint, so every operation that needs a
+schema requires an explicit `schema_ref`. `pyxsd_capabilities` reports the
+implemented RELAX NG contracts under `schema_languages["relax-ng"]`.
+
+Validation, batch validation, schema inspection, component search, diagnostics,
+stubs, data export and import, JSON Schema generation, comparison, projected
+models, records, datasets, and ordinary transform previews accept RELAX NG.
+Conversion covers all five formats and both fidelities. Ambiguous scalars use
+the RELAX NG tagged-value contract; generated JSON Schema is structural, not
+full grammar validation.
+
+MCP validation parses lexical RELAX NG trees only: capabilities report
+`validation.typed: false` and `validation.capture: false`, so annotation tables
+and typed scalar wrappers are not exposed through direct validation results.
+Conversion uses the public typed export path internally. Diagnostics report
+`completeness: "boolean"` plus `suppressed_count`; a truncated report stays
+invalid.
+
+Structural comparison is same-language; an XSD-to-RELAX NG structural section
+is explicitly **not comparable**, not an empty diff. Corpus impact is separate
+and validates documents under both schemas regardless of language. Built-in and
+XSD datatype libraries work over the wire; application-supplied Python factories
+are Python-only, and MCP never accepts executable factory code. XSD-only
+compile options are rejected before input is read. See {doc}`relax-ng` for the
+public capability contract and deliberate exclusions.
+
 ## Tool catalog
 
 | Tool | What it does |
@@ -234,6 +263,9 @@ infer a schema revision from a changed capture fingerprint alone.
 | `pyxsd_validate_document` | Returns verdicts, exact issue locations, aggregate counts, paged issues, and fingerprints; retains a report artifact only for invalid documents. |
 | `pyxsd_validate_documents` | Validates a batch with per-document schemas and outcomes in one capture and worker call; retains reports only for invalid documents. |
 | `pyxsd_query_document` | Runs XPath over the bound projection and returns scalars, node summaries, exact locations, or exact source subtrees. |
+| `pyxsd_export_data` | Exports a validated document under `pyxsd`, `pyxsd-json`, Parker, BadgerFish, or JsonML with explicit fidelity. |
+| `pyxsd_import_data` | Imports JSON-compatible data under one of the five formats, validates it, and returns the document report. |
+| `pyxsd_document_json_schema` | Generates the Draft 2020-12 structural contract for a selected data format and root. |
 | `pyxsd_explain_issue` | Gives curated issue-code guidance and can read an exact issue from a retained report. |
 | `pyxsd_inspect_model` | Projects JSON Schema for a selected declaration (optional Pydantic integration). |
 | `pyxsd_validate_data` | Checks JSON data against a projected contract (optional Pydantic integration). |
@@ -464,7 +496,10 @@ never append to existing output.
 ## Schema comparison and migration evidence
 
 `pyxsd_compare_schemas` compares an old and a new schema in clean workers and
-returns the result directly. The structural diff reports added, removed and changed
+returns the result directly. Structural comparison is same-language; a
+cross-language pair reports a **not comparable** structural section rather than
+an empty diff. The corpus section still validates every supplied document under
+both schemas regardless of language. The structural diff reports added, removed and changed
 components using comparison-specific declaration identities, plus changed-field
 details, a namespace-change flag, and exact totals. A target
 namespace change re-identifies every component. The summary is deterministic for

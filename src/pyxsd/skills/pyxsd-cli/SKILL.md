@@ -1,46 +1,53 @@
 ---
 name: pyxsd-cli
-description: Use when an agent needs the pyxsd command line or shell for XML/XSD validation, CI status checks, schema inspection, stub generation, transforms, or stdin/stdout pipelines, especially when MCP is unavailable or unnecessary.
+description: Use when an agent needs the pyxsd command line or shell for XML schema validation with XSD or RELAX NG, CI status checks, schema inspection, stub generation, transforms, or stdin/stdout pipelines, especially when MCP is unavailable or unnecessary.
 ---
 
 # pyxsd CLI workflow
 
 Use the installed `pyxsd` console script to validate and bind one XML document,
-run transforms, or inspect a schema. `python -m pyxsd` is equivalent. Neither
-form requires MCP or its optional dependencies.
+run transforms, or inspect an XSD or RELAX NG schema. `python -m pyxsd` is
+equivalent. Neither form requires MCP or its optional dependencies.
 
 Start with `pyxsd --version` and consult `pyxsd --help` for the installed
 release. The examples below use `document.xml` and `schema.xsd`; substitute real
-paths and quote transform calls for the shell.
+paths and quote transform calls for the shell. RELAX NG examples use
+`schema.rng` and always pass `--schema-language relax-ng`.
 
 ## Quick reference
 
 | Task | Command |
 | --- | --- |
-| Validate with an explicit schema | `pyxsd -i document.xml -s schema.xsd --strict` |
-| Validate using the instance's schema hints | `pyxsd -i document.xml --strict` |
+| Validate with an explicit XSD schema | `pyxsd -i document.xml -s schema.xsd --strict` |
+| Validate with an explicit RELAX NG schema | `pyxsd -i document.xml -s schema.rng --schema-language relax-ng --strict` |
+| Validate using the instance's XSD schema hints | `pyxsd -i document.xml --strict` |
 | Read XML from stdin | `pyxsd -s schema.xsd --strict < document.xml` |
 | Write the parsed tree before any transforms | `pyxsd -i document.xml -s schema.xsd -k -p parsed.xml` |
-| Export schema-driven JSON | `pyxsd -i document.xml -s schema.xsd -t 'ToData(format="pyxsd-json")' -o data.json` |
-| Export ordered JsonML arrays | `pyxsd -i document.xml -s schema.xsd -t 'ToData(format="jsonml")' -o data.json` |
+| Export XSD schema-driven JSON | `pyxsd -i document.xml -s schema.xsd -t 'ToData(format="pyxsd-json")' -o data.json` |
+| Export XSD ordered JsonML arrays | `pyxsd -i document.xml -s schema.xsd -t 'ToData(format="jsonml")' -o data.json` |
+| Print the parsed tree for XSD or RELAX NG | `pyxsd -i document.xml -s schema.xsd -t 'PrintData()'` |
 | Run a transform chain | `pyxsd -i document.xml -s schema.xsd -t 'PrintData() > PrintData()'` |
 | Read transform calls from a file | `pyxsd -i document.xml -s schema.xsd -T transforms.txt` |
-| Emit a full typing stub to stdout | `pyxsd --emit-stubs -s schema.xsd` |
-| Emit a compact stub to a file | `pyxsd --emit-stubs schema.pyi --stubs-compact -s schema.xsd` |
+| Emit a full XSD typing stub to stdout | `pyxsd --emit-stubs -s schema.xsd` |
+| Emit a compact RELAX NG stub to a file | `pyxsd --emit-stubs schema.pyi --stubs-compact -s schema.rng --schema-language relax-ng` |
 
 ## Validate and interpret the result
 
-1. Pass `-s schema.xsd` when the schema location is known. Without `-s`, pyxsd
-   reads `xsi:noNamespaceSchemaLocation` or `xsi:schemaLocation` from the
+1. Pass `-s schema.xsd` when the schema location is known. Without `-s`, XSD
+   mode reads `xsi:noNamespaceSchemaLocation` or `xsi:schemaLocation` from the
    instance and resolves the hint relative to the instance file. A missing hint
    is a fatal error; a malformed hint produces a `schema-hint` warning.
-2. Read validation findings from stderr. A nonempty report does not by itself
+2. For RELAX NG, pass `-s schema.rng --schema-language relax-ng`. A filename
+   extension never selects the language. RELAX NG has no instance schema hint,
+   so `-s` is required. Validation reports, parsed output, transforms, stubs,
+   and `--strict` status use the same pipeline.
+3. Read validation findings from stderr. A nonempty report does not by itself
    make the process fail.
-3. Add `--strict` when automation needs invalid content to produce exit status
+4. Add `--strict` when automation needs invalid content to produce exit status
    1. Without `--strict`, exit status 0 means the run completed, even when the
    report contains validation errors. Do not present that status alone as a
    validity verdict.
-4. Separate failure classes. Exit 1 also covers unreadable input, malformed XML,
+5. Separate failure classes. Exit 1 also covers unreadable input, malformed XML,
    a missing schema, and other fatal processing errors. Argparse usage errors
    exit 2. Inspect stderr before reporting a cause.
 
@@ -52,8 +59,9 @@ best-effort values where supported while keeping the validation findings.
 Choose `--namespaces strict` (the default) for expanded-name matching. Use
 `--namespaces legacy` only for documents that intentionally match by local name
 while ignoring namespace URIs. Select `--xsd-version 1.0` for an XSD 1.0
-processor; the default is 1.1. These are schema/binding choices, not output
-formats.
+processor; the default is 1.1. These are XSD schema/binding choices, not output
+formats. With `--schema-language relax-ng`, only their default values are
+accepted; `-c/--overlayClassesFile` is also XSD-only.
 
 ## Control inputs and outputs
 
@@ -80,13 +88,16 @@ Use `-t 'Class(args...)'` for literal arguments and chain top-level calls with
 `-T` are mutually exclusive. `-k` retains the pre-transform tree alongside the
 transform output.
 
-Use `ToData(format="...")` for JSON-safe export: `pyxsd` (native, the default),
-`pyxsd-json`, `parker`, `badgerfish`, or `jsonml`. `ToDict()` retains raw bound
-values; prefer `ToData()` for JSON output. `typed=False` and `always_list=True`
-are native-only options. Export defaults to `fidelity="best-effort"`; choose
-`fidelity="strict"` to reject representation losses. This is separate from
-the CLI's `--strict` validation-exit policy. `pyxsd-json` and JsonML preserve
-ordered and mixed content; grouped formats have fidelity limits.
+Use `ToData(format="...")` for JSON-safe XSD export: `pyxsd` (native, the
+default), `pyxsd-json`, `parker`, `badgerfish`, or `jsonml`. `ToData()` is
+XSD-only because it calls the XSD data-conversion path; it does not convert a
+RELAX NG tree. `ToDict()` and `PrintData()` work on both XSD and RELAX NG
+documents. `ToDict()` retains raw bound values; prefer `ToData()` for JSON
+output from XSD. `typed=False` and `always_list=True` are native-only options.
+Export defaults to `fidelity="best-effort"`; choose `fidelity="strict"` to
+reject representation losses. This is separate from the CLI's `--strict`
+validation-exit policy. `pyxsd-json` and JsonML preserve ordered and mixed
+content; grouped formats have fidelity limits.
 
 Transform resolution imports Python modules from pyxsd, the working directory,
 and the instance directory. Overlay files supplied with `-c` are also Python.
@@ -98,29 +109,37 @@ imported implementation safe.
 
 Use `--emit-stubs [PATH]` with `-s`. Omit `PATH` for stdout; add
 `--stubs-compact` for the shorter agent-oriented description. Compilation flags
-such as `--mode`, `--namespaces`, `--xsd-version`, and `-c` still apply.
+such as `--mode`, `--namespaces`, `--xsd-version`, and `-c` apply only to XSD.
+Add `--schema-language relax-ng` to emit stubs for a RELAX NG grammar; the
+result describes its route projections rather than XSD types.
 
 Stub mode reads no XML instance and prints no validation report. Recoverable
 schema findings do not prevent emission, and `--strict` has no effect in this
 mode. Successful stub output is not a schema-validity verdict. Use the Python
-API's `Schema.require_valid()` when schema findings must stop a workflow.
+API's `Schema.require_valid()` or `RelaxNGSchema.require_valid()` when schema
+findings must stop a workflow.
 
 ## Choose Python or MCP when the CLI ends
 
 The CLI prints a human-readable report but does not expose structured report
 objects, exact source-occurrence lookup, or programmatic tree editing. Use the
 Python API for those tasks, for parser hardening and resource policies, and for
-fresh `Document.revalidate()` checks after edits. JSON import and JSON Schema
-generation also use Python: `Schema.from_data()` / `Schema.from_json()` import
-all five formats, and `Schema.json_schema()` generates Draft 2020-12 contracts
-from XSD. Import and generation default to `format="pyxsd-json"` and
-`fidelity="strict"`; choose the format explicitly to match export. Pass JSON
-text or bytes to `from_json()`, not a filename, and call `require_valid()` on
-the imported document when XSD errors must stop processing. JSON Schema does
-not enforce every XSD rule. See the
-[data conversion guide](https://pyxsd.knorby.com/data-conversion.html).
-The CLI has no JSON-input or JSON-Schema-generation flags.
+fresh `Document.revalidate()` / `RelaxNGDocument.revalidate()` checks after
+edits. JSON import and JSON Schema generation also use Python: for XSD,
+`Schema.from_data()` / `Schema.from_json()` import all five formats, and
+`Schema.json_schema()` generates Draft 2020-12 contracts. For RELAX NG, use
+`RelaxNGSchema.from_data()` / `from_json()` / `json_schema()` and
+`RelaxNGDocument.to_data()` / `to_json()`; ambiguous scalars use the versioned
+RELAX NG `{"#value": ...}` profile. Import and generation default to
+`format="pyxsd-json"` and `fidelity="strict"`; choose the format explicitly to
+match export. Pass JSON text or bytes to `from_json()`, not a filename, and
+call `require_valid()` on the imported document when schema errors must stop
+processing. JSON Schema does not enforce every XSD or RELAX NG rule. See the
+[data conversion guide](https://pyxsd.knorby.com/data-conversion.html) and the
+[RELAX NG guide](https://pyxsd.knorby.com/relax-ng.html).
+The CLI has no JSON-input, RELAX NG conversion, model, or JSON-Schema-generation
+flags.
 
 Use MCP when a client needs workspace inputs, paginated issues, exact captured
-subtrees, comparisons, or retained artifacts. Do not invent CLI flags for those
-capabilities.
+subtrees, conversions, comparisons, or retained artifacts. Do not invent CLI
+flags for those capabilities.

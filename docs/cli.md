@@ -57,9 +57,12 @@ an XSD schema `.rng`, does not change the selected language.
 The standard workflows apply to both languages: validation reports, parsed
 output (`-k`/`-p`), transforms (`-t`/`-T`) through the shared document pipeline,
 transform output selection (`-o`/`-d`), stdin/stdout, quiet/verbose logging, and
-`--strict` exit status. A transform that relies on XSD-only typing remains
-XSD-specific. The CLI does not expose RELAX NG conversion, data-model, or record
-commands.
+`--strict` exit status. `PrintData()` and `ToDict()` work on RELAX NG
+documents. A transform that relies on XSD-only typing remains XSD-specific:
+`ToData()` calls the XSD data-conversion path, so RELAX NG conversion uses
+`RelaxNGDocument.to_data()` in Python or MCP `pyxsd_export_data`. The CLI does
+not expose RELAX NG conversion, data-model, or record commands. See
+{doc}`relax-ng` for the full capability contract.
 
 Given an instance document and a RELAX NG schema supplied by the caller:
 

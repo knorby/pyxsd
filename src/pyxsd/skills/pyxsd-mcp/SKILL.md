@@ -1,6 +1,6 @@
 ---
 name: pyxsd-mcp
-description: Drive pyxsd through the local stdio Model Context Protocol — session inputs, validation with exact occurrences, direct comparisons, transform previews, exports, and retained local outputs.
+description: Drive pyxsd through the local stdio Model Context Protocol — session inputs, XSD or RELAX NG validation with exact occurrences, data conversion, comparisons, transform previews, model and record exports, and retained local outputs.
 ---
 
 # pyxsd MCP workflow
@@ -32,6 +32,33 @@ default; use `--resource-limits enabled` or
 `--limit FIELD=VALUE` / `PYXSD_MCP_<UPPERCASE_FIELD>` to tune them. Do not assume
 execution or Arrow features — check `adapters.arrow.available` and
 `execution_backend`.
+
+## Schema language
+
+`SchemaRef.format` is `"xsd"` by default or `"relax-ng"`; filenames never
+select the language. RELAX NG has no instance schema-location hint, so every
+operation that needs a schema must receive an explicit reference:
+
+```json
+{"source": {"path": "schema.rng"}, "format": "relax-ng"}
+```
+
+`pyxsd_capabilities` reports both languages under `schema_languages`. For
+RELAX NG, validation is lexical-only (`validation.typed: false`,
+`validation.capture: false`), so direct results do not expose typed scalar
+wrappers or annotation tables. Conversion, models, records, datasets, and
+transform previews use the public typed adapters internally. Diagnostics expose
+`completeness: "boolean"` plus `suppressed_count`; a truncated report stays
+invalid.
+
+All five conversion formats and both fidelities are available. Ambiguous
+scalars use the versioned RELAX NG tagged-value contract, and generated JSON
+Schema is structural rather than full grammar validation. Built-in and XSD
+datatype libraries work over the wire; application-supplied Python datatype
+factories are Python-only, and the server never accepts executable factory
+code. XSD-only compile options (`binding: "strict"`, `namespaces: "legacy"`,
+nondefault `xsd_version`, or namespace mappings) are rejected for RELAX NG
+before input is read. See the [RELAX NG guide](https://pyxsd.knorby.com/relax-ng.html).
 
 ## Basic workflow
 
@@ -108,12 +135,33 @@ limits are enabled.
 Artifacts survive a server restart. Session inputs, page cursors, and preview
 execution context do not; recreate them and rerun the operation.
 
+## Data conversion
+
+`pyxsd_export_data` and `pyxsd_import_data` use the five shared formats:
+`pyxsd`, `pyxsd-json`, `parker`, `badgerfish`, and `jsonml`. Export defaults to
+`pyxsd` with best-effort fidelity; import defaults to `pyxsd-json` with strict
+fidelity. `typed` and `always_list` are native-only and must keep their
+defaults for other formats. `pyxsd_document_json_schema` returns the Draft
+2020-12 structural contract and lists unenforced rules under
+`x-pyxsd-validation.unvalidated`; it is not a full grammar or document
+validator.
+
+RELAX NG's `pyxsd-json` profile advertises `x-pyxsd-profile: "relaxng"` and
+`x-pyxsd-profile-version: 1`. Ambiguous or lexical-only scalars use the
+versioned `{"#value": ...}` tag; conventional formats carry lexical text at
+those positions. Bare `null` is not a RELAX NG scalar, and import never adds
+`xsi:nil`. `pyxsd_validate_data` checks a projected Pydantic route contract,
+not whole-document XML validity.
+
 ## Comparison and migration
 
 `pyxsd_compare_schemas` returns **structural impact** separately from **corpus
 evidence** (each file classified valid/regressed/resolved/invalid/malformed/
-unbindable/skipped under both schemas). Identical schemas moved to another path
-produce an empty diff. Named local declarations stay stable across sibling edits;
+unbindable/skipped under both schemas). Structural comparison is same-language:
+an XSD-to-RELAX NG pair is explicitly **not comparable**, not an empty diff.
+Corpus evidence still validates files under both schemas regardless of
+language. Identical schemas moved to another path produce an empty diff. Named
+local declarations stay stable across sibling edits;
 `changed_details` contains actual old/new field values. Regressed/resolved corpus
 items carry bounded issue evidence from the failing side. A no-regressions result
 applies only to the tested files and options.
@@ -160,5 +208,7 @@ did not cover every descendant.
 ## Fallback
 
 With `pyxsd[mcp]` not installed, use the pyxsd Python/CLI workflow directly (see
-the pyxsd-development skill). Do not claim MCP features exist when the server is
-not running.
+the pyxsd-development skill). For RELAX NG, `pyxsd --schema-language relax-ng`
+covers validation, parsed output, transforms, and stubs; use
+`RelaxNGDocument.to_data()` in Python for conversion. Do not claim MCP features
+exist when the server is not running.

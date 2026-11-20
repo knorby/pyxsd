@@ -2,7 +2,7 @@
 
 ```{eval-rst}
 .. meta::
-   :description: Convert bound XML to and from five JSON formats, with explicit scalar, namespace, fidelity, and document validation rules.
+   :description: Convert XSD- or RELAX NG-bound XML to and from five JSON formats, with explicit scalar, namespace, fidelity, and document validation rules.
 ```
 
 `Document.to_data()` exports the bound tree as JSON-safe Python values.
@@ -32,6 +32,27 @@ between them.
 
 `Schema.json_schema()` constructs a Draft 2020-12 description for any of
 these formats directly from the compiled XSD, without a sample document.
+
+## RELAX NG documents
+
+`RelaxNGDocument.to_dict` / `to_data` / `to_json` and `RelaxNGSchema.from_data`
+/ `from_json` / `json_schema` use the same five format names, export and import
+defaults, fidelity modes, and native-only `typed` / `always_list` rules. The
+RELAX NG `pyxsd-json` profile is schema-directed from the compiled projection
+plan, retains the root, and represents ambiguous or lexical-only scalar
+alternatives with a versioned profile-1 `{"#value": ...}` tag. Its generated
+JSON Schema advertises `x-pyxsd-profile: "relaxng"` and
+`x-pyxsd-profile-version: 1`.
+
+RELAX NG has no bare `null` scalar: a bare `null` is neither empty content nor
+nil, and XSD actual-type and nil shortcuts are rejected as markers. The
+conversion formats own different structural losses, but the RELAX NG adapters
+never call an XSD converter. See {doc}`relax-ng` for the tagged body, candidate
+reconstruction, generic mixed envelopes, invalid/edited lexical escape paths,
+and the structural limits of generated JSON Schema.
+
+The rest of this page describes the shared format structures and the XSD
+schema-directed layouts they use.
 
 ## Export a document
 
@@ -489,7 +510,10 @@ Parker keeps empty element-only `{}` distinct from nil `null`.
 
 Every result includes `$schema: "https://json-schema.org/draft/2020-12/schema"`,
 `x-pyxsd-format`, and `x-pyxsd-validation` with `level: "structural"` and a
-sorted `unvalidated` list. Only `pyxsd-json` adds `x-pyxsd-profile-version: 1`.
+sorted `unvalidated` list. XSD `pyxsd-json` adds
+`x-pyxsd-profile-version: 1`; the RELAX NG profile instead advertises
+`x-pyxsd-profile: "relaxng"` and `x-pyxsd-profile-version: 1` (see
+{doc}`relax-ng`).
 Reusable and recursive shapes use deterministic `$defs`/`$ref`; annotations
 such as `x-pyxsd-qname`, `x-pyxsd-type`, and `x-pyxsd-layout` identify their
 XSD origin or representation.

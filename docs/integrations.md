@@ -2,7 +2,7 @@
 
 ```{eval-rst}
 .. meta::
-   :description: Generate Pydantic models from XSD and export validated XML records to Arrow tables and Parquet, with explicit type and fidelity limits.
+   :description: Generate Pydantic models from XSD or RELAX NG and export validated XML records to Arrow tables and Parquet, with explicit type and fidelity limits.
 ```
 
 Both integrations ship in **pyxsd**, not a separate library. Python **3.11+**
@@ -28,6 +28,33 @@ extra requires 3.15.
 Base pyxsd depends on `elementpath` and `defusedxml`, both pure Python; the
 latter is loaded only for opt-in parser profiles. Extras may install compiled
 packages. Importing or using one integration does not require the other.
+
+## RELAX NG schemas
+
+Both adapters accept a compiled `RelaxNGSchema` as well as an XSD `Schema`.
+`models(schema)` returns a `RelaxNGModelSet` with the same `model_for`,
+`from_document`, `from_node`, and `to_document` workflows; models are built
+from the RELAX NG projection before any instance exists. Scalar
+alternatives and correlated list assignments keep their explicit wrappers
+rather than choosing a preferred Python branch.
+
+A local-route model describes only its selected subtree: ancestor, sibling,
+and document-level constraints are not represented, and `to_document` rejects a
+local route because it cannot synthesize a document start. Use `from_node` for
+local snapshots, and use the whole `RelaxNGDocument` report for XML validity.
+Context-dependent model input uses Pydantic's `context` argument as
+`{"relaxng": {"namespaces": {...}, "base_uri": ...}}`.
+
+`records(schema, *, element, path=(), columns=None)` returns a
+`RelaxNGRecordProjection` with `batches`, `table`, `write_parquet`,
+`write_dataset`, and `dataset_metadata`. An ambiguous scalar column requires
+`FieldSource(datatype=(library_uri, type_name))` or
+`FieldSource(candidate_id=...)`; omission is an error rather than a silent
+string fallback. See {doc}`relax-ng` for the shared and RELAX NG-specific
+contracts, tagged values, and limits.
+
+The rest of this page describes the XSD schema-directed declarations and the
+shared integration rules.
 
 ## Generate models without instance XML
 
@@ -302,10 +329,10 @@ statuses, manifest version 1, failure cleanup and local publication guarantees.
 
 ## Validation, supported subset, and errors
 
-The integrations support element-only sequence/all content, non-repeating
-composite groups, optional nested records, repeated child elements, simple
-single-element choice branches, attributes, defaults/fixed values, simple
-content, and declaration-driven nil shells. Optional groups retain mandatory
+For XSD schemas, the integrations support element-only sequence/all content,
+non-repeating composite groups, optional nested records, repeated child
+elements, simple single-element choice branches, attributes, defaults/fixed
+values, simple content, and declaration-driven nil shells. Optional groups retain mandatory
 member relationships; a required choice does not become unrelated optional
 fields.
 
@@ -340,8 +367,8 @@ optional installation retains its actual missing-module cause.
 
 Import `models` from `pyxsd.integrations.pydantic` or `records` from
 `pyxsd.integrations.arrow`. Both prepare a reusable adapter from a compiled
-`Schema`; neither parses XML itself. Declaration names and `path` steps use
-expanded XML names, not generated Python field names.
+`Schema` or `RelaxNGSchema`; neither parses XML itself. Declaration names and
+`path` steps use expanded XML names, not generated Python field names.
 
 | Entry point | Result and important arguments |
 | --- | --- |
