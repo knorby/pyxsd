@@ -206,7 +206,7 @@ disallow_incomplete_defs = true
 [[tool.mypy.overrides]]
 # PyArrow does not ship typing metadata; Pydantic is absent in base-only
 # environments. This affects third-party imports, not our own module checks.
-module = ["pyarrow", "pyarrow.*", "pydantic", "anyio", "anyio.*"]
+module = ["pyarrow", "pyarrow.*", "pydantic", "pydantic.*", "anyio", "anyio.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

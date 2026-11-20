@@ -776,6 +776,36 @@ def test_list_and_heterogeneous_list_round_trip() -> None:
             assert data
 
 
+def test_correlated_list_alternatives_round_trip_and_reject_forbidden_cross_products() -> None:
+    content = (
+        "<list><choice>"
+        "<group><data type='integer'/><data type='integer'/></group>"
+        "<group><data type='string'/><data type='string'/></group>"
+        "</choice></list>"
+    )
+    document = valid(content, "<r>12 34</r>")
+    original = document.root.scalar_value()
+    assert isinstance(original, AlternativeValue)
+    assert len(original.interpretations) == 1
+    source = original.interpretations[0]
+    assert source.as_types(("xsd:integer", "xsd:integer")) == (12, 34)
+    assert source.as_types(("xsd:string", "xsd:string")) == ("12", "34")
+
+    for format in FORMATS:
+        data, imported = round_trip(document, format)
+        rebuilt = imported.root.scalar_value()
+        assert isinstance(rebuilt, AlternativeValue)
+        assert rebuilt.lexical == "12 34"
+        (interpretation,) = rebuilt.interpretations
+        assert interpretation.as_types(("xsd:integer", "xsd:integer")) == (12, 34)
+        assert interpretation.as_types(("xsd:string", "xsd:string")) == ("12", "34")
+        with pytest.raises(ValueError, match="complete list derivation"):
+            interpretation.as_types(("xsd:integer", "xsd:string"))
+        with pytest.raises(ValueError, match="complete list derivation"):
+            interpretation.as_types(("xsd:string", "xsd:integer"))
+        assert data
+
+
 def test_ambiguous_atomic_and_list_scalars_round_trip_with_complete_candidates() -> None:
     content = (
         "<choice><data type='integer'/><list><oneOrMore><data type='integer'/>"

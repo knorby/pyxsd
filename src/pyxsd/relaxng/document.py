@@ -423,10 +423,14 @@ class RelaxNGDocument(Document):
                 state.mark_stale()
         else:
             if self._binding_evidence is None:
-                snapshot: _TypedSnapshotState = _InvalidTypedInterpretation(
-                    report=self._report,
-                    revision_id=self._revision_id,
-                    current=self._interpretations_current,
+                # Both concrete snapshots implement the tree's structural
+                # scalar/attribute protocol; the shared state base does not.
+                snapshot: _InvalidTypedInterpretation | _TypedInterpretation = (
+                    _InvalidTypedInterpretation(
+                        report=self._report,
+                        revision_id=self._revision_id,
+                        current=self._interpretations_current,
+                    )
                 )
             else:
                 snapshot = _TypedInterpretation(
@@ -511,13 +515,10 @@ class RelaxNGDocument(Document):
         """
         from pyxsd.relaxng.conversion import _export_native_raw
 
-        return cast(
-            dict,
-            _export_native_raw(
-                self,
-                typed=typed,
-                always_list=always_list,
-            ),
+        return _export_native_raw(
+            self,
+            typed=typed,
+            always_list=always_list,
         )
 
     def to_data(

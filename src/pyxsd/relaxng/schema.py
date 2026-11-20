@@ -311,7 +311,9 @@ def _grammar_uses_unparsed_entity_types(start: Pattern) -> bool:
         if isinstance(node, Ref):
             pending.append(node.target)
             continue
-        for item in dataclass_fields(node):
+        # Every Pattern leaf is a dataclass instance; the shared base annotation
+        # does not carry that instance type to dataclasses.fields().
+        for item in dataclass_fields(cast(Any, node)):
             value = getattr(node, item.name)
             if isinstance(value, Pattern):
                 pending.append(value)

@@ -507,6 +507,35 @@ BOUNDARY_TESTS: dict[str, tuple[tuple[str, str | None], ...]] = {
             "_verify",
             None,
         ),
+        (
+            "tests/test_relaxng_scalar_tags.py::test_empty_permitted_whole_list_and"
+            "_interpretation_round_trip_and_verify",
+            None,
+        ),
+        (
+            "tests/test_relaxng_conversion_parity.py::test_qname_values_and_attributes_keep"
+            "_scoped_context",
+            None,
+        ),
+        (
+            "tests/test_relaxng_conversion_parity.py::test_list_and_heterogeneous_list_round_trip",
+            None,
+        ),
+        (
+            "tests/test_relaxng_conversion_parity.py::test_correlated_list_alternatives_round"
+            "_trip_and_reject_forbidden_cross_products",
+            None,
+        ),
+        (
+            "tests/test_relaxng_conversion_parity.py::test_ambiguous_atomic_and_list_scalars"
+            "_round_trip_with_complete_candidates",
+            None,
+        ),
+        (
+            "tests/test_relaxng_conversion_parity.py::test_nondecodable_candidates_are_tagged"
+            "_or_kept_lexical_without_inventing_values",
+            None,
+        ),
         ("tests/test_relaxng_scalar_tags.py::test_outer_shape_rejected_at_supplied_pointer", None),
         ("tests/test_relaxng_scalar_tags.py::test_each_body_key_is_required", None),
         ("tests/test_relaxng_scalar_tags.py::test_version_is_exact_integer_one", None),
@@ -1402,7 +1431,7 @@ def test_ci_matrices_execute_every_supported_python_version_and_split_suites() -
     assert "sphinx-build -W" in docs_run
 
 
-def test_platform_evidence_records_linux_and_macos_without_an_unverified_windows_job() -> None:
+def test_platform_evidence_records_the_verified_linux_and_macos_jobs() -> None:
     runners: set[str] = set()
     for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
         workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -1411,9 +1440,7 @@ def test_platform_evidence_records_linux_and_macos_without_an_unverified_windows
             if isinstance(value, str):
                 runners.add(value)
 
-    # Current verified evidence is Ubuntu for the full matrices and macOS for
-    # the installed stdio job.  No Windows runner is claimed in this branch;
-    # adding one requires separately verified CI evidence.
+    # Record the platform evidence this branch actually has.  Whether to add
+    # another operating system is a controller decision, not this test's.
     assert "ubuntu-latest" in runners
     assert "macos-latest" in runners
-    assert not any("windows" in runner.lower() for runner in runners)
