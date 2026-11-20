@@ -78,19 +78,6 @@ alternatives and lists, annotations, all five data formats, JSON Schema,
 stubs and introspection, integrations, comparison, CLI/MCP, resources, and
 deliberate exclusions.
 
-## XDM values and document transforms
-
-`Document.to_xdm()` exposes the stored tree as XDM nodes, and
-`Document.transform()` runs a schema-bound document transform.
-
-```{eval-rst}
-.. autoclass:: pyxsd.xdm.nodes.XdmDocument
-
-.. autoclass:: pyxsd.xdm.errors.XdmInputError
-
-.. autoclass:: pyxsd.document_transform.DocumentTransform
-```
-
 ## Querying a document
 
 Common document entry points; full signatures and contracts are in the
