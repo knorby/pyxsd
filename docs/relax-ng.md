@@ -371,7 +371,7 @@ projections. Instance values never choose a class layout.
 `RelaxNGSchema.projection` is the immutable route graph.
 `RelaxNGSchema.projection_classes` is the generated-class factory for the plan,
 so repeated parses share class identity. `RelaxNGSchema.dependencies` is the
-canonical resource closure. `RelaxNGSchema.stub(compact=False,
+canonical resource closure. `RelaxNGSchema.stub(*, compact=False,
 component_ids=None, depth=None)` emits a full `.pyi` typing surface or the
 compact agent view; component IDs filter routes and unknown IDs raise
 `KeyError`. Stub emission never calls `require_valid()`; a schema with
@@ -380,10 +380,10 @@ compilation errors emits an explanatory comment instead.
 Introspection lives in `pyxsd.relaxng.introspection`:
 
 - `describe_schema(schema)` returns starts, components, and dependencies.
-- `find_components(schema, text=None, kind=None, namespace=None)` filters the
-  compiled grammar inventory.
+- `find_components(schema, *, text=None, kind=None, namespace=None)` filters
+  the compiled grammar inventory.
 - `describe_component(schema, component_id)` returns one exact component.
-- `related_components(schema, component_id, direction="uses"|"used_by",
+- `related_components(schema, component_id, *, direction="uses"|"used_by",
   depth=...)` traverses dependency edges.
 
 Component IDs cover normalized grammar semantics and dependency-content
@@ -726,10 +726,14 @@ The CLI selects RELAX NG explicitly; a filename extension never selects the
 language. RELAX NG has no instance schema-location hint, so `-s` is required.
 Validation, parsed output, transforms through the shared document pipeline, and
 stub emission work. `PrintData()` and `ToDict()` work on RELAX NG documents.
-`ToData()` is XSD-only because it calls the XSD data-conversion path; use
-`RelaxNGDocument.to_data()` in Python or `pyxsd_export_data` through MCP for
-RELAX NG conversion. The CLI has no separate JSON-input, model, or record
-commands.
+Native `ToData()` (the default `format="pyxsd"`) also works on RELAX NG and
+writes the generic lexical grouped export; it does not produce RELAX NG typed
+wrappers or tags. Use `RelaxNGDocument.to_data()` for typed or schema-directed
+RELAX NG output. `fidelity="strict"` reports representation losses instead of
+applying best-effort fallbacks. The schema-directed formats `"pyxsd-json"`,
+`"parker"`, `"badgerfish"`, and `"jsonml"` are XSD-only and fail explicitly;
+use `RelaxNGDocument.to_data(format=...)` or MCP `pyxsd_export_data` for RELAX
+NG. The CLI has no separate JSON-input, model, or record commands.
 
 Save these fixtures to a working directory:
 
@@ -753,12 +757,16 @@ Save these fixtures to a working directory:
 pyxsd -i note.xml -s note.rng --schema-language relax-ng --strict
 pyxsd -i note.xml -s note.rng --schema-language relax-ng -t 'PrintData()' -o printed.xml
 pyxsd --emit-stubs -s note.rng --schema-language relax-ng --stubs-compact
+pyxsd -i note.xml -s note.rng --schema-language relax-ng -t 'ToData()' -o data.json
+pyxsd -i note.xml -s note.rng --schema-language relax-ng -t 'ToData(format="parker")' -o data.json
 pyxsd -i broken.xml -s note.rng --schema-language relax-ng --strict
 ```
 
-The last command is expected to exit `1` and print an `unexpected-element`
-finding. `--mode`, `--namespaces`, `--xsd-version` other than the default, and
-`-c/--overlayClassesFile` are XSD-only and rejected with RELAX NG. See
+The final two commands are expected to exit `1`: the schema-directed `ToData`
+case prints the RELAX NG boundary error, and the invalid document prints an
+`unexpected-element` finding. The default values of `--mode`, `--namespaces`,
+and `--xsd-version` are accepted; only non-default values are rejected with
+RELAX NG. `-c/--overlayClassesFile` is always XSD-only and rejected. See
 {doc}`cli` for all flags and exit codes.
 
 ## MCP
@@ -772,12 +780,15 @@ validation, record previews and exports, and ordinary transform previews use
 RELAX NG adapters. `pyxsd_capabilities` reports RELAX NG under
 `schema_languages`.
 
-MCP validation parses lexical trees only: capabilities report
-`validation.typed: false` and `validation.capture: false` for RELAX NG, so MCP
-does not expose `document.annotations` or typed scalar wrappers directly.
-Conversion operations still use the public typed export path internally.
-Diagnostics expose `completeness: "boolean"` and `suppressed_count`. Conversion
-reports all five formats and both fidelities. Structural comparison is
+MCP validation parses lexical trees only. The capability metadata path
+`schema_languages["relax-ng"]["mcp"]["validation"]` reports `typed: false` and
+`capture: false`, so MCP does not expose `document.annotations` or typed scalar
+wrappers directly. Conversion operations still use the public typed export path
+internally. The capability metadata reports
+`schema_languages["relax-ng"]["mcp"]["diagnostics"]["completeness"]` as
+`"boolean"`; validation report objects expose the corresponding
+`diagnostics_complete` and `suppressed_count` fields. Conversion reports all
+five formats and both fidelities. Structural comparison is
 same-language; cross-language structural sections are not comparable, and
 corpus impact is separate.
 
@@ -815,9 +826,7 @@ parse raises `RuntimeError` immediately instead of waiting. Separate schema
 objects are independent and may compile or parse concurrently. `iter_parse`
 uses the shared sequential batch orchestration and parses each item
 validation-only, so batch documents are generic; see {doc}`batch` for source
-lifetimes and error policies. Compiled Pydantic and Arrow extras may re-enable
-the GIL when imported if their wheels lack free-threading support; that is a
-performance note, not a failure.
+lifetimes and error policies.
 
 ## Release capability matrix
 

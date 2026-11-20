@@ -58,13 +58,16 @@ def test_mcp_skill_documents_the_exact_subtree_contract():
         assert phrase in text
 
 
-def test_cli_skill_names_relax_ng_scope_and_xsd_only_conversion():
+def test_cli_skill_names_relax_ng_scope_and_native_to_data():
     text = " ".join(Path("src/pyxsd/skills/pyxsd-cli/SKILL.md").read_text(encoding="utf-8").split())
     for phrase in (
         "--schema-language relax-ng",
         "RELAX NG has no instance schema hint",
-        "`ToData()` is XSD-only",
-        "RelaxNGDocument.to_data()",
+        'Native `format="pyxsd"` (the default) works on both XSD and RELAX NG',
+        "does not produce typed wrappers or tags",
+        "schema-directed formats `pyxsd-json`, `parker`, `badgerfish`, and `jsonml` are XSD-only",
+        "RelaxNGDocument.to_data(format=...)",
+        "pyxsd_export_data",
         "`ToDict()` and `PrintData()` work on both XSD and RELAX NG",
         "`-c/--overlayClassesFile` is also XSD-only",
         "RelaxNGSchema.require_valid()",
@@ -78,9 +81,13 @@ def test_mcp_skill_names_relax_ng_scope_and_wire_limits():
         "`SchemaRef.format`",
         '"relax-ng"',
         "filenames never select the language",
-        "validation.typed: false",
-        "validation.capture: false",
-        '`completeness: "boolean"`',
+        '`schema_languages["relax-ng"]["mcp"]["validation"]`',
+        "`typed: false`",
+        "`capture: false`",
+        '`schema_languages["relax-ng"]["mcp"]["diagnostics"]["completeness"]`',
+        '`"boolean"`',
+        "`diagnostics_complete`",
+        "`suppressed_count`",
         "pyxsd_export_data",
         "pyxsd_document_json_schema",
         "never accepts executable factory code",

@@ -47,6 +47,20 @@ ATTRIBUTED_SCHEMA = f"""<grammar xmlns="{RNG_NS}">
 
 ATTRIBUTED_INSTANCE = '<doc lang="en">a<item>x</item>b</doc>'
 
+MIXED_ATTRIBUTED_SCHEMA = f"""<grammar xmlns="{RNG_NS}">
+  <start>
+    <element name="doc">
+      <attribute name="lang"><text/></attribute>
+      <mixed>
+        <optional><element name="extra"><empty/></element></optional>
+      </mixed>
+    </element>
+  </start>
+</grammar>"""
+
+MIXED_ATTRIBUTED_INSTANCE = '<doc lang="en">hello<extra/>tail</doc>'
+MIXED_LEXICAL_DATA = {"@lang": "en", "extra": None, "$": "hellotail"}
+
 
 class _FakeStdin:
     """A non-tty stdin stand-in, matching the XSD CLI tests."""
@@ -197,6 +211,71 @@ def test_to_dict_uses_lexical_attributes_on_relaxng(
     main([*_relaxng_args(schema, instance), "-t", "ToDict()"])
 
     assert json.loads(capsys.readouterr().out) == {"@lang": "en", "item": "x", "$": "ab"}
+
+
+def _mixed_attributed_files(tmp_path: Path) -> tuple[Path, Path]:
+    schema = tmp_path / "mixed.rng"
+    schema.write_text(MIXED_ATTRIBUTED_SCHEMA, encoding="utf-8")
+    instance = tmp_path / "mixed.xml"
+    instance.write_text(MIXED_ATTRIBUTED_INSTANCE, encoding="utf-8")
+    return schema, instance
+
+
+def test_native_to_data_exports_relaxng_mixed_content_lexically(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema, instance = _mixed_attributed_files(tmp_path)
+
+    main([*_relaxng_args(schema, instance), "-t", "ToData()"])
+
+    output = capsys.readouterr().out
+    assert json.loads(output) == MIXED_LEXICAL_DATA
+    assert "#value" not in output
+
+
+def test_native_to_data_strict_rejects_mixed_content_loss(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema, instance = _mixed_attributed_files(tmp_path)
+
+    with pytest.raises(SystemExit) as exitInfo:
+        main([*_relaxng_args(schema, instance), "-t", 'ToData(fidelity="strict")'])
+
+    assert exitInfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "mixed-content" in err
+    assert "character data" in err
+    assert "plan_layout" not in err
+
+
+@pytest.mark.parametrize("format", ["pyxsd-json", "parker", "badgerfish", "jsonml"])
+def test_to_data_schema_directed_formats_fail_explicitly_on_relaxng(
+    format: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema, instance = _mixed_attributed_files(tmp_path)
+
+    with pytest.raises(SystemExit) as exitInfo:
+        main([*_relaxng_args(schema, instance), "-t", f'ToData(format="{format}")'])
+
+    assert exitInfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "ToData schema-directed formats" in err
+    assert "XSD-only" in err
+    assert "RelaxNGDocument.to_data(format=...)" in err
+    assert "pyxsd_export_data" in err
+    assert "plan_layout" not in err
+
+
+def test_to_data_transform_native_and_schema_directed_boundary(tmp_path: Path) -> None:
+    from pyxsd import relaxng
+    from pyxsd.transforms import ToData
+
+    schema, instance = _mixed_attributed_files(tmp_path)
+    document = relaxng.compile(schema).parse(instance)
+
+    assert ToData(document.root)() == MIXED_LEXICAL_DATA
+    with pytest.raises(PyXSDError, match=r"schema-directed formats.*XSD-only"):
+        ToData(document.root, format="pyxsd-json")()
 
 
 def test_transform_returning_root_keeps_mixed_content(

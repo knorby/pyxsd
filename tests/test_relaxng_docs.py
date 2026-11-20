@@ -9,6 +9,7 @@ translation, browser XSLT replacement, or generated library markers.
 from __future__ import annotations
 
 import inspect
+import json
 import re
 import shlex
 import subprocess
@@ -169,6 +170,94 @@ def test_exclusions_custom_library_scope_and_local_model_scope_are_explicit():
         assert phrase in text, phrase
 
 
+def test_no_positive_xsd_translation_or_xsi_semantics_claims():
+    text = " ".join(page_text().split())
+    negated = re.compile(
+        r"\b(?:no|not|never|neither|without|cannot|can't|doesn't|don't|isn't|aren't|rejects?|excludes?|rather than)\b",
+        re.IGNORECASE,
+    )
+    claims = {
+        "XSD translation": re.compile(
+            r"\btranslat\w*\b.*\bRELAX NG\b|\bRELAX NG\b.*\btranslat\w*\b",
+            re.IGNORECASE,
+        ),
+        "global declarations": re.compile(r"\bglobal declarations?\b", re.IGNORECASE),
+        "xsi semantics": re.compile(
+            r"\bxsi:(?:type|nil)\b.*\b(?:select|dispatch|request|default|apply|applies|"
+            r"synthesi[sz]e|create)\b|"
+            r"\b(?:select|dispatch|request|default|apply|applies|synthesi[sz]e|create)\b"
+            r".*\bxsi:(?:type|nil)\b",
+            re.IGNORECASE,
+        ),
+        "synthesized defaults": re.compile(
+            r"\bdefaults?\b.*\b(?:synthesized|applied|supplied|injected)\b",
+            re.IGNORECASE,
+        ),
+    }
+    failures = []
+    for sentence in re.split(r"(?<=[.!?;])\s+", text):
+        if negated.search(sentence):
+            continue
+        for label, pattern in claims.items():
+            if pattern.search(sentence):
+                failures.append((label, sentence))
+    assert not failures, failures
+
+
+PUBLIC_OBJECT_NAMES = (
+    "compile",
+    "RelaxNGSchema",
+    "RelaxNGDocument",
+    "RelaxNGElement",
+    "AlternativeValue",
+    "ListInterpretation",
+    "NodeAnnotations",
+    "RelaxNGLimits",
+    "RelaxNGLimitError",
+    "StaleInterpretationError",
+    "AmbiguousValueError",
+    "stub",
+    "from_data",
+    "from_json",
+    "json_schema",
+    "projection",
+    "projection_classes",
+    "dependencies",
+    "require_valid",
+    "iter_parse",
+    "to_dict",
+    "to_data",
+    "to_json",
+    "annotations",
+    "revalidate",
+    "locate",
+    "write",
+    "to_string",
+    "to_xdm",
+    "xpath",
+    "walk",
+    "transform",
+    "describe_schema",
+    "find_components",
+    "describe_component",
+    "related_components",
+    "compare_relaxng_structure",
+    "models",
+    "RelaxNGModelSet",
+    "records",
+    "RelaxNGRecordProjection",
+    "FieldSource",
+    "datatype",
+    "candidate_id",
+)
+
+
+def test_page_names_every_documented_public_object():
+    text = page_text()
+    missing = [name for name in PUBLIC_OBJECT_NAMES if name not in text]
+    assert not missing, missing
+
+
 def test_core_python_snippets_execute(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     blocks = [
@@ -218,7 +307,7 @@ def test_cli_snippets_run_against_ascii_fixtures(tmp_path):
         for line in block.splitlines()
         if line.startswith("pyxsd ")
     ]
-    assert len(commands) == 4, commands
+    assert len(commands) == 6, commands
 
     results = []
     for command in commands:
@@ -238,8 +327,14 @@ def test_cli_snippets_run_against_ascii_fixtures(tmp_path):
     assert (tmp_path / "printed.xml").read_text(encoding="utf-8").strip() == "<note>hello</note>"
     assert "class Note" in results[2].stdout
     assert "AlternativeValue" in results[2].stdout
-    assert results[3].returncode == 1
-    assert "unexpected-element" in results[3].stderr
+    assert results[3].returncode == 0, results[3].stderr
+    assert json.loads((tmp_path / "data.json").read_text(encoding="utf-8")) == {"$": "hello"}
+    assert results[4].returncode == 1
+    assert "ToData schema-directed formats" in results[4].stderr
+    assert "RelaxNGDocument.to_data(format=...)" in results[4].stderr
+    assert "plan_layout" not in results[4].stderr
+    assert results[5].returncode == 1
+    assert "unexpected-element" in results[5].stderr
 
 
 def test_page_has_no_library_markers_or_xslt_replacement_wording():

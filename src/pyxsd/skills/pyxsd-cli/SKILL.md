@@ -24,6 +24,7 @@ paths and quote transform calls for the shell. RELAX NG examples use
 | Read XML from stdin | `pyxsd -s schema.xsd --strict < document.xml` |
 | Write the parsed tree before any transforms | `pyxsd -i document.xml -s schema.xsd -k -p parsed.xml` |
 | Export XSD schema-driven JSON | `pyxsd -i document.xml -s schema.xsd -t 'ToData(format="pyxsd-json")' -o data.json` |
+| Export native grouped JSON for XSD or RELAX NG | `pyxsd -i document.xml -s schema.rng --schema-language relax-ng -t 'ToData()' -o data.json` |
 | Export XSD ordered JsonML arrays | `pyxsd -i document.xml -s schema.xsd -t 'ToData(format="jsonml")' -o data.json` |
 | Print the parsed tree for XSD or RELAX NG | `pyxsd -i document.xml -s schema.xsd -t 'PrintData()'` |
 | Run a transform chain | `pyxsd -i document.xml -s schema.xsd -t 'PrintData() > PrintData()'` |
@@ -88,16 +89,20 @@ Use `-t 'Class(args...)'` for literal arguments and chain top-level calls with
 `-T` are mutually exclusive. `-k` retains the pre-transform tree alongside the
 transform output.
 
-Use `ToData(format="...")` for JSON-safe XSD export: `pyxsd` (native, the
-default), `pyxsd-json`, `parker`, `badgerfish`, or `jsonml`. `ToData()` is
-XSD-only because it calls the XSD data-conversion path; it does not convert a
-RELAX NG tree. `ToDict()` and `PrintData()` work on both XSD and RELAX NG
-documents. `ToDict()` retains raw bound values; prefer `ToData()` for JSON
-output from XSD. `typed=False` and `always_list=True` are native-only options.
-Export defaults to `fidelity="best-effort"`; choose `fidelity="strict"` to
-reject representation losses. This is separate from the CLI's `--strict`
-validation-exit policy. `pyxsd-json` and JsonML preserve ordered and mixed
-content; grouped formats have fidelity limits.
+Use `ToData(format="...")` for JSON-safe export. Native `format="pyxsd"` (the
+default) works on both XSD and RELAX NG; on RELAX NG it writes the generic
+lexical grouped export and does not produce typed wrappers or tags.
+`fidelity="strict"` reports representation losses. The schema-directed formats
+`pyxsd-json`, `parker`, `badgerfish`, and `jsonml` are XSD-only on a RELAX NG
+tree and fail explicitly. Use `RelaxNGDocument.to_data(format=...)` or MCP
+`pyxsd_export_data` for RELAX NG schema-directed conversion. `ToDict()` and
+`PrintData()` work on both XSD and RELAX NG documents. `ToDict()` retains raw
+bound values; prefer `ToData()` for JSON output from XSD. `typed=False` and
+`always_list=True` are native-only options. Export defaults to
+`fidelity="best-effort"`; choose `fidelity="strict"` to reject representation
+losses. This is separate from the CLI's `--strict` validation-exit policy.
+`pyxsd-json` and JsonML preserve ordered and mixed content; grouped formats
+have fidelity limits.
 
 Transform resolution imports Python modules from pyxsd, the working directory,
 and the instance directory. Overlay files supplied with `-c` are also Python.
@@ -137,8 +142,8 @@ call `require_valid()` on the imported document when schema errors must stop
 processing. JSON Schema does not enforce every XSD or RELAX NG rule. See the
 [data conversion guide](https://pyxsd.knorby.com/data-conversion.html) and the
 [RELAX NG guide](https://pyxsd.knorby.com/relax-ng.html).
-The CLI has no JSON-input, RELAX NG conversion, model, or JSON-Schema-generation
-flags.
+The CLI has no JSON-input, schema-directed RELAX NG conversion, model, or
+JSON-Schema-generation flags.
 
 Use MCP when a client needs workspace inputs, paginated issues, exact captured
 subtrees, conversions, comparisons, or retained artifacts. Do not invent CLI

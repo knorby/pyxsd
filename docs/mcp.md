@@ -236,11 +236,14 @@ Conversion covers all five formats and both fidelities. Ambiguous scalars use
 the RELAX NG tagged-value contract; generated JSON Schema is structural, not
 full grammar validation.
 
-MCP validation parses lexical RELAX NG trees only: capabilities report
-`validation.typed: false` and `validation.capture: false`, so annotation tables
-and typed scalar wrappers are not exposed through direct validation results.
-Conversion uses the public typed export path internally. Diagnostics report
-`completeness: "boolean"` plus `suppressed_count`; a truncated report stays
+MCP validation parses lexical RELAX NG trees only. The capability path
+`schema_languages["relax-ng"]["mcp"]["validation"]` reports `typed: false` and
+`capture: false`, so annotation tables and typed scalar wrappers are not exposed
+through direct validation results. Conversion uses the public typed export path
+internally. The capability metadata
+`schema_languages["relax-ng"]["mcp"]["diagnostics"]["completeness"]` is
+`"boolean"`; validation report objects carry the matching
+`diagnostics_complete` and `suppressed_count` fields. A truncated report stays
 invalid.
 
 Structural comparison is same-language; an XSD-to-RELAX NG structural section

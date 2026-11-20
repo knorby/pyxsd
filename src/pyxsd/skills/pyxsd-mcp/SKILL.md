@@ -44,11 +44,14 @@ operation that needs a schema must receive an explicit reference:
 ```
 
 `pyxsd_capabilities` reports both languages under `schema_languages`. For
-RELAX NG, validation is lexical-only (`validation.typed: false`,
-`validation.capture: false`), so direct results do not expose typed scalar
-wrappers or annotation tables. Conversion, models, records, datasets, and
-transform previews use the public typed adapters internally. Diagnostics expose
-`completeness: "boolean"` plus `suppressed_count`; a truncated report stays
+RELAX NG, the capability path
+`schema_languages["relax-ng"]["mcp"]["validation"]` reports `typed: false` and
+`capture: false`, so direct results do not expose typed scalar wrappers or
+annotation tables. Conversion, models, records, datasets, and transform
+previews use the public typed adapters internally. The capability metadata
+reports `schema_languages["relax-ng"]["mcp"]["diagnostics"]["completeness"]`
+as `"boolean"`; validation report objects carry the matching
+`diagnostics_complete` and `suppressed_count` fields. A truncated report stays
 invalid.
 
 All five conversion formats and both fidelities are available. Ambiguous

@@ -58,11 +58,14 @@ The standard workflows apply to both languages: validation reports, parsed
 output (`-k`/`-p`), transforms (`-t`/`-T`) through the shared document pipeline,
 transform output selection (`-o`/`-d`), stdin/stdout, quiet/verbose logging, and
 `--strict` exit status. `PrintData()` and `ToDict()` work on RELAX NG
-documents. A transform that relies on XSD-only typing remains XSD-specific:
-`ToData()` calls the XSD data-conversion path, so RELAX NG conversion uses
-`RelaxNGDocument.to_data()` in Python or MCP `pyxsd_export_data`. The CLI does
-not expose RELAX NG conversion, data-model, or record commands. See
-{doc}`relax-ng` for the full capability contract.
+documents. Native `ToData()` (the default `format="pyxsd"`) also works on RELAX
+NG and writes the generic lexical grouped export, without RELAX NG typed
+wrappers or tags; `fidelity="strict"` reports representation losses. The
+schema-directed formats `"pyxsd-json"`, `"parker"`, `"badgerfish"`, and
+`"jsonml"` are XSD-only on a RELAX NG tree and fail explicitly. Use
+`RelaxNGDocument.to_data(format=...)` in Python or MCP `pyxsd_export_data` for
+RELAX NG conversion. The CLI does not expose RELAX NG model, record, or
+JSON-input commands. See {doc}`relax-ng` for the full capability contract.
 
 Given an instance document and a RELAX NG schema supplied by the caller:
 
