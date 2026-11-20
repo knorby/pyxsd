@@ -352,18 +352,32 @@ def _build_document(
     mode: Any,
     overlay: str | Path | None,
     xsd_version: Literal["1.0", "1.1"] = "1.1",
+    schema_language: Literal["xsd", "relax-ng"] = "xsd",
 ) -> Any:
-    """Compiles the schema and binds the instance into a ``Document``.
+    """Compiles the selected schema and binds the instance into a ``Document``.
 
-    Mirrors the historic engine flow: the instance tree is parsed
-    once, its schemaLocation hints are read (a fatal
-    :class:`~pyxsd.exceptions.PyXSDError` when no schema was given
+    With XSD (the default), this mirrors the historic engine flow: the
+    instance tree is parsed once, its schemaLocation hints are read (a
+    fatal :class:`~pyxsd.exceptions.PyXSDError` when no schema was given
     and the instance names none), and the same tree object is bound
-    against the compiled schema. The hint findings land on the
-    document's report so the CLI surfaces them like any other issue,
-    and the instance's prefix bindings are shared with the schema
-    compilation.
+    against the compiled schema. The hint findings land on the document's
+    report so the CLI surfaces them like any other issue, and the
+    instance's prefix bindings are shared with the schema compilation.
+
+    With RELAX NG, the explicit schema is compiled and the instance is
+    parsed through that compiled schema. RELAX NG has no schemaLocation
+    hints, so a missing schema is rejected instead of discovered.
     """
+    if schema_language == "relax-ng":
+        if xsd is None:
+            raise PyXSDError(
+                "a RELAX NG schema must be named with -s/--inputXsd; "
+                "RELAX NG has no instance schemaLocation hints"
+            )
+        from pyxsd.relaxng import compile as compile_relaxng
+
+        return compile_relaxng(xsd).parse(xml_source)
+
     # Imported here rather than at module level: pyxsd.schema imports
     # this module, so a module-level import would be circular.
     from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
@@ -448,8 +462,21 @@ def main(argv: list[str] | None = None) -> None:
         dest="inputXsdFile",
         default=None,
         metavar="INPUTXSDFILE",
-        help="filename for the xsd (schema) file to read in. Tries to "
-        "determine the location from the input xml file by default.",
+        help="filename for the schema file to read in, in the language "
+        "selected by --schema-language. For XSD, tries to determine the "
+        "location from the input xml file by default; RELAX NG requires "
+        "this option.",
+    )
+    parser.add_argument(
+        "--schema-language",
+        choices=["xsd", "relax-ng"],
+        default="xsd",
+        dest="schemaLanguage",
+        help="schema language to compile. 'xsd' (default) reads an XSD "
+        "schema; 'relax-ng' compiles a RELAX NG schema, which must be "
+        "named with -s/--inputXsd because RELAX NG has no instance "
+        "schemaLocation hints. The filename extension never selects the "
+        "language.",
     )
     parser.add_argument(
         "-p",
@@ -514,9 +541,10 @@ def main(argv: list[str] | None = None) -> None:
         dest="classFile",
         default=None,
         metavar="CLASSFILE",
-        help="Experimental. Allows user-defined schemas to override and add "
-        "to the types defined in the schema file. See the documentation for "
-        "information on this function.",
+        help="Experimental XSD overlay. Allows user-defined schemas to "
+        "override and add to the types defined in the XSD schema file. Not "
+        "available with --schema-language relax-ng. See the documentation "
+        "for information on this function.",
     )
     parser.add_argument(
         "-v",
@@ -547,8 +575,8 @@ def main(argv: list[str] | None = None) -> None:
         choices=["strict", "lax"],
         default="strict",
         dest="mode",
-        help="binding mode. 'strict' (default) reports invalid values and "
-        "drops them; 'lax' keeps the report strict but binds best-effort "
+        help="XSD binding mode. 'strict' (default) reports invalid values "
+        "and drops them; 'lax' keeps the report strict but binds best-effort "
         "values (raw strings, generic subtrees) so no data is lost.",
     )
     parser.add_argument(
@@ -556,7 +584,7 @@ def main(argv: list[str] | None = None) -> None:
         choices=["strict", "legacy"],
         default="strict",
         dest="namespaces",
-        help="namespace handling. 'strict' (default) resolves QNames and "
+        help="XSD namespace handling. 'strict' (default) resolves QNames and "
         "matches elements and attributes by expanded name; 'legacy' matches "
         "by local name and ignores namespace URIs for compatibility with "
         "documents that only match that way.",
@@ -569,7 +597,8 @@ def main(argv: list[str] | None = None) -> None:
         help="XSD processor version to compile as. '1.1' (default) honors "
         "all vc:* conditional-inclusion selectors against 1.1; '1.0' tests "
         'them against 1.0, so a declaration carrying vc:minVersion="1.1" '
-        "is dropped (XSD 1.1 §4.2.2).",
+        "is dropped (XSD 1.1 §4.2.2). With --schema-language relax-ng only "
+        "the default 1.1 is accepted.",
     )
     parser.add_argument(
         "--emit-stubs",
@@ -578,9 +607,10 @@ def main(argv: list[str] | None = None) -> None:
         const="stdout",
         default=None,
         metavar="PATH",
-        help="compile the schema and write a .pyi type stub for its "
-        "generated classes to PATH, or to stdout when PATH is omitted, "
-        "then exit without reading any xml input. Requires -s/--inputXsd.",
+        help="compile the schema selected by --schema-language and write a "
+        ".pyi type stub for its generated classes to PATH, or to stdout "
+        "when PATH is omitted, then exit without reading any xml input. "
+        "Requires -s/--inputXsd.",
     )
     parser.add_argument(
         "--stubs-compact",
@@ -599,6 +629,32 @@ def main(argv: list[str] | None = None) -> None:
     if options.stubsCompact and options.emitStubs is None:
         parser.error("--stubs-compact requires --emit-stubs")
 
+    if options.schemaLanguage == "relax-ng":
+        if options.inputXsdFile is None:
+            parser.error(
+                "--schema-language relax-ng requires an explicit schema file "
+                "(-s/--inputXsd); RELAX NG has no instance schemaLocation hints"
+            )
+        if options.mode != "strict":
+            parser.error(
+                "--mode is an XSD-only option and cannot be used with --schema-language relax-ng"
+            )
+        if options.namespaces != "strict":
+            parser.error(
+                "--namespaces is an XSD-only option and cannot be used with "
+                "--schema-language relax-ng"
+            )
+        if options.xsdVersion != "1.1":
+            parser.error(
+                "--xsd-version is an XSD-only option and cannot be used with "
+                "--schema-language relax-ng"
+            )
+        if options.classFile is not None:
+            parser.error(
+                "-c/--overlayClassesFile is an XSD-only option and cannot be "
+                "used with --schema-language relax-ng"
+            )
+
     _configure_logging(options.verbose, options.quiet)
 
     mode = (ParseModes.LAX if options.mode == "lax" else ParseModes.STRICT).replace(
@@ -612,17 +668,24 @@ def main(argv: list[str] | None = None) -> None:
         if options.inputXsdFile is None:
             parser.error("--emit-stubs requires a schema file (-s/--inputXsd)")
 
-        # Imported here rather than at module level: pyxsd.schema imports
-        # this module, so a module-level import would be circular.
-        from pyxsd.schema import Schema
-
         try:
-            schema = Schema.compile(
-                options.inputXsdFile,
-                mode=mode,
-                overlay=options.classFile,
-                xsd_version=options.xsdVersion,
-            )
+            schema: Any
+            if options.schemaLanguage == "relax-ng":
+                from pyxsd.relaxng import compile as compile_relaxng
+
+                schema = compile_relaxng(options.inputXsdFile)
+            else:
+                # Imported here rather than at module level: pyxsd.schema
+                # imports this module, so a module-level import would be
+                # circular.
+                from pyxsd.schema import Schema
+
+                schema = Schema.compile(
+                    options.inputXsdFile,
+                    mode=mode,
+                    overlay=options.classFile,
+                    xsd_version=options.xsdVersion,
+                )
             stubText = schema.stub(compact=options.stubsCompact)
             if options.emitStubs == "stdout":
                 sys.stdout.write(stubText)
@@ -672,6 +735,7 @@ def main(argv: list[str] | None = None) -> None:
             mode=mode,
             overlay=options.classFile,
             xsd_version=options.xsdVersion,
+            schema_language=options.schemaLanguage,
         )
 
         if options.outputParsed and document.root is not None:
