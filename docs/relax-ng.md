@@ -2,16 +2,16 @@
 
 ```{eval-rst}
 .. meta::
-   :description: Compile, validate, query, convert, and project native RELAX NG 1.0 schemas with pyxsd, including alternatives, annotations, models, records, comparison, and deliberate exclusions.
+   :description: Compile, validate, query, convert, and project native RELAX NG 1.0 XML and compact schemas with pyxsd, including alternatives, annotations, models, records, comparison, and deliberate exclusions.
 ```
 
-`pyxsd.relaxng` is a native RELAX NG 1.0 XML-syntax processor. It compiles
-grammars into a pattern graph, validates instances with a derivative validator,
-and keeps one authoritative lexical XML tree. It does not translate RELAX NG
-into XSD, invent global declarations, or route RELAX NG work through the XSD
-compiler. It shares pyxsd's reports, resource policies, XML limits, XPath,
-writers, transforms, batch orchestration, data conversion, and optional
-integrations where their semantics are defined.
+`pyxsd.relaxng` is a native RELAX NG 1.0 processor for XML and compact syntax.
+It compiles grammars into a pattern graph, validates instances with a
+derivative validator, and keeps one authoritative lexical XML tree. It does
+not translate RELAX NG into XSD, invent global declarations, or route RELAX NG
+work through the XSD compiler. It shares pyxsd's reports, resource policies,
+XML limits, XPath, writers, transforms, batch orchestration, data conversion,
+and optional integrations where their semantics are defined.
 
 ```{note}
 RELAX NG is a separate schema language with a separate compiler and document
@@ -88,7 +88,7 @@ The complete compilation contract is:
 
 ```text
 pyxsd.relaxng.compile(
-    source, *, datatype_libraries=None, resource_policy=None,
+    source, *, syntax="auto", datatype_libraries=None, resource_policy=None,
     xml_policy=None, xml_limits=None, limits=None,
 ) -> RelaxNGSchema
 
@@ -112,6 +112,86 @@ input. Each parse returns a fresh report containing frozen schema findings
 followed by instance findings. Malformed XML raises `PyXSDError`; grammar
 mismatches are reported on the returned document. Call `require_valid()` when
 findings must stop processing.
+
+(relaxng-compact-syntax)=
+
+## Compact syntax
+
+`pyxsd.relaxng` reads RELAX NG compact syntax with a native lexer and parser.
+Both frontends build the same unresolved grammar and share every stage after
+reading: simplification, composition, correctness checks, datatypes,
+projections, stubs, data conversion, introspection, and instance validation.
+
+`syntax` is the root-frontend selector on `pyxsd.relaxng.compile` and
+`RelaxNGSchema.compile`:
+
+- `"auto"` (the default) selects compact only for a named root whose path
+  component ends in a case-insensitive `.rnc` suffix. A URL query or fragment
+  never participates in that decision.
+- Under `"auto"`, anonymous streams default to XML and every other named source
+  stays XML. Pass `syntax="compact"` explicitly for compact text read from a
+  stream.
+- `"xml"` and `"compact"` are explicit overrides. A suffix can disagree with
+  the contents, so an XML schema saved as `.rnc` needs `syntax="xml"`.
+
+Auto selection is root-only. Every `include` and external reference inherits
+the root syntax regardless of its own suffix, so one closure never mixes XML
+and compact resources. `RelaxNGSchema.dependencies` reports the compact
+dependency closure with content hashes and containing references exactly as it
+does for XML.
+
+A malformed compact root raises `RelaxNGCompactSyntaxError`, with `found` and
+`expected` token evidence where known. Its `location` is an `IssueLocation`
+whose `span` is a `SourceTextSpan`: source byte offsets plus 1-based line and
+column. A malformed nested compact resource is a schema finding at its exact
+nested location, and a decode failure at a nested resource is reported on the
+reference that named it.
+
+```python
+from io import StringIO
+from pathlib import Path
+
+from pyxsd import relaxng
+from pyxsd.relaxng import RelaxNGCompactSyntaxError
+
+COMPACT = "start = element note { text }\n"
+Path("note.rnc").write_text(COMPACT, encoding="utf-8")
+
+automatic = relaxng.compile("note.rnc")
+explicit = relaxng.compile(StringIO(COMPACT), syntax="compact")
+assert automatic.parse(StringIO("<note>hello</note>")).is_valid
+assert explicit.parse(StringIO("<note>hello</note>")).is_valid
+
+Path("base.rnc").write_text("item = element item { text }\n", encoding="utf-8")
+Path("root.rnc").write_text(
+    'include "base.rnc"\nstart = element root { item }\n',
+    encoding="utf-8",
+)
+composed = relaxng.compile("root.rnc")
+assert composed.parse(StringIO("<root><item>x</item></root>")).is_valid
+assert {Path(dependency.canonical_id).name for dependency in composed.dependencies} == {
+    "base.rnc",
+    "root.rnc",
+}
+
+try:
+    relaxng.compile(StringIO("start = element note {"), syntax="compact")
+except RelaxNGCompactSyntaxError as error:
+    assert error.location is not None
+    assert error.location.span is not None
+    assert error.location.span.line == 1
+    assert error.location.span.column == 23
+else:
+    raise AssertionError("a malformed compact root must raise")
+```
+
+Compact compilation accepts the same `RelaxNGLimits`. `max_compact_tokens` is
+cumulative across the root and every nested compact resource, and
+`max_compact_depth` records the high-water nesting depth. Exhausting a work
+budget raises `RelaxNGLimitError` rather than reporting invalidity. A compact
+root rejects `xml_policy` and `xml_limits` before input is read because compact
+resources are not XML parses; a trusted `resource_policy` still owns every
+read. Top-level `pyxsd.compile` remains XSD-only.
 
 ## Validation, recovery, and completeness
 
@@ -735,6 +815,12 @@ applying best-effort fallbacks. The schema-directed formats `"pyxsd-json"`,
 use `RelaxNGDocument.to_data(format=...)` or MCP `pyxsd_export_data` for RELAX
 NG. The CLI has no separate JSON-input, model, or record commands.
 
+`--schema-syntax auto|xml|compact` selects the RELAX NG root frontend with the
+same rules as the Python argument: `auto` (the default) uses a case-insensitive
+`.rnc` suffix, and `xml` and `compact` override the filename. The option has no
+effect on XSD, and a nondefault value with `--schema-language xsd` is a usage
+error. Explicit selection also applies to `--emit-stubs`.
+
 Save these fixtures to a working directory:
 
 ```xml
@@ -762,12 +848,30 @@ pyxsd -i note.xml -s note.rng --schema-language relax-ng -t 'ToData(format="park
 pyxsd -i broken.xml -s note.rng --schema-language relax-ng --strict
 ```
 
-The final two commands are expected to exit `1`: the schema-directed `ToData`
-case prints the RELAX NG boundary error, and the invalid document prints an
-`unexpected-element` finding. The default values of `--mode`, `--namespaces`,
-and `--xsd-version` are accepted; only non-default values are rejected with
-RELAX NG. `-c/--overlayClassesFile` is always XSD-only and rejected. See
+In the first block, the last two commands are expected to exit `1`: the
+schema-directed `ToData` case prints the RELAX NG boundary error, and the
+invalid document prints an `unexpected-element` finding. The default values of
+`--mode`, `--namespaces`, and `--xsd-version` are accepted; only non-default
+values are rejected with RELAX NG. `-c/--overlayClassesFile` is always XSD-only and rejected. See
 {doc}`cli` for all flags and exit codes.
+
+The compact schema is equivalent to `note.rng`:
+
+```rnc
+start = element note { text }
+```
+
+Save it as `note.rnc`; save a second copy as `note.compact`, and save the XML
+schema above as `note-xml.rnc`, to exercise the explicit selectors:
+
+```bash
+pyxsd -i note.xml -s note.rnc --schema-language relax-ng --strict
+pyxsd -i note.xml -s note.compact --schema-language relax-ng --schema-syntax compact --strict
+pyxsd -i note.xml -s note-xml.rnc --schema-language relax-ng --schema-syntax xml --strict
+```
+
+The first command relies on automatic root selection. The other two show that
+`--schema-syntax` overrides a different suffix in either direction.
 
 ## MCP
 
@@ -813,8 +917,8 @@ authorization, and the untrusted-input boundary.
 
 `RelaxNGLimits` bounds pattern nodes, derivative states, memo entries, evidence
 states and edges, scalar witnesses, binding summaries, capture entries,
-projection routes, and diagnostic retention. `None` leaves a budget unlimited,
-which is appropriate only for trusted inputs; applications processing
+compact tokens and nesting depth, projection routes, and diagnostic retention.
+`None` leaves a budget unlimited, which is appropriate only for trusted inputs; applications processing
 untrusted schemas or instances should set explicit budgets. A parse may
 override instance-side budgets. Work-budget exhaustion raises
 `RelaxNGLimitError`; it never reports semantic invalidity. A configured
@@ -835,7 +939,7 @@ XSD.
 
 | Capability | RELAX NG support | Difference from XSD |
 | --- | --- | --- |
-| Compile, parse, revalidate, batch | Equivalent lifecycle, source handling, bounded diagnostic recovery, and visible completeness | Separate compiler and explicit schema association |
+| Compile, parse, revalidate, batch | XML and compact syntax frontends with one shared lifecycle, source handling, bounded diagnostic recovery, and visible completeness | Separate compiler and explicit schema association |
 | Mutable document and writers | One lexical tree, synchronized descriptors, XPath, transforms, XDM, and serialization | No XSD infoset changes; revision-scoped interpretation evidence |
 | Typed Python access | Generated projections and descriptors for stable routes | Generic annotated nodes for structural ambiguity |
 | Stubs | Full and compact stubs for every schema, with route filtering | Grammar IDs and `AlternativeValue` replace XSD type claims |
@@ -850,8 +954,6 @@ XSD.
 
 ## Deliberate exclusions
 
-- **Compact syntax.** Only RELAX NG XML syntax is implemented. A filename
-  extension never selects compact syntax.
 - **DTD Compatibility and direct DTD coverage.** RELAX NG DTD Compatibility is
   not supported. There are no synthesized defaults or ID/IDREF cross-reference
   checks from that profile. Existing DTD-related preprocessing is not full DTD
@@ -866,9 +968,9 @@ XSD.
   actual-type and nil shortcuts are rejected as conversion markers.
 
 Core RELAX NG has neither XSD defaulting nor its identity-constraint semantics.
-Workflows that need direct DTD processing, DTD Compatibility, compact syntax,
-NVDL, or XSD schema-aware typing should use an appropriate external processor;
-pyxsd does not plan compatibility layers for these exclusions.
+Workflows that need direct DTD processing, DTD Compatibility, NVDL, or XSD
+schema-aware typing should use an appropriate external processor; pyxsd does
+not plan compatibility layers for these exclusions.
 
 See {doc}`supported` for the XSD coverage page and {doc}`data-conversion` for
 the shared five-format structures.

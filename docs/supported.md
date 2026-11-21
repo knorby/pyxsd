@@ -12,20 +12,20 @@ and instance validity verdicts, not complete feature coverage or certification.
 
 ## RELAX NG
 
-The native RELAX NG 1.0 XML-syntax processor supports grammar composition,
-recursive references, name classes, choice/group/interleave, occurrence
-particles, mixed content, lists, and `data`/`except` with the built-in and XSD
-datatype libraries. It provides typed projections and generic fallbacks,
-scalar alternatives, correlated list interpretations, opt-in pattern capture,
-all five data formats, Draft 2020-12 JSON Schema, stubs, introspection,
-Pydantic models, Arrow records and datasets, structural comparison, and the
-schema-neutral CLI/MCP workflows. {doc}`relax-ng` documents those capabilities
-and their exact differences from XSD.
+The native RELAX NG 1.0 processor reads XML and compact syntax with one
+shared compiler. It supports grammar composition, recursive references, name
+classes, choice/group/interleave, occurrence particles, mixed content, lists,
+and `data`/`except` with the built-in and XSD datatype libraries. It provides
+typed projections and generic fallbacks, scalar alternatives, correlated list
+interpretations, opt-in pattern capture, all five data formats, Draft 2020-12
+JSON Schema, stubs, introspection, Pydantic models, Arrow records and datasets,
+structural comparison, and the schema-neutral CLI/MCP workflows. {doc}`relax-ng`
+documents those capabilities and their exact differences from XSD.
 
-The core RELAX NG profile deliberately excludes compact syntax, RELAX NG DTD
-Compatibility and comprehensive direct DTD coverage, NVDL compound documents,
-schema-aware XSLT/XPath typing, RELAX NG-to-XSD translation, fabricated XSD
-global declarations, and XSD `xsi:type`, `xsi:nil`, substitution-group,
+The core RELAX NG profile deliberately excludes RELAX NG DTD Compatibility and
+comprehensive direct DTD coverage, NVDL compound documents, schema-aware
+XSLT/XPath typing, RELAX NG-to-XSD translation, fabricated XSD global
+declarations, and XSD `xsi:type`, `xsi:nil`, substitution-group,
 identity-constraint, or default semantics.
 
 ```{include} generated/xsts-headline.md

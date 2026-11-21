@@ -61,6 +61,9 @@ MIXED_ATTRIBUTED_SCHEMA = f"""<grammar xmlns="{RNG_NS}">
 MIXED_ATTRIBUTED_INSTANCE = '<doc lang="en">hello<extra/>tail</doc>'
 MIXED_LEXICAL_DATA = {"@lang": "en", "extra": None, "$": "hellotail"}
 
+COMPACT_SCHEMA = "start = element note { text }\n"
+COMPACT_INSTANCE = "<note>hello</note>"
+
 
 class _FakeStdin:
     """A non-tty stdin stand-in, matching the XSD CLI tests."""
@@ -389,6 +392,112 @@ def test_build_document_relaxng_rejects_a_missing_schema() -> None:
             overlay=None,
             schema_language="relax-ng",
         )
+
+
+# ---------------------------------------------------------------------------
+# Compact syntax selection
+# ---------------------------------------------------------------------------
+
+
+def _compact_files(tmp_path: Path, schema_name: str = "note.rnc") -> tuple[Path, Path]:
+    schema = tmp_path / schema_name
+    schema.write_text(COMPACT_SCHEMA, encoding="utf-8")
+    instance = tmp_path / "note.xml"
+    instance.write_text(COMPACT_INSTANCE, encoding="utf-8")
+    return schema, instance
+
+
+def test_dot_rnc_schema_is_compiled_as_compact_without_a_syntax_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema, instance = _compact_files(tmp_path)
+
+    assert main([*_relaxng_args(schema, instance), "-o", "/dev/null", "--strict"]) is None
+
+    assert capsys.readouterr().err == ""
+
+
+def test_schema_syntax_compact_reads_a_differently_suffixed_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema, instance = _compact_files(tmp_path, "note.schema")
+
+    assert (
+        main(
+            [
+                *_relaxng_args(schema, instance),
+                "--schema-syntax",
+                "compact",
+                "-o",
+                "/dev/null",
+                "--strict",
+            ]
+        )
+        is None
+    )
+
+    assert capsys.readouterr().err == ""
+
+
+def test_schema_syntax_xml_overrides_a_dot_rnc_suffix(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema = tmp_path / "note.rnc"
+    schema.write_text(SCHEMA, encoding="utf-8")
+    instance = tmp_path / "instance.xml"
+    instance.write_text(INSTANCE, encoding="utf-8")
+
+    assert (
+        main(
+            [
+                *_relaxng_args(schema, instance),
+                "--schema-syntax",
+                "xml",
+                "-o",
+                "/dev/null",
+                "--strict",
+            ]
+        )
+        is None
+    )
+
+    assert capsys.readouterr().err == ""
+
+
+def test_stub_emission_threads_the_schema_syntax_selector(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema = tmp_path / "note.schema"
+    schema.write_text(COMPACT_SCHEMA, encoding="utf-8")
+
+    main(["--emit-stubs", "--schema-syntax", "compact", *_relaxng_args(schema)])
+
+    out = capsys.readouterr().out
+    assert "class Note" in out
+    assert "AlternativeValue" in out
+
+
+def test_xsd_rejects_a_nondefault_schema_syntax(capsys: pytest.CaptureFixture[str]) -> None:
+    schema = Path(__file__).parent / "fixtures" / "inventory" / "schema.xsd"
+
+    with pytest.raises(SystemExit) as exitInfo:
+        main(["--emit-stubs", "-s", str(schema), "--schema-syntax", "compact"])
+
+    assert exitInfo.value.code == 2
+    err = capsys.readouterr().err
+    assert "--schema-syntax" in err
+    assert "RELAX NG" in err
+    assert "relax-ng" in err
+
+
+def test_xsd_accepts_the_default_schema_syntax(capsys: pytest.CaptureFixture[str]) -> None:
+    schema = Path(__file__).parent / "fixtures" / "inventory" / "schema.xsd"
+
+    main(["--emit-stubs", "-s", str(schema), "--schema-syntax", "auto"])
+
+    out = capsys.readouterr().out
+    assert "class itemType" in out
+    assert "RELAX NG" not in out
 
 
 # ---------------------------------------------------------------------------

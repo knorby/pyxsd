@@ -353,6 +353,7 @@ def _build_document(
     overlay: str | Path | None,
     xsd_version: Literal["1.0", "1.1"] = "1.1",
     schema_language: Literal["xsd", "relax-ng"] = "xsd",
+    schema_syntax: Literal["auto", "xml", "compact"] = "auto",
 ) -> Any:
     """Compiles the selected schema and binds the instance into a ``Document``.
 
@@ -376,7 +377,7 @@ def _build_document(
             )
         from pyxsd.relaxng import compile as compile_relaxng
 
-        return compile_relaxng(xsd).parse(xml_source)
+        return compile_relaxng(xsd, syntax=schema_syntax).parse(xml_source)
 
     # Imported here rather than at module level: pyxsd.schema imports
     # this module, so a module-level import would be circular.
@@ -477,6 +478,17 @@ def main(argv: list[str] | None = None) -> None:
         "named with -s/--inputXsd because RELAX NG has no instance "
         "schemaLocation hints. The filename extension never selects the "
         "language.",
+    )
+    parser.add_argument(
+        "--schema-syntax",
+        choices=["auto", "xml", "compact"],
+        default="auto",
+        dest="schemaSyntax",
+        help="RELAX NG root syntax. 'auto' (default) selects compact only for "
+        "a root path ending in '.rnc', case-insensitively; 'xml' and "
+        "'compact' override the filename. An anonymous stream defaults to "
+        "XML. Only meaningful with --schema-language relax-ng; a nondefault "
+        "value with XSD is a usage error.",
     )
     parser.add_argument(
         "-p",
@@ -629,6 +641,12 @@ def main(argv: list[str] | None = None) -> None:
     if options.stubsCompact and options.emitStubs is None:
         parser.error("--stubs-compact requires --emit-stubs")
 
+    if options.schemaLanguage != "relax-ng" and options.schemaSyntax != "auto":
+        parser.error(
+            "--schema-syntax is a RELAX NG-only option and cannot be used "
+            "unless --schema-language relax-ng is selected"
+        )
+
     if options.schemaLanguage == "relax-ng":
         if options.inputXsdFile is None:
             parser.error(
@@ -673,7 +691,7 @@ def main(argv: list[str] | None = None) -> None:
             if options.schemaLanguage == "relax-ng":
                 from pyxsd.relaxng import compile as compile_relaxng
 
-                schema = compile_relaxng(options.inputXsdFile)
+                schema = compile_relaxng(options.inputXsdFile, syntax=options.schemaSyntax)
             else:
                 # Imported here rather than at module level: pyxsd.schema
                 # imports this module, so a module-level import would be
@@ -736,6 +754,7 @@ def main(argv: list[str] | None = None) -> None:
             overlay=options.classFile,
             xsd_version=options.xsdVersion,
             schema_language=options.schemaLanguage,
+            schema_syntax=options.schemaSyntax,
         )
 
         if options.outputParsed and document.root is not None:
