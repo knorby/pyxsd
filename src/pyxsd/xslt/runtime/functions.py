@@ -39,6 +39,7 @@ from elementpath.xpath2 import XPath2Parser
 from elementpath.xpath3 import XPath31Parser
 
 from pyxsd import __version__
+from pyxsd import xsd_data_types as _xsd
 from pyxsd.namespaces import local_name as _local_name
 from pyxsd.namespaces import namespace_of as _namespace_of
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
@@ -1209,9 +1210,14 @@ class XsltContextBridge:
         context_item: XdmItem | None,
         arguments: tuple[XdmSequence, ...],
     ) -> XdmSequence:
-        """fn:namespace-uri-for-prefix from the element's XDM namespace scope."""
+        """fn:namespace-uri-for-prefix from the element's XDM namespace scope.
+
+        The prefix argument takes the declared ``xs:string?`` function
+        conversion (atomization of nodes, untyped-atomic cast, no non-string
+        atomics), and the result carries the declared ``xs:anyURI?`` type.
+        """
         del context_item
-        prefix = _optional_string(arguments, 0) or ""
+        prefix = _optional_atomic_string(arguments, 0, "namespace-uri-for-prefix") or ""
         node = _single_node(arguments[1] if len(arguments) > 1 else (), "namespace-uri-for-prefix")
         if node.kind is not NodeKind.ELEMENT:
             raise XsltDynamicError(
@@ -1219,7 +1225,7 @@ class XsltContextBridge:
                 code="XPTY0004",
             )
         uri = node.in_scope_namespaces.get(prefix)
-        return () if uri is None else (XdmAtomic.string(uri),)
+        return () if uri is None else (XdmAtomic.any_uri(uri),)
 
     def _node_name_function(
         self,
@@ -1718,26 +1724,58 @@ def _optional_atomic_string(
     index: int,
     label: str,
 ) -> str | None:
-    """One optional argument atomized and cast to ``xs:string``.
+    """One optional ``xs:string?`` argument with function conversion applied.
 
-    A function signature of ``xs:string?`` accepts a node through the function
-    conversion rules, which atomizes it.  The elementpath built-ins for some
-    QName functions skip that conversion, so the bridge applies it explicitly.
-    An empty sequence stays absent; a QName or other non-string atomic value
-    is a type error.
+    Atomization supplies a node's typed value, not its string value, so a
+    schema-typed integer or QName is rejected rather than silently becoming a
+    string.  ``xs:untypedAtomic`` is cast to ``xs:string`` as the function
+    conversion rules require, and string-derived atomics (including
+    ``xs:anyURI``) convert by subtype substitution.  An empty sequence stays
+    absent; more than one atomized item is a cardinality error.
     """
     if index >= len(arguments) or not arguments[index]:
         return None
-    sequence = arguments[index]
-    if len(sequence) != 1:
+    atomized: list[XdmAtomic] = []
+    for item in arguments[index]:
+        if isinstance(item, XdmNode):
+            for value in item.typed_value:
+                if not isinstance(value, XdmAtomic):  # pragma: no cover - nodes atomize to atomics
+                    raise XsltDynamicError(
+                        f"{label} requires a string value",
+                        code="XPTY0004",
+                    )
+                atomized.append(value)
+        elif isinstance(item, XdmAtomic):
+            atomized.append(item)
+        else:
+            raise XsltDynamicError(
+                f"{label} requires a string value",
+                code="XPTY0004",
+            )
+    if not atomized:
+        return None
+    if len(atomized) != 1:
         raise XsltDynamicError(
             f"{label} requires a single value",
             code="XPTY0004",
         )
-    item = sequence[0]
-    if isinstance(item, XdmNode):
-        return item.string_value
-    if isinstance(item, XdmAtomic) and isinstance(item.value, str):
+    return _function_string_value(atomized[0], label)
+
+
+#: Atomic values that store their lexical form in a string but do not derive
+#: from ``xs:string``; function conversion must not accept them as a string.
+_NON_STRING_ATOMIC_VALUES = (_xsd.QName, _xsd.NOTATION, _xsd.AnySimpleType, _xsd.AnyType)
+
+
+def _function_string_value(item: XdmAtomic, label: str) -> str:
+    """Apply the ``xs:string`` function-conversion rules to one atomic."""
+    local = item.type_name.partition("}")[2] if item.type_name.startswith("{") else item.type_name
+    if local == "untypedAtomic":
+        return item.lexical
+    if local == "anyURI":
+        # xs:anyURI is promoted to xs:string by function conversion.
+        return item.lexical
+    if isinstance(item.value, str) and not isinstance(item.value, _NON_STRING_ATOMIC_VALUES):
         return str(item.value)
     raise XsltDynamicError(
         f"{label} requires a string value",

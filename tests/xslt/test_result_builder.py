@@ -1131,6 +1131,21 @@ def test_element_initial_attribute_namespace_fixup() -> None:
     assert element.in_scope_namespaces["ns1"] == "urn:q"
 
 
+def test_element_attribute_uses_an_available_binding_that_was_not_copied() -> None:
+    builder = ResultBuilder.document()
+    element = builder.element(
+        "root",
+        attributes=(("{urn:excluded}a", "v"),),
+        namespaces={"p": "urn:excluded"},
+        excluded_namespaces=frozenset({"urn:excluded"}),
+    )
+
+    # Exclusion removes the copied namespace node; the attribute name forces
+    # exactly that binding back through namespace fixup.
+    assert element.attributes[0].prefix == "p"
+    assert element.in_scope_namespaces["p"] == "urn:excluded"
+
+
 def test_element_rejects_xmlns_attributes_in_initial_scope() -> None:
     builder = ResultBuilder.document()
     with pytest.raises(XsltDynamicError) as error:

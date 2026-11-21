@@ -88,6 +88,7 @@ from pyxsd.xslt.results import (
 )
 from pyxsd.xslt.runtime.accumulators import accumulator_copy_names
 from pyxsd.xslt.runtime.builder import (
+    AttributeName,
     NamespaceAlias,
     ResultBuilder,
     validate_constructed,
@@ -241,12 +242,27 @@ class SequenceInstruction:
         object.__setattr__(self, "items", items)
 
 
+def _freeze_attributes(
+    attributes: Iterable[tuple[AttributeName, str] | tuple[str, str]],
+) -> tuple[tuple[AttributeName, str], ...]:
+    """Normalize attribute entries, keeping each lexical prefix.
+
+    A plain string name is accepted for callers that construct an instruction
+    by hand; it denotes an unprefixed attribute.
+    """
+    entries: list[tuple[AttributeName, str]] = []
+    for head, value in attributes:
+        name = head if isinstance(head, AttributeName) else AttributeName(head)
+        entries.append((name, value))
+    return tuple(entries)
+
+
 @dataclass(frozen=True, slots=True)
 class ElementInstruction:
     """Construct one element with attributes and sequence-constructor content."""
 
     name: str
-    attributes: tuple[tuple[str, str], ...] = ()
+    attributes: tuple[tuple[AttributeName, str], ...] = ()
     namespaces: Mapping[str, str] = field(default_factory=dict)
     content: tuple[ConstructionInstruction, ...] = ()
     base_uri: str | None = None
@@ -257,7 +273,7 @@ class ElementInstruction:
     schema_pool: object = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "attributes", tuple(self.attributes))
+        object.__setattr__(self, "attributes", _freeze_attributes(self.attributes))
         object.__setattr__(self, "namespaces", _freeze(self.namespaces))
         object.__setattr__(self, "content", tuple(self.content))
 
@@ -267,7 +283,7 @@ class LiteralResultInstruction:
     """Construct one literal result element using retained static context."""
 
     name: str
-    attributes: tuple[tuple[str, str], ...] = ()
+    attributes: tuple[tuple[AttributeName, str], ...] = ()
     namespaces: Mapping[str, str] = field(default_factory=dict)
     content: tuple[ConstructionInstruction, ...] = ()
     base_uri: str | None = None
@@ -281,7 +297,7 @@ class LiteralResultInstruction:
     schema_pool: object = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "attributes", tuple(self.attributes))
+        object.__setattr__(self, "attributes", _freeze_attributes(self.attributes))
         object.__setattr__(self, "namespaces", _freeze(self.namespaces))
         object.__setattr__(self, "content", tuple(self.content))
         object.__setattr__(self, "namespace_aliases", _freeze(self.namespace_aliases))
@@ -293,7 +309,7 @@ class LiteralResultInstruction:
         cls,
         instruction: Instruction,
         *,
-        attributes: Iterable[tuple[str, str]] | None = None,
+        attributes: Iterable[tuple[AttributeName, str] | tuple[str, str]] | None = None,
         content: Iterable[ConstructionInstruction] = (),
         namespace_aliases: Mapping[str, str] | None = None,
         excluded_namespaces: Iterable[str] = (),
@@ -306,11 +322,12 @@ class LiteralResultInstruction:
         """Create a literal result from one compiled instruction's static state."""
         if attributes is None:
             attributes = tuple(
-                (attribute.name, attribute.value) for attribute in instruction.attributes
+                (AttributeName(attribute.name, attribute.prefix), attribute.value)
+                for attribute in instruction.attributes
             )
         return cls(
             name=instruction.name,
-            attributes=tuple(attributes),
+            attributes=_freeze_attributes(attributes),
             namespaces=instruction.namespaces,
             content=tuple(content),
             base_uri=instruction.base_uri,
@@ -520,7 +537,7 @@ def construct_map(maps: XdmSequence) -> XdmMap:
 def _construct_element(
     name: str,
     *,
-    attributes: Iterable[tuple[str, str]],
+    attributes: Iterable[tuple[AttributeName, str] | tuple[str, str]],
     namespaces: Mapping[str, str],
     content: Iterable[ConstructionInstruction],
     base_uri: str | None,
@@ -1192,11 +1209,14 @@ def literal_element(
     context: EvaluationContext,
 ) -> XdmNode:
     factory = _NodeFactory()
-    attribute_set_attributes: list[tuple[str, str]] = []
+    attribute_set_attributes: list[tuple[AttributeName, str]] = []
     for reference in plan.attribute_sets:
         component = invocation._resolve_attribute_set(reference, context.package_name)
         attribute_set_attributes.extend(
-            (attribute.name or "", attribute.string_value)
+            (
+                AttributeName(attribute.name or "", attribute.prefix),
+                attribute.string_value,
+            )
             for attribute in invocation._attribute_set_attributes(component, context)
             if attribute.kind is NodeKind.ATTRIBUTE
         )
@@ -1243,11 +1263,14 @@ def element_value(
         namespace_code="XTDE0835",
         prefix_code="XTDE0830",
     )
-    attributes: list[tuple[str, str]] = []
+    attributes: list[tuple[AttributeName, str]] = []
     for reference in plan.attribute_sets:
         component = invocation._resolve_attribute_set(reference, context.package_name)
         attributes.extend(
-            (attribute.name or "", attribute.string_value)
+            (
+                AttributeName(attribute.name or "", attribute.prefix),
+                attribute.string_value,
+            )
             for attribute in invocation._attribute_set_attributes(component, context)
             if attribute.kind is NodeKind.ATTRIBUTE
         )

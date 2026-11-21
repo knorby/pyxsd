@@ -644,6 +644,70 @@ def test_literal_xml_namespace_attribute_uses_the_xml_prefix() -> None:
     assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><out xml:lang="en"/>')
 
 
+def test_literal_attribute_keeps_its_lexical_prefix_among_same_uri_bindings() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xmlns:p="urn:x" xmlns:q="urn:x" q:a="1"/>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    attribute = out.attributes[0]
+    assert attribute.name == "{urn:x}a"
+    assert attribute.prefix == "q"
+    assert _declarations(out) == {"p": "urn:x", "q": "urn:x"}
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?><out xmlns:p="urn:x" xmlns:q="urn:x" q:a="1"/>'
+    )
+
+
+def test_attribute_set_attribute_keeps_its_lexical_prefix_among_same_uri_bindings() -> None:
+    result = _transform(
+        """
+        <xsl:attribute-set name="s">
+          <xsl:attribute name="q:a">1</xsl:attribute>
+        </xsl:attribute-set>
+        <xsl:template name="main">
+          <out xsl:use-attribute-sets="s"/>
+        </xsl:template>
+        """,
+        attributes=' xmlns:p="urn:x" xmlns:q="urn:x"',
+    )
+
+    out = result.principal_tree.root_element
+    attribute = out.attributes[0]
+    assert attribute.name == "{urn:x}a"
+    assert attribute.prefix == "q"
+    assert (
+        result.serialize()
+        == '<?xml version="1.0" encoding="UTF-8"?><out xmlns:p="urn:x" xmlns:q="urn:x" q:a="1"/>'
+    )
+
+
+def test_attribute_set_attribute_reuses_a_prefix_from_its_own_scope() -> None:
+    result = _transform(
+        """
+        <xsl:attribute-set name="s">
+          <xsl:attribute name="q:a" xmlns:q="urn:x">1</xsl:attribute>
+        </xsl:attribute-set>
+        <xsl:template name="main">
+          <out xmlns:p="urn:x" xsl:use-attribute-sets="s"/>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    attribute = out.attributes[0]
+    assert attribute.name == "{urn:x}a"
+    assert attribute.prefix == "q"
+    assert _declarations(out) == {"p": "urn:x", "q": "urn:x"}
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?><out xmlns:p="urn:x" xmlns:q="urn:x" q:a="1"/>'
+    )
+
+
 def test_namespace_alias_does_not_rewrite_attribute_set_attributes() -> None:
     result = _transform(
         """

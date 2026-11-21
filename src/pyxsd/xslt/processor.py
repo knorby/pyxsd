@@ -208,7 +208,7 @@ from pyxsd.xslt.runtime.accumulators import (
     parse_accumulator_names,
     same_context_accumulator_call,
 )
-from pyxsd.xslt.runtime.builder import NamespaceAlias, validate_delivered
+from pyxsd.xslt.runtime.builder import AttributeName, NamespaceAlias, validate_delivered
 from pyxsd.xslt.runtime.constructors import CONSTRUCTOR_PLAN_EXECUTORS
 from pyxsd.xslt.runtime.context import EvaluationContext
 from pyxsd.xslt.runtime.dispatch import (
@@ -4009,13 +4009,13 @@ def _compile_literal_result(
     context: StaticContext,
     module: EffectiveModule,
 ) -> _Plan:
-    attributes: list[tuple[str, str | CompiledValueTemplate]] = []
+    attributes: list[tuple[AttributeName, str | CompiledValueTemplate]] = []
     for attribute in instruction.attributes:
         if attribute.namespace_uri == XSLT_NS:
             continue
         attributes.append(
             (
-                attribute.name,
+                AttributeName(attribute.name, attribute.prefix),
                 compile_avt(attribute.value, context, location=instruction.location),
             )
         )

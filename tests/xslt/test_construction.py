@@ -338,6 +338,102 @@ def test_prepared_scope_ignores_a_nonmatching_alias_rule() -> None:
     assert scope.element_namespace == "urn:new"
 
 
+@pytest.mark.parametrize(
+    "namespaces",
+    [
+        {"new": "urn:other", "x": "urn:target"},
+        {"x": "urn:target", "new": "urn:other"},
+    ],
+)
+def test_prepared_scope_keeps_a_target_node_whose_prefix_is_occupied(
+    namespaces: dict[str, str],
+) -> None:
+    scope = _prepare_scope(
+        namespaces,
+        aliases=(NamespaceAlias("urn:old", "urn:target", "new"),),
+        element_namespace=None,
+    )
+
+    copied = dict(scope.copied_namespaces)
+    assert copied["new"] == "urn:other"
+    assert "urn:target" in copied.values()
+    assert len(copied) == len(set(copied))
+
+
+def test_prepared_scope_copies_every_binding_of_a_shared_target_uri() -> None:
+    scope = _prepare_scope(
+        {"a": "urn:target", "b": "urn:target", "c": "urn:other"},
+        aliases=(
+            NamespaceAlias("urn:l1", "urn:target", "a"),
+            NamespaceAlias("urn:l2", "urn:target", "b"),
+        ),
+        element_namespace=None,
+    )
+
+    assert dict(scope.copied_namespaces) == {
+        "a": "urn:target",
+        "b": "urn:target",
+        "c": "urn:other",
+    }
+    assert scope.available_bindings["a"] == "urn:target"
+    assert scope.available_bindings["b"] == "urn:target"
+
+
+def test_element_prefix_fixup_does_not_overwrite_a_conflicting_binding() -> None:
+    scope = {"p": "urn:other"}
+
+    # The conflicting prefix keeps its binding; the element name falls back
+    # to the free default namespace instead.
+    assert _element_prefix("urn:x", scope, requested="p", force_requested=True) == ""
+    assert scope == {"p": "urn:other", "": "urn:x"}
+    # A prefix that already names the namespace is kept as requested.
+    matching = {"p": "urn:x"}
+    assert _element_prefix("urn:x", matching, requested="p", force_requested=True) == "p"
+    assert matching == {"p": "urn:x"}
+
+
+@pytest.mark.parametrize(
+    "namespaces",
+    [
+        {"old": "urn:old", "new": "urn:other"},
+        {"new": "urn:other", "old": "urn:old"},
+    ],
+)
+def test_aliased_literal_element_keeps_a_copied_namespace_on_conflict(
+    namespaces: dict[str, str],
+) -> None:
+    builder = ResultBuilder.document()
+
+    element = builder.element(
+        "{urn:old}out",
+        namespaces=namespaces,
+        namespace_alias_rules=(NamespaceAlias("urn:old", "urn:new", "new"),),
+    )
+
+    assert element.name == "{urn:new}out"
+    assert element.in_scope_namespaces["new"] == "urn:other"
+    assert "urn:new" in element.in_scope_namespaces.values()
+    assert element.prefix != "new"
+    prefixes = [node.prefix for node in element.namespace_nodes]
+    assert len(prefixes) == len(set(prefixes))
+    assert {node.string_value for node in element.namespace_nodes} >= {"urn:other", "urn:new"}
+
+
+def test_unused_target_node_survives_a_copied_binding_conflict() -> None:
+    builder = ResultBuilder.document()
+
+    element = builder.element(
+        "root",
+        namespaces={"new": "urn:other", "x": "urn:target"},
+        namespace_alias_rules=(NamespaceAlias("urn:old", "urn:target", "new"),),
+    )
+
+    assert element.in_scope_namespaces["new"] == "urn:other"
+    assert "urn:target" in element.in_scope_namespaces.values()
+    prefixes = [node.prefix for node in element.namespace_nodes]
+    assert len(prefixes) == len(set(prefixes))
+
+
 def test_element_prefix_selection_uses_an_available_binding() -> None:
     assert _element_prefix("urn:x", {}, {"p": "urn:x"}, requested=None) == "p"
     assert _element_prefix(XML_NS, {}, requested=None) == "xml"

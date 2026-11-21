@@ -947,11 +947,56 @@ def test_in_scope_prefixes_and_namespace_uri_use_the_element_scope() -> None:
     result = transform(body, input_source=source)
     assert result.principal == (
         XdmAtomic.string(",p,q,xml"),
-        XdmAtomic.string("urn:p"),
-        XdmAtomic.string("urn:default"),
+        XdmAtomic.any_uri("urn:p"),
+        XdmAtomic.any_uri("urn:default"),
         XdmAtomic.integer(0),
-        XdmAtomic.string("urn:q2"),
+        XdmAtomic.any_uri("urn:q2"),
     )
+    assert all(
+        item.type_name == f"{{{XSD_NS}}}anyURI"
+        for item in (result.principal[1], result.principal[2], result.principal[4])
+    )
+
+
+def test_namespace_uri_for_prefix_uses_function_conversion_for_its_argument() -> None:
+    source = XdmDocument.parse(b'<r xmlns:p="urn:p"><prefix>p</prefix></r>')
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence select="namespace-uri-for-prefix(/*/prefix, /*)"/>
+          <xsl:sequence select="namespace-uri-for-prefix(xs:untypedAtomic('p'), /*)"/>
+          <xsl:sequence select="namespace-uri-for-prefix(xs:anyURI('p'), /*)"/>
+          <xsl:sequence select="count(namespace-uri-for-prefix((), /*))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=source)
+    assert result.principal == (
+        XdmAtomic.any_uri("urn:p"),
+        XdmAtomic.any_uri("urn:p"),
+        XdmAtomic.any_uri("urn:p"),
+        XdmAtomic.integer(0),
+    )
+    assert result.principal[0].type_name == f"{{{XSD_NS}}}anyURI"
+    assert result.principal[1].type_name == f"{{{XSD_NS}}}anyURI"
+
+
+def test_namespace_uri_for_prefix_rejects_a_non_string_prefix() -> None:
+    source = XdmDocument.parse(b'<r xmlns:p="urn:p"/>')
+
+    def code(expression: str) -> str | None:
+        body = stylesheet(
+            f"""
+            <xsl:template match="/">
+              <xsl:sequence select="{expression}"/>
+            </xsl:template>
+            """
+        )
+        return error_code(lambda: transform(body, input_source=source))
+
+    assert code("namespace-uri-for-prefix(1, /*)") == "XPTY0004"
+    assert code("namespace-uri-for-prefix(true(), /*)") == "XPTY0004"
+    assert code("namespace-uri-for-prefix(('p', 'q'), /*)") == "XPTY0004"
 
 
 def test_name_uses_a_prefix_for_namespaced_attributes() -> None:
@@ -1144,10 +1189,73 @@ def test_resolve_qname_reports_unbound_and_invalid_lexical_names() -> None:
     assert code("resolve-QName('a:b:c', /*)") == "FOCA0002"
     assert code("resolve-QName(1, /*)") == "XPTY0004"
     assert code("resolve-QName((1, 2), /*)") == "XPTY0004"
+    assert code("resolve-QName(map{}, /*)") == "XPTY0004"
     assert code("resolve-QName('p:x', 'not a node')") == "XPTY0004"
     assert code("resolve-QName('x', /)") == "XPTY0004"
     assert code("resolve-QName((), 'not a node')") == "XPTY0004"
     assert code("resolve-QName((), /)") == "XPTY0004"
+
+
+TYPED_NS = "urn:example:typed-arguments"
+
+
+def _typed_argument_stylesheet(expression: str) -> bytes:
+    schema = f"""
+    <xs:schema xmlns:xs="{XSD_NS}" xmlns:t="{TYPED_NS}" targetNamespace="{TYPED_NS}"
+        elementFormDefault="qualified">
+      <xs:simpleType name="Tokens"><xs:list itemType="xs:string"/></xs:simpleType>
+      <xs:complexType name="Holder">
+        <xs:sequence><xs:element name="empty-list" type="t:Tokens" minOccurs="0"/></xs:sequence>
+        <xs:attribute name="num" type="xs:int"/>
+        <xs:attribute name="qn" type="xs:QName"/>
+        <xs:attribute name="label" type="xs:string"/>
+      </xs:complexType>
+      <xs:element name="holder" type="t:Holder"/>
+    </xs:schema>
+    """
+    return (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" xmlns:t="{TYPED_NS}" '
+        f'xmlns:p="urn:p" version="3.0">'
+        f"<xsl:import-schema>{schema}</xsl:import-schema>"
+        f'<xsl:template name="main"><xsl:sequence select="{expression}"/></xsl:template>'
+        "</xsl:stylesheet>"
+    ).encode()
+
+
+def _typed_argument_result(expression: str):
+    compiled = XsltProcessor(validation="strict").compile(
+        io.BytesIO(_typed_argument_stylesheet(expression))
+    )
+    return compiled.transform(
+        (
+            f'<t:holder xmlns:t="{TYPED_NS}" xmlns:p="urn:p" num="5" qn="p:local" '
+            f'label="p:local"><t:empty-list/></t:holder>'
+        ).encode(),
+        initial_template="main",
+        delivery="raw",
+    )
+
+
+def test_resolve_qname_uses_the_argument_nodes_typed_value() -> None:
+    def code(expression: str) -> str | None:
+        return error_code(lambda: _typed_argument_result(expression))
+
+    # A schema-typed integer or QName is not a string after atomization, so
+    # function conversion rejects it instead of parsing its string value.
+    assert code("resolve-QName(/*/@num, /*)") == "XPTY0004"
+    assert code("resolve-QName(/*/@qn, /*)") == "XPTY0004"
+
+    # An empty atomized typed value stays an empty optional string.
+    assert _typed_argument_result("empty(resolve-QName(/*/t:empty-list, /*))").principal == (
+        XdmAtomic.boolean(True),
+    )
+
+    # A schema-typed xs:string node still converts normally.
+    result = _typed_argument_result(
+        "concat(prefix-from-QName(resolve-QName(/*/@label, /*)), ':',"
+        " local-name-from-QName(resolve-QName(/*/@label, /*)))"
+    )
+    assert result.principal == (XdmAtomic.string("p:local"),)
 
 
 def test_namespace_functions_reject_a_non_element_argument() -> None:

@@ -53,11 +53,16 @@ def _freeze(mapping: Mapping[str, str]) -> Mapping[str, str]:
 
 @dataclass(frozen=True, slots=True)
 class Attribute:
-    """One normalized attribute with an expanded name and lexical value."""
+    """One normalized attribute with an expanded name and lexical value.
+
+    ``prefix`` retains the lexical prefix the attribute's QName carried in the
+    stylesheet so literal result attributes can preserve it.
+    """
 
     name: str
     value: str
     static: bool = False
+    prefix: str = ""
 
     @property
     def local_name(self) -> str:
@@ -208,7 +213,12 @@ class SequenceConstructor:
 
 def _normalized_attributes(element: EffectiveElement) -> tuple[Attribute, ...]:
     return tuple(
-        Attribute(name=attribute.name, value=attribute.value, static=attribute.static)
+        Attribute(
+            name=attribute.name,
+            value=attribute.value,
+            static=attribute.static,
+            prefix=attribute.prefix,
+        )
         for attribute in element.attributes
     )
 

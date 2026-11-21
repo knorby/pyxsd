@@ -81,6 +81,11 @@ class TestExpandedName:
         assert ExpandedName.from_clark("{}root") == ExpandedName(None, "root")
         assert ExpandedName("", "root").clark == "root"
 
+    def test_an_empty_uri_is_the_same_value_as_no_uri(self):
+        assert ExpandedName("", "root") == ExpandedName(None, "root")
+        assert hash(ExpandedName("", "root")) == hash(ExpandedName(None, "root"))
+        assert ExpandedName("", "root").uri is None
+
     def test_the_value_is_frozen(self):
         name = ExpandedName("urn:test", "root")
         with pytest.raises(FrozenInstanceError):
@@ -164,6 +169,19 @@ class TestNamespaceBindings:
             bindings.resolve_name("p:local")
         with pytest.raises(NamespaceError, match="p"):
             bindings.resolve_qname("p:local")
+
+    @pytest.mark.parametrize("qname", ["p:a:b", "bad name", "p:", ":a", "", "1bad", "a:1bad"])
+    def test_invalid_lexical_names_raise(self, qname):
+        bindings = self._snapshot('<a xmlns="urn:d" xmlns:p="urn:p"/>')
+        with pytest.raises(NamespaceError):
+            bindings.resolve_name(qname)
+        with pytest.raises(NamespaceError):
+            bindings.resolve_qname(qname)
+
+    def test_invalid_lexical_attribute_name_raises(self):
+        bindings = self._snapshot("<a/>")
+        with pytest.raises(NamespaceError):
+            bindings.resolve_name("bad name", is_attribute=True)
 
     def test_prefix_for(self):
         bindings = self._snapshot('<a xmlns="urn:d" xmlns:p="urn:p"/>')
@@ -251,6 +269,14 @@ class TestCapture:
     def test_already_expanded_name_is_returned_unchanged(self):
         root, context = _parse("<a/>")
         assert context.resolve(root, "{urn:x}y") == "{urn:x}y"
+
+    def test_legacy_resolution_keeps_its_tolerant_lexical_parsing(self):
+        # NamespaceContext.resolve predates the strict snapshot API; its
+        # callers rely on the historical pass-through for malformed lexical
+        # names, so only the new public snapshot methods validate.
+        root, context = _parse('<a xmlns="urn:d" xmlns:p="urn:p"/>')
+        assert context.resolve(root, "p:a:b") == "{urn:p}a:b"
+        assert context.resolve(root, "bad name") == "{urn:d}bad name"
 
     def test_root_bindings_recorded_for_writers(self):
         _, context = _parse('<a xmlns="urn:d" xmlns:p="urn:p"/>')

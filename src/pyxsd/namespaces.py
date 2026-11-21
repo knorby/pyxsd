@@ -96,6 +96,15 @@ def namespace_of(name: str) -> str | None:
     return None
 
 
+def _require_lexical_qname(qname: str) -> None:
+    """Reject a lexical QName that is not ``NCName`` or ``NCName:NCName``."""
+    from elementpath.helpers import is_ncname
+
+    parts = qname.split(":")
+    if len(parts) > 2 or not all(is_ncname(part) for part in parts):
+        raise NamespaceError(f"the lexical QName {qname!r} is not valid")
+
+
 @dataclass(frozen=True, slots=True)
 class ExpandedName:
     """An expanded name: a namespace URI and a local part.
@@ -108,6 +117,12 @@ class ExpandedName:
 
     uri: str | None
     local: str
+
+    def __post_init__(self) -> None:
+        # ``""`` and ``None`` both mean "no namespace"; canonicalize so the
+        # two spellings cannot become unequal keys for the same name.
+        if self.uri == "":
+            object.__setattr__(self, "uri", None)
 
     @property
     def clark(self) -> str:
@@ -173,9 +188,16 @@ class NamespaceBindings:
 
         ``is_attribute`` matters for unprefixed names: attributes are
         never in the default namespace, while element names are. An
-        already-expanded Clark name is returned unchanged.
+        already-expanded Clark name is returned unchanged. A malformed
+        lexical QName raises :class:`NamespaceError` rather than becoming
+        an invalid expanded-name key.
         """
-        return self._resolve_in(self._bindings, qname, is_attribute=is_attribute)
+        return self._resolve_in(
+            self._bindings,
+            qname,
+            is_attribute=is_attribute,
+            strict=True,
+        )
 
     def resolve_qname(self, qname: str) -> str:
         """Resolve QName-valued content to a Clark name.
@@ -183,9 +205,10 @@ class NamespaceBindings:
         QName content follows element-name rules rather than
         attribute-name rules, so an unprefixed lexical QName uses the
         default namespace. Keeping this a separate operation stops a
-        caller from applying attribute semantics to content.
+        caller from applying attribute semantics to content. A malformed
+        lexical QName raises :class:`NamespaceError`.
         """
-        return self._resolve_in(self._bindings, qname)
+        return self._resolve_in(self._bindings, qname, strict=True)
 
     def prefix_for(self, uri: str | None) -> str | None:
         """Return a prefix bound to ``uri``.
@@ -196,15 +219,25 @@ class NamespaceBindings:
         return self._prefix_in(self._bindings, uri)
 
     @staticmethod
-    def _resolve_in(bindings: Mapping[str, str], qname: str, *, is_attribute: bool = False) -> str:
+    def _resolve_in(
+        bindings: Mapping[str, str],
+        qname: str,
+        *,
+        is_attribute: bool = False,
+        strict: bool = False,
+    ) -> str:
         """Resolve a lexical name against a raw binding frame.
 
         This is the one resolution implementation. :class:`NamespaceContext`
         calls it with the element's recorded frame so a QName lookup on a
-        compilation hot path does not materialize a snapshot per call.
+        compilation hot path does not materialize a snapshot per call. That
+        legacy entry point stays tolerant of malformed lexical names; the
+        public snapshot methods pass ``strict=True`` and reject them.
         """
         if qname.startswith("{"):
             return qname
+        if strict:
+            _require_lexical_qname(qname)
         if ":" in qname:
             prefix, local = qname.split(":", 1)
             # The ``xml`` prefix is implicitly bound by the XML spec.
