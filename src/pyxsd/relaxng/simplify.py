@@ -34,6 +34,8 @@ from pyxsd.relaxng.datatypes import (
     DatatypeParameterError,
     UnsupportedDatatypeError,
 )
+from pyxsd.relaxng.errors import RelaxNGCompactSyntaxError
+from pyxsd.relaxng.limits import BudgetCounter
 from pyxsd.relaxng.names import (
     AnyName,
     ExceptName,
@@ -65,7 +67,8 @@ from pyxsd.relaxng.patterns import (
     interleave,
     one_or_more,
 )
-from pyxsd.relaxng.resources import LoadedResource, ResourceDependency, ResourceLoader
+from pyxsd.relaxng.readers import read_schema_syntax
+from pyxsd.relaxng.resources import ResourceDependency, ResourceLoader, SchemaResource
 from pyxsd.relaxng.syntax import (
     FullAnyName,
     FullAttribute,
@@ -101,8 +104,8 @@ from pyxsd.relaxng.syntax import (
     GrammarScope,
     ReferencePlaceholder,
     SchemaFinding,
-    read_full_syntax,
 )
+from pyxsd.relaxng.uris import is_uri_reference, xlink_escape
 from pyxsd.relaxng.whitespace import trim_xml_whitespace
 from pyxsd.resource_policy import ResourcePolicyError
 from pyxsd.validation import ValidationReport
@@ -316,7 +319,7 @@ class GrammarBundle:
     report: ValidationReport = field(repr=False, compare=False)
     graph: PatternPool = field(repr=False, compare=False)
     libraries: DatatypeLibraryRegistry = field(repr=False, compare=False)
-    resource: LoadedResource = field(repr=False, compare=False)
+    resource: SchemaResource = field(repr=False, compare=False)
     findings: tuple[SchemaFinding, ...] = field(repr=False, compare=False)
     references: tuple[UnresolvedReference | LocalGrammar, ...] = field(repr=False, compare=False)
 
@@ -1085,6 +1088,22 @@ def _rebuild_pattern(pattern: Pattern, children: tuple[Pattern, ...]) -> Pattern
     return pattern
 
 
+def _nested_compact_message(error: RelaxNGCompactSyntaxError) -> str:
+    """The compact failure text without its already-rendered source position.
+
+    A located compact failure always carries a text span, and its string form
+    starts with ``source:line:column:``.  The schema finding records that same
+    location separately, so the message starts at the actual description.
+    """
+    location = error.location
+    if location is None:
+        return str(error)
+    span = location.span
+    assert span is not None
+    prefix = f"{location.source}:{span.line}:{span.column}: "
+    return str(error).removeprefix(prefix)
+
+
 class _Composer:
     """Scope expansion first, reference resolution second, element graph last.
 
@@ -1094,11 +1113,17 @@ class _Composer:
     Undefined references and combine errors are checked before reachability.
     """
 
-    def __init__(self, bundle: GrammarBundle, loader: ResourceLoader) -> None:
+    def __init__(
+        self,
+        bundle: GrammarBundle,
+        loader: ResourceLoader,
+        budget: BudgetCounter,
+    ) -> None:
         self.report = bundle.report
         self.pool = bundle.graph
         self.libraries = bundle.libraries
         self.loader = loader
+        self.budget = budget
         self.scopes: list[_Scope] = []
         self.slots: list[_Slot] = []
         # Keep environments alive for the lifetime of identity-keyed memos,
@@ -1172,7 +1197,7 @@ class _Composer:
         self,
         scope: BundleScope,
         environment: Mapping[BundleScope, _Scope],
-        resource: LoadedResource,
+        resource: SchemaResource,
         chain: tuple[str, ...],
         references: tuple[UnresolvedReference | LocalGrammar, ...],
     ) -> list[_Part]:
@@ -1240,21 +1265,27 @@ class _Composer:
     def load(
         self,
         reference: BundleInclude | UnresolvedReference,
-        containing: LoadedResource,
+        containing: SchemaResource,
         chain: tuple[str, ...],
     ) -> tuple[GrammarBundle, tuple[str, ...]] | None:
         origins = reference.origins
         if reference.href is None:
             self.error("relaxng-missing-href", "a resource reference needs an href", origins)
             return None
+        href = reference.href
+        if containing.syntax == "compact" and not is_uri_reference(xlink_escape(href)):
+            # Appendix A validates a compact include/external literal as an
+            # xs:anyURI.  Composition is the resource-resolution seam, so an
+            # invalid dependency surfaces through the ordinary read finding.
+            self.error(
+                "relaxng-resource-read",
+                f"the RELAX NG href value {href!r} is not a URI reference",
+                origins,
+            )
+            return None
         try:
-            # Reader dispatch arrives in Task 6; an XML containing resource
-            # still resolves an XML dependency until then.
-            resource = cast(
-                LoadedResource,
-                self.loader.resolve(
-                    reference.href, containing, reference.base, location=_location(origins)
-                ),
+            resource = self.loader.resolve(
+                href, containing, reference.base, location=_location(origins)
             )
         except (OSError, ParseError, ResourcePolicyError) as exc:
             self.error("relaxng-resource-read", str(exc), origins)
@@ -1266,9 +1297,20 @@ class _Composer:
         if namespace is None:
             namespace = containing.namespace_at(origins)
         resource = resource.with_namespace(namespace)
-        bundle = Simplifier(self.report, self.pool, self.libraries).simplify(
-            read_full_syntax(resource)
-        )
+        try:
+            full = read_schema_syntax(resource, budget=self.budget)
+        except RelaxNGCompactSyntaxError as exc:
+            # A malformed nested compact resource is a schema finding, not a
+            # compilation interruption.  The loader already recorded the
+            # containing reference edge; report the exact nested location.
+            self.report.add_error(
+                _nested_compact_message(exc),
+                code="relaxng-resource-read",
+                phase="schema",
+                location=exc.location if exc.location is not None else _location(origins),
+            )
+            return None
+        bundle = Simplifier(self.report, self.pool, self.libraries).simplify(full)
         return bundle, (*chain, resource.canonical_id)
 
     def setup(self, scope: _Scope) -> dict[str | None, _Slot]:
@@ -1535,14 +1577,26 @@ class _Composer:
         )
 
 
-def compose_grammars(bundle: GrammarBundle, loader: ResourceLoader) -> CompiledGrammar:
+def compose_grammars(
+    bundle: GrammarBundle,
+    loader: ResourceLoader,
+    *,
+    budget: BudgetCounter | None = None,
+) -> CompiledGrammar:
     """Compose a locally simplified bundle using its report and datatype context.
 
     Findings join ``bundle.report`` in the schema phase. Resource reads use
     only ``loader``; capability failures and budget exhaustion propagate
-    unchanged. The result contains no unresolved authored placeholders.
+    unchanged.  ``budget`` is the compilation's shared counter, so nested
+    compact resources charge the same token budget; ``None`` starts an
+    unlimited counter for direct simplification callers. The result contains
+    no unresolved authored placeholders.
     """
-    return _Composer(bundle, loader).compose(bundle)
+    return _Composer(
+        bundle,
+        loader,
+        budget if budget is not None else BudgetCounter("compile"),
+    ).compose(bundle)
 
 
 def simplify_schema(

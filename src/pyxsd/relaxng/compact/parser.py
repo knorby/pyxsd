@@ -34,7 +34,7 @@ from pyxsd.relaxng.compact.lexer import Token, TokenKind, lex_compact
 from pyxsd.relaxng.errors import RelaxNGCompactSyntaxError
 from pyxsd.relaxng.limits import BudgetCounter
 from pyxsd.relaxng.origins import OriginTable, SourceOrigin
-from pyxsd.relaxng.resources import LoadedCompactResource, LoadedResource
+from pyxsd.relaxng.resources import LoadedCompactResource
 from pyxsd.relaxng.syntax import (
     RELAX_NG_NAMESPACE,
     Annotation,
@@ -290,9 +290,9 @@ class _Reader:
             namespaces=context,
             origins=OriginTable(frozenset(self.origins)),
         )
-        # FullSchema.resource becomes SchemaResource with reader dispatch.
+        # FullSchema.resource is syntax-neutral; this reader's view is compact.
         return FullSchema(
-            resource=cast(LoadedResource, view),
+            resource=view,
             start=cast(FullPattern, node),
             grammars=tuple(self.grammars),
             findings=tuple(self.findings),

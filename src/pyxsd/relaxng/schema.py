@@ -55,14 +55,14 @@ from pyxsd.relaxng.evidence import EvidenceGraph, build_binding_evidence
 from pyxsd.relaxng.limits import BudgetCounter, RelaxNGLimits
 from pyxsd.relaxng.patterns import Data, DataExcept, Pattern, PatternPool, Ref
 from pyxsd.relaxng.projection import ProjectionPlan, plan_projections
+from pyxsd.relaxng.readers import SchemaSyntax, read_schema_syntax, select_root_syntax
 from pyxsd.relaxng.resources import (
-    LoadedResource,
     ResourceDependency,
     ResourceLoader,
     ResourceSource,
 )
 from pyxsd.relaxng.simplify import CompiledGrammar, Simplifier, compose_grammars
-from pyxsd.relaxng.syntax import SchemaFinding, read_full_syntax
+from pyxsd.relaxng.syntax import SchemaFinding
 from pyxsd.relaxng.tree import NodeContext, RelaxNGElement
 from pyxsd.relaxng.validator import validate_element_recovering
 from pyxsd.resource_policy import (
@@ -378,13 +378,14 @@ class RelaxNGSchema:
         cls,
         source: ResourceSource,
         *,
+        syntax: SchemaSyntax = "auto",
         datatype_libraries: Mapping[str, DatatypeLibraryRegistration] | None = None,
         resource_policy: ResourcePolicy | None = None,
         xml_policy: XmlParserPolicy | None = None,
         xml_limits: XmlLimits | None = None,
         limits: RelaxNGLimits | None = None,
     ) -> RelaxNGSchema:
-        """Compile one RELAX NG 1.0 XML-syntax schema.
+        """Compile one RELAX NG 1.0 schema in XML or compact syntax.
 
         - ``source`` is a local path or a readable text/binary stream.  Remote
           resources require an authorizing
@@ -392,14 +393,25 @@ class RelaxNGSchema:
           ``Element`` is deliberately not accepted because it cannot carry
           policy parser evidence.
 
+        - ``syntax`` selects the root frontend.  ``"auto"`` (the default)
+          selects compact only for a named root whose path component ends in
+          ``.rnc``, case-insensitively; URL query and fragment components do
+          not participate.  Anonymous streams and every other named source stay
+          XML.  ``"xml"`` and ``"compact"`` are explicit overrides.  Every
+          include and external dependency inherits the root syntax regardless
+          of its own suffix, so one closure never mixes the two frontends.
+
         - ``datatype_libraries`` maps library URIs to application
           registrations.  It augments the built-in and XSD libraries and may
           replace a nonreserved library; reserved identities cannot change.
 
         - ``resource_policy`` is a trusted application policy whose ``read``
           and ``parse`` own every resource read, including includes and
-          external references.  ``xml_policy`` and ``xml_limits`` configure
-          parsing only without a policy and cannot be combined with one.
+          external references.  A compact resource uses only the policy's
+          ``read`` admission; its XML ``parse`` is never called for compact
+          bytes.  ``xml_policy`` and ``xml_limits`` configure XML parsing only
+          without a policy and cannot be combined with one; together with a
+          compact root they are rejected before input is read.
 
         - ``limits`` bounds schema-side compiler work.  ``None`` leaves every
           budget unlimited; exhaustion of a work budget raises
@@ -407,38 +419,46 @@ class RelaxNGSchema:
           ``max_diagnostics`` only bounds report retention, further tightening
           any policy report bound: beyond it, findings stay counted but are not
           retained, so ``suppressed_count`` exposes the incomplete report and
-          ``diagnostics_complete`` is false.  Truncation never raises a limit
-          error or removes an invalid verdict.
+          ``diagnostics_complete`` is false.  ``max_compact_tokens`` is
+          cumulative across the root and every nested compact resource, and
+          ``max_compact_depth`` is a high-water observation.  Truncation never
+          raises a limit error or removes an invalid verdict.
 
         Grammatical errors are recorded on :attr:`report` instead of raising.
+        A malformed compact root raises
+        :class:`~pyxsd.relaxng.errors.RelaxNGCompactSyntaxError`; a malformed
+        nested compact resource is a schema finding at its exact location.
         Unreadable or malformed input and unsupported capabilities raise
         :class:`~pyxsd.exceptions.PyXSDError` or a more specific
         :class:`~pyxsd.exceptions.PyXSDError` subclass.
         """
+        root_syntax = select_root_syntax(source, syntax)
+        if root_syntax == "compact" and (xml_policy is not None or xml_limits is not None):
+            raise ValueError("xml_policy and xml_limits do not apply to RELAX NG compact syntax")
         reject_parser_override(resource_policy, xml_policy, xml_limits)
         if limits is not None and not isinstance(limits, RelaxNGLimits):
             raise TypeError("limits must be a RelaxNGLimits value or None")
         effective_limits = limits if limits is not None else RelaxNGLimits()
+        budget = BudgetCounter("compile", effective_limits)
         registry = _datatype_registry(datatype_libraries)
         loader = ResourceLoader(resource_policy, xml_policy=xml_policy, xml_limits=xml_limits)
         with policy_compilation(resource_policy, root_read=is_root_read_source(source)):
             try:
-                resource = loader.load(source)
+                resource = loader.load(source, syntax=root_syntax)
             except OSError as exc:
                 raise PyXSDError(f"the schema file could not be opened: {exc}") from exc
             except ET.ParseError as exc:
                 raise PyXSDError(f"the schema file is not well-formed XML: {exc}") from exc
             report = new_validation_report(resource_policy)
             compiler_report = _SchemaReport(report, effective_limits.max_diagnostics)
-            # Reader dispatch arrives in Task 6; the root is XML until then.
-            full = read_full_syntax(cast(LoadedResource, resource))
+            full = read_schema_syntax(resource, budget=budget)
             _record_reader_findings(compiler_report, full.findings)
             bundle = Simplifier(
                 compiler_report,
-                PatternPool(BudgetCounter("compile", effective_limits)),
+                PatternPool(budget),
                 registry,
             ).simplify(full)
-            compiled = compose_grammars(bundle, loader)
+            compiled = compose_grammars(bundle, loader, budget=budget)
             check_compiled_grammar(compiled, compiler_report)
         report._set_diagnostics_complete(report.suppressed_count == 0)
         schema = cls(
