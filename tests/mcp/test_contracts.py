@@ -212,11 +212,40 @@ def test_core_descriptions_and_xsd_values_have_explicit_encodings():
     )
     assert encode_value(QName("p:name")) == "p:name"
     location = IssueLocation("a.xml", (PathStep("{urn:x/y}r", 1),))
-    assert encode_value(location) == {
+    encoded = encode_value(location)
+    assert list(encoded) == ["source", "path", "attribute"]
+    assert encoded == {
         "source": "a.xml",
         "path": [{"name": "{urn:x/y}r", "index": 1}],
         "attribute": None,
     }
+
+
+def test_spanned_location_encodes_its_span_only_when_present():
+    from pyxsd.locations import IssueLocation, PathStep, SourceTextSpan
+    from pyxsd.mcp.encoding import encode_value
+
+    span = SourceTextSpan(start=4, end=9, line=2, column=4, end_line=2, end_column=9)
+    location = IssueLocation("schema.rnc", (PathStep("start", 1),), span=span)
+
+    encoded = encode_value(location)
+    assert list(encoded) == ["source", "path", "attribute", "span"]
+    assert encoded == {
+        "source": "schema.rnc",
+        "path": [{"name": "start", "index": 1}],
+        "attribute": None,
+        "span": {
+            "start": 4,
+            "end": 9,
+            "line": 2,
+            "column": 4,
+            "end_line": 2,
+            "end_column": 9,
+        },
+    }
+    encoded_span = encode_value(span)
+    assert list(encoded_span) == ["start", "end", "line", "column", "end_line", "end_column"]
+    assert encoded_span == encoded["span"]
 
 
 @pytest.mark.parametrize(
