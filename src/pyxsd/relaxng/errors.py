@@ -12,12 +12,70 @@ may catch either the specific contract or the common family.
 from __future__ import annotations
 
 from pyxsd.exceptions import PyXSDError
+from pyxsd.locations import IssueLocation
 
 __all__ = [
     "AmbiguousValueError",
+    "RelaxNGCompactSyntaxError",
     "RelaxNGLimitError",
     "StaleInterpretationError",
 ]
+
+
+class RelaxNGCompactSyntaxError(PyXSDError):
+    """A compact-syntax source could not be read into a schema.
+
+    Lexical, escape, tokenization, and unrecoverable grammar failures raise
+    this exception. ``location`` is the exact source occurrence when known,
+    ``found`` describes the offending token, and ``expected`` lists the tokens
+    that would have been accepted. The string form starts with
+    ``source:line:column`` when span evidence is available.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        location: IssueLocation | None = None,
+        found: str | None = None,
+        expected: tuple[str, ...] = (),
+    ) -> None:
+        self._location = location
+        self._found = found
+        self._expected = tuple(sorted(expected))
+        super().__init__(self._render(message))
+
+    @property
+    def location(self) -> IssueLocation | None:
+        """The source occurrence where the failure was detected."""
+        return self._location
+
+    @property
+    def found(self) -> str | None:
+        """A description of the token that was found, when known."""
+        return self._found
+
+    @property
+    def expected(self) -> tuple[str, ...]:
+        """Descriptions of acceptable tokens, sorted deterministically."""
+        return self._expected
+
+    def _render(self, message: str) -> str:
+        details = [message]
+        if self._found is not None:
+            details.append(f"found {self._found}")
+        if self._expected:
+            details.append(f"expected {', '.join(self._expected)}")
+        description = "; ".join(details)
+        location = self._location
+        if location is None:
+            return description
+        span = location.span
+        if span is None:
+            return description
+        if location.source is None:
+            return f"{span.line}:{span.column}: {description}"
+        return f"{location.source}:{span.line}:{span.column}: {description}"
 
 
 class RelaxNGLimitError(PyXSDError):

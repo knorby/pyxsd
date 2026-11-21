@@ -28,6 +28,7 @@ from pyxsd.relaxng import (
     RelaxNGSchema,
 )
 from pyxsd.relaxng.datatypes import DatatypeContext
+from pyxsd.relaxng.limits import BudgetCounter
 from pyxsd.relaxng.names import Name
 from pyxsd.relaxng.patterns import (
     Attribute,
@@ -699,3 +700,65 @@ def test_recovery_projection_reuses_shared_memo_and_shared_operands() -> None:
     expected = validator._without_attributes(shared)
     result = validator._without_attributes(Group(shared, shared))
     assert result == Group(expected, expected)
+
+
+def test_compact_budgets_default_to_none_and_reject_invalid_values() -> None:
+    limits = RelaxNGLimits()
+
+    assert limits.max_compact_tokens is None
+    assert limits.max_compact_depth is None
+    for name in ("max_compact_tokens", "max_compact_depth"):
+        for bad in (True, -1, 1.5, "2"):
+            with pytest.raises(ValueError, match=name):
+                RelaxNGLimits(**{name: bad})
+
+
+def test_observe_accepts_the_configured_depth_and_raises_one_above() -> None:
+    counter = BudgetCounter("compile", RelaxNGLimits(max_compact_depth=3))
+
+    counter.observe("max_compact_depth", 3)
+    counter.observe("max_compact_depth", 0)
+    with pytest.raises(RelaxNGLimitError) as caught:
+        counter.observe("max_compact_depth", 4)
+
+    assert (
+        caught.value.stage,
+        caught.value.budget,
+        caught.value.configured,
+        caught.value.observed,
+    ) == ("compile", "max_compact_depth", 3, 4)
+
+
+def test_observe_is_a_high_water_check_not_a_cumulative_charge() -> None:
+    counter = BudgetCounter(
+        "compile",
+        RelaxNGLimits(max_compact_tokens=4, max_compact_depth=2),
+    )
+
+    counter.observe("max_compact_depth", 2)
+    counter.observe("max_compact_depth", 2)
+    for _ in range(4):
+        counter.consume("max_compact_tokens")
+    with pytest.raises(RelaxNGLimitError) as caught:
+        counter.consume("max_compact_tokens")
+
+    assert caught.value.observed == 5
+
+
+def test_observe_without_a_configured_budget_has_no_bound() -> None:
+    BudgetCounter("compile", None).observe("max_compact_depth", 10_000)
+    BudgetCounter("compile", RelaxNGLimits()).observe("max_compact_depth", 10_000)
+
+
+def test_observe_rejects_an_unknown_budget_name() -> None:
+    with pytest.raises(ValueError, match="unknown"):
+        BudgetCounter("compile", RelaxNGLimits()).observe("max_nodes", 1)
+
+
+@pytest.mark.parametrize("observed", [True, False, -1, 1.0, "1"])
+def test_observe_rejects_invalid_depths(observed: object) -> None:
+    with pytest.raises(ValueError, match="observed"):
+        BudgetCounter("compile", RelaxNGLimits()).observe(
+            "max_compact_depth",
+            observed,  # type: ignore[arg-type]
+        )

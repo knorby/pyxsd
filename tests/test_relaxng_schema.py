@@ -977,6 +977,7 @@ def test_the_relaxng_package_exposes_the_real_compile_entry_point():
         "AmbiguousValueError",
         "ListInterpretation",
         "NodeAnnotations",
+        "RelaxNGCompactSyntaxError",
         "RelaxNGComponentDescription",
         "RelaxNGDocument",
         "RelaxNGElement",

@@ -6,7 +6,7 @@ namespace URIs may themselves contain slashes. Addresses describe one parse.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 LocationPrecision = Literal["exact", "container", "component", "unknown"]
@@ -21,12 +21,34 @@ class PathStep:
 
 
 @dataclass(frozen=True)
+class SourceTextSpan:
+    """A half-open character range in original source text.
+
+    Offsets are zero-based original characters; ``end`` points one past the
+    last included character. Lines and columns are one-based, and ``end_line``
+    and ``end_column`` use the same half-open convention as ``end``.
+    """
+
+    start: int
+    end: int
+    line: int
+    column: int
+    end_line: int
+    end_column: int
+
+
+@dataclass(frozen=True)
 class IssueLocation:
-    """A source occurrence, optionally identifying one expanded attribute name."""
+    """A source occurrence, optionally identifying one expanded attribute name.
+
+    ``span`` carries exact original-text evidence for textual sources; XML
+    occurrences that have only a path leave it ``None``.
+    """
 
     source: str | None
     path: tuple[PathStep, ...]
     attribute: str | None = None
+    span: SourceTextSpan | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)

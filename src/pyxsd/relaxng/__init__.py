@@ -9,6 +9,7 @@ from pyxsd.relaxng.annotations import NodeAnnotations, ScalarAnnotation
 from pyxsd.relaxng.document import RelaxNGDocument
 from pyxsd.relaxng.errors import (
     AmbiguousValueError,
+    RelaxNGCompactSyntaxError,
     RelaxNGLimitError,
     StaleInterpretationError,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "CandidateSelection",
     "ListInterpretation",
     "NodeAnnotations",
+    "RelaxNGCompactSyntaxError",
     "RelaxNGComponentDescription",
     "RelaxNGDocument",
     "RelaxNGElement",
