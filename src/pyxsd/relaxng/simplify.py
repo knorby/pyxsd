@@ -1248,8 +1248,13 @@ class _Composer:
             self.error("relaxng-missing-href", "a resource reference needs an href", origins)
             return None
         try:
-            resource = self.loader.resolve(
-                reference.href, containing, reference.base, location=_location(origins)
+            # Reader dispatch arrives in Task 6; an XML containing resource
+            # still resolves an XML dependency until then.
+            resource = cast(
+                LoadedResource,
+                self.loader.resolve(
+                    reference.href, containing, reference.base, location=_location(origins)
+                ),
             )
         except (OSError, ParseError, ResourcePolicyError) as exc:
             self.error("relaxng-resource-read", str(exc), origins)

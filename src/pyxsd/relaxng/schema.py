@@ -55,7 +55,12 @@ from pyxsd.relaxng.evidence import EvidenceGraph, build_binding_evidence
 from pyxsd.relaxng.limits import BudgetCounter, RelaxNGLimits
 from pyxsd.relaxng.patterns import Data, DataExcept, Pattern, PatternPool, Ref
 from pyxsd.relaxng.projection import ProjectionPlan, plan_projections
-from pyxsd.relaxng.resources import ResourceDependency, ResourceLoader, ResourceSource
+from pyxsd.relaxng.resources import (
+    LoadedResource,
+    ResourceDependency,
+    ResourceLoader,
+    ResourceSource,
+)
 from pyxsd.relaxng.simplify import CompiledGrammar, Simplifier, compose_grammars
 from pyxsd.relaxng.syntax import SchemaFinding, read_full_syntax
 from pyxsd.relaxng.tree import NodeContext, RelaxNGElement
@@ -425,7 +430,8 @@ class RelaxNGSchema:
                 raise PyXSDError(f"the schema file is not well-formed XML: {exc}") from exc
             report = new_validation_report(resource_policy)
             compiler_report = _SchemaReport(report, effective_limits.max_diagnostics)
-            full = read_full_syntax(resource)
+            # Reader dispatch arrives in Task 6; the root is XML until then.
+            full = read_full_syntax(cast(LoadedResource, resource))
             _record_reader_findings(compiler_report, full.findings)
             bundle = Simplifier(
                 compiler_report,
