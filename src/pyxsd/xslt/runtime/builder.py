@@ -337,6 +337,7 @@ def _element_prefix(
     available: Mapping[str, str] | None = None,
     *,
     requested: str | None,
+    force_requested: bool = False,
 ) -> str:
     """Select one element prefix, preferring the name's lexical prefix.
 
@@ -344,12 +345,21 @@ def _element_prefix(
     *namespace*; otherwise a copied default or prefix is selected, then an
     available (excluded or aliased) binding, and a deterministic prefix is
     generated as a last resort.
+
+    ``force_requested`` gives the prefix of an ``xsl:element`` name priority
+    over a conflicting in-scope binding: the lexical prefix part of the
+    expanded QName is copied, and namespace fixup rebinds it on the new
+    element (XSLT 3.0 §11.2.2).  The reserved ``xml``/``xmlns`` prefixes are
+    never rebound to another namespace; those are true fixup conflicts.
     """
     if namespace is None:
         return ""
     if namespace == XML_NS:
         scope.setdefault("xml", XML_NS)
         return "xml"
+    if force_requested and requested is not None and requested not in ("xml", "xmlns"):
+        scope[requested] = namespace
+        return requested
     bindings = scope if available is None else available
     if requested is not None and bindings.get(requested) == namespace:
         return _bind_prefix(scope, namespace, requested, is_attribute=False)
@@ -548,6 +558,7 @@ class _NodeFactory:
         namespace_alias_rules: Iterable[NamespaceAlias] = (),
         annotation: XdmAnnotation | None = None,
         prefix: str | None = None,
+        force_prefix: bool = False,
     ) -> XdmNode:
         """Create one detached element with namespace fixup applied.
 
@@ -559,7 +570,8 @@ class _NodeFactory:
         written on the literal result element itself.  ``attribute_set_attributes``
         come from ``xsl:attribute`` and keep their expanded names unchanged.
         ``namespace_aliases`` remains the low-level prefix-remap form of the
-        direct builder API.
+        direct builder API.  ``force_prefix`` gives ``prefix`` the priority of
+        an ``xsl:element`` lexical name over a conflicting in-scope binding.
         """
         raw_namespaces = _aliased_namespaces(namespaces, namespace_aliases)
         element_namespace, element_local = _expanded_name(name, code="XTDE0820")
@@ -597,6 +609,7 @@ class _NodeFactory:
                 (_clark(effective_namespace, attribute_local), value, selected)
             )
         requested_element_prefix = prepared.preferred_prefix(element_namespace)
+        aliased_element = requested_element_prefix is not None
         if requested_element_prefix is None:
             requested_element_prefix = prefix
         selected_prefix = _element_prefix(
@@ -604,6 +617,7 @@ class _NodeFactory:
             scope,
             prepared.available_bindings,
             requested=requested_element_prefix,
+            force_requested=force_prefix or aliased_element,
         )
         scope = _ordered_scope(scope, prepared.available_bindings)
         declarations = _declarations(scope)
@@ -1355,6 +1369,7 @@ class ResultBuilder:
         base_uri: str | None = None,
         annotation: XdmAnnotation | None = None,
         prefix: str | None = None,
+        force_prefix: bool = False,
         inherit_namespaces: bool = True,
     ) -> XdmNode:
         """Construct an element under the current parent and open it."""
@@ -1378,6 +1393,7 @@ class ResultBuilder:
             namespace_alias_rules=namespace_alias_rules,
             annotation=annotation,
             prefix=prefix,
+            force_prefix=force_prefix,
         )
         self._attach_existing(parent, element, inherit_namespaces=inherit_namespaces)
         self._stack.append(element)

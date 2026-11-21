@@ -422,6 +422,98 @@ def test_literal_result_element_keeps_its_lexical_prefix() -> None:
     )
 
 
+def test_xsl_element_uses_the_default_prefix_for_an_unprefixed_name() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xmlns="urn:outer">
+            <xsl:element name="item" namespace="urn:item"/>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    item = result.principal_tree.root_element.children[0]
+    assert item.prefix == ""
+    assert item.namespace_uri == "urn:item"
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<out xmlns="urn:outer"><item xmlns="urn:item"/></out>'
+    )
+
+
+def test_xsl_element_rebinds_the_requested_lexical_prefix() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xmlns:p="urn:outer">
+            <xsl:element name="p:item" namespace="urn:item"/>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    item = result.principal_tree.root_element.children[0]
+    assert item.prefix == "p"
+    assert item.namespace_uri == "urn:item"
+    assert dict(item.in_scope_namespaces)["p"] == "urn:item"
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<out xmlns:p="urn:outer"><p:item xmlns:p="urn:item"/></out>'
+    )
+
+
+def test_xsl_element_does_not_copy_stylesheet_namespaces() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out>
+            <xsl:element name="item" xmlns:unused="urn:unused"/>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    item = result.principal_tree.root_element.children[0]
+    assert "unused" not in item.in_scope_namespaces
+    assert "xsl" not in item.in_scope_namespaces
+    assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><out><item/></out>')
+
+
+def test_literal_result_element_keeps_unprefixed_standard_attribute_names() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out version="1.0" default-collation="urn:c"><xsl:element name="in"/></out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert [attribute.name for attribute in out.attributes] == [
+        "version",
+        "default-collation",
+    ]
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<out version="1.0" default-collation="urn:c"><in/></out>'
+    )
+
+
+def test_literal_result_element_drops_xslt_standard_attributes() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xsl:version="1.0" xsl:expand-text="no"/>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert out.attributes == ()
+    assert result.serialize() == '<?xml version="1.0" encoding="UTF-8"?><out/>'
+
+
 def test_literal_result_prefix_is_visible_to_name() -> None:
     result = _transform(
         """
@@ -663,6 +755,31 @@ def test_namespace_alias_to_the_null_default_namespace() -> None:
     assert out.attributes[0].prefix == ""
     assert _declarations(out) == {}
     assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><foo bar="baz"/>')
+
+
+def test_namespace_alias_result_prefix_rebinds_per_literal() -> None:
+    result = _transform(
+        """
+        <xsl:namespace-alias stylesheet-prefix="f1" result-prefix="bar"
+            xmlns:f1="urn:f1" xmlns:bar="urn:bar1"/>
+        <xsl:namespace-alias stylesheet-prefix="f2" result-prefix="bar"
+            xmlns:f2="urn:f2" xmlns:bar="urn:bar2"/>
+        <xsl:template name="main">
+          <out><one xmlns="urn:f1"/><two xmlns="urn:f2"/></out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    one, two = out.children
+    assert one.prefix == "bar"
+    assert one.namespace_uri == "urn:bar1"
+    assert two.prefix == "bar"
+    assert two.namespace_uri == "urn:bar2"
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<out><bar:one xmlns:bar="urn:bar1"/><bar:two xmlns:bar="urn:bar2"/></out>'
+    )
 
 
 def test_namespace_alias_copies_a_target_uri_even_when_excluded() -> None:

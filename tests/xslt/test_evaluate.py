@@ -631,6 +631,41 @@ def test_xpath_default_namespace_applies_to_the_target_expression() -> None:
     assert result.principal == (XdmAtomic.string("urn:def"),)
 
 
+def test_the_stylesheet_default_namespace_does_not_apply_to_xpath_names() -> None:
+    """The default ``xmlns`` names literal result elements, not XPath names.
+
+    XSLT 3.0 sections 3.7 and 5.3.1: unprefixed names in an XPath expression
+    use ``xpath-default-namespace`` when it is declared, and otherwise have no
+    namespace; the stylesheet's own default namespace never applies.
+    """
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="count(/*/item)"/>
+          <xsl:sequence select="count(/*/*)"/>
+        </xsl:template>
+        """,
+        attributes=' xmlns="urn:def"',
+    )
+    result = transform(source, b"<root><item/></root>", initial_template="main")
+    assert result.principal == (XdmAtomic.integer(1), XdmAtomic.integer(1))
+
+    declared = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="count(/*/item)"/>
+        </xsl:template>
+        """,
+        attributes=' xmlns="urn:def" xpath-default-namespace="urn:def"',
+    )
+    result = transform(
+        declared,
+        b'<root xmlns="urn:def"><item/></root>',
+        initial_template="main",
+    )
+    assert result.principal == (XdmAtomic.integer(1),)
+
+
 def test_base_uri_is_an_attribute_value_template() -> None:
     source = stylesheet(
         """

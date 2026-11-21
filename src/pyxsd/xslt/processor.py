@@ -332,21 +332,6 @@ _QNAME_LIST_OUTPUT_ATTRIBUTES = frozenset(
 UNTYPED_TYPE = "{http://www.w3.org/2001/XMLSchema}untyped"
 ANY_TYPE = "{http://www.w3.org/2001/XMLSchema}anyType"
 
-#: Literal-result attributes whose names are XSLT-defined metadata, not output.
-_LITERAL_XSLT_ATTRIBUTES = frozenset(
-    {
-        "default-collation",
-        "default-validation",
-        "exclude-result-prefixes",
-        "expand-text",
-        "extension-element-prefixes",
-        "input-type-annotations",
-        "use-when",
-        "version",
-        "xpath-default-namespace",
-    }
-)
-
 #: Every element name defined by the XSLT 3.0 schema.  A child in the XSLT
 #: namespace outside this set is a forwards-compatible candidate, not one of the
 #: known instructions this runtime intentionally reports as unimplemented.
@@ -4027,8 +4012,6 @@ def _compile_literal_result(
     attributes: list[tuple[str, str | CompiledValueTemplate]] = []
     for attribute in instruction.attributes:
         if attribute.namespace_uri == XSLT_NS:
-            continue
-        if attribute.namespace_uri is None and attribute.name in _LITERAL_XSLT_ATTRIBUTES:
             continue
         attributes.append(
             (

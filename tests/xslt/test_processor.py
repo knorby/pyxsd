@@ -1513,7 +1513,9 @@ def test_declaration_expand_text_and_literal_metadata_attributes() -> None:
     element = _element_children(document)[0]
 
     assert text.string_value == "2"
-    assert [attribute.name for attribute in element.attributes] == ["x"]
+    # An unprefixed `version` is an ordinary literal attribute; only an
+    # xsl:version standard attribute is metadata of the result element.
+    assert [attribute.name for attribute in element.attributes] == ["version", "x"]
 
 
 def test_exclude_all_keeps_namespaces_that_are_used() -> None:

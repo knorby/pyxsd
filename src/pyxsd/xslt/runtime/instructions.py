@@ -834,6 +834,20 @@ def _constructed_qname(
     return text
 
 
+def _lexical_prefix(lexical: str) -> str:
+    """The prefix an ``xsl:element`` lexical name contributes to its name.
+
+    XSLT 3.0 §11.2.2 copies the prefix of the lexical QName in ``name`` (or
+    its absence) to the expanded QName.  An EQName or Clark name carries no
+    prefix.  The caller has already validated the name.
+    """
+    text = lexical.strip()
+    if text.startswith("Q{") or text.startswith("{"):
+        return ""
+    prefix, separator, _ = text.partition(":")
+    return prefix if separator else ""
+
+
 def _diagnostic_error_code(
     value: str, namespaces: Mapping[str, str], *, default: str = "XTMM9001"
 ) -> str:
@@ -1242,8 +1256,9 @@ def element_value(
         builder.element(
             name,
             attributes=tuple(attributes),
-            namespaces=dict(plan.namespaces),
             base_uri=plan.instruction.base_uri,
+            prefix=_lexical_prefix(lexical),
+            force_prefix=True,
             inherit_namespaces=plan.inherit_namespaces,
         )
         builder.append(

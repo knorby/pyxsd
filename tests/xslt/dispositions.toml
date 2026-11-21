@@ -13,8 +13,11 @@
 # - Categories come from the closed vocabulary: declared-non-goal,
 #   implementation-gap, adapter-limit, platform-limit, queried-corpus,
 #   spec-correct-divergence, performance-budget.
-# - Seeds arrive with each profile's census. xslt20 and xslt30 stay unseeded
-#   until their censuses are adjudicated; do not invent case IDs.
+# - The namespace-family censuses for all three profiles were adjudicated by
+#   the XSLT namespace/XDM correction: every remaining non-passing case in
+#   `namespace/` and `namespace-alias/` names an entry here, and
+#   `test_every_namespace_family_residual_is_adjudicated` keeps it that way.
+#   New case IDs arrive with a reviewed census, never by guessing.
 
 # Adjudication: docs/superpowers/sdd/2026-11-15-xslt-adapter-gap-closure/task-7-brief.md
 # The harness executes local resource declarations; it refuses only a text
@@ -62,6 +65,208 @@ profiles = ["xslt30", "xslt20"]
 cases = ["key/key-085a", "key/key-085b"]
 reason = "Two role='.' sources reach suite._context_source because _merge_environments concatenates sources; the catalog runner's get-source-documents mode applies them in document order and keeps the last, so merging sources by role/URI would close these."
 links = ["https://github.com/w3c/xslt30-test/blob/master/runner/run-tests.xsl"]
+
+# The checked-in namespace-family residuals are adjudicated below by root
+# cause.  These entries are active only while the named cases stay failing;
+# a case that starts passing leaves the active view without an edit.
+
+# The assertion substrate evaluates XPath against an ElementTree view of the
+# serialized result.  ElementTree cannot represent namespace nodes or a
+# lexical prefix mapping, so an assertion that walks `namespace::` or asks
+# `name()` of a result-tree attribute has no namespace information to read,
+# even though the engine result tree carries it in `result_items`.
+[[dispositions]]
+id = "result-tree-namespace-nodes-invisible-to-xpath-assertions"
+title = "XPath assertions cannot see namespace nodes of the result tree"
+category = "adapter-limit"
+profiles = ["xslt30", "xslt20"]
+cases = [
+  "namespace/namespace-0201",
+  "namespace/namespace-0911",
+  "namespace/namespace-2001",
+  "namespace/namespace-2101",
+  "namespace/namespace-3301",
+  "namespace/namespace-3314",
+  "namespace/namespace-4302",
+]
+reason = "The assertion layer reparses the serialized principal result through ElementTree, which keeps neither namespace nodes nor the lexical prefix mapping; the engine's own result tree carries both. Moving XPath assertions onto the engine node substrate is a harness change outside this namespace/XDM correction."
+links = [
+  "https://www.w3.org/TR/xpath-datamodel-31/#const-global-names",
+  "https://www.w3.org/TR/xpath-31/#axes",
+]
+
+[[dispositions]]
+id = "result-tree-namespace-nodes-invisible-to-xpath-assertions-xslt10"
+title = "XPath 1.0 assertions cannot see namespace nodes of the result tree"
+category = "adapter-limit"
+profiles = ["xslt10"]
+cases = ["namespace/namespace-4302"]
+reason = "The assertion layer reparses the serialized principal result through ElementTree, which keeps no namespace nodes, so `/out/namespace::s` cannot see the engine's namespace node. The engine result tree carries the node; the assertion substrate does not."
+links = [
+  "https://www.w3.org/TR/xpath-datamodel-31/#const-global-names",
+  "https://www.w3.org/TR/xpath/#node-sets",
+]
+
+# `namespace::*` and `namespace::p` select from the element's namespace nodes,
+# but elementpath's namespace-axis implementation treats the `node()` kind test
+# as a prefix test, so `namespace::node()` selects nothing.  The axis itself and
+# the prefix tests are correct; the substrate's node test is the limit.
+[[dispositions]]
+id = "namespace-axis-node-kind-test"
+title = "the assertion substrate's namespace axis does not implement node()"
+category = "adapter-limit"
+profiles = ["xslt30", "xslt20"]
+cases = ["namespace/namespace-0901", "namespace/namespace-0908"]
+reason = "The namespace axis itself returns the element's namespace nodes (`namespace::*` and `namespace::p` pass), but the ElementPath namespace-axis token compares a `node()` kind test as if it were a prefix name, so `namespace::node()` yields an empty sequence."
+links = [
+  "https://www.w3.org/TR/xpath-31/#node-tests",
+  "https://www.w3.org/TR/xpath-31/#axes",
+]
+
+# XSLT 3.0 section 11.1.4 aliases a null literal namespace URI to attributes
+# in no namespace as well as to elements.  The W3C expectations keep the
+# unprefixed attribute untranslated (W3C bug 30397), so both cases fail on the
+# attribute namespace rather than on the element name.
+[[dispositions]]
+id = "namespace-alias-null-namespace-literal-attributes"
+title = "null-namespace alias also applies to unprefixed literal attributes"
+category = "spec-correct-divergence"
+profiles = ["xslt30", "xslt20"]
+cases = [
+  "namespace-alias/namespace-alias-1901",
+  "namespace-alias/namespace-alias-1904",
+]
+reason = "With stylesheet-prefix=\"#default\" and no default namespace, the literal alias URI is null. XSLT 3.0 section 11.1.4 applies aliasing to the expanded QName of an attribute on a literal result element, and names in no namespace are in that literal set, so `proc`/`name` become `xsl:proc`/`xsl:name`. The corpus expectations keep them untranslated (W3C bug 30397)."
+links = [
+  "https://www.w3.org/TR/xslt-30/#namespace-aliasing",
+  "https://www.w3.org/Bugs/Public/show_bug.cgi?id=30397",
+]
+
+# Namespace fixup may choose any prefix; the corpus expectations compare the
+# reference processor's `ns_0`/`p_0` names.
+[[dispositions]]
+id = "generated-prefix-labels-are-implementation-defined"
+title = "generated prefix labels differ from the reference processor's convention"
+category = "spec-correct-divergence"
+profiles = ["xslt30", "xslt20"]
+cases = [
+  "namespace-alias/namespace-alias-1903",
+  "namespace/namespace-2614",
+]
+reason = "XSLT 3.0 section 5.7.3 permits any prefix the fixup process can bind, and this engine generates `ns1` where the reference processor generates `ns_0`/`p_0`. Element names, namespace URIs, and declarations agree; only an implementation-defined prefix label differs."
+links = [
+  "https://www.w3.org/TR/xslt-30/#namespace-fixup",
+  "https://www.w3.org/TR/xml-names/",
+]
+
+# Section 5.7.3 explicitly allows the element prefix to be changed during
+# fixup.  This engine keeps the xsl:namespace binding and renames the element
+# prefix; the corpus expects XTDE0430.  The reviewed builder contract pins the
+# fixup reading, so the case is a documented divergence rather than a defect.
+[[dispositions]]
+id = "namespace-conflict-prefix-fixup"
+title = "a conflicting namespace node renames the element prefix instead of XTDE0430"
+category = "spec-correct-divergence"
+profiles = ["xslt30", "xslt20"]
+cases = ["namespace/namespace-2618"]
+reason = "XSLT 3.0 section 5.7.3 lets namespace fixup change an element prefix and says fixup cannot produce nodes inconsistent with those already present. The engine keeps the explicitly created `p` binding and renames the element's prefix, while the corpus expects XTDE0430; the builder contract pins the fixup reading."
+links = [
+  "https://www.w3.org/TR/xslt-30/#namespace-fixup",
+  "https://www.w3.org/TR/xslt-30/#creating-namespace-nodes",
+]
+
+[[dispositions]]
+id = "undeclared-fn-prefix-is-not-a-static-error"
+title = "the `fn` prefix is supplied implicitly instead of requiring a declaration"
+category = "implementation-gap"
+profiles = ["xslt30", "xslt20", "xslt10"]
+cases = ["namespace/namespace-6202"]
+reason = "The expression writes `fn:current-dateTime()` without declaring `fn`. A statically known namespace set that omits it must report XPST0081; this engine supplies `fn` (and `xs`/`xsl`) implicitly, so the 3.0/2.0 profiles run the call and the 1.0 profile reports XPST0017 for the resulting unknown function."
+links = [
+  "https://www.w3.org/TR/xpath-31/#static_context",
+  "https://www.w3.org/TR/xpath/#section-Expression-Grammar",
+]
+
+[[dispositions]]
+id = "boolean-sort-keys-are-not-ordered"
+title = "boolean sort keys are rejected instead of ordered"
+category = "implementation-gap"
+profiles = ["xslt30", "xslt20"]
+cases = ["namespace/namespace-0501"]
+reason = "The case sorts on `. instance of element()`. F&O 3.1 defines op:boolean-less-than, so xs:boolean values are orderable sort keys; this engine raises XTDE1030 (values of type boolean are not ordered)."
+links = [
+  "https://www.w3.org/TR/xpath-functions-31/#op-boolean-less-than",
+  "https://www.w3.org/TR/xslt-30/#element-sort",
+]
+
+[[dispositions]]
+id = "double-string-conversion-keeps-a-trailing-zero"
+title = "an xs:double result is written with a trailing `.0`"
+category = "implementation-gap"
+profiles = ["xslt30", "xslt20", "xslt10"]
+cases = ["namespace/namespace-1701"]
+reason = "`4 + .` with an untyped source value yields xs:double, and value-of uses a double lexical form (`5.0`) where the XPath string conversion requires the canonical form (`5`); the case's expected rows therefore differ from the actual rows even though namespace selection is correct."
+links = [
+  "https://www.w3.org/TR/xpath-functions-31/#casting-to-string",
+  "https://www.w3.org/TR/xpath-functions-31/#func-string",
+]
+
+[[dispositions]]
+id = "source-whitespace-siblings-enter-the-principal-sequence"
+title = "whitespace-only source siblings are copied into the principal result"
+category = "implementation-gap"
+profiles = ["xslt30", "xslt20", "xslt10"]
+cases = ["namespace/namespace-3401"]
+reason = "The source document's whitespace-only text siblings of the matched `a` element are copied by the built-in template rules, so the principal sequence begins with a text node while the corpus expectation is the `out` element alone. This is source-whitespace/built-in-rule behaviour, unrelated to namespace construction."
+links = [
+  "https://www.w3.org/TR/xslt-30/#built-in-templates",
+  "https://www.w3.org/TR/xslt-30/#element-strip-space",
+]
+
+# The native 2.0 profile deliberately does not implement the XSLT 3.0 xsl:mode
+# element; XSLT 2.0 has no mode declaration.
+[[dispositions]]
+id = "xslt20-profile-excludes-xsl-mode"
+title = "the native XSLT 2.0 profile does not implement xsl:mode"
+category = "declared-non-goal"
+profiles = ["xslt20"]
+cases = ["namespace/namespace-0912"]
+reason = "The case declares an xsl:mode; xsl:mode arrived with XSLT 3.0, and a native XSLT 2.0 processor rejects the element with XTSE0010. The 2.0 profile's declared surface is the authority for the refusal."
+links = [
+  "https://www.w3.org/TR/xslt-30/#element-mode",
+  "https://www.w3.org/TR/xslt20/",
+]
+
+# The native 1.0 profile deliberately excludes XSLT 2.0 instructions; an
+# unsupported instruction with no xsl:fallback is a static error.
+[[dispositions]]
+id = "xslt10-profile-excludes-xslt-2-0-instructions"
+title = "the native XSLT 1.0 profile rejects XSLT 2.0 instructions"
+category = "declared-non-goal"
+profiles = ["xslt10"]
+cases = [
+  "namespace/namespace-2614",
+  "namespace/namespace-2615",
+  "namespace-alias/namespace-alias-0902",
+]
+reason = "These cases use xsl:namespace or xsl:sequence, which XSLT 1.0 does not define; the native 1.0 profile reports the unsupported instruction and, without xsl:fallback, refuses the case. The 1.0 profile's declared surface is the authority."
+links = [
+  "https://www.w3.org/TR/xslt-30/#element-namespace",
+  "https://www.w3.org/TR/xslt-30/#element-sequence",
+]
+
+# XPath 1.0 has neither deep-equal nor `instance of`; both arrive with XPath 2.0.
+[[dispositions]]
+id = "xslt10-profile-excludes-xpath-2-0-syntax-and-functions"
+title = "the native XSLT 1.0 profile rejects XPath 2.0 syntax and functions"
+category = "declared-non-goal"
+profiles = ["xslt10"]
+cases = ["namespace/namespace-0501", "namespace/namespace-3005"]
+reason = "The cases use `instance of` and deep-equal(), neither of which exists in XPath 1.0; the 1.0 profile deliberately offers the XPath 1.0 grammar and function library, so the compilation fails as a profile limit."
+links = [
+  "https://www.w3.org/TR/xpath-31/#id-instance-of",
+  "https://www.w3.org/TR/xpath-functions-31/#func-deep-equal",
+]
 
 [[dispositions]]
 id = "result-variable-output-refused"

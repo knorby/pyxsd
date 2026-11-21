@@ -1253,6 +1253,20 @@ def test_stylesheet_delivery_serializes_a_text_only_xml_result() -> None:
     assert result.principal_entry.serialized == "just text"
 
 
+def test_a_foreign_namespace_output_attribute_is_ignored() -> None:
+    source = stylesheet(
+        '<xsl:output xmlns:ext="urn:ext" method="xml" '
+        'omit-xml-declaration="yes" ext:unknown="x"/>'
+        '<xsl:template name="xsl:initial-template"><out/></xsl:template>'
+    )
+
+    result = transform(source, delivery="stylesheet")
+
+    assert result.principal_entry.serialized == (
+        '<out xmlns:xs="http://www.w3.org/2001/XMLSchema"/>'
+    )
+
+
 def test_stylesheet_cdata_prefixed_qname_matches_a_namespaced_result() -> None:
     source = stylesheet(
         '<xsl:output xmlns:p="urn:p" method="xml" omit-xml-declaration="yes" '

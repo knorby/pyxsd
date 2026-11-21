@@ -61,6 +61,7 @@ __all__ = [
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
+XML_NS = "http://www.w3.org/XML/1998/namespace"
 FN_NS = "http://www.w3.org/2005/xpath-functions"
 
 
@@ -637,6 +638,8 @@ class XsltContextBridge:
             f"{{{FN_NS}}}namespace-uri-for-prefix": ContextFunction(
                 self._namespace_uri_for_prefix_function
             ),
+            f"{{{FN_NS}}}node-name": ContextFunction(self._node_name_function),
+            f"{{{FN_NS}}}resolve-QName": ContextFunction(self._resolve_qname_function),
             f"{{{FN_NS}}}unparsed-text": ContextFunction(self._unparsed_text_function),
             f"{{{FN_NS}}}unparsed-text-lines": ContextFunction(self._unparsed_text_lines_function),
             f"{{{FN_NS}}}collection": ContextFunction(self._collection_function),
@@ -1218,6 +1221,96 @@ class XsltContextBridge:
         uri = node.in_scope_namespaces.get(prefix)
         return () if uri is None else (XdmAtomic.string(uri),)
 
+    def _node_name_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """fn:node-name from the node's own lexical name.
+
+        The XDM node keeps the prefix its construction or copy selected, so
+        the returned QName does not depend on any static namespace map.  A
+        document, text, or comment node has no name; a processing instruction
+        contributes its target as a prefixless local name.
+        """
+        if arguments:
+            sequence = arguments[0]
+            if not sequence:
+                return ()
+            node = _single_node(sequence, "node-name")
+        else:
+            if context_item is None:
+                raise XsltDynamicError(
+                    "node-name requires a context item",
+                    code="XPDY0002",
+                )
+            if not isinstance(context_item, XdmNode):
+                raise XsltDynamicError(
+                    "node-name requires a node context item",
+                    code="XPTY0004",
+                )
+            node = context_item
+        if node.kind is NodeKind.PROCESSING_INSTRUCTION:
+            # XDM 3.1 section 6.5.2: the target is the local name and both
+            # the namespace URI and the prefix are empty.
+            target = node.target
+            assert target is not None
+            return (cast(XdmAtomic, as_xdm(QName("", target))[0]),)
+        if node.kind not in (NodeKind.ELEMENT, NodeKind.ATTRIBUTE, NodeKind.NAMESPACE):
+            return ()
+        local = node.local_name
+        if not local:
+            return ()
+        if node.kind is NodeKind.NAMESPACE:
+            # XDM 3.1 section 6.2: a namespace node's QName is its prefix as
+            # the local name, with no namespace URI and no prefix.
+            return (cast(XdmAtomic, as_xdm(QName("", local))[0]),)
+        prefix = node.prefix or ""
+        lexical = f"{prefix}:{local}" if prefix else local
+        return (cast(XdmAtomic, as_xdm(QName(node.namespace_uri or "", lexical))[0]),)
+
+    def _resolve_qname_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """fn:resolve-QName against the element's XDM namespace scope.
+
+        The first argument is atomized and cast to ``xs:string`` before the
+        lexical QName is parsed; an attribute node is a legal argument because
+        the elementpath built-in never applied that conversion.  An empty
+        first argument returns an empty sequence.  The prefix resolves from
+        the second argument's in-scope namespaces (F&O 3.1 section 5.1.2).
+        """
+        del context_item
+        lexical = _optional_atomic_string(arguments, 0, "resolve-QName")
+        if lexical is None:
+            return ()
+        element = _single_node(arguments[1] if len(arguments) > 1 else (), "resolve-QName")
+        if element.kind is not NodeKind.ELEMENT:
+            raise XsltDynamicError(
+                "resolve-QName requires an element node",
+                code="XPTY0004",
+            )
+        text = lexical.strip()
+        head, separator, tail = text.partition(":")
+        prefix, local = (head, tail) if separator else ("", head)
+        if not is_ncname(local) or (separator and not is_ncname(prefix)):
+            raise XsltDynamicError(
+                f"the lexical QName {text!r} is not valid",
+                code="FOCA0002",
+            )
+        if prefix:
+            uri = XML_NS if prefix == "xml" else element.in_scope_namespaces.get(prefix)
+            if uri is None:
+                raise XsltDynamicError(
+                    f"the namespace prefix {prefix!r} is not in scope",
+                    code="FONS0004",
+                )
+        else:
+            uri = element.in_scope_namespaces.get("", "")
+        return (cast(XdmAtomic, as_xdm(QName(uri or "", text))[0]),)
+
     def _direct_current(
         self,
         context_item: XdmItem | None,
@@ -1615,6 +1708,38 @@ def _optional_string(arguments: tuple[XdmSequence, ...], index: int) -> str | No
     if index >= len(arguments) or not arguments[index]:
         return None
     return _single_string(arguments, index)
+
+
+def _optional_atomic_string(
+    arguments: tuple[XdmSequence, ...],
+    index: int,
+    label: str,
+) -> str | None:
+    """One optional argument atomized and cast to ``xs:string``.
+
+    A function signature of ``xs:string?`` accepts a node through the function
+    conversion rules, which atomizes it.  The elementpath built-ins for some
+    QName functions skip that conversion, so the bridge applies it explicitly.
+    An empty sequence stays absent; a QName or other non-string atomic value
+    is a type error.
+    """
+    if index >= len(arguments) or not arguments[index]:
+        return None
+    sequence = arguments[index]
+    if len(sequence) != 1:
+        raise XsltDynamicError(
+            f"{label} requires a single value",
+            code="XPTY0004",
+        )
+    item = sequence[0]
+    if isinstance(item, XdmNode):
+        return item.string_value
+    if isinstance(item, XdmAtomic) and isinstance(item.value, str):
+        return str(item.value)
+    raise XsltDynamicError(
+        f"{label} requires a string value",
+        code="XPTY0004",
+    )
 
 
 _SERIALIZATION_NS = "http://www.w3.org/2010/xslt-xquery-serialization"

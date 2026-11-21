@@ -278,6 +278,18 @@ class StaticFunction:
         return _arity_matches(self.arity, requested)
 
 
+def _expression_namespaces(namespaces: Mapping[str, str]) -> dict[str, str]:
+    """The prefix map one XPath expression sees.
+
+    The stylesheet's default namespace names literal result elements and
+    namespace-alias declarations; it never becomes the default element
+    namespace of an XPath expression (XSLT 3.0 sections 3.7 and 5.3.1).  That
+    role belongs to ``xpath-default-namespace`` alone, which travels in the
+    static context's own field.
+    """
+    return {prefix: uri for prefix, uri in namespaces.items() if prefix}
+
+
 @dataclass(frozen=True, slots=True)
 class StaticContext:
     """One element's immutable, module-local XSLT static context."""
@@ -516,7 +528,7 @@ class StaticContext:
             if variable.sequence_type is not None
         }
         return XPathStaticContext(
-            namespaces=dict(self.namespaces),
+            namespaces=_expression_namespaces(self.namespaces),
             default_namespace=self.xpath_default_namespace,
             variable_types=variable_types,
             functions=functions,
