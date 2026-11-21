@@ -1042,24 +1042,35 @@ def _inherit_namespaces(
     element: XdmNode,
     inherited: Mapping[str, str],
 ) -> None:
-    """Copy inherited namespace nodes down one constructed subtree."""
-    scope = dict(element.in_scope_namespaces)
-    changed = False
+    """Copy inherited namespace nodes down one constructed subtree.
+
+    Only the namespace nodes of the element being attached are inherited;
+    the binding is then offered unchanged to every descendant, except where
+    an intermediate element already has a node with that name.  Carrying the
+    intermediate element's own scope onward instead would give every
+    descendant the deepest ancestry regardless of an ``inherit-namespaces="no"``
+    construction on the way down.
+    """
+    own = element.in_scope_namespaces
+    scope = dict(own)
+    added = False
     for prefix, uri in inherited.items():
-        if prefix == "xml" or prefix in scope:
+        if prefix == "xml" or prefix in own:
             continue
         if prefix == "" and element.namespace_uri is None:
             continue
         scope[prefix] = uri
         element._append_namespace_node(factory.namespace(prefix, uri, parent=element, scope=scope))
-        changed = True
-    if changed:
+        added = True
+    if added:
         element._in_scope_namespaces = MappingProxyType(scope)
         element._namespace_declarations = _declarations(scope)
-    child_scope = element.in_scope_namespaces
+    propagated = {prefix: uri for prefix, uri in inherited.items() if prefix not in own}
+    if not propagated:
+        return
     for child in element.children:
         if child.kind is NodeKind.ELEMENT:
-            _inherit_namespaces(factory, child, child_scope)
+            _inherit_namespaces(factory, child, propagated)
 
 
 def _attach_element(

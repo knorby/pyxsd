@@ -1373,7 +1373,21 @@ def check_namespace_sensitive_copy(
     node: XdmNode,
     plan: _CopyPlan | _CopyOfPlan,
 ) -> None:
-    if plan.copy_namespaces or plan.validation != "preserve" or plan.type_name is not None:
+    """Reject a copy that cannot preserve namespace-sensitive content.
+
+    XSLT 3.0 section 11.9 makes this a type error when ``copy-namespaces="no"``
+    and validation is preserved, and also when the copy produces a parentless
+    attribute with a QName or NOTATION typed value: an attribute node has no
+    namespace nodes of its own, so the value's prefix would no longer resolve.
+    """
+    if plan.validation != "preserve" or plan.type_name is not None:
+        return
+    if node.kind is NodeKind.ATTRIBUTE and namespace_sensitive(node):
+        raise XsltDynamicError(
+            "namespace-sensitive content cannot be copied without a parent element",
+            code="XTTE0950",
+        )
+    if plan.copy_namespaces:
         return
     if namespace_sensitive(node):
         raise XsltDynamicError(

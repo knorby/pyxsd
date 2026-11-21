@@ -633,6 +633,10 @@ class XsltContextBridge:
             f"{{{FN_NS}}}current": ContextFunction(self._direct_current, self._dynamic_current),
             f"{{{FN_NS}}}document": ContextFunction(self._document_function),
             f"{{{FN_NS}}}doc": ContextFunction(self._doc_function),
+            f"{{{FN_NS}}}in-scope-prefixes": ContextFunction(self._in_scope_prefixes_function),
+            f"{{{FN_NS}}}namespace-uri-for-prefix": ContextFunction(
+                self._namespace_uri_for_prefix_function
+            ),
             f"{{{FN_NS}}}unparsed-text": ContextFunction(self._unparsed_text_function),
             f"{{{FN_NS}}}unparsed-text-lines": ContextFunction(self._unparsed_text_lines_function),
             f"{{{FN_NS}}}collection": ContextFunction(self._collection_function),
@@ -1181,6 +1185,38 @@ class XsltContextBridge:
         return None
 
     # -- callback adapters --------------------------------------------------
+
+    def _in_scope_prefixes_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """fn:in-scope-prefixes from the element's XDM namespace scope."""
+        del context_item
+        node = _single_node(arguments[0] if arguments else (), "in-scope-prefixes")
+        if node.kind is not NodeKind.ELEMENT:
+            raise XsltDynamicError(
+                "in-scope-prefixes requires an element node",
+                code="XPTY0004",
+            )
+        return tuple(XdmAtomic.string(prefix) for prefix in node.in_scope_namespaces)
+
+    def _namespace_uri_for_prefix_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """fn:namespace-uri-for-prefix from the element's XDM namespace scope."""
+        del context_item
+        prefix = _optional_string(arguments, 0) or ""
+        node = _single_node(arguments[1] if len(arguments) > 1 else (), "namespace-uri-for-prefix")
+        if node.kind is not NodeKind.ELEMENT:
+            raise XsltDynamicError(
+                "namespace-uri-for-prefix requires an element node",
+                code="XPTY0004",
+            )
+        uri = node.in_scope_namespaces.get(prefix)
+        return () if uri is None else (XdmAtomic.string(uri),)
 
     def _direct_current(
         self,

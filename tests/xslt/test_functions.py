@@ -923,3 +923,83 @@ def test_library_key_match_predicate_uses_library_lazy_global(tmp_path: Path) ->
     )
     out = element_children(result.principal_tree)[0]
     assert out.string_value == "1"
+
+
+# ---------------------------------------------------------------------------
+# Namespace functions and lexical names (c.5)
+
+
+def test_in_scope_prefixes_and_namespace_uri_use_the_element_scope() -> None:
+    source = XdmDocument.parse(
+        b'<r xmlns="urn:default" xmlns:p="urn:p" xmlns:q="urn:q"><child xmlns:q="urn:q2"/></r>'
+    )
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence select="string-join(sort(in-scope-prefixes(/*)), ',')"/>
+          <xsl:sequence select="namespace-uri-for-prefix('p', /*)"/>
+          <xsl:sequence select="namespace-uri-for-prefix('', /*)"/>
+          <xsl:sequence select="count(namespace-uri-for-prefix('missing', /*))"/>
+          <xsl:sequence select="namespace-uri-for-prefix('q', /*/*[1])"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=source)
+    assert result.principal == (
+        XdmAtomic.string(",p,q,xml"),
+        XdmAtomic.string("urn:p"),
+        XdmAtomic.string("urn:default"),
+        XdmAtomic.integer(0),
+        XdmAtomic.string("urn:q2"),
+    )
+
+
+def test_name_uses_a_prefix_for_namespaced_attributes() -> None:
+    source = XdmDocument.parse(b'<r xmlns="urn:p" xmlns:p="urn:p" p:a="1"><p:child/></r>')
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence select="name(/*/@*[1])"/>
+          <xsl:sequence select="name(/*/p:child)"/>
+          <xsl:sequence select="local-name(/*/p:child)"/>
+          <xsl:sequence select="namespace-uri(/*/p:child)"/>
+        </xsl:template>
+        """,
+        namespaces={"p": "urn:p"},
+    )
+    result = transform(body, input_source=source)
+    assert result.principal == (
+        XdmAtomic.string("p:a"),
+        XdmAtomic.string("p:child"),
+        XdmAtomic.string("child"),
+        XdmAtomic.string("urn:p"),
+    )
+
+
+def test_namespace_functions_reject_a_non_element_argument() -> None:
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence select="in-scope-prefixes(/)"/>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(body, input_source=b"<r/>")) == "XPTY0004"
+
+    uri_body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence select="namespace-uri-for-prefix('p', /)"/>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(uri_body, input_source=b"<r/>")) == "XPTY0004"
+
+    atomic_body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="in-scope-prefixes('text')"/>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(atomic_body, initial_template="main")) == "XPTY0004"
