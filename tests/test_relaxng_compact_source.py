@@ -203,6 +203,27 @@ def test_escape_failures_report_the_exact_original_span(
     assert error.location.span == SourceTextSpan(0, end, 1, 1, 1, end + 1)
 
 
+@pytest.mark.parametrize(
+    ("content", "start", "end"),
+    [
+        (b"\\x{", 0, 3),
+        (b"\\xx{", 0, 4),
+        (b"a\\x{", 1, 4),
+    ],
+)
+def test_an_escape_open_at_end_of_source_keeps_the_span_in_bounds(
+    content: bytes, start: int, end: int
+) -> None:
+    with pytest.raises(RelaxNGCompactSyntaxError) as caught:
+        decode(content)
+
+    error = caught.value
+    assert "needs at least one hexadecimal digit" in str(error)
+    assert error.location is not None
+    assert error.location.span == SourceTextSpan(start, end, 1, start + 1, 1, end + 1)
+    assert error.location.span.end <= len(content.decode())
+
+
 def test_a_huge_hex_number_is_rejected_as_an_xml_character_without_overflow() -> None:
     content = b"\\x{1" + b"0" * 5000 + b"}"
 

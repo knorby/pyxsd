@@ -149,7 +149,7 @@ def _escape_value(
             line_starts,
             "an escape sequence needs at least one hexadecimal digit",
             index,
-            digits_start + 1,
+            min(digits_start + 1, len(text)),
         )
     if cursor == len(text):
         raise _escape_failure(
