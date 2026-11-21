@@ -159,6 +159,10 @@ class _Shape:
     token: Token
     build: Callable[[tuple[PathStep, ...], GrammarScope | None], FullNode]
     payload: object | None = None
+    #: A bare ``data ... - pattern`` may only stand alone as an
+    #: ``innerPattern``; mixing it with ``|``, ``&``, or ``,`` needs
+    #: parentheses.  Parenthesized results clear this mark.
+    inner_only: bool = False
 
 
 class _Children:
@@ -368,7 +372,7 @@ class _Reader:
             if token.value == "start":
                 return self._start_shape()
             if token.value == "div":
-                return self._div_shape()
+                return self._div_shape(allow_include=allow_include)
             if token.value == "include":
                 if not allow_include:
                     self._fail(
@@ -408,11 +412,11 @@ class _Reader:
 
         return _Shape("define", name, build)
 
-    def _div_shape(self) -> _Shape:
+    def _div_shape(self, *, allow_include: bool) -> _Shape:
         token = self._expect_keyword("div")
         self._expect_symbol("{")
         with self._nested():
-            members = self._grammar_members(end="}", allow_include=True)
+            members = self._grammar_members(end="}", allow_include=allow_include)
         self._expect_symbol("}")
 
         def build(path: tuple[PathStep, ...], scope: GrammarScope | None) -> FullNode:
@@ -469,15 +473,22 @@ class _Reader:
         token = self._peek()
         if token.kind is not TokenKind.SYMBOL or token.value not in _OPERATORS:
             return first
+        if first.inner_only:
+            self._fail(
+                "the - operator may not be mixed with , | or & without parentheses",
+                expected=("a parenthesized pattern",),
+                at=token,
+            )
         operator = token.value
+        operator_token = token
         parts = [first]
         self._advance()
-        parts.append(self._parse_particle_shape())
+        parts.append(self._sequence_operand(operator_token))
         while True:
             token = self._peek()
             if token.kind is TokenKind.SYMBOL and token.value == operator:
                 self._advance()
-                parts.append(self._parse_particle_shape())
+                parts.append(self._sequence_operand(token))
                 continue
             if token.kind is TokenKind.SYMBOL and token.value in _OPERATORS:
                 self._fail(
@@ -485,7 +496,17 @@ class _Reader:
                     expected=(repr(operator),),
                     at=token,
                 )
-            return self._pattern_container_shape(_OPERATORS[operator], token, parts)
+            return self._pattern_container_shape(_OPERATORS[operator], operator_token, parts)
+
+    def _sequence_operand(self, operator_token: Token) -> _Shape:
+        operand = self._parse_particle_shape()
+        if operand.inner_only:
+            self._fail(
+                "the - operator may not be mixed with , | or & without parentheses",
+                expected=("a parenthesized pattern",),
+                at=operator_token,
+            )
+        return operand
 
     def _parse_particle_shape(self) -> _Shape:
         shape = self._parse_lead_primary_shape()
@@ -502,7 +523,10 @@ class _Reader:
             self._advance()
             with self._nested():
                 excluded = self._parse_lead_primary_shape()
-            shape = self._data_shape(replace(info, except_shape=excluded, except_token=token))
+            shape = replace(
+                self._data_shape(replace(info, except_shape=excluded, except_token=token)),
+                inner_only=True,
+            )
             has_exception = True
         token = self._peek()
         if token.kind is TokenKind.SYMBOL and token.value in _REPEAT_TAGS:
@@ -531,7 +555,7 @@ class _Reader:
             with self._nested():
                 shape = self._parse_pattern_shape()
             self._expect_symbol(")")
-            return shape
+            return replace(shape, inner_only=False)
         if token.kind is TokenKind.KEYWORD:
             return self._keyword_primary_shape(token)
         if token.kind in {TokenKind.IDENTIFIER, TokenKind.QUOTED_IDENTIFIER}:

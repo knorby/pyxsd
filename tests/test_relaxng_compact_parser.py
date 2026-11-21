@@ -301,6 +301,7 @@ def test_quantifiers_build_repetition_nodes_and_paths() -> None:
     assert path_of(one_or_more) == (("element", 1), ("group", 1), ("oneOrMore", 1))
     assert isinstance(optional.children[0], FullText)  # type: ignore[attr-defined]
     assert span_of(optional) == SourceTextSpan(16, 17, 1, 17, 1, 18)
+    assert span_of(group) == SourceTextSpan(18, 19, 1, 19, 1, 20)
 
 
 def test_list_and_mixed_build_content_containers() -> None:
@@ -320,7 +321,7 @@ def test_data_value_parameters_and_exceptions() -> None:
     schema = parse(
         "element r { "
         "xsd:integer , "
-        'xsd:string { minLength = "1" maxLength = "3" } - (empty | text) , '
+        '(xsd:string { minLength = "1" maxLength = "3" } - (empty | text)) , '
         'string "abc" , '
         '"bare" , '
         "token"
@@ -687,6 +688,84 @@ def test_exception_and_postfix_misuse_is_rejected() -> None:
     assert repeated.value.found == "'*'"
 
 
+@pytest.mark.parametrize("operator", ["|", "&", ","])
+def test_data_exception_cannot_mix_with_pattern_operators(operator: str) -> None:
+    with pytest.raises(RelaxNGCompactSyntaxError) as raised:
+        parse(f"element r {{ xsd:string - empty {operator} text }}")
+
+    assert raised.value.found == repr(operator)
+    assert "mixed" in str(raised.value)
+
+    with pytest.raises(RelaxNGCompactSyntaxError) as appended:
+        parse(f"element r {{ text {operator} xsd:string - empty }}")
+
+    assert appended.value.found == repr(operator)
+    assert "mixed" in str(appended.value)
+
+
+def test_parenthesized_data_exception_composes_normally() -> None:
+    choice_schema = parse("element r { (xsd:string - empty) | text }")
+
+    choice = choice_schema.start.children[0]  # type: ignore[attr-defined]
+    assert isinstance(choice, FullChoice)
+    data = choice.children[0]
+    assert isinstance(data, FullData)
+    assert data.except_pattern is not None
+    assert isinstance(choice.children[1], FullText)
+
+    optional_schema = parse("element r { (xsd:string - empty)? }")
+
+    optional = optional_schema.start.children[0]  # type: ignore[attr-defined]
+    assert isinstance(optional, FullOptional)
+    optional_data = optional.children[0]
+    assert isinstance(optional_data, FullData)
+    assert optional_data.except_pattern is not None
+
+
+def test_quoted_identifiers_and_keyword_names() -> None:
+    schema = parse(
+        'namespace namespace = "urn:n"\n'
+        "\\start = element text { attribute element { empty } , \\start }\n"
+        'start = element namespace:foo { xsd:string { element = "x" } }\n'
+    )
+
+    definition, start_component = grammar_members(schema)
+    assert isinstance(definition, FullDefine)
+    assert definition.name == "start"
+    element = definition.children[0]
+    assert isinstance(element, FullElement)
+    element_name = element.name_class
+    assert isinstance(element_name, FullName)
+    assert (element_name.lexical, element_name.local, element_name.uri) == (
+        "text",
+        "text",
+        None,
+    )
+    attribute, reference = group_children(element.children[0])
+    assert isinstance(attribute, FullAttribute)
+    attribute_name = attribute.name_class
+    assert isinstance(attribute_name, FullName)
+    assert (attribute_name.lexical, attribute_name.local) == ("element", "element")
+    assert isinstance(reference, ReferencePlaceholder)
+    assert (reference.kind, reference.name) == ("ref", "start")
+
+    assert isinstance(start_component, FullStart)
+    start_element = start_component.children[0]
+    assert isinstance(start_element, FullElement)
+    start_name = start_element.name_class
+    assert isinstance(start_name, FullName)
+    assert (start_name.lexical, start_name.local, start_name.uri) == (
+        "namespace:foo",
+        "foo",
+        "urn:n",
+    )
+    data = start_element.children[0]
+    assert isinstance(data, FullData)
+    assert [(parameter.name, parameter.value) for parameter in data.parameters] == [
+        ("element", "x")
+    ]
+
+
 def test_nested_parentheses_observe_the_depth_high_water_mark() -> None:
     source = "element r { ((text)) }"
 
@@ -762,6 +841,9 @@ def test_pattern_choice_and_interleave_containers() -> None:
     assert isinstance(interleave, FullInterleave)
     assert path_of(choice) == (("element", 1), ("group", 1), ("choice", 1))
     assert path_of(interleave) == (("element", 1), ("group", 1), ("interleave", 1))
+    assert span_of(group) == SourceTextSpan(20, 21, 1, 21, 1, 22)
+    assert span_of(choice) == SourceTextSpan(15, 16, 1, 16, 1, 17)
+    assert span_of(interleave) == SourceTextSpan(25, 26, 1, 26, 1, 27)
     assert path_of(choice.children[0]) == (
         ("element", 1),
         ("group", 1),
@@ -803,6 +885,12 @@ def test_include_body_cannot_contain_an_include() -> None:
 
     assert raised.value.found == "'include'"
     assert "include body" in str(raised.value)
+
+    with pytest.raises(RelaxNGCompactSyntaxError) as nested:
+        parse('include "a.rnc" { div { include "b.rnc" } }')
+
+    assert nested.value.found == "'include'"
+    assert "include body" in str(nested.value)
 
 
 def test_name_classes_require_a_name() -> None:
