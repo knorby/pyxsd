@@ -3,7 +3,7 @@ name: Optional MCP integration
 on:
   workflow_call:
   push:
-    branches: ["**"]
+    branches: [develop]
   pull_request:
 
 permissions:

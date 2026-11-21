@@ -49,6 +49,17 @@ def test_reusable_workflow_concurrency_does_not_cancel_the_release():
     assert len(groups) == len(set(groups))
 
 
+@pytest.mark.parametrize(
+    "filename",
+    ["ci.yml", "mcp.yml", "optional-integrations.yml"],
+)
+def test_validation_workflows_push_only_from_develop(filename):
+    triggers = _workflow(filename)["on"]
+    assert triggers["push"]["branches"] == ["develop"]
+    assert "pull_request" in triggers
+    assert "workflow_call" in triggers
+
+
 def test_core_coverage_and_xsts_run_as_concurrent_version_matrices():
     jobs = _workflow("ci.yml")["jobs"]
     coverage = next(

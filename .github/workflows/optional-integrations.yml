@@ -3,7 +3,7 @@ name: Optional integrations
 on:
   workflow_call:
   push:
-    branches: ["**"]
+    branches: [develop]
   pull_request:
 
 permissions:
