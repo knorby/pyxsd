@@ -40,7 +40,7 @@ def _body(marker: str) -> str:
 
 def _write(root: Path, name: str, body: str) -> Path:
     target = root / name
-    target.write_bytes(stylesheet(body))
+    target.write_bytes(stylesheet(body, declare_xs=False))
     return target
 
 

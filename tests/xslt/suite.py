@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 from urllib.request import url2pathname
-from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
 from elementpath.regex import unicode_version
@@ -49,6 +48,7 @@ from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticCon
 from pyxsd.xslt import CompiledStylesheet, TransformationResult, XsltProcessor
 from pyxsd.xslt.compiler.packages import PackageResolver
 from pyxsd.xslt.errors import XsltDynamicError, XsltError
+from pyxsd.xslt.serialization.serializer import Serializer
 
 #: Capabilities a native XSLT 2.0 processor implements in addition to its
 #: language versions.  Streaming, higher-order functions, dynamic evaluation,
@@ -203,24 +203,16 @@ SUITE_PROFILES: Mapping[str, SuiteProfile] = {
 # Result conversion
 
 
-def _xml_element(source: XdmNode) -> ET.Element:
-    """The element-tree copy of *source* and its whole subtree."""
-    element = ET.Element(source.name or source.local_name or "node")
-    for attribute in source.attributes:
-        element.set(attribute.name, attribute.string_value)
-    for child in source.children:
-        if child.kind is NodeKind.TEXT:
-            if len(element):
-                element[-1].tail = (element[-1].tail or "") + child.string_value
-            else:
-                element.text = (element.text or "") + child.string_value
-        elif child.kind is NodeKind.ELEMENT:
-            element.append(_xml_element(child))
-        elif child.kind is NodeKind.COMMENT:
-            element.append(ET.Comment(child.string_value))
-        elif child.kind is NodeKind.PROCESSING_INSTRUCTION:
-            element.append(ET.ProcessingInstruction(child.target or "", child.string_value))
-    return element
+def _serialized_markup(node: XdmNode) -> str:
+    """One XDM node as the engine's own XML markup, without a declaration.
+
+    The assertion view must keep the lexical prefixes and namespace
+    declarations the result tree carries.  Rebuilding an ElementTree from the
+    XDM nodes makes its serializer invent ``ns0`` names and drop every
+    declaration, so a namespace expectation could never match the actual
+    result.
+    """
+    return Serializer.serialize((node,), {"omit-xml-declaration": True})
 
 
 def _document_xml(node: XdmNode) -> str:
@@ -233,7 +225,7 @@ def _document_xml(node: XdmNode) -> str:
     """
     elements = [child for child in node.children if child.kind is NodeKind.ELEMENT]
     if len(elements) == 1 and len(node.children) == 1:
-        return ET.tostring(_xml_element(elements[0]), encoding="unicode")
+        return _serialized_markup(elements[0])
     return escape("".join(child.string_value for child in node.children))
 
 
@@ -249,7 +241,7 @@ def _node_xml(node: XdmNode) -> str:
     """
     if node.kind is NodeKind.DOCUMENT:
         return _document_xml(node)
-    return ET.tostring(_xml_element(node), encoding="unicode")
+    return _serialized_markup(node)
 
 
 def _value(item: Any) -> Any:

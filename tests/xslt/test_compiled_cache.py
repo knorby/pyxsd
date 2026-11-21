@@ -63,7 +63,8 @@ def sheet(tmp_path: Path) -> Path:
     target.write_bytes(
         stylesheet(
             '<xsl:template name="xsl:initial-template"><out>'
-            '<xsl:value-of select="1 + 1"/></out></xsl:template>'
+            '<xsl:value-of select="1 + 1"/></out></xsl:template>',
+            declare_xs=False,
         )
     )
     return target

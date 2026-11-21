@@ -746,6 +746,8 @@ def test_a_shared_stylesheet_never_shares_one_compiled_artifact(
             '<xsl:template name="xsl:initial-template"><out>'
             '<xsl:value-of select="hat:hatsize($p)"/></out></xsl:template>',
             namespaces={"hat": HAT_NS},
+            attributes=' exclude-result-prefixes="hat"',
+            declare_xs=False,
         )
     )
 

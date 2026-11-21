@@ -17,7 +17,7 @@ import pytest
 from tests.xslt.support import stylesheet
 
 import pyxsd.xslt.processor as processor_module
-from pyxsd.xdm.nodes import NodeKind, XdmNode
+from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.constructors import (
     CONSTRUCTOR_INSTRUCTION_COMPILERS,
@@ -41,16 +41,18 @@ from pyxsd.xslt.runtime.constructors import (
 
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 XMLNS_NS = "http://www.w3.org/2000/xmlns/"
+XSD_NS = "http://www.w3.org/2001/XMLSchema"
+VALUE_NS = "urn:example:value"
 
 
-def _compile(body: str, *, version: str = "3.0", **kwargs: Any) -> Any:
+def _compile(body: str, *, version: str = "3.0", attributes: str = "", **kwargs: Any) -> Any:
     return XsltProcessor(**kwargs).compile(
-        io.BytesIO(stylesheet(body, version=version, declare_xs=False))
+        io.BytesIO(stylesheet(body, version=version, attributes=attributes, declare_xs=False))
     )
 
 
-def _transform(body: str, *, version: str = "3.0", **kwargs: Any) -> Any:
-    return _compile(body, version=version, **kwargs).transform(
+def _transform(body: str, *, version: str = "3.0", attributes: str = "", **kwargs: Any) -> Any:
+    return _compile(body, version=version, attributes=attributes, **kwargs).transform(
         initial_template="main", delivery="document"
     )
 
@@ -61,6 +63,21 @@ def _error_code(body: str, *, version: str = "3.0", **kwargs: Any) -> str | None
             initial_template="main", delivery="document"
         )
     return caught.value.code
+
+
+def _transform_source(
+    body: str,
+    source: XdmDocument | bytes,
+    *,
+    version: str = "3.0",
+    attributes: str = "",
+    **kwargs: Any,
+) -> Any:
+    return _compile(body, version=version, attributes=attributes, **kwargs).transform(
+        source=source,
+        initial_template="main",
+        delivery="document",
+    )
 
 
 def _comments(node: XdmNode) -> tuple[XdmNode, ...]:
@@ -378,6 +395,664 @@ def test_constructors_nest_inside_xsl_element_and_literal_result_elements() -> N
     literal = out.children[1]
     assert literal.kind is NodeKind.ELEMENT
     assert [pi.target for pi in _pis(literal)] == ["inner"]
+
+
+def test_literal_result_element_keeps_its_lexical_prefix() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xmlns="http://abc.uri/">
+            <p:item xmlns:p="http://abc.uri/"/>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    item = out.children[0]
+    assert out.prefix == ""
+    assert out.namespace_uri == "http://abc.uri/"
+    assert item.prefix == "p"
+    assert item.namespace_uri == "http://abc.uri/"
+    assert dict(item.in_scope_namespaces)["p"] == "http://abc.uri/"
+    assert ("p", "http://abc.uri/") in item.namespace_declarations
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<out xmlns="http://abc.uri/"><p:item xmlns:p="http://abc.uri/"/></out>'
+    )
+
+
+def test_xsl_element_uses_the_default_prefix_for_an_unprefixed_name() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xmlns="urn:outer">
+            <xsl:element name="item" namespace="urn:item"/>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    item = result.principal_tree.root_element.children[0]
+    assert item.prefix == ""
+    assert item.namespace_uri == "urn:item"
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<out xmlns="urn:outer"><item xmlns="urn:item"/></out>'
+    )
+
+
+def test_xsl_element_rebinds_the_requested_lexical_prefix() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xmlns:p="urn:outer">
+            <xsl:element name="p:item" namespace="urn:item"/>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    item = result.principal_tree.root_element.children[0]
+    assert item.prefix == "p"
+    assert item.namespace_uri == "urn:item"
+    assert dict(item.in_scope_namespaces)["p"] == "urn:item"
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<out xmlns:p="urn:outer"><p:item xmlns:p="urn:item"/></out>'
+    )
+
+
+def test_xsl_element_does_not_copy_stylesheet_namespaces() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out>
+            <xsl:element name="item" xmlns:unused="urn:unused"/>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    item = result.principal_tree.root_element.children[0]
+    assert "unused" not in item.in_scope_namespaces
+    assert "xsl" not in item.in_scope_namespaces
+    assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><out><item/></out>')
+
+
+def test_literal_result_element_keeps_unprefixed_standard_attribute_names() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out version="1.0" default-collation="urn:c"><xsl:element name="in"/></out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert [attribute.name for attribute in out.attributes] == [
+        "version",
+        "default-collation",
+    ]
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<out version="1.0" default-collation="urn:c"><in/></out>'
+    )
+
+
+def test_literal_result_element_drops_xslt_standard_attributes() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xsl:version="1.0" xsl:expand-text="no"/>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert out.attributes == ()
+    assert result.serialize() == '<?xml version="1.0" encoding="UTF-8"?><out/>'
+
+
+def test_literal_result_prefix_is_visible_to_name() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="v">
+            <p:item xmlns:p="urn:a" xmlns="urn:a"/>
+          </xsl:variable>
+          <out><xsl:value-of select="name($v/*)"/></out>
+        </xsl:template>
+        """
+    )
+
+    assert result.principal_tree.root_element.string_value == "p:item"
+
+
+def test_literal_nested_default_rebinding_and_undeclaration() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <a xmlns="urn:1"><b xmlns="urn:2"><c xmlns=""/></b></a>
+        </xsl:template>
+        """
+    )
+
+    a = result.principal_tree.root_element
+    b = a.children[0]
+    c = b.children[0]
+    assert [(node.prefix, node.namespace_uri) for node in (a, b, c)] == [
+        ("", "urn:1"),
+        ("", "urn:2"),
+        ("", None),
+    ]
+    assert a.namespace_declarations == (("", "urn:1"),)
+    assert b.namespace_declarations == (("", "urn:2"),)
+    assert c.namespace_declarations == ()
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<a xmlns="urn:1"><b xmlns="urn:2"><c xmlns=""/></b></a>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Namespace copying, exclusions, and aliasing
+
+
+def _declarations(node: XdmNode) -> dict[str, str]:
+    return {
+        node.prefix: node.namespace_binding for node in node.namespace_nodes if node.prefix != "xml"
+    }
+
+
+def test_literal_local_exclude_all_applies_to_the_bearing_subtree() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xmlns:p="urn:p" xmlns:q="urn:q" xsl:exclude-result-prefixes="#all">
+            <child xmlns:r="urn:r"/>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    child = out.children[0]
+    assert _declarations(out) == {}
+    assert _declarations(child) == {"r": "urn:r"}
+    assert "p" not in child.in_scope_namespaces
+    assert "q" not in child.in_scope_namespaces
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?><out><child xmlns:r="urn:r"/></out>'
+    )
+
+
+def test_literal_local_exclusion_of_default_and_a_shared_uri() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xmlns="urn:d" xmlns:a="urn:a" xmlns:a2="urn:a"
+               xsl:exclude-result-prefixes="#default a"/>
+        </xsl:template>
+        """,
+        attributes=' xmlns="urn:root" exclude-result-prefixes="#default"',
+    )
+
+    out = result.principal_tree.root_element
+    assert out.namespace_uri == "urn:d"
+    # The excluded URI is still required by the element name, so only that
+    # one namespace node is reintroduced; every other excluded binding stays
+    # out of the copied set.
+    assert _declarations(out) == {"": "urn:d"}
+    assert out.in_scope_namespaces[""] == "urn:d"
+    assert "a" not in out.in_scope_namespaces
+    assert "a2" not in out.in_scope_namespaces
+    assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><out xmlns="urn:d"/>')
+
+
+def test_literal_excluded_uri_required_by_an_attribute_name_is_fixed_up() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out a:value="1"/>
+        </xsl:template>
+        """,
+        attributes=' xmlns:a="urn:a" exclude-result-prefixes="a"',
+    )
+
+    out = result.principal_tree.root_element
+    attribute = out.attributes[0]
+    assert attribute.name == "{urn:a}value"
+    assert attribute.prefix == "a"
+    # Exclusion removed the copied node; namespace fixup reintroduces exactly
+    # the declaration the attribute name needs.
+    assert _declarations(out) == {"a": "urn:a"}
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?><out xmlns:a="urn:a" a:value="1"/>'
+    )
+
+
+def test_literal_xml_namespace_attribute_uses_the_xml_prefix() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main"><out xml:lang="en"/></xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert out.attributes[0].prefix == "xml"
+    assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><out xml:lang="en"/>')
+
+
+def test_literal_attribute_keeps_its_lexical_prefix_among_same_uri_bindings() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xmlns:p="urn:x" xmlns:q="urn:x" q:a="1"/>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    attribute = out.attributes[0]
+    assert attribute.name == "{urn:x}a"
+    assert attribute.prefix == "q"
+    assert _declarations(out) == {"p": "urn:x", "q": "urn:x"}
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?><out xmlns:p="urn:x" xmlns:q="urn:x" q:a="1"/>'
+    )
+
+
+def test_attribute_set_attribute_keeps_its_lexical_prefix_among_same_uri_bindings() -> None:
+    result = _transform(
+        """
+        <xsl:attribute-set name="s">
+          <xsl:attribute name="q:a">1</xsl:attribute>
+        </xsl:attribute-set>
+        <xsl:template name="main">
+          <out xsl:use-attribute-sets="s"/>
+        </xsl:template>
+        """,
+        attributes=' xmlns:p="urn:x" xmlns:q="urn:x"',
+    )
+
+    out = result.principal_tree.root_element
+    attribute = out.attributes[0]
+    assert attribute.name == "{urn:x}a"
+    assert attribute.prefix == "q"
+    assert (
+        result.serialize()
+        == '<?xml version="1.0" encoding="UTF-8"?><out xmlns:p="urn:x" xmlns:q="urn:x" q:a="1"/>'
+    )
+
+
+def test_attribute_set_attribute_reuses_a_prefix_from_its_own_scope() -> None:
+    result = _transform(
+        """
+        <xsl:attribute-set name="s">
+          <xsl:attribute name="q:a" xmlns:q="urn:x">1</xsl:attribute>
+        </xsl:attribute-set>
+        <xsl:template name="main">
+          <out xmlns:p="urn:x" xsl:use-attribute-sets="s"/>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    attribute = out.attributes[0]
+    assert attribute.name == "{urn:x}a"
+    assert attribute.prefix == "q"
+    assert _declarations(out) == {"p": "urn:x", "q": "urn:x"}
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?><out xmlns:p="urn:x" xmlns:q="urn:x" q:a="1"/>'
+    )
+
+
+def test_namespace_alias_does_not_rewrite_attribute_set_attributes() -> None:
+    result = _transform(
+        """
+        <xsl:attribute-set name="s">
+          <xsl:attribute name="old:from-set">set</xsl:attribute>
+        </xsl:attribute-set>
+        <xsl:namespace-alias stylesheet-prefix="old" result-prefix="new"/>
+        <xsl:template name="main">
+          <out xsl:use-attribute-sets="s" old:from-literal="lit"/>
+        </xsl:template>
+        """,
+        attributes=' xmlns:old="urn:old" xmlns:new="urn:new"',
+    )
+
+    out = result.principal_tree.root_element
+    attributes = {attribute.name: attribute for attribute in out.attributes}
+    assert set(attributes) == {"{urn:old}from-set", "{urn:new}from-literal"}
+    assert attributes["{urn:old}from-set"].prefix == "old"
+    assert attributes["{urn:new}from-literal"].prefix == "new"
+    assert _declarations(out) == {"old": "urn:old", "new": "urn:new"}
+
+
+def test_literal_own_extension_prefixes_are_excluded_namespaces() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xmlns:ext="urn:ext" xmlns:keep="urn:keep"
+               xsl:extension-element-prefixes="ext"/>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert _declarations(out) == {"keep": "urn:keep"}
+    assert "ext" not in out.in_scope_namespaces
+    assert "keep" in out.in_scope_namespaces
+
+
+def test_ancestor_extension_prefixes_are_excluded_for_the_subtree() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <outer xmlns:ext="urn:ext" xsl:extension-element-prefixes="ext">
+            <inner/>
+          </outer>
+        </xsl:template>
+        """
+    )
+
+    outer = result.principal_tree.root_element
+    inner = outer.children[0]
+    assert _declarations(outer) == {}
+    assert _declarations(inner) == {}
+    assert "ext" not in outer.in_scope_namespaces
+    assert "ext" not in inner.in_scope_namespaces
+
+
+def test_module_root_extension_prefixes_still_exclude_literal_namespaces() -> None:
+    result = _transform(
+        '<xsl:template name="main"><out xmlns:keep="urn:keep"/></xsl:template>',
+        attributes=' xmlns:ext="urn:ext" extension-element-prefixes="ext"',
+    )
+
+    out = result.principal_tree.root_element
+    assert _declarations(out) == {"keep": "urn:keep"}
+    assert "ext" not in out.in_scope_namespaces
+
+
+def test_namespace_alias_rewrites_element_and_attribute_names() -> None:
+    result = _transform(
+        """
+        <xsl:namespace-alias stylesheet-prefix="axsl" result-prefix="xsl"/>
+        <xsl:template name="main">
+          <axsl:template axsl:match="/"/>
+        </xsl:template>
+        """,
+        attributes=' xmlns:axsl="urn:alias"',
+    )
+
+    out = result.principal_tree.root_element
+    assert out.name == "{http://www.w3.org/1999/XSL/Transform}template"
+    assert out.prefix == "xsl"
+    assert out.attributes[0].name == "{http://www.w3.org/1999/XSL/Transform}match"
+    assert out.attributes[0].prefix == "xsl"
+    assert "urn:alias" not in out.in_scope_namespaces.values()
+    assert _declarations(out) == {"xsl": "http://www.w3.org/1999/XSL/Transform"}
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<xsl:template xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xsl:match="/"/>'
+    )
+
+
+def test_namespace_alias_to_the_null_default_namespace() -> None:
+    result = _transform(
+        """
+        <xsl:namespace-alias stylesheet-prefix="a" result-prefix="#default"/>
+        <xsl:template name="main">
+          <a:foo a:bar="baz"/>
+        </xsl:template>
+        """,
+        attributes=' xmlns:a="http://a/com/"',
+    )
+
+    out = result.principal_tree.root_element
+    assert out.name == "foo"
+    assert out.namespace_uri is None
+    assert out.prefix == ""
+    assert out.attributes[0].name == "bar"
+    assert out.attributes[0].prefix == ""
+    assert _declarations(out) == {}
+    assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><foo bar="baz"/>')
+
+
+def test_namespace_alias_result_prefix_rebinds_per_literal() -> None:
+    result = _transform(
+        """
+        <xsl:namespace-alias stylesheet-prefix="f1" result-prefix="bar"
+            xmlns:f1="urn:f1" xmlns:bar="urn:bar1"/>
+        <xsl:namespace-alias stylesheet-prefix="f2" result-prefix="bar"
+            xmlns:f2="urn:f2" xmlns:bar="urn:bar2"/>
+        <xsl:template name="main">
+          <out><one xmlns="urn:f1"/><two xmlns="urn:f2"/></out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    one, two = out.children
+    assert one.prefix == "bar"
+    assert one.namespace_uri == "urn:bar1"
+    assert two.prefix == "bar"
+    assert two.namespace_uri == "urn:bar2"
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<out><bar:one xmlns:bar="urn:bar1"/><bar:two xmlns:bar="urn:bar2"/></out>'
+    )
+
+
+def test_namespace_alias_copies_a_target_uri_even_when_excluded() -> None:
+    result = _transform(
+        """
+        <xsl:namespace-alias stylesheet-prefix="old" result-prefix="new"/>
+        <xsl:template name="main">
+          <old:item/>
+        </xsl:template>
+        """,
+        attributes=' xmlns:old="urn:old" xmlns:new="urn:new" exclude-result-prefixes="new"',
+    )
+
+    out = result.principal_tree.root_element
+    assert out.name == "{urn:new}item"
+    assert out.prefix == "new"
+    assert _declarations(out) == {"new": "urn:new"}
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?><new:item xmlns:new="urn:new"/>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Copy construction (c.4): namespace nodes, prefixes, declarations, identity
+
+
+def _namespace_prefixes(node: XdmNode) -> list[str]:
+    return [namespace.prefix for namespace in node.namespace_nodes]
+
+
+def test_copy_of_deep_retains_namespaces_prefixes_and_new_identity() -> None:
+    source = XdmDocument.parse(
+        b'<a:root xmlns:a="urn:a" xmlns:u="urn:unused">'
+        b'<b:item xmlns:b="urn:b" b:attr="1"><child/></b:item>'
+        b"</a:root>"
+    )
+    result = _transform_source(
+        '<xsl:template name="main"><out><xsl:copy-of select="/a:root"/></out></xsl:template>',
+        source,
+        attributes=' xmlns:a="urn:a"',
+    )
+
+    out = result.principal_tree.root_element
+    copied = out.children[0]
+    source_root = source.root_element
+    assert copied is not source_root
+    assert copied.name == "{urn:a}root"
+    assert copied.prefix == "a"
+    assert copied.namespace_uri == "urn:a"
+    assert copied.namespace_declarations == (("a", "urn:a"), ("u", "urn:unused"))
+    assert set(_namespace_prefixes(copied)) >= {"a", "u", "xml"}
+    assert len(_namespace_prefixes(copied)) == len(set(_namespace_prefixes(copied)))
+    assert all(namespace.parent is copied for namespace in copied.namespace_nodes)
+    assert all(namespace not in source_root.namespace_nodes for namespace in copied.namespace_nodes)
+    assert copied.in_scope_namespaces["u"] == "urn:unused"
+
+    item = copied.children[0]
+    assert item.name == "{urn:b}item"
+    assert item.prefix == "b"
+    assert item.namespace_declarations == (("b", "urn:b"),)
+    assert item.attributes[0].name == "{urn:b}attr"
+    assert item.attributes[0].prefix == "b"
+    assert item.children[0].name == "child"
+
+
+def test_shallow_copy_retains_name_attributes_and_namespaces_only() -> None:
+    source = XdmDocument.parse(
+        b'<a:root xmlns:a="urn:a"><b:item xmlns:b="urn:b" b:attr="1"><child/></b:item></a:root>'
+    )
+    result = _transform_source(
+        '<xsl:template name="main">'
+        '<out><xsl:for-each select="/a:root/b:item"><xsl:copy/></xsl:for-each></out>'
+        "</xsl:template>",
+        source,
+        attributes=' xmlns:a="urn:a" xmlns:b="urn:b"',
+    )
+
+    copied = result.principal_tree.root_element.children[0]
+    assert copied.name == "{urn:b}item"
+    assert copied.prefix == "b"
+    assert copied.children == ()
+    assert copied.attributes[0].name == "{urn:b}attr"
+    assert copied.attributes[0].prefix == "b"
+    assert set(_namespace_prefixes(copied)) >= {"b", "xml"}
+    assert all(namespace.parent is copied for namespace in copied.namespace_nodes)
+
+
+def test_copy_without_namespaces_drops_unused_bindings_but_keeps_name_ones() -> None:
+    source = (
+        b'<src xmlns:unused="urn:unused" xmlns:p="urn:p" p:a="1"><child xmlns:q="urn:q"/></src>'
+    )
+    result = _transform_source(
+        '<xsl:template name="main">'
+        '<out><xsl:copy-of select="/*" copy-namespaces="no"/></out>'
+        "</xsl:template>",
+        source,
+    )
+
+    copied = result.principal_tree.root_element.children[0]
+    assert copied.prefix == ""
+    assert copied.attributes[0].name == "{urn:p}a"
+    assert copied.attributes[0].prefix == "p"
+    assert set(_namespace_prefixes(copied)) == {"p", "xml"}
+    child = copied.children[0]
+    assert child.in_scope_namespaces.keys() >= {"xml"}
+    assert "q" not in child.in_scope_namespaces
+    assert "unused" not in copied.in_scope_namespaces
+
+
+@pytest.mark.parametrize(
+    ("inherit", "expected_plain"),
+    [("yes", {"xml", "z"}), ("no", {"xml"})],
+)
+def test_copy_inherit_namespaces_controls_propagation_to_constructed_children(
+    inherit: str,
+    expected_plain: set[str],
+) -> None:
+    source = b'<root xmlns:z="urn:z"><item/></root>'
+    result = _transform_source(
+        '<xsl:template name="main">'
+        '<xsl:variable name="v">'
+        f'<xsl:copy select="/*/*" inherit-namespaces="{inherit}">'
+        '<xsl:element name="plain"/>'
+        "</xsl:copy>"
+        "</xsl:variable>"
+        '<out><xsl:sequence select="$v"/></out>'
+        "</xsl:template>",
+        source,
+    )
+
+    item = result.principal_tree.root_element.children[0]
+    plain = item.children[0]
+    assert set(_namespace_prefixes(item)) >= {"z", "xml"}
+    assert set(_namespace_prefixes(plain)) >= expected_plain
+    if inherit == "no":
+        assert "z" not in plain.in_scope_namespaces
+
+
+def test_inherited_default_namespace_does_not_cross_a_no_namespace_element() -> None:
+    source = b'<root><item><q:c xmlns:q="urn:q"/></item></root>'
+    result = _transform_source(
+        '<xsl:template name="main">'
+        '<o xmlns="urn:d"><xsl:copy-of select="/*/*"/></o>'
+        "</xsl:template>",
+        source,
+    )
+
+    out = result.principal_tree.root_element
+    item = out.children[0]
+    child = item.children[0]
+    assert out.in_scope_namespaces[""] == "urn:d"
+    assert item.namespace_uri is None
+    assert item.in_scope_namespaces.get("") is None
+    assert child.namespace_uri == "urn:q"
+    assert child.in_scope_namespaces.get("") is None
+    assert child.namespace_node("") is None
+
+
+_QNAME_SCHEMA = f"""
+<xs:schema xmlns:xs="{XSD_NS}" xmlns:v="{VALUE_NS}"
+    targetNamespace="{VALUE_NS}" elementFormDefault="qualified">
+  <xs:complexType name="Holder">
+    <xs:attribute name="ref" type="xs:QName"/>
+  </xs:complexType>
+  <xs:element name="holder" type="v:Holder"/>
+</xs:schema>
+"""
+
+
+_QNAME_SOURCE = f'<v:holder xmlns:v="{VALUE_NS}" xmlns:q="urn:value" ref="q:thing"/>'.encode()
+
+
+def _qname_body(select: str) -> str:
+    return (
+        f"<xsl:import-schema>{_QNAME_SCHEMA}</xsl:import-schema>"
+        '<xsl:template name="main">'
+        '<out xmlns:q="urn:other" xsl:validation="preserve">'
+        f'<xsl:copy-of select="{select}" validation="preserve"/>'
+        "</out>"
+        "</xsl:template>"
+    )
+
+
+def test_copy_preserves_qname_typed_content_and_its_prefix_binding() -> None:
+    result = _transform_source(
+        _qname_body("/*"),
+        _QNAME_SOURCE,
+        attributes=f' xmlns:v="{VALUE_NS}"',
+        validation="strict",
+    )
+
+    copied = result.principal_tree.root_element.children[0]
+    reference = copied.attributes[0]
+    assert reference.string_value == "q:thing"
+    assert reference.typed_value[0].type_name.endswith("}QName")
+    assert copied.in_scope_namespaces["q"] == "urn:value"
+    assert result.principal_tree.root_element.in_scope_namespaces["q"] == "urn:other"
+    assert 'xmlns:q="urn:value"' in result.serialize()
+
+
+def test_copying_a_parentless_namespace_sensitive_attribute_is_xtte0950() -> None:
+    with pytest.raises(XsltError) as caught:
+        _transform_source(
+            _qname_body("/*/@ref"),
+            _QNAME_SOURCE,
+            attributes=f' xmlns:v="{VALUE_NS}"',
+            validation="strict",
+        )
+    assert caught.value.code == "XTTE0950"
 
 
 def test_raw_delivery_returns_a_constructed_leaf_node() -> None:

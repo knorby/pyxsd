@@ -273,6 +273,40 @@ def test_namespace_declarations_and_prefix_rebinding(tmp_path: Path) -> None:
     assert undeclared.children[0].namespace_declarations == ()
 
 
+def test_copied_elements_own_distinct_namespace_nodes() -> None:
+    from pyxsd.xslt.runtime.builder import _NodeFactory
+
+    source = XdmDocument.parse(
+        b'<r xmlns="urn:def" xmlns:p="urn:p"><a xmlns:q="urn:q" p:x="1"><b/></a></r>'
+    )
+    factory = _NodeFactory()
+    copied = factory.clone(source.root_element, parent=None, deep=True)
+    assert copied is not source.root_element
+    assert copied.document is not source
+
+    for source_element, copied_element in zip(
+        (
+            source.root_element,
+            source.root_element.children[0],
+            source.root_element.children[0].children[0],
+        ),
+        (copied, copied.children[0], copied.children[0].children[0]),
+        strict=True,
+    ):
+        assert copied_element.namespace_nodes
+        assert all(node.parent is copied_element for node in copied_element.namespace_nodes)
+        assert all(
+            node not in source_element.namespace_nodes for node in copied_element.namespace_nodes
+        )
+        prefixes = [node.prefix for node in copied_element.namespace_nodes]
+        assert len(prefixes) == len(set(prefixes))
+    assert {node.prefix: node.namespace_binding for node in copied.namespace_nodes} == {
+        "": "urn:def",
+        "p": "urn:p",
+        "xml": XML_NS,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Annotations, typed values, string values
 

@@ -59,7 +59,7 @@ from types import MethodType
 from typing import Any, cast
 
 from elementpath import XPathContext
-from elementpath.datatypes import AnyAtomicType, UntypedAtomic
+from elementpath.datatypes import AnyAtomicType, QName, UntypedAtomic
 from elementpath.helpers import upper_camel_case
 from elementpath.namespaces import get_expanded_name
 from elementpath.tdop import Parser
@@ -343,6 +343,10 @@ class _XdmElementAdapter(ElementNode, _NodeAdapterMixin):
         ]
 
     @property
+    def node_name(self) -> QName | None:
+        return _adapter_node_name(self._xdm, is_attribute=False)
+
+    @property
     def attributes(self) -> list[AttributeNode]:
         return self._attributes
 
@@ -379,6 +383,10 @@ class _XdmAttributeAdapter(AttributeNode, _NodeAdapterMixin):
         self.parent = parent
         self.position = xdm.document_order
         self.xsd_type = None
+
+    @property
+    def node_name(self) -> QName | None:
+        return _adapter_node_name(self._xdm, is_attribute=True)
 
     @property
     def string_value(self) -> str:
@@ -445,10 +453,38 @@ class _XdmProcessingInstructionAdapter(ProcessingInstructionNode, _NodeAdapterMi
 class _XdmNamespaceAdapter(NamespaceNode, _NodeAdapterMixin):
     __slots__ = ("_xdm",)
 
-    def __init__(self, xdm: XdmNode, parent: ElementNode, factory: Any) -> None:
+    def __init__(self, xdm: XdmNode, parent: ElementNode | None, factory: Any) -> None:
         del factory
         self._xdm = xdm
         super().__init__(xdm.prefix, xdm.bound_uri or "", parent, xdm.document_order)
+
+
+def _adapter_node_name(xdm: XdmNode, *, is_attribute: bool) -> QName | None:
+    """The lexical QName of one element or attribute adapter.
+
+    XDM keeps the prefix the construction or copy path selected, which a
+    namespace map cannot recover when a default and a prefixed binding name
+    the same URI.  An attribute in a namespace always needs a non-empty
+    prefix, so a missing stored prefix falls back to a binding for the URI.
+    """
+    local = xdm.local_name or ""
+    prefix = xdm.prefix
+    namespace = xdm.namespace_uri
+    if (
+        namespace is not None
+        and not prefix
+        and (is_attribute or xdm.in_scope_namespaces.get("") != namespace)
+    ):
+        prefix = next(
+            (
+                candidate
+                for candidate, uri in xdm.in_scope_namespaces.items()
+                if candidate and uri == namespace
+            ),
+            "",
+        )
+    lexical = f"{prefix}:{local}" if prefix else local
+    return QName(namespace, lexical)
 
 
 def _adapter_node(node: XdmNode, parent: Any, factory: Any) -> Any:
@@ -878,7 +914,11 @@ class _ValueBridge:
             return _XdmCommentAdapter(node, None, self)
         if node.kind is NodeKind.PROCESSING_INSTRUCTION:
             return _XdmProcessingInstructionAdapter(node, None, self)
-        raise ValueError(f"a detached {node.kind.value} node has no parent")
+        if node.kind is NodeKind.NAMESPACE:
+            return _XdmNamespaceAdapter(node, None, self)
+        raise ValueError(  # pragma: no cover - every non-document kind is handled above
+            f"a detached {node.kind.value} node has no parent"
+        )
 
     def adapt_item(self, item: XdmItem) -> Any:
         if isinstance(item, ResultTreeFragment):

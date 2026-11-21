@@ -1784,6 +1784,10 @@ def _build_constructs(
             )
             declarations.append(normalized)
             for attribute in declaration.element.attributes:
+                if attribute.namespace_uri is not None:
+                    # A foreign-namespace attribute is an extension attribute
+                    # (XSLT 3.0 section 3.2), never an output parameter.
+                    continue
                 local = attribute.local_name
                 assert local is not None
                 if attribute.name.startswith("_") or local == "name":

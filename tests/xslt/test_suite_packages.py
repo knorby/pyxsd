@@ -57,7 +57,7 @@ def _library(value: str = "'hello'") -> str:
 def _principal(*, name: str = PRINCIPAL, declarations: str = "") -> str:
     """A principal package that calls the library's public function."""
     return f"""<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:lib="{LIBRARY}"
-    name="{name}" version="3.0">
+    exclude-result-prefixes="lib" name="{name}" version="3.0">
   {declarations}
   <xsl:use-package name="{LIBRARY}"/>
   <xsl:template name="xsl:initial-template" visibility="public">
@@ -68,7 +68,8 @@ def _principal(*, name: str = PRINCIPAL, declarations: str = "") -> str:
 
 def _stylesheet_principal() -> str:
     """An ordinary stylesheet that reaches the same library package."""
-    return f"""<xsl:transform xmlns:xsl="{XSLT_NS}" xmlns:lib="{LIBRARY}" version="3.0">
+    return f"""<xsl:transform xmlns:xsl="{XSLT_NS}" xmlns:lib="{LIBRARY}"
+    exclude-result-prefixes="lib" version="3.0">
   <xsl:use-package name="{LIBRARY}"/>
   <xsl:template name="xsl:initial-template">
     <out><xsl:value-of select="lib:greet()"/></out>
