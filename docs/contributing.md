@@ -24,7 +24,9 @@ but they are greatly appreciated.
 git clone https://github.com/knorby/pyxsd
 cd pyxsd
 uv sync --group dev          # runtime + dev/test dependencies
-uv run pytest --cov --cov-branch  # default suite with branch coverage
+uv run pytest -n auto --dist loadfile                     # fast default suite
+uv run pytest -n auto --dist loadfile --cov --cov-branch  # full coverage gate
+uv run pytest --cov --cov-branch                          # serial fallback with branch coverage
 uvx ruff@0.16.6 check .      # lint
 uvx ruff@0.16.6 format --check .
 uv run mypy src/pyxsd        # type check
@@ -32,6 +34,12 @@ uv run python tests/report_conformance.py  # suite-inspired conformance report
 uv run python -m tests.conformance.run     # real-schema conformance + benchmarks
 PYXSD_RUN_XSTS=1 uv run pytest tests/test_xsts_suite.py  # W3C XML Schema Test Suite
 ```
+
+`-n auto --dist loadfile` runs the suite under pytest-xdist with one worker
+per available CPU, and `loadfile` hands each worker whole test files rather
+than individual tests. Serial pytest remains supported: omit the `-n` and
+`--dist` flags and the same tests run in one process. CI runs the coverage
+gate with four workers (`-n 4 --dist loadfile`).
 
 `uv run pre-commit install` installs hooks that run on every commit: ruff lint and
 format, file hygiene (whitespace, line endings, TOML/YAML validity,
