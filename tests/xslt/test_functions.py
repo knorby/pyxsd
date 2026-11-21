@@ -976,6 +976,38 @@ def test_name_uses_a_prefix_for_namespaced_attributes() -> None:
     )
 
 
+def test_attribute_name_falls_back_when_the_stored_prefix_is_absent() -> None:
+    from pyxsd.xpath.engine import _adapter_node_name
+    from pyxsd.xslt.runtime.builder import _NodeFactory
+
+    factory = _NodeFactory()
+    element = factory.element("r", namespaces={"p": "urn:p", "q": "urn:p"})
+    attribute = factory.attribute(
+        "{urn:p}a",
+        "1",
+        parent=element,
+        prefix="",
+        in_scope_namespaces=element.in_scope_namespaces,
+    )
+    name = _adapter_node_name(attribute, is_attribute=True)
+    assert name is not None
+    assert name.qname == "p:a"
+
+
+def test_name_keeps_the_stored_prefix_when_two_prefixes_share_a_uri() -> None:
+    source = XdmDocument.parse(b'<r xmlns:q="urn:p" xmlns:p="urn:p" p:a="1"/>')
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence select="name(/*/@*[1])"/>
+          <xsl:sequence select="name(/*/@*[1]) = 'p:a'"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=source)
+    assert result.principal == (XdmAtomic.string("p:a"), XdmAtomic.boolean(True))
+
+
 def test_namespace_functions_reject_a_non_element_argument() -> None:
     body = stylesheet(
         """

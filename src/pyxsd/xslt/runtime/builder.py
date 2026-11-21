@@ -1046,10 +1046,11 @@ def _inherit_namespaces(
 
     Only the namespace nodes of the element being attached are inherited;
     the binding is then offered unchanged to every descendant, except where
-    an intermediate element already has a node with that name.  Carrying the
-    intermediate element's own scope onward instead would give every
-    descendant the deepest ancestry regardless of an ``inherit-namespaces="no"``
-    construction on the way down.
+    an intermediate element already has a node with that name.  A default
+    namespace node additionally stops at an intermediate element in no
+    namespace (XSLT 3.0 section 5.7.1).  Carrying the intermediate element's
+    own scope onward instead would give every descendant the deepest ancestry
+    regardless of an ``inherit-namespaces="no"`` construction on the way down.
     """
     own = element.in_scope_namespaces
     scope = dict(own)
@@ -1065,7 +1066,11 @@ def _inherit_namespaces(
     if added:
         element._in_scope_namespaces = MappingProxyType(scope)
         element._namespace_declarations = _declarations(scope)
-    propagated = {prefix: uri for prefix, uri in inherited.items() if prefix not in own}
+    propagated = {
+        prefix: uri
+        for prefix, uri in inherited.items()
+        if prefix not in own and not (prefix == "" and element.namespace_uri is None)
+    }
     if not propagated:
         return
     for child in element.children:

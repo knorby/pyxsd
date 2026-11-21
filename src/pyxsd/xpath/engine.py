@@ -472,7 +472,7 @@ def _adapter_node_name(xdm: XdmNode, *, is_attribute: bool) -> QName | None:
     namespace = xdm.namespace_uri
     if (
         namespace is not None
-        and (is_attribute or not prefix)
+        and not prefix
         and (is_attribute or xdm.in_scope_namespaces.get("") != namespace)
     ):
         prefix = next(

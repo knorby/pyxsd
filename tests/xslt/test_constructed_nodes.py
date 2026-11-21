@@ -784,7 +784,7 @@ def test_copy_inherit_namespaces_controls_propagation_to_constructed_children(
     result = _transform_source(
         '<xsl:template name="main">'
         '<xsl:variable name="v">'
-        f'<xsl:copy select="/root/item" inherit-namespaces="{inherit}">'
+        f'<xsl:copy select="/*/*" inherit-namespaces="{inherit}">'
         '<xsl:element name="plain"/>'
         "</xsl:copy>"
         "</xsl:variable>"
@@ -799,6 +799,26 @@ def test_copy_inherit_namespaces_controls_propagation_to_constructed_children(
     assert set(_namespace_prefixes(plain)) >= expected_plain
     if inherit == "no":
         assert "z" not in plain.in_scope_namespaces
+
+
+def test_inherited_default_namespace_does_not_cross_a_no_namespace_element() -> None:
+    source = b'<root><item><q:c xmlns:q="urn:q"/></item></root>'
+    result = _transform_source(
+        '<xsl:template name="main">'
+        '<o xmlns="urn:d"><xsl:copy-of select="/*/*"/></o>'
+        "</xsl:template>",
+        source,
+    )
+
+    out = result.principal_tree.root_element
+    item = out.children[0]
+    child = item.children[0]
+    assert out.in_scope_namespaces[""] == "urn:d"
+    assert item.namespace_uri is None
+    assert item.in_scope_namespaces.get("") is None
+    assert child.namespace_uri == "urn:q"
+    assert child.in_scope_namespaces.get("") is None
+    assert child.namespace_node("") is None
 
 
 _QNAME_SCHEMA = f"""
