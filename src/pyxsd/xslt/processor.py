@@ -2517,14 +2517,19 @@ def _package_namespace_aliases(modules: tuple[EffectiveModule, ...]) -> tuple[Na
 
 def _literal_plan_namespaces(
     instruction: Instruction,
+    module: EffectiveModule,
     context: StaticContext,
 ) -> tuple[tuple[tuple[str, str], ...], frozenset[str]]:
     """The literal result element's raw bindings and excluded URIs.
 
     The runtime prepared scope separates these: the raw bindings stay
     available for naming and namespace fixup, while only the excluded URIs are
-    withheld from the namespace nodes copied into the result.
+    withheld from the namespace nodes copied into the result.  Module-root
+    extension tokens are validated here unconditionally: the error contract is
+    independent of the literal's own name and prefix, while cumulative
+    extension exclusion comes from the static context.
     """
+    _extension_instruction_namespaces(module)
     namespaces = tuple(instruction.namespaces.items())
     excluded = set(context.excluded_namespaces)
     excluded.add(XSLT_NS)
@@ -4031,7 +4036,7 @@ def _compile_literal_result(
                 compile_avt(attribute.value, context, location=instruction.location),
             )
         )
-    namespaces, excluded = _literal_plan_namespaces(instruction, context)
+    namespaces, excluded = _literal_plan_namespaces(instruction, module, context)
     validation, type_name = _compile_construction_validation(
         instruction,
         context,
