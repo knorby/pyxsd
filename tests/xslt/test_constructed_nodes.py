@@ -535,6 +535,74 @@ def test_literal_xml_namespace_attribute_uses_the_xml_prefix() -> None:
     assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><out xml:lang="en"/>')
 
 
+def test_namespace_alias_does_not_rewrite_attribute_set_attributes() -> None:
+    result = _transform(
+        """
+        <xsl:attribute-set name="s">
+          <xsl:attribute name="old:from-set">set</xsl:attribute>
+        </xsl:attribute-set>
+        <xsl:namespace-alias stylesheet-prefix="old" result-prefix="new"/>
+        <xsl:template name="main">
+          <out xsl:use-attribute-sets="s" old:from-literal="lit"/>
+        </xsl:template>
+        """,
+        attributes=' xmlns:old="urn:old" xmlns:new="urn:new"',
+    )
+
+    out = result.principal_tree.root_element
+    attributes = {attribute.name: attribute for attribute in out.attributes}
+    assert set(attributes) == {"{urn:old}from-set", "{urn:new}from-literal"}
+    assert attributes["{urn:old}from-set"].prefix == "old"
+    assert attributes["{urn:new}from-literal"].prefix == "new"
+    assert _declarations(out) == {"old": "urn:old", "new": "urn:new"}
+
+
+def test_literal_own_extension_prefixes_are_excluded_namespaces() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xmlns:ext="urn:ext" xmlns:keep="urn:keep"
+               xsl:extension-element-prefixes="ext"/>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert _declarations(out) == {"keep": "urn:keep"}
+    assert "ext" not in out.in_scope_namespaces
+    assert "keep" in out.in_scope_namespaces
+
+
+def test_ancestor_extension_prefixes_are_excluded_for_the_subtree() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <outer xmlns:ext="urn:ext" xsl:extension-element-prefixes="ext">
+            <inner/>
+          </outer>
+        </xsl:template>
+        """
+    )
+
+    outer = result.principal_tree.root_element
+    inner = outer.children[0]
+    assert _declarations(outer) == {}
+    assert _declarations(inner) == {}
+    assert "ext" not in outer.in_scope_namespaces
+    assert "ext" not in inner.in_scope_namespaces
+
+
+def test_module_root_extension_prefixes_still_exclude_literal_namespaces() -> None:
+    result = _transform(
+        '<xsl:template name="main"><out xmlns:keep="urn:keep"/></xsl:template>',
+        attributes=' xmlns:ext="urn:ext" extension-element-prefixes="ext"',
+    )
+
+    out = result.principal_tree.root_element
+    assert _declarations(out) == {"keep": "urn:keep"}
+    assert "ext" not in out.in_scope_namespaces
+
+
 def test_namespace_alias_rewrites_element_and_attribute_names() -> None:
     result = _transform(
         """

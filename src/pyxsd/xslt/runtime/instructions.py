@@ -1178,20 +1178,21 @@ def literal_element(
     context: EvaluationContext,
 ) -> XdmNode:
     factory = _NodeFactory()
-    attributes: list[tuple[str, str]] = []
+    attribute_set_attributes: list[tuple[str, str]] = []
     for reference in plan.attribute_sets:
         component = invocation._resolve_attribute_set(reference, context.package_name)
-        attributes.extend(
+        attribute_set_attributes.extend(
             (attribute.name or "", attribute.string_value)
             for attribute in invocation._attribute_set_attributes(component, context)
             if attribute.kind is NodeKind.ATTRIBUTE
         )
-    attributes.extend(
+    attributes = tuple(
         (name, invocation._value_source(value, context)) for name, value in plan.attributes
     )
     element = factory.element(
         plan.instruction.name,
-        attributes=tuple(attributes),
+        attributes=attributes,
+        attribute_set_attributes=tuple(attribute_set_attributes),
         namespaces=dict(plan.namespaces),
         base_uri=plan.instruction.base_uri,
         prefix=plan.instruction.prefix,

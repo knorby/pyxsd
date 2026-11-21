@@ -2517,7 +2517,6 @@ def _package_namespace_aliases(modules: tuple[EffectiveModule, ...]) -> tuple[Na
 
 def _literal_plan_namespaces(
     instruction: Instruction,
-    module: EffectiveModule,
     context: StaticContext,
 ) -> tuple[tuple[tuple[str, str], ...], frozenset[str]]:
     """The literal result element's raw bindings and excluded URIs.
@@ -2529,7 +2528,7 @@ def _literal_plan_namespaces(
     namespaces = tuple(instruction.namespaces.items())
     excluded = set(context.excluded_namespaces)
     excluded.add(XSLT_NS)
-    excluded.update(_extension_instruction_namespaces(module))
+    excluded.update(context.extension_namespaces)
     return namespaces, frozenset(excluded)
 
 
@@ -4032,7 +4031,7 @@ def _compile_literal_result(
                 compile_avt(attribute.value, context, location=instruction.location),
             )
         )
-    namespaces, excluded = _literal_plan_namespaces(instruction, module, context)
+    namespaces, excluded = _literal_plan_namespaces(instruction, context)
     validation, type_name = _compile_construction_validation(
         instruction,
         context,

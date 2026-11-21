@@ -311,6 +311,7 @@ class StaticContext:
     python_rule_count: int | None = None
     instruction_compilers: Mapping[str, InstructionCompiler] = field(default_factory=dict)
     excluded_namespaces: frozenset[str] = frozenset()
+    extension_namespaces: frozenset[str] = frozenset()
     namespace_aliases: tuple[NamespaceAlias, ...] = ()
 
     def __post_init__(self) -> None:
@@ -357,6 +358,7 @@ class StaticContext:
                 raise ValueError(f"function mapping key {key!r} does not match its declaration")
         object.__setattr__(self, "functions", functions)
         object.__setattr__(self, "excluded_namespaces", frozenset(self.excluded_namespaces))
+        object.__setattr__(self, "extension_namespaces", frozenset(self.extension_namespaces))
         object.__setattr__(self, "namespace_aliases", tuple(self.namespace_aliases))
 
         for label, value in (
@@ -749,6 +751,7 @@ class StaticContext:
             python_rule_count=(fallback.python_rule_count if fallback is not None else None),
             instruction_compilers=(fallback.instruction_compilers if fallback is not None else {}),
             excluded_namespaces=defaults.excluded_namespaces,
+            extension_namespaces=defaults.extension_namespaces,
             namespace_aliases=(fallback.namespace_aliases if fallback is not None else ()),
         )
 
@@ -772,6 +775,7 @@ class _ElementDefaults:
     location: IssueLocation | None
     module: str | None
     excluded_namespaces: frozenset[str] = frozenset()
+    extension_namespaces: frozenset[str] = frozenset()
 
 
 def _document_uri(element: XdmNode | EffectiveElement) -> str | None:
@@ -887,6 +891,31 @@ def _excluded_namespaces(
     return frozenset(excluded)
 
 
+def _extension_namespaces(
+    element: XdmNode | EffectiveElement,
+    namespaces: Mapping[str, str],
+    fallback: StaticContext | None,
+) -> frozenset[str]:
+    """The cumulative extension-namespace URIs at one stylesheet element.
+
+    ``[xsl:]extension-element-prefixes`` is a standard attribute whose value is
+    cumulative over ancestor-or-self elements and effective for the bearing
+    element's subtree in its own module (XSLT 3.0 3.4 and 24.2.1).  Each token
+    resolves in the binding context of the element that carries it.
+    """
+    extension = set(fallback.extension_namespaces if fallback is not None else ())
+    declared = _own_standard_attribute(
+        element, ("extension-element-prefixes", f"{{{XSLT_NS}}}extension-element-prefixes")
+    )
+    if declared is None:
+        return frozenset(extension)
+    for token in declared.split():
+        uri = namespaces.get("") if token == "#default" else namespaces.get(token)
+        if uri is not None:
+            extension.add(uri)
+    return frozenset(extension)
+
+
 def _element_defaults(
     element: XdmNode | EffectiveElement,
     fallback: StaticContext | None,
@@ -976,6 +1005,7 @@ def _element_defaults(
         input_type_annotations = fallback.input_type_annotations if fallback is not None else None
 
     excluded_namespaces = _excluded_namespaces(element, namespaces, fallback)
+    extension_namespaces = _extension_namespaces(element, namespaces, fallback)
 
     effective_namespaces = namespaces
     if not effective_namespaces and fallback is not None:
@@ -1002,6 +1032,7 @@ def _element_defaults(
         location=_source_location(element) or (fallback.location if fallback is not None else None),
         module=_document_uri(element) or (fallback.module if fallback is not None else None),
         excluded_namespaces=excluded_namespaces,
+        extension_namespaces=extension_namespaces,
     )
 
 

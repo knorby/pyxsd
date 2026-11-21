@@ -540,6 +540,7 @@ class _NodeFactory:
         name: str,
         *,
         attributes: Iterable[tuple[str, str]] = (),
+        attribute_set_attributes: Iterable[tuple[str, str]] = (),
         namespaces: Mapping[str, str] | None = None,
         base_uri: str | None = None,
         namespace_aliases: Mapping[str, str] | None = None,
@@ -554,11 +555,15 @@ class _NodeFactory:
         result element.  ``excluded_namespaces`` removes only the namespace
         nodes copied from that scope; a URI a constructed name requires is
         reintroduced by fixup.  ``namespace_alias_rules`` rewrites literal URIs
-        to their result-tree targets.  ``namespace_aliases`` remains the
-        low-level prefix-remap form of the direct builder API.
+        to their result-tree targets for ``attributes`` — the attributes
+        written on the literal result element itself.  ``attribute_set_attributes``
+        come from ``xsl:attribute`` and keep their expanded names unchanged.
+        ``namespace_aliases`` remains the low-level prefix-remap form of the
+        direct builder API.
         """
         raw_namespaces = _aliased_namespaces(namespaces, namespace_aliases)
         element_namespace, element_local = _expanded_name(name, code="XTDE0820")
+        attribute_set_list = tuple(attribute_set_attributes)
         attribute_list = tuple(attributes)
         prepared = _prepare_scope(
             raw_namespaces,
@@ -569,15 +574,19 @@ class _NodeFactory:
         scope = dict(prepared.copied_namespaces)
         scope.setdefault("xml", XML_NS)
         result_attributes: list[tuple[str, str, str]] = []
-        for attribute_name, value in attribute_list:
+        for index, (attribute_name, value) in enumerate(attribute_set_list + attribute_list):
             attribute_namespace, attribute_local = _expanded_name(attribute_name, code="XTDE0850")
             if attribute_namespace == XMLNS_NS:
                 raise _dynamic(
                     "an attribute cannot be in the xmlns namespace",
                     "XTDE0850",
                 )
-            effective_namespace = prepared.resolve_namespace(attribute_namespace)
-            requested = prepared.preferred_prefix(attribute_namespace)
+            if index < len(attribute_set_list):
+                effective_namespace = attribute_namespace
+                requested = None
+            else:
+                effective_namespace = prepared.resolve_namespace(attribute_namespace)
+                requested = prepared.preferred_prefix(attribute_namespace)
             selected = _attribute_prefix(
                 effective_namespace,
                 scope,
@@ -1322,6 +1331,7 @@ class ResultBuilder:
         name: str,
         *,
         attributes: Iterable[tuple[str, str]] = (),
+        attribute_set_attributes: Iterable[tuple[str, str]] = (),
         namespaces: Mapping[str, str] | None = None,
         namespace_aliases: Mapping[str, str] | None = None,
         excluded_namespaces: frozenset[str] = frozenset(),
@@ -1344,6 +1354,7 @@ class ResultBuilder:
         element = self._factory.element(
             name,
             attributes=attributes,
+            attribute_set_attributes=attribute_set_attributes,
             namespaces=inherited,
             base_uri=base_uri,
             namespace_aliases=namespace_aliases,
