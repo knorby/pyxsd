@@ -240,6 +240,8 @@ class Dependency:
 class TestCase:
     """One catalog test case."""
 
+    __test__ = False
+
     name: str
     local_name: str
     test_set: str

@@ -45,6 +45,7 @@ from tests.xslt.suite import (
     SUITE_PROFILES,
     SuiteProfile,
     UnsupportedCase,
+    _parallel_start_method,
     _run_payload,
     case_budget,
     execute_case,
@@ -787,6 +788,32 @@ def test_parallel_execution_preserves_catalog_order(tmp_path: Path) -> None:
         "gate/case-002": Outcome.PASS,
         "gate/case-003": Outcome.PASS,
     }
+
+
+def test_parallel_workers_avoid_fork_in_xdist_or_multithreaded_parents() -> None:
+    assert _parallel_start_method(in_xdist_worker=True, active_threads=1) == "spawn"
+    assert _parallel_start_method(in_xdist_worker=False, active_threads=2) == "spawn"
+
+
+def test_serial_workers_keep_the_fast_safe_start_method(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        suite_module.multiprocessing, "get_all_start_methods", lambda: ["fork", "spawn"]
+    )
+    assert _parallel_start_method(in_xdist_worker=False, active_threads=1) == "fork"
+    monkeypatch.setattr(suite_module.multiprocessing, "get_all_start_methods", lambda: ["spawn"])
+    assert _parallel_start_method(in_xdist_worker=False, active_threads=1) == "spawn"
+
+
+def test_catalog_models_are_not_collected_as_test_classes() -> None:
+    assert CatalogCase.__test__ is False
+
+
+def test_pytest_configuration_does_not_require_xdist() -> None:
+    addopts = _pyproject()["tool"]["pytest"]["ini_options"].get("addopts", "")
+    assert "-n" not in addopts
+    assert "--dist" not in addopts
 
 
 def test_worker_payload_carries_the_profile_unicode_version(

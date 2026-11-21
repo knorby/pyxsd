@@ -70,6 +70,7 @@ dev = [
     # The conformance contract parses workflow YAML directly, so it must be
     # declared here rather than inherited through pre-commit.
     "pyyaml>=6",
+    "pytest-xdist>=3.8",
 ]
 docs = [
     "sphinx>=8.2",

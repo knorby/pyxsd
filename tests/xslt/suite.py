@@ -21,6 +21,7 @@ import hashlib
 import multiprocessing
 import os
 import signal
+import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -1252,6 +1253,19 @@ def default_jobs() -> int:
     return max(1, int(configured))
 
 
+def _parallel_start_method(*, in_xdist_worker: bool, active_threads: int) -> str:
+    """The pool start method, forking only where forking is safe.
+
+    ``fork`` is much cheaper than ``spawn``, but a forked child of a
+    multi-threaded process inherits locks it can never release, and an xdist
+    worker already hosts pytest's executor threads.  Either condition forces
+    ``spawn``; a platform without ``fork`` falls back to it too.
+    """
+    if in_xdist_worker or active_threads > 1:
+        return "spawn"
+    return "fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn"
+
+
 def run_parallel(
     cases: Iterable[TestCase],
     profile: SuiteProfile,
@@ -1273,7 +1287,10 @@ def run_parallel(
     if workers == 1 or len(cases) <= 1:
         return run_suite(cases, profile, timeout=timeout)
     unicode_version = profile.feature_profile.unicode_version
-    method = "fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn"
+    method = _parallel_start_method(
+        in_xdist_worker="PYTEST_XDIST_WORKER" in os.environ,
+        active_threads=threading.active_count(),
+    )
     context = multiprocessing.get_context(method)
     budget = None if timeout is None else timeout + _PARENT_GRACE
     results: dict[str, CaseResult] = {}
