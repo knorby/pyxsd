@@ -395,6 +395,21 @@ def test_annotation_on_a_parenthesized_name_class_wraps_it_in_a_choice() -> None
     assert alternative.lexical == "name"
 
 
+def test_annotation_on_a_parenthesized_name_class_choice_is_not_double_wrapped() -> None:
+    schema = parse('namespace a = "urn:a"\nelement [a:mark = "1"] (x | y) { empty }')
+
+    element = schema.start
+    assert isinstance(element, FullElement)
+    name_class = element.name_class
+    assert isinstance(name_class, FullNameChoice)
+    assert attributes_of(name_class)["mark"].value == "1"
+    assert [type(alternative) for alternative in name_class.alternatives] == [
+        FullName,
+        FullName,
+    ]
+    assert [alternative.lexical for alternative in name_class.alternatives] == ["x", "y"]  # type: ignore[union-attr]
+
+
 # ---------------------------------------------------------------------------
 # Following annotations
 # ---------------------------------------------------------------------------
@@ -543,6 +558,7 @@ def test_nested_grammar_takes_annotations_of_its_own_content() -> None:
     assert isinstance(inner, FullGrammar)
     assert attributes_of(inner)["g"].value == "1"
     assert element_annotation(inner, "note").element is not None
+    assert inner.scope.annotations == inner.annotations
 
 
 # ---------------------------------------------------------------------------

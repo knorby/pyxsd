@@ -501,7 +501,8 @@ class _Reader:
 
     # -- grammar content --------------------------------------------------
 
-    def _grammar_shape(self, *, top_level: bool) -> _Shape:
+    def _grammar_shape(self, *, top_level: bool, initial: _Annotations | None = None) -> _Shape:
+        initial = initial if initial is not None else _Annotations()
         if top_level:
             token = self._peek()
             content = self._grammar_members(end=None, allow_include=True)
@@ -519,7 +520,11 @@ class _Reader:
         def build(path: tuple[PathStep, ...], parent_scope: GrammarScope | None) -> FullNode:
             origins = self._table(path, token)
             annotations = self._annotation_values(
-                _Annotations(elements=tuple(content.annotations)), path
+                _Annotations(
+                    attributes=initial.attributes,
+                    elements=initial.elements + tuple(content.annotations),
+                ),
+                path,
             )
             scope = GrammarScope(parent=parent_scope, origins=origins, annotations=annotations)
             self.grammars.append(scope)
@@ -782,6 +787,8 @@ class _Reader:
                     shape = self._annotate(self._group_wrapper_shape(shape, token), annotations)
             return replace(shape, container=False, repeated=False)
         if token.kind is TokenKind.KEYWORD:
+            if token.value == "grammar":
+                return self._grammar_shape(top_level=False, initial=annotations)
             shape = self._keyword_primary_shape(token)
         elif token.kind in {TokenKind.IDENTIFIER, TokenKind.QUOTED_IDENTIFIER}:
             self._advance()
@@ -817,8 +824,6 @@ class _Reader:
         if token.value == "text":
             self._advance()
             return self._leaf_shape("text", token, FullText)
-        if token.value == "grammar":
-            return self._grammar_shape(top_level=False)
         if token.value == "parent":
             return self._parent_reference_shape()
         if token.value == "external":
@@ -1131,8 +1136,11 @@ class _Reader:
                 shape = self._name_class_shape(is_element=is_element)
             self._expect_symbol(")")
             if annotations:
-                return self._annotate(self._name_choice_wrapper(shape, token), annotations)
-            return shape
+                if shape.container:
+                    shape = self._annotate(shape, annotations)
+                else:
+                    shape = self._annotate(self._name_choice_wrapper(shape, token), annotations)
+            return replace(shape, container=False)
         if token.kind is TokenKind.SYMBOL and token.value == "*":
             self._advance()
             shape = self._wildcard_shape("anyName", token, None)
@@ -1194,7 +1202,7 @@ class _Reader:
             )
             return FullNameChoice(built, self._table(path, token), annotations)
 
-        return _Shape("choice", token, build)
+        return _Shape("choice", token, build, container=True)
 
     def _name_choice_wrapper(self, shape: _Shape, token: Token) -> _Shape:
         """Wrap one name class in the ``choice`` a parent annotation needs."""

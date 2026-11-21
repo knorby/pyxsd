@@ -454,6 +454,24 @@ def test_every_name_class_form() -> None:
     assert (qualified.lexical, qualified.local, qualified.uri) == ("ex:foo", "foo", "urn:ex")
 
 
+def test_annotated_parenthesized_name_class_choice_keeps_one_virtual_choice() -> None:
+    schema = parse('namespace a = "urn:a"\nelement [a:mark = "1"] (x | y) { empty }')
+
+    element = schema.start
+    assert isinstance(element, FullElement)
+    choice = element.name_class
+    assert isinstance(choice, FullNameChoice)
+    assert path_of(choice) == (("element", 1), ("choice", 1))
+    assert [type(alternative) for alternative in choice.alternatives] == [
+        FullName,
+        FullName,
+    ]
+    assert [path_of(alternative)[-1] for alternative in choice.alternatives] == [
+        ("name", 1),
+        ("name", 2),
+    ]
+
+
 def test_literal_segments_concatenate() -> None:
     schema = parse('element r { "ab" ~ \'cd\' ~ """e"f""" }')
 
