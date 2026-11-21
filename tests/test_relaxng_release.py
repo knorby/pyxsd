@@ -1423,7 +1423,7 @@ def test_ci_matrices_execute_every_supported_python_version_and_split_suites() -
     assert "--cov" in run and "--cov-branch" in run
     assert "--ignore=tests/mcp" in run
     assert coverage_step.get("env", {}).get("PYXSD_RUN_RELAXNG") == "1"
-    assert "Run the XSD Test Suite" in {step.get("name") for step in test_job["steps"]}
+    assert "Run the XSD Test Suite" in {step.get("name") for step in ci["xsts"]["steps"]}
 
     mcp_job = _workflow("mcp.yml")["jobs"]["mcp"]
     assert mcp_job["strategy"]["matrix"]["python"] == supported

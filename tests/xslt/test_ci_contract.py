@@ -903,6 +903,9 @@ def test_standalone_corpus_job_never_weakens_unit_coverage() -> None:
         step.get("run", "") for step in _steps(ci["jobs"]["test"]) if "--cov" in step.get("run", "")
     ]
     assert any("--cov --cov-branch" in run for run in unit_runs)
+    base_run = next(run for run in unit_runs if "--cov --cov-branch" in run)
+    assert "-n 4" in base_run
+    assert "--dist loadfile" in base_run
 
     for job in _workflow()["jobs"].values():
         for step in _steps(job):

@@ -27,7 +27,7 @@ jobs:
       EXTRA: ${{ matrix.extra }}
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           python-version: "3.11"
       - name: Build and test distribution contents outside the checkout
@@ -108,7 +108,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
 
       - name: Ruff lint
         run: uvx ruff@0.16.6 check .
@@ -118,8 +118,8 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    # 20 min: the XSD Test Suite step adds several minutes on top of the
-    # coverage run (~3 min); slower runners need headroom beyond 15.
+    # 20 min: the four-way parallel coverage run covers the base suite, and
+    # the XSD Test Suite runs concurrently in its own `xsts` job.
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -129,7 +129,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -180,7 +180,7 @@ jobs:
         run: uv run python -m tests.conformance.fetch
 
       - name: Run tests with coverage
-        run: uv run pytest --cov --cov-branch --cov-report=xml --cov-report=term-missing --ignore=tests/mcp
+        run: uv run pytest -n 4 --dist loadfile --cov --cov-branch --cov-report=xml --cov-report=term-missing --ignore=tests/mcp
         env:
           PYXSD_RUN_RELAXNG: "1"
 
@@ -199,16 +199,6 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
           flags: python-${{ matrix.python-version }}
-
-      - name: Run the XSD Test Suite
-        run: uv run pytest tests/test_xsts_suite.py -q
-        env:
-          PYXSD_RUN_XSTS: "1"
-          # Standard runners are 2-4x slower than a dev machine; the
-          # slowest instance cases need more than the 60 s dev default.
-          # 180 s also covers the regex cases the repeated-particle fast
-          # path settled into a 24-43 s band on a dev machine.
-          PYXSD_XSTS_TIMEOUT: "180"
 
       - name: Benchmark the conformance corpus
         if: github.event_name == 'pull_request'
@@ -229,6 +219,49 @@ jobs:
           uv pip install --python "$RUNNER_TEMP/pyxsd-batch/bin/python" "$WHEEL" 'pytest>=8.4'
           "$RUNNER_TEMP/pyxsd-batch/bin/python" -m pytest -q tests/test_batch_parse.py tests/test_batch_example.py
 
+  xsts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Resolve the pinned xsdtests corpus commit
+        id: corpus
+        run: echo "sha=$(git rev-parse HEAD:tests/xsts/corpus)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the xsdtests corpus submodule
+        uses: actions/cache@v6
+        with:
+          path: |
+            tests/xsts/corpus
+            .git/modules/tests/xsts/corpus
+          key: xsdtests-${{ runner.os }}-${{ steps.corpus.outputs.sha }}
+
+      - name: Check out the xsdtests corpus
+        run: git submodule update --init --depth 1 tests/xsts/corpus
+
+      - name: Sync environment
+        run: uv sync --group dev --python ${{ matrix.python-version }}
+
+      - name: Run the XSD Test Suite
+        run: uv run pytest tests/test_xsts_suite.py -q
+        env:
+          PYXSD_RUN_XSTS: "1"
+          # Standard runners are 2-4x slower than a dev machine; the
+          # slowest instance cases need more than the 60 s dev default.
+          # 180 s also covers the regex cases the repeated-particle fast
+          # path settled into a 24-43 s band on a dev machine.
+          PYXSD_XSTS_TIMEOUT: "180"
+
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -236,7 +269,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
 
       - name: Sync environment
         run: uv sync --group dev --python 3.12
@@ -251,7 +284,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
 
       - name: Sync environment
         run: uv sync --group dev --python 3.12
