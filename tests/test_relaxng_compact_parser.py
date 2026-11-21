@@ -603,6 +603,20 @@ def test_default_namespace_with_a_prefix_binds_both() -> None:
     assert attribute.name_class.uri == "urn:ex"  # type: ignore[union-attr]
 
 
+def test_qname_value_requires_a_bound_prefix() -> None:
+    unbound = parse(
+        'datatypes xsd = "http://www.w3.org/2001/XMLSchema-datatypes"\nxsd:QName "p:local"'
+    )
+    assert [finding.code for finding in unbound.findings] == ["relaxng-compact-unbound-prefix"]
+
+    bound = parse(
+        'namespace p = "urn:p"\n'
+        'datatypes xsd = "http://www.w3.org/2001/XMLSchema-datatypes"\n'
+        'xsd:QName "p:local"'
+    )
+    assert bound.findings == ()
+
+
 def test_synthetic_namespace_context_excludes_datatypes_and_unusable_bindings() -> None:
     resource = make_resource(
         'namespace p = "urn:p"\n'

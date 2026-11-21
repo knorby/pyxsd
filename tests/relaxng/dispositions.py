@@ -1,8 +1,8 @@
 """Auditable dispositions and release blockers for RELAX NG cases.
 
-A case's declared profile is its default disposition: ``core`` and
-``xsd-datatype`` are release-required, while ``compact-syntax`` and
-``dtd-compatibility`` are outside this plan's profile.  Explicit disposition
+A case's declared profile is its default disposition: ``core``,
+``xsd-datatype``, and ``compact-syntax`` are release-required, while
+``dtd-compatibility`` is outside this plan's profile.  Explicit disposition
 entries add rationale for exclusions and may group cases for reporting; they
 can never reclassify a required case as excluded.
 

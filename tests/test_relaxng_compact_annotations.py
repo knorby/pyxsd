@@ -759,6 +759,12 @@ def test_annotation_attribute_names_reject_unqualified_and_xmlns_names() -> None
     assert codes(nested) == ["relaxng-compact-xmlns-namespace"]
 
 
+def test_annotation_attribute_rejects_the_reserved_xmlns_name() -> None:
+    schema = parse('foo [ xmlns = "bar" ]\nstart = element foo { empty }')
+
+    assert codes(schema) == ["relaxng-compact-xmlns-namespace"]
+
+
 def test_duplicate_annotation_attributes_keep_the_first_value() -> None:
     duplicated = parse('namespace a = "urn:a"\n[a:x = "1" a:x = "2"] element root { empty }')
     assert codes(duplicated) == ["relaxng-compact-duplicate-attribute"]

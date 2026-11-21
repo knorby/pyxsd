@@ -12,6 +12,8 @@ distributions and Ruff's source scan.
   <https://github.com/relaxng/jing-trang/blob/263a35a5e3ebbfccf8eb9752077e59cde9acc9a1/mod/rng-validate/test/spectest.xml>
 - XSD datatype catalog:
   <https://github.com/relaxng/jing-trang/blob/263a35a5e3ebbfccf8eb9752077e59cde9acc9a1/mod/xsd-datatype/test/xsdtest.xml>
+- Compact-syntax translation catalog:
+  <https://github.com/relaxng/jing-trang/blob/263a35a5e3ebbfccf8eb9752077e59cde9acc9a1/mod/rng-schema/test/compacttest.xml>
 - License source:
   <https://github.com/relaxng/jing-trang/blob/263a35a5e3ebbfccf8eb9752077e59cde9acc9a1/copying.txt>
 
@@ -20,7 +22,7 @@ BSD-3-Clause terms of the Thai Open Source Software Center Ltd.
 
 ## Integrity
 
-`SHA256SUMS` records the checksums of the three vendored files. Verify with:
+`SHA256SUMS` records the checksums of the four vendored files. Verify with:
 
 ```bash
 cd tests/relaxng/corpus
@@ -52,3 +54,14 @@ datatype validity values, equivalence classes, `length`, `lessThan`, and
 and `anyAtomicType` are XSD 1.1 additions and are deliberately excluded
 because the promised adapter profile is XSD 1.0. The remaining 42 datatypes
 produce 238 schema cases and 1041 instance assertions.
+
+`compacttest.xml` contains 87 `testCase` entries: 56 accepted compact fragments
+and 31 rejected fragments. It is a compact-to-XML translation manifest, not a
+schema-validity suite: an accepted fragment may translate to a pattern that is
+not a legal whole schema. The harness materializes each compact source as
+`c.rnc` or `i.rnc`, every accepted case's authored XML counterpart beside it as
+`c.rng`, and each inline `<resource>` at its manifest-relative path. The
+manifest's separate `<bug>` wrapper is a known non-testCase fragment and is not
+one of the 87 cases. Because every resource is inline, there is no separate
+committed compact resource tree; the derived files live under the gitignored
+`.cases/compacttest/` directory.

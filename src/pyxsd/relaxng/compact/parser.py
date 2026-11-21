@@ -998,6 +998,19 @@ class _Reader:
         type_name: str | None,
         lexical: str,
     ) -> _Shape:
+        if (
+            type_name in {"QName", "NOTATION"}
+            and library in {"", _XSD_DATATYPES}
+            and ":" in lexical
+        ):
+            prefix = lexical.split(":", 1)[0]
+            if prefix not in self.environment.namespaces:
+                self._finding(
+                    "relaxng-compact-unbound-prefix",
+                    f"the namespace prefix {prefix!r} is not bound in scope",
+                    token,
+                )
+
         def build(path: tuple[PathStep, ...], _scope: GrammarScope | None) -> FullNode:
             return FullValue(
                 datatype_library=library,
@@ -1557,6 +1570,12 @@ class _Reader:
             if token.kind is TokenKind.CNAME:
                 namespace, local = self._annotation_prefixed_name(token, initial=False)
             else:
+                if token.value == "xmlns":
+                    self._finding(
+                        "relaxng-compact-xmlns-namespace",
+                        "an annotation attribute may not be the xmlns attribute",
+                        token,
+                    )
                 namespace, local = None, token.value
             attribute_name = self._unique_attribute(seen, namespace, local, token)
             if attribute_name is None:
