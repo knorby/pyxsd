@@ -302,3 +302,23 @@ def test_node_xml_serializes_an_element_and_defers_for_a_document() -> None:
 
     assert suite._node_xml(document.root_element) == "<out>x</out>"
     assert suite._node_xml(document) == suite._document_xml(document)
+
+
+def test_the_assertion_xml_view_keeps_lexical_prefixes_and_declarations() -> None:
+    """The comparison view is the engine's own markup, not ElementTree's.
+
+    ``_xml_element`` used to rebuild an ElementTree whose serializer invented
+    ``ns0``/``ns1`` prefixes and dropped every namespace declaration, so an
+    expected ``p:``/``q:`` prefix could never match.  The assertion view now
+    carries the tree's lexical prefixes and in-scope declarations verbatim.
+    """
+    document = XdmDocument.parse(
+        b'<p:out xmlns:p="urn:p"><p:item xmlns="urn:d"/><q:x xmlns:q="urn:q" q:a="1"/></p:out>'
+    )
+    expected = (
+        '<p:out xmlns:p="urn:p"><p:item xmlns="urn:d"/><q:x xmlns:q="urn:q" q:a="1"/></p:out>'
+    )
+
+    assert suite._document_xml(document) == expected
+    assert suite._node_xml(document.root_element) == expected
+    assert suite._snapshot_entry(ResultEntry(raw=(), tree=document)).xml == expected

@@ -19,6 +19,7 @@ from pyxsd.xdm import XdmAtomic, XdmFunction, XdmMap
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xslt.errors import XsltError, XsltSerializationError, XsltStaticError
 from pyxsd.xslt.processor import XsltProcessor
+from pyxsd.xslt.runtime.builder import ResultBuilder
 from pyxsd.xslt.serialization import SerializationParameters, Serializer
 
 XHTML_NS = "http://www.w3.org/1999/xhtml"
@@ -171,6 +172,38 @@ def test_xml_generates_an_attribute_prefix_when_none_is_bound() -> None:
 
     assert _serialize((element,), omit_xml_declaration=True) == (
         '<root xmlns:ns0="urn:a" ns0:flag="yes"/>'
+    )
+
+
+def test_constructed_element_keeps_its_lexical_prefix_through_serialization() -> None:
+    builder = ResultBuilder.temporary()
+    builder.element("{urn:a}out", namespaces={"": "urn:a"})
+    builder.element(
+        "{urn:a}item",
+        namespaces={"": "urn:a", "p": "urn:a"},
+        prefix="p",
+    )
+    builder.end_element()
+    builder.end_element()
+    document = builder.to_tree()
+
+    assert _serialize((document,), omit_xml_declaration=True) == (
+        '<out xmlns="urn:a"><p:item xmlns:p="urn:a"/></out>'
+    )
+
+
+def test_constructed_undeclaration_is_serialized_under_a_rebound_default() -> None:
+    builder = ResultBuilder.temporary()
+    builder.element("{urn:1}a", namespaces={"": "urn:1"})
+    builder.element("{urn:2}b", namespaces={"": "urn:2"})
+    builder.element("c")
+    builder.end_element()
+    builder.end_element()
+    builder.end_element()
+    document = builder.to_tree()
+
+    assert _serialize((document,), omit_xml_declaration=True) == (
+        '<a xmlns="urn:1"><b xmlns="urn:2"><c xmlns=""/></b></a>'
     )
 
 
@@ -1218,6 +1251,20 @@ def test_stylesheet_delivery_serializes_a_text_only_xml_result() -> None:
     result = transform(source, delivery="stylesheet")
 
     assert result.principal_entry.serialized == "just text"
+
+
+def test_a_foreign_namespace_output_attribute_is_ignored() -> None:
+    source = stylesheet(
+        '<xsl:output xmlns:ext="urn:ext" method="xml" '
+        'omit-xml-declaration="yes" ext:unknown="x"/>'
+        '<xsl:template name="xsl:initial-template"><out/></xsl:template>'
+    )
+
+    result = transform(source, delivery="stylesheet")
+
+    assert result.principal_entry.serialized == (
+        '<out xmlns:xs="http://www.w3.org/2001/XMLSchema"/>'
+    )
 
 
 def test_stylesheet_cdata_prefixed_qname_matches_a_namespaced_result() -> None:

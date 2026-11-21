@@ -512,6 +512,8 @@ def _hat_sheet(root: Path) -> Path:
             '<xsl:template name="xsl:initial-template"><out>'
             '<xsl:value-of select="hat:hatsize(4)"/></out></xsl:template>',
             namespaces={"hat": HAT_NS},
+            attributes=' exclude-result-prefixes="hat"',
+            declare_xs=False,
         ).decode("utf-8"),
     )
 
@@ -549,6 +551,7 @@ def test_a_non_schema_aware_profile_compiles_without_a_pool(tmp_path: Path) -> N
             '<xsl:template name="xsl:initial-template"><out>'
             '<xsl:value-of select="1 + 1"/></out></xsl:template>',
             version="1.0",
+            declare_xs=False,
         ).decode("utf-8"),
     )
     case = _case(tmp_path, schemas=(_schema("stylesheet-import", "money.xsd"),))
@@ -604,6 +607,8 @@ def test_swapped_schema_roles_never_share_a_compiled_artifact(tmp_path: Path) ->
             '<xsl:template match="schema-element(h:html)"><out>typed</out></xsl:template>'
             '<xsl:template match="/"><out>other</out></xsl:template>',
             namespaces={"h": XHTML_NS},
+            attributes=' exclude-result-prefixes="h"',
+            declare_xs=False,
         ).decode("utf-8"),
     )
     source = (Source(role=".", content=f'<html xmlns="{XHTML_NS}"/>'),)
@@ -669,7 +674,16 @@ def _source_case(
     namespaces: Mapping[str, str] | None = None,
 ) -> CatalogCase:
     """One catalog-shaped case whose assertion names its expected verdict."""
-    _write(root, "sheet.xsl", stylesheet(body, namespaces=namespaces or {}).decode("utf-8"))
+    excluded = " ".join(("xs", *namespaces)) if namespaces else "xs"
+    _write(
+        root,
+        "sheet.xsl",
+        stylesheet(
+            body,
+            namespaces=namespaces or {},
+            attributes=f' exclude-result-prefixes="{excluded}"',
+        ).decode("utf-8"),
+    )
     return _case(root, sources=sources, schemas=schemas, result=result)
 
 

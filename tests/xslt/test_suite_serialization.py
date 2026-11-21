@@ -107,7 +107,7 @@ def test_raw_delivery_still_resolves_relative_result_documents(tmp_path: Path) -
     (uri, entry) = next(iter(snapshot.secondary.items()))
     assert uri.startswith("file:")
     assert uri.endswith("/out.xml")
-    assert entry.xml == "<out />"
+    assert entry.xml == "<out/>"
 
 
 def test_a_declared_output_file_is_the_base_output_uri(tmp_path: Path) -> None:
@@ -133,11 +133,11 @@ def test_a_declared_output_file_is_the_base_output_uri(tmp_path: Path) -> None:
 
     assert suite._delivery(case) == "document"
     assert suite._base_output_uri(case) == (tmp_path / "results/principal.xml").as_uri()
-    assert snapshot.xml == "<principal />"
+    assert snapshot.xml == "<principal/>"
     assert snapshot.serialized is None
     assert snapshot.secondary is not None
     assert list(snapshot.secondary) == [(tmp_path / "results" / "second" / "out.xml").as_uri()]
-    assert snapshot.secondary[(tmp_path / "results/second/out.xml").as_uri()].xml == "<out />"
+    assert snapshot.secondary[(tmp_path / "results/second/out.xml").as_uri()].xml == "<out/>"
 
 
 def test_a_relative_result_document_uses_a_synthetic_base(tmp_path: Path) -> None:
@@ -188,7 +188,7 @@ def test_an_absent_output_file_supplies_no_base_output_uri(tmp_path: Path) -> No
     assert raised.value.code == "XTDE1480"
 
     snapshot = suite.execute_case(declared, PROFILE)
-    assert snapshot.xml == "<principal />"
+    assert snapshot.xml == "<principal/>"
     assert snapshot.secondary is not None
     assert list(snapshot.secondary) == [(tmp_path / "out.xml").as_uri()]
 

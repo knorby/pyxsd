@@ -1517,7 +1517,10 @@ def test_native_element_and_attribute_namespace_attributes() -> None:
     ).serialize()
     assert "urn:p" in serialized
     assert "urn:a" in serialized
-    assert 'p:a="v"' in serialized
+    # The element keeps its lexical p prefix; fixup must give the attribute
+    # another prefix rather than rebinding p to a second namespace.
+    assert "p:out" in serialized
+    assert 'ns1:a="v"' in serialized
 
 
 # ---------------------------------------------------------------------------

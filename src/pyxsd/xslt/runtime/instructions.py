@@ -88,6 +88,8 @@ from pyxsd.xslt.results import (
 )
 from pyxsd.xslt.runtime.accumulators import accumulator_copy_names
 from pyxsd.xslt.runtime.builder import (
+    AttributeName,
+    NamespaceAlias,
     ResultBuilder,
     validate_constructed,
     validate_delivered,
@@ -240,12 +242,27 @@ class SequenceInstruction:
         object.__setattr__(self, "items", items)
 
 
+def _freeze_attributes(
+    attributes: Iterable[tuple[AttributeName, str] | tuple[str, str]],
+) -> tuple[tuple[AttributeName, str], ...]:
+    """Normalize attribute entries, keeping each lexical prefix.
+
+    A plain string name is accepted for callers that construct an instruction
+    by hand; it denotes an unprefixed attribute.
+    """
+    entries: list[tuple[AttributeName, str]] = []
+    for head, value in attributes:
+        name = head if isinstance(head, AttributeName) else AttributeName(head)
+        entries.append((name, value))
+    return tuple(entries)
+
+
 @dataclass(frozen=True, slots=True)
 class ElementInstruction:
     """Construct one element with attributes and sequence-constructor content."""
 
     name: str
-    attributes: tuple[tuple[str, str], ...] = ()
+    attributes: tuple[tuple[AttributeName, str], ...] = ()
     namespaces: Mapping[str, str] = field(default_factory=dict)
     content: tuple[ConstructionInstruction, ...] = ()
     base_uri: str | None = None
@@ -256,7 +273,7 @@ class ElementInstruction:
     schema_pool: object = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "attributes", tuple(self.attributes))
+        object.__setattr__(self, "attributes", _freeze_attributes(self.attributes))
         object.__setattr__(self, "namespaces", _freeze(self.namespaces))
         object.__setattr__(self, "content", tuple(self.content))
 
@@ -266,11 +283,13 @@ class LiteralResultInstruction:
     """Construct one literal result element using retained static context."""
 
     name: str
-    attributes: tuple[tuple[str, str], ...] = ()
+    attributes: tuple[tuple[AttributeName, str], ...] = ()
     namespaces: Mapping[str, str] = field(default_factory=dict)
     content: tuple[ConstructionInstruction, ...] = ()
     base_uri: str | None = None
     namespace_aliases: Mapping[str, str] = field(default_factory=dict)
+    excluded_namespaces: frozenset[str] = frozenset()
+    namespace_alias_rules: tuple[NamespaceAlias, ...] = ()
     annotation: XdmAnnotation | None = None
     prefix: str | None = None
     validation: str | None = None
@@ -278,19 +297,23 @@ class LiteralResultInstruction:
     schema_pool: object = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "attributes", tuple(self.attributes))
+        object.__setattr__(self, "attributes", _freeze_attributes(self.attributes))
         object.__setattr__(self, "namespaces", _freeze(self.namespaces))
         object.__setattr__(self, "content", tuple(self.content))
         object.__setattr__(self, "namespace_aliases", _freeze(self.namespace_aliases))
+        object.__setattr__(self, "excluded_namespaces", frozenset(self.excluded_namespaces))
+        object.__setattr__(self, "namespace_alias_rules", tuple(self.namespace_alias_rules))
 
     @classmethod
     def from_instruction(
         cls,
         instruction: Instruction,
         *,
-        attributes: Iterable[tuple[str, str]] | None = None,
+        attributes: Iterable[tuple[AttributeName, str] | tuple[str, str]] | None = None,
         content: Iterable[ConstructionInstruction] = (),
         namespace_aliases: Mapping[str, str] | None = None,
+        excluded_namespaces: Iterable[str] = (),
+        namespace_alias_rules: Iterable[NamespaceAlias] = (),
         annotation: XdmAnnotation | None = None,
         validation: str | None = None,
         type_name: str | None = None,
@@ -299,16 +322,20 @@ class LiteralResultInstruction:
         """Create a literal result from one compiled instruction's static state."""
         if attributes is None:
             attributes = tuple(
-                (attribute.name, attribute.value) for attribute in instruction.attributes
+                (AttributeName(attribute.name, attribute.prefix), attribute.value)
+                for attribute in instruction.attributes
             )
         return cls(
             name=instruction.name,
-            attributes=tuple(attributes),
+            attributes=_freeze_attributes(attributes),
             namespaces=instruction.namespaces,
             content=tuple(content),
             base_uri=instruction.base_uri,
             namespace_aliases=namespace_aliases or {},
+            excluded_namespaces=frozenset(excluded_namespaces),
+            namespace_alias_rules=tuple(namespace_alias_rules),
             annotation=annotation,
+            prefix=instruction.prefix,
             validation=validation,
             type_name=type_name,
             schema_pool=schema_pool,
@@ -510,13 +537,15 @@ def construct_map(maps: XdmSequence) -> XdmMap:
 def _construct_element(
     name: str,
     *,
-    attributes: Iterable[tuple[str, str]],
+    attributes: Iterable[tuple[AttributeName, str] | tuple[str, str]],
     namespaces: Mapping[str, str],
     content: Iterable[ConstructionInstruction],
     base_uri: str | None,
     annotation: XdmAnnotation | None,
     prefix: str | None,
     namespace_aliases: Mapping[str, str] | None = None,
+    excluded_namespaces: frozenset[str] = frozenset(),
+    namespace_alias_rules: Iterable[NamespaceAlias] = (),
     validation: str | None = None,
     type_name: str | None = None,
     schema_pool: object = None,
@@ -528,6 +557,8 @@ def _construct_element(
             attributes=attributes,
             namespaces=namespaces,
             namespace_aliases=namespace_aliases,
+            excluded_namespaces=excluded_namespaces,
+            namespace_alias_rules=namespace_alias_rules,
             base_uri=base_uri,
             annotation=annotation,
             prefix=prefix,
@@ -661,6 +692,8 @@ def construct_instruction(instruction: ConstructionInstruction) -> XdmSequence:
             annotation=instruction.annotation,
             prefix=instruction.prefix,
             namespace_aliases=instruction.namespace_aliases,
+            excluded_namespaces=instruction.excluded_namespaces,
+            namespace_alias_rules=instruction.namespace_alias_rules,
             validation=instruction.validation,
             type_name=instruction.type_name,
             schema_pool=instruction.schema_pool,
@@ -816,6 +849,20 @@ def _constructed_qname(
         if uri:
             return f"{{{uri}}}{text}"
     return text
+
+
+def _lexical_prefix(lexical: str) -> str:
+    """The prefix an ``xsl:element`` lexical name contributes to its name.
+
+    XSLT 3.0 §11.2.2 copies the prefix of the lexical QName in ``name`` (or
+    its absence) to the expanded QName.  An EQName or Clark name carries no
+    prefix.  The caller has already validated the name.
+    """
+    text = lexical.strip()
+    if text.startswith("Q{") or text.startswith("{"):
+        return ""
+    prefix, separator, _ = text.partition(":")
+    return prefix if separator else ""
 
 
 def _diagnostic_error_code(
@@ -1162,22 +1209,29 @@ def literal_element(
     context: EvaluationContext,
 ) -> XdmNode:
     factory = _NodeFactory()
-    attributes: list[tuple[str, str]] = []
+    attribute_set_attributes: list[tuple[AttributeName, str]] = []
     for reference in plan.attribute_sets:
         component = invocation._resolve_attribute_set(reference, context.package_name)
-        attributes.extend(
-            (attribute.name or "", attribute.string_value)
+        attribute_set_attributes.extend(
+            (
+                AttributeName(attribute.name or "", attribute.prefix),
+                attribute.string_value,
+            )
             for attribute in invocation._attribute_set_attributes(component, context)
             if attribute.kind is NodeKind.ATTRIBUTE
         )
-    attributes.extend(
+    attributes = tuple(
         (name, invocation._value_source(value, context)) for name, value in plan.attributes
     )
     element = factory.element(
         plan.instruction.name,
-        attributes=tuple(attributes),
+        attributes=attributes,
+        attribute_set_attributes=tuple(attribute_set_attributes),
         namespaces=dict(plan.namespaces),
         base_uri=plan.instruction.base_uri,
+        prefix=plan.instruction.prefix,
+        excluded_namespaces=plan.excluded_namespaces,
+        namespace_alias_rules=plan.namespace_aliases,
     )
     content = invocation._execute_plans(plan.children, context=context)
     _append_complex_content(factory, element, content, allow_attributes=True)
@@ -1209,11 +1263,14 @@ def element_value(
         namespace_code="XTDE0835",
         prefix_code="XTDE0830",
     )
-    attributes: list[tuple[str, str]] = []
+    attributes: list[tuple[AttributeName, str]] = []
     for reference in plan.attribute_sets:
         component = invocation._resolve_attribute_set(reference, context.package_name)
         attributes.extend(
-            (attribute.name or "", attribute.string_value)
+            (
+                AttributeName(attribute.name or "", attribute.prefix),
+                attribute.string_value,
+            )
             for attribute in invocation._attribute_set_attributes(component, context)
             if attribute.kind is NodeKind.ATTRIBUTE
         )
@@ -1222,8 +1279,9 @@ def element_value(
         builder.element(
             name,
             attributes=tuple(attributes),
-            namespaces=dict(plan.namespaces),
             base_uri=plan.instruction.base_uri,
+            prefix=_lexical_prefix(lexical),
+            force_prefix=True,
             inherit_namespaces=plan.inherit_namespaces,
         )
         builder.append(
@@ -1353,7 +1411,21 @@ def check_namespace_sensitive_copy(
     node: XdmNode,
     plan: _CopyPlan | _CopyOfPlan,
 ) -> None:
-    if plan.copy_namespaces or plan.validation != "preserve" or plan.type_name is not None:
+    """Reject a copy that cannot preserve namespace-sensitive content.
+
+    XSLT 3.0 section 11.9 makes this a type error when ``copy-namespaces="no"``
+    and validation is preserved, and also when the copy produces a parentless
+    attribute with a QName or NOTATION typed value: an attribute node has no
+    namespace nodes of its own, so the value's prefix would no longer resolve.
+    """
+    if plan.validation != "preserve" or plan.type_name is not None:
+        return
+    if node.kind is NodeKind.ATTRIBUTE and namespace_sensitive(node):
+        raise XsltDynamicError(
+            "namespace-sensitive content cannot be copied without a parent element",
+            code="XTTE0950",
+        )
+    if plan.copy_namespaces:
         return
     if namespace_sensitive(node):
         raise XsltDynamicError(

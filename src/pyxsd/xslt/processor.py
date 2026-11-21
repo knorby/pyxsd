@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from decimal import Decimal, InvalidOperation
-from functools import lru_cache
+from functools import cmp_to_key, lru_cache
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import urljoin, urlsplit
@@ -30,7 +30,6 @@ from elementpath.helpers import is_ncname
 
 from pyxsd.document import Document
 from pyxsd.locations import IssueLocation
-from pyxsd.namespaces import namespace_of as _namespace
 from pyxsd.resource_policy import ResourcePolicyError
 from pyxsd.schema import Schema
 from pyxsd.xdm import (
@@ -177,6 +176,7 @@ from pyxsd.xslt.errors import (
 )
 from pyxsd.xslt.extensions import ExtensionInstruction, XsltExtensions
 from pyxsd.xslt.policy import OutputPolicy
+from pyxsd.xslt.precedence import compare_precedence
 from pyxsd.xslt.profiles import RecoveryPolicy
 from pyxsd.xslt.python_rules import (
     PYTHON_APPLICATION_NAME,
@@ -208,7 +208,7 @@ from pyxsd.xslt.runtime.accumulators import (
     parse_accumulator_names,
     same_context_accumulator_call,
 )
-from pyxsd.xslt.runtime.builder import validate_delivered
+from pyxsd.xslt.runtime.builder import AttributeName, NamespaceAlias, validate_delivered
 from pyxsd.xslt.runtime.constructors import CONSTRUCTOR_PLAN_EXECUTORS
 from pyxsd.xslt.runtime.context import EvaluationContext
 from pyxsd.xslt.runtime.dispatch import (
@@ -331,21 +331,6 @@ _QNAME_LIST_OUTPUT_ATTRIBUTES = frozenset(
 )
 UNTYPED_TYPE = "{http://www.w3.org/2001/XMLSchema}untyped"
 ANY_TYPE = "{http://www.w3.org/2001/XMLSchema}anyType"
-
-#: Literal-result attributes whose names are XSLT-defined metadata, not output.
-_LITERAL_XSLT_ATTRIBUTES = frozenset(
-    {
-        "default-collation",
-        "default-validation",
-        "exclude-result-prefixes",
-        "expand-text",
-        "extension-element-prefixes",
-        "input-type-annotations",
-        "use-when",
-        "version",
-        "xpath-default-namespace",
-    }
-)
 
 #: Every element name defined by the XSLT 3.0 schema.  A child in the XSLT
 #: namespace outside this set is a forwards-compatible candidate, not one of the
@@ -1094,6 +1079,11 @@ def _compile_stylesheet(
     )
     modules = _module_map(package)
     packages = _package_map(package)
+    for current_package in packages.values():
+        # Namespace aliases are package-wide declarations; validate and merge
+        # them even when the package has no component that would build a
+        # static context lazily.
+        _package_namespace_aliases(tuple(current_package.modules))
     space_rules = {
         package_name: _package_space_rules(current_package)
         for package_name, current_package in packages.items()
@@ -2144,6 +2134,7 @@ def _context_for(
         package=package,
         python_rule_count=extensions.python_rules.rule_count,
         instruction_compilers=instruction_compilers,
+        namespace_aliases=_package_namespace_aliases(tuple(package.modules)),
     )
     if context.default_collation is None and default_collation is not None:
         context = context.with_default_collation(default_collation)
@@ -2398,9 +2389,137 @@ def _tail_marked_plan(plan: _Plan) -> _Plan:
     return plan
 
 
-def _exclusions(module: EffectiveModule) -> tuple[str, ...]:
-    value = module.root.attribute("exclude-result-prefixes") or ""
-    return tuple(value.split())
+_XSLT_NAMESPACE_ALIAS = f"{{{XSLT_NS}}}namespace-alias"
+
+
+def _namespace_alias_uri(
+    prefix: str | None,
+    namespaces: Mapping[str, str],
+    declaration: EffectiveElement,
+    module: EffectiveModule,
+    *,
+    attribute: str,
+) -> str | None:
+    """Resolve one alias prefix to its namespace URI in the declaring context."""
+    if prefix == "#default":
+        return namespaces.get("")
+    if not prefix:
+        raise XsltStaticError(
+            f"xsl:namespace-alias requires a non-empty {attribute} attribute",
+            code="XTSE0010",
+            uri=module.identity,
+            location=declaration.source_location(),
+        )
+    uri = namespaces.get(prefix)
+    if uri is None:
+        raise XsltStaticError(
+            f"the namespace-alias prefix {prefix!r} is not bound in scope",
+            code="XTSE0812",
+            uri=module.identity,
+            location=declaration.source_location(),
+        )
+    return uri
+
+
+@lru_cache(maxsize=128)
+def _module_namespace_aliases(module: EffectiveModule) -> tuple[NamespaceAlias, ...]:
+    """The ``xsl:namespace-alias`` rules declared directly in one module."""
+    rules: list[NamespaceAlias] = []
+    for declaration in module.root.elements:
+        if declaration.name != _XSLT_NAMESPACE_ALIAS:
+            continue
+        stylesheet_prefix = declaration.attribute("stylesheet-prefix")
+        result_prefix = declaration.attribute("result-prefix")
+        if stylesheet_prefix is None or result_prefix is None:
+            raise XsltStaticError(
+                "xsl:namespace-alias requires stylesheet-prefix and result-prefix",
+                code="XTSE0010",
+                uri=module.identity,
+                location=declaration.source_location(),
+            )
+        namespaces = declaration.in_scope_namespaces
+        literal_uri = _namespace_alias_uri(
+            stylesheet_prefix,
+            namespaces,
+            declaration,
+            module,
+            attribute="stylesheet-prefix",
+        )
+        target_uri = _namespace_alias_uri(
+            result_prefix,
+            namespaces,
+            declaration,
+            module,
+            attribute="result-prefix",
+        )
+        if literal_uri == target_uri and stylesheet_prefix != result_prefix:
+            raise XsltStaticError(
+                "xsl:namespace-alias must change the namespace URI",
+                code="XTSE0010",
+                uri=module.identity,
+                location=declaration.source_location(),
+            )
+        rules.append(
+            NamespaceAlias(
+                literal_uri=literal_uri,
+                target_uri=target_uri,
+                result_prefix="" if result_prefix == "#default" else result_prefix,
+            )
+        )
+    return tuple(rules)
+
+
+@lru_cache(maxsize=128)
+def _package_namespace_aliases(modules: tuple[EffectiveModule, ...]) -> tuple[NamespaceAlias, ...]:
+    """Merge one package's alias declarations by import precedence.
+
+    A literal URI uses the declaration with the highest import precedence;
+    within that precedence the last declaration order wins for the result
+    prefix, and two different target URIs at the same precedence are XTSE0810.
+    """
+    grouped: dict[str | None, list[tuple[tuple[int, ...], int, NamespaceAlias, str | None]]] = {}
+    order = 0
+    for module in modules:
+        for rule in _module_namespace_aliases(module):
+            grouped.setdefault(rule.literal_uri, []).append(
+                (module.precedence, order, rule, module.identity)
+            )
+            order += 1
+    merged: list[NamespaceAlias] = []
+    for entries in grouped.values():
+        highest = max((entry[0] for entry in entries), key=cmp_to_key(compare_precedence))
+        candidates = [entry for entry in entries if entry[0] == highest]
+        if len({entry[2].target_uri for entry in candidates}) > 1:
+            raise XsltStaticError(
+                "conflicting xsl:namespace-alias declarations at one import precedence",
+                code="XTSE0810",
+                uri=candidates[0][3],
+            )
+        candidates.sort(key=lambda entry: entry[1])
+        merged.append(candidates[-1][2])
+    return tuple(merged)
+
+
+def _literal_plan_namespaces(
+    instruction: Instruction,
+    module: EffectiveModule,
+    context: StaticContext,
+) -> tuple[tuple[tuple[str, str], ...], frozenset[str]]:
+    """The literal result element's raw bindings and excluded URIs.
+
+    The runtime prepared scope separates these: the raw bindings stay
+    available for naming and namespace fixup, while only the excluded URIs are
+    withheld from the namespace nodes copied into the result.  Module-root
+    extension tokens are validated here unconditionally: the error contract is
+    independent of the literal's own name and prefix, while cumulative
+    extension exclusion comes from the static context.
+    """
+    _extension_instruction_namespaces(module)
+    namespaces = tuple(instruction.namespaces.items())
+    excluded = set(context.excluded_namespaces)
+    excluded.add(XSLT_NS)
+    excluded.update(context.extension_namespaces)
+    return namespaces, frozenset(excluded)
 
 
 def _original_context(context: StaticContext, instruction: Instruction) -> StaticContext:
@@ -3890,25 +4009,17 @@ def _compile_literal_result(
     context: StaticContext,
     module: EffectiveModule,
 ) -> _Plan:
-    attributes: list[tuple[str, str | CompiledValueTemplate]] = []
+    attributes: list[tuple[AttributeName, str | CompiledValueTemplate]] = []
     for attribute in instruction.attributes:
         if attribute.namespace_uri == XSLT_NS:
             continue
-        if attribute.namespace_uri is None and attribute.name in _LITERAL_XSLT_ATTRIBUTES:
-            continue
         attributes.append(
             (
-                attribute.name,
+                AttributeName(attribute.name, attribute.prefix),
                 compile_avt(attribute.value, context, location=instruction.location),
             )
         )
-    namespaces = _literal_namespaces(
-        instruction,
-        attributes,
-        _exclusions(module),
-        _extension_instruction_namespaces(module),
-        module.root.in_scope_namespaces,
-    )
+    namespaces, excluded = _literal_plan_namespaces(instruction, module, context)
     validation, type_name = _compile_construction_validation(
         instruction,
         context,
@@ -3920,6 +4031,8 @@ def _compile_literal_result(
         attributes=tuple(attributes),
         children=_compile_sequence(instruction.children, context, module),
         namespaces=namespaces,
+        excluded_namespaces=excluded,
+        namespace_aliases=context.namespace_aliases,
         attribute_sets=tuple(
             reference for reference in instruction.references if reference.kind == "attribute-set"
         ),
@@ -5039,60 +5152,6 @@ def _compile_forward_instruction(
         instruction,
         tuple(_compile_sequence(fallback.children, context, module) for fallback in fallbacks),
     )
-
-
-def _literal_namespaces(
-    instruction: Instruction,
-    attributes: Sequence[tuple[str, str | CompiledValueTemplate]],
-    exclusions: tuple[str, ...],
-    extension_namespaces: frozenset[str],
-    root_namespaces: Mapping[str, str],
-) -> tuple[tuple[str, str], ...]:
-    """The namespace nodes one literal result element copies (XSLT 3.0 11.1.3).
-
-    The created element node copies every in-scope stylesheet namespace except
-    an excluded one.  Exclusion designates a namespace *URI*, never a prefix:
-    the XSLT namespace, each of the module root's extension instruction
-    namespaces, and every URI named by an ``exclude-result-prefixes`` token
-    declared on the module root (``#default`` names the root's default
-    namespace, XTSE0809, and ``#all`` names every in-scope namespace).
-
-    A token resolves against the bindings in scope on the element that carries
-    the attribute — the module root, where this compiler reads the declaration
-    — not against *instruction*'s own bindings, so a prefix the literal element
-    rebinds still designates the URI it named at the root.  A token bound
-    nowhere is not designated (this compiler reads that permissively rather
-    than raising XTSE0808).
-
-    A URI used by the element's own name or one of its attribute names is kept
-    regardless, because namespace fixup requires a node for it (XSLT 3.0
-    5.7.3); the ``xml`` prefix is always implicit and is never copied.  Any
-    other in-scope namespace, used or not, is copied and serialized; pruning
-    unused nodes is a serializer's freedom this engine does not take.
-    """
-    designated = set(exclusions)
-    exclude_all = "#all" in designated
-    excluded: set[str] = {XSLT_NS}
-    excluded.update(extension_namespaces)
-    for token in designated:
-        if token == "#all":
-            continue
-        uri = root_namespaces.get("" if token == "#default" else token)
-        if uri is not None:
-            excluded.add(uri)
-    used: set[str | None] = {_namespace(instruction.name)}
-    used.update(_namespace(name) for name, _ in attributes)
-    result: list[tuple[str, str]] = []
-    for prefix, uri in instruction.namespaces.items():
-        if prefix == "xml":
-            continue
-        if uri in used:
-            result.append((prefix, uri))
-            continue
-        if exclude_all or uri in excluded:
-            continue
-        result.append((prefix, uri))
-    return tuple(result)
 
 
 def _expanded_name(name: str, namespaces: Mapping[str, str]) -> str:

@@ -15,7 +15,13 @@ from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap
 from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmDocument, XdmNode
 from pyxsd.xslt.compiler import instructions as compiled
 from pyxsd.xslt.errors import XsltDynamicError
-from pyxsd.xslt.runtime.builder import ResultBuilder
+from pyxsd.xslt.runtime.builder import (
+    NamespaceAlias,
+    ResultBuilder,
+    _bind_prefix,
+    _element_prefix,
+    _prepare_scope,
+)
 from pyxsd.xslt.runtime.instructions import (
     AttributeInstruction,
     CommentInstruction,
@@ -35,6 +41,7 @@ from pyxsd.xslt.runtime.instructions import (
 
 UNTYPED = "{http://www.w3.org/2001/XMLSchema}untyped"
 UNTYPED_ATOMIC = "{http://www.w3.org/2001/XMLSchema}untypedAtomic"
+XML_NS = "http://www.w3.org/XML/1998/namespace"
 
 
 def _code(exc: BaseException) -> str | None:
@@ -297,6 +304,312 @@ def test_literal_result_direct_construction_without_static_context() -> None:
     assert element.children[0].string_value == "value"
 
 
+def test_prepared_scope_separates_copied_namespaces_from_available_bindings() -> None:
+    scope = _prepare_scope(
+        {"p": "urn:p", "q": "urn:p", "old": "urn:old", "new": "urn:new"},
+        excluded=frozenset({"urn:p"}),
+        aliases=(NamespaceAlias("urn:old", "urn:new", "new"),),
+        element_namespace="urn:old",
+    )
+
+    assert scope.element_namespace == "urn:new"
+    assert dict(scope.copied_namespaces) == {"new": "urn:new"}
+    # Excluded and aliased-literal bindings remain available to name and fix
+    # up constructed nodes even though neither is copied.
+    assert dict(scope.available_bindings) == {
+        "p": "urn:p",
+        "q": "urn:p",
+        "old": "urn:old",
+        "new": "urn:new",
+        "xml": XML_NS,
+    }
+
+
+def test_prepared_scope_ignores_a_nonmatching_alias_rule() -> None:
+    scope = _prepare_scope(
+        {"old": "urn:old", "new": "urn:new"},
+        aliases=(
+            NamespaceAlias("urn:other", "urn:target", "target"),
+            NamespaceAlias("urn:old", "urn:new", "new"),
+        ),
+        element_namespace="urn:old",
+    )
+
+    assert scope.element_namespace == "urn:new"
+
+
+@pytest.mark.parametrize(
+    "namespaces",
+    [
+        {"new": "urn:other", "x": "urn:target"},
+        {"x": "urn:target", "new": "urn:other"},
+    ],
+)
+def test_prepared_scope_keeps_a_target_node_whose_prefix_is_occupied(
+    namespaces: dict[str, str],
+) -> None:
+    scope = _prepare_scope(
+        namespaces,
+        aliases=(NamespaceAlias("urn:old", "urn:target", "new"),),
+        element_namespace=None,
+    )
+
+    copied = dict(scope.copied_namespaces)
+    assert copied["new"] == "urn:other"
+    assert "urn:target" in copied.values()
+    assert len(copied) == len(set(copied))
+
+
+def test_prepared_scope_copies_every_binding_of_a_shared_target_uri() -> None:
+    scope = _prepare_scope(
+        {"a": "urn:target", "b": "urn:target", "c": "urn:other"},
+        aliases=(
+            NamespaceAlias("urn:l1", "urn:target", "a"),
+            NamespaceAlias("urn:l2", "urn:target", "b"),
+        ),
+        element_namespace=None,
+    )
+
+    assert dict(scope.copied_namespaces) == {
+        "a": "urn:target",
+        "b": "urn:target",
+        "c": "urn:other",
+    }
+    assert scope.available_bindings["a"] == "urn:target"
+    assert scope.available_bindings["b"] == "urn:target"
+
+
+def test_element_prefix_fixup_does_not_overwrite_a_conflicting_binding() -> None:
+    scope = {"p": "urn:other"}
+
+    # The conflicting prefix keeps its binding; the element name falls back
+    # to the free default namespace instead.
+    assert _element_prefix("urn:x", scope, requested="p", force_requested=True) == ""
+    assert scope == {"p": "urn:other", "": "urn:x"}
+    # A prefix that already names the namespace is kept as requested.
+    matching = {"p": "urn:x"}
+    assert _element_prefix("urn:x", matching, requested="p", force_requested=True) == "p"
+    assert matching == {"p": "urn:x"}
+
+
+@pytest.mark.parametrize(
+    "namespaces",
+    [
+        {"old": "urn:old", "new": "urn:other"},
+        {"new": "urn:other", "old": "urn:old"},
+    ],
+)
+def test_aliased_literal_element_keeps_a_copied_namespace_on_conflict(
+    namespaces: dict[str, str],
+) -> None:
+    builder = ResultBuilder.document()
+
+    element = builder.element(
+        "{urn:old}out",
+        namespaces=namespaces,
+        namespace_alias_rules=(NamespaceAlias("urn:old", "urn:new", "new"),),
+    )
+
+    assert element.name == "{urn:new}out"
+    assert element.in_scope_namespaces["new"] == "urn:other"
+    assert "urn:new" in element.in_scope_namespaces.values()
+    assert element.prefix != "new"
+    prefixes = [node.prefix for node in element.namespace_nodes]
+    assert len(prefixes) == len(set(prefixes))
+    assert {node.string_value for node in element.namespace_nodes} >= {"urn:other", "urn:new"}
+
+
+def test_unused_target_node_survives_a_copied_binding_conflict() -> None:
+    builder = ResultBuilder.document()
+
+    element = builder.element(
+        "root",
+        namespaces={"new": "urn:other", "x": "urn:target"},
+        namespace_alias_rules=(NamespaceAlias("urn:old", "urn:target", "new"),),
+    )
+
+    assert element.in_scope_namespaces["new"] == "urn:other"
+    assert "urn:target" in element.in_scope_namespaces.values()
+    prefixes = [node.prefix for node in element.namespace_nodes]
+    assert len(prefixes) == len(set(prefixes))
+
+
+def test_element_prefix_selection_uses_an_available_binding() -> None:
+    assert _element_prefix("urn:x", {}, {"p": "urn:x"}, requested=None) == "p"
+    assert _element_prefix(XML_NS, {}, requested=None) == "xml"
+
+
+def test_bind_prefix_falls_back_when_the_preferred_prefix_is_taken() -> None:
+    scope = {"p": "urn:other"}
+
+    assert _bind_prefix(scope, "urn:new", "p", is_attribute=True) == "ns1"
+    assert scope == {"p": "urn:other", "ns1": "urn:new"}
+
+
+def test_literal_result_applies_compiled_namespace_alias_rules() -> None:
+    source = compiled.Instruction(
+        name="{urn:old}root",
+        attributes=(compiled.Attribute("{urn:old}id", "1"),),
+        namespaces={"old": "urn:old", "new": "urn:new"},
+        literal=True,
+    )
+    instruction = LiteralResultInstruction.from_instruction(
+        source,
+        namespace_alias_rules=(
+            NamespaceAlias("urn:other", "urn:target", "target"),
+            NamespaceAlias("urn:old", "urn:new", "new"),
+        ),
+    )
+
+    element = _require_element(construct_instruction(instruction)[0])
+
+    assert element.name == "{urn:new}root"
+    assert element.prefix == "new"
+    assert element.attributes[0].name == "{urn:new}id"
+    assert element.attributes[0].prefix == "new"
+    assert element.namespace_declarations == (("new", "urn:new"),)
+
+
+def test_literal_result_excludes_only_copied_namespaces() -> None:
+    source = compiled.Instruction(
+        name="{urn:keep}root",
+        namespaces={"keep": "urn:keep", "unused": "urn:unused"},
+        literal=True,
+    )
+    instruction = LiteralResultInstruction.from_instruction(
+        source,
+        excluded_namespaces=frozenset({"urn:unused"}),
+    )
+
+    element = _require_element(construct_instruction(instruction)[0])
+
+    assert element.namespace_uri == "urn:keep"
+    assert element.prefix == "keep"
+    assert "unused" not in element.in_scope_namespaces
+    assert element.in_scope_namespaces["keep"] == "urn:keep"
+
+
+def test_literal_result_keeps_its_lexical_prefix_over_a_default_binding() -> None:
+    source = compiled.Instruction(
+        name="{urn:a}item",
+        namespaces={"": "urn:a", "p": "urn:a"},
+        literal=True,
+        prefix="p",
+    )
+    instruction = LiteralResultInstruction.from_instruction(source)
+
+    element = _require_element(construct_instruction(instruction)[0])
+
+    assert element.name == "{urn:a}item"
+    assert element.prefix == "p"
+    assert element.namespace_uri == "urn:a"
+    assert dict(element.in_scope_namespaces)["p"] == "urn:a"
+    assert element.namespace_declarations == (("", "urn:a"), ("p", "urn:a"))
+
+
+def test_literal_result_prefers_its_lexical_prefix_over_another_binding() -> None:
+    source = compiled.Instruction(
+        name="{urn:a}item",
+        namespaces={"q": "urn:a", "p": "urn:a"},
+        literal=True,
+        prefix="p",
+    )
+    instruction = LiteralResultInstruction.from_instruction(source)
+
+    element = _require_element(construct_instruction(instruction)[0])
+
+    assert element.prefix == "p"
+    assert element.namespace_uri == "urn:a"
+    assert element.namespace_declarations == (("q", "urn:a"), ("p", "urn:a"))
+
+
+def test_literal_result_without_a_lexical_prefix_uses_a_default_binding() -> None:
+    instruction = LiteralResultInstruction(
+        name="{urn:a}item",
+        namespaces={"": "urn:a", "p": "urn:a"},
+    )
+
+    element = _require_element(construct_instruction(instruction)[0])
+
+    assert element.prefix == ""
+    assert element.namespace_uri == "urn:a"
+
+
+def test_bug_0302_literal_result_prefixes_and_declarations_match_the_corpus() -> None:
+    source = _stylesheet(
+        """
+        <xsl:output method="xml" encoding="iso-8859-1"/>
+        <xsl:template match="/" xmlns:z="http://z.uri/">
+          <xsl:variable name="tmp">
+            <z:a a-foo="a-bar"/>
+            <z:b b-foo="b-bar"/>
+            <c c-foo="c-bar"/>
+          </xsl:variable>
+          <out changed="2004-04-06">
+            <xsl:copy-of select="$tmp"/>
+          </out>
+        </xsl:template>
+        """,
+        version="2.0",
+        attributes=' exclude-result-prefixes="#default" xmlns="http://abc.uri/"',
+        declare_xs=False,
+    )
+    result = _transform(source, b"<doc/>", delivery="stylesheet")
+
+    out = result.principal_tree.root_element
+    assert out.name == "{http://abc.uri/}out"
+    assert out.prefix == ""
+    assert out.namespace_uri == "http://abc.uri/"
+    assert out.namespace_declarations == (
+        ("", "http://abc.uri/"),
+        ("z", "http://z.uri/"),
+    )
+    children = [child for child in out.children if child.kind is NodeKind.ELEMENT]
+    assert [(child.name, child.prefix) for child in children] == [
+        ("{http://z.uri/}a", "z"),
+        ("{http://z.uri/}b", "z"),
+        ("{http://abc.uri/}c", ""),
+    ]
+    assert result.principal_entry.serialized == (
+        '<?xml version="1.0" encoding="iso-8859-1"?>'
+        '<out xmlns="http://abc.uri/" xmlns:z="http://z.uri/" changed="2004-04-06">'
+        '<z:a a-foo="a-bar"/><z:b b-foo="b-bar"/><c c-foo="c-bar"/></out>'
+    )
+
+
+def test_nested_default_rebinding_and_undeclaration_keep_element_prefixes() -> None:
+    result = _transform(
+        _stylesheet(
+            """
+            <xsl:template name="main">
+              <a xmlns="urn:1"><b xmlns="urn:2"><c xmlns=""/></b></a>
+            </xsl:template>
+            """,
+            declare_xs=False,
+        ),
+        None,
+        delivery="stylesheet",
+        initial_template="main",
+    )
+
+    a = result.principal_tree.root_element
+    b = a.children[0]
+    c = b.children[0]
+    assert [(node.prefix, node.namespace_uri) for node in (a, b, c)] == [
+        ("", "urn:1"),
+        ("", "urn:2"),
+        ("", None),
+    ]
+    assert a.namespace_declarations == (("", "urn:1"),)
+    assert b.namespace_declarations == (("", "urn:2"),)
+    assert c.namespace_declarations == ()
+    assert "" not in c.in_scope_namespaces
+    assert result.principal_entry.serialized == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<a xmlns="urn:1"><b xmlns="urn:2"><c xmlns=""/></b></a>'
+    )
+
+
 # ---------------------------------------------------------------------------
 # Copies
 
@@ -408,6 +721,41 @@ def test_construct_into_flattens_document_results() -> None:
         ),
     )
     assert [child.name for child in builder.to_sequence()] == ["first", "second"]
+
+
+def test_builder_element_generates_a_prefix_only_when_no_binding_exists() -> None:
+    builder = ResultBuilder.temporary()
+
+    element = builder.element("{urn:x}item", namespaces={"": "urn:other"})
+
+    assert element.prefix == "ns1"
+    assert element.namespace_uri == "urn:x"
+    assert element.namespace_declarations == (("", "urn:other"), ("ns1", "urn:x"))
+    assert dict(element.in_scope_namespaces)["ns1"] == "urn:x"
+
+
+def test_builder_element_falls_back_when_the_requested_prefix_is_unbound() -> None:
+    builder = ResultBuilder.temporary()
+
+    element = builder.element("{urn:a}item", namespaces={"p": "urn:a"}, prefix="missing")
+
+    assert element.prefix == "p"
+    assert element.namespace_uri == "urn:a"
+
+
+def test_builder_unprefixed_attribute_never_uses_the_default_namespace() -> None:
+    builder = ResultBuilder.temporary()
+
+    element = builder.element(
+        "{urn:a}out",
+        attributes=(("id", "1"),),
+        namespaces={"": "urn:a"},
+    )
+
+    attribute = element.attributes[0]
+    assert attribute.name == "id"
+    assert attribute.prefix == ""
+    assert attribute.namespace_uri is None
 
 
 def test_construct_into_keeps_temporary_output_state() -> None:

@@ -374,6 +374,16 @@ def test_unbound_extension_prefix_is_a_static_error():
     assert code(caught.value) == "XTSE0280"
 
 
+def test_unbound_extension_prefix_is_a_static_error_for_an_unprefixed_literal():
+    source = mark_stylesheet(
+        '<xsl:template name="main"><out/></xsl:template>',
+        prefixes="missing",
+    )
+    with pytest.raises(XsltStaticError) as caught:
+        compile_mark_stylesheet(source=source)
+    assert code(caught.value) == "XTSE0280"
+
+
 def test_default_extension_prefix_resolves():
     source = (
         f'<xsl:stylesheet version="3.0" xmlns:xsl="{XSLT_NS}" '

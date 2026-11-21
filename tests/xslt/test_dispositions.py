@@ -500,6 +500,24 @@ def test_checked_in_dispositions_declare_the_remote_text_non_goal() -> None:
         assert not set(entry.cases) & set(unclassified(baseline, entries, profile))
 
 
+def test_every_namespace_family_residual_is_adjudicated() -> None:
+    """Every non-passing namespace-family case names an explicit disposition.
+
+    A new failure in either family must be fixed or adjudicated with a public
+    reason; it may not sit silently in the unclassified census.
+    """
+    entries = load_dispositions(DISPOSITIONS)
+    families = ("namespace/", "namespace-alias/")
+    for profile in PROFILES:
+        baseline = load_baseline(profile)
+        remaining = [
+            case_id
+            for case_id in unclassified(baseline, entries, profile)
+            if case_id.startswith(families)
+        ]
+        assert remaining == [], profile
+
+
 def test_loading_the_checked_in_file_is_deterministic() -> None:
     assert load_dispositions(DISPOSITIONS) == load_dispositions(DISPOSITIONS)
 

@@ -55,6 +55,7 @@ from pyxsd.xslt.compiler.patterns import (
     default_priority,
 )
 from pyxsd.xslt.errors import XsltStaticError, error_code_from_exception
+from pyxsd.xslt.runtime.builder import _NodeFactory
 from pyxsd.xslt.runtime.templates import PatternIndex, TemplateRule
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -397,6 +398,35 @@ def test_namespace_nodes_and_namespace_axis() -> None:
     assert _matches("namespace::p", namespace)
     assert not _matches("namespace::other", namespace)
     assert not _matches("self::p", namespace)
+
+
+def test_copied_element_namespace_axis_is_unique_ordered_and_parented() -> None:
+    document = _document(
+        '<r xmlns:p="urn:p" xmlns:q="urn:q"><a xmlns:r="urn:r"><b xmlns:s="urn:s"/></a></r>'
+    )
+    factory = _NodeFactory()
+    copied = factory.clone(document.root_element, parent=None, deep=True)
+    child = _element_children(copied)[0]
+    grandchild = _element_children(child)[0]
+
+    step = compile_pattern("namespace::*", _context()).alternatives[0].path.first.steps[0][1]
+    assert isinstance(step, AxisStep)
+    for element in (copied, child, grandchild):
+        nodes = _axis_nodes(step, element, False)
+        assert nodes == element.namespace_nodes
+        prefixes = [node.prefix for node in nodes]
+        assert len(prefixes) == len(set(prefixes))
+        assert "xml" in prefixes
+        assert all(node.parent is element for node in nodes)
+        assert all(node.kind is NodeKind.NAMESPACE for node in nodes)
+    assert {node.prefix for node in _axis_nodes(step, child, False)} >= {"p", "q", "r", "xml"}
+    assert {node.prefix for node in _axis_nodes(step, grandchild, False)} >= {
+        "p",
+        "q",
+        "r",
+        "s",
+        "xml",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1485,9 +1515,10 @@ def test_predicates_on_parentless_non_element_nodes() -> None:
     assert _matches(".[. instance of node()]", comment)
     assert _matches(".[. instance of node()]", pi)
     assert _matches(".[true()]", _parentless_attribute("code"))
-    # A parentless namespace node cannot be represented as an elementpath
-    # focus; the matcher treats the resulting evaluation error as a non-match.
-    assert not _matches(".[true()]", _parentless_namespace())
+    # A parentless namespace node is adapted like any other rootless node;
+    # its parent is reported as absent, not fabricated.
+    assert _matches(".[true()]", _parentless_namespace())
+    assert _matches(".[. instance of namespace-node()]", _parentless_namespace())
 
 
 def test_predicate_effective_boolean_value_branches() -> None:

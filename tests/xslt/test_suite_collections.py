@@ -55,7 +55,7 @@ def _write(root: Path, name: str, text: str) -> Path:
 def _sheet(root: Path, name: str, body: str) -> Path:
     target = root / name
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(stylesheet(body))
+    target.write_bytes(stylesheet(body, declare_xs=False))
     return target
 
 
@@ -288,7 +288,7 @@ def test_a_library_module_resolves_its_collection_against_its_own_directory(
         tmp_path,
         "principal.xsl",
         f"""<xsl:package xmlns:xsl="{XSLT_NS}" xmlns:lib="{LIBRARY}" name="{PRINCIPAL}"
-    version="3.0">
+    exclude-result-prefixes="lib" version="3.0">
   <xsl:use-package name="{LIBRARY}"/>
   <xsl:template name="main" visibility="public">
     <out><xsl:value-of select="lib:members()"/></out>
