@@ -6,6 +6,7 @@ compatibility.
 """
 
 import xml.etree.ElementTree as ET
+from dataclasses import FrozenInstanceError
 from io import StringIO
 
 import pytest
@@ -14,8 +15,11 @@ import pyxsd
 from pyxsd.binding import ParseModes
 from pyxsd.namespaces import (
     XLINK_NS,
+    XML_NS,
     XSD_NS,
     XSI_NS,
+    ExpandedName,
+    NamespaceBindings,
     NamespaceContext,
     NamespaceError,
     clark,
@@ -55,6 +59,131 @@ class TestNameHelpers:
         assert local_part("{urn:hl7-org:v3}QTY") == "QTY"
         assert local_part("hl7:QTY") == "QTY"
         assert local_part("QTY") == "QTY"
+
+
+class TestExpandedName:
+    """The public expanded-name value converts to and from Clark form."""
+
+    def test_clark_name_with_namespace(self):
+        name = ExpandedName.from_clark("{urn:test}root")
+        assert name == ExpandedName("urn:test", "root")
+        assert name.uri == "urn:test"
+        assert name.local == "root"
+        assert name.clark == "{urn:test}root"
+
+    def test_clark_name_without_namespace(self):
+        name = ExpandedName.from_clark("root")
+        assert name == ExpandedName(None, "root")
+        assert name.uri is None
+        assert name.clark == "root"
+
+    def test_empty_namespace_braces_mean_no_namespace(self):
+        assert ExpandedName.from_clark("{}root") == ExpandedName(None, "root")
+        assert ExpandedName("", "root").clark == "root"
+
+    def test_the_value_is_frozen(self):
+        name = ExpandedName("urn:test", "root")
+        with pytest.raises(FrozenInstanceError):
+            name.local = "other"  # type: ignore[misc]
+
+    @pytest.mark.parametrize("malformed", ["", "{urn:test}", "{urn:test"])
+    def test_malformed_names_raise(self, malformed):
+        with pytest.raises(NamespaceError):
+            ExpandedName.from_clark(malformed)
+
+
+class TestNamespaceBindings:
+    """An immutable snapshot answers name and QName-content resolution."""
+
+    @staticmethod
+    def _snapshot(xml: str) -> NamespaceBindings:
+        root, context = _parse(xml)
+        return context.snapshot(root)
+
+    def test_snapshot_exports_its_bindings(self):
+        bindings = self._snapshot('<a xmlns="urn:d" xmlns:p="urn:p"/>')
+        assert bindings.as_dict() == {"": "urn:d", "p": "urn:p"}
+
+    def test_from_mapping_copies_the_source(self):
+        source = {"p": "urn:p"}
+        bindings = NamespaceBindings.from_mapping(source)
+        source["p"] = "urn:changed"
+        source["q"] = "urn:q"
+        assert bindings.as_dict() == {"p": "urn:p"}
+
+    def test_as_dict_returns_a_fresh_copy(self):
+        bindings = NamespaceBindings.from_mapping({"p": "urn:p"})
+        exported = bindings.as_dict()
+        exported["p"] = "urn:changed"
+        assert bindings.as_dict() == {"p": "urn:p"}
+
+    def test_iteration_order_is_deterministic(self):
+        bindings = NamespaceBindings.from_mapping({"b": "urn:b", "a": "urn:a"})
+        assert list(bindings.as_dict()) == ["a", "b"]
+
+    def test_non_string_keys_are_rejected(self):
+        with pytest.raises(TypeError):
+            NamespaceBindings.from_mapping({1: "urn:x"})  # type: ignore[dict-item]
+
+    def test_non_string_values_are_rejected(self):
+        with pytest.raises(TypeError):
+            NamespaceBindings.from_mapping({"p": 1})  # type: ignore[dict-item]
+
+    def test_unprefixed_element_name_uses_the_default_namespace(self):
+        bindings = self._snapshot('<a xmlns="urn:d" xmlns:p="urn:p"/>')
+        assert bindings.resolve_name("local") == "{urn:d}local"
+        assert bindings.resolve_name("p:local") == "{urn:p}local"
+
+    def test_unprefixed_attribute_name_stays_unqualified(self):
+        bindings = self._snapshot('<a xmlns="urn:d"/>')
+        assert bindings.resolve_name("local", is_attribute=True) == "local"
+
+    def test_unprefixed_qname_content_uses_the_default_namespace(self):
+        bindings = self._snapshot('<a xmlns="urn:d" xmlns:p="urn:p"/>')
+        assert bindings.resolve_qname("local") == "{urn:d}local"
+        assert bindings.resolve_qname("p:local") == "{urn:p}local"
+
+    def test_unprefixed_name_without_a_default_stays_local(self):
+        bindings = self._snapshot("<a/>")
+        assert bindings.resolve_name("local") == "local"
+        assert bindings.resolve_qname("local") == "local"
+
+    def test_expanded_names_pass_through(self):
+        bindings = self._snapshot("<a/>")
+        assert bindings.resolve_name("{urn:x}y") == "{urn:x}y"
+        assert bindings.resolve_qname("{urn:x}y") == "{urn:x}y"
+
+    def test_the_implicit_xml_prefix_resolves(self):
+        bindings = self._snapshot("<a/>")
+        assert bindings.resolve_name("xml:lang") == f"{{{XML_NS}}}lang"
+        assert bindings.resolve_qname("xml:space") == f"{{{XML_NS}}}space"
+
+    def test_unknown_prefixes_raise(self):
+        bindings = self._snapshot("<a/>")
+        with pytest.raises(NamespaceError, match="p"):
+            bindings.resolve_name("p:local")
+        with pytest.raises(NamespaceError, match="p"):
+            bindings.resolve_qname("p:local")
+
+    def test_prefix_for(self):
+        bindings = self._snapshot('<a xmlns="urn:d" xmlns:p="urn:p"/>')
+        assert bindings.prefix_for("urn:p") == "p"
+        assert bindings.prefix_for("urn:d") == ""
+        assert bindings.prefix_for("urn:missing") is None
+
+    def test_nested_rebinding_is_snapshotted_per_scope(self):
+        root, context = _parse('<a xmlns="urn:outer"><b><c xmlns="urn:inner"/></b></a>')
+        outer_b = root.find("{urn:outer}b")
+        inner_c = root.find("{urn:outer}b/{urn:inner}c")
+        assert context.snapshot(outer_b).resolve_name("z") == "{urn:outer}z"
+        assert context.snapshot(inner_c).resolve_name("z") == "{urn:inner}z"
+
+    def test_a_snapshot_does_not_track_later_recording(self):
+        root, context = _parse('<a xmlns:p="urn:p"/>')
+        snapshot = context.snapshot(root)
+        context.record(root, {"p": "urn:changed"})
+        assert snapshot.resolve_name("p:x") == "{urn:p}x"
+        assert context.snapshot(root).resolve_name("p:x") == "{urn:changed}x"
 
 
 class TestCapture:
