@@ -49,13 +49,42 @@ def test_reusable_workflow_concurrency_does_not_cancel_the_release():
     assert len(groups) == len(set(groups))
 
 
-def test_core_coverage_gate_runs_relaxng_without_changing_the_xsts_environment():
-    steps = _workflow("ci.yml")["jobs"]["test"]["steps"]
-    coverage = next(step for step in steps if step.get("name") == "Run tests with coverage")
-    assert "pytest --cov --cov-branch" in coverage["run"]
+@pytest.mark.parametrize(
+    "filename",
+    ["ci.yml", "mcp.yml", "optional-integrations.yml"],
+)
+def test_validation_workflows_push_only_from_develop(filename):
+    triggers = _workflow(filename)["on"]
+    assert triggers["push"]["branches"] == ["develop"]
+    assert "pull_request" in triggers
+    assert "workflow_call" in triggers
+
+
+def test_core_coverage_and_xsts_run_as_concurrent_version_matrices():
+    jobs = _workflow("ci.yml")["jobs"]
+    coverage = next(
+        step for step in jobs["test"]["steps"] if step.get("name") == "Run tests with coverage"
+    )
+    assert "-n 4" in coverage["run"]
+    assert "--dist loadfile" in coverage["run"]
+    assert "--cov" in coverage["run"]
+    assert "--cov-branch" in coverage["run"]
     assert coverage["env"]["PYXSD_RUN_RELAXNG"] == "1"
-    xsts = next(step for step in steps if step.get("name") == "Run the XSD Test Suite")
+
+    xsts_job = jobs["xsts"]
+    assert xsts_job["strategy"]["matrix"]["python-version"] == [
+        "3.11",
+        "3.12",
+        "3.13",
+        "3.14",
+        "3.15",
+    ]
+    assert xsts_job["strategy"]["fail-fast"] == "false"
+    assert "needs" not in xsts_job
+    assert "Run the XSD Test Suite" not in {step.get("name") for step in jobs["test"]["steps"]}
+    xsts = next(step for step in xsts_job["steps"] if step.get("name") == "Run the XSD Test Suite")
     assert xsts["env"]["PYXSD_RUN_XSTS"] == "1"
+    assert xsts["env"]["PYXSD_XSTS_TIMEOUT"] == "180"
     assert "PYXSD_RUN_RELAXNG" not in xsts["env"]
 
 

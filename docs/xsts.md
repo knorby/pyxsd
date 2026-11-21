@@ -344,7 +344,8 @@ uv run python tests/report_xsts_docs.py --check
   `metadata-error` results are reported but do not themselves trigger this
   enforcement rule. A green enforcement run is not an all-pass claim.
 - **Required XSD 1.1 PR gate:** `tests/test_xsts_suite.py` runs with
-  `PYXSD_RUN_XSTS=1` and `PYXSD_XSTS_TIMEOUT=180` after the coverage run in CI.
+  `PYXSD_RUN_XSTS=1` and `PYXSD_XSTS_TIMEOUT=180` in its own CI job, concurrently
+  with the coverage run and across Python 3.11–3.15.
   It executes both engines and asserts an exact match to the XSD 1.1 baseline,
   including improvements. This is not the looser CLI `--enforce` rule.
 - **Dispatch-only workflow:** XSD 1.0 and on-demand XSD 1.1 reports/slices use
