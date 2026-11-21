@@ -88,6 +88,7 @@ from pyxsd.xslt.results import (
 )
 from pyxsd.xslt.runtime.accumulators import accumulator_copy_names
 from pyxsd.xslt.runtime.builder import (
+    NamespaceAlias,
     ResultBuilder,
     validate_constructed,
     validate_delivered,
@@ -271,6 +272,8 @@ class LiteralResultInstruction:
     content: tuple[ConstructionInstruction, ...] = ()
     base_uri: str | None = None
     namespace_aliases: Mapping[str, str] = field(default_factory=dict)
+    excluded_namespaces: frozenset[str] = frozenset()
+    namespace_alias_rules: tuple[NamespaceAlias, ...] = ()
     annotation: XdmAnnotation | None = None
     prefix: str | None = None
     validation: str | None = None
@@ -282,6 +285,8 @@ class LiteralResultInstruction:
         object.__setattr__(self, "namespaces", _freeze(self.namespaces))
         object.__setattr__(self, "content", tuple(self.content))
         object.__setattr__(self, "namespace_aliases", _freeze(self.namespace_aliases))
+        object.__setattr__(self, "excluded_namespaces", frozenset(self.excluded_namespaces))
+        object.__setattr__(self, "namespace_alias_rules", tuple(self.namespace_alias_rules))
 
     @classmethod
     def from_instruction(
@@ -291,6 +296,8 @@ class LiteralResultInstruction:
         attributes: Iterable[tuple[str, str]] | None = None,
         content: Iterable[ConstructionInstruction] = (),
         namespace_aliases: Mapping[str, str] | None = None,
+        excluded_namespaces: Iterable[str] = (),
+        namespace_alias_rules: Iterable[NamespaceAlias] = (),
         annotation: XdmAnnotation | None = None,
         validation: str | None = None,
         type_name: str | None = None,
@@ -308,6 +315,8 @@ class LiteralResultInstruction:
             content=tuple(content),
             base_uri=instruction.base_uri,
             namespace_aliases=namespace_aliases or {},
+            excluded_namespaces=frozenset(excluded_namespaces),
+            namespace_alias_rules=tuple(namespace_alias_rules),
             annotation=annotation,
             prefix=instruction.prefix,
             validation=validation,
@@ -518,6 +527,8 @@ def _construct_element(
     annotation: XdmAnnotation | None,
     prefix: str | None,
     namespace_aliases: Mapping[str, str] | None = None,
+    excluded_namespaces: frozenset[str] = frozenset(),
+    namespace_alias_rules: Iterable[NamespaceAlias] = (),
     validation: str | None = None,
     type_name: str | None = None,
     schema_pool: object = None,
@@ -529,6 +540,8 @@ def _construct_element(
             attributes=attributes,
             namespaces=namespaces,
             namespace_aliases=namespace_aliases,
+            excluded_namespaces=excluded_namespaces,
+            namespace_alias_rules=namespace_alias_rules,
             base_uri=base_uri,
             annotation=annotation,
             prefix=prefix,
@@ -662,6 +675,8 @@ def construct_instruction(instruction: ConstructionInstruction) -> XdmSequence:
             annotation=instruction.annotation,
             prefix=instruction.prefix,
             namespace_aliases=instruction.namespace_aliases,
+            excluded_namespaces=instruction.excluded_namespaces,
+            namespace_alias_rules=instruction.namespace_alias_rules,
             validation=instruction.validation,
             type_name=instruction.type_name,
             schema_pool=instruction.schema_pool,
@@ -1180,6 +1195,8 @@ def literal_element(
         namespaces=dict(plan.namespaces),
         base_uri=plan.instruction.base_uri,
         prefix=plan.instruction.prefix,
+        excluded_namespaces=plan.excluded_namespaces,
+        namespace_alias_rules=plan.namespace_aliases,
     )
     content = invocation._execute_plans(plan.children, context=context)
     _append_complex_content(factory, element, content, allow_attributes=True)

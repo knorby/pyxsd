@@ -1339,3 +1339,140 @@ def test_static_variable_select_uses_own_shadow_xpath_default_namespace(
     effective = _effective(tmp_path, xml)
 
     assert effective.find("t") is not None
+
+
+# ---------------------------------------------------------------------------
+# Namespace alias declarations
+
+
+def test_namespace_alias_declarations_keep_their_own_prefix_context(tmp_path: Path) -> None:
+    xml = _stylesheet(
+        '<xsl:namespace-alias stylesheet-prefix="foo" result-prefix="bar" '
+        'xmlns:foo="http://foo1/" xmlns:bar="http://bar1/"/>'
+        '<xsl:namespace-alias stylesheet-prefix="foo" result-prefix="bar" '
+        'xmlns:foo="http://foo2/" xmlns:bar="http://bar2/"/>'
+        '<xsl:template name="t"/>'
+    )
+
+    effective = _effective(tmp_path, xml)
+    declarations = [
+        child for child in effective.root.elements if child.local_name == "namespace-alias"
+    ]
+
+    assert len(declarations) == 2
+    assert [
+        (
+            declaration.in_scope_namespaces["foo"],
+            declaration.in_scope_namespaces["bar"],
+        )
+        for declaration in declarations
+    ] == [("http://foo1/", "http://bar1/"), ("http://foo2/", "http://bar2/")]
+
+
+def _compile_stylesheet(path: Path) -> Any:
+    from pyxsd.xslt import XsltProcessor
+
+    return XsltProcessor().compile(str(path))
+
+
+def test_static_context_exclusions_use_each_element_s_own_spelling(tmp_path: Path) -> None:
+    from pyxsd.xslt.compiler.context import StaticContext
+
+    xml = _stylesheet(
+        '<xsl:template name="t"><out xmlns:e="urn:e" '
+        'xsl:exclude-result-prefixes="e"/></xsl:template>',
+        attributes=' xmlns:r="urn:root" exclude-result-prefixes="r"',
+    )
+    module = ModuleLoader(None).load(_write(tmp_path, "root-attribute.xsl", xml))
+    literal = next(node for node in module.root.descendants if node.name == "out")
+
+    root_context = StaticContext.for_element(module.root)
+    assert root_context.excluded_namespaces >= {"urn:root"}
+    assert StaticContext.for_element(literal, parent=root_context).excluded_namespaces >= {
+        "urn:root",
+        "urn:e",
+    }
+
+
+def test_namespace_alias_uses_the_highest_import_precedence(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "base.xsl",
+        f'<xsl:stylesheet version="3.0" xmlns:xsl="{XSLT_NS}" '
+        'xmlns:x="urn:alias" xmlns:y="urn:base">'
+        '<xsl:namespace-alias stylesheet-prefix="x" result-prefix="y"/>'
+        "</xsl:stylesheet>",
+    )
+    principal = _write(
+        tmp_path,
+        "principal.xsl",
+        f'<xsl:stylesheet version="3.0" xmlns:xsl="{XSLT_NS}" '
+        'xmlns:x="urn:alias" xmlns:y="urn:principal">'
+        '<xsl:import href="base.xsl"/>'
+        '<xsl:namespace-alias stylesheet-prefix="x" result-prefix="y"/>'
+        '<xsl:template name="main"><x:transform/></xsl:template>'
+        "</xsl:stylesheet>",
+    )
+
+    compiled = _compile_stylesheet(principal)
+    element = compiled.transform(
+        initial_template="main", delivery="document"
+    ).principal_tree.root_element
+
+    assert element.name == "{urn:principal}transform"
+    assert element.prefix == "y"
+
+
+@pytest.mark.parametrize(
+    ("declaration", "code"),
+    [
+        ('<xsl:namespace-alias result-prefix="xsl"/>', "XTSE0010"),
+        ('<xsl:namespace-alias stylesheet-prefix="a"/>', "XTSE0010"),
+        (
+            '<xsl:namespace-alias stylesheet-prefix="a" result-prefix="missing"/>',
+            "XTSE0812",
+        ),
+        (
+            '<xsl:namespace-alias stylesheet-prefix="missing" result-prefix="xsl"/>',
+            "XTSE0812",
+        ),
+        (
+            '<xsl:namespace-alias stylesheet-prefix="a" result-prefix="a2"/>',
+            "XTSE0010",
+        ),
+        (
+            '<xsl:namespace-alias stylesheet-prefix="" result-prefix="xsl"/>',
+            "XTSE0010",
+        ),
+    ],
+)
+def test_invalid_namespace_alias_declarations_report_static_errors(
+    tmp_path: Path, declaration: str, code: str
+) -> None:
+    xml = _stylesheet(
+        declaration + '<xsl:template name="main"><out/></xsl:template>',
+        attributes=' xmlns:a="urn:a" xmlns:a2="urn:a"',
+    )
+    path = _write(tmp_path, "alias-error.xsl", xml)
+
+    with pytest.raises(XsltStaticError) as caught:
+        _compile_stylesheet(path)
+
+    assert caught.value.code == code
+
+
+def test_conflicting_namespace_aliases_at_one_precedence_are_xtse0810(
+    tmp_path: Path,
+) -> None:
+    xml = _stylesheet(
+        '<xsl:namespace-alias stylesheet-prefix="a" result-prefix="xsl"/>'
+        '<xsl:namespace-alias stylesheet-prefix="a" result-prefix="b"/>'
+        '<xsl:template name="main"><out/></xsl:template>',
+        attributes=' xmlns:a="urn:a" xmlns:b="urn:b"',
+    )
+    path = _write(tmp_path, "alias-conflict.xsl", xml)
+
+    with pytest.raises(XsltStaticError) as caught:
+        _compile_stylesheet(path)
+
+    assert caught.value.code == "XTSE0810"

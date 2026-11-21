@@ -43,14 +43,14 @@ XML_NS = "http://www.w3.org/XML/1998/namespace"
 XMLNS_NS = "http://www.w3.org/2000/xmlns/"
 
 
-def _compile(body: str, *, version: str = "3.0", **kwargs: Any) -> Any:
+def _compile(body: str, *, version: str = "3.0", attributes: str = "", **kwargs: Any) -> Any:
     return XsltProcessor(**kwargs).compile(
-        io.BytesIO(stylesheet(body, version=version, declare_xs=False))
+        io.BytesIO(stylesheet(body, version=version, attributes=attributes, declare_xs=False))
     )
 
 
-def _transform(body: str, *, version: str = "3.0", **kwargs: Any) -> Any:
-    return _compile(body, version=version, **kwargs).transform(
+def _transform(body: str, *, version: str = "3.0", attributes: str = "", **kwargs: Any) -> Any:
+    return _compile(body, version=version, attributes=attributes, **kwargs).transform(
         initial_template="main", delivery="document"
     )
 
@@ -443,6 +443,160 @@ def test_literal_nested_default_rebinding_and_undeclaration() -> None:
     assert result.serialize() == (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<a xmlns="urn:1"><b xmlns="urn:2"><c xmlns=""/></b></a>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Namespace copying, exclusions, and aliasing
+
+
+def _declarations(node: XdmNode) -> dict[str, str]:
+    return {
+        node.prefix: node.namespace_binding for node in node.namespace_nodes if node.prefix != "xml"
+    }
+
+
+def test_literal_local_exclude_all_applies_to_the_bearing_subtree() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xmlns:p="urn:p" xmlns:q="urn:q" xsl:exclude-result-prefixes="#all">
+            <child xmlns:r="urn:r"/>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    child = out.children[0]
+    assert _declarations(out) == {}
+    assert _declarations(child) == {"r": "urn:r"}
+    assert "p" not in child.in_scope_namespaces
+    assert "q" not in child.in_scope_namespaces
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?><out><child xmlns:r="urn:r"/></out>'
+    )
+
+
+def test_literal_local_exclusion_of_default_and_a_shared_uri() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xmlns="urn:d" xmlns:a="urn:a" xmlns:a2="urn:a"
+               xsl:exclude-result-prefixes="#default a"/>
+        </xsl:template>
+        """,
+        attributes=' xmlns="urn:root" exclude-result-prefixes="#default"',
+    )
+
+    out = result.principal_tree.root_element
+    assert out.namespace_uri == "urn:d"
+    # The excluded URI is still required by the element name, so only that
+    # one namespace node is reintroduced; every other excluded binding stays
+    # out of the copied set.
+    assert _declarations(out) == {"": "urn:d"}
+    assert out.in_scope_namespaces[""] == "urn:d"
+    assert "a" not in out.in_scope_namespaces
+    assert "a2" not in out.in_scope_namespaces
+    assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><out xmlns="urn:d"/>')
+
+
+def test_literal_excluded_uri_required_by_an_attribute_name_is_fixed_up() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out a:value="1"/>
+        </xsl:template>
+        """,
+        attributes=' xmlns:a="urn:a" exclude-result-prefixes="a"',
+    )
+
+    out = result.principal_tree.root_element
+    attribute = out.attributes[0]
+    assert attribute.name == "{urn:a}value"
+    assert attribute.prefix == "a"
+    # Exclusion removed the copied node; namespace fixup reintroduces exactly
+    # the declaration the attribute name needs.
+    assert _declarations(out) == {"a": "urn:a"}
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?><out xmlns:a="urn:a" a:value="1"/>'
+    )
+
+
+def test_literal_xml_namespace_attribute_uses_the_xml_prefix() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main"><out xml:lang="en"/></xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    assert out.attributes[0].prefix == "xml"
+    assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><out xml:lang="en"/>')
+
+
+def test_namespace_alias_rewrites_element_and_attribute_names() -> None:
+    result = _transform(
+        """
+        <xsl:namespace-alias stylesheet-prefix="axsl" result-prefix="xsl"/>
+        <xsl:template name="main">
+          <axsl:template axsl:match="/"/>
+        </xsl:template>
+        """,
+        attributes=' xmlns:axsl="urn:alias"',
+    )
+
+    out = result.principal_tree.root_element
+    assert out.name == "{http://www.w3.org/1999/XSL/Transform}template"
+    assert out.prefix == "xsl"
+    assert out.attributes[0].name == "{http://www.w3.org/1999/XSL/Transform}match"
+    assert out.attributes[0].prefix == "xsl"
+    assert "urn:alias" not in out.in_scope_namespaces.values()
+    assert _declarations(out) == {"xsl": "http://www.w3.org/1999/XSL/Transform"}
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<xsl:template xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xsl:match="/"/>'
+    )
+
+
+def test_namespace_alias_to_the_null_default_namespace() -> None:
+    result = _transform(
+        """
+        <xsl:namespace-alias stylesheet-prefix="a" result-prefix="#default"/>
+        <xsl:template name="main">
+          <a:foo a:bar="baz"/>
+        </xsl:template>
+        """,
+        attributes=' xmlns:a="http://a/com/"',
+    )
+
+    out = result.principal_tree.root_element
+    assert out.name == "foo"
+    assert out.namespace_uri is None
+    assert out.prefix == ""
+    assert out.attributes[0].name == "bar"
+    assert out.attributes[0].prefix == ""
+    assert _declarations(out) == {}
+    assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><foo bar="baz"/>')
+
+
+def test_namespace_alias_copies_a_target_uri_even_when_excluded() -> None:
+    result = _transform(
+        """
+        <xsl:namespace-alias stylesheet-prefix="old" result-prefix="new"/>
+        <xsl:template name="main">
+          <old:item/>
+        </xsl:template>
+        """,
+        attributes=' xmlns:old="urn:old" xmlns:new="urn:new" exclude-result-prefixes="new"',
+    )
+
+    out = result.principal_tree.root_element
+    assert out.name == "{urn:new}item"
+    assert out.prefix == "new"
+    assert _declarations(out) == {"new": "urn:new"}
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?><new:item xmlns:new="urn:new"/>'
     )
 
 

@@ -35,6 +35,7 @@ from pyxsd.xslt.runtime.functions import xslt_function_declarations
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
     from pyxsd.xslt.compiler.dispatch import InstructionCompiler
+    from pyxsd.xslt.runtime.builder import NamespaceAlias
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
@@ -309,6 +310,8 @@ class StaticContext:
     package: Any = None
     python_rule_count: int | None = None
     instruction_compilers: Mapping[str, InstructionCompiler] = field(default_factory=dict)
+    excluded_namespaces: frozenset[str] = frozenset()
+    namespace_aliases: tuple[NamespaceAlias, ...] = ()
 
     def __post_init__(self) -> None:
         namespaces = dict(BUILT_IN_NAMESPACES)
@@ -353,6 +356,8 @@ class StaticContext:
             if not isinstance(key, tuple) or key != (function.name, function.arity):
                 raise ValueError(f"function mapping key {key!r} does not match its declaration")
         object.__setattr__(self, "functions", functions)
+        object.__setattr__(self, "excluded_namespaces", frozenset(self.excluded_namespaces))
+        object.__setattr__(self, "namespace_aliases", tuple(self.namespace_aliases))
 
         for label, value in (
             ("default_collation", self.default_collation),
@@ -743,6 +748,8 @@ class StaticContext:
             package=fallback.package if fallback is not None else None,
             python_rule_count=(fallback.python_rule_count if fallback is not None else None),
             instruction_compilers=(fallback.instruction_compilers if fallback is not None else {}),
+            excluded_namespaces=defaults.excluded_namespaces,
+            namespace_aliases=(fallback.namespace_aliases if fallback is not None else ()),
         )
 
 
@@ -764,6 +771,7 @@ class _ElementDefaults:
     uri: str | None
     location: IssueLocation | None
     module: str | None
+    excluded_namespaces: frozenset[str] = frozenset()
 
 
 def _document_uri(element: XdmNode | EffectiveElement) -> str | None:
@@ -825,6 +833,58 @@ def _parse_yes_no(
         uri=_document_uri(element),
         location=_source_location(element),
     )
+
+
+def _own_standard_attribute(
+    element: XdmNode | EffectiveElement,
+    names: Sequence[str],
+) -> str | None:
+    """Return this element's own standard attribute value, ignoring ancestors."""
+    if isinstance(element, EffectiveElement):
+        source: XdmNode | EffectiveElement = element.raw or element
+        for name in names:
+            if not _applies_to(source, name):
+                continue
+            value = element.attribute(name)
+            if value is not None:
+                return value
+        return None
+    for name in names:
+        if not _applies_to(element, name):
+            continue
+        attribute = element.attribute(name)
+        if attribute is not None:
+            return attribute.string_value
+    return None
+
+
+def _excluded_namespaces(
+    element: XdmNode | EffectiveElement,
+    namespaces: Mapping[str, str],
+    fallback: StaticContext | None,
+) -> frozenset[str]:
+    """The cumulative excluded-namespace URIs at one stylesheet element.
+
+    ``[xsl:]exclude-result-prefixes`` is a standard attribute whose value is
+    cumulative over ancestor-or-self elements (XSLT 3.0 3.4).  Each token
+    resolves in the namespace context of the element that carries it, so a
+    prefix rebound nearer the literal result element still designates the URI
+    it names at its declaration.
+    """
+    excluded = set(fallback.excluded_namespaces if fallback is not None else ())
+    declared = _own_standard_attribute(
+        element, ("exclude-result-prefixes", f"{{{XSLT_NS}}}exclude-result-prefixes")
+    )
+    if declared is None:
+        return frozenset(excluded)
+    for token in declared.split():
+        if token == "#all":
+            excluded.update(uri for uri in namespaces.values() if uri)
+            continue
+        uri = namespaces.get("") if token == "#default" else namespaces.get(token)
+        if uri is not None:
+            excluded.add(uri)
+    return frozenset(excluded)
 
 
 def _element_defaults(
@@ -915,6 +975,8 @@ def _element_defaults(
     else:
         input_type_annotations = fallback.input_type_annotations if fallback is not None else None
 
+    excluded_namespaces = _excluded_namespaces(element, namespaces, fallback)
+
     effective_namespaces = namespaces
     if not effective_namespaces and fallback is not None:
         effective_namespaces = fallback.namespaces
@@ -939,6 +1001,7 @@ def _element_defaults(
         else None,
         location=_source_location(element) or (fallback.location if fallback is not None else None),
         module=_document_uri(element) or (fallback.module if fallback is not None else None),
+        excluded_namespaces=excluded_namespaces,
     )
 
 

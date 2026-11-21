@@ -1033,7 +1033,10 @@ def test_literal_result_exclude_all_and_default_namespaces() -> None:
     all_element = _element_children(all_compiled.transform(initial_template="main").principal_tree)[
         0
     ]
-    assert all(node.prefix != "unused" for node in all_element.namespace_nodes)
+    # ``#all`` designates the namespaces in scope on the element carrying the
+    # attribute (the module root here), not ones the literal element declares
+    # locally (XSLT 3.0 11.1.3).
+    assert any(node.prefix == "unused" for node in all_element.namespace_nodes)
 
     default_compiled = compile_bytes(
         xsl(
@@ -2176,26 +2179,23 @@ def test_template_parameter_name_validation_and_unknown_prefixes() -> None:
 
 
 def test_literal_namespaces_skip_unused_default_even_when_excluded() -> None:
-    from pyxsd.xslt.compiler.instructions import Instruction
-    from pyxsd.xslt.processor import _literal_namespaces
+    from pyxsd.xslt.runtime.builder import _prepare_scope
 
-    instruction = Instruction(
-        name="out",
-        namespaces={
+    xml_ns = "http://www.w3.org/XML/1998/namespace"
+    scope = _prepare_scope(
+        {
             "": "urn:unused",
             "p": "urn:p",
-            "xml": "http://www.w3.org/XML/1998/namespace",
+            "xml": xml_ns,
             "xsl": XSLT_NS,
         },
+        excluded=frozenset({"urn:unused", XSLT_NS}),
+        element_namespace=None,
     )
 
-    assert _literal_namespaces(
-        instruction,
-        (),
-        ("#default",),
-        frozenset(),
-        {"": "urn:unused"},
-    ) == (("p", "urn:p"),)
+    assert scope.copied_namespaces == (("p", "urn:p"),)
+    assert scope.available_bindings[""] == "urn:unused"
+    assert scope.available_bindings["p"] == "urn:p"
 
 
 def test_mode_rule_context_item_constraints() -> None:

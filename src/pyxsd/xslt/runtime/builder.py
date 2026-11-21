@@ -194,28 +194,6 @@ def _prefix_for(
     return None
 
 
-def _element_prefix(
-    namespace: str | None,
-    namespaces: dict[str, str],
-    *,
-    requested: str | None,
-) -> str:
-    """Select one element prefix, preferring the literal's lexical prefix.
-
-    A requested prefix wins only while it still names *namespace*; otherwise a
-    bound default or prefix is selected.  When no binding exists, a
-    deterministic prefix is generated as a last resort.
-    """
-    if namespace is None:
-        return ""
-    if requested is not None and namespaces.get(requested) == namespace:
-        return requested
-    selected = _prefix_for(namespace, namespaces)
-    if selected is not None:
-        return selected
-    return _new_prefix(namespaces, namespace)
-
-
 def _new_prefix(namespaces: dict[str, str], namespace: str) -> str:
     index = 1
     while f"ns{index}" in namespaces:
@@ -223,6 +201,189 @@ def _new_prefix(namespaces: dict[str, str], namespace: str) -> str:
     prefix = f"ns{index}"
     namespaces[prefix] = namespace
     return prefix
+
+
+@dataclass(frozen=True, slots=True)
+class NamespaceAlias:
+    """One compiled ``xsl:namespace-alias`` mapping.
+
+    ``literal_uri`` is the namespace URI used in the stylesheet and
+    ``target_uri`` the URI it becomes in the result tree; either may be
+    ``None`` for names in no namespace.  ``result_prefix`` is the lexical
+    prefix of the ``result-prefix`` declaration (``""`` for ``#default``).
+    """
+
+    literal_uri: str | None
+    target_uri: str | None
+    result_prefix: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedScope:
+    """One literal result element's namespace preparation.
+
+    ``copied_namespaces`` is exactly the set of namespace nodes the literal
+    element copies from the stylesheet (after exclusions and namespace
+    aliasing).  ``available_bindings`` retains every binding usable for naming
+    or namespace fixup, including excluded and aliased-literal bindings, so a
+    name's required namespace can be reintroduced without copying the rest.
+    """
+
+    copied_namespaces: tuple[tuple[str, str], ...]
+    available_bindings: Mapping[str, str]
+    element_namespace: str | None
+    aliases: tuple[NamespaceAlias, ...]
+
+    def alias_for(self, namespace: str | None) -> NamespaceAlias | None:
+        for rule in self.aliases:
+            if rule.literal_uri == namespace:
+                return rule
+        return None
+
+    def resolve_namespace(self, namespace: str | None) -> str | None:
+        """The result-tree namespace URI for a literal name in *namespace*."""
+        rule = self.alias_for(namespace)
+        return namespace if rule is None else rule.target_uri
+
+    def preferred_prefix(self, namespace: str | None) -> str | None:
+        """The lexical prefix an aliased name takes, otherwise ``None``."""
+        rule = self.alias_for(namespace)
+        return None if rule is None else rule.result_prefix
+
+
+def _prepare_scope(
+    namespaces: Mapping[str, str] | None,
+    *,
+    excluded: frozenset[str] = frozenset(),
+    aliases: Iterable[NamespaceAlias] = (),
+    element_namespace: str | None,
+) -> _PreparedScope:
+    """Prepare one literal result element's copied nodes and naming bindings.
+
+    Exclusion designates a namespace URI, never a prefix, and only affects
+    namespace nodes copied from the stylesheet.  Namespace aliasing replaces a
+    literal URI by its target URI for names, drops namespace nodes whose URI is
+    a literal URI, and copies nodes whose URI is a target URI even when that
+    URI is also excluded.
+    """
+    rules = tuple(aliases)
+    raw = dict(namespaces or {})
+    available = dict(raw)
+    available.setdefault("xml", XML_NS)
+    target_prefixes: dict[str, str] = {}
+    for rule in rules:
+        if rule.target_uri is not None:
+            target_prefixes.setdefault(rule.target_uri, rule.result_prefix)
+            available.setdefault(rule.result_prefix, rule.target_uri)
+    literal_uris = {rule.literal_uri for rule in rules}
+    copied: dict[str, str] = {}
+    for prefix, uri in raw.items():
+        if prefix == "xml":
+            continue
+        if uri in target_prefixes:
+            keep = any(rule.target_uri == uri and rule.result_prefix == prefix for rule in rules)
+            selected = prefix if keep else target_prefixes[uri]
+            copied.setdefault(selected, uri)
+            continue
+        if uri in literal_uris or uri in excluded:
+            continue
+        copied.setdefault(prefix, uri)
+    effective_element = element_namespace
+    for rule in rules:
+        if rule.literal_uri == element_namespace:
+            effective_element = rule.target_uri
+            break
+    if effective_element is None:
+        copied.pop("", None)
+    return _PreparedScope(
+        copied_namespaces=tuple(copied.items()),
+        available_bindings=MappingProxyType(available),
+        element_namespace=effective_element,
+        aliases=rules,
+    )
+
+
+def _clark(namespace: str | None, local: str) -> str:
+    return local if namespace is None else f"{{{namespace}}}{local}"
+
+
+def _bind_prefix(
+    scope: dict[str, str],
+    namespace: str,
+    preferred: str | None,
+    *,
+    is_attribute: bool,
+) -> str:
+    """Ensure *scope* declares *namespace* and return the selected prefix.
+
+    A preferred alias prefix wins when it is free or already names the target
+    namespace.  Otherwise an element takes a free default namespace and every
+    other name gets a deterministic generated prefix.
+    """
+    if preferred is not None and (not is_attribute or preferred):
+        existing = scope.get(preferred)
+        if existing is None or existing == namespace:
+            scope[preferred] = namespace
+            return preferred
+    if not is_attribute and "" not in scope:
+        scope[""] = namespace
+        return ""
+    return _new_prefix(scope, namespace)
+
+
+def _element_prefix(
+    namespace: str | None,
+    scope: dict[str, str],
+    available: Mapping[str, str] | None = None,
+    *,
+    requested: str | None,
+) -> str:
+    """Select one element prefix, preferring the name's lexical prefix.
+
+    A requested prefix wins only while a binding for it still names
+    *namespace*; otherwise a copied default or prefix is selected, then an
+    available (excluded or aliased) binding, and a deterministic prefix is
+    generated as a last resort.
+    """
+    if namespace is None:
+        return ""
+    if namespace == XML_NS:
+        scope.setdefault("xml", XML_NS)
+        return "xml"
+    bindings = scope if available is None else available
+    if requested is not None and bindings.get(requested) == namespace:
+        return _bind_prefix(scope, namespace, requested, is_attribute=False)
+    selected = _prefix_for(namespace, scope)
+    if selected is not None:
+        return selected
+    selected = _prefix_for(namespace, bindings)
+    if selected is not None:
+        return _bind_prefix(scope, namespace, selected, is_attribute=False)
+    return _bind_prefix(scope, namespace, None, is_attribute=False)
+
+
+def _attribute_prefix(
+    namespace: str | None,
+    scope: dict[str, str],
+    available: Mapping[str, str],
+    *,
+    requested: str | None,
+) -> str:
+    """Select one attribute prefix; unprefixed attributes are unqualified."""
+    if namespace is None:
+        return ""
+    if namespace == XML_NS:
+        scope.setdefault("xml", XML_NS)
+        return "xml"
+    if requested and available.get(requested) == namespace:
+        return _bind_prefix(scope, namespace, requested, is_attribute=True)
+    selected = _prefix_for(namespace, scope, is_attribute=True)
+    if selected is not None:
+        return selected
+    selected = _prefix_for(namespace, available, is_attribute=True)
+    if selected is not None:
+        return _bind_prefix(scope, namespace, selected, is_attribute=True)
+    return _bind_prefix(scope, namespace, requested or None, is_attribute=True)
 
 
 def _aliased_namespaces(
@@ -262,25 +423,22 @@ def _aliased_namespaces(
     return result
 
 
-def _prepare_scope(
-    namespaces: Mapping[str, str] | None,
-    aliases: Mapping[str, str] | None,
-    element_namespace: str | None,
-) -> dict[str, str]:
-    scope = _aliased_namespaces(namespaces, aliases)
-    scope.setdefault("xml", XML_NS)
-    if element_namespace is None:
-        scope.pop("", None)
-    elif not any(uri == element_namespace for uri in scope.values()):
-        if "" not in scope:
-            scope[""] = element_namespace
-        else:
-            _new_prefix(scope, element_namespace)
-    return scope
-
-
 def _declarations(scope: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
     return tuple((prefix, uri) for prefix, uri in scope.items() if prefix != "xml")
+
+
+def _ordered_scope(scope: Mapping[str, str], available: Mapping[str, str]) -> dict[str, str]:
+    """Order declared prefixes by the stylesheet's binding order.
+
+    Namespace fixup may reintroduce a copied binding after exclusions; placing
+    it back at its in-scope position keeps declarations deterministic and
+    independent of whether the binding was copied or fixed up.
+    """
+    ordered = {prefix: scope[prefix] for prefix in available if prefix in scope}
+    for prefix, uri in scope.items():
+        if prefix not in ordered:
+            ordered[prefix] = uri
+    return ordered
 
 
 def _sanitize_comment(value: str) -> str:
@@ -385,47 +543,73 @@ class _NodeFactory:
         namespaces: Mapping[str, str] | None = None,
         base_uri: str | None = None,
         namespace_aliases: Mapping[str, str] | None = None,
+        excluded_namespaces: frozenset[str] = frozenset(),
+        namespace_alias_rules: Iterable[NamespaceAlias] = (),
         annotation: XdmAnnotation | None = None,
         prefix: str | None = None,
     ) -> XdmNode:
-        """Create one detached element with namespace fixup applied."""
-        element_namespace, _ = _expanded_name(name, code="XTDE0820")
+        """Create one detached element with namespace fixup applied.
+
+        ``namespaces`` are the stylesheet bindings in scope at the literal
+        result element.  ``excluded_namespaces`` removes only the namespace
+        nodes copied from that scope; a URI a constructed name requires is
+        reintroduced by fixup.  ``namespace_alias_rules`` rewrites literal URIs
+        to their result-tree targets.  ``namespace_aliases`` remains the
+        low-level prefix-remap form of the direct builder API.
+        """
+        raw_namespaces = _aliased_namespaces(namespaces, namespace_aliases)
+        element_namespace, element_local = _expanded_name(name, code="XTDE0820")
         attribute_list = tuple(attributes)
-        scope = _prepare_scope(namespaces, namespace_aliases, element_namespace)
-        for attribute_name, _ in attribute_list:
-            attribute_namespace, _ = _expanded_name(attribute_name, code="XTDE0850")
-            if attribute_namespace is None:
-                continue
+        prepared = _prepare_scope(
+            raw_namespaces,
+            excluded=excluded_namespaces,
+            aliases=namespace_alias_rules,
+            element_namespace=element_namespace,
+        )
+        scope = dict(prepared.copied_namespaces)
+        scope.setdefault("xml", XML_NS)
+        result_attributes: list[tuple[str, str, str]] = []
+        for attribute_name, value in attribute_list:
+            attribute_namespace, attribute_local = _expanded_name(attribute_name, code="XTDE0850")
             if attribute_namespace == XMLNS_NS:
                 raise _dynamic(
                     "an attribute cannot be in the xmlns namespace",
                     "XTDE0850",
                 )
-            if (
-                attribute_namespace != XML_NS
-                and _prefix_for(attribute_namespace, scope, is_attribute=True) is None
-            ):
-                _new_prefix(scope, attribute_namespace)
+            effective_namespace = prepared.resolve_namespace(attribute_namespace)
+            requested = prepared.preferred_prefix(attribute_namespace)
+            selected = _attribute_prefix(
+                effective_namespace,
+                scope,
+                prepared.available_bindings,
+                requested=requested,
+            )
+            result_attributes.append(
+                (_clark(effective_namespace, attribute_local), value, selected)
+            )
+        requested_element_prefix = prepared.preferred_prefix(element_namespace)
+        if requested_element_prefix is None:
+            requested_element_prefix = prefix
         selected_prefix = _element_prefix(
-            element_namespace,
+            prepared.element_namespace,
             scope,
-            requested=prefix,
+            prepared.available_bindings,
+            requested=requested_element_prefix,
         )
+        scope = _ordered_scope(scope, prepared.available_bindings)
         declarations = _declarations(scope)
         element = self._new(
             NodeKind.ELEMENT,
             parent=None,
-            name=name,
+            name=_clark(prepared.element_namespace, element_local),
             base_uri=base_uri,
             in_scope_namespaces=scope,
             namespace_declarations=declarations,
             prefix=selected_prefix,
-            namespace_uri=element_namespace,
+            namespace_uri=prepared.element_namespace,
             annotations=annotation,
         )
-        for attribute_name, value in attribute_list:
-            attribute_namespace, _ = _expanded_name(attribute_name, code="XTDE0850")
-            attribute_prefix = _prefix_for(attribute_namespace, scope, is_attribute=True) or ""
+        for attribute_name, value, attribute_prefix in result_attributes:
             self.attach_attribute(
                 element,
                 self.attribute(
@@ -1140,6 +1324,8 @@ class ResultBuilder:
         attributes: Iterable[tuple[str, str]] = (),
         namespaces: Mapping[str, str] | None = None,
         namespace_aliases: Mapping[str, str] | None = None,
+        excluded_namespaces: frozenset[str] = frozenset(),
+        namespace_alias_rules: Iterable[NamespaceAlias] = (),
         base_uri: str | None = None,
         annotation: XdmAnnotation | None = None,
         prefix: str | None = None,
@@ -1161,6 +1347,8 @@ class ResultBuilder:
             namespaces=inherited,
             base_uri=base_uri,
             namespace_aliases=namespace_aliases,
+            excluded_namespaces=excluded_namespaces,
+            namespace_alias_rules=namespace_alias_rules,
             annotation=annotation,
             prefix=prefix,
         )

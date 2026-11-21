@@ -29,6 +29,7 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
     )
     from pyxsd.xslt.compiler.patterns import CompiledPattern
     from pyxsd.xslt.runtime.accumulators import AccumulatorKey
+    from pyxsd.xslt.runtime.builder import NamespaceAlias
     from pyxsd.xslt.runtime.iteration import Completion, SortKey
     from pyxsd.xslt.runtime.templates import RuleMatch, TemplateRule
 
@@ -146,6 +147,8 @@ class _LiteralPlan:
     children: tuple[_Plan, ...]
     namespaces: tuple[tuple[str, str], ...]
     attribute_sets: tuple[ComponentReference, ...] = ()
+    excluded_namespaces: frozenset[str] = frozenset()
+    namespace_aliases: tuple[NamespaceAlias, ...] = ()
     validation: str = "strip"
     type_name: str | None = None
 
