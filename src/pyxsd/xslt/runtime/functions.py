@@ -1278,20 +1278,23 @@ class XsltContextBridge:
 
         The first argument is atomized and cast to ``xs:string`` before the
         lexical QName is parsed; an attribute node is a legal argument because
-        the elementpath built-in never applied that conversion.  An empty
-        first argument returns an empty sequence.  The prefix resolves from
-        the second argument's in-scope namespaces (F&O 3.1 section 5.1.2).
+        the elementpath built-in never applied that conversion.  Both arguments
+        are converted first, so a missing second argument or a non-element
+        second argument is XPTY0004 even when the first is empty; only then
+        does an empty first argument return an empty sequence.  The prefix
+        resolves from the second argument's in-scope namespaces (F&O 3.1
+        section 5.1.2).
         """
         del context_item
-        lexical = _optional_atomic_string(arguments, 0, "resolve-QName")
-        if lexical is None:
-            return ()
         element = _single_node(arguments[1] if len(arguments) > 1 else (), "resolve-QName")
         if element.kind is not NodeKind.ELEMENT:
             raise XsltDynamicError(
                 "resolve-QName requires an element node",
                 code="XPTY0004",
             )
+        lexical = _optional_atomic_string(arguments, 0, "resolve-QName")
+        if lexical is None:
+            return ()
         text = lexical.strip()
         head, separator, tail = text.partition(":")
         prefix, local = (head, tail) if separator else ("", head)

@@ -1146,6 +1146,8 @@ def test_resolve_qname_reports_unbound_and_invalid_lexical_names() -> None:
     assert code("resolve-QName((1, 2), /*)") == "XPTY0004"
     assert code("resolve-QName('p:x', 'not a node')") == "XPTY0004"
     assert code("resolve-QName('x', /)") == "XPTY0004"
+    assert code("resolve-QName((), 'not a node')") == "XPTY0004"
+    assert code("resolve-QName((), /)") == "XPTY0004"
 
 
 def test_namespace_functions_reject_a_non_element_argument() -> None:
