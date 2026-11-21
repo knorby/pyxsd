@@ -171,25 +171,49 @@ def _normalize_prefix(prefix: str) -> str:
     return "" if prefix in ("", "#default") else prefix
 
 
-def _prefix_for(namespace: str | None, namespaces: Mapping[str, str]) -> str:
+def _prefix_for(
+    namespace: str | None,
+    namespaces: Mapping[str, str],
+    *,
+    is_attribute: bool = False,
+) -> str | None:
+    """Return a prefix bound to *namespace*, or ``None`` when it is unbound.
+
+    Element names prefer a default binding, because the default namespace
+    applies to unprefixed element names.  Attribute names never use it: an
+    unprefixed attribute is in no namespace, so an attribute in a namespace
+    needs an explicit prefix.  ``""`` is returned for a name in no namespace.
+    """
     if namespace is None:
         return ""
-    default = namespaces.get("")
-    if default == namespace:
+    if not is_attribute and namespaces.get("") == namespace:
         return ""
     for prefix, uri in namespaces.items():
-        if uri == namespace and prefix:
+        if prefix and uri == namespace:
             return prefix
-    return ""
+    return None
 
 
-def _attribute_prefix(namespace: str | None, namespaces: Mapping[str, str]) -> str:
+def _element_prefix(
+    namespace: str | None,
+    namespaces: dict[str, str],
+    *,
+    requested: str | None,
+) -> str:
+    """Select one element prefix, preferring the literal's lexical prefix.
+
+    A requested prefix wins only while it still names *namespace*; otherwise a
+    bound default or prefix is selected.  When no binding exists, a
+    deterministic prefix is generated as a last resort.
+    """
     if namespace is None:
         return ""
-    for prefix, uri in namespaces.items():
-        if uri == namespace and prefix:
-            return prefix
-    return ""
+    if requested is not None and namespaces.get(requested) == namespace:
+        return requested
+    selected = _prefix_for(namespace, namespaces)
+    if selected is not None:
+        return selected
+    return _new_prefix(namespaces, namespace)
 
 
 def _new_prefix(namespaces: dict[str, str], namespace: str) -> str:
@@ -379,12 +403,14 @@ class _NodeFactory:
                 )
             if (
                 attribute_namespace != XML_NS
-                and _attribute_prefix(attribute_namespace, scope) == ""
+                and _prefix_for(attribute_namespace, scope, is_attribute=True) is None
             ):
                 _new_prefix(scope, attribute_namespace)
-        selected_prefix = prefix if prefix is not None else _prefix_for(element_namespace, scope)
-        if selected_prefix and scope.get(selected_prefix) != element_namespace:
-            selected_prefix = _prefix_for(element_namespace, scope)
+        selected_prefix = _element_prefix(
+            element_namespace,
+            scope,
+            requested=prefix,
+        )
         declarations = _declarations(scope)
         element = self._new(
             NodeKind.ELEMENT,
@@ -399,7 +425,7 @@ class _NodeFactory:
         )
         for attribute_name, value in attribute_list:
             attribute_namespace, _ = _expanded_name(attribute_name, code="XTDE0850")
-            attribute_prefix = _attribute_prefix(attribute_namespace, scope)
+            attribute_prefix = _prefix_for(attribute_namespace, scope, is_attribute=True) or ""
             self.attach_attribute(
                 element,
                 self.attribute(
@@ -547,9 +573,13 @@ class _NodeFactory:
             for attribute in source.attributes:
                 cloned_attribute = self.clone(attribute, parent=node)
                 if not copy_namespaces and cloned_attribute.namespace_uri is not None:
-                    cloned_attribute._prefix = _attribute_prefix(
-                        cloned_attribute.namespace_uri,
-                        scope,
+                    cloned_attribute._prefix = (
+                        _prefix_for(
+                            cloned_attribute.namespace_uri,
+                            scope,
+                            is_attribute=True,
+                        )
+                        or ""
                     )
                 cloned_attribute._in_scope_namespaces = MappingProxyType(scope)
                 node._append_attribute(cloned_attribute)
@@ -641,7 +671,7 @@ class _NodeFactory:
             if attribute_namespace == XML_NS:
                 reduced["xml"] = XML_NS
                 continue
-            if _attribute_prefix(attribute_namespace, reduced):
+            if _prefix_for(attribute_namespace, reduced, is_attribute=True) is not None:
                 continue
             if attribute.prefix and attribute.prefix not in reduced:
                 reduced[attribute.prefix] = attribute_namespace
@@ -947,8 +977,8 @@ def _ensure_attribute_namespace(
         return "xml"
     if prefix and parent.in_scope_namespaces.get(prefix) == namespace:
         return prefix
-    existing = _attribute_prefix(namespace, parent.in_scope_namespaces)
-    if existing:
+    existing = _prefix_for(namespace, parent.in_scope_namespaces, is_attribute=True)
+    if existing is not None:
         return existing
     selected = prefix
     if not selected or selected in parent.in_scope_namespaces:

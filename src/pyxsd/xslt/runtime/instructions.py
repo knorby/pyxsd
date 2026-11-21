@@ -309,6 +309,7 @@ class LiteralResultInstruction:
             base_uri=instruction.base_uri,
             namespace_aliases=namespace_aliases or {},
             annotation=annotation,
+            prefix=instruction.prefix,
             validation=validation,
             type_name=type_name,
             schema_pool=schema_pool,
@@ -1178,6 +1179,7 @@ def literal_element(
         attributes=tuple(attributes),
         namespaces=dict(plan.namespaces),
         base_uri=plan.instruction.base_uri,
+        prefix=plan.instruction.prefix,
     )
     content = invocation._execute_plans(plan.children, context=context)
     _append_complex_content(factory, element, content, allow_attributes=True)

@@ -335,7 +335,7 @@ def test_constructed_and_cloned_annotations_are_preserved() -> None:
 def test_namespace_prefix_generation_and_collision() -> None:
     from pyxsd.xslt.results import _prefix_for
 
-    assert _prefix_for("urn:missing", {}) == ""
+    assert _prefix_for("urn:missing", {}) is None
 
     factory = _factory()
     collided = factory.element(

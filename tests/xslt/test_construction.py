@@ -297,6 +297,127 @@ def test_literal_result_direct_construction_without_static_context() -> None:
     assert element.children[0].string_value == "value"
 
 
+def test_literal_result_keeps_its_lexical_prefix_over_a_default_binding() -> None:
+    source = compiled.Instruction(
+        name="{urn:a}item",
+        namespaces={"": "urn:a", "p": "urn:a"},
+        literal=True,
+        prefix="p",
+    )
+    instruction = LiteralResultInstruction.from_instruction(source)
+
+    element = _require_element(construct_instruction(instruction)[0])
+
+    assert element.name == "{urn:a}item"
+    assert element.prefix == "p"
+    assert element.namespace_uri == "urn:a"
+    assert dict(element.in_scope_namespaces)["p"] == "urn:a"
+    assert element.namespace_declarations == (("", "urn:a"), ("p", "urn:a"))
+
+
+def test_literal_result_prefers_its_lexical_prefix_over_another_binding() -> None:
+    source = compiled.Instruction(
+        name="{urn:a}item",
+        namespaces={"q": "urn:a", "p": "urn:a"},
+        literal=True,
+        prefix="p",
+    )
+    instruction = LiteralResultInstruction.from_instruction(source)
+
+    element = _require_element(construct_instruction(instruction)[0])
+
+    assert element.prefix == "p"
+    assert element.namespace_uri == "urn:a"
+    assert element.namespace_declarations == (("q", "urn:a"), ("p", "urn:a"))
+
+
+def test_literal_result_without_a_lexical_prefix_uses_a_default_binding() -> None:
+    instruction = LiteralResultInstruction(
+        name="{urn:a}item",
+        namespaces={"": "urn:a", "p": "urn:a"},
+    )
+
+    element = _require_element(construct_instruction(instruction)[0])
+
+    assert element.prefix == ""
+    assert element.namespace_uri == "urn:a"
+
+
+def test_bug_0302_literal_result_prefixes_and_declarations_match_the_corpus() -> None:
+    source = _stylesheet(
+        """
+        <xsl:output method="xml" encoding="iso-8859-1"/>
+        <xsl:template match="/" xmlns:z="http://z.uri/">
+          <xsl:variable name="tmp">
+            <z:a a-foo="a-bar"/>
+            <z:b b-foo="b-bar"/>
+            <c c-foo="c-bar"/>
+          </xsl:variable>
+          <out changed="2004-04-06">
+            <xsl:copy-of select="$tmp"/>
+          </out>
+        </xsl:template>
+        """,
+        version="2.0",
+        attributes=' exclude-result-prefixes="#default" xmlns="http://abc.uri/"',
+        declare_xs=False,
+    )
+    result = _transform(source, b"<doc/>", delivery="stylesheet")
+
+    out = result.principal_tree.root_element
+    assert out.name == "{http://abc.uri/}out"
+    assert out.prefix == ""
+    assert out.namespace_uri == "http://abc.uri/"
+    assert out.namespace_declarations == (
+        ("", "http://abc.uri/"),
+        ("z", "http://z.uri/"),
+    )
+    children = [child for child in out.children if child.kind is NodeKind.ELEMENT]
+    assert [(child.name, child.prefix) for child in children] == [
+        ("{http://z.uri/}a", "z"),
+        ("{http://z.uri/}b", "z"),
+        ("{http://abc.uri/}c", ""),
+    ]
+    assert result.principal_entry.serialized == (
+        '<?xml version="1.0" encoding="iso-8859-1"?>'
+        '<out xmlns="http://abc.uri/" xmlns:z="http://z.uri/" changed="2004-04-06">'
+        '<z:a a-foo="a-bar"/><z:b b-foo="b-bar"/><c c-foo="c-bar"/></out>'
+    )
+
+
+def test_nested_default_rebinding_and_undeclaration_keep_element_prefixes() -> None:
+    result = _transform(
+        _stylesheet(
+            """
+            <xsl:template name="main">
+              <a xmlns="urn:1"><b xmlns="urn:2"><c xmlns=""/></b></a>
+            </xsl:template>
+            """,
+            declare_xs=False,
+        ),
+        None,
+        delivery="stylesheet",
+        initial_template="main",
+    )
+
+    a = result.principal_tree.root_element
+    b = a.children[0]
+    c = b.children[0]
+    assert [(node.prefix, node.namespace_uri) for node in (a, b, c)] == [
+        ("", "urn:1"),
+        ("", "urn:2"),
+        ("", None),
+    ]
+    assert a.namespace_declarations == (("", "urn:1"),)
+    assert b.namespace_declarations == (("", "urn:2"),)
+    assert c.namespace_declarations == ()
+    assert "" not in c.in_scope_namespaces
+    assert result.principal_entry.serialized == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<a xmlns="urn:1"><b xmlns="urn:2"><c xmlns=""/></b></a>'
+    )
+
+
 # ---------------------------------------------------------------------------
 # Copies
 
@@ -408,6 +529,41 @@ def test_construct_into_flattens_document_results() -> None:
         ),
     )
     assert [child.name for child in builder.to_sequence()] == ["first", "second"]
+
+
+def test_builder_element_generates_a_prefix_only_when_no_binding_exists() -> None:
+    builder = ResultBuilder.temporary()
+
+    element = builder.element("{urn:x}item", namespaces={"": "urn:other"})
+
+    assert element.prefix == "ns1"
+    assert element.namespace_uri == "urn:x"
+    assert element.namespace_declarations == (("", "urn:other"), ("ns1", "urn:x"))
+    assert dict(element.in_scope_namespaces)["ns1"] == "urn:x"
+
+
+def test_builder_element_falls_back_when_the_requested_prefix_is_unbound() -> None:
+    builder = ResultBuilder.temporary()
+
+    element = builder.element("{urn:a}item", namespaces={"p": "urn:a"}, prefix="missing")
+
+    assert element.prefix == "p"
+    assert element.namespace_uri == "urn:a"
+
+
+def test_builder_unprefixed_attribute_never_uses_the_default_namespace() -> None:
+    builder = ResultBuilder.temporary()
+
+    element = builder.element(
+        "{urn:a}out",
+        attributes=(("id", "1"),),
+        namespaces={"": "urn:a"},
+    )
+
+    attribute = element.attributes[0]
+    assert attribute.name == "id"
+    assert attribute.prefix == ""
+    assert attribute.namespace_uri is None
 
 
 def test_construct_into_keeps_temporary_output_state() -> None:

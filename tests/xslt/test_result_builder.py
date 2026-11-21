@@ -18,7 +18,7 @@ from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xslt.errors import XsltDynamicError
 from pyxsd.xslt.runtime.builder import (
     ResultBuilder,
-    _attribute_prefix,
+    _element_prefix,
     _new_prefix,
     _NodeFactory,
     _prefix_for,
@@ -1080,12 +1080,20 @@ def test_prefix_helpers_choose_expected_prefixes() -> None:
     assert _prefix_for(None, {"p": "urn:p"}) == ""
     assert _prefix_for("urn:x", {"": "urn:x"}) == ""
     assert _prefix_for("urn:x", {"p": "urn:y", "q": "urn:x"}) == "q"
-    assert _prefix_for("urn:missing", {"p": "urn:p"}) == ""
-    assert _attribute_prefix(None, {}) == ""
-    assert _attribute_prefix("urn:x", {"": "urn:x"}) == ""
-    assert _attribute_prefix("urn:x", {"p": "urn:x"}) == "p"
-    assert _attribute_prefix("urn:missing", {"p": "urn:p"}) == ""
+    assert _prefix_for("urn:missing", {"p": "urn:p"}) is None
+    assert _prefix_for(None, {}) == ""
+    assert _prefix_for("urn:x", {"": "urn:x"}, is_attribute=True) is None
+    assert _prefix_for("urn:x", {"p": "urn:x"}, is_attribute=True) == "p"
+    assert _prefix_for("urn:missing", {"p": "urn:p"}, is_attribute=True) is None
     assert _new_prefix({"ns1": "urn:one", "ns2": "urn:two"}, "urn:new") == "ns3"
+
+
+def test_element_prefix_selection_prefers_the_requested_prefix() -> None:
+    assert _element_prefix("urn:x", {"": "urn:x", "p": "urn:x"}, requested="p") == "p"
+    assert _element_prefix("urn:x", {"": "urn:x", "p": "urn:x"}, requested="") == ""
+    assert _element_prefix("urn:x", {"p": "urn:x"}, requested="missing") == "p"
+    assert _element_prefix(None, {"": "urn:x"}, requested="p") == ""
+    assert _element_prefix("urn:new", {"": "urn:x"}, requested=None) == "ns1"
 
 
 def test_non_clark_malformed_element_name_is_rejected() -> None:

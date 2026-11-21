@@ -380,6 +380,72 @@ def test_constructors_nest_inside_xsl_element_and_literal_result_elements() -> N
     assert [pi.target for pi in _pis(literal)] == ["inner"]
 
 
+def test_literal_result_element_keeps_its_lexical_prefix() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <out xmlns="http://abc.uri/">
+            <p:item xmlns:p="http://abc.uri/"/>
+          </out>
+        </xsl:template>
+        """
+    )
+
+    out = result.principal_tree.root_element
+    item = out.children[0]
+    assert out.prefix == ""
+    assert out.namespace_uri == "http://abc.uri/"
+    assert item.prefix == "p"
+    assert item.namespace_uri == "http://abc.uri/"
+    assert dict(item.in_scope_namespaces)["p"] == "http://abc.uri/"
+    assert ("p", "http://abc.uri/") in item.namespace_declarations
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<out xmlns="http://abc.uri/"><p:item xmlns:p="http://abc.uri/"/></out>'
+    )
+
+
+def test_literal_result_prefix_is_visible_to_name() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="v">
+            <p:item xmlns:p="urn:a" xmlns="urn:a"/>
+          </xsl:variable>
+          <out><xsl:value-of select="name($v/*)"/></out>
+        </xsl:template>
+        """
+    )
+
+    assert result.principal_tree.root_element.string_value == "p:item"
+
+
+def test_literal_nested_default_rebinding_and_undeclaration() -> None:
+    result = _transform(
+        """
+        <xsl:template name="main">
+          <a xmlns="urn:1"><b xmlns="urn:2"><c xmlns=""/></b></a>
+        </xsl:template>
+        """
+    )
+
+    a = result.principal_tree.root_element
+    b = a.children[0]
+    c = b.children[0]
+    assert [(node.prefix, node.namespace_uri) for node in (a, b, c)] == [
+        ("", "urn:1"),
+        ("", "urn:2"),
+        ("", None),
+    ]
+    assert a.namespace_declarations == (("", "urn:1"),)
+    assert b.namespace_declarations == (("", "urn:2"),)
+    assert c.namespace_declarations == ()
+    assert result.serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<a xmlns="urn:1"><b xmlns="urn:2"><c xmlns=""/></b></a>'
+    )
+
+
 def test_raw_delivery_returns_a_constructed_leaf_node() -> None:
     principal = (
         _compile('<xsl:template name="main"><xsl:comment select="\'c\'"/></xsl:template>')

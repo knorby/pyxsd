@@ -121,6 +121,7 @@ class Instruction:
     location: IssueLocation | None = None
     literal: bool = False
     expand_text: bool = False
+    prefix: str = ""
     reference: ComponentReference | None = None
     references: tuple[ComponentReference, ...] = ()
 
@@ -250,6 +251,7 @@ def normalize_element(
         location=element.source_location(),
         literal=namespace != XSLT_NS,
         expand_text=False,
+        prefix=element.prefix,
     )
 
 
