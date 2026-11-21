@@ -175,18 +175,7 @@ class NamespaceBindings:
         never in the default namespace, while element names are. An
         already-expanded Clark name is returned unchanged.
         """
-        if qname.startswith("{"):
-            return qname
-        if ":" in qname:
-            prefix, local = qname.split(":", 1)
-            uri = self._uri_for_prefix(prefix)
-            if uri is None:
-                raise NamespaceError(f"the namespace prefix {prefix!r} is not bound in scope")
-            return clark(uri, local)
-        if is_attribute:
-            return qname
-        uri = self._bindings.get("")
-        return clark(uri, qname) if uri else qname
+        return self._resolve_in(self._bindings, qname, is_attribute=is_attribute)
 
     def resolve_qname(self, qname: str) -> str:
         """Resolve QName-valued content to a Clark name.
@@ -196,7 +185,7 @@ class NamespaceBindings:
         default namespace. Keeping this a separate operation stops a
         caller from applying attribute semantics to content.
         """
-        return self.resolve_name(qname)
+        return self._resolve_in(self._bindings, qname)
 
     def prefix_for(self, uri: str | None) -> str | None:
         """Return a prefix bound to ``uri``.
@@ -204,18 +193,38 @@ class NamespaceBindings:
         The default namespace is returned as ``""``. ``None`` is returned
         when the URI is bound nowhere in scope.
         """
-        for prefix, bound in self._bindings.items():
+        return self._prefix_in(self._bindings, uri)
+
+    @staticmethod
+    def _resolve_in(bindings: Mapping[str, str], qname: str, *, is_attribute: bool = False) -> str:
+        """Resolve a lexical name against a raw binding frame.
+
+        This is the one resolution implementation. :class:`NamespaceContext`
+        calls it with the element's recorded frame so a QName lookup on a
+        compilation hot path does not materialize a snapshot per call.
+        """
+        if qname.startswith("{"):
+            return qname
+        if ":" in qname:
+            prefix, local = qname.split(":", 1)
+            # The ``xml`` prefix is implicitly bound by the XML spec.
+            uri = XML_NS if prefix == "xml" else bindings.get(prefix)
+            if uri is None:
+                raise NamespaceError(f"the namespace prefix {prefix!r} is not bound in scope")
+            return clark(uri, local)
+        if is_attribute:
+            return qname
+        uri = bindings.get("")
+        return clark(uri, qname) if uri else qname
+
+    @staticmethod
+    def _prefix_in(bindings: Mapping[str, str], uri: str | None) -> str | None:
+        for prefix, bound in bindings.items():
             if bound == uri and prefix:
                 return prefix
-        if self._bindings.get("") == uri:
+        if bindings.get("") == uri:
             return ""
         return None
-
-    def _uri_for_prefix(self, prefix: str) -> str | None:
-        # The ``xml`` prefix is implicitly bound by the XML spec.
-        if prefix == "xml":
-            return XML_NS
-        return self._bindings.get(prefix)
 
 
 class NamespaceContext:
@@ -301,15 +310,17 @@ class NamespaceContext:
         never in the default namespace, while element content is.
         An already-expanded Clark name is returned unchanged.
         """
-        return self.snapshot(element).resolve_name(qname, is_attribute=is_attribute)
+        return NamespaceBindings._resolve_in(self._frame(element), qname, is_attribute=is_attribute)
 
     def prefix_for(self, element: ET.Element, uri: str | None) -> str | None:
         """Return a prefix bound to ``uri`` in ``element``'s scope.
 
         The default namespace is returned as ``""``. ``None`` is
-        returned when the URI is bound nowhere in scope.
+        returned when the URI is bound nowhere in scope. When several
+        prefixes name the same URI, the first declaration in scope wins,
+        preserving the accessor names generated from this lookup.
         """
-        return self.snapshot(element).prefix_for(uri)
+        return NamespaceBindings._prefix_in(self._frame(element), uri)
 
     def _frame(self, element: ET.Element) -> dict[str, str]:
         return self._bindings.get(element, self.root_bindings)

@@ -171,6 +171,35 @@ class TestNamespaceBindings:
         assert bindings.prefix_for("urn:d") == ""
         assert bindings.prefix_for("urn:missing") is None
 
+    def test_the_snapshot_is_frozen(self):
+        bindings = NamespaceBindings.from_mapping({"p": "urn:p"})
+        with pytest.raises(FrozenInstanceError):
+            bindings._bindings = {}  # type: ignore[misc]
+
+    def test_the_stored_mapping_rejects_mutation(self):
+        bindings = NamespaceBindings.from_mapping({"p": "urn:p"})
+        with pytest.raises(TypeError):
+            bindings._bindings["p"] = "urn:changed"  # type: ignore[index]
+
+    def test_snapshot_prefix_selection_is_sorted(self):
+        # Declaration order is q then p; the snapshot's deterministic
+        # iteration picks the sorted prefix, unlike the context lookup
+        # that keeps declaration order for generated accessor names.
+        bindings = self._snapshot('<a xmlns:q="urn:x" xmlns:p="urn:x"/>')
+        assert bindings.prefix_for("urn:x") == "p"
+
+    def test_resolve_does_not_materialize_a_snapshot(self, monkeypatch):
+        # Compilation and validation resolve many QNames; each lookup
+        # must reuse the recorded frame instead of copying it.
+        root, context = _parse('<a xmlns:d="urn:d"/>')
+
+        def fail(mapping):
+            raise AssertionError("resolution must not build a snapshot")
+
+        monkeypatch.setattr(NamespaceBindings, "from_mapping", fail)
+        assert context.resolve(root, "d:x") == "{urn:d}x"
+        assert context.prefix_for(root, "urn:d") == "d"
+
     def test_nested_rebinding_is_snapshotted_per_scope(self):
         root, context = _parse('<a xmlns="urn:outer"><b><c xmlns="urn:inner"/></b></a>')
         outer_b = root.find("{urn:outer}b")
@@ -232,6 +261,12 @@ class TestCapture:
         assert context.prefix_for(root, "urn:p") == "p"
         assert context.prefix_for(root, "urn:d") == ""
         assert context.prefix_for(root, "urn:nope") is None
+
+    def test_prefix_for_keeps_the_first_declared_prefix(self):
+        # schema_base names generated accessors from this lookup, so the
+        # declaration order in scope stays authoritative.
+        root, context = _parse('<a xmlns:q="urn:x" xmlns:p="urn:x"/>')
+        assert context.prefix_for(root, "urn:x") == "q"
 
     def test_xsd_namespace_constant(self):
         assert XSD_NS == "http://www.w3.org/2001/XMLSchema"
