@@ -19,7 +19,7 @@ import os
 from copy import copy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, cast
+from typing import IO, Literal, cast
 from urllib.parse import unquote, urljoin
 from xml.etree import ElementTree as ET
 
@@ -45,10 +45,12 @@ from pyxsd.resource_refs import (
 from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 __all__ = [
+    "LoadedCompactResource",
     "LoadedResource",
     "ResourceDependency",
     "ResourceLoader",
     "ResourceReference",
+    "SchemaResource",
     "resolve_xml_base",
 ]
 
@@ -56,6 +58,10 @@ __all__ = [
 #: :class:`xml.etree.ElementTree.Element` is deliberately rejected: it cannot
 #: carry the namespace and policy evidence a policy's parser records.
 ResourceSource = str | os.PathLike[str] | IO[str] | IO[bytes]
+
+#: The syntaxes one loaded resource can be read as.  A compilation selects
+#: one for its root and every include/external dependency inherits it.
+ResourceSyntax = Literal["xml", "compact"]
 
 
 @dataclass(frozen=True)
@@ -112,6 +118,11 @@ class LoadedResource:
     def __repr__(self) -> str:
         return f"LoadedResource(canonical_id={self.canonical_id!r})"
 
+    @property
+    def syntax(self) -> Literal["xml"]:
+        """The syntax this resource was read as."""
+        return "xml"
+
     def with_namespace(self, namespace: str) -> LoadedResource:
         """A read-context view with an inherited RELAX NG ``ns``.
 
@@ -141,6 +152,67 @@ class LoadedResource:
             node = [child for child in node if child.tag == step.name][step.index - 1]
             namespace = node.get("ns", namespace)
         return namespace
+
+
+@dataclass(frozen=True, eq=False, repr=False)
+class LoadedCompactResource:
+    """One admitted compact-syntax resource, parsed after namespace views.
+
+    ``content`` is the exact admitted original input.  Parsing is deferred
+    until a view has applied its inherited namespace, because one canonical
+    compact resource may be referenced with different inherited namespaces.
+    ``namespaces`` and ``origins`` are empty until a reader parses the view.
+    Identity is per loader, exactly as for :class:`LoadedResource`.
+    """
+
+    canonical_id: str
+    content: bytes
+    namespaces: NamespaceContext
+    origins: OriginTable
+    inherited_namespace: str = ""
+
+    def __repr__(self) -> str:
+        return f"LoadedCompactResource(canonical_id={self.canonical_id!r})"
+
+    @property
+    def syntax(self) -> Literal["compact"]:
+        """The syntax this resource is read as."""
+        return "compact"
+
+    def with_namespace(self, namespace: str) -> LoadedCompactResource:
+        """A view whose compact environment inherits *namespace*.
+
+        An explicit compact namespace declaration still wins; the inherited
+        value applies only where the compact environment says ``inherit``.
+        The admitted bytes and every piece of evidence are shared, and the
+        loader's cached resource is never changed.
+        """
+        if not namespace or namespace == self.inherited_namespace:
+            return self
+        return LoadedCompactResource(
+            self.canonical_id,
+            self.content,
+            self.namespaces,
+            self.origins,
+            namespace,
+        )
+
+    def namespace_at(self, origins: OriginTable) -> str:
+        """The namespace a compact reference without ``ns`` inherits."""
+        return self.inherited_namespace
+
+
+#: Any resource a loader admits; consumers select behavior through ``syntax``.
+SchemaResource = LoadedResource | LoadedCompactResource
+
+
+def _validate_syntax(syntax: str) -> ResourceSyntax:
+    """Return *syntax* if known, else reject it before any resource is read."""
+    if syntax not in ("xml", "compact"):
+        raise ValueError(
+            f"unknown RELAX NG resource syntax {syntax!r}; expected 'xml' or 'compact'"
+        )
+    return cast(ResourceSyntax, syntax)
 
 
 @dataclass
@@ -271,7 +343,7 @@ class ResourceLoader:
         self._policy = policy
         self._xml_policy = xml_policy
         self._xml_limits = xml_limits
-        self._resources: dict[str, LoadedResource] = {}
+        self._resources: dict[str, SchemaResource] = {}
         self._dependencies: dict[str, _DependencyRecord] = {}
         self._anonymous = 0
 
@@ -280,34 +352,51 @@ class ResourceLoader:
         source: ResourceSource | ET.Element,
         *,
         purpose: ResourcePurpose = "schema",
-    ) -> LoadedResource:
-        """Read and parse one explicitly supplied resource.
+        syntax: ResourceSyntax = "xml",
+    ) -> SchemaResource:
+        """Read and admit one explicitly supplied resource.
 
         A stream is read once through the policy's admission path.  An
         unnamed stream has no implicit base; each such stream is a distinct
         resource so two anonymous schemas cannot be conflated.  A stream
         whose name is supplied keeps that name as its source identity.
+
+        An XML resource is parsed immediately.  A compact resource retains
+        its admitted bytes so parsing can happen after a namespace view is
+        applied.  One canonical resource keeps the syntax it was first
+        loaded as; a compilation never mixes the two.
         """
         checked = validate_purpose(purpose)
+        checked_syntax = _validate_syntax(syntax)
         requested = self._requested_id(source)
         if requested is not None:
             cached = self._resources.get(requested)
             if cached is not None:
+                self._check_cached_syntax(cached, checked_syntax)
                 return cached
         data = self._read(source, requested, checked)
         canonical = self._canonical_id(data, requested)
         existing = self._resources.get(canonical)
         if existing is not None:
+            self._check_cached_syntax(existing, checked_syntax)
             self._remember_alias(requested, canonical, existing)
             return existing
-        context = NamespaceContext()
-        root = self._parse(data, context)
-        resource = LoadedResource(
-            canonical_id=canonical,
-            root=root,
-            namespaces=context,
-            origins=_origin_table(root, canonical),
-        )
+        if checked_syntax == "compact":
+            resource: SchemaResource = LoadedCompactResource(
+                canonical_id=canonical,
+                content=data.content,
+                namespaces=NamespaceContext(),
+                origins=OriginTable(),
+            )
+        else:
+            context = NamespaceContext()
+            root = self._parse(data, context)
+            resource = LoadedResource(
+                canonical_id=canonical,
+                root=root,
+                namespaces=context,
+                origins=_origin_table(root, canonical),
+            )
         self._resources[canonical] = resource
         self._remember_alias(requested, canonical, resource)
         self._dependencies[canonical] = _DependencyRecord(
@@ -320,24 +409,26 @@ class ResourceLoader:
     def resolve(
         self,
         reference: str,
-        containing: LoadedResource,
+        containing: SchemaResource,
         base: str | None,
         *,
         location: IssueLocation | None = None,
-    ) -> LoadedResource:
+    ) -> SchemaResource:
         """Load *reference* against *containing* and its effective *base*.
 
         ``base`` is already normalized: it includes every in-scope
         ``xml:base`` and is never parsed as URI text a second time.  Only the
         authored reference is XLink-escaped and resolved.  A raw ``#`` in
-        that authored reference is a URI fragment and rejects XML retrieval
+        that authored reference is a URI fragment and rejects retrieval
         before any dot-segment or filesystem normalization, so a ``%23``
         escape remains a legal filename character.
 
-        A missing resource raises the ordinary ``OSError`` or policy denial;
-        a malformed one raises :class:`xml.etree.ElementTree.ParseError`.
-        Composition decides whether such a required dependency is a schema
-        finding.  A failed read records no dependency.
+        The dependency is loaded as the containing resource's syntax; a
+        suffix never selects a syntax.  A missing resource raises the
+        ordinary ``OSError`` or policy denial; a malformed XML resource
+        raises :class:`xml.etree.ElementTree.ParseError`.  Composition
+        decides whether such a required dependency is a schema finding.  A
+        failed read records no dependency.
         """
         reference = xlink_escape(reference)
         if "#" in reference:
@@ -354,7 +445,11 @@ class ResourceLoader:
             resolved_base = base
         canonical = _resolve_against(resolved_base, reference)
         cached = self._resources.get(canonical)
-        resource = cached if cached is not None else self.load(canonical)
+        if cached is not None:
+            self._check_cached_syntax(cached, containing.syntax)
+            resource = cached
+        else:
+            resource = self.load(canonical, syntax=containing.syntax)
         self._record_reference(
             containing_id=containing.canonical_id,
             reference=reference,
@@ -446,11 +541,18 @@ class ResourceLoader:
             limits=self._xml_limits,
         )
 
+    def _check_cached_syntax(self, resource: SchemaResource, syntax: ResourceSyntax) -> None:
+        if resource.syntax != syntax:
+            raise ValueError(
+                f"resource {resource.canonical_id!r} is already loaded as "
+                f"{resource.syntax!r} syntax, not {syntax!r}"
+            )
+
     def _remember_alias(
         self,
         requested: str | None,
         canonical: str,
-        resource: LoadedResource,
+        resource: SchemaResource,
     ) -> None:
         if requested is not None and requested != canonical:
             self._resources[requested] = resource
