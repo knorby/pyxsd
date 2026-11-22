@@ -93,6 +93,19 @@ def test_lexical_conversion_omits_captured_comments_and_pis_without_losing_tails
         LexicalElement.from_etree(ET.Comment("not an element"))
 
 
+@pytest.mark.parametrize(
+    "xml",
+    ["<!--note-->", "<r>a<!--note-->b<?p value?>c</r>"],
+    ids=["comment-root", "comment-and-pi-children"],
+)
+def test_relaxng_conversion_retains_captured_comments_and_pis(xml: str) -> None:
+    parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True))
+    element = ET.fromstring(f"<wrapper>{xml}</wrapper>", parser)[0]
+
+    root = RelaxNGElement.from_etree(element)
+    assert ET.tostring(root.to_etree(), encoding="unicode") == xml
+
+
 def test_relaxng_entry_points_reject_generic_lexical_nodes() -> None:
     root = RelaxNGElement.from_etree(ET.fromstring("<r><c/></r>"))
     generic = LexicalElement.from_etree(ET.Element("c"))
