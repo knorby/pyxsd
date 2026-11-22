@@ -998,12 +998,13 @@ class _Reader:
         type_name: str | None,
         lexical: str,
     ) -> _Shape:
+        normalized_lexical = lexical.strip()
         if (
             type_name in {"QName", "NOTATION"}
             and library in {"", _XSD_DATATYPES}
-            and ":" in lexical
+            and ":" in normalized_lexical
         ):
-            prefix = lexical.split(":", 1)[0]
+            prefix = normalized_lexical.split(":", 1)[0]
             if prefix not in self.environment.namespaces:
                 self._finding(
                     "relaxng-compact-unbound-prefix",

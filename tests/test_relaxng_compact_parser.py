@@ -616,6 +616,14 @@ def test_qname_value_requires_a_bound_prefix() -> None:
     )
     assert bound.findings == ()
 
+    # XSD QName has the collapse whitespace facet, so padding is valid.
+    padded = parse(
+        'namespace p = "urn:p"\n'
+        'datatypes xsd = "http://www.w3.org/2001/XMLSchema-datatypes"\n'
+        'xsd:QName " p:local "'
+    )
+    assert padded.findings == ()
+
 
 def test_synthetic_namespace_context_excludes_datatypes_and_unusable_bindings() -> None:
     resource = make_resource(
