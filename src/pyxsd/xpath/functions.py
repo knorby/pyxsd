@@ -227,6 +227,7 @@ class HostFunctionToken(XPathFunction):
         name: str | None = None,
         arity: int | tuple[int, int | None] | None = None,
         context_binder: Callable[[Any], Any] | None = None,
+        to_xdm: Callable[[Any], XdmSequence] | None = None,
     ) -> None:
         super().__init__(parser)
         if not callable(target) and not isinstance(target, XdmFunction):
@@ -234,6 +235,7 @@ class HostFunctionToken(XPathFunction):
         self._target = target
         self._item_converter = item_converter
         self._context_binder = context_binder
+        self._to_xdm = to_xdm
         self._host_name = name
         self.name = name or ""
         self.nargs = function_arity(target) if arity is None else arity
@@ -269,17 +271,32 @@ class HostFunctionToken(XPathFunction):
             return self._target
         return binder(context)
 
+    def _arguments(self, values: Iterable[Any], context: Any) -> tuple[XdmSequence, ...]:
+        """Convert elementpath argument values back to XDM sequences.
+
+        An argument may be a grounded node adapter, a list of adapters, or an
+        atomic value.  ``as_xdm`` only accepts XDM items, so a node argument
+        needs the evaluation's bridge; without it a function item called with
+        ``@name`` raised instead of applying the implicit atomization every
+        function call performs.
+        """
+        convert = self._to_xdm
+        if convert is None:
+            return tuple(as_xdm(value) for value in values)
+        return tuple(convert(value) for value in values)
+
     def __call__(self, *args: Any, context: Any = None) -> Any:
         target = self._invocation_target(context)
         self._check(len(args))
-        arguments = tuple(as_xdm(_evaluate_token(value, context)) for value in args)
+        arguments = self._arguments((_evaluate_token(value, context) for value in args), context)
         result = call_host_function(target, arguments)
         return sequence_to_elementpath(result, item_converter=self._item_converter)
 
     def evaluate(self, context: Any = None) -> Any:
         target = self._invocation_target(context)
-        arguments = tuple(
-            as_xdm(self.get_argument(context, index=index)) for index in range(len(self))
+        arguments = self._arguments(
+            (self.get_argument(context, index=index) for index in range(len(self))),
+            context,
         )
         result = call_host_function(target, arguments)
         return sequence_to_elementpath(result, item_converter=self._item_converter)

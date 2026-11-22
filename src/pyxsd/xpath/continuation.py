@@ -37,6 +37,7 @@ reports the result as a Task 4 :class:`CapabilityOutcome` subtype.
 
 from __future__ import annotations
 
+import copy
 import sys
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -45,6 +46,7 @@ from types import MappingProxyType
 from typing import Any
 
 from elementpath import XPathContext
+from elementpath.datatypes import UntypedAtomic
 from elementpath.xpath3 import XPath31Parser
 from elementpath.xpath_tokens import XPathArray, XPathMap
 from elementpath.xpath_tokens.tokens import ValueToken
@@ -75,11 +77,44 @@ __all__ = [
     "VariablePlan",
     "XPathClosure",
     "XPathEvaluationError",
+    "comparison_operands",
     "compile_expression",
     "evaluate",
     "evaluate_closure",
     "probe_mixed_recursion",
 ]
+
+#: The general-comparison symbols.  Value comparisons (``eq``, ``lt``, ...) have
+#: their own tokens and already cast untyped operands.
+_GENERAL_COMPARISONS = frozenset({"=", "!=", "<", ">", "<=", ">="})
+
+
+def _untyped_operand(value: Any) -> bool:
+    if isinstance(value, list):
+        return bool(value) and all(isinstance(item, UntypedAtomic) for item in value)
+    return isinstance(value, UntypedAtomic)
+
+
+def _string_operand(value: Any) -> Any:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return str(value)
+
+
+def comparison_operands(left: Any, right: Any) -> tuple[Any, Any]:
+    """Cast a two-untyped general-comparison operand pair to ``xs:string``.
+
+    Functions and Operators 3.1 section 3.7.2 casts two untyped atomic operands
+    of a general comparison to ``xs:string``.  elementpath's ``UntypedAtomic``
+    instead compares two untyped values as doubles, so both evaluators
+    normalize the pair before the comparison operator reads it.  An operand is
+    one item or a list of items (one multi-item XPath sequence), and a mixed
+    pair keeps its own dynamic rules: an untyped value against a number is still
+    converted numerically by the operator.
+    """
+    if _untyped_operand(left) and _untyped_operand(right):
+        return _string_operand(left), _string_operand(right)
+    return left, right
 
 
 class ContinuationError(Exception):
@@ -545,6 +580,10 @@ def compile_expression(
         variable_types=types,
         default_collation=default_collation,
     )
+    # A declared function colliding with a built-in moves the built-in to an
+    # expanded symbol.  That write must land in this parser's own table, never
+    # in the class-level one every later parser inherits.
+    parser.symbol_table = copy.copy(parser.symbol_table)
     _register_static_functions(parser, functions, namespace_map)
     token = parser.parse(source)
     plan = _Compiler(parser).compile(token)
@@ -789,6 +828,8 @@ class ContinuationMachine:
             )
             self._actions.append(_EvalAction(frame.remaining[0], frame.environment))
             return
+        if frame.plan.symbol in _GENERAL_COMPARISONS and len(values) == 2:
+            values = comparison_operands(values[0], values[1])
         token = frame.plan.operator_class(self._parser)
         token.symbol = frame.plan.symbol
         token.label = frame.plan.label

@@ -77,11 +77,12 @@ from elementpath.xpath_nodes import (
     XPathNode,
     XPathNodeTree,
 )
-from elementpath.xpath_tokens import XPathArray, XPathMap
+from elementpath.xpath_tokens import ProxyToken, XPathArray, XPathConstructor, XPathMap, XPathToken
 from elementpath.xpath_tokens.functions import ExternalFunction, XPathFunction
 from elementpath.xpath_tokens.tokens import ContextItemToken, VariableToken
 
 from pyxsd import xsd_data_types as _xsd
+from pyxsd.namespaces import XML_NS
 from pyxsd.xdm import (
     XdmArray,
     XdmAtomic,
@@ -981,6 +982,7 @@ class _ValueBridge:
                 item_converter=self.adapt_item,
                 name=item.name,
                 arity=item.arity,
+                to_xdm=self.to_xdm_sequence,
             )
         raise TypeError(f"{type(item).__name__} is not an XDM item")
 
@@ -999,6 +1001,7 @@ class _ValueBridge:
                     item_converter=self.adapt_item,
                     name=name,
                     context_binder=_context_target_binder(value, self),
+                    to_xdm=self.to_xdm_sequence,
                 )
             else:
                 values[name] = self.sequence_to_elementpath(as_xdm(value))
@@ -1346,7 +1349,7 @@ class XPathEngine:
             holder = parser._pyxsd_bridge_holder
             assert holder is not None
             _install_function_overrides(
-                parser, holder, _override_symbols(environment.function_overrides)
+                parser, holder, _override_symbols(environment.function_overrides, parser)
             )
         else:
             bucket = cache.bucket(
@@ -1370,7 +1373,7 @@ class XPathEngine:
         previous = (holder.bridge, holder.xpath_context, holder.overrides, holder.functions)
         holder.bridge = bridge
         holder.xpath_context = None
-        holder.overrides = _overrides_by_symbol(environment.function_overrides)
+        holder.overrides = _overrides_by_symbol(environment.function_overrides, parser)
         holder.functions = environment.functions
         try:
             if compiled.continuation_plan is not None:
@@ -1417,25 +1420,63 @@ def _decimal_formats_key(
     )
 
 
-def _override_symbols(function_overrides: Mapping[str, Any]) -> list[str]:
-    """The parser symbols an override table replaces, in table order.
+def _override_key(function_overrides: Mapping[str, Any]) -> frozenset[str]:
+    """The bucket identity of an override table.
 
-    The rule is the one the registration itself applies: a Clark name and a
-    prefixed lexical name both address the function's local symbol.
+    Two lexical spellings of one function address one parser symbol, so they
+    must share a bucket; the local name is that identity.  Installation still
+    resolves the exact symbol against the built parser.
     """
-    return [
+    return frozenset(
         name.rpartition("}")[2] if name.startswith("{") else name.rpartition(":")[2]
         for name in function_overrides
-    ]
+    )
 
 
-def _overrides_by_symbol(function_overrides: Mapping[str, Any]) -> dict[str, Any]:
+def _override_symbol(parser: Any, name: str) -> str:
+    """The parser symbol that an override of the function *name* replaces.
+
+    elementpath registers a declared function that collides with a built-in in
+    another namespace under its expanded name, moves the built-in to its own
+    expanded key, and leaves a :class:`ProxyToken` at the bare local symbol.
+    An override has to follow the same table: prefer the expanded key that
+    holds the real function token, and only fall back to the local symbol.
+    Resolving to the proxy would read ``nargs`` (and every other signature
+    attribute) off a token class that has none.
+    """
+    local = name.rpartition("}")[2] if name.startswith("{") else name.rpartition(":")[2]
+    candidates: list[str] = []
+    if name.startswith("{"):
+        candidates.append(name)
+    else:
+        prefix, separator, _ = name.partition(":")
+        uri = parser.namespaces.get(prefix) if separator else None
+        if uri is not None:
+            candidates.append(f"{{{uri}}}{local}")
+    candidates.append(local)
+    for candidate in candidates:
+        base = parser.symbol_table.get(candidate)
+        if base is not None and not issubclass(base, ProxyToken):
+            return candidate
+    return candidates[0]
+
+
+def _override_symbols(function_overrides: Mapping[str, Any], parser: Any) -> list[str]:
+    """The parser symbols an override table replaces, in table order."""
+    return [_override_symbol(parser, name) for name in function_overrides]
+
+
+def _overrides_by_symbol(function_overrides: Mapping[str, Any], parser: Any) -> dict[str, Any]:
     """The override table keyed by the parser symbol it replaces.
 
     Later duplicates win, exactly as the registration loop did.
     """
     return dict(
-        zip(_override_symbols(function_overrides), function_overrides.values(), strict=True)
+        zip(
+            _override_symbols(function_overrides, parser),
+            function_overrides.values(),
+            strict=True,
+        )
     )
 
 
@@ -1465,7 +1506,7 @@ def _parser_key(
         static_context.xsd_version,
         static_context.xslt_version,
         _decimal_formats_key(environment.decimal_formats),
-        frozenset(_override_symbols(environment.function_overrides)),
+        _override_key(environment.function_overrides),
     )
 
 
@@ -1517,7 +1558,7 @@ class XPathParserCache:
         holder = parser._pyxsd_bridge_holder
         assert holder is not None
         _install_function_overrides(
-            parser, holder, _override_symbols(environment.function_overrides)
+            parser, holder, _override_symbols(environment.function_overrides, parser)
         )
         bucket = _ParserBucket(parser, holder, static_context, key)
         self._buckets[key] = bucket
@@ -1605,6 +1646,11 @@ def _build_parser(
     if version == "1.0":
         _install_legacy_1_0_overrides(parser)
     else:
+        _install_constructor_partial_application(parser)
+        _install_comparison_string_atomization(parser)
+        _install_lang_function(parser)
+        if version == "2.0":
+            _install_xpath20_regex_surface(parser)
         _register_schema_constructors(parser, static_context)
         _install_schema_kind_tests(parser)
         # A declared type may be a user-defined schema type the parser can only
@@ -1716,6 +1762,203 @@ def _install_function_scope(parser: Any) -> None:
         bases=(base,),
         label=base.label,
         __call__=call,
+    )
+
+
+def _install_constructor_partial_application(parser: Any) -> None:
+    """Treat only a bare ``?`` as a constructor's partial application.
+
+    elementpath's ``XPathConstructor.nud`` marks the constructor as a partial
+    function whenever the argument's root token *is* ``?``.  XPath's placeholder
+    is the bare lookup token, but a lookup expression such as ``$map?value``
+    also has the ``?`` symbol, so ``xs:integer($map?value)`` silently evaluates
+    to a function item instead of casting.  A lookup expression carries an
+    operand and is a normal argument.  The corrected token class is registered
+    on this parser instance only; elementpath's own class table is untouched.
+    """
+
+    def is_placeholder(token: Any) -> bool:
+        return token.symbol == "?" and not len(token)
+
+    def nud(self: Any) -> Any:
+        if not self.parser.parse_arguments:
+            return self
+        try:
+            self.parser.advance("(")
+            self[0:] = (self.parser.expression(5),)
+            if self.parser.next_token.symbol == ",":
+                raise self.error("XPST0017", "Too many arguments: expected at most 1 argument")
+            self.parser.advance(")")
+        except SyntaxError:
+            raise self.error("XPST0017") from None
+        else:
+            if is_placeholder(self[0]):
+                self.to_partial_function()
+            return self
+
+    def evaluate(self: Any, context: Any = None) -> Any:
+        arg = self.data_value(self.get_argument(context))
+        if arg is None:
+            return []
+        elif arg == "?" and is_placeholder(self[0]):
+            raise self.error("XPTY0004", "cannot evaluate a partial function")
+        try:
+            return self.cast(arg.value if isinstance(arg, UntypedAtomic) else arg)
+        except (TypeError, ValueError) as err:
+            raise self.error("FORG0001", err) from None
+
+    for symbol, base in list(parser.symbol_table.items()):
+        if not isinstance(base, type) or not issubclass(base, XPathConstructor):
+            continue
+        # Dual-use keywords (boolean, string, QName, dateTime) and the error
+        # constructor provide their own parsing and evaluation; only the plain
+        # one-argument constructors use elementpath's generic implementation.
+        if getattr(base, "nud", None) is not XPathConstructor.nud:
+            continue
+        if getattr(base, "evaluate", None) is not XPathConstructor.evaluate:
+            continue
+        parser._register(
+            symbol,
+            f"_PyxsdConstructor_{symbol.replace('-', '_').replace(':', '_')}",
+            bases=(base,),
+            label=base.label,
+            nargs=getattr(base, "nargs", None),
+            sequence_types=getattr(base, "sequence_types", ()),
+            nud=nud,
+            evaluate=evaluate,
+        )
+
+
+def _install_comparison_string_atomization(parser: Any) -> None:
+    """Compare two untyped atomic operands as strings in general comparisons.
+
+    Functions and Operators 3.1 section 3.7.2 casts both untyped atomic
+    operands of a general comparison to ``xs:string``.  elementpath hands the
+    ``UntypedAtomic`` values to Python's comparison operators, which compare
+    them numerically, so two untyped nodes can disagree with a string
+    comparison.  Value comparisons are already correct and keep their own
+    tokens.  The corrected comparison tokens live on this parser instance only.
+    """
+
+    def iter_comparison_data(self: Any, context: Any) -> Iterator[Any]:
+        for left, right in XPathToken.iter_comparison_data(self, context):
+            yield continuation.comparison_operands(left, right)
+
+    for symbol in ("=", "!=", "<", ">", "<=", ">="):
+        base = parser.symbol_table[symbol]
+        parser._register(
+            symbol,
+            f"_PyxsdComparison_{symbol.replace('=', 'eq').replace('!', 'ne')}".replace(
+                "<", "lt"
+            ).replace(">", "gt"),
+            bases=(base,),
+            label=base.label,
+            nargs=getattr(base, "nargs", (2, 2)),
+            sequence_types=getattr(base, "sequence_types", ()),
+            iter_comparison_data=iter_comparison_data,
+        )
+
+
+_XPATH20_REGEX_FLAGS = frozenset("imsx")
+
+
+def _install_xpath20_regex_surface(parser: Any) -> None:
+    """Restore the XPath 2.0 regular-expression flag vocabulary.
+
+    elementpath's XPath 2.0 parser gates the XPath 3.0 ``q`` flag on
+    ``parser.version > '2'``; the lexical comparison is true for ``"2.0"``, so
+    a native 2.0 profile accepts a flag that XPath 2.0 does not define.  The
+    arity of ``tokenize`` is left as elementpath declares it: the W3C XSLT 2.0
+    catalog uses its third argument for the 2.0 flag vocabulary.  The corrected
+    tokens live on this parser instance only.
+    """
+
+    def validate_flags(token: Any, context: Any, index: int) -> None:
+        if len(token) <= index:
+            return
+        flags = token.get_argument(context, index, required=True, cls=str)
+        for flag in flags:
+            if flag not in _XPATH20_REGEX_FLAGS:
+                raise token.error("FORX0001", f"Invalid regular expression flag {flag!r}")
+
+    def flags_checked(base: Any, index: int) -> Callable[..., Any]:
+        def evaluate(self: Any, context: Any = None) -> Any:
+            validate_flags(self, context, index)
+            return base.evaluate(self, context)
+
+        return evaluate
+
+    for symbol, index in (("matches", 2), ("replace", 3)):
+        base = parser.symbol_table[symbol]
+        parser._register(
+            symbol,
+            f"_PyxsdXPath20{symbol.title()}",
+            bases=(base,),
+            label=base.label,
+            nargs=getattr(base, "nargs", None),
+            sequence_types=getattr(base, "sequence_types", ()),
+            evaluate=flags_checked(base, index),
+        )
+    tokenize = parser.symbol_table["tokenize"]
+    parser._register(
+        "tokenize",
+        "_PyxsdXPath20Tokenize",
+        bases=(tokenize,),
+        label=tokenize.label,
+        nargs=getattr(tokenize, "nargs", None),
+        sequence_types=getattr(tokenize, "sequence_types", ()),
+        evaluate=flags_checked(tokenize, 2),
+    )
+
+
+def _install_lang_function(parser: Any) -> None:
+    """Read ``xml:lang`` through grounded adapters, not just etree nodes.
+
+    elementpath implements ``fn:lang`` only for its own ``EtreeElementNode``
+    and returns false for any other element node, so every bridged attribute
+    and element ignored the language in scope.  The language is inherited from
+    the nearest ancestor element that declares it.  The corrected token lives
+    on this parser instance only.
+    """
+    base = parser.symbol_table["lang"]
+
+    def language_in_scope(item: Any) -> str | None:
+        node = item
+        while node is not None:
+            if isinstance(node, ElementNode):
+                for attribute in node.attributes:
+                    name = getattr(attribute, "node_name", None)
+                    if name is not None and name.namespace == XML_NS and name.local_name == "lang":
+                        return attribute.string_value
+            node = getattr(node, "parent", None)
+        return None
+
+    def evaluate(self: Any, context: Any = None) -> Any:
+        if len(self) > 1:
+            item = self.get_argument(context, index=1, default_to_context=True)
+        else:
+            item = None if context is None else context.item
+        if not isinstance(item, ElementNode):
+            raise self.error("XPTY0004")
+        language = language_in_scope(item)
+        if language is None:
+            return False
+        test_language = (self.get_argument(context, cls=str) or "").strip().lower()
+        language = language.strip().lower()
+        return language == test_language or (
+            language.startswith(test_language)
+            and len(language) > len(test_language)
+            and language[len(test_language)] == "-"
+        )
+
+    parser._register(
+        "lang",
+        "_PyxsdLangFunction",
+        bases=(base,),
+        label=base.label,
+        nargs=getattr(base, "nargs", (1, 2)),
+        sequence_types=getattr(base, "sequence_types", ()),
+        evaluate=evaluate,
     )
 
 
@@ -2664,6 +2907,15 @@ def _continuation_variables(
     environment: ExpressionEnvironment,
     bridge: _ValueBridge,
 ) -> dict[str, Any] | None:
+    """One sequence per variable in the representation the machine reads.
+
+    A one-item variable is the item itself; every other cardinality is a Python
+    list.  ``ValueToken.select`` expands a list item by item, so an empty
+    variable is an empty *sequence* and a multi-item variable is several
+    operands.  A tuple is one item to elementpath, which would make an
+    empty-sequence comparison atomize ``()`` as a value instead of comparing an
+    empty sequence.
+    """
     values: dict[str, Any] = {}
     for name, value in environment.variables.items():
         if isinstance(value, XdmFunction) and isinstance(value.closure, XPathClosure):
@@ -2682,7 +2934,7 @@ def _continuation_variables(
                 converted.append(_continuation_host_function(item, bridge, name))
             else:
                 return None
-        values[name] = converted[0] if len(converted) == 1 else tuple(converted)
+        values[name] = converted[0] if len(converted) == 1 else converted
     return values
 
 
