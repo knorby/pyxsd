@@ -60,6 +60,7 @@ from typing import Any, cast
 
 from elementpath import XPathContext
 from elementpath.datatypes import AnyAtomicType, QName, UntypedAtomic
+from elementpath.exceptions import ElementPathError
 from elementpath.helpers import upper_camel_case
 from elementpath.namespaces import get_expanded_name
 from elementpath.tdop import Parser
@@ -1804,6 +1805,9 @@ def _install_constructor_partial_application(parser: Any) -> None:
             raise self.error("XPTY0004", "cannot evaluate a partial function")
         try:
             return self.cast(arg.value if isinstance(arg, UntypedAtomic) else arg)
+        except ElementPathError as err:
+            err.token = self
+            raise
         except (TypeError, ValueError) as err:
             raise self.error("FORG0001", err) from None
 

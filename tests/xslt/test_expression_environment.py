@@ -1828,3 +1828,19 @@ def test_override_symbol_prefers_the_expanded_function_token() -> None:
     assert _override_symbol(parser, "my:doc") == "{urn:my}doc"
     assert _override_symbol(parser, "my:other") == "{urn:my}other"
     assert _override_symbol(parser, "plain") == "plain"
+
+
+def test_constructor_error_codes_keep_upstream_precedence() -> None:
+    """A constructor re-raises an elementpath cast error unchanged.
+
+    ``xs:integer(xs:double('NaN'))`` and its infinity form are F&O
+    ``FOCA0002`` failures raised by elementpath's own cast; the corrected
+    constructor must not convert their ``ElementPathValueError``/
+    ``ElementPathTypeError`` (subclasses of ``ValueError``/``TypeError``) into
+    ``FORG0001``.
+    """
+    engine = XPathEngine()
+    for source in ("xs:integer(xs:double('NaN'))", "xs:integer(xs:double('INF'))"):
+        with pytest.raises(Exception) as caught:
+            engine.evaluate(engine.compile(source), ExpressionEnvironment())
+        assert _error_code(caught.value) == "FOCA0002", source
