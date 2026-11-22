@@ -16,9 +16,13 @@ value decides.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from pyxsd.locations import IssueLocation
 from pyxsd.xslt.errors import XsltStaticError
+
+if TYPE_CHECKING:
+    from pyxsd.xslt.compiler.expressions import CompiledSequenceType
 
 __all__ = [
     "constant_value",
@@ -26,6 +30,7 @@ __all__ = [
     "require_choice_value",
     "require_integer_sequence_value",
     "require_integer_value",
+    "require_item_type",
 ]
 
 #: The legal lexical forms of the XSLT ``yes-or-no`` type.
@@ -138,3 +143,25 @@ def require_choice_value(
     if value.strip() not in choices:
         allowed = ", ".join(sorted(choices))
         raise _value_error(f"expected one of {allowed}", source, label, uri, location)
+
+
+def require_item_type(
+    sequence_type: CompiledSequenceType,
+    *,
+    label: str,
+    uri: str | None,
+    location: IssueLocation | None,
+) -> None:
+    """Require a compiled sequence type to be an item type.
+
+    ``xsl:context-item`` and ``xsl:global-context-item`` declare the type of a
+    single item; an occurrence indicator or ``empty-sequence()`` is therefore
+    the static error ``XTSE0020``.
+    """
+    if sequence_type.item_type is None or sequence_type.occurrence:
+        raise XsltStaticError(
+            f"{label} must be an item type without an occurrence indicator",
+            code="XTSE0020",
+            uri=uri,
+            location=location,
+        )

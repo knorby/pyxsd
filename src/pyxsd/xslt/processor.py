@@ -64,6 +64,7 @@ from pyxsd.xslt.compiler.attribute_values import (
     require_choice_value,
     require_integer_sequence_value,
     require_integer_value,
+    require_item_type,
 )
 from pyxsd.xslt.compiler.constructors import CONSTRUCTOR_INSTRUCTION_COMPILERS
 from pyxsd.xslt.compiler.context import (
@@ -2210,13 +2211,12 @@ def _context_item_signature(
                 context,
                 location=child.location,
             )
-            if sequence_type.item_type is None or sequence_type.occurrence:
-                raise XsltStaticError(
-                    "xsl:context-item/@as must be an item type without an occurrence indicator",
-                    code="XTSE0020",
-                    uri=context.uri,
-                    location=child.location,
-                )
+            require_item_type(
+                sequence_type,
+                label="xsl:context-item/@as",
+                uri=context.uri,
+                location=child.location,
+            )
             return ContextItemSignature(use, sequence_type)
     return None
 

@@ -1254,7 +1254,9 @@ def test_attribute_value_helpers_distinguish_static_and_dynamic_values() -> None
         require_choice_value,
         require_integer_sequence_value,
         require_integer_value,
+        require_item_type,
     )
+    from pyxsd.xslt.compiler.expressions import CompiledSequenceType, ItemType
 
     location = IssueLocation("file:///module.xsl", (PathStep("template", 1),))
     assert constant_value("yes") == "yes"
@@ -1275,6 +1277,24 @@ def test_attribute_value_helpers_distinguish_static_and_dynamic_values() -> None
         uri=None,
         location=location,
     )
+    require_item_type(
+        CompiledSequenceType(ItemType("item"), "", "item()"),
+        label="context item",
+        uri=None,
+        location=location,
+    )
+    for invalid_type in (
+        CompiledSequenceType(),
+        CompiledSequenceType(ItemType("item"), "?", "item()?"),
+    ):
+        with pytest.raises(XsltStaticError) as caught:
+            require_item_type(
+                invalid_type,
+                label="context item",
+                uri=None,
+                location=location,
+            )
+        assert caught.value.code == "XTSE0020"
 
     for call, code in (
         (

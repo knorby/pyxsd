@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import local_name as _local_name
 from pyxsd.namespaces import namespace_of as _namespace_of
+from pyxsd.xslt.compiler.attribute_values import require_item_type
 from pyxsd.xslt.compiler.context import StaticContext
 from pyxsd.xslt.compiler.expressions import CompiledSequenceType, compile_sequence_type
 from pyxsd.xslt.compiler.instructions import (
@@ -990,13 +991,12 @@ def _context_item_signature(
             module=module,
         )
     sequence_type = _type(child, "as", context, default="item()")
-    if sequence_type.item_type is None or sequence_type.occurrence:
-        raise _error(
-            "xsl:context-item/@as must be an item type without an occurrence indicator",
-            "XTSE0020",
-            element=child,
-            module=module,
-        )
+    require_item_type(
+        sequence_type,
+        label="xsl:context-item/@as",
+        uri=module.identity,
+        location=child.source_location(),
+    )
     return ContextItemSignature(use, sequence_type)
 
 
@@ -1938,6 +1938,9 @@ def _rebind_node(node: InstructionNode, lookup: _Lookup) -> InstructionNode:
             containing=target.containing,
             visibility=target.visibility,
             original=False,
+            parameter_names=(
+                _non_tunnel_parameter_names(target) if target.kind == "template" else ()
+            ),
         )
 
     reference = None if node.reference is None else rebind(node.reference)

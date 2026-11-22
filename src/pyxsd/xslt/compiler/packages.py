@@ -39,6 +39,7 @@ from urllib.parse import urlsplit
 
 from pyxsd.locations import IssueLocation
 from pyxsd.xdm.schema import SchemaPool
+from pyxsd.xslt.compiler.attribute_values import require_item_type
 from pyxsd.xslt.compiler.components import (
     _ACCEPT,
     _APPLY_TEMPLATES,
@@ -1112,14 +1113,12 @@ def _package_global_context_item(
                 context,
                 location=element.source_location(),
             )
-            if sequence_type.item_type is None or sequence_type.occurrence:
-                raise _error(
-                    "xsl:global-context-item/@as must be an item type without an "
-                    "occurrence indicator",
-                    "XTSE0020",
-                    element=element,
-                    module=module,
-                )
+            require_item_type(
+                sequence_type,
+                label="xsl:global-context-item/@as",
+                uri=module.identity,
+                location=element.source_location(),
+            )
         compiled.append((module, element, use, sequence_type))
     base_module, base, base_use, base_type = compiled[0]
     for module, element, use, sequence_type in compiled[1:]:

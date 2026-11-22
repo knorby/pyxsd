@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from pyxsd.locations import IssueLocation
+from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.modules import ModuleLoader
 from pyxsd.xslt.compiler.packages import (
     Component,
@@ -3843,3 +3844,49 @@ def test_used_package_import_schema_type_resolves_in_its_signature(tmp_path: Pat
     compiled = compile_package_set(base, principal)
 
     assert compiled.components  # the library's own import pool reached its signature
+
+
+def test_used_package_mode_rule_preserves_declared_parameter_names() -> None:
+    """A copied mode rule keeps the target template's declared parameters.
+
+    ``_rebind_rule`` rebuilds the rule's component references when a used
+    package contributes a mode layer.  The rebuilt ``xsl:call-template``
+    reference must retain the target template's non-tunnel parameter names, or
+    a declared ``xsl:with-param`` is rejected as undeclared during plan
+    compilation (XTSE0680).
+    """
+    library = _package(
+        BASE,
+        """
+        <xsl:mode name="app:m" visibility="public"/>
+        <xsl:template match="doc:a" mode="app:m">
+          <xsl:call-template name="app:t">
+            <xsl:with-param name="p" select="42"/>
+          </xsl:call-template>
+        </xsl:template>
+        <xsl:template name="app:t" visibility="public">
+          <xsl:param name="p"/>
+          <result><xsl:value-of select="$p"/></result>
+        </xsl:template>
+        """,
+        package_version="1.0.0",
+    )
+    principal = _package(
+        USING,
+        """
+        <xsl:use-package name="urn:example:base" package-version="1.0">
+          <xsl:accept component="mode" names="app:m" visibility="public"/>
+        </xsl:use-package>
+        """,
+        package_version="1.0.0",
+    )
+    resolver = PackageResolver.from_sources(library)
+    compiled = XsltProcessor(resolver=resolver).compile(io.BytesIO(principal.encode()))
+
+    result = compiled.transform(
+        source=f'<doc:a xmlns:doc="{DOC_NS}"/>'.encode(),
+        initial_mode="app:m",
+        delivery="raw",
+    )
+
+    assert result.principal[0].string_value == "42"
