@@ -22,6 +22,7 @@ from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.relaxng.annotations import NodeAnnotations, ScalarAnnotation
 from pyxsd.relaxng.errors import (
     AmbiguousValueError,
+    RelaxNGCompactSyntaxError,
     RelaxNGLimitError,
     StaleInterpretationError,
 )
@@ -47,6 +48,7 @@ def test_the_package_exposes_only_the_settled_public_contracts():
         "AmbiguousValueError",
         "ListInterpretation",
         "NodeAnnotations",
+        "RelaxNGCompactSyntaxError",
         "RelaxNGComponentDescription",
         "RelaxNGDocument",
         "RelaxNGElement",
@@ -63,6 +65,7 @@ def test_the_package_exposes_only_the_settled_public_contracts():
         "related_components",
     }
     assert relaxng.RelaxNGLimitError is RelaxNGLimitError
+    assert relaxng.RelaxNGCompactSyntaxError is RelaxNGCompactSyntaxError
     assert relaxng.AmbiguousValueError is AmbiguousValueError
     assert relaxng.StaleInterpretationError is StaleInterpretationError
     assert relaxng.RelaxNGLimits is RelaxNGLimits
@@ -110,7 +113,12 @@ def test_importing_relaxng_does_not_pull_xsd_machinery():
 
 @pytest.mark.parametrize(
     "exception",
-    [RelaxNGLimitError, AmbiguousValueError, StaleInterpretationError],
+    [
+        RelaxNGCompactSyntaxError,
+        RelaxNGLimitError,
+        AmbiguousValueError,
+        StaleInterpretationError,
+    ],
 )
 def test_every_public_exception_shares_the_pyxsd_root(exception):
     assert issubclass(exception, PyXSDError)

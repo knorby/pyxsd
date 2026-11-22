@@ -22,7 +22,7 @@ from xml.etree import ElementTree as ET
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import XML_NS, local_name, namespace_of
 from pyxsd.relaxng.origins import OriginTable, SourceOrigin
-from pyxsd.relaxng.resources import LoadedResource, resolve_xml_base
+from pyxsd.relaxng.resources import LoadedResource, SchemaResource, resolve_xml_base
 from pyxsd.relaxng.uris import is_uri_reference, xlink_escape
 from pyxsd.relaxng.whitespace import is_xml_whitespace, trim_xml_whitespace
 from pyxsd.resource_policy import ResourcePolicyError
@@ -649,7 +649,7 @@ class FullSchema:
     the resource root is one.
     """
 
-    resource: LoadedResource
+    resource: SchemaResource
     start: FullPattern
     grammars: tuple[GrammarScope, ...]
     findings: tuple[SchemaFinding, ...]

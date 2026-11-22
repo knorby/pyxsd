@@ -55,15 +55,20 @@ Common schema entry points; full signatures and contracts below.
 
 RELAX NG has a separate compiler and document type; it is not an XSD mode and
 does not appear in `pyxsd.compile` or `Schema`. `pyxsd.relaxng.compile(source,
-*, datatype_libraries=None, resource_policy=None, xml_policy=None,
+*, syntax="auto", datatype_libraries=None, resource_policy=None, xml_policy=None,
 xml_limits=None, limits=None)` returns a `RelaxNGSchema`, and
 `RelaxNGSchema.parse(xml, *, xml_policy=None, xml_limits=None, typed=True,
 capture="none", capture_xdm=False, limits=None)` returns a
-`RelaxNGDocument`. The schema also provides `stub`, `from_data`, `from_json`,
-`json_schema`, `projection`, `projection_classes`, `dependencies`,
-`require_valid`, and `iter_parse`. The document provides `to_dict`,
-`to_data`, `to_json`, `annotations`, `revalidate`, `locate`, `write`,
-`to_string`, `to_xdm`, `xpath`, `walk`, and `transform`.
+`RelaxNGDocument`. The `syntax` selector is `"auto"`, `"xml"`, or `"compact"`:
+`"auto"` (the default) selects compact only for a named root whose path
+component ends in a case-insensitive `.rnc` suffix, anonymous streams and every
+other named source stay XML, and explicit values override the name. Selection
+applies to the root only; includes and external references inherit it. The
+schema also provides `stub`, `from_data`, `from_json`, `json_schema`,
+`projection`, `projection_classes`, `dependencies`, `require_valid`, and
+`iter_parse`. The document provides `to_dict`, `to_data`, `to_json`,
+`annotations`, `revalidate`, `locate`, `write`, `to_string`, `to_xdm`, `xpath`,
+`walk`, and `transform`.
 
 Scalar alternatives use `AlternativeValue`; correlated list assignments use
 `ListInterpretation`; pattern capture returns `NodeAnnotations`. Datatype
@@ -345,12 +350,17 @@ spans directly. The whole input is parsed and policy-checked before returning
 a span. Paths use expanded names and same-name sibling indexes, as issue
 locations do.
 
+Compact RELAX NG diagnostics instead carry a `SourceTextSpan`, whose offsets
+address decoded source text rather than original bytes.
+
 ```{eval-rst}
 .. autoclass:: pyxsd.source_spans.SourceIndex
    :members:
 
 .. autoclass:: pyxsd.source_spans.SourceSpan
    :members:
+
+.. autoclass:: pyxsd.locations.SourceTextSpan
 
 .. autoclass:: pyxsd.locations.PathStep
 

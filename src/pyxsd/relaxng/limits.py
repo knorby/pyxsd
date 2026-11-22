@@ -40,9 +40,13 @@ class RelaxNGLimits:
     edge, surviving witness, or capture record. ``max_capture_entries`` bounds
     the independent optional annotation table and truncates it visibly instead
     of raising. A ``max_diagnostics`` budget is a truncatable retention budget,
-    not a work budget. The compiler's graph and semantic correctness checks run
-    regardless of these values; a projection budget never skips a correctness
-    check.
+    not a work budget. ``max_compact_tokens`` charges emitted compact tokens
+    cumulatively; ``max_compact_depth`` checks the parser's current nesting
+    depth as a high-water observation rather than charging every production
+    entry, and the compact reader caps that depth at a fixed interpreter-safety
+    ceiling so a larger or unset budget cannot leak ``RecursionError``. The
+    compiler's graph and semantic correctness checks run regardless of these
+    values; a projection budget never skips a correctness check.
     """
 
     max_pattern_nodes: int | None = None
@@ -55,6 +59,8 @@ class RelaxNGLimits:
     max_capture_entries: int | None = None
     max_projection_routes: int | None = None
     max_diagnostics: int | None = None
+    max_compact_tokens: int | None = None
+    max_compact_depth: int | None = None
 
     def __post_init__(self) -> None:
         for field in fields(self):
@@ -76,6 +82,11 @@ class BudgetCounter:
         self._limits = limits
         self._observed: dict[str, int] = {}
 
+    @property
+    def stage(self) -> str:
+        """The compilation stage this counter charges."""
+        return self._stage
+
     def consume(self, budget: str, amount: int = 1) -> None:
         """Record *amount* units of *budget*, raising when the bound is crossed."""
         configured = self._configured(budget)
@@ -83,6 +94,20 @@ class BudgetCounter:
             raise ValueError("amount must be a non-negative integer")
         observed = self._observed.get(budget, 0) + amount
         self._observed[budget] = observed
+        if configured is not None and observed > configured:
+            raise RelaxNGLimitError(self._stage, budget, configured, observed)
+
+    def observe(self, budget: str, observed: int) -> None:
+        """Check *observed* as a high-water mark without charging the budget.
+
+        The compact parser reports its current nesting depth before entering a
+        deeper production. Repeated observations never accumulate, and a
+        successful observation leaves cumulative :meth:`consume` counts
+        untouched.
+        """
+        configured = self._configured(budget)
+        if isinstance(observed, bool) or not isinstance(observed, int) or observed < 0:
+            raise ValueError("observed must be a non-negative integer")
         if configured is not None and observed > configured:
             raise RelaxNGLimitError(self._stage, budget, configured, observed)
 

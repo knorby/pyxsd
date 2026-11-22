@@ -42,6 +42,7 @@ from tests.relaxng.dispositions import (
     validate_dispositions,
 )
 from tests.relaxng.model import (
+    PROFILE_COMPACT_SYNTAX,
     PROFILE_CORE,
     PROFILE_XSD_DATATYPE,
     REQUIRED_PROFILES,
@@ -872,7 +873,12 @@ def test_vendored_catalog_checksums_and_provenance_are_pinned() -> None:
         for line in (CORPUS / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert {name for _digest, name in lines} == {"spectest.xml", "xsdtest.xml", "LICENSE"}
+    assert {name for _digest, name in lines} == {
+        "spectest.xml",
+        "xsdtest.xml",
+        "compacttest.xml",
+        "LICENSE",
+    }
     for digest, name in lines:
         assert hashlib.sha256((CORPUS / name).read_bytes()).hexdigest() == digest
 
@@ -882,15 +888,20 @@ def test_pinned_catalog_counts_and_profiles_are_exact() -> None:
     schemas = report_relaxng.schema_cases(cases)
     instances = report_relaxng.instance_cases(cases)
 
-    assert len(schemas) == 623
+    assert len(schemas) == 710
     assert len(instances) == 1621
-    assert len(cases) == 623 + 1621
-    assert {case.profile for case in cases} == {PROFILE_CORE, PROFILE_XSD_DATATYPE}
+    assert len(cases) == 710 + 1621
+    assert {case.profile for case in cases} == {
+        PROFILE_CORE,
+        PROFILE_XSD_DATATYPE,
+        PROFILE_COMPACT_SYNTAX,
+    }
     assert {case.profile for case in cases} <= REQUIRED_PROFILES
     assert not any(case.is_excluded for case in cases)
 
     assert sum(case.profile == PROFILE_CORE for case in schemas) == 376
     assert sum(case.profile == PROFILE_XSD_DATATYPE for case in schemas) == 247
+    assert sum(case.profile == PROFILE_COMPACT_SYNTAX for case in schemas) == 87
     assert sum(case.profile == PROFILE_CORE for case in instances) == 538
     assert sum(case.profile == PROFILE_XSD_DATATYPE for case in instances) == 1083
     assert sum(case.kind == "valid-instance" for case in instances) == 593
@@ -906,7 +917,11 @@ def test_every_case_has_exactly_one_audited_disposition() -> None:
     assignments = report_relaxng.case_dispositions(cases, dispositions)
 
     assert set(assignments) == set(by_id)
-    assert set(assignments.values()) == {PROFILE_CORE, PROFILE_XSD_DATATYPE}
+    assert set(assignments.values()) == {
+        PROFILE_CORE,
+        PROFILE_XSD_DATATYPE,
+        PROFILE_COMPACT_SYNTAX,
+    }
     assert report_relaxng.excluded_dependencies(cases, dispositions) == ()
     assert dispositions == ()
 
@@ -931,8 +946,8 @@ def test_checked_in_baseline_is_a_complete_nonweakened_pass_record() -> None:
     assert baseline.meta == {
         "catalog": report_relaxng.CATALOG_COMMIT,
         "instance_cases": 1621,
-        "profile": "core+xsd-datatype",
-        "schema_cases": 623,
+        "profile": "core+xsd-datatype+compact-syntax",
+        "schema_cases": 710,
     }
     assert set(baseline.results) == {case.id for case in schemas}
     assert set(baseline.instances) == {case.id for case in instances}
@@ -979,7 +994,7 @@ def test_baseline_update_refuses_to_remove_or_downgrade_a_pass(tmp_path: Path) -
     save_baseline(
         path,
         {schemas[0].id: "pass"},
-        {"profile": "core+xsd-datatype"},
+        {"profile": "core+xsd-datatype+compact-syntax"},
         instances={instances[0].id: "pass"},
     )
 
@@ -987,21 +1002,21 @@ def test_baseline_update_refuses_to_remove_or_downgrade_a_pass(tmp_path: Path) -
         report_relaxng.save_baseline_checked(
             path,
             {schemas[0].id: "fail"},
-            {"profile": "core+xsd-datatype"},
+            {"profile": "core+xsd-datatype+compact-syntax"},
             instances={instances[0].id: "pass"},
         )
     with pytest.raises(BaselineError, match="refusing to remove"):
         report_relaxng.save_baseline_checked(
             path,
             {schemas[0].id: "pass"},
-            {"profile": "core+xsd-datatype"},
+            {"profile": "core+xsd-datatype+compact-syntax"},
             instances={instances[0].id: "adapter-gap"},
         )
     with pytest.raises(BaselineError, match="refusing to remove"):
         report_relaxng.save_baseline_checked(
             path,
             {},
-            {"profile": "core+xsd-datatype"},
+            {"profile": "core+xsd-datatype+compact-syntax"},
             instances={instances[0].id: "pass"},
         )
 

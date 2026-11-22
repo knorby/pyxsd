@@ -8,6 +8,13 @@ instance assertion has two phases: its schema must compile, and its instance
 must then be well-formed XML.  A schema rejection is a schema-phase gap, never
 an invalid-instance pass, and malformed XML is an instance-phase gap, never a
 validity verdict.
+
+A compact-syntax rejection is a settled verdict for an incorrect-schema case.
+It remains an adapter gap for a correct schema (which must parse) and a
+schema-phase gap for an instance assertion.  The compact profile's
+correct-schema verdict is parser acceptance: the upstream catalog asserts
+compact syntax and translation, and some accepted fragments are not legal
+whole schemas.  Compiled translation parity is checked separately.
 """
 
 from __future__ import annotations
@@ -22,12 +29,12 @@ from pathlib import Path
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.relaxng.document import RelaxNGDocument
-from pyxsd.relaxng.errors import RelaxNGLimitError
+from pyxsd.relaxng.errors import RelaxNGCompactSyntaxError, RelaxNGLimitError
 from pyxsd.relaxng.limits import RelaxNGLimits
 from pyxsd.relaxng.schema import RelaxNGSchema
 from pyxsd.validation import ValidationReport
 
-from .model import INSTANCE_KINDS, CorpusCase, Outcome
+from .model import INSTANCE_KINDS, PROFILE_COMPACT_SYNTAX, CorpusCase, Outcome
 
 __all__ = [
     "DEFAULT_TIMEOUT",
@@ -53,6 +60,9 @@ class CaseFailure(enum.StrEnum):
     NONE = "none"
     #: A verdict that contradicted the expectation.
     WRONG_VERDICT = "wrong-verdict"
+    #: A compact-syntax rejection.  It is a verdict for an incorrect-schema
+    #: case, a gap for a correct schema, and a schema-phase gap for an instance.
+    COMPACT_SYNTAX = "compact-syntax"
     #: A capability gap: an unsupported library/type or another expected refusal.
     ADAPTER_GAP = "adapter-gap"
     #: The per-case wall-clock budget expired.
@@ -214,6 +224,15 @@ class PyXSDDriver:
         try:
             with time_limit(self.timeout):
                 schema = self._compiler(path, limits=self.limits)
+        except RelaxNGCompactSyntaxError as exc:
+            # A compact syntax rejection is a settled verdict, not a generic
+            # input failure.  The case kind decides whether it satisfies the
+            # catalog expectation.
+            outcome = _Compilation(
+                None,
+                CaseFailure.COMPACT_SYNTAX,
+                f"{type(exc).__name__}: {exc}",
+            )
         except RelaxNGLimitError as exc:
             outcome = _Compilation(None, CaseFailure.LIMIT, f"limit: {exc}")
         except TimeoutError as exc:
@@ -241,7 +260,32 @@ class PyXSDDriver:
         compiled = self._compile(case.schema)
         if compiled.schema is None:
             assert compiled.detail is not None
+            if compiled.failure is CaseFailure.COMPACT_SYNTAX:
+                if case.kind == "incorrect-schema":
+                    return CaseResult(
+                        case=case,
+                        outcome=Outcome.PASS,
+                        failure=CaseFailure.NONE,
+                        expected_valid=False,
+                        actual_valid=False,
+                    )
+                # A correct compact schema must parse; its rejection remains a
+                # capability gap, never a passing verdict.
+                return _gap(case, CaseFailure.ADAPTER_GAP, compiled.detail)
             return _gap(case, compiled.failure, compiled.detail)
+
+        if case.profile == PROFILE_COMPACT_SYNTAX and case.kind == "correct-schema":
+            # The upstream compact catalog asserts compact-syntax acceptance
+            # and translation, not whole-schema validity.  A fragment can be
+            # accepted compact syntax and still fail a cross-syntax start
+            # restriction; compiled translation parity is asserted separately.
+            return CaseResult(
+                case=case,
+                outcome=Outcome.PASS,
+                failure=CaseFailure.NONE,
+                expected_valid=True,
+                actual_valid=True,
+            )
 
         actual_valid = not compiled.schema.report.has_errors
         if actual_valid == expected_valid:
@@ -267,7 +311,12 @@ class PyXSDDriver:
         compiled = self._compile(case.schema)
         if compiled.schema is None:
             assert compiled.detail is not None
-            return _gap(case, compiled.failure, compiled.detail)
+            failure = (
+                CaseFailure.SCHEMA_REJECTED
+                if compiled.failure is CaseFailure.COMPACT_SYNTAX
+                else compiled.failure
+            )
+            return _gap(case, failure, compiled.detail)
 
         if compiled.schema.report.has_errors:
             codes = sorted({issue.code for issue in compiled.schema.report.issues})

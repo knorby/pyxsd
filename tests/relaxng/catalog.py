@@ -3,9 +3,10 @@
 The upstream catalogs are single inline XML manifests.  ``spectest.xml``
 holds correct/incorrect schemas plus valid/invalid instances; ``xsdtest.xml``
 holds datatype lexical and facet assertions that the upstream ``xsdtest.xsl``
-turns into schema/instance cases.  Both loaders return real document paths by
-materializing the cases under ``<root>/.cases`` using the upstream split
-layout from ``test/prep.xsl``.
+turns into schema/instance cases; ``compacttest.xml`` pairs accepted and
+rejected compact fragments with their XML translations.  Every loader returns
+real document paths by materializing the cases under ``<root>/.cases`` using
+the upstream split layout from ``test/prep.xsl``.
 
 The manifests stay canonical and unmodified.  Materialized files are derived,
 gitignored, and rewritten only when their content differs.
@@ -21,6 +22,7 @@ from xml.parsers.expat import ExpatError
 from xml.sax.saxutils import escape, quoteattr
 
 from .model import (
+    PROFILE_COMPACT_SYNTAX,
     PROFILE_CORE,
     PROFILE_XSD_DATATYPE,
     CaseKind,
@@ -29,6 +31,7 @@ from .model import (
 
 SPECTEST_FILE = "spectest.xml"
 XSDTEST_FILE = "xsdtest.xml"
+COMPACTTEST_FILE = "compacttest.xml"
 CASE_DIRECTORY = ".cases"
 
 RNG_NAMESPACE = "http://relaxng.org/ns/structure/1.0"
@@ -58,6 +61,8 @@ class _GroupSpec:
     schema: _CaseSpec
     instances: tuple[_CaseSpec, ...] = ()
     resources: tuple[tuple[str, str], ...] = ()
+    #: An equivalent XML-syntax schema materialized beside a compact case.
+    paired_schema: _CaseSpec | None = None
 
 
 def load_xml_syntax_catalog(root: Path) -> tuple[CorpusCase, ...]:
@@ -78,6 +83,23 @@ def load_xsd_datatype_catalog(root: Path) -> tuple[CorpusCase, ...]:
     if element.tagName != "xsdtest":
         raise CatalogError(f"{path}: expected <xsdtest>, found <{element.tagName}>")
     return _materialize(root, "xsdtest", _xsd_groups(element, path))
+
+
+def load_compact_syntax_catalog(root: Path) -> tuple[CorpusCase, ...]:
+    """Read and materialize the pinned compact-syntax catalog under *root*.
+
+    The manifest is a compact-to-XML translation suite.  Every ``testCase``
+    contributes one compact schema assertion; a correct case also materializes
+    its authored XML counterpart beside it as ``c.rng``.  The upstream
+    ``bug`` wrapper is a known non-testCase entry and is deliberately excluded,
+    preserving the catalog's 87-case granularity.
+    """
+    path = root / COMPACTTEST_FILE
+    document = _parse_xml(path)
+    element = document.documentElement
+    if element.tagName != "testSuite":
+        raise CatalogError(f"{path}: expected <testSuite>, found <{element.tagName}>")
+    return _materialize(root, "compacttest", _compact_groups(element, path))
 
 
 def _parse_xml(path: Path) -> minidom.Document:
@@ -340,6 +362,94 @@ def _spectest_case(
         schema=schema,
         instances=tuple(instances),
         resources=tuple(_collect_resources(test_case)),
+    )
+
+
+_COMPACT_PART_TAGS = frozenset({"compact", "xml"})
+_COMPACT_CASE_TAGS = frozenset({"correct", "incorrect", "resource", "dir"})
+
+
+def _compact_groups(root: DomElement, path: Path) -> tuple[_GroupSpec, ...]:
+    groups: list[_GroupSpec] = []
+    index = 0
+    for child in _element_children(root):
+        if child.tagName == "bug":
+            # The upstream manifest keeps one known-bug fragment outside the
+            # testCase sequence; it is not one of the 87 catalog cases.
+            continue
+        if child.tagName != "testCase":
+            raise CatalogError(f"{path}: unexpected <{child.tagName}> in a testSuite")
+        index += 1
+        groups.append(_compact_case(child, index, path))
+    return tuple(groups)
+
+
+def _compact_case(test_case: DomElement, index: int, path: Path) -> _GroupSpec:
+    group_id = f"compacttest-{index:04d}"
+    parts: dict[str, DomElement] = {}
+    for child in _element_children(test_case):
+        if child.tagName not in _COMPACT_PART_TAGS:
+            raise CatalogError(f"{path}: {group_id}: unexpected <{child.tagName}>")
+        if child.tagName in parts:
+            raise CatalogError(f"{path}: {group_id}: duplicate <{child.tagName}>")
+        parts[child.tagName] = child
+    compact = parts.get("compact")
+    if compact is None:
+        raise CatalogError(f"{path}: {group_id}: missing <compact>")
+    for child in _element_children(compact):
+        if child.tagName not in _COMPACT_CASE_TAGS:
+            raise CatalogError(f"{path}: {group_id}: unexpected <{child.tagName}> in <compact>")
+
+    containers = [
+        child for child in _element_children(compact) if child.tagName in {"correct", "incorrect"}
+    ]
+    if len(containers) != 1:
+        raise CatalogError(
+            f"{path}: {group_id}: compact must contain exactly one of correct/incorrect"
+        )
+    container = containers[0]
+    is_correct = container.tagName == "correct"
+    if _element_children(container):
+        raise CatalogError(f"{path}: {group_id}: compact schema must contain only text")
+    kind: CaseKind = "correct-schema" if is_correct else "incorrect-schema"
+    schema = _CaseSpec(
+        id=group_id,
+        kind=kind,
+        filename="c.rnc" if is_correct else "i.rnc",
+        text=_string_value(container),
+    )
+
+    resources = list(_collect_resources(compact))
+    paired: _CaseSpec | None = None
+    xml = parts.get("xml")
+    if xml is not None:
+        for child in _element_children(xml):
+            if child.tagName not in _COMPACT_CASE_TAGS:
+                raise CatalogError(f"{path}: {group_id}: unexpected <{child.tagName}> in <xml>")
+        xml_containers = [
+            child for child in _element_children(xml) if child.tagName in {"correct", "incorrect"}
+        ]
+        if len(xml_containers) != 1:
+            raise CatalogError(
+                f"{path}: {group_id}: xml must contain exactly one of correct/incorrect"
+            )
+        xml_container = xml_containers[0]
+        if (xml_container.tagName == "correct") != is_correct:
+            raise CatalogError(f"{path}: {group_id}: compact and xml verdicts must agree")
+        paired = _CaseSpec(
+            id=group_id,
+            kind=kind,
+            filename="c.rng" if is_correct else "i.rng",
+            text=_schema_text(xml_container, f"{path}: {group_id}"),
+        )
+        resources.extend(_collect_resources(xml))
+
+    return _GroupSpec(
+        directory=f"{index:04d}",
+        profile=PROFILE_COMPACT_SYNTAX,
+        schema=schema,
+        resources=tuple(resources),
+        paired_schema=paired,
     )
 
 
@@ -652,6 +762,8 @@ def _materialize(
                 profile=group.profile,
             )
         )
+        if group.paired_schema is not None:
+            _write(case_dir / group.paired_schema.filename, group.paired_schema.text, written)
         for resource_name, resource_text in group.resources:
             _write(case_dir / resource_name, resource_text, written)
         for instance in group.instances:

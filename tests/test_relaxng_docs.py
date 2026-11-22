@@ -164,7 +164,6 @@ def test_exclusions_custom_library_scope_and_local_model_scope_are_explicit():
         "`xsi:nil`",
         "no synthesized defaults",
         "DTD Compatibility",
-        "compact syntax",
         "NVDL",
         "schema-aware XSLT",
         "schema-aware XPath",
@@ -184,6 +183,46 @@ def test_exclusions_custom_library_scope_and_local_model_scope_are_explicit():
         "`suppressed_count`",
     ):
         assert phrase in text, phrase
+
+    exclusions = page_text().split("## Deliberate exclusions", 1)[1]
+    excluded = " ".join(exclusions.split()).lower()
+    assert "compact syntax" not in excluded
+    assert "DTD Compatibility" in exclusions
+    assert "NVDL" in exclusions
+
+
+def test_compact_syntax_contract_is_documented():
+    text = page_text()
+    flat = " ".join(text.split())
+    for phrase in (
+        "case-insensitive `.rnc`",
+        "anonymous streams default to XML",
+        "inherits the root syntax",
+        "`RelaxNGCompactSyntaxError`",
+        "`SourceTextSpan`",
+        "1-based line and column",
+        "max_compact_tokens",
+        "max_compact_depth",
+    ):
+        assert phrase in flat, phrase
+    assert 'syntax="auto"' in text
+    assert 'syntax="xml"' in text
+    assert 'syntax="compact"' in text
+
+    api = " ".join((ROOT / "docs" / "api.md").read_text(encoding="utf-8").split())
+    assert 'syntax="auto"' in api
+    assert "case-insensitive" in api
+    assert ".. autoclass:: pyxsd.locations.SourceTextSpan" in api
+
+    cli = (ROOT / "docs" / "cli.md").read_text(encoding="utf-8")
+    assert "--schema-syntax {auto,xml,compact}" in cli
+    cli_flat = " ".join(cli.split())
+    for phrase in ("case-insensitively", "anonymous", "usage error"):
+        assert phrase in cli_flat, phrase
+
+    supported = " ".join((ROOT / "docs" / "supported.md").read_text(encoding="utf-8").split())
+    assert "excludes compact syntax" not in supported
+    assert "XML and compact syntax" in supported
 
 
 _NEGATED = re.compile(
@@ -400,7 +439,7 @@ def test_optional_integration_snippet_executes(tmp_path, monkeypatch):
 
 def test_code_fixtures_and_fences_are_ascii():
     text = page_text()
-    for language in ("python", "bash", "xml"):
+    for language in ("python", "bash", "rnc", "xml"):
         for block in fenced_blocks(text, language):
             assert block.isascii(), (language, block)
 
@@ -419,13 +458,19 @@ def test_cli_snippets_run_against_ascii_fixtures(tmp_path):
     for name, block in zip(names, blocks, strict=False):
         (tmp_path / name).write_text(block + "\n", encoding="utf-8")
 
+    compact_blocks = fenced_blocks(page_text(), "rnc")
+    assert len(compact_blocks) == 1
+    for name in ("note.rnc", "note.compact"):
+        (tmp_path / name).write_text(compact_blocks[0] + "\n", encoding="utf-8")
+    (tmp_path / "note-xml.rnc").write_text(blocks[0] + "\n", encoding="utf-8")
+
     commands = [
         line
         for block in fenced_blocks(page_text(), "bash")
         for line in block.splitlines()
         if line.startswith("pyxsd ")
     ]
-    assert len(commands) == 6, commands
+    assert len(commands) == 9, commands
 
     results = []
     for command in commands:
@@ -453,6 +498,10 @@ def test_cli_snippets_run_against_ascii_fixtures(tmp_path):
     assert "plan_layout" not in results[4].stderr
     assert results[5].returncode == 1
     assert "unexpected-element" in results[5].stderr
+    for result in results[6:]:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+        assert result.stderr == ""
 
 
 def test_page_has_no_library_markers_or_xslt_replacement_wording():

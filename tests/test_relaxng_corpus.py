@@ -1,6 +1,6 @@
 """Contract tests for the pinned RELAX NG conformance harness.
 
-The corpus is a pair of upstream XML catalogs, not a directory tree.  These
+The corpus is a set of upstream XML manifests, not a directory tree.  These
 tests pin both the synthetic catalog semantics (so the harness itself is
 checked) and the exact shape of the pinned catalogs (so upstream drift is a
 review event rather than a silently updated count).
@@ -31,6 +31,7 @@ from tests.relaxng.baseline import (
 )
 from tests.relaxng.catalog import (
     CASE_DIRECTORY,
+    COMPACTTEST_FILE,
     SPECTEST_FILE,
     XSD_1_1_DATATYPES,
     XSDTEST_FILE,
@@ -70,7 +71,14 @@ from pyxsd.relaxng.names import Name
 from pyxsd.relaxng.patterns import Element, Ref, Value
 
 CORPUS = Path(__file__).resolve().parent / "relaxng" / "corpus"
-CORPUS_FILES = (SPECTEST_FILE, XSDTEST_FILE, "LICENSE", "PROVENANCE.md", "SHA256SUMS")
+CORPUS_FILES = (
+    SPECTEST_FILE,
+    XSDTEST_FILE,
+    COMPACTTEST_FILE,
+    "LICENSE",
+    "PROVENANCE.md",
+    "SHA256SUMS",
+)
 CORPUS_AVAILABLE = all((CORPUS / name).is_file() for name in CORPUS_FILES)
 
 # The research-established shape of the pinned XML-syntax catalog.  Changing
@@ -187,8 +195,8 @@ def test_profiles_have_one_closed_vocabulary():
         PROFILE_COMPACT_SYNTAX,
         PROFILE_DTD_COMPATIBILITY,
     } == PROFILES
-    assert {PROFILE_CORE, PROFILE_XSD_DATATYPE} == REQUIRED_PROFILES
-    assert {PROFILE_COMPACT_SYNTAX, PROFILE_DTD_COMPATIBILITY} == EXCLUDED_PROFILES
+    assert {PROFILE_CORE, PROFILE_XSD_DATATYPE, PROFILE_COMPACT_SYNTAX} == REQUIRED_PROFILES
+    assert {PROFILE_DTD_COMPATIBILITY} == EXCLUDED_PROFILES
     assert REQUIRED_PROFILES.isdisjoint(EXCLUDED_PROFILES)
 
 
@@ -234,7 +242,7 @@ def test_corpus_case_rejects_invalid_metadata(case_id, kind, profile, message):
 def test_corpus_case_properties_classify_scope():
     assert case("c", "correct-schema", PROFILE_CORE).is_required
     assert case("x", "correct-schema", PROFILE_XSD_DATATYPE).is_required
-    assert case("k", "incorrect-schema", PROFILE_COMPACT_SYNTAX).is_excluded
+    assert case("k", "incorrect-schema", PROFILE_COMPACT_SYNTAX).is_required
     assert case("d", "invalid-instance", PROFILE_DTD_COMPATIBILITY).is_excluded
     assert not case("c", "correct-schema", PROFILE_CORE).is_excluded
 
@@ -1076,7 +1084,7 @@ title = "Compact syntax"
 category = "compact-syntax"
 feature = "compact-syntax"
 cases = ["c1", "c2"]
-rationale = "The compact frontend is outside this profile."
+rationale = "A compact profile note."
 links = ["https://relaxng.org/compact.html"]
 
 [[dispositions]]
@@ -1093,7 +1101,7 @@ rationale = "Required."
             title="Compact syntax",
             category=PROFILE_COMPACT_SYNTAX,
             cases=("c1", "c2"),
-            rationale="The compact frontend is outside this profile.",
+            rationale="A compact profile note.",
             feature=PROFILE_COMPACT_SYNTAX,
             links=("https://relaxng.org/compact.html",),
         ),
@@ -1172,12 +1180,7 @@ def test_dispositions_validate_required_and_excluded_entries():
     valid = (
         disposition("core-note", PROFILE_CORE, ("core",)),
         disposition("xsd-note", PROFILE_XSD_DATATYPE, ("xsd",)),
-        disposition(
-            "compact-note",
-            PROFILE_COMPACT_SYNTAX,
-            ("compact",),
-            feature=PROFILE_COMPACT_SYNTAX,
-        ),
+        disposition("compact-note", PROFILE_COMPACT_SYNTAX, ("compact",)),
         disposition(
             "dtd-note",
             PROFILE_DTD_COMPATIBILITY,
@@ -1189,8 +1192,8 @@ def test_dispositions_validate_required_and_excluded_entries():
 
 
 def test_every_excluded_case_needs_an_explicit_feature_disposition():
-    cases = {"compact": compact_case()}
-    with pytest.raises(DispositionError, match="compact"):
+    cases = {"dtd": dtd_case()}
+    with pytest.raises(DispositionError, match="dtd"):
         validate_dispositions((), cases)
 
 
@@ -1201,9 +1204,9 @@ def test_core_cases_cannot_be_reclassified_as_excluded():
             (
                 disposition(
                     "waive",
-                    PROFILE_COMPACT_SYNTAX,
+                    PROFILE_DTD_COMPATIBILITY,
                     ("core",),
-                    feature=PROFILE_COMPACT_SYNTAX,
+                    feature=PROFILE_DTD_COMPATIBILITY,
                 ),
             ),
             cases,
@@ -1213,18 +1216,27 @@ def test_core_cases_cannot_be_reclassified_as_excluded():
 @pytest.mark.parametrize(
     ("entry", "message"),
     [
-        (disposition("ex", PROFILE_COMPACT_SYNTAX, ("compact",)), "feature"),
+        (disposition("ex", PROFILE_DTD_COMPATIBILITY, ("dtd",)), "feature"),
         (
             disposition(
                 "ex",
-                PROFILE_COMPACT_SYNTAX,
-                ("compact",),
-                feature=PROFILE_DTD_COMPATIBILITY,
+                PROFILE_DTD_COMPATIBILITY,
+                ("dtd",),
+                feature=PROFILE_COMPACT_SYNTAX,
             ),
             "feature",
         ),
         (
             disposition("core", PROFILE_CORE, ("core",), feature=PROFILE_COMPACT_SYNTAX),
+            "feature",
+        ),
+        (
+            disposition(
+                "compact",
+                PROFILE_COMPACT_SYNTAX,
+                ("compact",),
+                feature=PROFILE_COMPACT_SYNTAX,
+            ),
             "feature",
         ),
         (disposition("", PROFILE_CORE, ("core",)), "id"),
@@ -1243,7 +1255,7 @@ def test_core_cases_cannot_be_reclassified_as_excluded():
     ],
 )
 def test_disposition_validation_rejects_invalid_entries(entry, message):
-    cases = {"core": core_case(), "compact": compact_case()}
+    cases = {"core": core_case(), "compact": compact_case(), "dtd": dtd_case()}
     with pytest.raises(DispositionError, match=message):
         validate_dispositions((entry,), cases)
 
@@ -1280,20 +1292,22 @@ def test_release_requires_every_required_case_to_pass():
         "core-schema": core_case("core-schema"),
         "xsd-instance": xsd_case("xsd-instance"),
         "compact": compact_case(),
+        "dtd": dtd_case(),
     }
     dispositions = (
         disposition(
-            "compact-note",
-            PROFILE_COMPACT_SYNTAX,
-            ("compact",),
-            feature=PROFILE_COMPACT_SYNTAX,
+            "dtd-note",
+            PROFILE_DTD_COMPATIBILITY,
+            ("dtd",),
+            feature=PROFILE_DTD_COMPATIBILITY,
         ),
     )
     baseline = Baseline(
         results={
             "core-schema": "pass",
             "xsd-instance": "pass",
-            "compact": "profile-excluded",
+            "compact": "pass",
+            "dtd": "profile-excluded",
         }
     )
     assert release_violations(cases, baseline, dispositions) == ()
@@ -1374,9 +1388,9 @@ def test_release_refuses_invalid_dispositions():
             (
                 disposition(
                     "waive",
-                    PROFILE_COMPACT_SYNTAX,
+                    PROFILE_DTD_COMPATIBILITY,
                     ("core",),
-                    feature=PROFILE_COMPACT_SYNTAX,
+                    feature=PROFILE_DTD_COMPATIBILITY,
                 ),
             ),
         )
@@ -1392,7 +1406,7 @@ def copied_corpus(tmp_path_factory) -> Path:
     if not CORPUS_AVAILABLE:
         pytest.skip("the pinned corpus is checkout-only")
     root = tmp_path_factory.mktemp("relaxng-corpus")
-    for name in (SPECTEST_FILE, XSDTEST_FILE):
+    for name in (SPECTEST_FILE, XSDTEST_FILE, COMPACTTEST_FILE):
         (root / name).write_bytes((CORPUS / name).read_bytes())
     return root
 
@@ -1510,13 +1524,14 @@ def test_pinned_corpus_provenance_and_license_are_auditable():
     assert "263a35a5e3ebbfccf8eb9752077e59cde9acc9a1" in provenance
     assert "mod/rng-validate/test/spectest.xml" in provenance
     assert "mod/xsd-datatype/test/xsdtest.xml" in provenance
+    assert "mod/rng-schema/test/compacttest.xml" in provenance
     assert "BSD-3-Clause" in provenance
     sums = (CORPUS / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
     expected = {}
     for line in sums:
         digest, name = line.split("  ", 1)
         expected[name] = digest
-    assert set(expected) == {"LICENSE", SPECTEST_FILE, XSDTEST_FILE}
+    assert set(expected) == {"LICENSE", SPECTEST_FILE, XSDTEST_FILE, COMPACTTEST_FILE}
     for name, digest in expected.items():
         assert hashlib.sha256((CORPUS / name).read_bytes()).hexdigest() == digest, name
     license_text = (CORPUS / "LICENSE").read_text(encoding="utf-8")

@@ -52,7 +52,8 @@ from pyxsd.relaxng.schema import RelaxNGSchema
 
 NS = "http://relaxng.org/ns/structure/1.0"
 CORPUS_AVAILABLE = all(
-    (report_relaxng.CORPUS / name).is_file() for name in ("spectest.xml", "xsdtest.xml")
+    (report_relaxng.CORPUS / name).is_file()
+    for name in ("spectest.xml", "xsdtest.xml", "compacttest.xml")
 )
 CORRECT = f'<element xmlns="{NS}" name="doc"><empty/></element>'
 INCORRECT = f'<element xmlns="{NS}"><empty/></element>'
@@ -371,12 +372,7 @@ def test_every_case_has_exactly_one_disposition(tmp_path):
     compact = write_case(tmp_path, "compact", "correct-schema", profile=PROFILE_COMPACT_SYNTAX)
     dtd = write_case(tmp_path, "dtd", "incorrect-schema", profile=PROFILE_DTD_COMPATIBILITY)
     dispositions = (
-        disposition(
-            "compact-note",
-            PROFILE_COMPACT_SYNTAX,
-            (compact.id,),
-            feature=PROFILE_COMPACT_SYNTAX,
-        ),
+        disposition("compact-note", PROFILE_COMPACT_SYNTAX, (compact.id,)),
         disposition(
             "dtd-note",
             PROFILE_DTD_COMPATIBILITY,
@@ -395,34 +391,36 @@ def test_every_case_has_exactly_one_disposition(tmp_path):
     }
 
     with pytest.raises(DispositionError, match="no feature disposition"):
-        report_relaxng.case_dispositions((core, compact), ())
+        report_relaxng.case_dispositions((core, dtd), ())
 
 
 def test_excluded_dependencies_are_sorted_and_carry_their_feature(tmp_path):
-    compact = write_case(tmp_path, "compact", "correct-schema", profile=PROFILE_COMPACT_SYNTAX)
-    dtd = write_case(tmp_path, "dtd", "incorrect-schema", profile=PROFILE_DTD_COMPATIBILITY)
+    first = write_case(tmp_path, "dtd-z", "incorrect-schema", profile=PROFILE_DTD_COMPATIBILITY)
+    second = write_case(tmp_path, "dtd-a", "incorrect-schema", profile=PROFILE_DTD_COMPATIBILITY)
     dispositions = (
         disposition(
-            "z-compact",
-            PROFILE_COMPACT_SYNTAX,
-            (compact.id,),
-            feature=PROFILE_COMPACT_SYNTAX,
-            links=("https://relaxng.org/compact.html",),
+            "z-dtd",
+            PROFILE_DTD_COMPATIBILITY,
+            (first.id,),
+            feature=PROFILE_DTD_COMPATIBILITY,
+            links=("https://relaxng.org/compatibility.html",),
         ),
         disposition(
             "a-dtd",
             PROFILE_DTD_COMPATIBILITY,
-            (dtd.id,),
+            (second.id,),
             feature=PROFILE_DTD_COMPATIBILITY,
         ),
     )
 
-    dependencies = report_relaxng.excluded_dependencies((compact, dtd), dispositions)
+    dependencies = report_relaxng.excluded_dependencies((first, second), dispositions)
 
-    assert [dependency.entry_id for dependency in dependencies] == ["a-dtd", "z-compact"]
-    assert dependencies[1].feature == PROFILE_COMPACT_SYNTAX
-    assert dependencies[1].links == ("https://relaxng.org/compact.html",)
-    assert report_relaxng.excluded_dependencies((dtd,), (dispositions[1],))[0].cases == (dtd.id,)
+    assert [dependency.entry_id for dependency in dependencies] == ["a-dtd", "z-dtd"]
+    assert dependencies[1].feature == PROFILE_DTD_COMPATIBILITY
+    assert dependencies[1].links == ("https://relaxng.org/compatibility.html",)
+    assert report_relaxng.excluded_dependencies((second,), (dispositions[1],))[0].cases == (
+        second.id,
+    )
 
 
 @pytest.mark.skipif(
@@ -450,6 +448,7 @@ def report_fixture(tmp_path):
     wrong = write_case(tmp_path, "wrong", "incorrect-schema")
     gap = write_case(tmp_path, "gap", "incorrect-schema")
     compact = write_case(tmp_path, "compact", "correct-schema", profile=PROFILE_COMPACT_SYNTAX)
+    dtd = write_case(tmp_path, "dtd", "incorrect-schema", profile=PROFILE_DTD_COMPATIBILITY)
     results = (
         make_result(passed, Outcome.PASS, CaseFailure.NONE),
         make_result(
@@ -464,30 +463,26 @@ def report_fixture(tmp_path):
             CaseFailure.ADAPTER_GAP,
             detail="UnsupportedDatatypeError: no such library",
         ),
-        make_result(
-            compact,
-            Outcome.ADAPTER_GAP,
-            CaseFailure.ADAPTER_GAP,
-            detail="compact syntax is outside the profile",
-        ),
+        make_result(compact, Outcome.PASS, CaseFailure.NONE),
     )
     baseline = Baseline(
         results={
             passed.id: "pass",
             wrong.id: "fail",
             gap.id: "adapter-gap",
+            compact.id: "pass",
         }
     )
     dispositions = (
         disposition(
-            "compact-note",
-            PROFILE_COMPACT_SYNTAX,
-            (compact.id,),
-            feature=PROFILE_COMPACT_SYNTAX,
-            links=("https://relaxng.org/compact.html",),
+            "dtd-note",
+            PROFILE_DTD_COMPATIBILITY,
+            (dtd.id,),
+            feature=PROFILE_DTD_COMPATIBILITY,
+            links=("https://relaxng.org/compatibility.html",),
         ),
     )
-    return (passed, wrong, gap, compact), results, baseline, dispositions
+    return (passed, wrong, gap, compact, dtd), results, baseline, dispositions
 
 
 def test_report_lists_every_unresolved_failure_and_exclusion(tmp_path):
@@ -496,15 +491,15 @@ def test_report_lists_every_unresolved_failure_and_exclusion(tmp_path):
     text = report_relaxng.render_report(cases, results, baseline, dispositions, deferred=3)
 
     assert text == report_relaxng.render_report(cases, results, baseline, dispositions, deferred=3)
-    assert "scope: 3 required schema assertions" in text
+    assert "scope: 4 required schema assertions" in text
     assert "excluded schema assertions: 1" in text
     assert "deferred instance assertions: 3" in text
-    assert "dispositions: 4 schema cases assigned exactly one" in text
+    assert "dispositions: 5 schema cases assigned exactly one" in text
     assert "unresolved in-scope failures (2):" in text
     assert f"  {cases[1].id} [incorrect-schema] fail (wrong-verdict)" in text
     assert f"  {cases[2].id} [incorrect-schema] adapter-gap (adapter-gap)" in text
-    assert "compact-note [compact-syntax] compact-note" in text
-    assert "https://relaxng.org/compact.html" in text
+    assert "dtd-note [dtd-compatibility] dtd-note" in text
+    assert "https://relaxng.org/compatibility.html" in text
     assert "baseline: matches" in text
 
 
@@ -514,9 +509,10 @@ def test_report_shows_baseline_changes_without_hiding_failures(tmp_path):
 
     text = report_relaxng.render_report(cases, results, baseline, dispositions)
 
-    assert "baseline changes (2):" in text
+    assert "baseline changes (3):" in text
     assert "[new] gap: missing -> adapter-gap" in text
     assert "[new] wrong: missing -> fail" in text
+    assert "[new] compact: missing -> pass" in text
     assert "unresolved in-scope failures (2):" in text
 
 
@@ -528,10 +524,11 @@ def test_json_report_has_the_same_per_case_evidence(tmp_path):
     )
 
     assert payload["scope"] == {
+        "compact_syntax": 1,
         "core": 3,
         "deferred_instance_assertions": 7,
         "excluded_schema_cases": 1,
-        "required_schema_cases": 3,
+        "required_schema_cases": 4,
         "xsd_datatype": 0,
     }
     assert set(payload["results"]) == {case.id for case in cases if case.is_required}
@@ -540,7 +537,7 @@ def test_json_report_has_the_same_per_case_evidence(tmp_path):
         cases[2].id,
         cases[1].id,
     ]
-    assert payload["excluded"][0]["feature"] == PROFILE_COMPACT_SYNTAX
+    assert payload["excluded"][0]["feature"] == PROFILE_DTD_COMPATIBILITY
     assert payload["baseline_changes"] == []
 
 
@@ -597,6 +594,7 @@ def test_report_cli_writes_enforces_and_refuses_regressions(tmp_path, capsys):
     root.mkdir()
     (root / SPECTEST_FILE).write_text(_TWO_CASE_CATALOG, encoding="utf-8")
     (root / "xsdtest.xml").write_text("<xsdtest/>", encoding="utf-8")
+    (root / "compacttest.xml").write_text("<testSuite/>", encoding="utf-8")
     dispositions = tmp_path / "dispositions.toml"
     dispositions.write_text("", encoding="utf-8")
     baseline = tmp_path / "baseline.toml"
@@ -640,6 +638,7 @@ def test_report_cli_rejects_bad_dispositions_and_baselines(tmp_path, capsys):
     root.mkdir()
     (root / SPECTEST_FILE).write_text(_TWO_CASE_CATALOG, encoding="utf-8")
     (root / "xsdtest.xml").write_text("<xsdtest/>", encoding="utf-8")
+    (root / "compacttest.xml").write_text("<testSuite/>", encoding="utf-8")
     dispositions = tmp_path / "dispositions.toml"
     dispositions.write_text("[[dispositions]]\nid = 'x'\n", encoding="utf-8")
     baseline = tmp_path / "baseline.toml"
@@ -682,6 +681,7 @@ def test_report_script_entry_point_runs_as_a_script(tmp_path, monkeypatch, capsy
     root.mkdir()
     (root / SPECTEST_FILE).write_text(_TWO_CASE_CATALOG, encoding="utf-8")
     (root / "xsdtest.xml").write_text("<xsdtest/>", encoding="utf-8")
+    (root / "compacttest.xml").write_text("<testSuite/>", encoding="utf-8")
     dispositions = tmp_path / "dispositions.toml"
     dispositions.write_text("", encoding="utf-8")
     baseline = tmp_path / "baseline.toml"

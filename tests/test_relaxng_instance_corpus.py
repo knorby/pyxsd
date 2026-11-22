@@ -28,8 +28,8 @@ from tests.relaxng.dispositions import (
 )
 from tests.relaxng.driver import CaseFailure, PyXSDDriver
 from tests.relaxng.model import (
-    PROFILE_COMPACT_SYNTAX,
     PROFILE_CORE,
+    PROFILE_DTD_COMPATIBILITY,
     PROFILE_XSD_DATATYPE,
     CorpusCase,
     Outcome,
@@ -50,7 +50,8 @@ from pyxsd.resource_policy import ResourceData
 NS = "http://relaxng.org/ns/structure/1.0"
 XSD = "http://www.w3.org/2001/XMLSchema-datatypes"
 CORPUS_AVAILABLE = all(
-    (report_relaxng.CORPUS / name).is_file() for name in ("spectest.xml", "xsdtest.xml")
+    (report_relaxng.CORPUS / name).is_file()
+    for name in ("spectest.xml", "xsdtest.xml", "compacttest.xml")
 )
 
 EMPTY_SCHEMA = f'<element xmlns="{NS}" name="doc"><empty/></element>'
@@ -659,25 +660,25 @@ def test_full_report_shows_instance_failures_and_baseline_changes(
 
 
 def test_full_report_lists_excluded_instance_assertions(tmp_path: Path) -> None:
-    compact = write_instance_case(
+    dtd = write_instance_case(
         tmp_path,
-        "compact",
+        "dtd",
         "valid-instance",
-        profile=PROFILE_COMPACT_SYNTAX,
+        profile=PROFILE_DTD_COMPATIBILITY,
     )
     dispositions = (
         Disposition(
-            id="compact-note",
-            title="compact syntax",
-            category=PROFILE_COMPACT_SYNTAX,
-            cases=(compact.id,),
-            rationale="depends on compact syntax",
-            feature=PROFILE_COMPACT_SYNTAX,
+            id="dtd-note",
+            title="DTD Compatibility",
+            category=PROFILE_DTD_COMPATIBILITY,
+            cases=(dtd.id,),
+            rationale="depends on DTD Compatibility",
+            feature=PROFILE_DTD_COMPATIBILITY,
         ),
     )
 
     text = report_relaxng.render_report(
-        (compact,),
+        (dtd,),
         (),
         Baseline(),
         dispositions,
@@ -687,7 +688,7 @@ def test_full_report_lists_excluded_instance_assertions(tmp_path: Path) -> None:
 
     assert "instance scope: 0 required instance assertions" in text
     assert "excluded instance assertions: 1" in text
-    assert "compact-note [compact-syntax] compact syntax" in text
+    assert "dtd-note [dtd-compatibility] DTD Compatibility" in text
     assert "instance baseline: matches" in text
 
 

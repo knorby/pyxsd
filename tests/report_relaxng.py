@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Deterministic report for the pinned RELAX NG conformance corpus.
 
-The schema phase owns the 623 correct/incorrect schema assertions and the
+The schema phase owns the 710 correct/incorrect schema assertions and the
 instance phase owns the 1,621 valid/invalid instance assertions from the
-pinned Jing/Trang catalogs.  This report runs each required case in both
-phases, compares the settled outcomes with the checked-in baseline, and prints
-every unresolved failure and every actually excluded feature dependency.  It
+pinned Jing/Trang catalogs, including the 87 compact-syntax cases.  This
+report runs each required case in both phases, compares the settled outcomes
+with the checked-in baseline, and prints every unresolved failure and every
+actually excluded feature dependency.  It
 never substitutes a pass rate for per-case evidence.
 
 Examples::
@@ -44,6 +45,7 @@ from tests.relaxng.baseline import (
 )
 from tests.relaxng.catalog import (
     CatalogError,
+    load_compact_syntax_catalog,
     load_xml_syntax_catalog,
     load_xsd_datatype_catalog,
 )
@@ -97,7 +99,7 @@ CORPUS = _ROOT / "relaxng" / "corpus"
 BASELINE = _ROOT / "relaxng" / "baseline.toml"
 DISPOSITIONS = _ROOT / "relaxng" / "dispositions.toml"
 
-_PROFILE_LABEL = "core+xsd-datatype"
+_PROFILE_LABEL = "core+xsd-datatype+compact-syntax"
 
 
 @dataclass(frozen=True)
@@ -122,8 +124,12 @@ class BaselineUpdateViolation:
 
 
 def load_cases(root: Path = CORPUS) -> tuple[CorpusCase, ...]:
-    """Read both pinned catalogs, in their stable catalog order."""
-    return load_xml_syntax_catalog(root) + load_xsd_datatype_catalog(root)
+    """Read the pinned catalogs, in their stable catalog order."""
+    return (
+        load_xml_syntax_catalog(root)
+        + load_xsd_datatype_catalog(root)
+        + load_compact_syntax_catalog(root)
+    )
 
 
 def schema_cases(cases: Iterable[CorpusCase]) -> tuple[CorpusCase, ...]:
@@ -286,6 +292,16 @@ def save_baseline_checked(
     save_baseline(path, results, meta, instances=instances)
 
 
+def _profile_breakdown(cases: Iterable[CorpusCase]) -> str:
+    """The stable per-profile counts shown in the scope lines."""
+    profile_counts = Counter(case.profile for case in cases)
+    return (
+        f" (core: {profile_counts.get('core', 0)},"
+        f" xsd-datatype: {profile_counts.get('xsd-datatype', 0)},"
+        f" compact-syntax: {profile_counts.get('compact-syntax', 0)})"
+    )
+
+
 def _baseline_summary(baseline: Baseline, comparison: BaselineDiff) -> list[str]:
     if not comparison:
         return ["baseline: matches"]
@@ -369,7 +385,6 @@ def render_report(
         schema_assignment_count = len(assignments)
         instance_assignment_count = 0
 
-    profile_counts = Counter(case.profile for case in required)
     outcome_counts = Counter(result.outcome.value for result in schema_results)
     recorded = set(results_to_keys(schema_results))
     missing = [case.id for case in required if case.id not in recorded]
@@ -377,16 +392,12 @@ def render_report(
     lines = [
         "RELAX NG schema conformance",
         f"catalog: pinned Jing/Trang {CATALOG_COMMIT}",
-        f"scope: {len(required)} required schema assertions"
-        f" (core: {profile_counts.get('core', 0)},"
-        f" xsd-datatype: {profile_counts.get('xsd-datatype', 0)})",
+        f"scope: {len(required)} required schema assertions" + _profile_breakdown(required),
     ]
     if full:
-        instance_profile_counts = Counter(case.profile for case in required_instances)
         lines.append(
             f"instance scope: {len(required_instances)} required instance assertions"
-            f" (core: {instance_profile_counts.get('core', 0)},"
-            f" xsd-datatype: {instance_profile_counts.get('xsd-datatype', 0)})"
+            + _profile_breakdown(required_instances)
         )
         if len(all_instances) != len(required_instances):
             lines.append(
@@ -501,6 +512,7 @@ def render_json(
         "required_schema_cases": len(required),
         "core": profile_counts.get("core", 0),
         "xsd_datatype": profile_counts.get("xsd-datatype", 0),
+        "compact_syntax": profile_counts.get("compact-syntax", 0),
         "excluded_schema_cases": len(all_schema) - len(required),
         "deferred_instance_assertions": deferred,
     }
@@ -511,6 +523,7 @@ def render_json(
                 "required_instance_assertions": len(required_instances),
                 "instance_core": instance_profile_counts.get("core", 0),
                 "instance_xsd_datatype": instance_profile_counts.get("xsd-datatype", 0),
+                "instance_compact_syntax": instance_profile_counts.get("compact-syntax", 0),
                 "excluded_instance_cases": len(all_instances) - len(required_instances),
             }
         )

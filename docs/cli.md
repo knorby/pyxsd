@@ -17,6 +17,7 @@ pyxsd [options]
 | `-i FILE` | `--inputXml` | Filename of the XML document to read in. Reads from **stdin** by default. |
 | `-s FILE` | `--inputXsd`, `--schema` | Filename of the schema, in the language selected by `--schema-language`. For XSD, pyxsd tries to determine the location from the instance document (schema hints) when this is omitted. RELAX NG requires this option. |
 | `--schema-language {xsd,relax-ng}` | | Schema language to compile: `xsd` (default) or `relax-ng`. A filename extension never selects the language. See [Schema language](#schema-language). |
+| `--schema-syntax {auto,xml,compact}` | | RELAX NG root syntax. `auto` (default) selects compact only for a root path ending in `.rnc`, case-insensitively; `xml` and `compact` override the filename; anonymous streams stay XML. A nondefault value with `--schema-language xsd` is a usage error. See [Schema language](#schema-language). |
 | `-p FILE` | `--parsedXml`, `--parsedOutput` | Filename for parsed (pre-transform) output when `-k` is enabled. Default: input stem + `Parsed.xml` beside the input. |
 | `-k` | `--ParsedFile` | Write the parsed tree even when transforms are given. Off by default. |
 | `-o FILE` | `--transformOutput` | Output after parsing and transforming. **stdout** by default. `stdout` may also be given explicitly as the value. |
@@ -51,8 +52,18 @@ pyxsd [options]
   `schemaLocation`/`noNamespaceSchemaLocation` hint, so `-s/--inputXsd` is
   required; omitting it is a usage error.
 
-The filename extension is never consulted. Naming a RELAX NG schema `.xsd`, or
-an XSD schema `.rng`, does not change the selected language.
+`--schema-syntax` is the RELAX NG root-frontend selector. `auto` (the
+default) selects compact only for a root path ending in `.rnc`,
+case-insensitively; `xml` and `compact` override the filename; anonymous
+streams stay XML. Every include and external reference inherits the root
+syntax, so one closure never mixes XML and compact resources. With
+`--schema-language xsd`, only the default `auto` is accepted; any other value
+is a usage error and exits `2`. The option also applies to `--emit-stubs`.
+
+The filename extension never selects the language. Naming a RELAX NG schema
+`.xsd`, or an XSD schema `.rng`, does not change the selected language. Within
+RELAX NG, `--schema-syntax auto` consults only the root filename, and an
+explicit `--schema-syntax` value overrides it.
 
 The standard workflows apply to both languages: validation reports, parsed
 output (`-k`/`-p`), transforms (`-t`/`-T`) through the shared document pipeline,

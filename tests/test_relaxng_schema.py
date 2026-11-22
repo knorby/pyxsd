@@ -11,6 +11,7 @@ input is consumed.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import io
 import threading
 from collections.abc import Iterator
@@ -239,6 +240,18 @@ def test_compile_returns_the_valid_composed_schema_with_an_empty_report():
     assert schema.limits == RelaxNGLimits()
     assert schema.namespace_context.root_bindings == {"": NS}
     assert schema.datatype_fingerprint.startswith("pyxsd.relaxng.datatypes/1:")
+
+
+def test_compile_defaults_to_auto_and_keeps_xml_for_unnamed_sources():
+    default = compile_schema(io.StringIO(VALID))
+    explicit = compile_schema(io.StringIO(VALID), syntax="xml")
+
+    assert not default.report.has_errors
+    assert default.report.issues == explicit.report.issues
+    assert default.namespace_context.root_bindings == explicit.namespace_context.root_bindings
+    parameters = inspect.signature(RelaxNGSchema.compile).parameters
+    assert parameters["syntax"].default == "auto"
+    assert "syntax" not in inspect.signature(pyxsd.Schema.compile).parameters
 
 
 def test_a_bare_pattern_root_compiles_like_a_grammar_start():
@@ -977,6 +990,7 @@ def test_the_relaxng_package_exposes_the_real_compile_entry_point():
         "AmbiguousValueError",
         "ListInterpretation",
         "NodeAnnotations",
+        "RelaxNGCompactSyntaxError",
         "RelaxNGComponentDescription",
         "RelaxNGDocument",
         "RelaxNGElement",

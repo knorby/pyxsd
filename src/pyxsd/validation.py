@@ -23,7 +23,13 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pyxsd._diagnostic_encoding import encode_number
 from pyxsd.exceptions import ValidationError
-from pyxsd.locations import ConstraintInfo, IssueLocation, LocationPrecision, PathStep
+from pyxsd.locations import (
+    ConstraintInfo,
+    IssueLocation,
+    LocationPrecision,
+    PathStep,
+    SourceTextSpan,
+)
 
 if TYPE_CHECKING:
     from pyxsd.schema_base import SchemaBase
@@ -100,8 +106,16 @@ class ValidationIssue:
     location_precision: LocationPrecision = field(default="unknown", kw_only=True)
 
     def format(self) -> str:
-        """Render the issue as one line, as shown by the CLI."""
+        """Render the issue as one line, as shown by the CLI.
+
+        A location with exact text-span evidence adds ``source:line:column``;
+        issues without a span keep their established rendering.
+        """
         prefix = f"{self.severity.value}: [{self.code}]"
+        location = self.location
+        span = location.span if location is not None else None
+        if location is not None and span is not None:
+            prefix = f"{prefix} {_source_position(location, span)}:"
         if self.element is not None:
             return f"{prefix} {self.element}: {self.message}"
         return f"{prefix} {self.message}"
@@ -117,6 +131,13 @@ def _bounded_message(message: str, max_bytes: int | None) -> str:
         return "." * max_bytes
     prefix = encoded[: max_bytes - 3].decode("utf-8", errors="ignore")
     return prefix + "..."
+
+
+def _source_position(location: IssueLocation, span: SourceTextSpan) -> str:
+    """Render a spanned location as ``source:line:column``, or ``line:column``."""
+    if location.source is None:
+        return f"{span.line}:{span.column}"
+    return f"{location.source}:{span.line}:{span.column}"
 
 
 def _merge_diagnostics_complete(left: bool | None, right: bool | None) -> bool | None:
@@ -432,12 +453,24 @@ def _diagnostic_value(value: object) -> object:
         return encode_number(value)
     if isinstance(value, PathStep):
         return {"name": value.name, "index": value.index}
-    if isinstance(value, IssueLocation):
+    if isinstance(value, SourceTextSpan):
         return {
+            "start": value.start,
+            "end": value.end,
+            "line": value.line,
+            "column": value.column,
+            "end_line": value.end_line,
+            "end_column": value.end_column,
+        }
+    if isinstance(value, IssueLocation):
+        encoded: dict[str, object] = {
             "source": value.source,
             "path": [_diagnostic_value(step) for step in value.path],
             "attribute": value.attribute,
         }
+        if value.span is not None:
+            encoded["span"] = _diagnostic_value(value.span)
+        return encoded
     if isinstance(value, ConstraintInfo):
         return {
             "kind": value.kind,

@@ -17,7 +17,7 @@ from pyxsd.introspection import (
     SchemaDescription,
     WildcardDescription,
 )
-from pyxsd.locations import ConstraintInfo, IssueLocation, PathStep
+from pyxsd.locations import ConstraintInfo, IssueLocation, PathStep, SourceTextSpan
 from pyxsd.xsd_data_types import Boolean
 
 from .contracts import WireModel
@@ -26,6 +26,7 @@ from .errors import ToolError
 _CORE_RECORDS = (
     PathStep,
     IssueLocation,
+    SourceTextSpan,
     ConstraintInfo,
     ComponentDescription,
     FacetDescription,
@@ -73,6 +74,15 @@ def _encode(value: object, depth: int, active: set[int]) -> JsonValue:
             return [_encode(item, depth - 1, active) for item in value]
         if isinstance(value, dict) and all(isinstance(key, str) for key in value):
             return {str(key): _encode(item, depth - 1, active) for key, item in value.items()}
+        if isinstance(value, IssueLocation):
+            location: dict[str, JsonValue] = {
+                "source": _encode(value.source, depth - 1, active),
+                "path": _encode(value.path, depth - 1, active),
+                "attribute": _encode(value.attribute, depth - 1, active),
+            }
+            if value.span is not None:
+                location["span"] = _encode(value.span, depth - 1, active)
+            return location
         if isinstance(value, _CORE_RECORDS):
             return {
                 field.name: _encode(getattr(value, field.name), depth - 1, active)

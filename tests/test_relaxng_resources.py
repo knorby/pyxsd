@@ -9,6 +9,7 @@ resolution semantics, origin recording, and dependency evidence.
 
 from __future__ import annotations
 
+import hashlib
 import io
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -21,6 +22,7 @@ from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import parse_with_namespaces
 from pyxsd.relaxng.origins import SourceOrigin
 from pyxsd.relaxng.resources import (
+    LoadedCompactResource,
     LoadedResource,
     ResourceDependency,
     ResourceLoader,
@@ -92,6 +94,7 @@ class TestLoad:
         loaded = ResourceLoader().load(path)
 
         assert isinstance(loaded, LoadedResource)
+        assert loaded.syntax == "xml"
         assert repr(loaded) == f"LoadedResource(canonical_id={str(path)!r})"
         assert loaded.canonical_id == str(path)
         assert loaded.root.tag == f"{{{RNG_NS}}}grammar"
@@ -243,6 +246,109 @@ class TestLoad:
 
         assert loaded.namespaces.bindings_for(defaulted)[""] == "urn:example:default"
         assert loaded.namespaces.bindings_for(value_element)[""] == ""
+
+
+class TestCompactLoad:
+    def test_compact_load_retains_admitted_bytes_and_dependency_hash(self, tmp_path):
+        content = b"element root { text }\n"
+        path = tmp_path / "schema.rnc"
+        path.write_bytes(content)
+        resolved = str(path.resolve())
+        policy = RecordingPolicy(tmp_path)
+        loader = ResourceLoader(policy=policy)
+
+        loaded = loader.load(path, syntax="compact")
+
+        assert isinstance(loaded, LoadedCompactResource)
+        assert loaded.syntax == "compact"
+        assert repr(loaded) == f"LoadedCompactResource(canonical_id={resolved!r})"
+        assert loaded.canonical_id == resolved
+        assert loaded.content == content
+        assert loaded.inherited_namespace == ""
+        assert policy.reads == [(str(path), None, "schema")]
+        assert policy.parsed == []
+        dependency = loader.dependencies()[0]
+        assert dependency.canonical_id == resolved
+        assert dependency.content_sha256 == hashlib.sha256(content).hexdigest()
+
+    def test_compact_load_dedupes_by_canonical_id(self, tmp_path):
+        path = tmp_path / "schema.rnc"
+        path.write_bytes(b"element root { text }\n")
+        policy = RecordingPolicy(tmp_path)
+        loader = ResourceLoader(policy=policy)
+
+        first = loader.load(path, syntax="compact")
+        second = loader.load(tmp_path / "." / path.name, syntax="compact")
+
+        assert second is first
+        assert len(loader.dependencies()) == 1
+        assert policy.parsed == []
+
+    def test_compact_view_inherits_a_namespace_without_mutating_the_resource(self, tmp_path):
+        path = tmp_path / "schema.rnc"
+        path.write_bytes(b"element root { text }\n")
+        resource = ResourceLoader().load(path, syntax="compact")
+
+        view = resource.with_namespace("urn:one")
+
+        assert view is not resource
+        assert view.inherited_namespace == "urn:one"
+        assert view.namespace_at(resource.origins) == "urn:one"
+        assert view.content == resource.content
+        assert view.canonical_id == resource.canonical_id
+        assert resource.inherited_namespace == ""
+        assert resource.namespace_at(resource.origins) == ""
+        assert resource.with_namespace("") is resource
+        assert view.with_namespace("urn:one") is view
+
+    def test_unknown_resource_syntax_is_rejected_before_reading(self, tmp_path):
+        path = tmp_path / "schema.rnc"
+        path.write_bytes(b"element root { text }\n")
+        policy = RecordingPolicy(tmp_path)
+
+        with pytest.raises(ValueError, match="syntax"):
+            ResourceLoader(policy=policy).load(path, syntax="auto")  # type: ignore[arg-type]
+
+        assert policy.reads == []
+
+    def test_a_canonical_resource_keeps_one_syntax(self, tmp_path):
+        path = tmp_path / "schema.rnc"
+        path.write_bytes(b"element root { text }\n")
+        loader = ResourceLoader()
+        loader.load(path, syntax="compact")
+
+        with pytest.raises(ValueError, match="compact"):
+            loader.load(path, syntax="xml")
+
+
+class TestCompactResolve:
+    def test_compact_resolve_reads_a_dependency_as_compact_regardless_of_suffix(self, tmp_path):
+        child_content = b"element child { empty }\n"
+        (tmp_path / "main.rnc").write_bytes(b'include "child.rng"\n')
+        (tmp_path / "child.rng").write_bytes(child_content)
+        policy = RecordingPolicy(tmp_path)
+        loader = ResourceLoader(policy=policy)
+        main = loader.load(tmp_path / "main.rnc", syntax="compact")
+
+        child = loader.resolve("child.rng", main, None)
+
+        assert isinstance(main, LoadedCompactResource)
+        assert isinstance(child, LoadedCompactResource)
+        assert child.syntax == "compact"
+        assert child.content == child_content
+        assert child.canonical_id == str((tmp_path / "child.rng").resolve())
+        assert policy.parsed == []
+
+    def test_an_xml_closure_cannot_resolve_a_compact_resource(self, tmp_path):
+        child = tmp_path / "child.rng"
+        child.write_bytes(b"element child { empty }\n")
+        (tmp_path / "main.rng").write_text(RNG_START, encoding="utf-8")
+        loader = ResourceLoader()
+        loader.load(child, syntax="compact")
+        main = loader.load(tmp_path / "main.rng")
+
+        with pytest.raises(ValueError, match="compact"):
+            loader.resolve("child.rng", main, None)
 
 
 class TestResolve:
