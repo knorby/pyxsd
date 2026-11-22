@@ -350,12 +350,17 @@ spans directly. The whole input is parsed and policy-checked before returning
 a span. Paths use expanded names and same-name sibling indexes, as issue
 locations do.
 
+Compact RELAX NG diagnostics instead carry a `SourceTextSpan`, whose offsets
+address decoded source text rather than original bytes.
+
 ```{eval-rst}
 .. autoclass:: pyxsd.source_spans.SourceIndex
    :members:
 
 .. autoclass:: pyxsd.source_spans.SourceSpan
    :members:
+
+.. autoclass:: pyxsd.locations.SourceTextSpan
 
 .. autoclass:: pyxsd.locations.PathStep
 

@@ -212,6 +212,7 @@ def test_compact_syntax_contract_is_documented():
     api = " ".join((ROOT / "docs" / "api.md").read_text(encoding="utf-8").split())
     assert 'syntax="auto"' in api
     assert "case-insensitive" in api
+    assert ".. autoclass:: pyxsd.locations.SourceTextSpan" in api
 
     cli = (ROOT / "docs" / "cli.md").read_text(encoding="utf-8")
     assert "--schema-syntax {auto,xml,compact}" in cli
