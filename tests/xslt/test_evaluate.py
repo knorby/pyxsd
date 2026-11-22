@@ -925,7 +925,7 @@ def test_with_param_value_may_come_from_its_sequence_constructor() -> None:
     assert transform(source, initial_template="main").principal == (XdmAtomic.integer(42),)
 
 
-def test_invalid_schema_aware_value_is_a_dynamic_error() -> None:
+def test_invalid_schema_aware_value_is_a_static_error() -> None:
     source = stylesheet(
         """
         <xsl:template name="main">
@@ -933,7 +933,7 @@ def test_invalid_schema_aware_value_is_a_dynamic_error() -> None:
         </xsl:template>
         """
     )
-    assert error_code(lambda: transform(source, initial_template="main")) == "XTDE0030"
+    assert error_code(lambda: compiled(source)) == "XTSE0020"
 
 
 def test_namespace_context_supplies_a_default_element_namespace() -> None:

@@ -81,6 +81,9 @@ class ComponentReference:
     marks the special ``xsl:original`` reference and is legal only inside a
     named-component override.  ``visibility`` records the target's visibility
     at binding time so a package copy can decide whether to rebind it.
+    ``parameter_names`` records the target template's non-tunnel parameter
+    names so ``xsl:call-template`` can reject a stray non-tunnel
+    ``xsl:with-param`` at compile time (XTSE0680).
     """
 
     kind: str
@@ -90,6 +93,7 @@ class ComponentReference:
     containing: str | None = None
     visibility: str | None = None
     original: bool = False
+    parameter_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

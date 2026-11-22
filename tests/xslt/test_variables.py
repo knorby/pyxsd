@@ -395,6 +395,7 @@ def test_non_tunnel_parameters_do_not_cross_intermediate_named_templates() -> No
           </xsl:call-template>
         </xsl:template>
         <xsl:template name="middle">
+          <xsl:param name="p"/>
           <xsl:call-template name="inner"/>
         </xsl:template>
         <xsl:template name="inner">

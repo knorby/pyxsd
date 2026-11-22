@@ -1138,7 +1138,7 @@ def test_document_type_and_copy_document_nodes() -> None:
     copied = (
         '<xsl:template name="main">'
         '<xsl:variable name="c">'
-        '<xsl:copy select="/" validation="preserve" xsl:default-validation="preserve">'
+        '<xsl:copy select="/" validation="preserve" default-validation="preserve">'
         '<xsl:copy-of select="/" validation="preserve"/>'
         "</xsl:copy>"
         "</xsl:variable>"
@@ -1474,7 +1474,7 @@ def test_xsl_element_attribute_sets_and_copy_document_content() -> None:
     copied = (
         '<xsl:template name="main">'
         '<xsl:variable name="c">'
-        '<xsl:copy select="/" validation="preserve" xsl:default-validation="preserve">'
+        '<xsl:copy select="/" validation="preserve" default-validation="preserve">'
         '<xsl:copy-of select="/" validation="preserve"/>'
         "</xsl:copy>"
         "</xsl:variable>"

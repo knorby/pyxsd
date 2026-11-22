@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from importlib.resources import as_file
 from importlib.resources import files as resource_files
@@ -44,6 +44,21 @@ XSD_NS = "http://www.w3.org/2001/XMLSchema"
 #: advisory inspection profile uses).  It is the vocabulary source for this
 #: gate; the Recommendation remains normative where the two might differ.
 XSLT20_SCHEMA_RESOURCE = "schema-for-xslt20.xsd"
+
+#: The bundled XSLT 3.0 stylesheet schema, used for the general XTSE0090
+#: attribute check on a 3.0 processor.
+XSLT30_SCHEMA_RESOURCE = "schema-for-xslt30.xsd"
+
+#: Attributes the Recommendation defines that the bundled 3.0 schema omits, plus
+#: the two public engine extension attributes.  Keeping this explicit means the
+#: schema remains the default source of truth without rejecting supported syntax.
+XSLT30_SCHEMA_SUPPLEMENTS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "accumulator-rule": frozenset({"priority"}),
+        "evaluate": frozenset({"xpath-version"}),
+        "function": frozenset({"identity-sensitive"}),
+    }
+)
 
 __all__ = ["assert_native_profile_language"]
 
@@ -127,8 +142,13 @@ def _simple_type_enumerations(
 ) -> frozenset[str]:
     """Collect the ``#token`` vocabulary of one simple type."""
     if isinstance(type_ref, str):
+        declared = simple_types.get(_local_name(type_ref))
+        if declared is None:
+            # An XSD built-in type (such as xs:NCName) has no enumerations in
+            # this schema bundle; it contributes no special mode tokens.
+            return frozenset()
         return _simple_type_enumerations(
-            simple_types[_local_name(type_ref)],
+            declared,
             simple_types,
         )
     values: set[str] = set()
@@ -142,10 +162,10 @@ def _simple_type_enumerations(
     return frozenset(values)
 
 
-@lru_cache(maxsize=1)
-def _xslt20_vocabulary() -> _XSLT20Vocabulary:
-    """Load the XSLT 2.0 element, attribute, and mode vocabulary."""
-    resource = resource_files("pyxsd.xslt") / "resources" / XSLT20_SCHEMA_RESOURCE
+@lru_cache(maxsize=2)
+def _schema_vocabulary(resource_name: str) -> _XSLT20Vocabulary:
+    """Load one bundled XSLT schema's element and attribute vocabulary."""
+    resource = resource_files("pyxsd.xslt") / "resources" / resource_name
     with as_file(resource) as path:
         root = ElementTree.parse(path).getroot()
     complex_types: dict[str, Any] = {
@@ -177,6 +197,22 @@ def _xslt20_vocabulary() -> _XSLT20Vocabulary:
     )
 
 
+def _xslt20_vocabulary() -> _XSLT20Vocabulary:
+    """Load the XSLT 2.0 element, attribute, and mode vocabulary."""
+    return _schema_vocabulary(XSLT20_SCHEMA_RESOURCE)
+
+
+def _xslt30_vocabulary() -> _XSLT20Vocabulary:
+    """Load the XSLT 3.0 element and attribute vocabulary."""
+    return _schema_vocabulary(XSLT30_SCHEMA_RESOURCE)
+
+
+def _attribute_text(attribute: Any) -> str:
+    """One attribute's value from a raw or effective stylesheet element."""
+    value = getattr(attribute, "string_value", None)
+    return value if isinstance(value, str) else attribute.value
+
+
 def _attribute_triples(node: Any) -> list[tuple[str | None, str, str]]:
     """Return one (namespace, local, value) triple per attribute of *node*."""
     triples: list[tuple[str | None, str, str]] = []
@@ -184,9 +220,9 @@ def _attribute_triples(node: Any) -> list[tuple[str | None, str, str]]:
         name = attribute.name or ""
         if name.startswith("{"):
             namespace, _, local = name[1:].partition("}")
-            triples.append((namespace, local, attribute.string_value))
+            triples.append((namespace, local, _attribute_text(attribute)))
         else:
-            triples.append((None, name, attribute.string_value))
+            triples.append((None, name, _attribute_text(attribute)))
     return triples
 
 
@@ -235,6 +271,44 @@ def _check_attributes(
                 uri=uri,
                 location=location,
             )
+
+
+def _check_30_attributes(
+    node: Any,
+    local: str,
+    vocabulary: _XSLT20Vocabulary,
+    *,
+    uri: str | None,
+    location: IssueLocation | None,
+) -> None:
+    """Reject an attribute the XSLT 3.0 schema does not define on *local*.
+
+    XTSE0090 covers attributes in no namespace and attributes in the XSLT
+    namespace.  A standard attribute is written unprefixed on an XSLT element;
+    the XSLT-namespaced spelling is for literal result elements and is therefore
+    an error here.  Shadow attributes have already been replaced in the
+    effective view this check walks.
+    """
+    allowed = vocabulary.attributes[local] | XSLT30_SCHEMA_SUPPLEMENTS.get(local, frozenset())
+    for namespace, attribute_local, _value in _attribute_triples(node):
+        if namespace == XSLT_NS:
+            raise XsltStaticError(
+                f"the XSLT-namespaced attribute {attribute_local!r} is not permitted "
+                f"on xsl:{local}",
+                code="XTSE0090",
+                uri=uri,
+                location=location,
+            )
+        if namespace is not None:
+            continue
+        if attribute_local in allowed:
+            continue
+        raise XsltStaticError(
+            f"the attribute {attribute_local!r} is not defined for xsl:{local} by XSLT 3.0",
+            code="XTSE0090",
+            uri=uri,
+            location=location,
+        )
 
 
 def _check_mode_tokens(
@@ -348,13 +422,66 @@ def _visit(node: Any, *, uri: str | None, vocabulary: _XSLT20Vocabulary) -> None
         _visit(child, uri=uri, vocabulary=vocabulary)
 
 
-def assert_native_profile_language(module: Any, profile: ProfileOptions) -> None:
-    """Gate one stylesheet module against the native profile's vocabulary.
+def _version_attribute(node: Any, *, xslt_namespace: bool) -> str | None:
+    """One element's declared forwards-compatibility version, if it has one."""
+    target = f"{{{XSLT_NS}}}version" if xslt_namespace else "version"
+    for attribute in node.attributes:
+        if attribute.name == target:
+            return _attribute_text(attribute)
+    return None
 
-    The gate runs only for native pre-3.0 processor profiles; a 3.0
-    processor applying compatibility rules to an early effective version
-    never sees it.  *module* is the compiled module whose ``document`` and
-    ``identity`` describe one stylesheet module of the package closure.
+
+def _forwards_compatible_30(node: Any, inherited: bool) -> bool:
+    """Whether *node* enables XSLT section 3.11 forwards-compatible processing."""
+    name = node.name or ""
+    from_xslt_namespace = not name.startswith(f"{{{XSLT_NS}}}")
+    version = _version_attribute(node, xslt_namespace=from_xslt_namespace)
+    if version is None:
+        return inherited
+    try:
+        return Decimal(version.strip()) > Decimal("3.0")
+    except (InvalidOperation, ValueError):
+        return inherited
+
+
+def _visit_30(
+    node: Any,
+    *,
+    uri: str | None,
+    vocabulary: _XSLT20Vocabulary,
+    forwards_compatible: bool,
+) -> None:
+    """Check one XSLT 3.0 module's element attributes for XTSE0090."""
+    if node.kind is not NodeKind.ELEMENT:
+        return
+    current = _forwards_compatible_30(node, forwards_compatible)
+    name = node.name or ""
+    if name.startswith(f"{{{XSLT_NS}}}"):
+        local = name[len(XSLT_NS) + 2 :]
+        if local in vocabulary.attributes and not current:
+            _check_30_attributes(
+                node,
+                local,
+                vocabulary,
+                uri=uri,
+                location=node.source_location(),
+            )
+    for child in node.children:
+        _visit_30(
+            child,
+            uri=uri,
+            vocabulary=vocabulary,
+            forwards_compatible=current,
+        )
+
+
+def assert_native_profile_language(module: Any, profile: ProfileOptions) -> None:
+    """Gate one stylesheet module against its processor's language vocabulary.
+
+    A native pre-3.0 processor is gated against the matching bundled schema.  A
+    3.0 processor still owns XTSE0090 for every XSLT element, so the same
+    vocabulary check runs there too; forwards-compatible declarations are
+    exempt, exactly as section 3.11 requires.
     """
     resolved = LanguageProfile.from_options(profile)
     if resolved.processor_version == "1.0":
@@ -362,7 +489,13 @@ def assert_native_profile_language(module: Any, profile: ProfileOptions) -> None
 
         assert_xslt10_language(module, resolved)
         return
-    if Decimal(resolved.processor_version) >= Decimal("3.0"):
-        return
     uri = getattr(module, "identity", None)
+    if Decimal(resolved.processor_version) >= Decimal("3.0"):
+        _visit_30(
+            module.root,
+            uri=uri,
+            vocabulary=_xslt30_vocabulary(),
+            forwards_compatible=False,
+        )
+        return
     _visit(module.document.root_element, uri=uri, vocabulary=_xslt20_vocabulary())

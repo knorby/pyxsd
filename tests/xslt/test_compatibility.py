@@ -313,7 +313,7 @@ def test_nested_version_scopes_value_of_and_avt_conversions() -> None:
     result = transform(
         """
         <xsl:template name="main">
-          <first><xsl:value-of xsl:version="1.0" select="(1, 2, 3)"/></first>
+          <first><xsl:value-of version="1.0" select="(1, 2, 3)"/></first>
           <second><xsl:value-of select="(1, 2, 3)"/></second>
         </xsl:template>
         """,

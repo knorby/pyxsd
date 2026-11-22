@@ -45,6 +45,7 @@ from pyxsd.xdm import (
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
+from pyxsd.xdm.values import _coerce_atomic as _function_conversion_atomic
 from pyxsd.xpath.continuation import (
     ContinuationMachine,
     HostFunction,
@@ -58,6 +59,12 @@ from pyxsd.xpath.engine import (
     _XdmAdapterRegistry,
 )
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, FocusKind, FunctionArity
+from pyxsd.xslt.compiler.attribute_values import (
+    require_boolean_value,
+    require_choice_value,
+    require_integer_sequence_value,
+    require_integer_value,
+)
 from pyxsd.xslt.compiler.constructors import CONSTRUCTOR_INSTRUCTION_COMPILERS
 from pyxsd.xslt.compiler.context import (
     ProfileOptions,
@@ -422,6 +429,43 @@ _XSLT30_ELEMENTS = frozenset(
 )
 
 _PROCESSOR_VERSION = Decimal("3.0")
+
+#: XSLT-namespace elements that are top-level declarations, not instructions.
+#: ``xsl:param`` and ``xsl:variable`` are declarations too, but both are legal
+#: instructions and own dedicated compilers.
+_TOP_LEVEL_DECLARATIONS = frozenset(
+    {
+        "accept",
+        "accumulator",
+        "attribute-set",
+        "character-map",
+        "decimal-format",
+        "expose",
+        "function",
+        "global-context-item",
+        "import",
+        "import-schema",
+        "include",
+        "key",
+        "mode",
+        "namespace-alias",
+        "output",
+        "override",
+        "package",
+        "preserve-space",
+        "strip-space",
+        "stylesheet",
+        "template",
+        "transform",
+        "use-package",
+    }
+)
+
+#: The normative static code for a declaration element used as an instruction.
+_DECLARATION_PLACEMENT_CODES = {
+    "include": "XTSE0170",
+    "import": "XTSE0190",
+}
 
 #: The public processor identities this constructor builds and the XPath
 #: version each language profile normatively pairs with.  The 3.0 processor
@@ -1263,44 +1307,6 @@ def _compile_stylesheet(
     )
 
 
-_XSLT_STANDARD_ATTRIBUTES = frozenset(
-    {
-        "default-collation",
-        "default-mode",
-        "default-validation",
-        "exclude-result-prefixes",
-        "expand-text",
-        "extension-element-prefixes",
-        "use-when",
-        "version",
-        "xpath-default-namespace",
-    }
-)
-
-_ACCUMULATOR_ATTRIBUTES = frozenset({"as", "initial-value", "name", "streamable"})
-_ACCUMULATOR_RULE_ATTRIBUTES = frozenset({"match", "phase", "priority", "select"})
-
-
-def _validate_accumulator_attributes(
-    instruction: Instruction,
-    allowed: frozenset[str],
-    module: EffectiveModule,
-) -> None:
-    """Reject an unprefixed attribute not defined for an accumulator element."""
-    for attribute in instruction.attributes:
-        if attribute.namespace_uri is not None:
-            continue
-        local = attribute.local_name
-        if local in allowed or local in _XSLT_STANDARD_ATTRIBUTES:
-            continue
-        raise XsltStaticError(
-            f"the attribute {local!r} is not permitted on xsl:{instruction.local_name}",
-            code="XTSE0090",
-            uri=module.identity,
-            location=instruction.location,
-        )
-
-
 def _compile_accumulator(
     component: Component,
     context: StaticContext,
@@ -1308,7 +1314,6 @@ def _compile_accumulator(
 ) -> AccumulatorDefinition:
     """Compile one package-local ``xsl:accumulator`` declaration."""
     declaration = component.declaration
-    _validate_accumulator_attributes(declaration, _ACCUMULATOR_ATTRIBUTES, module)
     name = component.name
     if name is None:  # pragma: no cover - package composition requires a name
         raise XsltStaticError(
@@ -1383,7 +1388,6 @@ def _compile_accumulator_rule(
     as_source: str | None,
     order: int,
 ) -> AccumulatorRule:
-    _validate_accumulator_attributes(rule, _ACCUMULATOR_RULE_ATTRIBUTES, module)
     base_context = _instruction_context(context, rule)
     match = rule.attribute("match")
     if match is None:
@@ -2194,14 +2198,26 @@ def _context_item_signature(
                     uri=context.uri,
                     location=child.location,
                 )
-            return ContextItemSignature(
-                use,
-                compile_sequence_type(
-                    as_source or "item()",
-                    context,
+            if declaration.attribute("name") is None and use != "required":
+                raise XsltStaticError(
+                    "a template rule's xsl:context-item must specify use='required'",
+                    code="XTSE0020",
+                    uri=context.uri,
                     location=child.location,
-                ),
+                )
+            sequence_type = compile_sequence_type(
+                as_source or "item()",
+                context,
+                location=child.location,
             )
+            if sequence_type.item_type is None or sequence_type.occurrence:
+                raise XsltStaticError(
+                    "xsl:context-item/@as must be an item type without an occurrence indicator",
+                    code="XTSE0020",
+                    uri=context.uri,
+                    location=child.location,
+                )
+            return ContextItemSignature(use, sequence_type)
     return None
 
 
@@ -2633,6 +2649,32 @@ def _compile_sort_key(
             else None
         )
 
+    stable_source = instruction.attribute("stable")
+    if stable_source is not None:
+        require_boolean_value(
+            stable_source,
+            label="xsl:sort/@stable",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    order_source = instruction.attribute("order")
+    if order_source is not None:
+        require_choice_value(
+            order_source,
+            frozenset({"ascending", "descending"}),
+            label="xsl:sort/@order",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    case_order_source = instruction.attribute("case-order")
+    if case_order_source is not None:
+        require_choice_value(
+            case_order_source,
+            frozenset({"upper-first", "lower-first"}),
+            label="xsl:sort/@case-order",
+            uri=context.uri,
+            location=instruction.location,
+        )
     return SortKey(
         instruction=instruction,
         select=expression,
@@ -2970,13 +3012,6 @@ def _compile_merge_key(
         raise XsltStaticError(
             "xsl:merge-key with a select attribute must have empty content except for xsl:fallback",
             code="XTSE3200",
-            uri=context.uri,
-            location=instruction.location,
-        )
-    if instruction.attribute("stable") is not None:
-        raise XsltStaticError(
-            "xsl:merge-key does not have a stable attribute",
-            code="XTSE0010",
             uri=context.uri,
             location=instruction.location,
         )
@@ -3353,6 +3388,22 @@ def _compile_number(
         raise XsltStaticError(
             f"invalid xsl:number level {level!r}",
             code="XTSE0020",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    start_at_source = instruction.attribute("start-at")
+    if start_at_source is not None:
+        require_integer_sequence_value(
+            start_at_source,
+            label="xsl:number/@start-at",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    grouping_size_source = instruction.attribute("grouping-size")
+    if grouping_size_source is not None:
+        require_integer_value(
+            grouping_size_source,
+            label="xsl:number/@grouping-size",
             uri=context.uri,
             location=instruction.location,
         )
@@ -4550,6 +4601,13 @@ def _compile_choose(
                 location=child.location,
             )
         if child.is_xslt and child.local_name == "when":
+            if otherwise is not None:
+                raise XsltStaticError(
+                    "xsl:when must precede xsl:otherwise",
+                    code="XTSE0010",
+                    uri=context.uri,
+                    location=child.location,
+                )
             test = child.attribute("test")
             if test is None:
                 raise XsltStaticError(
@@ -4631,13 +4689,6 @@ def _compile_map(
     context: StaticContext,
     module: EffectiveModule,
 ) -> _Plan:
-    if instruction.attribute("select") is not None:
-        raise XsltStaticError(
-            "xsl:map does not have a select attribute",
-            code="XTSE0010",
-            uri=context.uri,
-            location=instruction.location,
-        )
     return _MapPlan(
         instruction=instruction,
         children=_compile_sequence(instruction.children, context, module),
@@ -4683,34 +4734,15 @@ def _compile_message(
     context: StaticContext,
     module: EffectiveModule,
 ) -> _Plan:
-    allowed = {
-        "select",
-        "terminate",
-        "error-code",
-        "default-collation",
-        "default-mode",
-        "default-validation",
-        "exclude-result-prefixes",
-        "expand-text",
-        "extension-element-prefixes",
-        "use-when",
-        "version",
-        "xpath-default-namespace",
-    }
-    for attribute in instruction.attributes:
-        if (
-            attribute.namespace_uri is None
-            and attribute.name not in allowed
-            and Decimal(context.version) <= Decimal("3.0")
-        ):
-            raise XsltStaticError(
-                f"unknown xsl:message attribute {attribute.name!r}",
-                code="XTSE0090",
-                uri=context.uri,
-                location=instruction.location,
-            )
     select = instruction.attribute("select")
     terminate = instruction.attribute("terminate")
+    if terminate is not None:
+        require_boolean_value(
+            terminate,
+            label="xsl:message/@terminate",
+            uri=context.uri,
+            location=instruction.location,
+        )
     error_code = instruction.attribute("error-code")
     return _MessagePlan(
         instruction=instruction,
@@ -4769,13 +4801,6 @@ def _compile_where_populated(
     context: StaticContext,
     module: EffectiveModule,
 ) -> _Plan:
-    if instruction.attribute("select") is not None:
-        raise XsltStaticError(
-            "xsl:where-populated does not have a select attribute",
-            code="XTSE0010",
-            uri=context.uri,
-            location=instruction.location,
-        )
     return _WherePopulatedPlan(
         instruction=instruction,
         children=_compile_sequence(instruction.children, context, module),
@@ -4833,10 +4858,22 @@ def _compile_call_template(
             uri=context.uri,
             location=instruction.location,
         )
+    parameters = _compile_with_params(instruction, context, module)
+    if not context.compatibility_mode:
+        declared = set(reference.parameter_names)
+        for parameter in parameters:
+            if parameter.tunnel or parameter.name in declared:
+                continue
+            raise XsltStaticError(
+                f"the parameter {parameter.name!r} is not declared by the called template",
+                code="XTSE0680",
+                uri=context.uri,
+                location=instruction.location,
+            )
     return _CallTemplatePlan(
         instruction=instruction,
         reference=reference,
-        parameters=_compile_with_params(instruction, context, module),
+        parameters=parameters,
     )
 
 
@@ -4893,6 +4930,17 @@ def _compile_unhandled_instruction(
     local = instruction.local_name
     if instruction.is_xslt and local not in _XSLT30_ELEMENTS:
         return _compile_forward_instruction(instruction, context, module)
+    if (
+        instruction.is_xslt
+        and local in _TOP_LEVEL_DECLARATIONS
+        and Decimal(context.version) <= _PROCESSOR_VERSION
+    ):
+        raise XsltStaticError(
+            f"xsl:{local} is a declaration and is not permitted in a sequence constructor",
+            code=_DECLARATION_PLACEMENT_CODES.get(local, "XTSE0010"),
+            uri=context.uri,
+            location=instruction.location,
+        )
     select = instruction.attribute("select")
     if select is not None:
         compile_xpath(select, context, location=instruction.location)
@@ -5018,6 +5066,13 @@ def _compile_evaluate(
     namespace_context = instruction.attribute("namespace-context")
     base_uri = instruction.attribute("base-uri")
     schema_aware = instruction.attribute("schema-aware")
+    if schema_aware is not None:
+        require_boolean_value(
+            schema_aware,
+            label="xsl:evaluate/@schema-aware",
+            uri=context.uri,
+            location=instruction.location,
+        )
     as_source = instruction.attribute("as")
     namespaces = {prefix: uri for prefix, uri in instruction.namespaces.items() if prefix}
     return _EvaluatePlan(
@@ -5340,6 +5395,11 @@ def _prepare_invocation(
 
     global_item = explicit_global if global_supplied else default_global
     selection = explicit_selection if explicit_selection is not _ABSENT else default_selection
+    global_item = _apply_global_context_item(
+        package,
+        global_item,
+        schema_pool=stylesheet.schema_pool,
+    )
 
     template_params = _parameter_sequences(package, template_parameters)
     tunnel = _parameter_sequences(package, tunnel_parameters)
@@ -5378,8 +5438,8 @@ def _prepare_invocation(
     elif initial_mode is not None:
         entry = "mode"
         mode = _initial_mode(package, initial_mode)
-        if selection is _ABSENT and explicit_global is not None:
-            selection = (explicit_global,)
+        if selection is _ABSENT and explicit_global is not None and global_item is not None:
+            selection = (global_item,)
         if selection is _ABSENT:
             raise XsltInvocationError(
                 "an initial mode requires source or initial_match_selection",
@@ -5596,12 +5656,79 @@ def _global_parameter_sequences(
     return MappingProxyType(result)
 
 
+def _apply_global_context_item(
+    package: CompiledPackage,
+    item: XdmItem | None,
+    *,
+    schema_pool: SchemaPool | None,
+) -> XdmItem | None:
+    """Apply the package's ``xsl:global-context-item`` declaration.
+
+    A required declaration in a used library package is an error on its own
+    (XSLT 3.0 section 6.6.6, XTTE0590); the principal package's declaration
+    instead checks presence (XTDE3086) and the declared item type (XTTE0590).
+    """
+    for dependency in _transitive_dependencies(package):
+        declaration = dependency.global_context_item
+        if declaration is not None and declaration.use == "required":
+            raise XsltError(
+                "a library package requires a global context item",
+                code="XTTE0590",
+            )
+    declaration = package.global_context_item
+    if declaration is None:
+        return item
+    if declaration.use == "absent":
+        return None
+    if item is None:
+        if declaration.use == "required":
+            raise XsltError(
+                "the stylesheet requires a global context item but none was supplied",
+                code="XTDE3086",
+            )
+        return None
+    if declaration.sequence_type is not None:
+        converted = _coerce_sequence(
+            (item,),
+            declaration.sequence_type,
+            code="XTTE0590",
+            label="global context item",
+            schema_pool=schema_pool,
+            atomize=False,
+            strict=True,
+        )
+        return converted[0]
+    return item
+
+
+def _transitive_dependencies(package: CompiledPackage) -> tuple[CompiledPackage, ...]:
+    result: list[CompiledPackage] = []
+
+    def visit(current: CompiledPackage) -> None:
+        for dependency in current.dependencies:
+            result.append(dependency)
+            visit(dependency)
+
+    visit(package)
+    return tuple(result)
+
+
 def _initial_mode(package: CompiledPackage, name: str) -> Mode:
     wanted = None if name == "#unnamed" else name
     mode = package.mode(wanted)
     if mode is None:
         raise XsltError(
             f"the initial mode {name!r} is not a visible mode in the stylesheet",
+            code="XTDE0045",
+        )
+    if (
+        mode.name is not None
+        and mode.declared
+        and mode.visibility == "private"
+        and mode.name != package.default_mode
+    ):
+        raise XsltError(
+            f"the initial mode {name!r} is private and is not the package default mode",
             code="XTDE0045",
         )
     return mode
@@ -5632,14 +5759,17 @@ def _coerce_sequence(
     code: str,
     label: str,
     schema_pool: SchemaPool | None = None,
+    atomize: bool = True,
+    strict: bool = False,
 ) -> XdmSequence:
     """Apply a narrow but normative function-conversion boundary.
 
-    The implementation atomizes for atomic required types, casts
-    untyped/atomic values to the required built-in or supplied atomic type, and
-    enforces cardinality.  It does not pretend to be the full F&O function
-    conversion algorithm; unsupported conversions raise the specification's
-    type error rather than passing an untyped value through.
+    The implementation atomizes for atomic required types when *atomize* is
+    true, converts untyped/atomic values with the F&O function conversion
+    rules, and enforces cardinality.  Context-item conversion passes
+    ``atomize=False`` and ``strict=True``: XSLT 3.0 section 10.1.1 applies the
+    function conversion rules without atomizing the supplied context item, so a
+    string does not become a boolean and an element does not become a string.
     """
     if sequence_type.item_type is None:
         if sequence:
@@ -5650,7 +5780,7 @@ def _coerce_sequence(
         return ()
     item_type = sequence_type.item_type
     items = (
-        _atomize_items(sequence, code=code, label=label)
+        (_atomize_items(sequence, code=code, label=label) if atomize else tuple(sequence))
         if item_type.kind == "atomic"
         else tuple(sequence)
     )
@@ -5658,9 +5788,20 @@ def _coerce_sequence(
     if item_type.kind == "atomic":
         converted: list[XdmItem] = []
         for item in items:
-            assert isinstance(item, XdmAtomic)
+            if not isinstance(item, XdmAtomic):
+                raise _type_error(
+                    code,
+                    f"{label} requires {sequence_type}, got {type(item).__name__}",
+                )
             converted.append(
-                _coerce_atomic(item, item_type, code=code, label=label, schema_pool=schema_pool)
+                _coerce_atomic(
+                    item,
+                    item_type,
+                    code=code,
+                    label=label,
+                    schema_pool=schema_pool,
+                    strict=strict,
+                )
             )
         return tuple(converted)
     for item in items:
@@ -5700,6 +5841,7 @@ def _coerce_atomic(
     code: str,
     label: str,
     schema_pool: SchemaPool | None = None,
+    strict: bool = False,
 ) -> XdmAtomic:
     required = item_type.name
     if required is None or required == f"{{{_XSD_NS}}}anyAtomicType":
@@ -5726,6 +5868,15 @@ def _coerce_atomic(
             raise _type_error(
                 code, f"{label} requires {item_type}, cannot convert {item.lexical!r}"
             ) from cast_exc
+    local = required.rpartition("}")[2].rpartition(":")[2]
+    if strict:
+        try:
+            return _function_conversion_atomic(item, local)
+        except TypeError as exc:
+            raise _type_error(
+                code,
+                f"{label} requires {item_type}, cannot convert {item.lexical!r}",
+            ) from exc
     try:
         return item.cast(required)
     except (TypeError, ValueError) as exc:
@@ -5813,7 +5964,13 @@ def _matches_item_type(
             schema_pool,
         )
     if kind == "document-node":
-        return isinstance(item, XdmNode) and item.kind is NodeKind.DOCUMENT
+        if not isinstance(item, XdmNode) or item.kind is not NodeKind.DOCUMENT:
+            return False
+        child = item_type.child
+        if child is None:
+            return True
+        root = getattr(item, "root_element", None)
+        return root is not None and _matches_item_type(root, child, schema_pool)
     if kind == "function":
         return isinstance(item, (XdmFunction, XdmMap, XdmArray))
     if kind == "map":
@@ -6730,6 +6887,8 @@ class _Invocation(Transformation):
             code="XTTE0590",
             label="context item",
             schema_pool=self._package_schema_pool(package_name),
+            atomize=False,
+            strict=True,
         )
         return Focus.singleton(
             sequence[0],

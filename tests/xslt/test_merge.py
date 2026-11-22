@@ -1216,7 +1216,7 @@ def test_merge_key_stable_attribute_is_xtse0010() -> None:
           </xsl:merge>
         </xsl:template>
     """
-    assert error_code(lambda: compiled(stylesheet(body))) == "XTSE0010"
+    assert error_code(lambda: compiled(stylesheet(body))) == "XTSE0090"
 
 
 def test_merge_empty_key_sequences_group_together() -> None:

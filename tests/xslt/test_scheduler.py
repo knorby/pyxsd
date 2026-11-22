@@ -1078,7 +1078,7 @@ def test_static_validation_for_call_apply_choose_and_with_param() -> None:
     whitespace = compile_stylesheet(
         _stylesheet(
             '<xsl:template name="m">'
-            '<xsl:call-template name="m"> <xsl:with-param name="x"/> </xsl:call-template>'
+            '<xsl:call-template name="m"><xsl:with-param name="x" tunnel="yes"/></xsl:call-template>'
             "</xsl:template>"
         )
     )

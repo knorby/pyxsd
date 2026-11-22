@@ -43,6 +43,7 @@ from pyxsd.xslt.compiler.components import (
     _ACCEPT,
     _APPLY_TEMPLATES,
     _ATTRIBUTE_SET,
+    _CONTEXT_ITEM,
     _EXPOSE,
     _FUNCTION,
     _OVERRIDE,
@@ -85,7 +86,8 @@ from pyxsd.xslt.compiler.components import (
 from pyxsd.xslt.compiler.components import (
     XSLT_NS as XSLT_NS,
 )
-from pyxsd.xslt.compiler.context import ProfileOptions
+from pyxsd.xslt.compiler.context import ProfileOptions, StaticContext
+from pyxsd.xslt.compiler.expressions import CompiledSequenceType, compile_sequence_type
 from pyxsd.xslt.compiler.instructions import (
     ComponentReference as ComponentReference,
 )
@@ -134,6 +136,9 @@ from pyxsd.xslt.serialization.parameters import expand_qname
 _PACKAGE_VERSION = re.compile(
     r"^(?P<numeric>[0-9]+(?:\.[0-9]+)*)(?:-(?P<name>[A-Za-z_][\w.\-]*))?$"
 )
+_GLOBAL_CONTEXT_ITEM = f"{{{XSLT_NS}}}global-context-item"
+_ON_COMPLETION = f"{{{XSLT_NS}}}on-completion"
+_ITERATE = f"{{{XSLT_NS}}}iterate"
 _INPUT_TYPE_ANNOTATIONS = frozenset({"strip", "preserve", "unspecified"})
 
 PackageInput: TypeAlias = (
@@ -334,6 +339,17 @@ class UsedPackage:
 
 
 @dataclass(frozen=True, slots=True)
+class GlobalContextItem:
+    """One package's validated ``xsl:global-context-item`` declaration."""
+
+    use: str
+    as_source: str | None = None
+    sequence_type: CompiledSequenceType | None = None
+    location: IssueLocation | None = None
+    module: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class CompiledPackage:
     """One completely composed, immutable package.
 
@@ -363,6 +379,7 @@ class CompiledPackage:
     schema_pool: SchemaPool | None = None
     input_type_annotations: str | None = None
     default_validation: str | None = None
+    global_context_item: GlobalContextItem | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "components", MappingProxyType(dict(self.components)))
@@ -900,11 +917,52 @@ def _assert_native_profile_language(
 # Package manifest validation
 
 
+def _validate_context_item_placement(element: EffectiveElement, module: EffectiveModule) -> None:
+    """Require one leading ``xsl:context-item`` in a template's content model.
+
+    XSLT 3.0 section 10.1.1 gives ``xsl:template`` the content model
+    ``(xsl:context-item?, xsl:param*, sequence-constructor)``.  A declaration
+    after a parameter, after other content, or a second declaration is
+    therefore the content-model error ``XTSE0010`` rather than a silently
+    ignored child.
+    """
+    seen = False
+    content_started = False
+    for child in element.children:
+        if isinstance(child, EffectiveElement) and child.name == _CONTEXT_ITEM:
+            if seen or content_started:
+                raise _error(
+                    "xsl:context-item must be the first child of xsl:template and appear once",
+                    "XTSE0010",
+                    element=child,
+                    module=module,
+                )
+            seen = True
+            continue
+        content_started = True
+
+
 def _validate_manifest_placement(module: EffectiveModule) -> None:
     root = module.root
     root_name = root.local_name
 
     def visit(element: EffectiveElement, parent: str | None, root_child: bool) -> None:
+        if element.name == _CONTEXT_ITEM and parent != _TEMPLATE:
+            raise _error(
+                "xsl:context-item is only permitted as a child of xsl:template",
+                "XTSE0010",
+                element=element,
+                module=module,
+            )
+        if element.name == _TEMPLATE:
+            _validate_context_item_placement(element, module)
+        if element.name == _ON_COMPLETION and parent != _ITERATE:
+            raise _error(
+                "xsl:on-completion is only permitted as a child of xsl:iterate",
+                "XTSE0010",
+                element=element,
+                module=module,
+            )
         if element.name == _USE_PACKAGE:
             if not (root_child and root_name in ("package", "stylesheet", "transform")):
                 raise _error(
@@ -995,6 +1053,90 @@ def _package_input_type_annotations(descriptor: PackageDescriptor) -> str | None
             )
         return package_value
     return None
+
+
+def _package_global_context_item(
+    descriptor: PackageDescriptor,
+    schema: SchemaPool | None,
+) -> GlobalContextItem | None:
+    """Validate one package's ``xsl:global-context-item`` declarations.
+
+    XSLT 3.0 section 6.6.6 permits at most one declaration in a module and
+    requires every module of a package to agree.  The declaration's ``as`` is an
+    item type and is stored compiled so priming can signal XTTE0590 without a
+    second static context.
+    """
+    modules = [
+        descriptor.module,
+        *(m for m in descriptor.all_modules if m is not descriptor.module),
+    ]
+    found: list[tuple[EffectiveModule, EffectiveElement]] = []
+    for module in modules:
+        declarations = [
+            element for element in module.root.elements if element.name == _GLOBAL_CONTEXT_ITEM
+        ]
+        if len(declarations) > 1:
+            raise _error(
+                "more than one xsl:global-context-item declaration appears in one module",
+                "XTSE3087",
+                element=declarations[1],
+                module=module,
+            )
+        if declarations:
+            found.append((module, declarations[0]))
+    if not found:
+        return None
+    compiled: list[tuple[EffectiveModule, EffectiveElement, str, CompiledSequenceType | None]] = []
+    for module, element in found:
+        use = (element.attribute("use") or "optional").strip()
+        if use not in ("required", "optional", "absent"):
+            raise _error(
+                f"invalid xsl:global-context-item use {use!r}",
+                "XTSE0020",
+                element=element,
+                module=module,
+            )
+        as_source = element.attribute("as")
+        if use == "absent" and as_source is not None:
+            raise _error(
+                "xsl:global-context-item with use='absent' must not have an as attribute",
+                "XTSE3089",
+                element=element,
+                module=module,
+            )
+        sequence_type: CompiledSequenceType | None = None
+        if as_source is not None:
+            context = StaticContext.for_element(module.root, schema=schema)
+            sequence_type = compile_sequence_type(
+                as_source,
+                context,
+                location=element.source_location(),
+            )
+            if sequence_type.item_type is None or sequence_type.occurrence:
+                raise _error(
+                    "xsl:global-context-item/@as must be an item type without an "
+                    "occurrence indicator",
+                    "XTSE0020",
+                    element=element,
+                    module=module,
+                )
+        compiled.append((module, element, use, sequence_type))
+    base_module, base, base_use, base_type = compiled[0]
+    for module, element, use, sequence_type in compiled[1:]:
+        if use != base_use or str(sequence_type) != str(base_type):
+            raise _error(
+                "stylesheet modules in one package disagree on xsl:global-context-item",
+                "XTSE3087",
+                element=element,
+                module=module,
+            )
+    return GlobalContextItem(
+        use=base_use,
+        as_source=base.attribute("as"),
+        sequence_type=base_type,
+        location=base.source_location(),
+        module=base_module.identity,
+    )
 
 
 def _package_default_validation(descriptor: PackageDescriptor) -> str | None:
@@ -1303,6 +1445,7 @@ class _PackageCompiler:
             location=descriptor.module.root.source_location(),
         )
         schema = _merge_schema_pools(self._schema, imported)
+        global_context_item = _package_global_context_item(descriptor, schema)
         groups = _group_declarations(local.declarations, descriptor)
         local_visibility = _build_local_components(descriptor, groups, local.exposes)
 
@@ -1647,6 +1790,7 @@ class _PackageCompiler:
             schema_pool=imported,
             input_type_annotations=_package_input_type_annotations(descriptor),
             default_validation=_package_default_validation(descriptor),
+            global_context_item=global_context_item,
         )
 
     # -- binding ---------------------------------------------------------------

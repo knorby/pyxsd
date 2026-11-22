@@ -868,7 +868,7 @@ def test_number_start_at_rejects_non_integer_tokens() -> None:
     source = stylesheet(
         '<xsl:template name="main"><xsl:number value="1" start-at="bad"/></xsl:template>'
     )
-    assert error_code(lambda: transform(source, None, initial_template="main")) == "XTDE0030"
+    assert error_code(lambda: compiled(source)) == "XTSE0020"
 
 
 def test_format_number_dynamic_call_and_multiple_values() -> None:

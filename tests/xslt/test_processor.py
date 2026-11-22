@@ -832,7 +832,7 @@ def test_compiled_accessors_and_mode_rule_counts() -> None:
     [
         (
             '<xsl:template match="doc" select="1"><literal/></xsl:template>',
-            "XTSE0010",
+            "XTSE0090",
         ),
         (
             '<xsl:variable name="v" select="1"><content/></xsl:variable>'
@@ -1089,13 +1089,15 @@ def test_text_value_templates_and_nested_sequences() -> None:
     )
 
 
-def test_unsupported_instruction_with_select_attribute_is_compiled() -> None:
-    compiled = compile_bytes(
-        xsl('<xsl:template name="main"><xsl:when select="1 + 1"/></xsl:template>')
-    )
+def test_disallowed_select_on_when_is_xtse0090() -> None:
+    with pytest.raises(XsltStaticError) as error:
+        compile_bytes(
+            xsl(
+                '<xsl:template name="main"><xsl:choose><xsl:when select="1 + 1"/></xsl:choose></xsl:template>'
+            )
+        )
 
-    with pytest.raises(XsltError, match="not supported"):
-        compiled.transform(initial_template="main")
+    assert error.value.code == "XTSE0090"
 
 
 @pytest.mark.parametrize(
@@ -1495,7 +1497,7 @@ def test_named_template_select_is_rejected() -> None:
     with pytest.raises(XsltStaticError) as error:
         compile_bytes(xsl('<xsl:template name="named" select="1"><literal/></xsl:template>'))
 
-    assert error.value.code == "XTSE0010"
+    assert error.value.code == "XTSE0090"
 
 
 def test_declaration_expand_text_and_literal_metadata_attributes() -> None:

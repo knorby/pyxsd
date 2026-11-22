@@ -51,7 +51,7 @@ def test_messages_are_not_shared_between_invocations() -> None:
 
 
 def test_message_terminate_empty_is_invalid() -> None:
-    with pytest.raises(XsltDynamicError) as exc:
+    with pytest.raises(XsltStaticError) as exc:
         transform(
             stylesheet(
                 '<xsl:template name="xsl:initial-template">'
@@ -59,7 +59,7 @@ def test_message_terminate_empty_is_invalid() -> None:
                 "</xsl:template>"
             )
         )
-    assert exc.value.code == "XTDE0030"
+    assert exc.value.code == "XTSE0020"
 
 
 def test_message_custom_error_code_is_reported() -> None:

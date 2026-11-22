@@ -223,7 +223,7 @@ def test_copy_shallow_element_preserves_root_any_type_and_children() -> None:
         '<xsl:template name="main">'
         '<xsl:variable name="c">'
         '<xsl:for-each select="/v:Order">'
-        '<xsl:copy validation="preserve" xsl:default-validation="preserve">'
+        '<xsl:copy validation="preserve" default-validation="preserve">'
         '<xsl:copy-of select="v:line"/>'
         "</xsl:copy>"
         "</xsl:for-each>"

@@ -690,8 +690,8 @@ def test_override_signature_compatibility() -> None:
         </xsl:function>
         <xsl:variable name="app:v" as="xs:integer" select="1" visibility="public"/>
         <xsl:template name="app:t" as="xs:string" visibility="public">
-          <xsl:param name="x" as="xs:string"/>
           <xsl:context-item use="optional" as="item()"/>
+          <xsl:param name="x" as="xs:string"/>
         </xsl:template>
         """,
         package_version="1.0.0",
@@ -741,8 +741,8 @@ def test_override_signature_compatibility() -> None:
         USING,
         '<xsl:use-package name="urn:example:base"><xsl:override>'
         '<xsl:template name="app:t" as="xs:string" visibility="public">'
-        '<xsl:param name="x" as="xs:string"/>'
         '<xsl:context-item use="absent"/>'
+        '<xsl:param name="x" as="xs:string"/>'
         "</xsl:template></xsl:override></xsl:use-package>",
         package_version="1.0.0",
     )

@@ -106,6 +106,51 @@ def _error(
     return XsltStaticError(message, code=code, uri=uri, location=location)
 
 
+#: Namespaces XSLT 3.0 section 3.2 reserves from stylesheet-defined names.
+_RESERVED_NAMESPACES = frozenset(
+    {
+        XSLT_NS,
+        "http://www.w3.org/2005/xpath-functions",
+        "http://www.w3.org/2005/xpath-functions/math",
+        "http://www.w3.org/2005/xpath-functions/map",
+        "http://www.w3.org/2005/xpath-functions/array",
+        "http://www.w3.org/2001/XMLSchema",
+        "http://www.w3.org/2001/XMLSchema-instance",
+        "http://www.w3.org/XML/1998/namespace",
+        "http://www.w3.org/2000/xmlns/",
+        "http://www.w3.org/2005/xqt-errors",
+    }
+)
+
+#: The one reserved name the specification permits as a template name.
+_INITIAL_TEMPLATE = f"{_XSLT}initial-template"
+
+
+def _check_reserved_name(
+    expanded: str,
+    element: EffectiveElement,
+    module: EffectiveModule,
+    *,
+    allow_initial_template: bool = False,
+) -> None:
+    """Reject a stylesheet-defined name in a reserved namespace (XTSE0080).
+
+    The namespaces in :data:`_RESERVED_NAMESPACES` are reserved for the
+    specification; ``xsl:initial-template`` is the one documented exception.
+    """
+    namespace = _namespace_of(expanded) or ""
+    if namespace not in _RESERVED_NAMESPACES:
+        return
+    if allow_initial_template and expanded == _INITIAL_TEMPLATE:
+        return
+    raise _error(
+        "a reserved namespace must not be used in the name of a stylesheet-defined object",
+        "XTSE0080",
+        element=element,
+        module=module,
+    )
+
+
 def _expand_name(
     value: str,
     namespaces: Mapping[str, str],
@@ -405,6 +450,7 @@ def _parse_declaration(
         expanded = _expand_name(
             name_value, element.in_scope_namespaces, element=element, module=module
         )
+        _check_reserved_name(expanded, element, module, allow_initial_template=True)
         return [
             _Declaration(
                 kind="template",
@@ -436,6 +482,7 @@ def _parse_declaration(
                 element=element,
                 module=module,
             )
+        _check_reserved_name(expanded, element, module)
         _visibility(element, module)
         arity = sum(1 for child in element.elements if child.name == _PARAM)
         return [
@@ -472,6 +519,7 @@ def _parse_declaration(
                 )
         else:
             _visibility(element, module)
+        _check_reserved_name(expanded, element, module)
         return [
             _Declaration(
                 kind="variable",
@@ -497,6 +545,7 @@ def _parse_declaration(
             name_value, element.in_scope_namespaces, element=element, module=module
         )
         _visibility(element, module)
+        _check_reserved_name(expanded, element, module)
         return [
             _Declaration(
                 kind="attribute-set",
@@ -528,6 +577,8 @@ def _parse_declaration(
                 module=module,
             )
         )
+        if mode_name is not None:
+            _check_reserved_name(mode_name, element, module)
         declared_visibility = _visibility(element, module, mode=True)
         if mode_name is None and declared_visibility not in (None, "private"):
             raise _error(
@@ -567,6 +618,7 @@ def _parse_declaration(
                 element=element,
                 module=module,
             )
+        _check_reserved_name(expanded, element, module)
         return [
             _Declaration(
                 kind="accumulator",
@@ -605,6 +657,7 @@ def _parse_declaration(
         expanded = _expand_name(
             name_value, element.in_scope_namespaces, element=element, module=module
         )
+        _check_reserved_name(expanded, element, module)
         return [
             _Declaration(
                 kind="key",
@@ -631,6 +684,7 @@ def _parse_declaration(
             construct_name = _expand_name(
                 name_value, element.in_scope_namespaces, element=element, module=module
             )
+            _check_reserved_name(construct_name, element, module)
         kind = {
             _OUTPUT: "output",
             _DECIMAL_FORMAT: "decimal-format",
@@ -935,10 +989,15 @@ def _context_item_signature(
             element=child,
             module=module,
         )
-    return ContextItemSignature(
-        use,
-        _type(child, "as", context, default="item()"),
-    )
+    sequence_type = _type(child, "as", context, default="item()")
+    if sequence_type.item_type is None or sequence_type.occurrence:
+        raise _error(
+            "xsl:context-item/@as must be an item type without an occurrence indicator",
+            "XTSE0020",
+            element=child,
+            module=module,
+        )
+    return ContextItemSignature(use, sequence_type)
 
 
 def _signature(declaration: _Declaration, *, schema: SchemaPool | None = None) -> Signature:
@@ -1546,6 +1605,13 @@ def _bind_instruction(
     return bound
 
 
+def _non_tunnel_parameter_names(component: Component) -> tuple[str, ...]:
+    """The names of one target template's non-tunnel parameters, in order."""
+    signature = component.signature
+    assert signature is not None
+    return tuple(parameter.name for parameter in signature.parameters if not parameter.tunnel)
+
+
 def _rebind_instruction(node: Instruction, lookup: _Lookup) -> Instruction:
     rebound = _rebind_node(node, lookup)
     assert isinstance(rebound, Instruction)
@@ -1586,6 +1652,7 @@ def _bind_node(
                     containing=original.containing,
                     visibility=original.visibility,
                     original=True,
+                    parameter_names=_non_tunnel_parameter_names(original),
                 )
             else:
                 target = lookup.component("template", expanded)
@@ -1601,6 +1668,7 @@ def _bind_node(
                     owner=target.owner,
                     containing=target.containing,
                     visibility=target.visibility,
+                    parameter_names=_non_tunnel_parameter_names(target),
                 )
     for attribute in node.attributes:
         is_xslt_attribute = (node.is_xslt and attribute.namespace_uri is None) or (

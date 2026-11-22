@@ -266,7 +266,7 @@ def test_map_rejects_a_select_attribute() -> None:
     )
     with pytest.raises(XsltStaticError) as caught:
         XsltProcessor().compile(io.BytesIO(source))
-    assert caught.value.code == "XTSE0010"
+    assert caught.value.code == "XTSE0090"
 
 
 # ---------------------------------------------------------------------------

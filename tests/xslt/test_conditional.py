@@ -18,7 +18,7 @@ from tests.xslt.support import transform as _transform
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmMap
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xslt import XsltProcessor
-from pyxsd.xslt.errors import XsltError
+from pyxsd.xslt.errors import XsltError, XsltStaticError
 from pyxsd.xslt.runtime.instructions import is_deemed_empty, is_vacuous
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -175,7 +175,7 @@ def test_where_populated_rejects_a_select_attribute() -> None:
         <xsl:template name="main"><xsl:where-populated select="1"/></xsl:template>
         """
     )
-    assert error_code(lambda: compiled(source)) == "XTSE0010"
+    assert error_code(lambda: compiled(source)) == "XTSE0090"
 
 
 def test_where_populated_uses_on_empty_and_on_non_empty_content() -> None:
@@ -528,8 +528,9 @@ def test_misplaced_instruction_keeps_an_explicit_error() -> None:
         <xsl:template name="main"><xsl:when select="'hello'"/></xsl:template>
         """
     )
-    with pytest.raises(XsltError, match="not supported"):
-        transform(source, initial_template="main")
+    with pytest.raises(XsltStaticError) as caught:
+        compiled(source)
+    assert caught.value.code == "XTSE0090"
 
 
 # ---------------------------------------------------------------------------
