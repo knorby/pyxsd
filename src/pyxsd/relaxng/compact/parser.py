@@ -31,7 +31,7 @@ from xml.etree import ElementTree as ET
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import XML_NS, NamespaceContext, clark
 from pyxsd.relaxng.compact.lexer import Token, TokenKind, lex_compact
-from pyxsd.relaxng.errors import RelaxNGCompactSyntaxError
+from pyxsd.relaxng.errors import RelaxNGCompactSyntaxError, RelaxNGLimitError
 from pyxsd.relaxng.limits import BudgetCounter
 from pyxsd.relaxng.origins import OriginTable, SourceOrigin
 from pyxsd.relaxng.resources import LoadedCompactResource
@@ -85,6 +85,17 @@ _COMPAT_ANNOTATIONS = "http://relaxng.org/ns/compatibility/annotations/1.0"
 #: The reserved XML namespaces prefix namespace.
 _XMLNS_NAMESPACE = "http://www.w3.org/2000/xmlns"
 
+#: The deepest compact production nesting one read admits.
+#:
+#: The reader is recursive descent, and one nested production costs several
+#: Python frames.  Python's default recursion limit leaves room for roughly
+#: five frames per level, so this fixed ceiling stays well inside the safe
+#: margin on every supported interpreter.  ``max_compact_depth`` can lower
+#: the effective bound but never raise it: the alternative is an interpreter
+#: ``RecursionError`` escaping a public compile.  :func:`read_compact_syntax`
+#: also converts any unforeseen recursion failure into a structured error.
+_MAX_COMPACT_NESTING = 128
+
 #: The combine value each compact assignment operator implies.
 _ASSIGNMENT_COMBINES: dict[str, str | None] = {
     "=": None,
@@ -119,7 +130,13 @@ def read_compact_syntax(
     whose namespace context is the synthetic translation frame and whose
     origins are every construct read from this source.
     """
-    return _Reader(resource, budget).read()
+    try:
+        return _Reader(resource, budget).read()
+    except RecursionError as exc:
+        raise RelaxNGCompactSyntaxError(
+            "the compact schema nests too deeply to read within the "
+            "interpreter's recursion limit; reduce the nesting or raise the limit"
+        ) from exc
 
 
 def _describe_token(token: Token) -> str:
@@ -1005,7 +1022,11 @@ class _Reader:
             and ":" in normalized_lexical
         ):
             prefix = normalized_lexical.split(":", 1)[0]
-            if prefix not in self.environment.namespaces:
+            # The synthetic frame contains only usable bindings, so an
+            # inherited or empty namespace declaration is unbound here just
+            # as an undeclared prefix is.  An empty prefix is not a legal
+            # lexical QName prefix, so it is unbound too.
+            if not prefix or prefix not in self.frame:
                 self._finding(
                     "relaxng-compact-unbound-prefix",
                     f"the namespace prefix {prefix!r} is not bound in scope",
@@ -1649,7 +1670,18 @@ class _Reader:
     def _nested(self) -> Iterator[None]:
         self.depth += 1
         try:
+            # A caller's lower budget raises RelaxNGLimitError here; the fixed
+            # safety ceiling then keeps a larger or unset budget from
+            # exhausting the interpreter's own recursion limit.
             self.budget.observe("max_compact_depth", self.depth)
+            if self.depth > _MAX_COMPACT_NESTING:
+                raise RelaxNGLimitError(
+                    self.budget.stage,
+                    "max_compact_depth",
+                    _MAX_COMPACT_NESTING,
+                    self.depth,
+                    detail=(f"the compact parser's safe nesting ceiling is {_MAX_COMPACT_NESTING}"),
+                )
             yield
         finally:
             self.depth -= 1

@@ -83,14 +83,28 @@ class RelaxNGLimitError(PyXSDError):
 
     Budget exhaustion is not semantic invalidity: a schema or instance that
     exceeds a caller's budget has no verdict. The attributes name the work
-    that stopped and the observation that crossed the configured value.
+    that stopped and the observation that crossed the configured value. The
+    compact reader's fixed interpreter-safety nesting ceiling is reported as
+    an exhausted ``max_compact_depth`` budget even when that budget is unset
+    or larger, and ``detail`` explains that effective bound.
     """
 
-    def __init__(self, stage: str, budget: str, configured: int, observed: int) -> None:
-        super().__init__(
+    def __init__(
+        self,
+        stage: str,
+        budget: str,
+        configured: int,
+        observed: int,
+        *,
+        detail: str | None = None,
+    ) -> None:
+        message = (
             f"RELAX NG {stage} budget {budget} exhausted: "
             f"configured {configured}, observed {observed}"
         )
+        if detail is not None:
+            message = f"{message} ({detail})"
+        super().__init__(message)
         self._stage = stage
         self._budget = budget
         self._configured = configured

@@ -86,6 +86,18 @@ def test_the_relaxng_compile_alias_accepts_the_same_syntax_selector():
     assert relaxng.compile.__func__ is RelaxNGSchema.compile.__func__
 
 
+@pytest.mark.parametrize("declaration", ["inherit", '""'])
+def test_qname_with_an_unusable_namespace_binding_is_a_schema_error(
+    declaration: str,
+) -> None:
+    source = f'namespace p = {declaration}\nstart = element r {{ xsd:QName "p:foo" }}\n'
+
+    schema = RelaxNGSchema.compile(io.StringIO(source), syntax="compact")
+
+    assert schema.report.has_errors
+    assert [issue.code for issue in schema.report.issues] == ["relaxng-compact-unbound-prefix"]
+
+
 @pytest.mark.parametrize("name", ["schema.rnc", "SCHEMA.RNC", "Schema.RnC"])
 def test_auto_selects_compact_from_a_case_insensitive_named_path(tmp_path, name):
     path = tmp_path / name

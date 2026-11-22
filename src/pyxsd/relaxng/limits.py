@@ -43,8 +43,10 @@ class RelaxNGLimits:
     not a work budget. ``max_compact_tokens`` charges emitted compact tokens
     cumulatively; ``max_compact_depth`` checks the parser's current nesting
     depth as a high-water observation rather than charging every production
-    entry. The compiler's graph and semantic correctness checks run regardless
-    of these values; a projection budget never skips a correctness check.
+    entry, and the compact reader caps that depth at a fixed interpreter-safety
+    ceiling so a larger or unset budget cannot leak ``RecursionError``. The
+    compiler's graph and semantic correctness checks run regardless of these
+    values; a projection budget never skips a correctness check.
     """
 
     max_pattern_nodes: int | None = None
@@ -79,6 +81,11 @@ class BudgetCounter:
         self._stage = stage
         self._limits = limits
         self._observed: dict[str, int] = {}
+
+    @property
+    def stage(self) -> str:
+        """The compilation stage this counter charges."""
+        return self._stage
 
     def consume(self, budget: str, amount: int = 1) -> None:
         """Record *amount* units of *budget*, raising when the bound is crossed."""

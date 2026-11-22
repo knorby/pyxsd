@@ -24,9 +24,10 @@ class PathStep:
 class SourceTextSpan:
     """A half-open character range in original source text.
 
-    Offsets are zero-based original characters; ``end`` points one past the
-    last included character. Lines and columns are one-based, and ``end_line``
-    and ``end_column`` use the same half-open convention as ``end``.
+    Offsets are zero-based character offsets into the decoded source after a
+    leading BOM is removed, not byte offsets; ``end`` points one past the last
+    included character. Lines and columns are one-based, and ``end_line`` and
+    ``end_column`` use the same half-open convention as ``end``.
     """
 
     start: int

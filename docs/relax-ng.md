@@ -142,10 +142,11 @@ does for XML.
 
 A malformed compact root raises `RelaxNGCompactSyntaxError`, with `found` and
 `expected` token evidence where known. Its `location` is an `IssueLocation`
-whose `span` is a `SourceTextSpan`: source byte offsets plus 1-based line and
-column. A malformed nested compact resource is a schema finding at its exact
-nested location, and a decode failure at a nested resource is reported on the
-reference that named it.
+whose `span` is a `SourceTextSpan`: zero-based character offsets into the
+decoded source after a leading BOM is removed, with 1-based line and column
+numbers and a half-open end. A malformed nested compact resource is a schema
+finding at its exact nested location, and a decode failure at a nested
+resource is reported on the reference that named it.
 
 ```python
 from io import StringIO
@@ -188,10 +189,15 @@ else:
 Compact compilation accepts the same `RelaxNGLimits`. `max_compact_tokens` is
 cumulative across the root and every nested compact resource, and
 `max_compact_depth` records the high-water nesting depth. Exhausting a work
-budget raises `RelaxNGLimitError` rather than reporting invalidity. A compact
-root rejects `xml_policy` and `xml_limits` before input is read because compact
-resources are not XML parses; a trusted `resource_policy` still owns every
-read. Top-level `pyxsd.compile` remains XSD-only.
+budget raises `RelaxNGLimitError` rather than reporting invalidity. The reader
+also enforces a fixed interpreter-safety nesting ceiling (128 productions): a
+source that nests deeper raises `RelaxNGLimitError` for `max_compact_depth`
+even when the configured budget is larger or unset, and an unforeseen
+interpreter recursion failure becomes `RelaxNGCompactSyntaxError` instead of
+escaping the compile. A compact root rejects `xml_policy` and `xml_limits`
+before input is read because compact resources are not XML parses; a trusted
+`resource_policy` still owns every read. Top-level `pyxsd.compile` remains
+XSD-only.
 
 ## Validation, recovery, and completeness
 

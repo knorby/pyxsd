@@ -624,6 +624,23 @@ def test_qname_value_requires_a_bound_prefix() -> None:
     )
     assert padded.findings == ()
 
+    # An inherited or empty binding is declared but cannot supply a namespace,
+    # so a QName that uses it is unbound exactly as an undeclared prefix is.
+    for declaration in ("inherit", '""'):
+        unusable = parse(
+            f"namespace p = {declaration}\n"
+            'datatypes xsd = "http://www.w3.org/2001/XMLSchema-datatypes"\n'
+            'xsd:QName "p:local"'
+        )
+        assert [finding.code for finding in unusable.findings] == [
+            "relaxng-compact-unbound-prefix"
+        ], declaration
+
+    empty_prefix = parse(
+        'datatypes xsd = "http://www.w3.org/2001/XMLSchema-datatypes"\nxsd:QName ":local"'
+    )
+    assert [finding.code for finding in empty_prefix.findings] == ["relaxng-compact-unbound-prefix"]
+
 
 def test_synthetic_namespace_context_excludes_datatypes_and_unusable_bindings() -> None:
     resource = make_resource(
@@ -819,6 +836,62 @@ def test_nested_parentheses_observe_the_depth_high_water_mark() -> None:
     # Two siblings both reach depth two; the observation is a high-water mark,
     # not a cumulative charge.
     parse("element r { (text) , (text) }", limits=RelaxNGLimits(max_compact_depth=2))
+
+
+def nested_elements(depth: int) -> str:
+    return "element a {" * depth + "text" + "}" * depth
+
+
+def nested_parentheses(depth: int) -> str:
+    return "element a { " + "(" * depth + "text" + ")" * depth + " }"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(nested_elements(1000), id="elements"),
+        pytest.param(nested_parentheses(1000), id="parentheses"),
+    ],
+)
+def test_deep_nesting_raises_a_limit_error_not_recursion_error(source: str) -> None:
+    with pytest.raises(RelaxNGLimitError) as raised:
+        parse(source)
+
+    assert raised.value.budget == "max_compact_depth"
+    assert raised.value.observed > raised.value.configured
+    assert "safe nesting ceiling" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(nested_elements(1000), id="elements"),
+        pytest.param(nested_parentheses(1000), id="parentheses"),
+    ],
+)
+def test_depth_budget_above_the_interpreter_ceiling_still_raises(source: str) -> None:
+    with pytest.raises(RelaxNGLimitError) as raised:
+        parse(source, limits=RelaxNGLimits(max_compact_depth=1000))
+
+    assert raised.value.budget == "max_compact_depth"
+    # The safety ceiling, not the caller's larger budget, is the effective bound.
+    assert raised.value.configured < 1000
+    assert "safe nesting ceiling" in str(raised.value)
+
+
+def test_unexpected_recursion_becomes_a_structured_syntax_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyxsd.relaxng.compact import parser as parser_module
+
+    def recurse(_reader: object) -> None:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(parser_module._Reader, "read", recurse)
+    with pytest.raises(RelaxNGCompactSyntaxError) as raised:
+        parse("element r { text }")
+
+    assert "recursion limit" in str(raised.value)
 
 
 def test_unterminated_element_reports_exact_end_of_input_evidence() -> None:
