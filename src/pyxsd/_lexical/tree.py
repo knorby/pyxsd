@@ -1,0 +1,637 @@
+"""Authoritative lexical element tree for XML documents.
+
+One :class:`LexicalRevision` owns a single element graph.  Every element stores
+its expanded name, lexical attributes, ordered children, and character data
+exactly once.  The revision stores the namespace frame, effective base URI, and
+source occurrence of each element; elements are views over that revision rather
+than a second object graph.  Mutations update the same stores and dirty the
+owning revision.
+
+The nodes satisfy :class:`pyxsd.nodes.XMLNode` and carry no schema binding
+semantics.
+"""
+
+from __future__ import annotations
+
+import itertools
+import operator
+import threading
+import weakref
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, replace
+from types import MappingProxyType
+from typing import Any, ClassVar, Protocol, Self, TypeVar, cast
+from urllib.parse import urljoin
+from xml.etree import ElementTree as ET
+
+from pyxsd.exceptions import PyXSDError
+from pyxsd.locations import IssueLocation, PathStep
+from pyxsd.namespaces import XML_NS, NamespaceContext
+
+__all__ = ["LexicalElement", "LexicalRevision", "NodeContext"]
+
+_XML_BASE = f"{{{XML_NS}}}base"
+_NON_ELEMENT_TAGS = (ET.Comment, ET.ProcessingInstruction)
+
+_NodeT_contra = TypeVar("_NodeT_contra", bound="LexicalElement", contravariant=True)
+
+
+class _TypedSnapshot(Protocol[_NodeT_contra]):
+    """One document's typed access over a valid, current lexical revision."""
+
+    def scalar_value(self, node: _NodeT_contra) -> Any:
+        """Interpret the element's leading character data."""
+
+    def attribute_value(self, node: _NodeT_contra, expanded_name: str) -> Any:
+        """Interpret one present attribute value by expanded name."""
+
+
+_revision_ids = itertools.count(1)
+_revision_lock = threading.Lock()
+
+
+def _next_revision_id() -> int:
+    """Return a process-unique revision identifier."""
+    with _revision_lock:
+        return next(_revision_ids)
+
+
+@dataclass(frozen=True)
+class NodeContext:
+    """The lexical context recorded for one element occurrence.
+
+    ``namespaces`` is the in-scope prefix mapping, or ``None`` when no
+    namespace context was supplied.  ``base_uri`` is the effective base URI
+    after any ``xml:base`` values.  ``source`` links the occurrence to its
+    original document position for diagnostics.  The namespace mapping is
+    copied into an immutable view so later caller mutations cannot change a
+    recorded frame.
+    """
+
+    namespaces: Mapping[str, str] | None = None
+    base_uri: str | None = None
+    source: IssueLocation | None = None
+
+    def __post_init__(self) -> None:
+        if self.namespaces is not None:
+            object.__setattr__(self, "namespaces", MappingProxyType(dict(self.namespaces)))
+
+
+_EMPTY_CONTEXT = NodeContext()
+
+
+class LexicalRevision:
+    """The single revision that owns a lexical XML element graph.
+
+    The revision ID identifies one parse revision.  ``dirty`` becomes true
+    after the first successful mutation and stays true: writers and traversal
+    read the current tree, while prior interpretations are no longer current.
+    Contexts are held weakly so removing a subtree does not keep it alive.  A
+    document may attach an immutable interpretation snapshot to the revision;
+    mutations make that snapshot stale rather than refreshing it.
+    """
+
+    __slots__ = ("_contexts", "_dirty", "_root", "_typed_snapshot", "revision_id")
+
+    revision_id: int
+    _dirty: bool
+    _root: LexicalElement | None
+    _contexts: weakref.WeakKeyDictionary[LexicalElement, NodeContext]
+    _typed_snapshot: _TypedSnapshot[Any] | None
+
+    def __init__(self) -> None:
+        self.revision_id = _next_revision_id()
+        self._dirty = False
+        self._root: LexicalElement | None = None
+        self._contexts: weakref.WeakKeyDictionary[LexicalElement, NodeContext] = (
+            weakref.WeakKeyDictionary()
+        )
+        self._typed_snapshot = None
+
+    @property
+    def root(self) -> LexicalElement:
+        """The root element adopted by this revision."""
+        return cast("LexicalElement", self._root)
+
+    @property
+    def dirty(self) -> bool:
+        """Whether a successful mutation has occurred in this revision."""
+        return self._dirty
+
+    def mark_dirty(self) -> None:
+        """Mark this revision as edited; repeated calls are idempotent."""
+        self._dirty = True
+
+    def context_for(self, node: LexicalElement) -> NodeContext:
+        """Return the recorded context of *node*, or an empty context."""
+        return self._contexts.get(node, _EMPTY_CONTEXT)
+
+    def namespaces_for(self, node: LexicalElement) -> Mapping[str, str] | None:
+        """Return the recorded namespace frame of *node*."""
+        return self.context_for(node).namespaces
+
+    def base_uri_for(self, node: LexicalElement) -> str | None:
+        """Return the effective base URI of *node*."""
+        return self.context_for(node).base_uri
+
+    def source_location_for(self, node: LexicalElement) -> IssueLocation | None:
+        """Return the source occurrence of *node*."""
+        return self.context_for(node).source
+
+    def _adopt_root(self, root: LexicalElement) -> None:
+        self._root = root
+
+    def _attach_typed_snapshot(self, snapshot: _TypedSnapshot[Any]) -> None:
+        """Attach the one typed interpretation that describes this revision.
+
+        A revision never replaces typed evidence in place: a second, different
+        snapshot is a construction error, and revalidation works on a fresh
+        revision.  Idempotent reattachment lets a transformed document share the
+        revision.  The attaching document must supply a snapshot that accepts
+        this revision's node family.
+        """
+        if self._typed_snapshot is not None and self._typed_snapshot is not snapshot:
+            raise ValueError("this revision already owns typed interpretation evidence")
+        self._typed_snapshot = snapshot
+
+    def _register_context(self, node: LexicalElement, context: NodeContext) -> None:
+        self._contexts[node] = context
+
+    def _replace_context(self, node: LexicalElement, context: NodeContext) -> None:
+        self._contexts[node] = context
+
+
+class LexicalElement:
+    """One node of the authoritative lexical tree.
+
+    The four :class:`~pyxsd.nodes.XMLNode` fields are the lexical stores:
+    ``_name_`` is the expanded (Clark) element name, ``_attribs_`` maps expanded
+    attribute names to lexical values, ``_children_`` is the one ordered child
+    list, and ``_value_`` holds the element's leading character data as a
+    single entry (``None`` when absent, ``[""]`` when explicitly empty).
+    ``_tail_`` holds character data following this element in its parent.
+    """
+
+    __slots__ = (
+        "__weakref__",
+        "_attribs_",
+        "_children_",
+        "_name_",
+        "_parent_",
+        "_revision",
+        "_tail_",
+        "_value_",
+    )
+
+    _name_: str
+    _attribs_: dict[str, str]
+    _children_: list[Self]
+    _value_: list[str] | None
+    _tail_: str | None
+    _parent_: Self | None
+    _revision: LexicalRevision
+
+    _typed_access_capability: ClassVar[str] = (
+        "lexical scalar access requires a typed interpretation"
+    )
+    _keep_non_element_tags: ClassVar[bool] = False
+
+    def __init__(self) -> None:
+        raise TypeError("LexicalElement values are created by from_etree() or clone_lexical()")
+
+    @classmethod
+    def _new(
+        cls,
+        name: str,
+        revision: LexicalRevision,
+        *,
+        attributes: Mapping[str, str] | None = None,
+        text: str | None = None,
+        tail: str | None = None,
+    ) -> Self:
+        node = object.__new__(cls)
+        node._name_ = name
+        node._attribs_ = dict(attributes) if attributes is not None else {}
+        node._children_ = []
+        node._value_ = [text] if text is not None else None
+        node._tail_ = tail
+        node._parent_ = None
+        node._revision = revision
+        return node
+
+    @classmethod
+    def from_etree(
+        cls,
+        element: ET.Element,
+        *,
+        namespaces: NamespaceContext | None = None,
+        base_uri: str | None = None,
+        source: IssueLocation | None = None,
+    ) -> Self:
+        """Build an independent lexical tree from an ElementTree subtree.
+
+        - ``element`` is the parsed source subtree.  Its expanded names and
+          lexical values are copied; it is never retained.
+        - ``namespaces`` supplies the recorded in-scope frame of every source
+          element.  Without it, elements record no namespace frame and the
+          writer generates prefixes as needed.
+        - ``base_uri`` is the source document's base URI.  Each ``xml:base``
+          value is resolved into the element's effective base.
+        - ``source`` is the root occurrence.  Child occurrences receive paths
+          extended with expanded names and same-name sibling indices.
+
+        The returned tree belongs to a fresh :class:`LexicalRevision`.
+        Comments and processing instructions are not stored.
+        """
+        if not isinstance(element, ET.Element):
+            raise TypeError("element must be an xml.etree.ElementTree.Element")
+        if source is not None and not isinstance(source, IssueLocation):
+            raise TypeError("source must be an IssueLocation or None")
+        return cls._from_etree(element, namespaces=namespaces, base_uri=base_uri, source=source)
+
+    @classmethod
+    def _from_etree(
+        cls,
+        element: ET.Element,
+        *,
+        namespaces: NamespaceContext | None,
+        base_uri: str | None,
+        source: IssueLocation | None,
+    ) -> Self:
+        if not cls._keep_non_element_tags and element.tag in _NON_ELEMENT_TAGS:
+            raise TypeError("element must have an element name")
+        revision = cls._create_revision()
+        location = _root_location(source, element)
+        frame = None if namespaces is None else dict(namespaces.bindings_for(element))
+        effective_base = _effective_base(base_uri, element)
+        root = cls._new(
+            element.tag,
+            revision,
+            attributes=element.attrib,
+            text=element.text,
+            tail=element.tail,
+        )
+        revision._adopt_root(root)
+        revision._register_context(root, NodeContext(frame, effective_base, location))
+        stack: list[tuple[ET.Element, Self, str | None, IssueLocation | None]] = [
+            (element, root, effective_base, location)
+        ]
+        while stack:
+            source_element, target_element, parent_base, parent_location = stack.pop()
+            counts: dict[str, int] = {}
+            for source_child in source_element:
+                if not cls._keep_non_element_tags and source_child.tag in _NON_ELEMENT_TAGS:
+                    _merge_omitted_tail(target_element, source_child.tail)
+                    continue
+                index = counts.get(source_child.tag, 0) + 1
+                counts[source_child.tag] = index
+                child_location = _child_location(parent_location, source_child.tag, index)
+                child_base = _effective_base(parent_base, source_child)
+                child_frame = (
+                    None if namespaces is None else dict(namespaces.bindings_for(source_child))
+                )
+                child = cls._new(
+                    source_child.tag,
+                    revision,
+                    attributes=source_child.attrib,
+                    text=source_child.text,
+                    tail=source_child.tail,
+                )
+                target_element._children_.append(child)
+                child._parent_ = target_element
+                revision._register_context(
+                    child, NodeContext(child_frame, child_base, child_location)
+                )
+                stack.append((source_child, child, child_base, child_location))
+        return root
+
+    @classmethod
+    def _create_revision(cls) -> LexicalRevision:
+        return LexicalRevision()
+
+    @classmethod
+    def _clone_new(cls, source: LexicalElement, revision: LexicalRevision) -> Self:
+        """Create one clone node through this concrete class's factory.
+
+        Cloning resolves the factory on the *concrete* node class, so a
+        subclass keeps its own construction contract instead of collapsing to
+        :class:`LexicalElement`.
+        """
+        return cls._new(
+            source._name_,
+            revision,
+            attributes=source._attribs_,
+            text=source.text_value(),
+            tail=source._tail_,
+        )
+
+    @property
+    def revision(self) -> LexicalRevision:
+        """The revision that owns this node."""
+        return self._revision
+
+    @property
+    def parent(self) -> Self | None:
+        """The parent node, or ``None`` for a root or detached subtree."""
+        return self._parent_
+
+    @property
+    def children(self) -> tuple[Self, ...]:
+        """The element children in document order."""
+        return tuple(self._children_)
+
+    @property
+    def _elementOnly_(self) -> bool:
+        """Whether this element's content is element-only.
+
+        Mixed content is present when the element has leading character data
+        or any child carries a tail.  The generic XML writer and dict exporter
+        use this narrow marker to preserve ordered text and tails; an
+        element-only node keeps their legacy block layout and tail-ignoring
+        export.  The answer is computed from the current lexical stores, so
+        text and tail edits update it without extra bookkeeping.
+        """
+        if self._value_ is not None:
+            return False
+        return all(child._tail_ is None for child in self._children_)
+
+    @property
+    def attributes(self) -> Mapping[str, str]:
+        """A read-only view of the expanded attribute store."""
+        return MappingProxyType(self._attribs_)
+
+    @property
+    def namespaces(self) -> Mapping[str, str] | None:
+        """The recorded in-scope namespace frame, or ``None``."""
+        return self._revision.context_for(self).namespaces
+
+    @property
+    def base_uri(self) -> str | None:
+        """The effective base URI recorded for this element."""
+        return self._revision.context_for(self).base_uri
+
+    @property
+    def source_location(self) -> IssueLocation | None:
+        """The source occurrence recorded for this element."""
+        return self._revision.context_for(self).source
+
+    def text_value(self) -> str | None:
+        """Return the element's exact leading character data.
+
+        ``None`` means the element has no character data at that position;
+        ``""`` is present but empty.  Child tails belong to the children.
+        """
+        if self._value_ is None:
+            return None
+        return self._value_[0]
+
+    def tail_value(self) -> str | None:
+        """Return the character data immediately following this element."""
+        return self._tail_
+
+    def attribute_lexical(self, expanded_name: str) -> str | None:
+        """Return one attribute's lexical value, or ``None`` when absent."""
+        return self._attribs_.get(expanded_name)
+
+    def scalar_value(self) -> Any:
+        """Return this element's typed leading-character-data interpretation.
+
+        The revision's snapshot determines validity and freshness.  Without a
+        snapshot, typed access raises :class:`~pyxsd.exceptions.PyXSDError`.
+        """
+        snapshot = self._revision._typed_snapshot
+        if snapshot is None:
+            raise PyXSDError(self._typed_access_capability)
+        return snapshot.scalar_value(self)
+
+    def attribute_value(self, expanded_name: str) -> Any:
+        """Return an attribute's typed interpretation from this revision's snapshot."""
+        snapshot = self._revision._typed_snapshot
+        if snapshot is None:
+            raise PyXSDError(self._typed_access_capability)
+        return snapshot.attribute_value(self, expanded_name)
+
+    def iter_content(self) -> Iterator[str | Self]:
+        """Yield text, child elements, and child tails in document order.
+
+        Present-but-empty text is yielded as ``""``; an absent tail is
+        omitted.  The child list is snapshotted so iteration cannot observe a
+        partially applied structural edit.
+        """
+        text = self.text_value()
+        if text is not None:
+            yield text
+        for child in tuple(self._children_):
+            yield child
+            if child._tail_ is not None:
+                yield child._tail_
+
+    def set_name(self, name: str) -> None:
+        """Replace the expanded element name and dirty the revision."""
+        _check_name(name, "element")
+        self._name_ = name
+        self._touch()
+
+    def set_text(self, lexical: str) -> None:
+        """Replace the leading character data with *lexical*."""
+        if not isinstance(lexical, str):
+            raise TypeError("text must be a string")
+        self._value_ = [lexical]
+        self._touch()
+
+    def clear_text(self) -> None:
+        """Remove the element's leading character data."""
+        self._value_ = None
+        self._touch()
+
+    def set_tail(self, lexical: str) -> None:
+        """Replace the character data following this element."""
+        if not isinstance(lexical, str):
+            raise TypeError("tail must be a string")
+        self._tail_ = lexical
+        self._touch()
+
+    def clear_tail(self) -> None:
+        """Remove the character data following this element."""
+        self._tail_ = None
+        self._touch()
+
+    def set_attribute(self, expanded_name: str, lexical: str) -> None:
+        """Set one expanded attribute name to a lexical string.
+
+        This is a lexical edit only: it does not reinterpret ``xml:base`` or
+        namespace declarations.  Recorded context is edited explicitly with
+        :meth:`set_base_uri` and :meth:`set_namespace_bindings`.
+        """
+        _check_name(expanded_name, "attribute")
+        if not isinstance(lexical, str):
+            raise TypeError("attribute value must be a string")
+        self._attribs_[expanded_name] = lexical
+        self._touch()
+
+    def delete_attribute(self, expanded_name: str) -> None:
+        """Delete one expanded attribute, raising ``KeyError`` when absent."""
+        _check_name(expanded_name, "attribute")
+        if expanded_name not in self._attribs_:
+            raise KeyError(expanded_name)
+        del self._attribs_[expanded_name]
+        self._touch()
+
+    def set_namespace_bindings(self, mappings: Mapping[str, str]) -> None:
+        """Replace the recorded in-scope namespace frame of this element."""
+        if not isinstance(mappings, Mapping):
+            raise TypeError("namespace bindings must be a mapping")
+        context = self._revision.context_for(self)
+        self._revision._replace_context(
+            self, NodeContext(mappings, context.base_uri, context.source)
+        )
+        self._touch()
+
+    def set_base_uri(self, base_uri: str | None) -> None:
+        """Replace the recorded effective base URI of this element."""
+        if base_uri is not None and not isinstance(base_uri, str):
+            raise TypeError("base_uri must be a string or None")
+        context = self._revision.context_for(self)
+        self._revision._replace_context(
+            self, NodeContext(context.namespaces, base_uri, context.source)
+        )
+        self._touch()
+
+    def append_child(self, child: Self) -> None:
+        """Append a detached element from the same revision."""
+        self._validate_child(child)
+        self._children_.append(child)
+        child._parent_ = self
+        self._touch()
+
+    def insert_child(self, index: int, child: Self) -> None:
+        """Insert a detached element from the same revision at *index*."""
+        position = operator.index(index)
+        self._validate_child(child)
+        self._children_.insert(position, child)
+        child._parent_ = self
+        self._touch()
+
+    def remove_child(self, child_or_index: Self | int) -> Self:
+        """Remove a child by node or index and return it with no parent."""
+        if isinstance(child_or_index, self._child_type()):
+            if child_or_index._parent_ is not self:
+                raise ValueError("the node is not a child of this element")
+            position = self._children_.index(child_or_index)
+            removed = self._children_.pop(position)
+        else:
+            position = operator.index(cast(int, child_or_index))
+            removed = self._children_.pop(position)
+        removed._parent_ = None
+        self._touch()
+        return removed
+
+    def replace_child(self, index: int, child: Self) -> Self:
+        """Replace the child at *index* with a detached same-revision element."""
+        position = operator.index(index)
+        current = self._children_[position]
+        if current is child:
+            self._touch()
+            return current
+        self._validate_child(child)
+        self._children_[position] = child
+        current._parent_ = None
+        child._parent_ = self
+        self._touch()
+        return current
+
+    def clear_children(self) -> None:
+        """Detach every child, leaving this element with no children."""
+        for child in self._children_:
+            child._parent_ = None
+        self._children_.clear()
+        self._touch()
+
+    def to_etree(self) -> ET.Element:
+        """Copy this subtree to an independent ElementTree structure."""
+        root = ET.Element(self._name_, dict(self._attribs_))
+        _copy_text_and_tail(root, self)
+        stack: list[tuple[LexicalElement, ET.Element]] = [(self, root)]
+        while stack:
+            source, target = stack.pop()
+            for child in source._children_:
+                target_child = ET.Element(child._name_, dict(child._attribs_))
+                _copy_text_and_tail(target_child, child)
+                target.append(target_child)
+                stack.append((child, target_child))
+        return root
+
+    @staticmethod
+    def _child_type() -> type[LexicalElement]:
+        return LexicalElement
+
+    def _validate_child(self, child: Self, *, expanded_name: str | None = None) -> None:
+        """Require one detached same-revision node, optionally of one name.
+
+        Callers may validate a whole batch before any edits or require the
+        exact expanded name of a named child field.
+        """
+        child_type = self._child_type()
+        if not isinstance(child, child_type):
+            raise TypeError(f"child must be a {child_type.__name__}")
+        if child._revision is not self._revision:
+            raise ValueError("a child must belong to the same revision")
+        if child._parent_ is not None:
+            raise ValueError("the child is already attached")
+        if expanded_name is not None and child._name_ != expanded_name:
+            raise ValueError(f"a child of the {expanded_name!r} field must have that expanded name")
+        ancestor: LexicalElement | None = self
+        while ancestor is not None:
+            if ancestor is child:
+                raise ValueError("a child cannot contain its ancestor")
+            ancestor = ancestor._parent_
+
+    def _touch(self) -> None:
+        self._revision.mark_dirty()
+
+
+def _check_name(name: str, role: str) -> None:
+    if not isinstance(name, str):
+        raise TypeError(f"{role} name must be a string")
+    if not name:
+        raise ValueError(f"{role} name must not be empty")
+
+
+def _copy_text_and_tail(target: ET.Element, source: LexicalElement) -> None:
+    text = source.text_value()
+    if text is not None:
+        target.text = text
+    if source._tail_ is not None:
+        target.tail = source._tail_
+
+
+def _merge_omitted_tail(parent: LexicalElement, tail: str | None) -> None:
+    """Keep character data after a comment or PI when omitting that node."""
+    if tail is None:
+        return
+    if parent._children_:
+        previous = parent._children_[-1]
+        previous._tail_ = (previous._tail_ or "") + tail
+    else:
+        parent._value_ = [(parent.text_value() or "") + tail]
+
+
+def _root_location(source: IssueLocation | None, element: ET.Element) -> IssueLocation | None:
+    if source is None or source.path:
+        return source
+    return replace(source, path=(PathStep(element.tag, 1),))
+
+
+def _child_location(parent: IssueLocation | None, name: str, index: int) -> IssueLocation | None:
+    if parent is None:
+        return None
+    return IssueLocation(parent.source, (*parent.path, PathStep(name, index)))
+
+
+def _effective_base(parent_base: str | None, element: ET.Element) -> str | None:
+    raw = element.get(_XML_BASE)
+    if raw is None or raw == "":
+        return parent_base
+    if parent_base:
+        return urljoin(parent_base, raw)
+    return raw
