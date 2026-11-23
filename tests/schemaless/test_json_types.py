@@ -210,6 +210,17 @@ def test_custom_adapter_supplies_typed_values_and_xdm_output():
     assert doc.to_data() == {"id": raw}
 
 
+def test_pins_convert_false_boolean_without_reinferring_the_native_kind():
+    doc = from_json('{"b":false}')
+    assert not doc.pin_type("/b", "xs:boolean").has_errors
+    assert doc.value_at("/b", typed=True) is False
+    item = _member(doc, "b")
+    assert item.type_name == f"{{{XSD_NS}}}boolean"
+    assert item == XdmAtomic.boolean(False)
+    assert not item.value
+    assert doc.to_data() == {"b": False}
+
+
 def test_pins_convert_native_scalar_kinds_without_float_round_trips():
     doc = from_json('{"b":true,"i":42,"d":1e2,"n":"7"}')
     assert not doc.pin_type("/b", "xs:boolean").has_errors
