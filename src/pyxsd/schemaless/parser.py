@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 from codecs import BOM_UTF16_BE, BOM_UTF16_LE
 from contextlib import suppress
-from dataclasses import dataclass
 from io import BytesIO
 from os import PathLike
 from typing import IO
@@ -15,6 +14,7 @@ from xml.parsers import expat
 from pyxsd.locations import IssueLocation, PathStep, SourceTextSpan
 from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
 from pyxsd.resource_policy import ResourcePolicyError
+from pyxsd.schemaless.document import SchemalessDocument
 from pyxsd.schemaless.errors import SchemalessParseError
 from pyxsd.schemaless.tree import SchemalessElement
 from pyxsd.source_spans import SourceIndex
@@ -26,17 +26,6 @@ from pyxsd.xml_policy import (
     configure_expat_security,
     enforce_tree_limits,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class SchemalessDocument:
-    """The parse result consumed by the schemaless document interface."""
-
-    root: SchemalessElement
-    source: str
-    source_index: SourceIndex | None
-    report: ValidationReport
-    _capture_source: CaptureSource
 
 
 def parse_xml(
@@ -80,7 +69,11 @@ def parse_xml(
         element, namespaces=namespaces, base_uri=captured.document_uri, source=location
     )
     return SchemalessDocument(
-        root, captured.source_name, index, ValidationReport(diagnostics_complete=True), captured
+        root,
+        captured.source_name,
+        ValidationReport(diagnostics_complete=True),
+        source_index=index,
+        capture_source=captured,
     )
 
 

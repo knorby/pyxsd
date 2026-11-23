@@ -17,6 +17,7 @@ export and ignores its children's whitespace tails, which are
 insignificant there.
 """
 
+from collections.abc import Callable
 from typing import Any
 
 from pyxsd.xsd_data_types import XsdDataType
@@ -42,23 +43,42 @@ def _text_of(node: Any) -> str | None:
     return str(value)
 
 
-def _leaf_value(node: Any, *, typed: bool) -> Any:
+def _leaf_value(
+    node: Any, *, typed: bool, scalar_reader: Callable[[Any], Any] | None = None
+) -> Any:
     if getattr(node, "_nil_", False):
         return None
-    if typed and isinstance(node, XsdDataType):
-        return node
+    if typed:
+        if scalar_reader is not None:
+            return scalar_reader(node)
+        if isinstance(node, XsdDataType):
+            return node
     text = _text_of(node)
     if text is None:
         return None if typed else ""
     return text
 
 
-def _export_node(node: Any, *, typed: bool, always_list: bool) -> Any:
+def _export_node(
+    node: Any,
+    *,
+    typed: bool,
+    always_list: bool,
+    scalar_reader: Callable[[Any], Any] | None = None,
+    attribute_reader: Callable[[Any, str], Any] | None = None,
+) -> Any:
     """Exports one bound node, applying the module's convention.
 
     A character-data-admitting element whose children carry ``_tail_``
     values exports all of its recorded text under ``$``, in document
     order.
+
+    ``scalar_reader`` and ``attribute_reader`` are the internal typed-view
+    seam. When supplied and ``typed`` is true, they interpret a leaf's
+    character data and a present attribute instead of the default
+    XSD-scalar-or-lexical-text behavior. Schemaless documents supply readers
+    backed by their lexical tree; the defaults keep every existing caller
+    unchanged.
     """
     children = [
         child
@@ -67,11 +87,13 @@ def _export_node(node: Any, *, typed: bool, always_list: bool) -> Any:
     ]
     attribs = getattr(node, "_attribs_", None) or {}
     if not children and not attribs:
-        return _leaf_value(node, typed=typed)
+        return _leaf_value(node, typed=typed, scalar_reader=scalar_reader)
 
     result: dict[str, Any] = {}
     for key, raw in attribs.items():
-        if typed:
+        if typed and attribute_reader is not None:
+            result["@" + key] = attribute_reader(node, key)
+        elif typed:
             # A declared XSD attribute's typed value lives in the instance
             # dictionary. A slotted node (RELAX NG) and a wildcard attribute
             # have only the recorded lexical form.
@@ -83,7 +105,13 @@ def _export_node(node: Any, *, typed: bool, always_list: bool) -> Any:
 
     groups: dict[str, list[Any]] = {}
     for child in children:
-        exported = _export_node(child, typed=typed, always_list=always_list)
+        exported = _export_node(
+            child,
+            typed=typed,
+            always_list=always_list,
+            scalar_reader=scalar_reader,
+            attribute_reader=attribute_reader,
+        )
         groups.setdefault(_node_name(child), []).append(exported)
     for name, values in groups.items():
         result[name] = values if always_list else (values[0] if len(values) == 1 else values)
@@ -101,19 +129,35 @@ def _export_node(node: Any, *, typed: bool, always_list: bool) -> Any:
     return result
 
 
-def bound_to_dict(root: Any, *, typed: bool = True, always_list: bool = False) -> dict:
+def bound_to_dict(
+    root: Any,
+    *,
+    typed: bool = True,
+    always_list: bool = False,
+    scalar_reader: Callable[[Any], Any] | None = None,
+    attribute_reader: Callable[[Any, str], Any] | None = None,
+) -> dict:
     """Exports the bound tree rooted at ``root`` as a plain dict.
 
     - ``typed``: keep typed Python scalar values; otherwise use the
       lexical text.
     - ``always_list``: wrap every child value in a list, even a single
       occurrence.
+    - ``scalar_reader``/``attribute_reader``: internal typed-view seam for
+      node families that own their scalar interpretation (schemaless XML).
+      Both default to the XSD-scalar-or-lexical-text behavior.
 
     A primitive root is returned under ``"$"``. For character-data-
     admitting content ``$`` keeps every recorded text piece in document
     order; element-only content keeps the legacy export.
     """
-    exported = _export_node(root, typed=typed, always_list=always_list)
+    exported = _export_node(
+        root,
+        typed=typed,
+        always_list=always_list,
+        scalar_reader=scalar_reader,
+        attribute_reader=attribute_reader,
+    )
     if isinstance(exported, dict):
         return exported
     return {TEXT_KEY: exported}
