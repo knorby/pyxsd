@@ -23,6 +23,12 @@ def test_nested_arrays_and_null_members_stay_nested():
     assert root.get(XdmAtomic.string("n")) == ()
 
 
+def test_converter_is_optional_and_keeps_the_native_mapping():
+    assert json_to_xdm("x") == (XdmAtomic.string("x"),)
+    root = json_to_xdm({"n": 2})[0]
+    assert root.get(XdmAtomic.string("n")) == (XdmAtomic.integer(2),)
+
+
 def test_root_json_values_have_xdm_sequence_semantics():
     assert from_json("null").to_xdm() == ()
     assert isinstance(from_json("[1,2]").to_xdm()[0], XdmArray)

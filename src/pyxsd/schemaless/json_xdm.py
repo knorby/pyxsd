@@ -62,7 +62,10 @@ def _to_xdm(
             if not isinstance(key, str):
                 raise TypeError(f"a JSON object key must be a string, not {type(key).__name__}")
             entries.append(
-                (XdmAtomic.string(key), _to_xdm(member, f"{pointer}/{_escape(key)}", converter))
+                (
+                    XdmAtomic.string(key),
+                    _to_xdm(member, f"{pointer}/{escape_pointer_segment(key)}", converter),
+                )
             )
         return (XdmMap(entries),)
     if isinstance(value, list):
@@ -80,7 +83,7 @@ def _to_xdm(
     return (native,)
 
 
-def _escape(segment: str) -> str:
+def escape_pointer_segment(segment: str) -> str:
     """Escape one RFC 6901 pointer segment."""
     return segment.replace("~", "~0").replace("/", "~1")
 
@@ -102,4 +105,4 @@ def _atomic(value: NativeJsonValue) -> XdmAtomic:
     raise TypeError(f"{type(value).__name__} is not a native JSON scalar")
 
 
-__all__ = ["json_to_xdm"]
+__all__ = ["escape_pointer_segment", "json_to_xdm"]

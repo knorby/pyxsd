@@ -120,6 +120,30 @@ class TypePolicy:
         pins[path] = self.resolve(type_ref)
         return replace(self, pins=pins)
 
+    def json_adapter(
+        self,
+        pointer: str,
+        value: object,
+        *,
+        asserted: ScalarAdapter | None = None,
+    ) -> ScalarAdapter | None:
+        """Resolve the adapter for one native JSON scalar at *pointer*.
+
+        Precedence is an explicit pointer pin, *asserted* guidance from an
+        evaluated schema, conservative inference of a string leaf, and then the
+        native kind (no adapter). ``asserted`` is the document layer's
+        extension point for a schema that proves this occurrence's type;
+        inference never reinterprets a non-string native value.
+        """
+        pinned = self.pins.get(pointer)
+        if pinned is not None:
+            return pinned
+        if asserted is not None:
+            return asserted
+        if self.mode == "infer" and isinstance(value, str):
+            return _infer_adapter((value,))
+        return None
+
 
 _LEADING_ZERO = re.compile(r"^[ \t\r\n]*[+-]?0[0-9]")
 _NUMERIC_CANDIDATES = ("integer", "decimal", "double")
