@@ -1,12 +1,10 @@
-"""Explicit element-first projection from native JSON into XML.
+"""Explicit projection from native JSON into XML.
 
 A :class:`~pyxsd.schemaless.json_document.JsonDocument` never turns its native
 value into XML on its own. :meth:`JsonDocument.to_xml` asks for one explicit
-:class:`XmlMapping`, which names the root element and may rename projected
-occurrences by JSON Pointer. Element-first is the conservative default: object
-properties become child elements, arrays become a wrapper element holding
-repeated ``item`` children, and no property becomes an attribute without an
-explicit rule.
+:class:`XmlMapping`, which names the root element and applies rules by JSON
+Pointer. Element-first is the conservative default. Compact mapping turns
+scalar object properties into attributes unless a rule selects another kind.
 
 The projection is one-way. It reads authoritative native storage, builds a
 fresh :class:`~pyxsd.schemaless.document.SchemalessDocument` with no source
@@ -20,23 +18,24 @@ a non-fatal warning on the derived document's report.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import KW_ONLY, dataclass, field
+from decimal import Decimal
 from types import MappingProxyType
 from typing import TYPE_CHECKING, NoReturn
 from xml.etree import ElementTree as ET
 from xml.parsers import expat
 
-from pyxsd._lexical import NodeContext
 from pyxsd.locations import DataLocation
-from pyxsd.namespaces import XSI_NS
+from pyxsd.namespaces import XML_NS, XSI_NS, NamespaceContext, clark, namespace_of
 from pyxsd.schemaless.document import SchemalessDocument
-from pyxsd.schemaless.errors import XmlMappingError
+from pyxsd.schemaless.errors import ScalarTypeError, XmlMappingError
+from pyxsd.schemaless.json_document import _typed_scalar
 from pyxsd.schemaless.json_values import NativeJsonValue, encode_json
 from pyxsd.schemaless.json_xdm import escape_pointer_segment
 from pyxsd.schemaless.nodes import NodeMapping
 from pyxsd.schemaless.tree import SchemalessElement
-from pyxsd.schemaless.types import TypePolicy
+from pyxsd.schemaless.types import _PARSE_ERRORS, TypePolicy, TypeRef
 from pyxsd.validation import ValidationReport
 
 if TYPE_CHECKING:
@@ -45,7 +44,7 @@ if TYPE_CHECKING:
 _XSI_NIL = f"{{{XSI_NS}}}nil"
 _XMLNS_NS = "http://www.w3.org/2000/xmlns/"
 _POINTER_BAD_ESCAPE = re.compile(r"~(?:[^01]|$)")
-_OccurrencePath = tuple[tuple[str, int], ...]
+_Scalar = bool | int | float | Decimal | str
 
 #: ASCII characters XLink 1.0 section 5.4 percent-escapes. A namespace name is
 #: a literal identifier, never an escaped ``xs:anyURI`` value, so these cannot
@@ -60,32 +59,56 @@ _NS_FORBIDDEN_ASCII = frozenset(
 class MappingRule:
     """One explicit override for an occurrence addressed by JSON Pointer.
 
-    ``name`` is a local XML name or a Clark expanded name. It replaces the
-    default element name derived from an object member key (or ``item`` for an
-    array member, or the mapping's root name at the empty pointer). Only
-    explicit mapping names may be expanded: object keys are data and must be
-    local names. Later mapping policies add node kinds, namespaces, array
-    wrapping, null handling, and scalar type pins; element-first projection
-    only renames.
+    ``kind`` overrides the default node kind. ``none`` inlines container
+    children and drops scalar values with a warning. ``name`` and ``item_name``
+    are local or Clark names; keys used as names must be local. ``namespace``
+    qualifies a local ``name``; ``prefix`` supplies a lexical binding.
+
+    Arrays wrap by default. Unwrapped arrays repeat the occurrence name
+    unless ``item_name`` supplies a separate name. ``order`` lists object
+    keys to emit first. By default null emits ``xsi:nil`` for elements and
+    is omitted with a warning for attributes and text. ``type`` formats a
+    scalar's lexical value without annotating the XML or changing the JSON.
     """
 
     name: str | None = None
+    _: KW_ONLY
+    kind: str | None = None
+    namespace: str | None = None
+    prefix: str | None = None
+    array: str | None = None
+    item_name: str | None = None
+    null: str | None = None
+    type: TypeRef | None = None
+    order: Sequence[str] | None = None
 
     def __post_init__(self) -> None:
-        if self.name is not None and not isinstance(self.name, str):
-            raise TypeError("a mapping rule name must be a string or None")
+        for field_name in ("name", "namespace", "prefix", "item_name"):
+            component = getattr(self, field_name)
+            if component is not None and not isinstance(component, str):
+                raise TypeError(f"a mapping rule {field_name} must be a string or None")
+        order = self.order
+        if order is None:
+            return
+        if not isinstance(order, Sequence) or isinstance(order, (str, bytes)):
+            raise TypeError("mapping rule order must be a sequence of strings")
+        if not all(isinstance(key, str) for key in order):
+            raise TypeError("mapping rule order must be a sequence of strings")
+        object.__setattr__(self, "order", tuple(order))
+
+
+_DEFAULT_RULE = MappingRule()
 
 
 class XmlMapping:
-    """A root name plus per-pointer element-first overrides.
+    """A root name plus per-pointer projection rules.
 
     ``rules`` maps RFC 6901 JSON Pointers to :class:`MappingRule` values. A
     pointer that does not occur in a particular document is simply policy for a
     possible occurrence; it is not an error, so mapping factories can describe
-    optional schema properties. ``default="elements"`` is the only projection
-    policy in this release: object properties and array members are elements.
-    A supplied rule name is checked when its occurrence is projected, because
-    only then is its XML path known.
+    optional schema properties. Use :meth:`compact` to opt into scalar
+    attributes. Rules are checked when their occurrences are projected,
+    because only then are their XML paths known.
     """
 
     __slots__ = ("_default", "_root_name", "_rules")
@@ -101,9 +124,10 @@ class XmlMapping:
             raise TypeError("root_name must be a string")
         if default != "elements":
             raise ValueError(
-                f"unsupported XmlMapping default {default!r}; only 'elements' is available"
+                f"with the direct XmlMapping constructor only 'elements' is available; "
+                f"got {default!r}. Use XmlMapping.compact() to opt in to compact projection"
             )
-        root_path = _format_path(((root_name, 1),))
+        root_path = f"/{root_name}[1]"
         _check_xml_name(root_name, "", root_path, None)
 
         checked: dict[str, MappingRule] = {}
@@ -136,7 +160,7 @@ class XmlMapping:
 
     @property
     def default(self) -> str:
-        """The projection policy; only ``"elements"`` is currently available."""
+        """The projection policy: ``"elements"`` or ``"compact"``."""
         return self._default
 
     @property
@@ -151,6 +175,15 @@ class XmlMapping:
         """Return the conservative element-first mapping for *root_name*."""
         return cls(root_name, default="elements", rules=rules)
 
+    @classmethod
+    def compact(
+        cls, root_name: str, *, rules: Mapping[str, MappingRule] | None = None
+    ) -> XmlMapping:
+        """Map scalar object properties to attributes unless overridden."""
+        mapping = cls(root_name, rules=rules)
+        mapping._default = "compact"
+        return mapping
+
 
 def _pointer_problem(pointer: str) -> str:
     """Return why *pointer* is not RFC 6901 syntax, or the empty string."""
@@ -159,11 +192,6 @@ def _pointer_problem(pointer: str) -> str:
     if any(_POINTER_BAD_ESCAPE.search(raw) for raw in pointer.split("/")[1:]):
         return "contains an invalid escape"
     return ""
-
-
-def _format_path(path: _OccurrencePath) -> str:
-    """Render an occurrence path for a mapping diagnostic."""
-    return "".join(f"/{name}[{index}]" for name, index in path)
 
 
 def _split_name(name: str) -> tuple[str, str]:
@@ -231,7 +259,7 @@ def _is_namespace_name(uri: str) -> bool:
     return is_uri_reference(uri)
 
 
-def _check_xml_name(name: str, pointer: str, xml_path: str, source: str | None) -> None:
+def _check_xml_name(name: str, pointer: str, xml_path: str, source: str | None) -> tuple[str, str]:
     """Reject an invalid explicit local or Clark expanded name; never repair it."""
     try:
         uri, local = _split_name(name)
@@ -259,6 +287,7 @@ def _check_xml_name(name: str, pointer: str, xml_path: str, source: str | None) 
             xml_path,
             source,
         )
+    return uri, local
 
 
 def _check_local_name(name: str, pointer: str, xml_path: str, source: str | None) -> None:
@@ -278,7 +307,7 @@ def _check_local_name(name: str, pointer: str, xml_path: str, source: str | None
         )
 
 
-def _check_xml_text(text: str, pointer: str, path: _OccurrencePath, source: str) -> None:
+def _check_xml_text(text: str, pointer: str, xml_path: str, source: str) -> None:
     """Reject a JSON string XML 1.0 cannot represent as character data."""
     for character in text:
         code = ord(character)
@@ -289,7 +318,7 @@ def _check_xml_text(text: str, pointer: str, path: _OccurrencePath, source: str)
                 f"the JSON string at pointer {pointer!r} contains {marker}, "
                 "which XML 1.0 cannot represent",
                 pointer,
-                _format_path(path),
+                xml_path,
                 source,
                 character=marker,
             )
@@ -319,96 +348,368 @@ def _fail(
     raise XmlMappingError(report)
 
 
-class _Projector:
-    """One immutable mapping applied to one native JSON value."""
+@dataclass(slots=True)
+class _Target:
+    """An emitted element and the occurrence state shared by inlined children."""
 
-    __slots__ = ("_mapping", "_report", "_source", "_uses_xsi")
+    element: ET.Element
+    path: str
+    counts: dict[str, int] = field(default_factory=dict)
+    origins: dict[str, set[str]] = field(default_factory=dict)
+
+    def next_path(self, name: str, kind: str = "element") -> str:
+        if kind == "attribute":
+            return f"{self.path}/@{name}"
+        return f"{self.path}/{name}[{self.counts.get(name, 0) + 1}]"
+
+
+@dataclass(frozen=True, slots=True)
+class _Name:
+    """A candidate XML name plus whether it comes from policy or a JSON key."""
+
+    value: str
+    explicit: bool = True
+    prefix: str | None = None
+
+
+_ITEM = _Name("item")
+
+
+class _Projector:
+    """Apply one immutable mapping, tracking XML and JSON addresses separately."""
 
     def __init__(self, mapping: XmlMapping, source: str, report: ValidationReport) -> None:
         self._mapping = mapping
         self._source = source
         self._report = report
+        self._bindings: dict[ET.Element, dict[str, str]] = {}
         self._uses_xsi = False
 
     def build(self, value: NativeJsonValue) -> SchemalessElement:
-        rule = self._mapping.rules.get("")
-        root_name = (
-            rule.name if rule is not None and rule.name is not None else self._mapping.root_name
-        )
-        path: _OccurrencePath = ((root_name, 1),)
-        _check_xml_name(root_name, "", _format_path(path), self._source)
-        root = ET.Element(root_name)
-        self._fill(root, value, "", path)
-        element = SchemalessElement.from_etree(root)
+        rule = self._mapping.rules.get("", _DEFAULT_RULE)
+        name, path = self._resolve_name(_Name(self._mapping.root_name), rule, "", None, "element")
+        self._check_rule(rule, value, "element" if rule.kind is None else rule.kind, "", path)
+        if rule.kind not in (None, "element") or rule.array == "unwrapped":
+            self._invalid("the root must be a single element", "", path)
+        if value is None and rule.null == "omit":
+            self._invalid("the root element cannot be omitted", "", path)
+        root = ET.Element(name.value)
+        self._bind(root, name, "", path)
+        self._fill(_Target(root, path), rule, value, "")
+        return SchemalessElement.from_etree(root, namespaces=self._namespace_context(root))
+
+    def _namespace_context(self, root: ET.Element) -> NamespaceContext | None:
         if self._uses_xsi:
-            element.revision._replace_context(element, NodeContext({"xsi": XSI_NS}, None, None))
-        return element
+            self._bindings.setdefault(root, {}).setdefault("xsi", XSI_NS)
+        if not self._bindings:
+            return None
+        context = NamespaceContext()
+        stack: list[tuple[ET.Element, dict[str, str]]] = [(root, {})]
+        while stack:
+            node, inherited = stack.pop()
+            frame = {**inherited, **self._bindings.get(node, {})}
+            if frame.get("") and not namespace_of(node.tag):
+                frame[""] = ""
+            context.record(node, frame)
+            stack.extend((child, frame) for child in reversed(node))
+        return context
 
     def _fill(
-        self, element: ET.Element, value: NativeJsonValue, pointer: str, path: _OccurrencePath
+        self, target: _Target, rule: MappingRule, value: NativeJsonValue, pointer: str
+    ) -> None:
+        if isinstance(value, (dict, list)):
+            self._children(target, rule, value, pointer)
+        elif value is None:
+            if rule.null == "empty":
+                self._warn_null("empty", "element", pointer, target.path)
+                target.element.text = ""
+            else:
+                target.element.set(_XSI_NIL, "true")
+                self._uses_xsi = True
+        else:
+            target.element.text = self._lexical(value, rule, pointer, target.path)
+
+    def _children(
+        self,
+        target: _Target,
+        rule: MappingRule,
+        value: dict[str, NativeJsonValue] | list[NativeJsonValue],
+        pointer: str,
+        item_default: _Name = _ITEM,
     ) -> None:
         if isinstance(value, dict):
             if not value:
-                self._warn_empty("empty-object", "object", pointer, path)
-                return
-            counts: dict[str, int] = {}
-            for key, member in value.items():
-                child_pointer = f"{pointer}/{escape_pointer_segment(key)}"
-                child_name, child_path = self._child_name(key, child_pointer, path, counts)
-                self._fill(ET.SubElement(element, child_name), member, child_pointer, child_path)
+                self._warn_empty("object", pointer, target.path)
+            # dict.fromkeys keeps each listed key at its first position.
+            for key in dict.fromkeys((*(rule.order or ()), *value)):
+                if key in value:
+                    member_pointer = f"{pointer}/{escape_pointer_segment(key)}"
+                    self._emit(
+                        target,
+                        _Name(key, explicit=False),
+                        value[key],
+                        member_pointer,
+                        member_pointer,
+                    )
             return
-        if isinstance(value, list):
-            if not value:
-                self._warn_empty("empty-array", "array", pointer, path)
-                return
-            counts = {}
-            for index, member in enumerate(value):
-                child_pointer = f"{pointer}/{index}"
-                child_name, child_path = self._child_name("item", child_pointer, path, counts)
-                self._fill(ET.SubElement(element, child_name), member, child_pointer, child_path)
+
+        item = item_default
+        if rule.item_name is not None:
+            item_path = target.next_path(rule.item_name)
+            uri, local = _check_xml_name(rule.item_name, pointer, item_path, self._source)
+            if rule.item_name.startswith("{"):
+                item = _Name(clark(uri, local))
+            else:
+                item = _Name(
+                    clark(namespace_of(item_default.value), local), prefix=item_default.prefix
+                )
+        if not value:
+            self._warn_empty("array", pointer, target.path)
+        for index, member in enumerate(value):
+            self._emit(target, item, member, f"{pointer}/{index}", pointer)
+
+    def _emit(
+        self, parent: _Target, default: _Name, value: NativeJsonValue, pointer: str, origin: str
+    ) -> None:
+        rule = self._mapping.rules.get(pointer, _DEFAULT_RULE)
+        kind = rule.kind
+        if kind is None:
+            compact_property = self._mapping.default == "compact" and not default.explicit
+            kind = (
+                "attribute"
+                if compact_property and not isinstance(value, (dict, list))
+                else "element"
+            )
+        if kind in ("text", "none"):
+            path = f"{parent.path}/text()" if kind == "text" else parent.path
+        else:
+            name, path = self._resolve_name(default, rule, pointer, parent, kind)
+        self._check_rule(rule, value, kind, pointer, path)
+
+        if kind == "none":
+            if isinstance(value, (dict, list)):
+                self._children(parent, rule, value, pointer)
+            else:
+                self._warn("unmapped-scalar", "the JSON scalar has no XML node", pointer, path)
             return
-        if value is None:
-            element.set(_XSI_NIL, "true")
-            self._uses_xsi = True
-        elif isinstance(value, str):
+        if kind == "text":
+            self._text(parent, rule, value, pointer, path)
+            return
+        if kind == "attribute":
+            self._attribute(parent, name, rule, value, pointer, path)
+            return
+        if rule.array == "unwrapped" and isinstance(value, list):
+            self._children(parent, rule, value, pointer, name)
+            return
+        if value is None and rule.null == "omit":
+            self._warn_null("omit", kind, pointer, path)
+            return
+        child = ET.SubElement(parent.element, name.value)
+        parent.counts[name.value] = parent.counts.get(name.value, 0) + 1
+        origins = parent.origins.setdefault(name.value, set())
+        if origins and origin not in origins:
+            self._warn(
+                "repeated-element-name",
+                "distinct JSON members project to sibling elements with the same name",
+                pointer,
+                path,
+            )
+        origins.add(origin)
+        self._bind(child, name, pointer, path)
+        self._fill(_Target(child, path), rule, value, pointer)
+
+    def _resolve_name(
+        self, default: _Name, rule: MappingRule, pointer: str, parent: _Target | None, kind: str
+    ) -> tuple[_Name, str]:
+        name = default if rule.name is None else _Name(rule.name)
+        original = name.value
+        expanded = name.explicit and original.startswith("{")
+        if not name.explicit:
+            assert parent is not None  # Only object properties get names from data.
+            _check_local_name(original, pointer, parent.next_path(original, kind), self._source)
+        # Normalize the no-namespace Clark spelling before counting or comparing
+        # names; the writer emits it identically to the local spelling.
+        value = original.removeprefix("{}") if expanded else original
+        if rule.namespace and not expanded:
+            value = clark(rule.namespace, value)
+        path = f"/{value}[1]" if parent is None else parent.next_path(value, kind)
+        if name.explicit:
+            uri, local = _check_xml_name(original, pointer, path, self._source)
+        else:
+            uri, local = "", original
+        if rule.namespace is not None:
+            if expanded and uri != rule.namespace:
+                self._invalid("name and namespace specify different namespace names", pointer, path)
+            uri = rule.namespace
+            if uri and (uri == _XMLNS_NS or not _is_namespace_name(uri)):
+                _fail(
+                    "invalid-xml-name",
+                    f"unusable namespace name {uri!r}",
+                    pointer,
+                    path,
+                    self._source,
+                )
+        if kind == "attribute" and not uri and local == "xmlns":
+            _fail(
+                "invalid-xml-name", "xmlns cannot be a data attribute", pointer, path, self._source
+            )
+        prefix = rule.prefix if rule.prefix is not None else name.prefix
+        if prefix is not None:
+            if prefix == "xmlns" or (prefix and not _is_xml_ncname(prefix)):
+                self._invalid(f"invalid namespace prefix {prefix!r}", pointer, path)
+            if not uri or (prefix == "xml") != (uri == XML_NS):
+                self._invalid(f"prefix {prefix!r} cannot bind namespace {uri!r}", pointer, path)
+            if kind == "attribute" and not prefix:
+                self._invalid("an attribute cannot use a default namespace binding", pointer, path)
+        return _Name(clark(uri, local), prefix=prefix), path
+
+    def _check_rule(
+        self, rule: MappingRule, value: NativeJsonValue, kind: str, pointer: str, path: str
+    ) -> None:
+        if kind not in ("element", "attribute", "text", "none"):
+            self._invalid(f"unsupported node kind {kind!r}", pointer, path)
+        if rule.array not in (None, "wrapped", "unwrapped"):
+            self._invalid(f"unsupported array policy {rule.array!r}", pointer, path)
+        if rule.null not in (None, "omit", "empty", "nil"):
+            self._invalid(f"unsupported null policy {rule.null!r}", pointer, path)
+        if kind in ("text", "none") and any(
+            option is not None for option in (rule.name, rule.namespace, rule.prefix)
+        ):
+            self._invalid(f"{kind!r} has no XML name or namespace binding", pointer, path)
+        if kind == "none" and (
+            rule.array == "wrapped" or rule.type is not None or rule.null is not None
+        ):
+            self._invalid("'none' cannot wrap, format or emit a value of its own", pointer, path)
+        if kind in ("attribute", "text"):
+            if isinstance(value, (dict, list)):
+                self._invalid(f"{kind!r} requires a scalar value", pointer, path)
+            if rule.null == "nil":
+                self._invalid("only an element can carry xsi:nil", pointer, path)
+            if rule.array is not None or rule.item_name is not None:
+                self._invalid(f"{kind!r} cannot configure array items", pointer, path)
+        if (rule.array is not None or rule.item_name is not None) and not (
+            value is None or isinstance(value, list)
+        ):
+            self._invalid("array and item_name require an array", pointer, path)
+        if rule.type is not None and isinstance(value, (dict, list)):
+            self._invalid("type requires a scalar value", pointer, path)
+        if rule.order is not None:
+            if value is not None and not isinstance(value, dict):
+                self._invalid("order requires an object", pointer, path)
+            if len(set(rule.order)) != len(rule.order):
+                self._invalid("order cannot list a property twice", pointer, path)
+
+    def _bind(self, element: ET.Element, name: _Name, pointer: str, path: str) -> None:
+        if name.prefix is None:
+            return
+        uri = namespace_of(name.value)
+        assert uri is not None  # _resolve_name requires a namespace for every explicit prefix.
+        bindings = self._bindings.setdefault(element, {})
+        if bindings.setdefault(name.prefix, uri) != uri:
+            self._invalid(
+                f"prefix {name.prefix!r} has conflicting bindings on one element", pointer, path
+            )
+
+    def _lexical(self, value: _Scalar, rule: MappingRule, pointer: str, path: str) -> str:
+        if isinstance(value, str):
             _check_xml_text(value, pointer, path, self._source)
-            element.text = value
-        else:
-            element.text = encode_json(value)
+        if rule.type is None:
+            return value if isinstance(value, str) else encode_json(value)
+        try:
+            adapter = TypePolicy.resolve(rule.type)
+            lexical = adapter.format(_typed_scalar(self._source, pointer, adapter, value))
+            if not isinstance(lexical, str):
+                raise TypeError("the scalar formatter did not return a string")
+        except (ScalarTypeError, *_PARSE_ERRORS):
+            _fail(
+                "invalid-mapping-type",
+                "the rule could not format the scalar",
+                pointer,
+                path,
+                self._source,
+            )
+        _check_xml_text(lexical, pointer, path, self._source)
+        return lexical
 
-    def _child_name(
+    def _scalar_content(
+        self, rule: MappingRule, value: NativeJsonValue, kind: str, pointer: str, path: str
+    ) -> str | None:
+        if value is None:
+            policy = "empty" if rule.null == "empty" else "omit"
+            self._warn_null(policy, kind, pointer, path)
+            return "" if policy == "empty" else None
+        assert not isinstance(value, (dict, list))  # _check_rule requires a scalar.
+        return self._lexical(value, rule, pointer, path)
+
+    def _attribute(
         self,
-        default: str,
+        parent: _Target,
+        name: _Name,
+        rule: MappingRule,
+        value: NativeJsonValue,
         pointer: str,
-        parent_path: _OccurrencePath,
-        counts: dict[str, int],
-    ) -> tuple[str, _OccurrencePath]:
-        rule = self._mapping.rules.get(pointer)
-        name = default
-        explicit = False
-        if rule is not None and rule.name is not None:
-            name = rule.name
-            explicit = True
-        index = counts.get(name, 0) + 1
-        path: _OccurrencePath = (*parent_path, (name, index))
-        if explicit:
-            _check_xml_name(name, pointer, _format_path(path), self._source)
-        else:
-            _check_local_name(name, pointer, _format_path(path), self._source)
-        counts[name] = index
-        return name, path
+        path: str,
+    ) -> None:
+        lexical = self._scalar_content(rule, value, "attribute", pointer, path)
+        if lexical is None:
+            return
+        if name.value in parent.element.attrib:
+            _fail(
+                "duplicate-attribute",
+                "two values map to one attribute",
+                pointer,
+                path,
+                self._source,
+            )
+        self._bind(parent.element, name, pointer, path)
+        parent.element.set(name.value, lexical)
 
-    def _warn_empty(self, code: str, kind: str, pointer: str, path: _OccurrencePath) -> None:
+    def _text(
+        self, parent: _Target, rule: MappingRule, value: NativeJsonValue, pointer: str, path: str
+    ) -> None:
+        lexical = self._scalar_content(rule, value, "text", pointer, path)
+        if lexical is None:
+            return
+        node = parent.element
+        slot = node[-1].tail if len(node) else node.text
+        if slot is not None:
+            _fail("ambiguous-text", "adjacent text values would merge", pointer, path, self._source)
+        if len(node):
+            node[-1].tail = lexical
+        else:
+            node.text = lexical
+
+    def _invalid(self, message: str, pointer: str, path: str) -> NoReturn:
+        _fail("invalid-mapping-rule", message, pointer, path, self._source)
+
+    def _warn_null(self, policy: str, kind: str, pointer: str, path: str) -> None:
+        if policy == "empty":
+            code = "null-emptied"
+            message = f"null projects as empty {kind} content and is not distinguishable from empty content"
+        else:
+            code = "null-attribute-omitted" if kind == "attribute" else "null-omitted"
+            message = f"omitted null {kind} is not distinguishable from a missing value"
+        self._warn(code, message, pointer, path)
+
+    def _warn_empty(self, kind: str, pointer: str, path: str) -> None:
+        self._warn(
+            f"empty-{kind}",
+            f"an empty JSON {kind} has no XML children, so the container kind is not recoverable",
+            pointer,
+            path,
+            json_kind=kind,
+        )
+
+    def _warn(self, code: str, message: str, pointer: str, path: str, **details: str) -> None:
         self._report.add_warning(
-            f"an empty JSON {kind} projects to an empty XML element, so the "
-            "container kind is not recoverable",
+            message,
             code=code,
             location=DataLocation(self._source, pointer),
             location_precision="exact",
             details={
                 "json_pointer": pointer,
-                "xml_path": _format_path(path),
-                "json_kind": kind,
+                "xml_path": path,
+                **details,
             },
         )
 
