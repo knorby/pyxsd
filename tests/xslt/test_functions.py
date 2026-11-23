@@ -1092,6 +1092,34 @@ def test_id_lookup_must_be_callable() -> None:
         XsltContextBridge(object(), id_lookup=1)  # type: ignore[arg-type]
 
 
+def test_key_rejects_element_rooted_trees_for_both_argument_forms() -> None:
+    two_argument = stylesheet(
+        """
+        <xsl:key name="k" match="*" use="'pqr'"/>
+        <xsl:template name="main">
+          <xsl:variable name="e" as="element()"><e/></xsl:variable>
+          <xsl:for-each select="$e">
+            <xsl:sequence select="key('k', 'abc')"/>
+          </xsl:for-each>
+        </xsl:template>
+        """
+    )
+    three_argument = stylesheet(
+        """
+        <xsl:key name="k" match="*" use="'pqr'"/>
+        <xsl:template name="main">
+          <xsl:variable name="e" as="element()"><e/></xsl:variable>
+          <xsl:variable name="d"><e/></xsl:variable>
+          <xsl:for-each select="$d">
+            <xsl:sequence select="key('k', 'abc', $e)"/>
+          </xsl:for-each>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(two_argument, initial_template="main")) == "XTDE1270"
+    assert error_code(lambda: transform(three_argument, initial_template="main")) == "XTDE1270"
+
+
 def test_key_third_argument_limits_the_indexed_subtree() -> None:
     source = b"<doc><a><item n='1'/></a><b><item n='1'/></b></doc>"
     source_sheet = stylesheet(

@@ -61,10 +61,10 @@ def test_remote_text_reads_still_require_remote_authorization() -> None:
     assert caught.value.code == "FOUT1170"
 
 
-def test_relative_document_uri_falls_back_to_the_expression_base(tmp_path) -> None:
+def test_relative_document_uri_uses_the_static_base_for_atomic_items(tmp_path) -> None:
     source = stylesheet(
         '<xsl:template match="/">'
-        "<out><xsl:copy-of select=\"document('data.xml', /)/data\"/></out>"
+        "<out><xsl:copy-of select=\"document('data.xml')/data\"/></out>"
         "</xsl:template>"
     )
     (tmp_path / "sheet.xsl").write_bytes(source)
@@ -85,7 +85,24 @@ def test_relative_document_uri_falls_back_to_the_expression_base(tmp_path) -> No
     assert copied.attribute("value").string_value == "ok"
 
 
-def test_document_uri_node_argument_uses_its_tree_or_reports_no_base(tmp_path) -> None:
+def test_relative_document_uri_requires_the_base_node_base_uri(tmp_path) -> None:
+    source = stylesheet(
+        '<xsl:template match="/">'
+        "<out><xsl:copy-of select=\"document('data.xml', /)/data\"/></out>"
+        "</xsl:template>"
+    )
+    (tmp_path / "sheet.xsl").write_bytes(source)
+    (tmp_path / "data.xml").write_text('<data value="ok"/>', encoding="utf-8")
+
+    with pytest.raises(XsltDynamicError) as caught:
+        XsltProcessor().compile(tmp_path / "sheet.xsl").transform(
+            source=io.BytesIO(b"<root/>"),
+            delivery="document",
+        )
+    assert caught.value.code == "XTDE1162"
+
+
+def test_document_uri_node_argument_reports_no_base_uri(tmp_path) -> None:
     source = stylesheet(
         '<xsl:template match="/">'
         '<out><xsl:copy-of select="document(/*/@file)/data"/></out>'
@@ -93,16 +110,12 @@ def test_document_uri_node_argument_uses_its_tree_or_reports_no_base(tmp_path) -
     )
     (tmp_path / "sheet.xsl").write_bytes(source)
     (tmp_path / "data.xml").write_text('<data value="ok"/>', encoding="utf-8")
-    result = (
-        XsltProcessor()
-        .compile(tmp_path / "sheet.xsl")
-        .transform(
+    with pytest.raises(XsltDynamicError) as caught:
+        XsltProcessor().compile(tmp_path / "sheet.xsl").transform(
             source=io.BytesIO(b'<root file="data.xml"/>'),
             delivery="document",
         )
-    )
-    copied = result.principal_tree.root_element.children[0]
-    assert copied.name == "data"
+    assert caught.value.code == "XTDE1162"
 
     parentless = stylesheet(
         '<xsl:template name="main">'

@@ -32,6 +32,7 @@ from pyxsd.xslt.compiler.packages import Component, PackageResolver
 from pyxsd.xslt.compiler.patterns import compile_pattern
 from pyxsd.xslt.errors import XsltError
 from pyxsd.xslt.processor import _ABSENT, _Invocation, _prepare_invocation
+from pyxsd.xslt.runtime.builder import _NodeFactory
 from pyxsd.xslt.runtime.context import EvaluationContext
 from pyxsd.xslt.runtime.templates import (
     PatternIndex,
@@ -1262,10 +1263,12 @@ def test_key_context_root_must_be_a_document() -> None:
             """
         )
     )
-    node = object.__new__(XdmNode)
-    object.__setattr__(node, "_document", None)
+    detached = _NodeFactory().clone(
+        XdmDocument.parse(b"<root/>").root_element,
+        parent=None,
+    )
     with pytest.raises(XsltError) as caught:
-        invocation._key_root(node)
+        invocation._key_root(detached)
     assert caught.value.code == "XTDE1270"
 
 

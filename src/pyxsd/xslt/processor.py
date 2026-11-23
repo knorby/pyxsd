@@ -7738,21 +7738,28 @@ class _Invocation(Transformation):
                     "key() requires a single node as its third argument",
                     code="XPTY0004",
                 )
-            # XSLT 3.0 section 9.11: the third argument supplies the root of
-            # the subtree that is indexed, not merely a node in the document.
+            # XSLT 3.0 §9.11 / XTDE1270: the third argument selects a subtree
+            # inside a document tree; an element-rooted tree is not eligible.
+            if top[0].root.kind is not NodeKind.DOCUMENT:
+                raise XsltDynamicError(
+                    "the key subtree root is not in a document tree",
+                    code="XTDE1270",
+                )
             return top[0]
         if not isinstance(context_item, XdmNode):
             raise XsltDynamicError(
                 "key() with two arguments requires a context node",
                 code="XTDE1270",
             )
-        document = context_item.document
-        if not isinstance(document, XdmDocument):
+        # XSLT 3.0 §9.11 / XTDE1270: the context node's tree root must be a
+        # document node, not merely attached to a construction document.
+        root = context_item.root
+        if root.kind is not NodeKind.DOCUMENT:
             raise XsltDynamicError(
-                "the key context node must have a document root",
+                "the key context node is not in a document tree",
                 code="XTDE1270",
             )
-        return document
+        return root
 
     def _key_index(
         self,
