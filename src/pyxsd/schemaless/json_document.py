@@ -25,7 +25,9 @@ from pyxsd.schemaless.json_values import (
     encode_json,
     resolve_pointer,
 )
+from pyxsd.schemaless.json_xdm import json_to_xdm
 from pyxsd.validation import ValidationReport
+from pyxsd.xdm.values import XdmSequence
 
 _JsonSource = str | bytes | bytearray | memoryview | IO[str] | IO[bytes]
 
@@ -124,6 +126,16 @@ class JsonDocument:
         round trip or a quoted string.
         """
         return encode_json(self._value, indent=indent)
+
+    def to_xdm(self) -> XdmSequence:
+        """Return this document's native value as an XDM 3.1 sequence.
+
+        Objects become maps with ``xs:string`` keys, arrays become arrays whose
+        members keep their nesting, scalars become atomics with their exact
+        native type, and null becomes the empty sequence. A root null therefore
+        supplies no context item; nothing is wrapped in an XML document.
+        """
+        return json_to_xdm(self._value)
 
 
 def from_data(value: object, *, limits: JsonLimits | None = None) -> JsonDocument:
