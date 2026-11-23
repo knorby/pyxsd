@@ -22,6 +22,7 @@ from pyxsd._lexical.xml_writer import serialize_lexical
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
 from pyxsd.schemaless.errors import ScalarTypeError
+from pyxsd.schemaless.profile import DocumentProfile, ProfileLimits, _xml_profile
 from pyxsd.schemaless.tree import SchemalessElement, _pinned_value, _XmlPath
 from pyxsd.schemaless.types import ScalarAdapter, TypePolicy, TypeRef
 from pyxsd.validation import ValidationReport
@@ -239,6 +240,18 @@ class SchemalessDocument(Document):
             scalar_reader=SchemalessElement.scalar_value,
             attribute_reader=SchemalessElement.attribute_value,
         )
+
+    def profile(self, limits: ProfileLimits | None = None) -> DocumentProfile:
+        """Walk the current lexical revision into an immutable profile.
+
+        XML rows group occurrences by expanded-name path without same-name
+        occurrence indexes and report attributes separately. Candidate
+        evaluation is evidence only: it never installs a pin, edits lexical
+        data, or adds XDM annotations, and a failing pin still profiles without
+        raising. ``revision_id`` and ``revision_dirty`` record the source
+        revision at snapshot time.
+        """
+        return _xml_profile(self, limits)
 
     def write(self, dest: str | Path | os.PathLike[str] | IO[str]) -> None:
         """Writes the lexical tree to *dest* (a path or a file object)."""

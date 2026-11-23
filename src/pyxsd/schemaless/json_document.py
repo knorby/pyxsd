@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal
-from typing import IO, Any, Literal, overload
+from typing import IO, TYPE_CHECKING, Any, Literal, overload
 
 from pyxsd.exceptions import ValidationError
 from pyxsd.locations import DataLocation
@@ -37,6 +37,9 @@ from pyxsd.schemaless.types import _PARSE_ERRORS, ScalarAdapter, TypePolicy, Typ
 from pyxsd.validation import ValidationReport
 from pyxsd.xdm.values import XdmAtomic, XdmSequence
 from pyxsd.xsd_data_types import qname_context
+
+if TYPE_CHECKING:
+    from pyxsd.schemaless.profile import DocumentProfile, ProfileLimits
 
 _JsonSource = str | bytes | bytearray | memoryview | IO[str] | IO[bytes]
 _ScalarValue = bool | int | float | Decimal | str
@@ -222,6 +225,21 @@ class JsonDocument:
         """
         return json_to_xdm(self._value, converter=self._convert_scalar)
 
+    def profile(self, limits: ProfileLimits | None = None) -> DocumentProfile:
+        """Return a bounded, immutable profile of the current native value.
+
+        Rows use exact RFC 6901 pointers: one ``"value"`` row for every
+        address and one additional ``"array-items"`` row at each array's
+        pointer for aggregate member evidence. Scalar candidates are evaluated
+        as evidence only: the profile never changes the native value, the
+        scalar policy, or any later XDM interpretation. A native document has
+        no revision counter, so the snapshot records ``revision_id=None`` and
+        ``revision_dirty=False``.
+        """
+        from pyxsd.schemaless.profile import _json_profile
+
+        return _json_profile(self, limits)
+
     def test_type(self, pointer: str, type_ref: TypeRef) -> ValidationReport:
         """Report whether the JSON scalar at *pointer* accepts a proposed type.
 
@@ -308,8 +326,16 @@ class JsonDocument:
 
     def _adapter_at(self, pointer: str, value: _ScalarValue) -> ScalarAdapter | None:
         """Resolve the effective adapter for one native JSON scalar."""
+        return self._resolution_at(pointer, value)[0]
+
+    def _interpretation_at(self, pointer: str, value: _ScalarValue) -> str:
+        """Name the policy source that interprets one native JSON scalar."""
+        return self._resolution_at(pointer, value)[1]
+
+    def _resolution_at(self, pointer: str, value: _ScalarValue) -> tuple[ScalarAdapter | None, str]:
+        """Resolve one native scalar and its current interpretation source."""
         asserted = self._asserted_adapter(pointer, value)
-        return self._types.json_adapter(pointer, value, asserted=asserted)
+        return self._types._json_adapter_source(pointer, value, asserted=asserted)
 
     def _typed_tree(self, value: NativeJsonValue, pointer: str) -> Any:
         """Build an independent typed view of *value* at *pointer*."""

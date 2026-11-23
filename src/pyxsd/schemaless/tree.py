@@ -149,6 +149,34 @@ class SchemalessRevision(LexicalRevision):
         self._xml_pins = tuple(pin for _, pin in ranked)
         self._types = policy
 
+    def _pin_for(
+        self,
+        root: SchemalessElement,
+        path: tuple[PathStep, ...],
+        attribute: str | None,
+    ) -> ScalarAdapter | None:
+        """Return the pin that interprets this exact occurrence, if any.
+
+        A detached subtree is addressed by its own root and therefore never
+        inherits an occurrence pin installed for the revision.
+        """
+        if root is not self.root:
+            return None
+        for selector, adapter in self._xml_pins:
+            if selector.matches(path, attribute):
+                return adapter
+        return None
+
+    def _inferred_adapter(
+        self,
+        root: SchemalessElement,
+        path: tuple[PathStep, ...],
+        attribute: str | None,
+    ) -> ScalarAdapter | None:
+        """Infer one type from every current occurrence of a structural path."""
+        group = _XmlPath(tuple((step.name, None) for step in path), attribute)
+        return _infer_adapter(tuple(value or "" for _, _, value in group.values(root)))
+
     def scalar_value(self, node: SchemalessElement) -> Any:
         return self._value(node, None, node.text_value())
 
@@ -163,13 +191,11 @@ class SchemalessRevision(LexicalRevision):
         if not infer and not self._xml_pins:
             return lexical
         root, path = _current_path(node)
-        if root is self.root:
-            for selector, adapter in self._xml_pins:
-                if selector.matches(path, attribute):
-                    return _pinned_value(node, path, attribute, lexical, adapter)
+        adapter = self._pin_for(root, path, attribute)
+        if adapter is not None:
+            return _pinned_value(node, path, attribute, lexical, adapter)
         if infer and lexical is not None:
-            group = _XmlPath(tuple((step.name, None) for step in path), attribute)
-            inferred = _infer_adapter(tuple(value or "" for _, _, value in group.values(root)))
+            inferred = self._inferred_adapter(root, path, attribute)
             if inferred is not None:
                 return inferred.parse(lexical)
         return lexical

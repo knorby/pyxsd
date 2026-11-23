@@ -135,19 +135,50 @@ class TypePolicy:
         extension point for a schema that proves this occurrence's type;
         inference never reinterprets a non-string native value.
         """
+        return self._json_adapter_source(pointer, value, asserted=asserted)[0]
+
+    def _json_adapter_source(
+        self,
+        pointer: str,
+        value: object,
+        *,
+        asserted: ScalarAdapter | None = None,
+    ) -> tuple[ScalarAdapter | None, str]:
+        """Resolve one native scalar and name the policy source that decided it.
+
+        The source is ``"pinned"``, ``"schema-guided"``, ``"inferred"``, or
+        ``"native"``. Profiles use it as interpretation provenance; resolving a
+        source never changes the policy or the native storage.
+        """
         pinned = self.pins.get(pointer)
         if pinned is not None:
-            return pinned
+            return pinned, "pinned"
         if asserted is not None:
-            return asserted
+            return asserted, "schema-guided"
         if self.mode == "infer" and isinstance(value, str):
-            return _infer_adapter((value,))
-        return None
+            inferred = _infer_adapter((value,))
+            if inferred is not None:
+                return inferred, "inferred"
+        return None, "native"
 
 
 _LEADING_ZERO = re.compile(r"^[ \t\r\n]*[+-]?0[0-9]")
 _NUMERIC_CANDIDATES = ("integer", "decimal", "double")
 _OTHER_CANDIDATES = ("date", "dateTime", "time")
+
+
+def _ranked_candidates() -> tuple[tuple[str, ScalarAdapter], ...]:
+    """Return the ranked built-in scalar candidates a profile evaluates.
+
+    The names use the ``xs:`` spelling and the order is the conservative
+    inference order: boolean, the numeric ladder, then the calendar types.
+    Profiles report evidence only, so this is the single owner of the candidate
+    ranking and ``profile`` never keeps a parallel name list.
+    """
+    return tuple(
+        (f"xs:{name}", _BUILTINS[name])
+        for name in ("boolean", *_NUMERIC_CANDIDATES, *_OTHER_CANDIDATES)
+    )
 
 
 def _finite_double(lexical: str) -> bool:
