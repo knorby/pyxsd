@@ -43,6 +43,7 @@ from pyxsd.xdm import (
     type_tests,
 )
 from pyxsd.xdm.annotations import builtin_type_classes
+from pyxsd.xdm.legacy import ResultTreeFragment
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xdm.values import _coerce_atomic as _function_conversion_atomic
@@ -7663,6 +7664,7 @@ class _Invocation(Transformation):
                 else getattr(static, "xslt_version", None) or getattr(static, "version", None)
             ),
             key_lookup=self._key_override_for(package_name),
+            id_lookup=self._id_override,
             extension_functions=self.stylesheet.extensions.availability(),
         )
 
@@ -7805,6 +7807,86 @@ class _Invocation(Transformation):
             return frozen
         finally:
             del self._key_builds[key]
+
+    def _id_override(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+        element_with_id: bool,
+    ) -> XdmSequence:
+        """``fn:id``/``fn:element-with-id`` over grounded nodes.
+
+        The XDM parser marks DTD-declared ``ID`` attributes and ``xml:id``;
+        the lookup derives one invocation-local index per tree so repeated
+        calls in a template do not rescan the tree.  ``element-with-id`` names
+        the element carrying the ID, which is the same element for an
+        attribute-borne ID and for an element whose own typed value is an ID.
+        """
+        tokens: set[str] = set()
+        for item in arguments[0]:
+            if isinstance(item, ResultTreeFragment):
+                raise XsltDynamicError(
+                    "fn:id() requires a node-set, but a result tree fragment was supplied; "
+                    "a native XSLT 1.0 processor does not convert a result tree fragment "
+                    "where a node-set is required",
+                    code="XPTY0004",
+                )
+            if isinstance(item, XdmNode):
+                values: Iterable[XdmItem] = item.typed_value
+            elif isinstance(item, XdmAtomic):
+                values = (item,)
+            else:
+                raise XsltDynamicError(
+                    "id() requires atomic values or nodes",
+                    code="XPTY0004",
+                )
+            for value in values:
+                if not isinstance(value, XdmAtomic):  # pragma: no cover - XDM invariant
+                    raise XsltDynamicError(
+                        "id() node atomization must yield atomic values",
+                        code="XPTY0004",
+                    )
+                tokens.update(value.lexical.split())
+        if not tokens:
+            return ()
+        if len(arguments) > 1:
+            argument = arguments[1]
+            if len(argument) != 1 or not isinstance(argument[0], XdmNode):
+                raise XsltDynamicError(
+                    "id() requires a single node as its second argument",
+                    code="XPTY0004",
+                )
+            node = argument[0]
+        elif isinstance(context_item, XdmNode):
+            node = context_item
+        else:
+            raise XsltDynamicError(
+                "id() requires a context node",
+                code="XPDY0002",
+            )
+        root = node.root
+        index = self._id_index(root)
+        found: dict[int, XdmNode] = {
+            id(element): element for token in tokens if (element := index.get(token)) is not None
+        }
+        return tuple(sorted(found.values(), key=lambda element: element.document_order))
+
+    def _id_index(self, root: XdmNode) -> Mapping[str, XdmNode]:
+        cached = self.id_indexes.get(id(root))
+        if cached is not None and cached[0] is root:
+            return cached[1]
+        index: dict[str, XdmNode] = {}
+        for node in (root, *root.descendants):
+            if node.kind is not NodeKind.ELEMENT:
+                continue
+            if getattr(node.annotation, "id_kind", None) in {"ID", "id"}:
+                index.setdefault(node.string_value, node)
+            for attribute in node.attributes:
+                if getattr(attribute.annotation, "id_kind", None) in {"ID", "id"}:
+                    index.setdefault(attribute.string_value, node)
+        frozen = MappingProxyType(index)
+        self.id_indexes[id(root)] = (root, frozen)
+        return frozen
 
     def _invoke_component_callable(
         self,

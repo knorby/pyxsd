@@ -489,6 +489,7 @@ class XsltContextBridge:
     xpath_version: str = "3.1"
     xslt_version: str | None = None
     key_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence] | None = None
+    id_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...], bool], XdmSequence] | None = None
     extension_functions: frozenset[tuple[str, int]] = frozenset()
 
     def __post_init__(self) -> None:
@@ -556,6 +557,8 @@ class XsltContextBridge:
             raise TypeError("package_name must be a string or None")
         if self.key_lookup is not None and not callable(self.key_lookup):
             raise TypeError("key_lookup must be callable or None")
+        if self.id_lookup is not None and not callable(self.id_lookup):
+            raise TypeError("id_lookup must be callable or None")
         declared = frozenset(self.extension_functions)
         for name, arity in declared:
             if not isinstance(name, str) or not name:
@@ -696,6 +699,12 @@ class XsltContextBridge:
             table[f"{{{FN_NS}}}accumulator-after"] = ContextFunction(self._direct_accumulator_after)
         if self.key_lookup is not None:
             table[f"{{{FN_NS}}}key"] = ContextFunction(self._direct_key, self._dynamic_key)
+        if self.id_lookup is not None:
+            table[f"{{{FN_NS}}}id"] = ContextFunction(self._direct_id, self._dynamic_id)
+            if _version_at_least(self.version, "3.0"):
+                table[f"{{{FN_NS}}}element-with-id"] = ContextFunction(
+                    self._direct_element_with_id, self._dynamic_element_with_id
+                )
         return MappingProxyType(table)
 
     def _serialize_function(
@@ -1707,6 +1716,40 @@ class XsltContextBridge:
         assert self.key_lookup is not None
         del context_item
         return self.key_lookup(None, arguments)
+
+    def _direct_id(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        assert self.id_lookup is not None
+        return self.id_lookup(context_item, arguments, False)
+
+    def _dynamic_id(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        assert self.id_lookup is not None
+        del context_item
+        return self.id_lookup(None, arguments, False)
+
+    def _direct_element_with_id(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        assert self.id_lookup is not None
+        return self.id_lookup(context_item, arguments, True)
+
+    def _dynamic_element_with_id(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        assert self.id_lookup is not None
+        del context_item
+        return self.id_lookup(None, arguments, True)
 
 
 def _document_uri(item: XdmAtomic) -> str:

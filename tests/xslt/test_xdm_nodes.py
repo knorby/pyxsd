@@ -114,6 +114,31 @@ def test_all_node_kinds_identity_and_provenance(tmp_path: Path) -> None:
     assert doc.root_element.node_id != child.node_id
 
 
+def test_dtd_id_idref_and_xml_id_annotations(tmp_path: Path) -> None:
+    content = (
+        b"<!DOCTYPE r ["
+        b"<!ELEMENT r (item*)>"
+        b"<!ELEMENT item EMPTY>"
+        b"<!ATTLIST item id ID #REQUIRED ref IDREF #IMPLIED refs IDREFS #IMPLIED"
+        b" label CDATA #IMPLIED>"
+        b"]>"
+        b'<r><item id="a" ref="b" refs="a b" label="x"/>'
+        b'<item xml:id="b" id="c"/></r>'
+    )
+    doc = XdmDocument.parse(content)
+    items = [child for child in doc.root_element.children if child.kind is NodeKind.ELEMENT]
+    first, second = items
+
+    kinds = {attribute.local_name: attribute.annotation.id_kind for attribute in first.attributes}
+    assert kinds["id"] == "ID"
+    assert kinds["ref"] == "IDREF"
+    assert kinds["refs"] == "IDREFS"
+    assert kinds["label"] is None
+    second_kinds = {attribute.name: attribute.annotation.id_kind for attribute in second.attributes}
+    assert second_kinds[f"{{{XML_NS}}}id"] == "ID"
+    assert second_kinds["id"] == "ID"
+
+
 def test_dtd_internal_comments_and_pis_are_not_nodes(tmp_path: Path) -> None:
     content = (
         b"<!DOCTYPE r [<!--dtd comment--><?dtd pi?>"

@@ -18,7 +18,7 @@ from tests.xslt.support import element_children, transform
 from tests.xslt.support import stylesheet as _stylesheet
 
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction
-from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
+from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmDocument, XdmNode
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.context import StaticContext
@@ -1177,6 +1177,20 @@ def test_package_pattern_predicate_uses_library_global_and_namespaces(tmp_path: 
     assert [child.local_name for child in element_children(result.principal_tree)] == [
         "from-library"
     ]
+
+
+def test_id_index_reads_a_validated_element_id_and_rejects_function_items() -> None:
+    invocation = _invocation(stylesheet('<xsl:template name="main"><out/></xsl:template>'))
+    document = XdmDocument.parse(b"<root><keyed>x</keyed></root>")
+    keyed = element_children(document.root_element)[0]
+    keyed._apply_occurrence_annotation(XdmAnnotation(f"{{{XSD_NS}}}untyped", False, id_kind="ID"))
+
+    assert invocation._id_override(None, ((XdmAtomic.string("x"),), (document,)), False) == (keyed,)
+
+    function = XdmFunction(lambda arguments, environment, captured: (), arity=0)
+    with pytest.raises(XsltError) as caught:
+        invocation._id_override(None, ((function,), (document,)), False)
+    assert caught.value.code == "XPTY0004"
 
 
 def test_key_context_root_must_be_a_document() -> None:

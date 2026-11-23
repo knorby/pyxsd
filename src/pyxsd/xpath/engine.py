@@ -2487,19 +2487,6 @@ def _install_legacy_1_0_overrides(parser: Any) -> None:
                 )
         return len(items)
 
-    def legacy_id(base: Any) -> Any:
-        def select(self: Any, context: Any = None) -> Any:
-            active = active_context(self, context)
-            if is_fragment(self.get_argument(active)):
-                raise LegacyNodeSetError(
-                    "fn:id() requires a node-set, but a result tree fragment "
-                    "was supplied; a native XSLT 1.0 processor does not convert "
-                    "a result tree fragment where a node-set is required"
-                )
-            return base.select(self, context)
-
-        return select
-
     def legacy_string(self: Any, context: Any = None) -> str:
         active = active_context(self, context)
         if not self:
@@ -2667,15 +2654,6 @@ def _install_legacy_1_0_overrides(parser: Any) -> None:
         sequence_types=sum_base.sequence_types,
         evaluate=legacy_sum,
     )
-    id_base = parser.symbol_table["id"]
-    id_options: dict[str, Any] = {
-        "bases": (id_base,),
-        "label": id_base.label,
-        "nargs": id_base.nargs,
-        "sequence_types": id_base.sequence_types,
-        "select": legacy_id(id_base),
-    }
-    parser._register("id", "_PyxsdLegacyId", **id_options)
     _install_legacy_path_operators(parser)
 
 

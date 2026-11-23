@@ -116,6 +116,7 @@ class XdmNode(XdmItem):
     """
 
     __slots__ = (
+        "_adopts_parent_base",
         "_annotations",
         "_attributes",
         "_base_uri",
@@ -162,6 +163,7 @@ class XdmNode(XdmItem):
     ) -> None:
         self._kind = kind
         self._document = document
+        self._adopts_parent_base = False
         self._node_id = node_id
         self._source_name = source_name
         self._source_index = source_index
@@ -532,6 +534,7 @@ class XdmDocument(XdmNode):
         parser.namespace_prefixes = True
         parser.StartDoctypeDeclHandler = builder.start_doctype
         parser.EndDoctypeDeclHandler = builder.end_doctype
+        parser.AttlistDeclHandler = builder.attlist_declaration
         parser.StartNamespaceDeclHandler = builder.start_namespace_declaration
         parser.StartElementHandler = builder.start_element
         parser.EndElementHandler = builder.end_element
@@ -594,6 +597,25 @@ class _Builder:
         self._paths: list[PathStep] = []
         self._counts: list[dict[str, int]] = [{}]
         self._in_doctype = False
+        #: DTD ATTLIST declarations: (element local name, attribute local name)
+        #: mapped to the declared attribute type.  Only the ID/IDREF family is
+        #: consumed here; every other declared type leaves the untyped
+        #: annotation unchanged.
+        self._attlist_types: dict[tuple[str, str], str] = {}
+
+    def attlist_declaration(
+        self,
+        element_name: str,
+        attribute_name: str,
+        type_name: str,
+        default: str | None,
+        required: bool,
+    ) -> None:
+        del default, required
+        kind = type_name.strip().upper()
+        if kind not in {"ID", "IDREF", "IDREFS"}:
+            return
+        self._attlist_types[(_local_dtd_name(element_name), _local_dtd_name(attribute_name))] = kind
 
     def start_doctype(
         self,
@@ -659,12 +681,17 @@ class _Builder:
             self._document._root_element = element
 
         for name, value in decoded_attributes:
+            id_kind = None
+            if name.clark == f"{{{XML_NS}}}id":
+                id_kind = "ID"
+            else:
+                id_kind = self._attlist_types.get((expanded.local, name.local))
             attribute = self._new_node(
                 NodeKind.ATTRIBUTE,
                 parent=element,
                 name=name.clark,
                 value=value,
-                annotations=XdmAnnotation(_UNTYPED_ATOMIC, None),
+                annotations=XdmAnnotation(_UNTYPED_ATOMIC, None, id_kind=id_kind),
                 base_uri=base_uri,
                 in_scope_namespaces=in_scope_namespaces,
                 path=path,
@@ -876,6 +903,17 @@ def _decode_name(raw_name: str) -> _ExpandedName:
 
 def _namespace_sort_key(prefix: str) -> tuple[bool, str]:
     return (prefix != "", prefix)
+
+
+def _local_dtd_name(name: str) -> str:
+    """The local part of one DTD declaration name.
+
+    Expat reports ATTLIST names as authored, without namespace expansion.
+    ID/IDREF attributes in real documents are unqualified; a prefixed
+    declaration loses its prefix here so the same attribute still matches the
+    element whose expanded name the XML parser reports.
+    """
+    return name.rpartition(":")[2]
 
 
 def _apply_xml_base(parent_base: str | None, xml_base: str | None) -> str | None:

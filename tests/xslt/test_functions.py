@@ -1005,6 +1005,144 @@ def test_namespace_uri_for_prefix_uses_function_conversion_for_its_argument() ->
     assert result.principal[1].type_name == f"{{{XSD_NS}}}anyURI"
 
 
+def test_id_reads_dtd_and_xml_id_declarations() -> None:
+    source = (
+        b"<!DOCTYPE tee [<!ELEMENT tee (s*)><!ELEMENT s EMPTY>"
+        b"<!ATTLIST s id ID #REQUIRED>]>"
+        b'<tee><s id="a"/><s id="b"/><s id="c"/><s xml:id="d"/></tee>'
+    )
+    source_sheet = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="id('b')/@id/string()"/>
+          <xsl:sequence select="id('d')/name()"/>
+          <xsl:sequence select="id(//s[1]/@id)/@id/string()"/>
+          <xsl:sequence select="count(id(('c', 'a')))"/>
+          <xsl:sequence select="count(id('missing'))"/>
+          <xsl:sequence select="count(id(()))"/>
+          <xsl:sequence select="element-with-id('c')/@id/string()"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source_sheet, initial_template="main", input_source=source)
+    assert result.principal == (
+        XdmAtomic.string("b"),
+        XdmAtomic.string("s"),
+        XdmAtomic.string("a"),
+        XdmAtomic.integer(2),
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(0),
+        XdmAtomic.string("c"),
+    )
+
+
+def test_id_error_arms_and_dynamic_lookup() -> None:
+    source = (
+        b"<!DOCTYPE tee [<!ELEMENT tee (s*)><!ELEMENT s EMPTY>"
+        b'<!ATTLIST s id ID #REQUIRED>]><tee><s id="a"/></tee>'
+    )
+    no_context = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="id(\'a\')"/></xsl:template>'
+    )
+    assert error_code(lambda: transform(no_context, initial_template="main")) == "XPDY0002"
+
+    bad_node = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="id('a', 'not-a-node')"/>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(bad_node, source, initial_template="main")) == "XPTY0004"
+
+    bad_item = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="id(map{})"/></xsl:template>'
+    )
+    assert (
+        error_code(lambda: transform(bad_item, source, initial_template="main", delivery="raw"))
+        == "XPTY0004"
+    )
+
+    dynamic = stylesheet(
+        """
+        <xsl:function name="my:lookup" as="element()*">
+          <xsl:param name="n" as="node()"/>
+          <xsl:sequence select="id('a', $n)"/>
+        </xsl:function>
+        <xsl:template name="main">
+          <xsl:variable name="f" select="fn:id#2"/>
+          <xsl:variable name="g" select="fn:element-with-id#2"/>
+          <xsl:sequence select="my:lookup(/)/@id/string()"/>
+          <xsl:sequence select="$f('a', /)/@id/string()"/>
+          <xsl:sequence select="$g('a', /)/@id/string()"/>
+        </xsl:template>
+        """
+    )
+    assert transform(dynamic, source, initial_template="main").principal == (
+        XdmAtomic.string("a"),
+        XdmAtomic.string("a"),
+        XdmAtomic.string("a"),
+    )
+
+
+def test_id_lookup_must_be_callable() -> None:
+    from pyxsd.xslt.runtime.functions import XsltContextBridge
+
+    with pytest.raises(TypeError, match="id_lookup"):
+        XsltContextBridge(object(), id_lookup=1)  # type: ignore[arg-type]
+
+
+def test_key_third_argument_limits_the_indexed_subtree() -> None:
+    source = b"<doc><a><item n='1'/></a><b><item n='1'/></b></doc>"
+    source_sheet = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="@n"/>
+        <xsl:template name="main">
+          <xsl:variable name="sub" select="//a"/>
+          <xsl:sequence select="count(key('k', '1', $sub))"/>
+          <xsl:sequence select="count(key('k', '1'))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source_sheet, initial_template="main", input_source=source)
+    assert result.principal == (XdmAtomic.integer(1), XdmAtomic.integer(2))
+
+
+def test_id_in_a_pattern_matches_a_dtd_declared_id() -> None:
+    source = (
+        b"<!DOCTYPE tee [<!ELEMENT tee (s*)><!ELEMENT s EMPTY>"
+        b'<!ATTLIST s id ID #REQUIRED>]><tee><s id="a"/><s id="c"/><s id="d"/></tee>'
+    )
+    source_sheet = stylesheet(
+        """
+        <xsl:template match="/"><out><xsl:apply-templates select="tee/s"/></out></xsl:template>
+        <xsl:template match="id('c')"><hit/></xsl:template>
+        <xsl:template match="s"><miss/></xsl:template>
+        """
+    )
+    result = transform(source_sheet, input_source=source, delivery="document")
+    out = result.principal_tree.root_element
+    assert [child.local_name for child in element_children(out)] == ["miss", "hit", "miss"]
+
+
+def test_key_accepts_a_sequence_constructor_and_a_node_key_name() -> None:
+    source = b"<doc><item>2</item><item>3</item><item>4</item></doc>"
+    source_sheet = stylesheet(
+        """
+        <xsl:variable name="keyspace" as="xs:string">k</xsl:variable>
+        <xsl:key name="k" match="item">
+          <xsl:sequence select="."/>
+        </xsl:key>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key($keyspace, 3))"/>
+          <xsl:sequence select="key($keyspace, 3)/string()"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source_sheet, initial_template="main", input_source=source)
+    assert result.principal == (XdmAtomic.integer(1), XdmAtomic.string("3"))
+
+
 def test_namespace_uri_for_prefix_rejects_a_non_string_prefix() -> None:
     source = XdmDocument.parse(b'<r xmlns:p="urn:p"/>')
 
