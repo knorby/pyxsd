@@ -24,12 +24,23 @@ from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
 from pyxsd.schemaless.tree import SchemalessElement
 from pyxsd.validation import ValidationReport
+from pyxsd.xdm.document import (
+    CapturedXdmDocument,
+    CaptureSource,
+    _bound_snapshot,
+    _InvalidBoundTree,
+)
+from pyxsd.xdm.errors import XdmInputError
+from pyxsd.xdm.nodes import XdmDocument
 
 if TYPE_CHECKING:
     from pyxsd.data_conversion.contracts import Fidelity, FormatName, JsonValue
     from pyxsd.source_spans import SourceIndex
-    from pyxsd.xdm.document import CaptureSource
-    from pyxsd.xdm.nodes import XdmDocument
+    from pyxsd.xdm.document import _NodeState
+    from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
+
+_BoundSnapshot = tuple[tuple["_NodeState", ...], tuple[SchemalessElement, ...]]
+_STALE_XDM = "the schemaless tree changed; call revalidate() for a coherent XDM view"
 
 
 class _LexicalScalarSnapshot:
@@ -66,6 +77,7 @@ class SchemalessDocument(Document):
     """
 
     root: SchemalessElement
+    _xdm_capture: CapturedXdmDocument | None
 
     def __init__(
         self,
@@ -76,13 +88,19 @@ class SchemalessDocument(Document):
         source_index: SourceIndex | None = None,
         capture_source: CaptureSource | None = None,
         report_current: bool = True,
+        xml_policy: XmlParserPolicy | None = None,
+        xml_limits: XmlLimits | None = None,
+        _xdm_baseline: _BoundSnapshot | None = None,
     ) -> None:
-        # The parse's materialized bytes are retained for a later coherent
-        # XDM view; the base class's separately-shaped XDM capture stays None.
         super().__init__(schema=None, root=root, source=source, report=report)
         self.source_index = source_index
         self._capture_source = capture_source
         self._report_current = report_current
+        self._xml_policy = xml_policy
+        self._xml_limits = xml_limits
+        # Take the baseline before callers can edit the lexical stores. Building
+        # the second tree is lazy, but the source/tree association is not.
+        self._xdm_baseline = _bound_snapshot(root) if _xdm_baseline is None else _xdm_baseline
         if root.revision._typed_snapshot is None:
             root.revision._attach_typed_snapshot(_LEXICAL_SNAPSHOT)
 
@@ -97,10 +115,54 @@ class SchemalessDocument(Document):
         return self._report_current and not self.root.revision.dirty
 
     def to_xdm(self) -> XdmDocument:
-        """Rejects XDM access until a coherent schemaless view is connected."""
-        raise PyXSDError(
-            "XDM access is not connected for a schemaless document; "
-            "the lexical tree and to_string() are the authoritative views"
+        """Return the cached, untyped XDM view of this unedited revision.
+
+        A parsed XML source retains its comments, processing instructions and
+        spans. A caller-built tree instead supplies its XML lexical projection.
+        After an edit, use :meth:`revalidate` to obtain a fresh document.
+        """
+        signature, nodes = self._xdm_baseline
+        if self.root is not nodes[0] or self.root.revision.dirty:
+            raise XdmInputError(_STALE_XDM)
+        try:
+            current, _ = _bound_snapshot(self.root)
+        except _InvalidBoundTree as exc:
+            raise XdmInputError(_STALE_XDM) from exc
+        if current != signature:
+            raise XdmInputError(_STALE_XDM)
+        if self._xdm_capture is None:
+            source = self._capture_source or self._capture_projection()
+            xdm = XdmDocument.parse(
+                source.data,
+                source_index=self.source_index,
+                source_name=source.source_name,
+                document_uri=source.document_uri,
+            )
+            self._xdm_capture = CapturedXdmDocument(xdm, self.root, signature, nodes)
+        return self._xdm_capture.xdm
+
+    def revalidate(self) -> SchemalessDocument:
+        """Refresh the current lexical XML in a new document, without a schema.
+
+        The new parse has its own report, source index, lexical revision and
+        XDM view. Comments and processing instructions omitted by the editable
+        tree do not survive this round trip.
+        """
+        from pyxsd.schemaless.parser import _parse_captured_xml
+
+        again = _parse_captured_xml(
+            self._capture_projection(), xml_policy=self._xml_policy, xml_limits=self._xml_limits
+        )
+        again.source = self.source
+        return again
+
+    def _capture_projection(self) -> CaptureSource:
+        """Materialize the current XML projection under its original source label."""
+        captured = self._capture_source
+        return CaptureSource(
+            self.to_string().encode("utf-8"),
+            cast("str | None", self.source) or "<memory>",
+            captured.document_uri if captured is not None else None,
         )
 
     def to_dict(self, *, typed: bool = True, always_list: bool = False) -> dict:
@@ -183,4 +245,7 @@ class SchemalessDocument(Document):
             source_index=self.source_index if unchanged else None,
             capture_source=self._capture_source if unchanged else None,
             report_current=False,
+            xml_policy=self._xml_policy,
+            xml_limits=self._xml_limits,
+            _xdm_baseline=self._xdm_baseline if unchanged else None,
         )

@@ -136,20 +136,6 @@ def test_lexical_mutation_makes_the_parse_report_stale():
     assert doc.is_valid  # the report is the parse-time snapshot, not refreshed
 
 
-def test_revalidation_without_a_schema_is_an_explicit_capability_error():
-    doc = parse_xml(io.StringIO("<r/>"))
-
-    with pytest.raises(PyXSDError, match="no schema"):
-        doc.revalidate()
-
-
-def test_xdm_access_is_explicitly_unavailable_for_a_schemaless_parse():
-    doc = parse_xml(io.StringIO("<r/>"))
-
-    with pytest.raises(PyXSDError, match="XDM access is not connected"):
-        doc.to_xdm()
-
-
 def test_lexical_serialization_keeps_recorded_namespaces_and_mixed_content():
     source = '<r xmlns="urn:x" xmlns:p="urn:p" p:a="1">head<p:c/>tail</r>'
     doc = parse_xml(io.StringIO(source))

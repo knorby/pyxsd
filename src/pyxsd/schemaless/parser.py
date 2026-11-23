@@ -40,40 +40,70 @@ def parse_xml(
     A caller-built tree has no original byte spans. Malformed XML raises
     :class:`SchemalessParseError`; policy and budget errors propagate unchanged.
     """
-    limits = xml_limits or XmlLimits()
-    policy = xml_policy or XmlParserPolicy.default()
     if isinstance(source, ET.Element):
-        enforce_tree_limits(source, limits, count_non_element_nodes=False)
+        enforce_tree_limits(source, xml_limits, count_non_element_nodes=False)
         element = copy.deepcopy(source)
         element.tail = None  # A root's tail lies outside its document.
-        captured = CaptureSource.from_input(element)
-        namespaces = None
-        index = None
-    else:
-        captured = CaptureSource.from_input(source, max_bytes=limits.max_bytes)
-        # CaptureSource enforces the read budget for paths and streams, but
-        # trusts already-materialized buffers. Check those before any parse.
-        if limits.max_bytes is not None and len(captured.data) > limits.max_bytes:
-            raise ResourcePolicyError(f"the XML input exceeds max_bytes={limits.max_bytes}")
-        namespaces = NamespaceContext()
-        try:
-            element = parse_with_namespaces(
-                BytesIO(captured.data), namespaces, policy=policy, limits=limits
-            )
-        except (ET.ParseError, LookupError, ValueError) as exc:
-            raise _diagnose_malformed(captured, policy, exc) from exc
-        index = SourceIndex(captured.source_name, captured.data, policy=policy, limits=limits)
+        return _bind_xml(element, xml_policy=xml_policy, xml_limits=xml_limits)
+    max_bytes = xml_limits.max_bytes if xml_limits is not None else None
+    captured = CaptureSource.from_input(source, max_bytes=max_bytes)
+    return _parse_captured_xml(captured, xml_policy=xml_policy, xml_limits=xml_limits)
 
-    location = IssueLocation(captured.source_name, (PathStep(element.tag, 1),))
+
+def _parse_captured_xml(
+    captured: CaptureSource,
+    *,
+    xml_policy: XmlParserPolicy | None,
+    xml_limits: XmlLimits | None,
+) -> SchemalessDocument:
+    """Parse a byte revision with an already resolved source name and URI."""
+    limits = xml_limits or XmlLimits()
+    policy = xml_policy or XmlParserPolicy.default()
+    # CaptureSource enforces the read budget for paths and streams, but
+    # trusts already-materialized buffers. Check those before any parse.
+    if limits.max_bytes is not None and len(captured.data) > limits.max_bytes:
+        raise ResourcePolicyError(f"the XML input exceeds max_bytes={limits.max_bytes}")
+    namespaces = NamespaceContext()
+    try:
+        element = parse_with_namespaces(
+            BytesIO(captured.data), namespaces, policy=policy, limits=limits
+        )
+    except (ET.ParseError, LookupError, ValueError) as exc:
+        raise _diagnose_malformed(captured, policy, exc) from exc
+    index = SourceIndex(captured.source_name, captured.data, policy=policy, limits=limits)
+    return _bind_xml(
+        element,
+        captured=captured,
+        namespaces=namespaces,
+        index=index,
+        xml_policy=policy,
+        xml_limits=limits,
+    )
+
+
+def _bind_xml(
+    element: ET.Element,
+    *,
+    captured: CaptureSource | None = None,
+    namespaces: NamespaceContext | None = None,
+    index: SourceIndex | None = None,
+    xml_policy: XmlParserPolicy | None,
+    xml_limits: XmlLimits | None,
+) -> SchemalessDocument:
+    source_name = captured.source_name if captured is not None else "<memory>"
+    base_uri = captured.document_uri if captured is not None else None
+    location = IssueLocation(source_name, (PathStep(element.tag, 1),))
     root = SchemalessElement.from_etree(
-        element, namespaces=namespaces, base_uri=captured.document_uri, source=location
+        element, namespaces=namespaces, base_uri=base_uri, source=location
     )
     return SchemalessDocument(
         root,
-        captured.source_name,
+        source_name,
         ValidationReport(diagnostics_complete=True),
         source_index=index,
         capture_source=captured,
+        xml_policy=xml_policy,
+        xml_limits=xml_limits,
     )
 
 

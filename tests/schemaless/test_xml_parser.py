@@ -103,7 +103,6 @@ def test_parse_etree_keeps_an_independent_tree_and_has_no_original_source_index(
     assert child.attribute_lexical("a") == "original"
     assert source[1].tail == "tail"
     assert source.tail == "outside"
-    assert doc._capture_source.data == b'<r>before<!--omit-->after<c a="original" />tail</r>'
 
 
 @pytest.mark.parametrize(
