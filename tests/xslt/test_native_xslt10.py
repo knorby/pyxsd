@@ -886,6 +886,24 @@ def test_native_ieee_rounding_and_special_values() -> None:
     assert text_of(body) == "3|-2|0|NaN|Infinity"
 
 
+def test_native_forwards_compatible_value_of_uses_number_to_string() -> None:
+    """A 1.0 processor stringifies a 2.0 stylesheet's numbers without ``.0``.
+
+    ``xsl:value-of`` is an XSLT 1.0 instruction, so the number-to-string
+    conversion applies even when the containing stylesheet declares a later
+    version that the 1.0 processor processes in forwards-compatible mode.
+    """
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:value-of select="2.0"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="1 div 2"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="0 div 0"/>'
+        "</xsl:template>"
+    )
+    compiled = native_compile(body, version="2.0")
+    assert principal_text(compiled.transform(initial_template="main")) == "2|0.5|NaN"
+
+
 def test_native_general_comparison_conversions() -> None:
     body = (
         '<xsl:template name="main">'

@@ -908,7 +908,7 @@ def _diagnostic_error_code(
 
 def _item_string(item: XdmItem) -> str:
     if isinstance(item, XdmAtomic):
-        return item.lexical
+        return item.string_value
     if isinstance(item, XdmNode):
         return item.string_value
     raise XsltError(

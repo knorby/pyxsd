@@ -1202,7 +1202,7 @@ def _append_complex_content(
     last_atomic = False
     for item in _flatten_arrays(sequence):
         if isinstance(item, XdmAtomic):
-            value = item.lexical
+            value = item.string_value
             if last_atomic:
                 value = " " + value
             _append_text(factory, parent, value)

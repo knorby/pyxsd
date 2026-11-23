@@ -6,6 +6,10 @@ a parser's class-level symbol table.  Plain Python callables receive convenient
 Python values for singleton atomic arguments; :class:`pyxsd.xdm.XdmFunction`
 items receive XDM argument sequences and return XDM sequences, as required by
 Task 7.
+
+:func:`install_string_function` corrects the substrate's ``fn:string``
+conversion for floats and doubles, which elementpath spells with the shortest
+binary64 ``repr`` instead of the F&O 3.1 §19.1.1 canonical form.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import copy
 import inspect
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from decimal import Decimal
 from types import MethodType
 from typing import Any, cast
 
@@ -21,7 +26,9 @@ from elementpath.datatypes import AnyAtomicType, UntypedAtomic
 from elementpath.xpath_tokens.base import XPathToken
 from elementpath.xpath_tokens.functions import XPathFunction
 
+from pyxsd.namespaces import XSD_NS
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmItem, XdmSequence, as_xdm
+from pyxsd.xdm.values import canonical_decimal_string, canonical_float_string
 
 __all__ = [
     "FUNCTION_SCOPE_ATTRIBUTE",
@@ -33,6 +40,7 @@ __all__ = [
     "call_host_function",
     "clone_function_token",
     "function_arity",
+    "install_string_function",
     "sequence_to_elementpath",
 ]
 
@@ -92,11 +100,180 @@ def _local_type_name(type_name: str) -> str:
 
 
 def atomic_to_elementpath(item: XdmAtomic) -> Any:
-    """Convert one XDM atomic to elementpath's atomic representation."""
-    if _local_type_name(item.type_name) == "untypedAtomic":
+    """Convert one XDM atomic to elementpath's atomic representation.
+
+    Python ``bool`` is elementpath's ``xs:boolean``.  A pyxsd
+    ``xsd_data_types.Boolean`` is an ``int`` subclass over the XSD value space,
+    so passing that payload through unchanged made every bridged boolean test
+    as ``xs:integer`` instead of ``xs:boolean``.
+
+    The same identity problem applies to every pyxsd datatype that elementpath
+    models with a dedicated class: ``xs:float``, the string-derived types,
+    ``xs:anyURI``, the date/time and duration families, the binary types, and
+    ``xs:QName``.  Those payloads are converted to elementpath's class so a
+    typed value keeps its XSD type identity through ``instance of``,
+    ``treat as``, and the typed function signatures.
+    """
+    local = _local_type_name(item.type_name)
+    if local == "untypedAtomic":
         return UntypedAtomic(item.lexical)
+    if local == "boolean":
+        return bool(item.value)
     value = item.value
-    return value if isinstance(value, AnyAtomicType) else item.lexical
+    if _is_builtin_type_name(item.type_name) and isinstance(value, AnyAtomicType):
+        return _elementpath_datatype_value(value, local)
+    if isinstance(value, AnyAtomicType):
+        return value
+    return item.lexical
+
+
+def _is_builtin_type_name(type_name: str) -> bool:
+    """Whether *type_name* names a built-in XSD atomic type.
+
+    A user-defined type can reuse a built-in local name, so only the XSD
+    namespace may select elementpath's class for a bridged value.
+    """
+    if type_name.startswith("{"):
+        return type_name.startswith(f"{{{XSD_NS}}}")
+    return ":" not in type_name
+
+
+#: Elementpath classes whose instances build from their XSD lexical string.
+_EP_LEXICAL_DATATYPES = frozenset(
+    {
+        "anyURI",
+        "base64Binary",
+        "gDay",
+        "gMonth",
+        "gMonthDay",
+        "gYear",
+        "gYearMonth",
+        "hexBinary",
+        "ID",
+        "IDREF",
+        "ENTITY",
+        "language",
+        "Name",
+        "NCName",
+        "NMTOKEN",
+        "normalizedString",
+        "token",
+    }
+)
+
+#: Elementpath integer-derived classes: the payload is the Python integer.
+_EP_INTEGER_DATATYPES = frozenset(
+    {
+        "byte",
+        "int",
+        "integer",
+        "long",
+        "negativeInteger",
+        "nonNegativeInteger",
+        "nonPositiveInteger",
+        "positiveInteger",
+        "short",
+        "unsignedByte",
+        "unsignedInt",
+        "unsignedLong",
+        "unsignedShort",
+    }
+)
+
+#: Elementpath date/time and duration classes built through ``fromstring``.
+_EP_FROMSTRING_DATATYPES = frozenset(
+    {
+        "date",
+        "dateTime",
+        "dateTimeStamp",
+        "dayTimeDuration",
+        "duration",
+        "gDay",
+        "gMonth",
+        "gMonthDay",
+        "gYear",
+        "gYearMonth",
+        "time",
+        "yearMonthDuration",
+    }
+)
+
+
+#: Elementpath QName-family classes built from the resolved name parts.
+_EP_QNAME_DATATYPES = frozenset({"NOTATION", "QName"})
+
+
+def _elementpath_datatype_value(value: Any, local: str) -> Any:
+    """Elementpath's own class for one pyxsd datatype value, when it has one."""
+    from elementpath.datatypes import builtin_atomic_types
+
+    datatype = builtin_atomic_types.get(f"xs:{local}")
+    if datatype is None or isinstance(value, datatype):
+        return value
+    if local in _EP_QNAME_DATATYPES:
+        if not getattr(value, "_resolved_", False):
+            return value
+        prefix = getattr(value, "_prefix_", "")
+        name = getattr(value, "_local_", "")
+        lexical = f"{prefix}:{name}" if prefix else name
+        try:
+            return datatype(getattr(value, "_uri_", None) or "", lexical)
+        except (TypeError, ValueError):  # pragma: no cover - the source QName is valid
+            return value
+    if local == "float":
+        try:
+            return datatype(float(value))
+        except (TypeError, ValueError):  # pragma: no cover - the source value is a binary32
+            return value
+    if local in _EP_INTEGER_DATATYPES:
+        try:
+            return datatype(int(value))
+        except (TypeError, ValueError):  # pragma: no cover - the source is a bounded integer
+            return value
+    if local in _EP_FROMSTRING_DATATYPES and hasattr(datatype, "fromstring"):
+        try:
+            return datatype.fromstring(str(value))
+        except (TypeError, ValueError):  # pragma: no cover - the source already parsed
+            return value
+    if local in _EP_LEXICAL_DATATYPES:
+        try:
+            return datatype(str(value))
+        except (TypeError, ValueError):  # pragma: no cover - the source already parsed
+            return value
+    return value  # pragma: no cover - every built-in XSD atomic type has a rule above
+
+
+def install_string_function(parser: Any) -> None:
+    """Give ``fn:string``/``xs:string`` the F&O canonical float/double form.
+
+    elementpath converts a float or double by ``repr``: it writes ``1e6`` as
+    ``1000000`` and ``1e-13`` as ``1E-13``, while F&O 3.1 §19.1.1 requires
+    ``1.0E6`` and ``1.0E-13`` (one digit before the point, at least one after),
+    and uses the shortest binary32 form for ``xs:float``.  Only the parser
+    instance's ``string`` token changes; every other conversion keeps the
+    substrate's own behavior.
+    """
+    base = parser.symbol_table["string"]
+
+    def string_value(self: Any, obj: Any) -> str:
+        if isinstance(obj, bool):
+            return "true" if obj else "false"
+        if isinstance(obj, float):
+            single = getattr(type(obj), "name", None) == "float"
+            return canonical_float_string(float(obj), single=single)
+        if isinstance(obj, Decimal):
+            return canonical_decimal_string(Decimal(obj))
+        return base.string_value(self, obj)
+
+    parser._register(
+        "string",
+        "_PyxsdStringFunction",
+        bases=(base,),
+        label=base.label,
+        nargs=getattr(base, "nargs", (0, 1)),
+        sequence_types=getattr(base, "sequence_types", ()),
+        string_value=string_value,
+    )
 
 
 def sequence_to_elementpath(

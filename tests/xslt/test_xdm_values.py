@@ -225,6 +225,98 @@ def test_special_float_lexical_forms():
 
 
 @pytest.mark.parametrize(
+    ("atomic", "string_value"),
+    [
+        # xs:double uses the F&O 3.1 §19.1.1 canonical string form: an
+        # integer-valued double has no fractional part, negative zero keeps
+        # its sign, and values outside [1e-6, 1e6) use scientific notation
+        # with one digit before and at least one digit after the point.
+        (XdmAtomic.double(2.0), "2"),
+        (XdmAtomic.double(-2.0), "-2"),
+        (XdmAtomic.double(1.5), "1.5"),
+        (XdmAtomic.double(1e6), "1.0E6"),
+        (XdmAtomic.double(999999.0), "999999"),
+        (XdmAtomic.double(1e-6), "0.000001"),
+        (XdmAtomic.double(1e-13), "1.0E-13"),
+        (XdmAtomic.double(12345678901234.0), "1.2345678901234E13"),
+        (XdmAtomic.double(0.0), "0"),
+        (XdmAtomic.double(-0.0), "-0"),
+        (XdmAtomic.double(math.inf), "INF"),
+        (XdmAtomic.double(-math.inf), "-INF"),
+        (XdmAtomic.double(math.nan), "NaN"),
+        # xs:float is binary32: the shortest form that round-trips to the
+        # same binary32 value, not the shortest binary64 spelling of the
+        # binary64 approximation.
+        (XdmAtomic.float(-1.75e-3), "-0.00175"),
+        (XdmAtomic.float(1.5), "1.5"),
+        (XdmAtomic.float(0.0), "0"),
+        # xs:decimal has no exponent and no negative zero.
+        (XdmAtomic.decimal("1.50"), "1.5"),
+        (XdmAtomic.decimal("2.00"), "2"),
+        (XdmAtomic.decimal("-0.00"), "0"),
+        (XdmAtomic.integer(3), "3"),
+        (XdmAtomic.boolean(True), "true"),
+    ],
+)
+def test_atomic_string_value_uses_the_fo_canonical_numeric_forms(
+    atomic: XdmAtomic,
+    string_value: str,
+) -> None:
+    assert atomic.string_value == string_value
+
+
+def test_canonical_float_string_covers_the_special_values() -> None:
+    from pyxsd.xdm.values import canonical_float_string
+
+    assert canonical_float_string(math.inf, single=False) == "INF"
+    assert canonical_float_string(-math.inf, single=True) == "-INF"
+    assert canonical_float_string(math.nan, single=False) == "NaN"
+    assert canonical_float_string(-0.0, single=False) == "-0"
+    assert canonical_float_string(0.0, single=True) == "0"
+
+
+def test_atomic_string_value_and_xsd_lexical_form_stay_distinct() -> None:
+    double = XdmAtomic.double(2.0)
+    decimal = XdmAtomic.decimal("2.00")
+    assert double.lexical == "2.0"
+    assert decimal.lexical == "2.00"
+    assert double.string_value == "2"
+    assert decimal.string_value == "2"
+
+
+def test_atomic_string_value_canonicalizes_durations() -> None:
+    cases = [
+        (XdmAtomic.typed(xsd.Duration("P12M"), xsd.Duration), "P1Y"),
+        (XdmAtomic.typed(xsd.Duration("-P12M23DT0M59.123S"), xsd.Duration), "-P1Y23DT59.123S"),
+        (XdmAtomic.typed(xsd.Duration("PT0.123456789S"), xsd.Duration), "PT0.123456789S"),
+        (XdmAtomic.typed(xsd.Duration("P0Y0M0DT0H0M0S"), xsd.Duration), "PT0S"),
+        (XdmAtomic.typed(xsd.YearMonthDuration("P12M"), xsd.YearMonthDuration), "P1Y"),
+        (XdmAtomic.typed(xsd.DayTimeDuration("PT36H"), xsd.DayTimeDuration), "P1DT12H"),
+    ]
+    for atomic, string_value in cases:
+        assert atomic.string_value == string_value
+
+
+def test_canonical_duration_string_falls_back_and_keeps_minutes() -> None:
+    from pyxsd.xdm.values import canonical_duration_string
+
+    assert canonical_duration_string("not-a-duration", "duration") == "not-a-duration"
+    assert canonical_duration_string("PT1H5M", "duration") == "PT1H5M"
+
+
+def test_atomic_string_value_preserves_every_non_numeric_xsd_lexical_form() -> None:
+    for atomic in (
+        XdmAtomic.string("a"),
+        XdmAtomic.untyped_atomic("a"),
+        XdmAtomic.any_uri("urn:x"),
+        XdmAtomic.typed(xsd.Date("1999-05-31"), xsd.Date),
+        XdmAtomic.typed(xsd.HexBinary("07FF"), xsd.HexBinary),
+        XdmAtomic.typed(xsd.Duration("P1Y2M"), xsd.Duration),
+    ):
+        assert atomic.string_value == atomic.lexical
+
+
+@pytest.mark.parametrize(
     ("factory", "value"),
     [
         (XdmAtomic.string, 1),

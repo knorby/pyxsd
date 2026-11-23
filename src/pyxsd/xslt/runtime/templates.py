@@ -774,7 +774,7 @@ def builtin_step(
             return Continue(
                 replace(
                     resume,
-                    values=(*resume.values, invocation._text_node(item.lexical)),
+                    values=(*resume.values, invocation._text_node(item.string_value)),
                 )
             )
         return None
@@ -906,7 +906,7 @@ def builtin_value(
                 return (invocation._text_node(item.string_value),)
             return ()
         if isinstance(item, XdmAtomic):
-            return (invocation._text_node(item.lexical),)
+            return (invocation._text_node(item.string_value),)
         return ()
     if variant == "deep-skip":
         if isinstance(item, XdmNode) and item.kind is NodeKind.DOCUMENT:

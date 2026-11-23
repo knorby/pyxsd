@@ -121,6 +121,7 @@ from pyxsd.xpath.functions import (
     call_host_function,
     clone_function_token,
     function_arity,
+    install_string_function,
     sequence_to_elementpath,
 )
 from pyxsd.xpath.regex_cache import install_regex_translation_cache
@@ -1674,6 +1675,7 @@ def _build_parser(
         _install_constructor_partial_application(parser)
         _install_comparison_string_atomization(parser)
         _install_lang_function(parser)
+        install_string_function(parser)
         if version == "2.0":
             _install_xpath20_regex_surface(parser)
         _register_schema_constructors(parser, static_context)

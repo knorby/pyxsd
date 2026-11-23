@@ -71,6 +71,52 @@ def test_function_argument_and_result_conversion() -> None:
     )
 
 
+def test_function_conversion_keeps_a_subtype_value_unchanged() -> None:
+    """``as="xs:decimal"`` accepts an xs:integer without changing its type."""
+    source = stylesheet(
+        """
+        <xsl:variable name="v" select="xs:integer(-300)" as="xs:decimal"/>
+        <xsl:template name="main">
+          <xsl:sequence select="$v instance of xs:integer"/>
+          <xsl:sequence select="$v instance of xs:decimal"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main").principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+    )
+
+
+def test_boolean_values_keep_their_xsd_type_identity_across_the_bridge() -> None:
+    """A bound xs:boolean reaches expressions as xs:boolean, not xs:integer.
+
+    ``pyxsd.xsd_data_types.Boolean`` is an ``int`` subclass for the XSD value
+    space, but Python ``bool`` is the bridge's xs:boolean.  Handing the payload
+    through unchanged made a typed variable report
+    ``$b instance of xs:boolean`` as false and ``instance of xs:integer`` as
+    true.
+    """
+    source = stylesheet(
+        """
+        <xsl:variable name="typed" select="xs:boolean('true')" as="xs:boolean"/>
+        <xsl:variable name="computed" select="1 = 1" as="xs:boolean"/>
+        <xsl:template name="main">
+          <xsl:sequence select="$typed instance of xs:boolean"/>
+          <xsl:sequence select="$typed instance of xs:integer"/>
+          <xsl:sequence select="$computed instance of xs:boolean"/>
+          <xsl:sequence select="$computed instance of xs:integer"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main").principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(False),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(False),
+    )
+
+
 def test_function_argument_and_result_type_errors() -> None:
     argument = stylesheet(
         """
@@ -1475,3 +1521,82 @@ def test_namespace_functions_reject_a_non_element_argument() -> None:
         """
     )
     assert error_code(lambda: transform(atomic_body, initial_template="main")) == "XPTY0004"
+
+
+def test_atomic_to_elementpath_keeps_xsd_type_identity() -> None:
+    from elementpath.datatypes import (
+        AnyURI,
+        Date,
+        Duration,
+        Float,
+        Int,
+        QName,
+        XsdToken,
+    )
+
+    from pyxsd import xsd_data_types as xsd
+    from pyxsd.xpath.functions import atomic_to_elementpath
+    from pyxsd.xsd_data_types import qname_context
+
+    assert atomic_to_elementpath(XdmAtomic.boolean(True)) is True
+    assert isinstance(atomic_to_elementpath(XdmAtomic.typed(xsd.Int(3), xsd.Int)), Int)
+    assert isinstance(atomic_to_elementpath(XdmAtomic.typed(xsd.Float(1.5), xsd.Float)), Float)
+    assert isinstance(atomic_to_elementpath(XdmAtomic.typed(xsd.Token("a"), xsd.Token)), XsdToken)
+    assert isinstance(
+        atomic_to_elementpath(XdmAtomic.typed(xsd.AnyURI("urn:x"), xsd.AnyURI)), AnyURI
+    )
+    assert isinstance(
+        atomic_to_elementpath(XdmAtomic.typed(xsd.Date("1999-05-31"), xsd.Date)), Date
+    )
+    assert isinstance(
+        atomic_to_elementpath(XdmAtomic.typed(xsd.Duration("P1Y"), xsd.Duration)), Duration
+    )
+
+    with qname_context({"p": "urn:x"}):
+        resolved = XdmAtomic.typed(xsd.QName("p:local"), xsd.QName)
+    bridged = atomic_to_elementpath(resolved)
+    assert isinstance(bridged, QName)
+    assert bridged.namespace == "urn:x"
+    assert bridged.local_name == "local"
+
+    # An unresolved QName has no namespace to build elementpath's value from.
+    unresolved = XdmAtomic.typed(xsd.QName("local"), xsd.QName)
+    assert atomic_to_elementpath(unresolved) is unresolved.value
+
+
+def test_atomic_to_elementpath_leaves_custom_types_and_host_payloads_alone() -> None:
+    from pyxsd import xsd_data_types as xsd
+    from pyxsd.xpath.functions import atomic_to_elementpath
+
+    class _CustomString(xsd.String):
+        name = "custom"
+        _targetNamespace_ = "urn:test"
+
+    custom = XdmAtomic(_CustomString("value"), "{urn:test}custom", _CustomString)
+    assert atomic_to_elementpath(custom) is custom.value
+
+    # A payload that is not an elementpath atomic converts through its lexical form.
+    plain = XdmAtomic("plain", "{urn:test}payload")
+    assert atomic_to_elementpath(plain) == "plain"
+    payload = XdmAtomic(b"plain", "{urn:test}payload")
+    assert atomic_to_elementpath(payload) == "b'plain'"
+
+
+def test_fn_string_uses_the_fo_canonical_numeric_forms() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:value-of select="string(true())"/>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="string(xs:double(7000000))"/>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="string(xs:float(-1.75e-3))"/>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="string(xs:decimal('2.50'))"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        "".join(item.string_value for item in transform(source, initial_template="main").principal)
+        == "true|7.0E6|-0.00175|2.5"
+    )

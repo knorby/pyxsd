@@ -656,6 +656,19 @@ def test_zero_length_atomic_strings_keep_their_separators() -> None:
     assert empties_root.children[0].string_value == "  "
 
 
+def test_atomic_complex_content_uses_the_fo_string_value() -> None:
+    builder = ResultBuilder.document()
+    root = _element(builder)
+    builder.append(
+        (
+            XdmAtomic.double(2.0),
+            XdmAtomic.decimal("2.50"),
+            XdmAtomic.float(-1.75e-3),
+        )
+    )
+    assert root.children[0].string_value == "2 2.5 -0.00175"
+
+
 def test_append_text_nodes_merges_with_existing_text() -> None:
     text = _xml(b"<s>source</s>").root_element.children[0]
     builder = ResultBuilder.document()

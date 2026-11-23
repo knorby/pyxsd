@@ -422,7 +422,7 @@ class LanguageProfile:
                 "string conversion requires a singleton sequence",
                 code="XPTY0004",
             )
-        return atomized[0].lexical
+        return atomized[0].string_value
 
 
 def _property_name(value: str) -> tuple[str | None, str]:

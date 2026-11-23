@@ -47,6 +47,7 @@ from pyxsd.xdm.legacy import ResultTreeFragment
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xdm.values import _coerce_atomic as _function_conversion_atomic
+from pyxsd.xdm.values import is_xsd_subtype
 from pyxsd.xpath.continuation import (
     ContinuationMachine,
     HostFunction,
@@ -5875,6 +5876,13 @@ def _coerce_atomic(
                 code, f"{label} requires {item_type}, cannot convert {item.lexical!r}"
             ) from cast_exc
     local = required.rpartition("}")[2].rpartition(":")[2]
+    item_local = item.type_name.rpartition("}")[2].rpartition(":")[2]
+    if is_xsd_subtype(item_local, local):
+        # Function conversion (XPath 3.1 §3.1.5.2): a value whose type is the
+        # required type or one of its subtypes is used unchanged.  Casting an
+        # xs:integer to xs:decimal here would lose the subtype, so an
+        # ``as="xs:decimal"`` variable would no longer be an xs:integer.
+        return item
     if strict:
         try:
             return _function_conversion_atomic(item, local)

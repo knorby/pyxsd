@@ -652,8 +652,8 @@ def test_sort_before_merge_uses_merge_wide_promoted_numeric_order() -> None:
         ] == [
             ("0.1", "decimal"),
             ("0.1000000001", "decimal"),
-            ("1.0", "float"),
-            ("2.0", "double"),
+            ("1", "float"),
+            ("2", "double"),
         ]
 
 
