@@ -72,11 +72,12 @@ def _to_xdm(
                 for index, member in enumerate(value)
             ),
         )
+    native = _atomic(value)
     if converter is not None:
         converted = converter(pointer, value)
         if converted is not None:
             return as_xdm(converted)
-    return (_atomic(value),)
+    return (native,)
 
 
 def _escape(segment: str) -> str:

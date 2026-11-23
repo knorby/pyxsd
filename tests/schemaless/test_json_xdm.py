@@ -122,3 +122,41 @@ def test_object_keys_must_be_strings():
 def test_non_finite_floats_are_rejected(value):
     with pytest.raises(TypeError, match="non-finite floats"):
         json_to_xdm(value)
+
+
+def _accepting_converter(calls):
+    """A converter that records its calls and always replaces the value."""
+
+    def converter(pointer, value):
+        calls.append((pointer, value))
+        return XdmAtomic.string("replacement")
+
+    return converter
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf], ids=["nan", "inf", "-inf"])
+def test_invalid_floats_are_rejected_before_the_converter(value):
+    calls = []
+    with pytest.raises(TypeError, match="non-finite floats"):
+        json_to_xdm(value, converter=_accepting_converter(calls))
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")],
+    ids=["nan", "inf", "-inf"],
+)
+def test_invalid_decimals_are_rejected_before_the_converter(value):
+    calls = []
+    with pytest.raises(TypeError, match="finite"):
+        json_to_xdm(value, converter=_accepting_converter(calls))
+    assert calls == []
+
+
+@pytest.mark.parametrize("value", [object(), {1, 2}], ids=["object", "set"])
+def test_unsupported_objects_are_rejected_before_the_converter(value):
+    calls = []
+    with pytest.raises(TypeError, match="not a native JSON scalar"):
+        json_to_xdm(value, converter=_accepting_converter(calls))  # type: ignore[arg-type]
+    assert calls == []
