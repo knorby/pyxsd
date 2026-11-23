@@ -415,26 +415,31 @@ class SchemaGuidance:
         format_assertion: bool = False,
     ) -> SchemaGuidance:
         api = _load_optional()
-        schemas = _Schemas(api, limits)
-        runtime = _Resources(schemas, resource_policy)
-        root = _read_schema(schema, limits)
-        resource = schemas.resource(root, base_uri)
-        registry = _offline_registry()
-        if reference_registry is not None:
-            for uri, value in reference_registry.items():
-                item = schemas.resource(_read_schema(value.contents, limits), uri)
-                registry = runtime.register(registry, uri, uri, item)
-        registry = runtime.register(registry, base_uri or "", base_uri or "", resource)
-        resolver = _Resolver(
-            schemas, registry, runtime.aliases[base_uri or ""], base_uri, (), runtime
-        )
-        evaluator = _evaluator(schemas)
-        validator = evaluator(
-            root,
-            _resolver=resolver,
-            registry=registry,
-            format_checker=schemas.draft.FORMAT_CHECKER if format_assertion else None,
-        )
+        try:
+            schemas = _Schemas(api, limits)
+            runtime = _Resources(schemas, resource_policy)
+            root = _read_schema(schema, limits)
+            resource = schemas.resource(root, base_uri)
+            registry = _offline_registry()
+            if reference_registry is not None:
+                for uri, value in reference_registry.items():
+                    item = schemas.resource(_read_schema(value.contents, limits), uri)
+                    registry = runtime.register(registry, uri, uri, item)
+            registry = runtime.register(registry, base_uri or "", base_uri or "", resource)
+            resolver = _Resolver(
+                schemas, registry, runtime.aliases[base_uri or ""], base_uri, (), runtime
+            )
+            evaluator = _evaluator(schemas)
+            validator = evaluator(
+                root,
+                _resolver=resolver,
+                registry=registry,
+                format_checker=schemas.draft.FORMAT_CHECKER if format_assertion else None,
+            )
+        except RecursionError as exc:
+            raise JsonSchemaError(
+                "JSON Schema compilation exceeded the host recursion limit"
+            ) from exc
         return cls(validator, resolver, source, limits, resource_policy)
 
     def validate(self, value: NativeJsonValue) -> ValidationReport:

@@ -84,6 +84,35 @@ def test_invalid_schemas_raise_before_evaluating_even_a_valid_instance(schema, m
         from_json("null", json_schema=schema)
 
 
+def test_deep_schema_meta_validation_reports_compilation_recursion():
+    schema = {"type": "integer"}
+    # Meta-validation consumes several frames per nested applicator, more
+    # than the initial native-number normalization.
+    for _ in range(sys.getrecursionlimit() // 3):
+        schema = {"not": schema}
+
+    with pytest.raises(schemaless.JsonSchemaError, match=r"compilation.*recursion") as exc:
+        from_data(1, json_schema=schema)
+    assert isinstance(exc.value.__cause__, RecursionError)
+
+
+def test_deep_registered_schema_reports_compilation_recursion():
+    schema = {"type": "integer"}
+    for _ in range(sys.getrecursionlimit() + 1):
+        schema = {"not": schema}
+    registry = Registry().with_resource(_REMOTE, DRAFT202012.create_resource(schema))
+
+    with pytest.raises(schemaless.JsonSchemaError, match=r"compilation.*recursion") as exc:
+        from_data(1, json_schema={"$ref": _REMOTE}, reference_registry=registry)
+    assert isinstance(exc.value.__cause__, RecursionError)
+
+
+def test_shallow_nested_schema_still_reports_instance_validity():
+    schema = {"not": {"not": {"type": "integer"}}}
+    assert from_data(1, json_schema=schema).is_valid
+    assert from_data("1", json_schema=schema).report.error_count == 1
+
+
 @pytest.mark.parametrize(
     "schema",
     [
