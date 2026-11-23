@@ -35,6 +35,10 @@ class JsonLimitError(ResourcePolicyError):
     """Native JSON input exceeded one of its structural or byte budgets."""
 
 
+class JsonSchemaError(PyXSDError):
+    """JSON Schema could not be compiled or evaluated for this document."""
+
+
 class ScalarTypeError(PyXSDError):
     """The lexical value at an explicitly pinned location was rejected."""
 

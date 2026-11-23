@@ -18,6 +18,7 @@ spelling, and the untyped data export never change because of a policy.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from decimal import Decimal
 from typing import IO, TYPE_CHECKING, Any, Literal, overload
 
@@ -39,12 +40,16 @@ from pyxsd.xdm.values import XdmAtomic, XdmSequence
 from pyxsd.xsd_data_types import qname_context
 
 if TYPE_CHECKING:
+    from referencing.jsonschema import SchemaRegistry
+
+    from pyxsd.resource_policy import ResourcePolicy
     from pyxsd.schemaless.document import SchemalessDocument
     from pyxsd.schemaless.mapping import XmlMapping
     from pyxsd.schemaless.nodes import NodeMapping
     from pyxsd.schemaless.profile import DocumentProfile, ProfileLimits
 
 _JsonSource = str | bytes | bytearray | memoryview | IO[str] | IO[bytes]
+_JsonSchemaInput = bool | Mapping[str, object] | str
 _ScalarValue = bool | int | float | Decimal | str
 _POINTER_BAD_ESCAPE = re.compile(r"~(?:[^01]|$)")
 
@@ -105,13 +110,13 @@ def _typed_scalar(source: str, pointer: str, adapter: ScalarAdapter, value: _Sca
 
 
 class JsonDocument:
-    """One native JSON value with an initially empty validation report.
+    """One native JSON value with an optional JSON Schema validation report.
 
     ``source`` is the recorded input name (``"<memory>"`` for anonymous text,
     bytes, streams, and host data), ``report`` is the document's report, and
-    ``is_valid`` is false once that report holds an error. Schema evaluation in
-    a later layer fills the report; parsing itself either succeeds completely
-    or raises. ``types`` is the immutable scalar policy; the default is
+    ``is_valid`` is false once that report records an error. A schema-invalid
+    instance still supports native reads and XDM conversion. ``types`` is the
+    immutable scalar policy; the default is
     :meth:`~pyxsd.schemaless.types.TypePolicy.native`, and :meth:`pin_type`
     replaces it for this document only.
     """
@@ -148,7 +153,7 @@ class JsonDocument:
 
     @property
     def report(self) -> ValidationReport:
-        """The document's report, empty until a later layer evaluates a schema."""
+        """The document's report, empty when built without JSON Schema guidance."""
         return self._report
 
     @property
@@ -405,6 +410,11 @@ def from_data(
     *,
     limits: JsonLimits | None = None,
     types: TypePolicy | None = None,
+    json_schema: _JsonSchemaInput | None = None,
+    base_uri: str | None = None,
+    reference_registry: SchemaRegistry | None = None,
+    resource_policy: ResourcePolicy | None = None,
+    format_assertion: bool = False,
 ) -> JsonDocument:
     """Copy host data into a new native JSON document.
 
@@ -418,10 +428,20 @@ def from_data(
     *types* is the document's scalar policy for typed reads and XDM
     conversion; the default is
     :meth:`~pyxsd.schemaless.types.TypePolicy.native`, which preserves every
-    native scalar kind.
+    native scalar kind. For the optional schema arguments, see :func:`from_json`.
     """
     data = copy_native_data(value, limits=limits)
-    return JsonDocument._from_owned(data, source="<memory>", types=types)
+    return _build_document(
+        data,
+        "<memory>",
+        types,
+        limits,
+        json_schema,
+        base_uri,
+        reference_registry,
+        resource_policy,
+        format_assertion,
+    )
 
 
 def from_json(
@@ -429,6 +449,11 @@ def from_json(
     *,
     limits: JsonLimits | None = None,
     types: TypePolicy | None = None,
+    json_schema: _JsonSchemaInput | None = None,
+    base_uri: str | None = None,
+    reference_registry: SchemaRegistry | None = None,
+    resource_policy: ResourcePolicy | None = None,
+    format_assertion: bool = False,
 ) -> JsonDocument:
     """Decode JSON text, bytes, or a stream into a new native JSON document.
 
@@ -444,13 +469,59 @@ def from_json(
     conversion; the default is
     :meth:`~pyxsd.schemaless.types.TypePolicy.native`, which preserves every
     native scalar kind. Parsed JSON text never changes because of it.
+
+    *json_schema* accepts a Draft 2020-12 boolean, mapping, or strict JSON
+    text. Relative references use the schema's *base_uri*, not the instance
+    source. External resources must be registered in *reference_registry*
+    or authorized and read by *resource_policy*. Format is an annotation
+    unless *format_assertion* is true. Invalid schemas or unresolved references
+    raise :class:`~pyxsd.schemaless.errors.JsonSchemaError`; instance failures
+    are recorded in the document's report.
     """
     source_name = _source_name(source)
     try:
         value = decode_json(source, limits=limits)
     except JsonParseError as error:
         raise _source_error(source_name, error) from error
-    return JsonDocument._from_owned(value, source=source_name, types=types)
+    return _build_document(
+        value,
+        source_name,
+        types,
+        limits,
+        json_schema,
+        base_uri,
+        reference_registry,
+        resource_policy,
+        format_assertion,
+    )
+
+
+def _build_document(
+    value: NativeJsonValue,
+    source: str,
+    types: TypePolicy | None,
+    limits: JsonLimits | None,
+    json_schema: _JsonSchemaInput | None,
+    base_uri: str | None,
+    reference_registry: SchemaRegistry | None,
+    resource_policy: ResourcePolicy | None,
+    format_assertion: bool,
+) -> JsonDocument:
+    document = JsonDocument._from_owned(value, source=source, types=types)
+    if json_schema is not None:
+        from pyxsd.schemaless.json_schema import SchemaGuidance
+
+        guidance = SchemaGuidance.compile(
+            json_schema,
+            source=source,
+            limits=limits,
+            base_uri=base_uri,
+            reference_registry=reference_registry,
+            resource_policy=resource_policy,
+            format_assertion=format_assertion,
+        )
+        document._report = guidance.validate(value)
+    return document
 
 
 __all__ = [
