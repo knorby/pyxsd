@@ -239,6 +239,7 @@ class TransformationResult:
     principal_entry: ResultEntry
     secondary: Mapping[str, ResultEntry] = field(default_factory=dict)
     messages: tuple[Message, ...] = ()
+    warnings: tuple[str, ...] = ()
     _output_policy: OutputPolicy | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -261,6 +262,10 @@ class TransformationResult:
         if not all(isinstance(message, Message) for message in messages):
             raise TypeError("result messages must be Message values")
         object.__setattr__(self, "messages", messages)
+        warnings = tuple(self.warnings)
+        if not all(isinstance(warning, str) for warning in warnings):
+            raise TypeError("result warnings must be strings")
+        object.__setattr__(self, "warnings", warnings)
 
     @property
     def principal(self) -> XdmSequence:

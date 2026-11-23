@@ -51,6 +51,8 @@ if TYPE_CHECKING:
 ModeKey = str | None
 HiddenModeKey = tuple[ModeKey, str | None]
 
+_BOOLEAN_MODE_VALUES: frozenset[str] = frozenset({"yes", "no", "true", "false", "1", "0"})
+
 _TYPED_MODE_VALUES: Mapping[str, str] = MappingProxyType(
     {
         "yes": "yes",
@@ -333,9 +335,56 @@ def _merge_mode_properties(
         )
         if local == "typed":
             value = _typed_mode_value(value, declaration)
+        elif local in (
+            "on-no-match",
+            "on-multiple-match",
+            "warning-on-no-match",
+            "warning-on-multiple-match",
+        ):
+            value = _normalized_mode_property(value, local, declaration)
         properties[local] = value
         property_namespaces[local] = declaration.element.in_scope_namespaces
     return MappingProxyType(properties), MappingProxyType(property_namespaces)
+
+
+def _normalized_mode_property(value: str, local: str, declaration: _Declaration) -> str:
+    """Trim and validate one token/boolean mode property.
+
+    XSLT attribute values for these properties are tokens and booleans; the
+    corpus and the specification both expect leading/trailing whitespace to be
+    insignificant.  Invalid values are static errors (XTSE0020) rather than
+    deferred runtime failures.
+    """
+    normalized = value.strip()
+    if local == "on-no-match" or local == "on-multiple-match":
+        allowed = (
+            {"use-last", "fail"}
+            if local == "on-multiple-match"
+            else {
+                "shallow-copy",
+                "shallow-skip",
+                "deep-copy",
+                "deep-skip",
+                "text-only-copy",
+                "fail",
+            }
+        )
+        if normalized not in allowed:
+            raise _error(
+                f"invalid {local} value {value!r}",
+                "XTSE0020",
+                element=declaration.element,
+                module=declaration.module,
+            )
+        return normalized
+    if normalized not in _BOOLEAN_MODE_VALUES:
+        raise _error(
+            f"invalid {local} value {value!r}",
+            "XTSE0020",
+            element=declaration.element,
+            module=declaration.module,
+        )
+    return normalized
 
 
 def _typed_mode_value(value: str, declaration: _Declaration) -> str:

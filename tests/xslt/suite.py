@@ -334,7 +334,7 @@ def _snapshot(result: TransformationResult, output_uri: str | None = None) -> Re
         serialized=view.serialized,
         messages=messages,
         secondary={uri: _snapshot_entry(value) for uri, value in result.secondary.items()},
-        warnings=(),
+        warnings=result.warnings,
         serialization_method=view.serialization_method,
         serialization_encoding=view.serialization_encoding,
     )

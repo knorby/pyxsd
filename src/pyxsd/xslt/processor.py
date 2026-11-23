@@ -6025,6 +6025,7 @@ class _Invocation(Transformation):
         self.current_merge_sources: tuple[str, ...] = ()
         self.current_regex_groups: tuple[str, ...] | None = None
         self.messages: list[Message] = []
+        self.warnings: list[str] = []
         validation_type = options.validation_type
         if validation_type is not None and stylesheet.schema_pool is not None:
             validation_type = _expanded_name(validation_type, self.package.namespaces)
@@ -6139,6 +6140,7 @@ class _Invocation(Transformation):
             entry,
             secondary=secondary,
             messages=tuple(self.messages),
+            warnings=tuple(self.warnings),
             _output_policy=policy,
         )
 
@@ -7327,7 +7329,7 @@ class _Invocation(Transformation):
                                     locals={},
                                     final_output=False,
                                     package_name=component.owner,
-                                    mode=None,
+                                    mode=context.mode,
                                     tunnel_parameters={},
                                     rule_context=None,
                                     original_functions={},

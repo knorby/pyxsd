@@ -42,7 +42,7 @@ from pyxsd.xslt.compiler.plans import (
     _Plan,
     _RuleContext,
 )
-from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltStaticError
+from pyxsd.xslt.errors import XsltDynamicError, XsltError
 from pyxsd.xslt.precedence import compare_precedence
 from pyxsd.xslt.results import _append_complex_content, _NodeFactory
 from pyxsd.xslt.runtime.context import EvaluationContext
@@ -254,10 +254,7 @@ class RuleDispatcher:
             selected = matches[0]
             if self.on_multiple_match == "fail":
                 tied = {
-                    (
-                        id(match.rule),
-                        match.alternative_index if match.rule.priority is None else None,
-                    )
+                    id(match.rule)
                     for match in matches
                     if match.rule.precedence == selected.rule.precedence
                     and match.priority == selected.priority
@@ -646,12 +643,33 @@ def step_apply(invocation: _Invocation, frame: Frame) -> FrameResult:
         return invocation._return_frame(frame)
     item = state.items[state.index]
     focus = Focus.singleton(item, position=state.index + 1, size=len(state.items))
-    rule = invocation._dispatcher(state.mode, state.mode_package).select(
+    dispatcher = invocation._dispatcher(state.mode, state.mode_package)
+    properties = invocation._mode_properties(state.mode, state.mode_package)
+    rule = dispatcher.select(
         item,
         state.mode,
         invocation._environment(EvaluationContext(package_name=state.package_name)),
         invocation._pattern_environment,
     )
+    if rule is not None and _warning_enabled(properties.get("warning-on-multiple-match")):
+        candidates = dispatcher.matches(
+            item,
+            state.mode,
+            invocation._environment(EvaluationContext(package_name=state.package_name)),
+            invocation._pattern_environment,
+        )
+        tied = {
+            id(candidate.rule)
+            for candidate in candidates
+            if candidate.rule.precedence == rule.rule.precedence
+            and candidate.priority == rule.priority
+        }
+        if len(tied) > 1:
+            invocation.warnings.append(
+                f"more than one template rule matches {item.kind.value} at priority {rule.priority}"
+            )
+    elif rule is None and _warning_enabled(properties.get("warning-on-no-match")):
+        invocation.warnings.append(f"no template rule matches {item.kind.value}")
     next_state = replace(state, index=state.index + 1)
     resume = replace(frame, program=next_state)
     last = state.index + 1 == len(state.items)
@@ -675,6 +693,10 @@ def step_apply(invocation: _Invocation, frame: Frame) -> FrameResult:
         grouping_key=state.grouping_key,
     )
     return Call(child, resume=resume, tail=tail)
+
+
+def _warning_enabled(value: str | None) -> bool:
+    return (value or "").strip() in {"yes", "true", "1"}
 
 
 def builtin_step(
@@ -833,20 +855,9 @@ def builtin_step(
 def builtin_variant(
     invocation: _Invocation, mode: str | None, mode_package: str | None = None
 ) -> str:
-    variant = invocation._mode_properties(mode, mode_package).get("on-no-match", "text-only-copy")
-    if variant not in {
-        "text-only-copy",
-        "deep-copy",
-        "shallow-copy",
-        "deep-skip",
-        "shallow-skip",
-        "fail",
-    }:
-        raise XsltStaticError(
-            f"invalid on-no-match value {variant!r}",
-            code="XTSE0020",
-        )
-    return variant
+    # Compilation validates the value against the XSLT 3.0 enumeration
+    # (XTSE0020), so the runtime selection only reads the stored property.
+    return invocation._mode_properties(mode, mode_package).get("on-no-match", "text-only-copy")
 
 
 def builtin_value(

@@ -109,6 +109,13 @@ def test_transformation_result_exposes_principal_and_secondary() -> None:
         _ = TransformationResult(ResultEntry((document, document))).principal_tree
 
 
+def test_transformation_result_keeps_ordered_warnings() -> None:
+    result = TransformationResult(ResultEntry(()), warnings=("first", "second"))
+    assert result.warnings == ("first", "second")
+    with pytest.raises(TypeError, match="warnings"):
+        TransformationResult(ResultEntry(()), warnings=(1,))  # type: ignore[arg-type]
+
+
 def test_transformation_result_rejects_bad_secondary_entries() -> None:
     principal = ResultEntry(())
     entry = ResultEntry((), output_uri=SECONDARY_URI)
