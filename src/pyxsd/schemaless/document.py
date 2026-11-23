@@ -23,7 +23,7 @@ from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
 from pyxsd.schemaless.errors import ScalarTypeError
 from pyxsd.schemaless.profile import DocumentProfile, ProfileLimits, _xml_profile
-from pyxsd.schemaless.tree import SchemalessElement, _pinned_value, _XmlPath
+from pyxsd.schemaless.tree import SchemalessElement, SchemalessRevision, _pinned_value, _XmlPath
 from pyxsd.schemaless.types import ScalarAdapter, TypePolicy, TypeRef
 from pyxsd.validation import ValidationReport
 from pyxsd.xdm.document import (
@@ -37,6 +37,7 @@ from pyxsd.xdm.nodes import XdmDocument
 
 if TYPE_CHECKING:
     from pyxsd.data_conversion.contracts import Fidelity, FormatName, JsonValue
+    from pyxsd.schemaless.nodes import _CompiledNodeMapping
     from pyxsd.source_spans import SourceIndex
     from pyxsd.xdm.document import _NodeState
     from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
@@ -70,6 +71,7 @@ class SchemalessDocument(Document):
         xml_policy: XmlParserPolicy | None = None,
         xml_limits: XmlLimits | None = None,
         _xdm_baseline: _BoundSnapshot | None = None,
+        _node_mapping: _CompiledNodeMapping | None = None,
     ) -> None:
         super().__init__(schema=None, root=root, source=source, report=report)
         self.source_index = source_index
@@ -77,6 +79,7 @@ class SchemalessDocument(Document):
         self._report_current = report_current
         self._xml_policy = xml_policy
         self._xml_limits = xml_limits
+        self._node_mapping = _node_mapping
         # Take the baseline before callers can edit the lexical stores. Building
         # the second tree is lazy, but the source/tree association is not.
         self._xdm_baseline = _bound_snapshot(root) if _xdm_baseline is None else _xdm_baseline
@@ -172,15 +175,19 @@ class SchemalessDocument(Document):
 
         The new parse has its own report, source index, lexical revision and
         XDM view. Comments and processing instructions omitted by the editable
-        tree do not survive this round trip.
+        tree do not survive this round trip. Mixin selectors use the paths
+        and lexical values of the new tree.
         """
         from pyxsd.schemaless.parser import _parse_captured_xml
 
+        revision = self.root.revision
         again = _parse_captured_xml(
             self._capture_projection(),
             xml_policy=self._xml_policy,
             xml_limits=self._xml_limits,
-            types=self.root.revision.types,
+            # A generic lexical clone retains node classes but not its typed view.
+            types=revision.types if isinstance(revision, SchemalessRevision) else None,
+            node_mapping=self._node_mapping,
         )
         again.source = self.source
         return again
@@ -288,4 +295,5 @@ class SchemalessDocument(Document):
             xml_policy=self._xml_policy,
             xml_limits=self._xml_limits,
             _xdm_baseline=self._xdm_baseline if unchanged else None,
+            _node_mapping=self._node_mapping,
         )

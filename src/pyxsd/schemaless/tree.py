@@ -214,3 +214,32 @@ class SchemalessElement(LexicalElement):
     @classmethod
     def _create_revision(cls) -> SchemalessRevision:
         return SchemalessRevision()
+
+
+def _project_class(
+    source: SchemalessElement, target: type[SchemalessElement], position: int
+) -> SchemalessElement:
+    """Install a projection without changing the lexical data or revision."""
+    if not target.__dictoffset__:
+        source.__class__ = target
+        return source
+
+    # A plain Python mixin contributes a dict even when the generated
+    # subclass adds no slots. CPython cannot reassign to a different
+    # layout, so transfer this occurrence's stores into a new shell.
+    node = object.__new__(target)
+    node._name_ = source._name_
+    node._attribs_ = source._attribs_
+    node._children_ = source._children_
+    node._value_ = source._value_
+    node._tail_ = source._tail_
+    node._parent_ = parent = source._parent_
+    node._revision = revision = source.revision
+    revision._register_context(node, revision.context_for(source))
+    if parent is None:
+        revision._adopt_root(node)
+    else:
+        parent._children_[position] = node
+    for child in node._children_:
+        child._parent_ = node
+    return node

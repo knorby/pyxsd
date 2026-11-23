@@ -16,6 +16,7 @@ from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
 from pyxsd.resource_policy import ResourcePolicyError
 from pyxsd.schemaless.document import SchemalessDocument
 from pyxsd.schemaless.errors import SchemalessParseError
+from pyxsd.schemaless.nodes import NodeMapping, _CompiledNodeMapping
 from pyxsd.schemaless.tree import SchemalessElement
 from pyxsd.source_spans import SourceIndex
 from pyxsd.validation import ValidationReport
@@ -37,6 +38,7 @@ def parse_xml(
     xml_policy: XmlParserPolicy | None = None,
     xml_limits: XmlLimits | None = None,
     types: TypePolicy | None = None,
+    node_mapping: NodeMapping | None = None,
 ) -> SchemalessDocument:
     """Read XML from a path, bytes, stream, or caller-built element.
 
@@ -44,15 +46,27 @@ def parse_xml(
     A caller-built tree has no original byte spans. Malformed XML raises
     :class:`SchemalessParseError`; policy and budget errors propagate unchanged.
     By default scalar reads are lexical; pass *types* to change interpretation.
+    Pass *node_mapping* to add Python mixins to matching lexical occurrences.
     """
+    if node_mapping is not None and not isinstance(node_mapping, NodeMapping):
+        raise TypeError("node_mapping must be a NodeMapping or None")
+    compiled = None if node_mapping is None else node_mapping._compiled
     if isinstance(source, ET.Element):
         enforce_tree_limits(source, xml_limits, count_non_element_nodes=False)
         element = copy.deepcopy(source)
         element.tail = None  # A root's tail lies outside its document.
-        return _bind_xml(element, xml_policy=xml_policy, xml_limits=xml_limits, types=types)
+        return _bind_xml(
+            element,
+            xml_policy=xml_policy,
+            xml_limits=xml_limits,
+            types=types,
+            node_mapping=compiled,
+        )
     max_bytes = xml_limits.max_bytes if xml_limits is not None else None
     captured = CaptureSource.from_input(source, max_bytes=max_bytes)
-    return _parse_captured_xml(captured, xml_policy=xml_policy, xml_limits=xml_limits, types=types)
+    return _parse_captured_xml(
+        captured, xml_policy=xml_policy, xml_limits=xml_limits, types=types, node_mapping=compiled
+    )
 
 
 def _parse_captured_xml(
@@ -61,6 +75,7 @@ def _parse_captured_xml(
     xml_policy: XmlParserPolicy | None,
     xml_limits: XmlLimits | None,
     types: TypePolicy | None,
+    node_mapping: _CompiledNodeMapping | None = None,
 ) -> SchemalessDocument:
     """Parse a byte revision with an already resolved source name and URI."""
     limits = xml_limits or XmlLimits()
@@ -85,6 +100,7 @@ def _parse_captured_xml(
         xml_policy=policy,
         xml_limits=limits,
         types=types,
+        node_mapping=node_mapping,
     )
 
 
@@ -97,6 +113,7 @@ def _bind_xml(
     xml_policy: XmlParserPolicy | None,
     xml_limits: XmlLimits | None,
     types: TypePolicy | None,
+    node_mapping: _CompiledNodeMapping | None = None,
 ) -> SchemalessDocument:
     source_name = captured.source_name if captured is not None else "<memory>"
     base_uri = captured.document_uri if captured is not None else None
@@ -104,6 +121,8 @@ def _bind_xml(
     root = SchemalessElement.from_etree(
         element, namespaces=namespaces, base_uri=base_uri, source=location
     )
+    if node_mapping is not None and node_mapping.rules:
+        root = node_mapping.apply(root)
     if types is not None:
         root.revision._set_types(types)
     return SchemalessDocument(
@@ -114,6 +133,7 @@ def _bind_xml(
         capture_source=captured,
         xml_policy=xml_policy,
         xml_limits=xml_limits,
+        _node_mapping=node_mapping,
     )
 
 
