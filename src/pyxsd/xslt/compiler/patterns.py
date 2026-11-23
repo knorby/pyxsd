@@ -778,10 +778,16 @@ def _evaluate_intersect_except(
     candidate: XdmNode,
     statistics: PatternStatistics,
     schema: SchemaPool | None,
+    *,
+    top: bool = True,
 ) -> tuple[XdmNode, ...]:
-    result = _evaluate_path(expr.first, context_node, environment, candidate, statistics, schema)
+    result = _evaluate_path(
+        expr.first, context_node, environment, candidate, statistics, schema, top=top
+    )
     for operator, path in expr.rest:
-        other = set(_evaluate_path(path, context_node, environment, candidate, statistics, schema))
+        other = set(
+            _evaluate_path(path, context_node, environment, candidate, statistics, schema, top=top)
+        )
         if operator == "intersect":
             result = tuple(node for node in result if node in other)
         else:
@@ -796,11 +802,13 @@ def _evaluate_union(
     candidate: XdmNode,
     statistics: PatternStatistics,
     schema: SchemaPool | None,
+    *,
+    top: bool,
 ) -> tuple[XdmNode, ...]:
     nodes: dict[XdmNode, None] = {}
     for alternative in union.alternatives:
         for node in _evaluate_intersect_except(
-            alternative, context_node, environment, candidate, statistics, schema
+            alternative, context_node, environment, candidate, statistics, schema, top=top
         ):
             nodes[node] = None
     return tuple(sorted(nodes, key=lambda node: (id(node.root), node.document_order)))
@@ -813,10 +821,12 @@ def _evaluate_path(
     candidate: XdmNode,
     statistics: PatternStatistics,
     schema: SchemaPool | None,
+    *,
+    top: bool = True,
 ) -> tuple[XdmNode, ...]:
     if isinstance(path, RelativePath):
         return _evaluate_steps(
-            path, (context_node,), environment, candidate, statistics, schema, top=True
+            path, (context_node,), environment, candidate, statistics, schema, top=top
         )
     if isinstance(path, AbsoluteOnly):
         root = context_node.root
@@ -939,7 +949,7 @@ def _evaluate_step(
 ) -> tuple[XdmNode, ...]:
     if isinstance(step, PostfixStep):
         nodes = _evaluate_union(
-            step.union, context_node, environment, candidate, statistics, schema
+            step.union, context_node, environment, candidate, statistics, schema, top=top
         )
         return _filter_sequence(nodes, step.predicates, environment, candidate, statistics)
     nodes = tuple(

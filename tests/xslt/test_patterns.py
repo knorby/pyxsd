@@ -389,6 +389,19 @@ def test_parentless_adjustment_and_absolute_paths() -> None:
     )
 
 
+def test_union_on_the_right_of_a_path_matches_an_element_rooted_tree() -> None:
+    document = _document("<x><a>23</a><b>25</b></x>")
+    factory = _NodeFactory()
+    root = factory.clone(document.root_element, parent=None, deep=True)
+    first, second = _element_children(root)
+
+    assert _matches("x/(a|b)", first)
+    assert _matches("x/(a|b)", second)
+    assert _matches("x/(child::a|descendant::b)", first)
+    assert _matches("x/(child::a|descendant::b)", second)
+    assert not _matches("x/(child::b|descendant::b)", first)
+
+
 def test_namespace_nodes_and_namespace_axis() -> None:
     document = _document("<r xmlns:p='urn:p' p:x='1'/>")
     root = document.root_element
