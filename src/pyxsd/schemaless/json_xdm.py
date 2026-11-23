@@ -18,6 +18,7 @@ never applied to a native list directly; every container is converted first.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from decimal import Decimal
 
@@ -56,12 +57,14 @@ def _to_xdm(
     if value is None:
         return ()
     if isinstance(value, dict):
-        return (
-            XdmMap(
+        entries: list[tuple[XdmAtomic, XdmSequence]] = []
+        for key, member in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"a JSON object key must be a string, not {type(key).__name__}")
+            entries.append(
                 (XdmAtomic.string(key), _to_xdm(member, f"{pointer}/{_escape(key)}", converter))
-                for key, member in value.items()
-            ),
-        )
+            )
+        return (XdmMap(entries),)
     if isinstance(value, list):
         return (
             XdmArray(
@@ -90,6 +93,8 @@ def _atomic(value: NativeJsonValue) -> XdmAtomic:
     if isinstance(value, Decimal):
         return XdmAtomic.decimal(value)
     if isinstance(value, float):
+        if not math.isfinite(value):
+            raise TypeError("non-finite floats are not valid JSON")
         return XdmAtomic.double(value)
     if isinstance(value, str):
         return XdmAtomic.string(value)

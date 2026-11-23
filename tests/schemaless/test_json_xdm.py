@@ -1,5 +1,6 @@
 """Native JSON values exposed as XDM maps, arrays, atomics, and sequences."""
 
+import math
 from decimal import Decimal
 
 import pytest
@@ -110,3 +111,14 @@ def test_converter_receives_the_empty_pointer_for_a_root_scalar():
 def test_values_outside_the_native_model_are_rejected():
     with pytest.raises(TypeError, match="not a native JSON scalar"):
         json_to_xdm({1, 2})  # type: ignore[arg-type]
+
+
+def test_object_keys_must_be_strings():
+    with pytest.raises(TypeError, match="JSON object key must be a string"):
+        json_to_xdm({1: "x"})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf], ids=["nan", "inf", "-inf"])
+def test_non_finite_floats_are_rejected(value):
+    with pytest.raises(TypeError, match="non-finite floats"):
+        json_to_xdm(value)
