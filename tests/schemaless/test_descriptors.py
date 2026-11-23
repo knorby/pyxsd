@@ -142,6 +142,72 @@ def test_cross_class_or_shadowed_list_descriptors_do_not_suppress_ambiguity():
     assert len(method_doc.root.all_x()) == 2
 
 
+def test_cross_mixin_non_descriptor_shadow_keeps_child_strict():
+    class Paired:
+        value = child("x")
+        all_x = children("x")
+
+    class Shadow:
+        all_x = 5
+
+    mapping = NodeMapping()
+    mapping.register(Paired, path="/r")
+    mapping.register(Shadow, path="/r")
+    doc = parse_xml(b"<r><x/><x/></r>", node_mapping=mapping)
+    assert doc.root.all_x == 5
+    with pytest.raises(ValueError, match="multiple"):
+        doc.root.value  # noqa: B018
+
+
+def test_cross_mixin_method_shadow_keeps_child_strict():
+    class Paired:
+        value = child("x")
+        all_x = children("x")
+
+    class Shadow:
+        def all_x(self):
+            return self.children
+
+    mapping = NodeMapping()
+    mapping.register(Paired, path="/r")
+    mapping.register(Shadow, path="/r")
+    doc = parse_xml(b"<r><x/><x/></r>", node_mapping=mapping)
+    assert len(doc.root.all_x()) == 2
+    with pytest.raises(ValueError, match="multiple"):
+        doc.root.value  # noqa: B018
+
+
+def test_sibling_inheritance_shadow_keeps_child_strict():
+    class Paired:
+        value = child("x")
+        all_x = children("x")
+
+    class Left(Paired):
+        pass
+
+    class Shadow(Paired):
+        all_x = 5
+
+    mapping = NodeMapping()
+    mapping.register(Left, path="/r")
+    mapping.register(Shadow, path="/r")
+    doc = parse_xml(b"<r><x/><x/></r>", node_mapping=mapping)
+    assert doc.root.all_x == 5
+    with pytest.raises(ValueError, match="multiple"):
+        doc.root.value  # noqa: B018
+
+    class Replaced(Paired):
+        all_x = attribute("other")
+
+    replaced = NodeMapping()
+    replaced.register(Left, path="/r")
+    replaced.register(Replaced, path="/r")
+    replaced_doc = parse_xml(b'<r other="9"><x/><x/></r>', node_mapping=replaced)
+    assert replaced_doc.root.all_x == "9"
+    with pytest.raises(ValueError, match="multiple"):
+        replaced_doc.root.value  # noqa: B018
+
+
 def test_missing_attribute_text_and_child_defaults():
     class DefaultsView:
         id = attribute("id", type="xs:integer")
@@ -485,8 +551,9 @@ def test_reverse_base_registration_order_fails_with_a_clear_error():
     mapping = NodeMapping()
     mapping.register(Derived, path="/r")
     mapping.register(Base, path="/r")
-    with pytest.raises(TypeError, match="mixin"):
+    with pytest.raises(TypeError, match="register a base class before its subclasses") as failure:
         parse_xml(b'<r value="1"/>', node_mapping=mapping)
+    assert "Cannot create a consistent method resolution order" not in str(failure.value)
 
 
 def test_sibling_inherited_override_combines_in_generated_mro_order():

@@ -63,10 +63,13 @@ def child(name: str) -> Any:
     """Declare one child element field by expanded name.
 
     The field reads ``None`` when no child has *name*. More than one matching
-    child is ambiguous and raises ``ValueError``, unless the same mapped class
-    also declares :func:`children` for that name: the list view then makes the
-    repetition explicit, and the singular field addresses its first element.
-    Navigation fields are read-only.
+    child is ambiguous and raises ``ValueError``, unless the generated mapped
+    class keeps a :func:`children` view for that name declared by the same
+    class as this singular field: the list view then makes the repetition
+    explicit, and the singular field addresses its first element. An inherited
+    pair from one declaring class stays lenient; a list view from another
+    mixin, or one shadowed or replaced in the generated MRO, does not suppress
+    the ambiguity. Navigation fields are read-only.
     """
     _check_name(name, "child element")
     return _ChildDescriptor(name)
@@ -164,21 +167,22 @@ def _single_child(node: SchemalessElement, name: str) -> SchemalessElement | Non
     return matches[0]
 
 
-def _paired_child_names(fields: dict[str, _DescriptorField]) -> frozenset[str]:
+def _paired_child_names(effective: dict[str, _DescriptorField]) -> frozenset[str]:
     """Return singular child names paired with a list view on the same class.
 
-    Leniency for repeated children is deliberately local: a ``children(name)``
-    descriptor only makes ``child(name)`` address the first occurrence when one
-    class declares both fields and both descriptors remain effective for the
-    generated class. A list view from another mixin or a shadowed base
-    declaration does not hide ambiguity.
+    *effective* is the descriptor map of the final generated class, so a list
+    view shadowed or replaced anywhere in its MRO is already gone. Leniency is
+    deliberately local: a ``children(name)`` descriptor only makes
+    ``child(name)`` address the first occurrence when one declaring class
+    supplies both effective descriptors. A list view from another mixin or a
+    shadowed declaration does not hide ambiguity.
     """
     lists: dict[type, set[str]] = {}
-    for descriptor, owner in fields.values():
+    for descriptor, owner in effective.values():
         if isinstance(descriptor, _ChildrenDescriptor):
             lists.setdefault(owner, set()).add(descriptor._expanded_name)
     paired: set[str] = set()
-    for descriptor, owner in fields.values():
+    for descriptor, owner in effective.values():
         if isinstance(descriptor, _ChildDescriptor) and (
             descriptor._expanded_name in lists.get(owner, ())
         ):
@@ -352,7 +356,7 @@ class _CompiledNodeMapping:
 
 
 def _declared_descriptors(mixin: type) -> dict[str, _DescriptorField]:
-    """Return one mixin's effective descriptors, with its own MRO deciding overrides.
+    """Return one class's effective descriptors, with its own MRO deciding overrides.
 
     A subclass name shadows a base name even when the subclass does not supply
     a descriptor, exactly as normal attribute lookup would. Only the first
@@ -425,21 +429,22 @@ def _descriptor_pins(mixin: type, path: str | None) -> tuple[_AdapterPin, ...]:
 
 
 def _mixin_class(mixins: tuple[type, ...]) -> type[SchemalessElement]:
-    fields = _descriptor_fields(mixins)  # Reject incompatible same-name declarations.
+    _descriptor_fields(mixins)  # Reject incompatible same-name declarations.
     _check_mixin_order(mixins)
     name = "SchemalessElement_" + "_".join(mixin.__name__ for mixin in mixins)
     try:
         generated = type(
             name,
             (*mixins, SchemalessElement),
-            {
-                "__slots__": (),
-                "__module__": __name__,
-                "_child_pair_names_": _paired_child_names(fields),
-            },
+            {"__slots__": (), "__module__": __name__},
         )
     except TypeError as exc:
         raise TypeError(f"incompatible node mapping mixin bases: {exc}") from exc
+    # Pairing must see the final MRO: a later mixin can shadow a list descriptor
+    # with a plain attribute, a method, or another descriptor.
+    generated._child_pair_names_ = _paired_child_names(  # type: ignore[attr-defined]
+        _declared_descriptors(generated)
+    )
     if generated.__hash__ is None:
         raise TypeError("a node mapping mixin must preserve node hashability")
     return generated
