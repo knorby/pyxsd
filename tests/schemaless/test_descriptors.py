@@ -285,6 +285,57 @@ def test_descriptor_type_pins_are_effective_and_replaceable():
     assert doc.root.attribute_lexical("id") == "002"
 
 
+def test_equivalent_pin_spellings_follow_latest_change_and_survive_revalidation():
+    class SecondView:
+        value = text(type="xs:string")
+
+    mapping = NodeMapping()
+    mapping.register(SecondView, path="/r/x[2]")
+    doc = parse_xml(b"<r><x>0</x><x>1</x></r>", node_mapping=mapping)
+    second = doc.root.children[1]
+    assert second.value == "1"
+
+    assert not doc.pin_type("/r[1]/x[2]", "xs:boolean").has_errors
+    assert second.value is True
+    assert not doc.pin_type("/r/x[2]", "xs:integer").has_errors
+    assert second.value == 1
+    assert not isinstance(second.value, bool)
+
+    second.value = 7
+    assert second.text_value() == "7"
+    assert second.value == 7
+
+    again = doc.revalidate()
+    assert again.root.children[1].value == 7
+    assert again.root.children[1].text_value() == "7"
+
+
+def test_parse_time_explicit_pins_override_descriptor_defaults_at_equivalent_paths():
+    class SecondView:
+        value = text(type="xs:string")
+
+    mapping = NodeMapping()
+    mapping.register(SecondView, path="/r/x[2]")
+
+    only_boolean = TypePolicy.lexical().with_pin("/r[1]/x[2]", "xs:boolean")
+    boolean_doc = parse_xml(b"<r><x>0</x><x>1</x></r>", node_mapping=mapping, types=only_boolean)
+    assert boolean_doc.root.children[1].value is True
+
+    later_integer = (
+        TypePolicy.lexical().with_pin("/r[1]/x[2]", "xs:boolean").with_pin("/r/x[2]", "xs:integer")
+    )
+    integer_doc = parse_xml(b"<r><x>0</x><x>1</x></r>", node_mapping=mapping, types=later_integer)
+    value = integer_doc.root.children[1].value
+    assert value == 1
+    assert not isinstance(value, bool)
+
+    path_wide = TypePolicy.lexical().with_pin("/r/x", "xs:boolean")
+    path_wide_doc = parse_xml(b"<r><x>0</x><x>1</x></r>", node_mapping=mapping, types=path_wide)
+    specific = path_wide_doc.root.children[1].value
+    assert specific == "1"
+    assert isinstance(specific, str)
+
+
 def test_construction_policy_merges_beneath_descriptor_pins():
     lexical = parse_xml(
         b'<order id="1"/>', node_mapping=order_mapping(), types=TypePolicy.lexical()
