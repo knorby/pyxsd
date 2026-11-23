@@ -92,7 +92,7 @@ def _named_children(node: SchemalessElement, name: str) -> Iterator[SchemalessEl
 def _current_path(node: SchemalessElement) -> tuple[SchemalessElement, tuple[PathStep, ...]]:
     """Build an occurrence path from the editable graph, not recorded provenance."""
     steps: list[PathStep] = []
-    while (parent := node.parent) is not None:
+    while (parent := node._parent_) is not None:
         index = next(
             index
             for index, sibling in enumerate(_named_children(parent, node._name_), start=1)

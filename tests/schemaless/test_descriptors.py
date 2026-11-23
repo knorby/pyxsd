@@ -5,8 +5,11 @@ import io
 import pytest
 
 from pyxsd._lexical import clone_lexical
+from pyxsd.exceptions import PyXSDError
+from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.schemaless import (
     NodeMapping,
+    ScalarTypeError,
     SchemalessElement,
     TypePolicy,
     attribute,
@@ -73,6 +76,70 @@ def test_singular_child_is_still_ambiguous_without_a_list_view_for_that_name():
     with pytest.raises(ValueError, match="multiple"):
         doc.root.value  # noqa: B018
     assert doc.root.others[0]._name_ == "y"
+
+
+def test_paired_child_leniency_is_local_to_the_declaring_class():
+    class SingleView:
+        value = child("x")
+
+    class ListView:
+        all_x = children("x")
+
+    mapping = NodeMapping()
+    mapping.register(SingleView, path="/r")
+    mapping.register(ListView, path="/r")
+    doc = parse_xml(b"<r><x/><x/></r>", node_mapping=mapping)
+    with pytest.raises(ValueError, match="multiple"):
+        doc.root.value  # noqa: B018
+    assert len(doc.root.all_x) == 2
+
+    class PairedView:
+        value = child("x")
+        all_x = children("x")
+
+    paired = NodeMapping()
+    paired.register(PairedView, path="/r")
+    both = parse_xml(b"<r><x/><x/></r>", node_mapping=paired)
+    assert both.root.value is both.root.all_x[0]
+
+
+def test_cross_class_or_shadowed_list_descriptors_do_not_suppress_ambiguity():
+    class Base:
+        value = child("x")
+        all_x = children("x")
+
+    class Shadowed(Base):
+        all_x = text()
+
+    shadowed = NodeMapping()
+    shadowed.register(Shadowed, path="/r")
+    doc = parse_xml(b"<r>head<x/><x/></r>", node_mapping=shadowed)
+    with pytest.raises(ValueError, match="multiple"):
+        doc.root.value  # noqa: B018
+    assert doc.root.all_x == "head"
+
+    class ChildOnly:
+        value = child("x")
+
+    class ListOnly(ChildOnly):
+        all_x = children("x")
+
+    crossed = NodeMapping()
+    crossed.register(ListOnly, path="/r")
+    crossed_doc = parse_xml(b"<r><x/><x/></r>", node_mapping=crossed)
+    with pytest.raises(ValueError, match="multiple"):
+        crossed_doc.root.value  # noqa: B018
+
+    class ShadowedByMethod(Base):
+        def all_x(self):
+            return self.children
+
+    method_mapping = NodeMapping()
+    method_mapping.register(ShadowedByMethod, path="/r")
+    method_doc = parse_xml(b"<r><x/><x/></r>", node_mapping=method_mapping)
+    with pytest.raises(ValueError, match="multiple"):
+        method_doc.root.value  # noqa: B018
+    assert len(method_doc.root.all_x()) == 2
 
 
 def test_missing_attribute_text_and_child_defaults():
@@ -316,3 +383,168 @@ def test_typed_descriptor_pin_path_must_be_a_scalar_path():
 
     with pytest.raises(ValueError, match="path"):
         NodeMapping().register(BadView, path="/r")
+
+
+def test_untyped_descriptors_follow_inferred_policy_for_reads_and_writes():
+    class View:
+        id = attribute("id")
+        body = text()
+
+    mapping = NodeMapping()
+    mapping.register(View, path="/r")
+    lexical = parse_xml(b'<r id="012">12</r>', node_mapping=mapping, types=TypePolicy.infer())
+    assert lexical.root.id == "012"
+    assert lexical.root.body == 12
+    lexical.root.body = 13
+    assert lexical.root.text_value() == "13"
+    lexical.root.id = "007"
+    assert lexical.root.attribute_lexical("id") == "007"
+
+    numeric = parse_xml(b'<r id="1">12</r>', node_mapping=mapping, types=TypePolicy.infer())
+    assert numeric.root.id == 1
+    assert numeric.root.body == 12
+    numeric.root.id = 2
+    numeric.root.body = 13
+    assert numeric.to_string() == '<r id="2">13</r>'
+
+
+def test_descriptor_pin_survives_an_overridden_parent_property():
+    class View:
+        @property
+        def parent(self):
+            return None
+
+        value = text(type="xs:integer")
+
+    mapping = NodeMapping()
+    mapping.register(View, path="/r/x")
+    doc = parse_xml(b"<r><x>1</x></r>", node_mapping=mapping)
+    child = doc.root.children[0]
+    assert child.parent is None
+    assert child.value == 1
+    child.value = 2
+    assert child.text_value() == "2"
+
+
+def test_failing_descriptor_pin_reports_the_exact_occurrence():
+    class View:
+        value = text(type="xs:integer")
+
+    mapping = NodeMapping()
+    mapping.register(View, path="/r/x")
+    doc = parse_xml(b"<r><x>bad</x></r>", node_mapping=mapping)
+    child = doc.root.children[0]
+    with pytest.raises(ScalarTypeError) as failure:
+        child.value  # noqa: B018
+    location = IssueLocation(doc.root.source_location.source, (PathStep("r", 1), PathStep("x", 1)))
+    assert failure.value.location == location
+    report = doc.test_type("/r/x", "xs:integer")
+    assert report.issues[0].location == location
+    assert report.issues[0].location_precision == "exact"
+    assert child.text_value() == "bad"
+
+
+def test_sibling_subclass_same_name_descriptors_conflict():
+    class Shared:
+        pass
+
+    class Left(Shared):
+        value = attribute("a")
+
+    class Right(Shared):
+        value = attribute("b")
+
+    mapping = NodeMapping()
+    mapping.register(Left, path="/r")
+    mapping.register(Right, path="/r")
+    with pytest.raises(TypeError, match="descriptor"):
+        parse_xml(b'<r a="1" b="2"/>', node_mapping=mapping)
+
+
+def test_identical_configs_on_unrelated_mixins_are_still_conflicts():
+    class First:
+        value = attribute("a")
+
+    class Second:
+        value = attribute("a")
+
+    mapping = NodeMapping()
+    mapping.register(First, path="/r")
+    mapping.register(Second, path="/r")
+    with pytest.raises(TypeError, match="descriptor"):
+        parse_xml(b'<r a="1"/>', node_mapping=mapping)
+
+
+def test_reverse_base_registration_order_fails_with_a_clear_error():
+    class Base:
+        value = attribute("value", type="xs:integer")
+
+    class Derived(Base):
+        value = attribute("value", type="xs:string")
+
+    mapping = NodeMapping()
+    mapping.register(Derived, path="/r")
+    mapping.register(Base, path="/r")
+    with pytest.raises(TypeError, match="mixin"):
+        parse_xml(b'<r value="1"/>', node_mapping=mapping)
+
+
+def test_sibling_inherited_override_combines_in_generated_mro_order():
+    class Shared:
+        value = attribute("value")
+
+    class Left(Shared):
+        value = attribute("value", type="xs:integer")
+
+    class Right(Shared):
+        pass
+
+    mapping = NodeMapping()
+    mapping.register(Left, path="/r")
+    mapping.register(Right, path="/r")
+    doc = parse_xml(b'<r value="1"/>', node_mapping=mapping)
+    assert doc.root.value == 1
+
+
+def test_writing_an_absent_attribute_installs_the_typed_lexical_value():
+    doc = parse_xml(b"<order/>", node_mapping=order_mapping())
+    assert doc.root.id is None
+    doc.root.id = 5
+    assert doc.root.attribute_lexical("id") == "5"
+    assert doc.root.id == 5
+
+
+def test_detached_subtree_descriptors_are_lexical():
+    class View:
+        value = text(type="xs:integer")
+
+    mapping = NodeMapping()
+    mapping.register(View, path="/r/x")
+    doc = parse_xml(b"<r><x>1</x></r>", node_mapping=mapping)
+    detached = doc.root.remove_child(0)
+    assert detached.value == "1"
+    with pytest.raises(TypeError):
+        detached.value = 2
+    detached.value = "2"
+    assert detached.text_value() == "2"
+
+
+def test_generic_clone_descriptor_reads_require_a_typed_snapshot():
+    doc = parse_xml(b'<order id="1">note</order>', node_mapping=order_mapping())
+    clone = doc.transform(clone_lexical)
+    with pytest.raises(PyXSDError, match="typed interpretation"):
+        clone.root.id  # noqa: B018
+    with pytest.raises(PyXSDError, match="typed interpretation"):
+        clone.root.note  # noqa: B018
+
+
+def test_descriptor_pins_are_isolated_per_document():
+    mapping = order_mapping()
+    first = parse_xml(b'<order id="1"/>', node_mapping=mapping)
+    second = parse_xml(b'<order id="1"/>', node_mapping=mapping)
+    assert type(first.root) is type(second.root)
+    first.pin_type("/order/@id", "xs:string")
+    assert first.root.id == "1"
+    assert second.root.id == 1
+    second.root.id = 2
+    assert second.root.attribute_lexical("id") == "2"

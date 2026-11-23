@@ -137,10 +137,11 @@ class _TextDescriptor(_NodeDescriptor):
 
 
 class _ChildDescriptor(_NodeDescriptor):
-    __slots__ = ()
+    __slots__ = ("_expanded_name",)
 
     def __init__(self, expanded_name: str) -> None:
         super().__init__(None, lambda node: _single_child(node, expanded_name))
+        self._expanded_name = expanded_name
 
 
 class _ChildrenDescriptor(_NodeDescriptor):
@@ -158,32 +159,55 @@ def _single_child(node: SchemalessElement, name: str) -> SchemalessElement | Non
     matches = [child for child in node._children_ if child._name_ == name]
     if not matches:
         return None
-    if len(matches) > 1 and not _has_children_view(type(node), name):
+    if len(matches) > 1 and name not in getattr(type(node), "_child_pair_names_", frozenset()):
         raise ValueError(f"multiple child elements named {name!r}")
     return matches[0]
 
 
-def _has_children_view(node_class: type, name: str) -> bool:
-    """Whether the mapped class declares an explicit list view for *name*."""
-    for base in node_class.__mro__:
-        for value in vars(base).values():
-            if isinstance(value, _ChildrenDescriptor) and value._expanded_name == name:
-                return True
-    return False
+def _paired_child_names(fields: dict[str, _DescriptorField]) -> frozenset[str]:
+    """Return singular child names paired with a list view on the same class.
+
+    Leniency for repeated children is deliberately local: a ``children(name)``
+    descriptor only makes ``child(name)`` address the first occurrence when one
+    class declares both fields and both descriptors remain effective for the
+    generated class. A list view from another mixin or a shadowed base
+    declaration does not hide ambiguity.
+    """
+    lists: dict[type, set[str]] = {}
+    for descriptor, owner in fields.values():
+        if isinstance(descriptor, _ChildrenDescriptor):
+            lists.setdefault(owner, set()).add(descriptor._expanded_name)
+    paired: set[str] = set()
+    for descriptor, owner in fields.values():
+        if isinstance(descriptor, _ChildDescriptor) and (
+            descriptor._expanded_name in lists.get(owner, ())
+        ):
+            paired.add(descriptor._expanded_name)
+    return frozenset(paired)
 
 
 def _effective_adapter(instance: SchemalessElement, attribute: str | None) -> ScalarAdapter | None:
     """Return the adapter the ordinary typed readers use for this occurrence.
 
     Descriptor reads delegate to the revision's typed snapshot, so a write must
-    resolve the same occurrence pin rather than a private copy of the declared
-    type. A generic lexical clone has no scalar policy and keeps lexical writes.
+    resolve the same occurrence pin, and the same inference fallback, rather
+    than a private copy of the declared type. A generic lexical clone has no
+    scalar policy and keeps lexical writes.
     """
     revision = instance._revision
     if not isinstance(revision, SchemalessRevision):
         return None
+    infer = revision.types.mode == "infer"
+    if not infer and not revision._xml_pins:
+        return None
+    lexical = instance.text_value() if attribute is None else instance.attribute_lexical(attribute)
     root, path = _current_path(instance)
-    return revision._pin_for(root, path, attribute)
+    pinned = revision._pin_for(root, path, attribute)
+    if pinned is not None:
+        return pinned
+    if infer and lexical is not None:
+        return revision._inferred_adapter(root, path, attribute)
+    return None
 
 
 def _lexical_write(adapter: ScalarAdapter | None, value: Any) -> str:
@@ -328,11 +352,20 @@ class _CompiledNodeMapping:
 
 
 def _declared_descriptors(mixin: type) -> dict[str, _DescriptorField]:
-    """Return one mixin's descriptors, with its own MRO deciding overrides."""
+    """Return one mixin's effective descriptors, with its own MRO deciding overrides.
+
+    A subclass name shadows a base name even when the subclass does not supply
+    a descriptor, exactly as normal attribute lookup would. Only the first
+    class in the MRO that defines a name can contribute it.
+    """
     found: dict[str, _DescriptorField] = {}
+    seen: set[str] = set()
     for base in mixin.__mro__:
         for name, value in vars(base).items():
-            if isinstance(value, _NodeDescriptor) and name not in found:
+            if name in seen:
+                continue
+            seen.add(name)
+            if isinstance(value, _NodeDescriptor):
                 found[name] = (value, base)
     return found
 
@@ -341,8 +374,9 @@ def _descriptor_fields(mixins: tuple[type, ...]) -> dict[str, _DescriptorField]:
     """Combine the matching mixins' descriptors or reject incompatible ones.
 
     A repeated declaration is compatible when it is the same descriptor object
-    or when one declaring class derives from the other, because registration
-    order then gives the generated class one deterministic MRO winner.
+    or when one declaring class derives from the other, because the generated
+    MRO then has one deterministic winner. Base/derived mixins in an impossible
+    order are rejected separately by :func:`_check_mixin_order`.
     """
     fields: dict[str, _DescriptorField] = {}
     for mixin in mixins:
@@ -361,6 +395,15 @@ def _same_declaration(first: _DescriptorField, second: _DescriptorField) -> bool
     return (
         left is right or issubclass(left_owner, right_owner) or issubclass(right_owner, left_owner)
     )
+
+
+def _check_mixin_order(mixins: tuple[type, ...]) -> None:
+    """Reject a base class placed before one of its own subclasses."""
+    for index, mixin in enumerate(mixins):
+        if any(issubclass(candidate, mixin) for candidate in mixins[index + 1 :]):
+            raise TypeError(
+                "incompatible node mapping mixin order: register a base class before its subclasses"
+            )
 
 
 def _descriptor_pins(mixin: type, path: str | None) -> tuple[_AdapterPin, ...]:
@@ -382,11 +425,18 @@ def _descriptor_pins(mixin: type, path: str | None) -> tuple[_AdapterPin, ...]:
 
 
 def _mixin_class(mixins: tuple[type, ...]) -> type[SchemalessElement]:
-    _descriptor_fields(mixins)  # Reject incompatible same-name declarations.
+    fields = _descriptor_fields(mixins)  # Reject incompatible same-name declarations.
+    _check_mixin_order(mixins)
     name = "SchemalessElement_" + "_".join(mixin.__name__ for mixin in mixins)
     try:
         generated = type(
-            name, (*mixins, SchemalessElement), {"__slots__": (), "__module__": __name__}
+            name,
+            (*mixins, SchemalessElement),
+            {
+                "__slots__": (),
+                "__module__": __name__,
+                "_child_pair_names_": _paired_child_names(fields),
+            },
         )
     except TypeError as exc:
         raise TypeError(f"incompatible node mapping mixin bases: {exc}") from exc
