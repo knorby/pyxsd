@@ -124,6 +124,7 @@ from pyxsd.xpath.functions import (
     install_string_function,
     sequence_to_elementpath,
 )
+from pyxsd.xpath.numeric import install_numeric_functions
 from pyxsd.xpath.regex_cache import install_regex_translation_cache
 
 # Memoise elementpath's regex translation at this import seam.  The call has to
@@ -1671,11 +1672,13 @@ def _build_parser(
     _install_function_scope(parser)
     if version == "1.0":
         _install_legacy_1_0_overrides(parser)
+        install_numeric_functions(parser, include_round=False)
     else:
         _install_constructor_partial_application(parser)
         _install_comparison_string_atomization(parser)
         _install_lang_function(parser)
         install_string_function(parser)
+        install_numeric_functions(parser)
         if version == "2.0":
             _install_xpath20_regex_surface(parser)
         _register_schema_constructors(parser, static_context)
