@@ -336,6 +336,59 @@ def test_parse_time_explicit_pins_override_descriptor_defaults_at_equivalent_pat
     assert isinstance(specific, str)
 
 
+def test_duplicate_descriptor_defaults_use_latest_registration_order():
+    class FirstView:
+        first = text(type="xs:string")
+
+    class MiddleView:
+        middle = text(type="xs:boolean")
+
+    class LastView:
+        last = text(type="xs:integer")
+
+    mapping = NodeMapping()
+    mapping.register(FirstView, path="/r/x[2]")
+    mapping.register(MiddleView, path="/r[1]/x[2]")
+    mapping.register(LastView, path="/r/x[2]")
+
+    doc = parse_xml(b"<r><x>0</x><x>1</x></r>", node_mapping=mapping)
+    second = doc.root.children[1]
+    value = second.last
+    assert value == 1
+    assert not isinstance(value, bool)
+
+    second.last = 7
+    assert second.text_value() == "7"
+    assert second.last == 7
+
+    again = doc.revalidate()
+    assert again.root.children[1].last == 7
+    assert again.root.children[1].text_value() == "7"
+
+
+def test_parse_time_explicit_pin_beats_every_duplicate_descriptor_default():
+    class FirstView:
+        first = text(type="xs:string")
+
+    class MiddleView:
+        middle = text(type="xs:boolean")
+
+    class LastView:
+        last = text(type="xs:integer")
+
+    mapping = NodeMapping()
+    mapping.register(FirstView, path="/r/x[2]")
+    mapping.register(MiddleView, path="/r[1]/x[2]")
+    mapping.register(LastView, path="/r/x[2]")
+
+    explicit = TypePolicy.lexical().with_pin("/r[1]/x[2]", "xs:string")
+    doc = parse_xml(b"<r><x>0</x><x>1</x></r>", node_mapping=mapping, types=explicit)
+    value = doc.root.children[1].last
+    assert value == "1"
+    assert isinstance(value, str)
+    assert not isinstance(value, (bool, int))
+
+
 def test_construction_policy_merges_beneath_descriptor_pins():
     lexical = parse_xml(
         b'<order id="1"/>', node_mapping=order_mapping(), types=TypePolicy.lexical()

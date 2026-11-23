@@ -126,11 +126,15 @@ class TypePolicy:
         Node-mapping descriptors compile their ``type=`` entries into
         occurrence pins. Those pins behave exactly like an explicit pin
         supplied at parse time, except that a path already pinned by this
-        policy keeps its adapter. Explicit pins are reinserted after the
-        defaults, so an equivalent spelling that updates an existing key cannot
-        inherit that key's older position and lose latest-change precedence.
+        policy keeps its adapter. Defaults and then explicit pins are
+        reinserted in their own order, so a repeated or equivalently spelled
+        path always keeps its latest registration/change position instead of
+        an older key's position.
         """
-        merged = dict(pins)
+        merged: dict[str, ScalarAdapter] = {}
+        for path, adapter in pins:
+            merged.pop(path, None)
+            merged[path] = adapter
         for path, adapter in self.pins.items():
             merged.pop(path, None)
             merged[path] = adapter
