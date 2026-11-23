@@ -43,8 +43,17 @@ if TYPE_CHECKING:
     from pyxsd.schemaless.nodes import _CompiledNodeMapping
 
 _XSI_NIL = f"{{{XSI_NS}}}nil"
+_XMLNS_NS = "http://www.w3.org/2000/xmlns/"
 _POINTER_BAD_ESCAPE = re.compile(r"~(?:[^01]|$)")
 _OccurrencePath = tuple[tuple[str, int], ...]
+
+#: ASCII characters XLink 1.0 section 5.4 percent-escapes. A namespace name is
+#: a literal identifier, never an escaped ``xs:anyURI`` value, so these cannot
+#: appear in one; legal non-ASCII IRI characters remain allowed.
+_NS_FORBIDDEN_ASCII = frozenset(
+    [chr(code) for code in range(0x20)]
+    + [" ", "<", ">", '"', "{", "}", "|", "\\", "^", "`", "\x7f"]
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,9 +62,11 @@ class MappingRule:
 
     ``name`` is a local XML name or a Clark expanded name. It replaces the
     default element name derived from an object member key (or ``item`` for an
-    array member, or the mapping's root name at the empty pointer). Later
-    mapping policies add node kinds, namespaces, array wrapping, null
-    handling, and scalar type pins; element-first projection only renames.
+    array member, or the mapping's root name at the empty pointer). Only
+    explicit mapping names may be expanded: object keys are data and must be
+    local names. Later mapping policies add node kinds, namespaces, array
+    wrapping, null handling, and scalar type pins; element-first projection
+    only renames.
     """
 
     name: str | None = None
@@ -190,14 +201,52 @@ def _is_xml_ncname(name: str) -> bool:
     return seen == [name]
 
 
+def _is_xml_char(code: int) -> bool:
+    """Whether *code* is an XML 1.0 ``Char``."""
+    return (
+        code in (0x9, 0xA, 0xD)
+        or 0x20 <= code <= 0xD7FF
+        or 0xE000 <= code <= 0xFFFD
+        or 0x10000 <= code <= 0x10FFFF
+    )
+
+
+def _is_namespace_name(uri: str) -> bool:
+    """Whether *uri* can be used literally as an element namespace name.
+
+    A namespace name is compared literally, so ASCII characters that a URI
+    reference must percent-encode cannot appear in it. Non-ASCII IRI
+    characters are allowed when they are XML characters. Structural URI
+    validation reuses the project's XSD ``anyURI`` discipline.
+    """
+    for character in uri:
+        code = ord(character)
+        if code <= 0x7F:
+            if character in _NS_FORBIDDEN_ASCII:
+                return False
+        elif not _is_xml_char(code):
+            return False
+    from pyxsd.relaxng.uris import is_uri_reference
+
+    return is_uri_reference(uri)
+
+
 def _check_xml_name(name: str, pointer: str, xml_path: str, source: str | None) -> None:
-    """Reject an invalid local or expanded name; never repair it."""
+    """Reject an invalid explicit local or Clark expanded name; never repair it."""
     try:
-        _uri, local = _split_name(name)
+        uri, local = _split_name(name)
     except ValueError:
         _fail(
             "invalid-xml-name",
             f"the XML name {name!r} is not valid",
+            pointer,
+            xml_path,
+            source,
+        )
+    if uri and (uri == _XMLNS_NS or not _is_namespace_name(uri)):
+        _fail(
+            "invalid-xml-name",
+            f"the XML name {name!r} has an unusable namespace name {uri!r}",
             pointer,
             xml_path,
             source,
@@ -212,15 +261,60 @@ def _check_xml_name(name: str, pointer: str, xml_path: str, source: str | None) 
         )
 
 
-def _fail(code: str, message: str, pointer: str, xml_path: str, source: str | None) -> NoReturn:
+def _check_local_name(name: str, pointer: str, xml_path: str, source: str | None) -> None:
+    """Reject a data-derived object key that is not a local XML name.
+
+    Only explicit mapping names may be Clark expanded names. A JSON object key
+    is data, not namespace policy, so `{urn:x}id` is an invalid key rather than
+    a namespaced element.
+    """
+    if not _is_xml_ncname(name):
+        _fail(
+            "invalid-xml-name",
+            f"the object member name {name!r} is not a valid local XML name",
+            pointer,
+            xml_path,
+            source,
+        )
+
+
+def _check_xml_text(text: str, pointer: str, path: _OccurrencePath, source: str) -> None:
+    """Reject a JSON string XML 1.0 cannot represent as character data."""
+    for character in text:
+        code = ord(character)
+        if not _is_xml_char(code):
+            marker = f"U+{code:04X}"
+            _fail(
+                "invalid-xml-text",
+                f"the JSON string at pointer {pointer!r} contains {marker}, "
+                "which XML 1.0 cannot represent",
+                pointer,
+                _format_path(path),
+                source,
+                character=marker,
+            )
+
+
+def _fail(
+    code: str,
+    message: str,
+    pointer: str,
+    xml_path: str,
+    source: str | None,
+    *,
+    character: str | None = None,
+) -> NoReturn:
     """Raise one fatal mapping diagnostic with both addresses."""
+    details: dict[str, object] = {"json_pointer": pointer, "xml_path": xml_path}
+    if character is not None:
+        details["character"] = character
     report = ValidationReport(diagnostics_complete=True)
     report.add_error(
         message,
         code=code,
         location=DataLocation(source, pointer),
         location_precision="exact",
-        details={"json_pointer": pointer, "xml_path": xml_path},
+        details=details,
     )
     raise XmlMappingError(report)
 
@@ -277,6 +371,7 @@ class _Projector:
             element.set(_XSI_NIL, "true")
             self._uses_xsi = True
         elif isinstance(value, str):
+            _check_xml_text(value, pointer, path, self._source)
             element.text = value
         else:
             element.text = encode_json(value)
@@ -289,10 +384,17 @@ class _Projector:
         counts: dict[str, int],
     ) -> tuple[str, _OccurrencePath]:
         rule = self._mapping.rules.get(pointer)
-        name = default if rule is None or rule.name is None else rule.name
+        name = default
+        explicit = False
+        if rule is not None and rule.name is not None:
+            name = rule.name
+            explicit = True
         index = counts.get(name, 0) + 1
         path: _OccurrencePath = (*parent_path, (name, index))
-        _check_xml_name(name, pointer, _format_path(path), self._source)
+        if explicit:
+            _check_xml_name(name, pointer, _format_path(path), self._source)
+        else:
+            _check_local_name(name, pointer, _format_path(path), self._source)
         counts[name] = index
         return name, path
 

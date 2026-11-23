@@ -230,10 +230,13 @@ class JsonDocument:
 
         The result has no source bytes or source index. Its report is current
         and holds non-fatal warnings for information the XML shape cannot
-        retain. Invalid names and other fatal mapping problems raise
+        retain. Invalid names, unusable expanded namespace names, and string
+        characters XML 1.0 cannot represent raise
         :class:`~pyxsd.schemaless.errors.XmlMappingError` instead of being
-        repaired. JSON Pointer pins stay on this document: the projected tree
-        starts from a lexical policy.
+        repaired, escaped around, or dropped. Object member keys are always
+        validated as local names; only explicit mapping names may be expanded.
+        JSON Pointer pins stay on this document: the projected tree starts from
+        a lexical policy.
 
         Pass *node_mapping* to add Python mixins to matching projected
         occurrences; descriptor ``type=`` entries become occurrence pins on the

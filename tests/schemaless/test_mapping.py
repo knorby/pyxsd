@@ -118,6 +118,48 @@ def test_strings_are_escaped_text_not_json_quoted():
     assert "<empty></empty>" in xml.to_string()
 
 
+@pytest.mark.parametrize(
+    ("text", "character"),
+    [
+        ("a\x00b", "U+0000"),
+        ("a\x01b", "U+0001"),
+        ("a\ufffeb", "U+FFFE"),
+        ("a\ud800b", "U+D800"),
+    ],
+)
+def test_xml_illegal_string_characters_are_fatal(text, character):
+    with pytest.raises(XmlMappingError) as caught:
+        from_data({"s": text}).to_xml(XmlMapping.elements("root"))
+
+    issue = caught.value.report.issues[0]
+    assert issue.code == "invalid-xml-text"
+    assert issue.details == {
+        "json_pointer": "/s",
+        "xml_path": "/root[1]/s[1]",
+        "character": character,
+    }
+
+
+def test_illegal_root_string_names_both_addresses():
+    with pytest.raises(XmlMappingError) as caught:
+        from_data("\x00").to_xml(XmlMapping.elements("root"))
+
+    assert caught.value.report.issues[0].details == {
+        "json_pointer": "",
+        "xml_path": "/root[1]",
+        "character": "U+0000",
+    }
+
+
+def test_valid_xml_characters_survive_text_escaping():
+    value = "tab\tline\nreturn\rnext café \ufffd"
+    xml = from_data({"s": value}).to_xml(XmlMapping.elements("root"))
+
+    assert xml.root.children[0].text_value() == value
+    assert "tab\tline\nreturn&#13;next café \ufffd" in xml.to_string()
+    assert xml.to_xdm().root_element.local_name == "root"
+
+
 def test_null_uses_the_xsi_prefix_and_is_declared_only_when_used():
     with_nil = from_data({"nil": None}).to_xml(XmlMapping.elements("order"))
     text = with_nil.to_string()
@@ -219,6 +261,69 @@ def test_expanded_names_project_with_a_generated_prefix():
     assert xml.root.children[0]._name_ == "{urn:x}id"
     assert 'xmlns:ns0="urn:example"' in xml.to_string()
     assert 'xmlns:ns1="urn:x"' in xml.to_string()
+
+
+XMLNS_NS = "http://www.w3.org/2000/xmlns/"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        f"{{{XMLNS_NS}}}r",
+        "{urn: x}r",
+        "{urn:\x00x}r",
+        "{urn:\ufffex}r",
+        "{urn:foo[bar}r",
+    ],
+)
+def test_invalid_expanded_namespace_names_are_rejected_eagerly(name):
+    with pytest.raises(XmlMappingError) as caught:
+        XmlMapping.elements(name)
+
+    issue = caught.value.report.issues[0]
+    assert issue.code == "invalid-xml-name"
+    assert issue.details == {"json_pointer": "", "xml_path": f"/{name}[1]"}
+
+
+@pytest.mark.parametrize(
+    "name",
+    [f"{{{XMLNS_NS}}}a", "{urn: x}a", "{urn:\x00x}a", "{urn:foo[bar}a"],
+)
+def test_rule_namespace_names_are_validated_when_projected(name):
+    mapping = XmlMapping.elements("root", rules={"/a": MappingRule(name=name)})
+    with pytest.raises(XmlMappingError) as caught:
+        from_data({"a": 1}).to_xml(mapping)
+
+    issue = caught.value.report.issues[0]
+    assert issue.code == "invalid-xml-name"
+    assert issue.details == {"json_pointer": "/a", "xml_path": f"/root[1]/{name}[1]"}
+
+
+def test_invalid_namespace_name_on_an_absent_rule_stays_lazy():
+    mapping = XmlMapping.elements("root", rules={"/absent": MappingRule(name="{urn: x}a")})
+    xml = from_data({"a": 1}).to_xml(mapping)
+
+    assert xml.root.children[0]._name_ == "a"
+
+
+def test_valid_expanded_names_allow_iri_namespace_names():
+    xml = from_data({"id": 1}).to_xml(XmlMapping.elements("{urn:café}order"))
+
+    assert xml.root._name_ == "{urn:café}order"
+    assert 'xmlns:ns0="urn:café"' in xml.to_string()
+
+
+@pytest.mark.parametrize("key", ["{urn:x}id", "{urn:x}bad name"])
+def test_object_keys_are_local_names_only(key):
+    with pytest.raises(XmlMappingError) as caught:
+        from_data({key: 1}).to_xml(XmlMapping.elements("root"))
+
+    issue = caught.value.report.issues[0]
+    assert issue.code == "invalid-xml-name"
+    assert issue.details == {
+        "json_pointer": f"/{key}",
+        "xml_path": f"/root[1]/{key}[1]",
+    }
 
 
 def test_invalid_root_and_rule_names_raise_mapping_errors():
