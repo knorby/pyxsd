@@ -15,7 +15,7 @@ import struct
 from decimal import ROUND_DOWN, ROUND_FLOOR, ROUND_HALF_EVEN, Decimal, localcontext
 from typing import Any
 
-from elementpath.datatypes import Float, NumericProxy
+from elementpath.datatypes import Float, NumericProxy, UntypedAtomic
 from elementpath.xpath_nodes import XPathNode
 
 __all__ = ["install_numeric_functions"]
@@ -92,7 +92,9 @@ def _numeric_mod(left: Any, right: Any, *, legacy: bool = False) -> Any:
         return _float_mod(float(left), float(right))
     if isinstance(left, float) or isinstance(right, float):
         result = _float_mod(left, right)
-        return Float(result) if _is_single_precision(left) else result
+        if _is_single_precision(left) or _is_single_precision(right):
+            return Float(result)
+        return result
     if right == 0:
         raise ZeroDivisionError("mod by zero")
     if isinstance(left, Decimal) or isinstance(right, Decimal):
@@ -207,6 +209,11 @@ def _optional_numeric_argument(token: Any, context: Any) -> Any:
     if item is None:
         return _ABSENT_NUMERIC
     if isinstance(item, XPathNode):
+        item = token.number_value(item)
+    elif isinstance(item, UntypedAtomic):
+        # The XPath 3.1 §3.1.5.2 function conversion rules cast an
+        # xs:untypedAtomic argument to the parameter's numeric type.  The
+        # union type resolves to xs:double, which is number_value's contract.
         item = token.number_value(item)
     if isinstance(item, bool) or not isinstance(item, (int, float, Decimal)):
         raise token.error("XPTY0004", f"invalid argument type {type(item)!r}")
