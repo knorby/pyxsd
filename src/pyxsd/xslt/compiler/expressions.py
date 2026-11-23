@@ -881,13 +881,16 @@ def compile_xpath(
     *,
     location: IssueLocation | None = None,
     version: str | None = None,
+    compatibility_mode: bool | None = None,
 ) -> CompiledExpression:
     """Compile one XPath expression through the Task 11 versioned engine.
 
     ``version`` overrides the static context's XPath version for this one
     expression — the override the native-profile seams use to prove a
     grammar is out of scope for the requested surface.  An unsupported
-    version is a caller error, not a stylesheet error.
+    version is a caller error, not a stylesheet error.  ``compatibility_mode``
+    overrides the element's XPath 1.0 compatibility rule for this expression;
+    a text value template passes ``False`` (XSLT 3.0 §3.9.1).
     """
     from pyxsd.xslt.compiler.context import StaticContext
 
@@ -906,7 +909,10 @@ def compile_xpath(
         )
     engine = XPathEngine(context.xpath_version)
     try:
-        compiled = engine.compile(source, context.xpath_static_context())
+        compiled = engine.compile(
+            source,
+            context.xpath_static_context(compatibility_mode=compatibility_mode),
+        )
     except Exception as exc:
         if is_budget_alarm(exc):
             raise
@@ -940,6 +946,7 @@ def compile_avt(
         context,
         expand=True,
         location=location,
+        compatibility_mode=None,
     )
     return CompiledValueTemplate(
         source=source,
@@ -974,6 +981,7 @@ def compile_tvt(
         context,
         expand=expand,
         location=location,
+        compatibility_mode=False,
     )
     return CompiledValueTemplate(
         source=source,
@@ -989,6 +997,7 @@ def _template_parts(
     *,
     expand: bool,
     location: IssueLocation | None,
+    compatibility_mode: bool | None,
 ) -> tuple[TemplatePart, ...]:
     if not expand:
         if not source:
@@ -1007,7 +1016,12 @@ def _template_parts(
             _flush_text(parts, pending)
             expression, index = _scan_expression(source, index + 1, context, location)
             if _has_expression_content(expression):
-                compiled = compile_xpath(expression, context, location=location)
+                compiled = compile_xpath(
+                    expression,
+                    context,
+                    location=location,
+                    compatibility_mode=compatibility_mode,
+                )
                 parts.append(TemplatePart(kind="expression", text=expression, expression=compiled))
             continue
         if character == "}":

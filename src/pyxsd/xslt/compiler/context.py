@@ -478,11 +478,16 @@ class StaticContext:
     def collection_type(self, uri: str) -> str | None:
         return self.collection_types.get(uri)
 
-    def xpath_static_context(self) -> XPathStaticContext:
-        """Build the immutable Task 11 static context for this element."""
-        effective_xslt_version = self.version
-        if Decimal(effective_xslt_version) > Decimal("3.1"):
-            effective_xslt_version = "3.1"
+    def xpath_static_context(self, compatibility_mode: bool | None = None) -> XPathStaticContext:
+        """Build the immutable Task 11 static context for this element.
+
+        *compatibility_mode* overrides the element's own rule for one
+        expression.  Text value templates pass ``False``: XSLT 3.0 §3.9.1
+        excludes them from XPath 1.0 compatibility mode even when the element
+        has effective version 1.0.
+        """
+        profile = LanguageProfile.from_options(self.profile, self.version)
+        effective_xslt_version = profile.language_version
         grouped: dict[str, list[FunctionArity]] = {}
         for name, arity in self.functions:
             grouped.setdefault(name, []).append(arity)
@@ -537,6 +542,9 @@ class StaticContext:
             default_collation=self.default_collation,
             xsd_version=self.schema.xsd_version if self.schema is not None else None,
             xslt_version=effective_xslt_version,
+            compatibility_mode=(
+                profile.compatibility_mode if compatibility_mode is None else compatibility_mode
+            ),
         )
 
     # -- immutable updates -----------------------------------------------------

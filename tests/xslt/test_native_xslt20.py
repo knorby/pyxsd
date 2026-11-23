@@ -999,9 +999,13 @@ def test_native_schema_gate_keeps_the_2_0_vocabulary() -> None:
 
 
 def test_native_rejects_static_variables() -> None:
+    # A declaration above 2.0 would enable forwards-compatible processing, in
+    # which XSLT 2.0 §3.6 requires an undefined attribute to be ignored; the
+    # strict 2.0 declaration keeps XTSE0090.
     source = stylesheet(
         '<xsl:variable name="v" static="yes" select="1"/>'
-        '<xsl:template name="main"><xsl:value-of select="$v"/></xsl:template>'
+        '<xsl:template name="main"><xsl:value-of select="$v"/></xsl:template>',
+        version="2.0",
     )
     with pytest.raises(XsltStaticError) as caught:
         XsltProcessor(**NATIVE).compile(io.BytesIO(source))

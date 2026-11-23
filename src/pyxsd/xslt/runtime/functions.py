@@ -44,6 +44,7 @@ from pyxsd.namespaces import local_name as _local_name
 from pyxsd.namespaces import namespace_of as _namespace_of
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
 from pyxsd.xdm.annotations import builtin_type_classes
+from pyxsd.xdm.legacy import ResultTreeFragment
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xpath.environment import Focus, FunctionArity
 from pyxsd.xpath.functions import ContextFunction
@@ -1467,10 +1468,10 @@ class XsltContextBridge:
                 code="XPTY0004",
             )
         value = value_sequence[0] if value_sequence else None
-        picture = _single_string(arguments, 1)
+        picture = _argument_string(arguments, 1, label="number picture")
         name: str | None = None
         if len(arguments) > 2 and arguments[2]:
-            name = _single_string(arguments, 2)
+            name = _argument_string(arguments, 2, label="decimal format name")
         formats = self.decimal_formats or {None: DecimalFormat()}
         return (
             XdmAtomic.string(
@@ -2189,6 +2190,35 @@ def _single_string(arguments: tuple[XdmSequence, ...], index: int) -> str:
     if not isinstance(item, XdmAtomic):
         raise XsltDynamicError(
             "the function argument must be an atomic value",
+            code="XPTY0004",
+        )
+    return item.lexical
+
+
+def _argument_string(
+    arguments: tuple[XdmSequence, ...],
+    index: int,
+    *,
+    label: str,
+) -> str:
+    """One string-valued argument under the function conversion rules.
+
+    A single node atomizes to its string value, and a native 1.0 result tree
+    fragment converts to the string value of its root.  ``_single_string``
+    stays the strict atomic helper for the XSLT-defined functions that do not
+    accept a node argument here.
+    """
+    if index >= len(arguments) or len(arguments[index]) != 1:
+        raise XsltDynamicError(
+            f"the {label} must be a single value",
+            code="XPTY0004",
+        )
+    item = arguments[index][0]
+    if isinstance(item, (XdmNode, ResultTreeFragment)):
+        return item.string_value
+    if not isinstance(item, XdmAtomic):
+        raise XsltDynamicError(
+            f"the {label} must be a string",
             code="XPTY0004",
         )
     return item.lexical

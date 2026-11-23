@@ -427,6 +427,31 @@ def test_branch_text_value_templates_follow_effective_expand_text() -> None:
 # Static content model
 
 
+def test_native_2_0_rejects_a_zero_length_match() -> None:
+    source = stylesheet(
+        '<xsl:template name="main">'
+        "<out>"
+        '<xsl:analyze-string select="\'ab\'" regex="a*">'
+        "<xsl:matching-substring><xsl:value-of select=\"'*'\"/></xsl:matching-substring>"
+        '<xsl:non-matching-substring><xsl:value-of select="."/></xsl:non-matching-substring>'
+        "</xsl:analyze-string>"
+        "</out>"
+        "</xsl:template>"
+    )
+    # XSLT 2.0 §15.1 makes a zero-length match a dynamic error.
+    native = XsltProcessor(language="2.0", xpath="2.0", schema_aware=False)
+    compiled_native = native.compile(io.BytesIO(source))
+    assert (
+        error_code(lambda: compiled_native.transform(initial_template="main", delivery="raw"))
+        == "XTDE1150"
+    )
+
+    # XSLT 3.0 allows it and advances past the empty position.
+    three = XsltProcessor().compile(io.BytesIO(source))
+    three_result = three.transform(initial_template="main", delivery="raw")
+    assert "".join(item.string_value for item in three_result.principal) == "**b*"
+
+
 def test_analyze_string_requires_a_branch() -> None:
     source = stylesheet(
         '<xsl:template name="main"><xsl:analyze-string select="\'a\'" regex="a"/></xsl:template>'

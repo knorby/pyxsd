@@ -909,7 +909,7 @@ def _diagnostic_error_code(
 def _item_string(item: XdmItem) -> str:
     if isinstance(item, XdmAtomic):
         return item.string_value
-    if isinstance(item, XdmNode):
+    if isinstance(item, (XdmNode, ResultTreeFragment)):
         return item.string_value
     raise XsltError(
         "atomization of a function item is not permitted here",
@@ -1553,7 +1553,7 @@ def parameter_value(
     """
     if not content:
         return (XdmAtomic.string(""),) if profile.legacy else ()
-    if profile.legacy:
+    if profile.result_tree_fragments:
         return (ResultTreeFragment(_build_result_tree(sequence)),)
     return sequence
 
@@ -1683,15 +1683,25 @@ def execute_analyze_string(
     text = _analyze_string_value(values)
     regex_source = invocation._value_source(plan.regex, context)
     flags = invocation._value_source(plan.flags, context) if plan.flags is not None else ""
+    profile = invocation.profile_for(plan.expression.static_context.xslt_version)
     try:
         regex = compile_xpath_regex(
             regex_source,
             flags,
-            allowed_flags=invocation.profile_for().regex_flags,
+            allowed_flags=profile.regex_flags,
         )
     except XPathRegexError as exc:
         code = "XTDE1145" if exc.code == "FORX0001" else "XTDE1140"
         raise XsltDynamicError(str(exc), code=code) from exc
+    if profile.native and regex.match("", 0) is not None:
+        # A native XSLT 2.0 processor follows XSLT 2.0 §15.1, where a
+        # zero-length match is a dynamic error; the 3.0 algorithm (used by the
+        # 3.0 processor) skips the empty position instead.
+        raise XsltDynamicError(
+            "xsl:analyze-string requires a regular expression that does not match "
+            "a zero-length string",
+            code="XTDE1150",
+        )
     substrings = analyze_string(regex, text)
     result: list[XdmItem] = []
     for position, substring in enumerate(substrings, start=1):

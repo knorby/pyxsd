@@ -1600,3 +1600,67 @@ def test_fn_string_uses_the_fo_canonical_numeric_forms() -> None:
         "".join(item.string_value for item in transform(source, initial_template="main").principal)
         == "true|7.0E6|-0.00175|2.5"
     )
+
+
+def test_format_number_atomizes_a_node_or_result_tree_fragment_argument() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="pattern">#,###.00</xsl:variable>
+        <xsl:template name="main">
+          <xsl:value-of select="format-number(1234.78, $pattern)"/>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="format-number(1234.78, //pattern)"/>
+        </xsl:template>
+        """
+    )
+    raw = _transform(
+        source,
+        input_source=b"<doc><pattern>#,###.00</pattern></doc>",
+        initial_template="main",
+    )
+    assert "".join(item.string_value for item in raw.principal) == "1,234.78|1,234.78"
+
+    native = XsltProcessor(language="1.0", xpath="1.0", schema_aware=False)
+    compiled = native.compile(io.BytesIO(source))
+    assert (
+        "".join(
+            item.string_value
+            for item in compiled.transform(
+                source=b"<doc><pattern>#,###.00</pattern></doc>",
+                initial_template="main",
+                delivery="raw",
+            ).principal
+        )
+        == "1,234.78|1,234.78"
+    )
+
+    # The number argument takes the same conversion: a native 1.0 content
+    # variable is a result tree fragment whose string value is the number.
+    fragment = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="number">12.5</xsl:variable>
+          <xsl:value-of select="format-number($number, '#.0')"/>
+        </xsl:template>
+        """,
+        version="1.0",
+    )
+    native_fragment = native.compile(io.BytesIO(fragment))
+    assert (
+        "".join(
+            item.string_value
+            for item in native_fragment.transform(initial_template="main", delivery="raw").principal
+        )
+        == "12.5"
+    )
+
+    # A picture that is a sequence or a function item is still a type error.
+    for picture in ("('#', '0')", "function () { '#' }"):
+        invalid = stylesheet(
+            f'<xsl:template name="main">'
+            f'<xsl:value-of select="format-number(1, {picture})"/>'
+            "</xsl:template>"
+        )
+        with pytest.raises(XsltError) as caught:
+            transform(invalid, initial_template="main")
+        assert caught.value.code == "XPTY0004"

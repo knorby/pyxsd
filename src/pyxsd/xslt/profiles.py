@@ -17,9 +17,10 @@ rule back into an error without changing any other conformance behavior.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from types import MappingProxyType
 from typing import Any, cast
 
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction, XdmItem, XdmMap, XdmSequence
@@ -30,6 +31,19 @@ from pyxsd.xslt.errors import XsltDynamicError, normalized_error_code
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 
 _PROCESSOR_VERSIONS = frozenset({"1.0", "2.0", "3.0", "3.1"})
+
+#: The language versions each processor identity implements.  A processor
+#: always offers its own complete language; a declaration that names a version
+#: it does not implement (1.5, 3.3, 8.5, ...) never invents a vocabulary, so
+#: profile-owned decisions resolve to one of these.
+_IMPLEMENTED_LANGUAGE_VERSIONS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "1.0": ("1.0",),
+        "2.0": ("1.0", "2.0"),
+        "3.0": ("1.0", "2.0", "3.0", "3.1"),
+        "3.1": ("1.0", "2.0", "3.0", "3.1"),
+    }
+)
 
 
 def _decimal_version(value: Any, label: str) -> Decimal:
@@ -251,14 +265,63 @@ class LanguageProfile:
 
         A native pre-3.0 processor applies the compatibility rule of its own
         language: XSLT 2.0 §3.8 enables backwards-compatible processing for
-        every element whose effective version is less than 2.0.  The default
-        3.0 processor keeps the XSLT 3.0 rule (§3.9.1), where only an
-        effective version of exactly 1.0 is XSLT 1.0 behavior.
+        every element whose effective version is less than 2.0.  The native
+        1.0 processor runs the XPath 1.0 grammar itself, so its expressions
+        already use 1.0 semantics; a stylesheet it forwards also keeps the
+        1.0 value model (see :attr:`result_tree_fragments`).  The default 3.0
+        processor keeps the XSLT 3.0 rule (§3.9.1), where only an effective
+        version of exactly 1.0 is XSLT 1.0 behavior.
         """
         effective = _decimal_version(self.effective_version, "effective_version")
         if self.native:
             return effective < Decimal("2.0")
         return effective == Decimal("1.0")
+
+    @property
+    def result_tree_fragments(self) -> bool:
+        """Whether this element's content values use XSLT 1.0 fragments.
+
+        XSLT 1.0 §11.1 makes a content-initialized variable, parameter, or
+        with-parameter a result tree fragment.  The model belongs to a native
+        1.0 processor when the element is processed with 1.0 behavior; a
+        later effective version keeps the later language's value model.
+        """
+        if not self.legacy:
+            return False
+        return _decimal_version(self.effective_version, "effective_version") == Decimal("1.0")
+
+    @property
+    def language_version(self) -> str:
+        """The implemented language version that governs this element.
+
+        Profile-owned version decisions — function arities, element
+        availability, and the runtime bridge — key off a declared version the
+        processor implements.  A declaration naming a version the processor
+        does not implement keeps the processor's own language: a future
+        version (``8.5``) is processed forwards-compatibly with the
+        implemented language, and an unimplemented intermediate version
+        (``1.5`` under a 3.0 processor) does not invent a vocabulary.
+        ``compatibility_mode`` and the forwards-compatible checks keep reading
+        the declared version itself.
+        """
+        declared = _decimal_version(self.effective_version, "effective_version")
+        if self.legacy:
+            # A native 1.0 processor executes the 1.0 language, but a
+            # forwards-compatible stylesheet may select a later implemented
+            # function surface (the engine offers those as extensions, as it
+            # long has).  A declaration the engine does not implement keeps
+            # the 1.0 surface.
+            for candidate in reversed(_IMPLEMENTED_LANGUAGE_VERSIONS["3.0"]):
+                if declared == Decimal(candidate):
+                    return candidate
+            return "1.0"
+        implemented = _IMPLEMENTED_LANGUAGE_VERSIONS.get(self.processor_version)
+        if implemented is None:  # pragma: no cover - every profile is in the table
+            implemented = _IMPLEMENTED_LANGUAGE_VERSIONS["3.0"]
+        for candidate in reversed(implemented):
+            if declared == Decimal(candidate):
+                return candidate
+        return implemented[-1]
 
     @property
     def xpath_version(self) -> str:

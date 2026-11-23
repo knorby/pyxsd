@@ -187,7 +187,7 @@ from pyxsd.xslt.errors import (
 from pyxsd.xslt.extensions import ExtensionInstruction, XsltExtensions
 from pyxsd.xslt.policy import OutputPolicy
 from pyxsd.xslt.precedence import compare_precedence
-from pyxsd.xslt.profiles import RecoveryPolicy
+from pyxsd.xslt.profiles import LanguageProfile, RecoveryPolicy
 from pyxsd.xslt.python_rules import (
     PYTHON_APPLICATION_NAME,
     PYTHON_LAYER_IDENTITY,
@@ -3930,8 +3930,8 @@ def _compile_instruction(
     """
     context = _instruction_context(context, instruction)
     context = _original_context(context, instruction)
-    if _native_10_forwards_compatible(instruction, context):
-        return _compile_native_10_forwards_compatible(instruction, context, module)
+    if _native_forwards_compatible(instruction, context):
+        return _compile_native_forwards_compatible(instruction, context, module)
     if supports_instruction(instruction.name, context):
         return compile_instruction(instruction, context, module)
     if instruction.literal:
@@ -3941,36 +3941,44 @@ def _compile_instruction(
     return _compile_unhandled_instruction(instruction, context, module)
 
 
-def _native_10_forwards_compatible(instruction: Instruction, context: StaticContext) -> bool:
-    """Whether *instruction* is a later element the native 1.0 rules forward.
+def _native_forwards_compatible(instruction: Instruction, context: StaticContext) -> bool:
+    """Whether *instruction* is a later element the native profile forwards.
 
-    The profile owns the vocabulary decision (see
-    :func:`pyxsd.xslt.profile10.forwards_compatible_instruction`), and the
-    static context owns the §2.5 mode, which only a stylesheet root's
-    ``version`` and a literal result element's ``xsl:version`` move.  This hook
-    keeps the XSLT 2.0/3.0 instruction registry out of the way so the
-    forwards-compatible fallback can run instead of the later semantics.
+    The profile owns the vocabulary decision (:mod:`pyxsd.xslt.profile10` for
+    XSLT 1.0 §2.5, the bundled XSLT 2.0 schema for XSLT 2.0 §3.6), and the
+    static context owns the effective version.  This hook keeps the XSLT
+    3.0 instruction registry out of the way so the forwards-compatible
+    fallback can run instead of the later semantics.
     """
     if not instruction.is_xslt:
         return False
-    from pyxsd.xslt.profile10 import forwards_compatible_instruction
+    profile = LanguageProfile.from_options(context.profile)
+    if profile.processor_version == "1.0":
+        from pyxsd.xslt.profile10 import forwards_compatible_instruction
 
-    return forwards_compatible_instruction(
-        instruction.local_name,
-        context.profile,
-        context.forwards_compatible,
-    )
+        return forwards_compatible_instruction(
+            instruction.local_name,
+            context.profile,
+            context.forwards_compatible,
+        )
+    if profile.processor_version != "2.0":
+        return False
+    from pyxsd.xslt.compiler.native_profile import native_vocabulary_element
+
+    if native_vocabulary_element(instruction.local_name):
+        return False
+    return _forwards_compatible(context.version, context.profile)
 
 
-def _compile_native_10_forwards_compatible(
+def _compile_native_forwards_compatible(
     instruction: Instruction,
     context: StaticContext,
     module: EffectiveModule,
 ) -> _Plan:
-    """Compile one forwards-compatible instruction under XSLT 1.0 §2.5/§15.
+    """Compile one forwards-compatible instruction under XSLT §15 Fallback.
 
-    An element XSLT 1.0 does not allow in a template must not be an error
-    unless it is instantiated; when it is instantiated, §15 Fallback
+    An element the native language does not allow in a template must not be an
+    error unless it is instantiated; when it is instantiated, §15 Fallback
     instantiates every ``xsl:fallback`` child in sequence and signals an error
     only when none is present.  Compiling the fallback content eagerly is
     inert for an uninstantiated element because the whole plan lives in the
@@ -3983,6 +3991,22 @@ def _compile_native_10_forwards_compatible(
         return _ConcatPlan(
             instruction,
             tuple(_compile_sequence(fallback.children, context, module) for fallback in fallbacks),
+        )
+    profile = LanguageProfile.from_options(context.profile)
+    if profile.processor_version != "1.0":
+        # XSLT 2.0 §18.2.3: an unrecognized XSLT element in a sequence
+        # constructor is a static error unless forwards-compatible behavior is
+        # enabled *and* the instruction has an xsl:fallback child.  XSLT 1.0
+        # §2.5 defers its error until the element is instantiated and assigns
+        # it no code, so only the 2.0 profile reports it here.
+        raise XsltStaticError(
+            f"xsl:{instruction.local_name} is not defined by XSLT "
+            f"{profile.processor_version} and has no xsl:fallback; a native XSLT "
+            f"{profile.processor_version} processor performs fallback for it when it "
+            "is instantiated",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
         )
     return _MissingFallbackPlan(instruction)
 
@@ -4866,7 +4890,13 @@ def _compile_call_template(
             location=instruction.location,
         )
     parameters = _compile_with_params(instruction, context, module)
-    if not context.compatibility_mode:
+    # XSLT 1.0 §11.6 ignores a supplied parameter the called template does not
+    # declare; XSLT 2.0 made it a static error.  The native 1.0 rule belongs to
+    # the processor identity, not to an element's compatibility mode.
+    if not (
+        context.compatibility_mode
+        or LanguageProfile.from_options(context.profile, context.version).legacy
+    ):
         declared = set(reference.parameter_names)
         for parameter in parameters:
             if parameter.tunnel or parameter.name in declared:
@@ -5181,11 +5211,20 @@ _INSTRUCTION_COMPILERS: Mapping[str, InstructionCompiler] = {
 register_instruction_compilers(_INSTRUCTION_COMPILERS)
 
 
-def _forwards_compatible(version: str) -> bool:
+def _forwards_compatible(version: str, profile: Any = None) -> bool:
+    """Whether *version* exceeds the active processor's language version.
+
+    XSLT 1.0 §2.5, 2.0 §3.9, and 3.0 §3.10 all key forwards-compatible
+    processing off the same comparison: the effective version is greater than
+    the version the processor implements.  ``profile`` is the compilation's
+    ``ProfileOptions`` (or ``None`` for the default 3.0 processor).
+    """
     try:
-        return Decimal(version) > _PROCESSOR_VERSION
+        declared = Decimal(version)
     except (InvalidOperation, ValueError):
         return False
+    processor = Decimal(LanguageProfile.from_options(profile).processor_version)
+    return declared > processor
 
 
 def _compile_forward_instruction(
@@ -5193,9 +5232,10 @@ def _compile_forward_instruction(
     context: StaticContext,
     module: EffectiveModule,
 ) -> _Plan:
-    if not _forwards_compatible(context.version):
+    if not _forwards_compatible(context.version, context.profile):
+        processor = LanguageProfile.from_options(context.profile).processor_version
         raise XsltStaticError(
-            f"xsl:{instruction.local_name} is not defined in XSLT 3.0",
+            f"xsl:{instruction.local_name} is not defined in XSLT {processor}",
             code="XTSE0010",
             uri=context.uri,
             location=instruction.location,
@@ -5204,8 +5244,10 @@ def _compile_forward_instruction(
         child for child in instruction.elements if child.is_xslt and child.local_name == "fallback"
     ]
     if not fallbacks:
+        processor = LanguageProfile.from_options(context.profile).processor_version
         raise XsltStaticError(
-            f"xsl:{instruction.local_name} is not defined in XSLT 3.0 and has no xsl:fallback",
+            f"xsl:{instruction.local_name} is not defined in XSLT {processor}"
+            " and has no xsl:fallback",
             code="XTSE0010",
             uri=context.uri,
             location=instruction.location,
@@ -7270,10 +7312,11 @@ class _Invocation(Transformation):
                 code=None,
             )
         if isinstance(plan, _MissingFallbackPlan):
+            language = self.profile_for().processor_version
             raise XsltDynamicError(
-                f"xsl:{plan.instruction.local_name} is not defined by XSLT 1.0 and has no "
-                "xsl:fallback; a native XSLT 1.0 processor performs fallback for it when it "
-                "is instantiated (XSLT 1.0 §2.5 and §15)",
+                f"xsl:{plan.instruction.local_name} is not defined by XSLT {language} and has "
+                f"no xsl:fallback; a native XSLT {language} processor performs fallback for it "
+                "when it is instantiated (XSLT §2.5 and §15)",
                 code=None,
                 uri=plan.instruction.module,
                 location=plan.instruction.location,
@@ -7671,7 +7714,10 @@ class _Invocation(Transformation):
             xslt_version=(
                 None
                 if static is None
-                else getattr(static, "xslt_version", None) or getattr(static, "version", None)
+                else LanguageProfile.from_options(
+                    getattr(static, "profile", self.stylesheet.profile),
+                    getattr(static, "xslt_version", None) or getattr(static, "version", None),
+                ).language_version
             ),
             key_lookup=self._key_override_for(package_name),
             id_lookup=self._id_override,

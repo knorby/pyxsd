@@ -60,7 +60,7 @@ XSLT30_SCHEMA_SUPPLEMENTS: Mapping[str, frozenset[str]] = MappingProxyType(
     }
 )
 
-__all__ = ["assert_native_profile_language"]
+__all__ = ["assert_native_profile_language", "native_vocabulary_element"]
 
 #: The Serialization 2.0 output methods (XSLT 2.0 §20).  The core methods
 #: are these unprefixed NCNames; every other name selects an output method
@@ -392,34 +392,52 @@ def _check_analyze_string_flags(
         )
 
 
-def _visit(node: Any, *, uri: str | None, vocabulary: _XSLT20Vocabulary) -> None:
+def _visit(
+    node: Any,
+    *,
+    uri: str | None,
+    vocabulary: _XSLT20Vocabulary,
+    forwards_compatible: bool = False,
+) -> None:
     if node.kind is not NodeKind.ELEMENT:
         return
+    current = _forwards_compatible_at(node, forwards_compatible, "2.0")
     name = node.name or ""
     if name.startswith(f"{{{XSLT_NS}}}"):
         local = name[len(XSLT_NS) + 2 :]
         location = node.source_location()
         if local not in vocabulary.elements:
-            raise XsltStaticError(
-                f"the xsl:{local} element is not defined by XSLT 2.0; a native "
-                "XSLT 2.0 processor cannot compile it",
-                code="XTSE0010",
-                uri=uri,
-                location=location,
-            )
-        _check_attributes(node, local, vocabulary, uri=uri, location=location)
-        _check_mode_tokens(node, local, vocabulary, uri=uri, location=location)
-        if local in ("output", "result-document"):
-            _check_method_attribute(
-                node,
-                uri=uri,
-                location=location,
-                allow_avt=local == "result-document",
-            )
-        if local == "analyze-string":
-            _check_analyze_string_flags(node, uri=uri, location=location)
+            if not current:
+                raise XsltStaticError(
+                    f"the xsl:{local} element is not defined by XSLT 2.0; a native "
+                    "XSLT 2.0 processor cannot compile it",
+                    code="XTSE0010",
+                    uri=uri,
+                    location=location,
+                )
+            # XSLT 2.0 §3.6: a top-level element XSLT 2.0 does not allow is
+            # ignored with its content, and one in a template is not a static
+            # error unless instantiated (xsl:fallback then applies).  The
+            # compile path owns that split.
+        elif not current:
+            _check_attributes(node, local, vocabulary, uri=uri, location=location)
+            _check_mode_tokens(node, local, vocabulary, uri=uri, location=location)
+            if local in ("output", "result-document"):
+                _check_method_attribute(
+                    node,
+                    uri=uri,
+                    location=location,
+                    allow_avt=local == "result-document",
+                )
+            if local == "analyze-string":
+                _check_analyze_string_flags(node, uri=uri, location=location)
     for child in node.children:
-        _visit(child, uri=uri, vocabulary=vocabulary)
+        _visit(
+            child,
+            uri=uri,
+            vocabulary=vocabulary,
+            forwards_compatible=current,
+        )
 
 
 def _version_attribute(node: Any, *, xslt_namespace: bool) -> str | None:
@@ -433,13 +451,24 @@ def _version_attribute(node: Any, *, xslt_namespace: bool) -> str | None:
 
 def _forwards_compatible_30(node: Any, inherited: bool) -> bool:
     """Whether *node* enables XSLT section 3.11 forwards-compatible processing."""
+    return _forwards_compatible_at(node, inherited, "3.0")
+
+
+def _forwards_compatible_at(node: Any, inherited: bool, ceiling: str) -> bool:
+    """Whether *node*'s effective version exceeds the processor's *ceiling*.
+
+    XSLT 2.0 §3.6 and XSLT 3.0 §3.10 share the same declaration shape: an
+    XSLT-namespace element carries ``version`` (a standard attribute), while a
+    literal result element carries ``xsl:version``.  An element without a
+    declaration inherits the mode of its parent.
+    """
     name = node.name or ""
     from_xslt_namespace = not name.startswith(f"{{{XSLT_NS}}}")
     version = _version_attribute(node, xslt_namespace=from_xslt_namespace)
     if version is None:
         return inherited
     try:
-        return Decimal(version.strip()) > Decimal("3.0")
+        return Decimal(version.strip()) > Decimal(ceiling)
     except (InvalidOperation, ValueError):
         return inherited
 
@@ -473,6 +502,17 @@ def _visit_30(
             vocabulary=vocabulary,
             forwards_compatible=current,
         )
+
+
+def native_vocabulary_element(local: str) -> bool:
+    """Whether the native XSLT 2.0 vocabulary defines ``xsl:local``.
+
+    The forwards-compatible compile path uses this so an element XSLT 2.0 does
+    not define runs its ``xsl:fallback`` content instead of the later
+    language's registered semantics.  The native 1.0 profile resolves its own
+    vocabulary from :mod:`pyxsd.xslt.profile10` before reaching this helper.
+    """
+    return local in _xslt20_vocabulary().elements
 
 
 def assert_native_profile_language(module: Any, profile: ProfileOptions) -> None:

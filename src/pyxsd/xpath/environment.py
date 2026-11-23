@@ -121,6 +121,11 @@ class XPathStaticContext:
     default_collation: str | None = None
     xsd_version: str | None = None
     xslt_version: str | None = None
+    #: Whether expressions compiled against this context evaluate with XPath
+    #: 1.0 compatibility mode.  XSLT owns the rule (XSLT 3.0 §3.9.1); the
+    #: engine passes it to the parser, which applies the specified operand
+    #: conversions to operators and function arguments.
+    compatibility_mode: bool = False
 
     def __post_init__(self) -> None:
         namespaces = _freeze_mapping(self.namespaces, "namespaces")
@@ -149,6 +154,8 @@ class XPathStaticContext:
             raise ValueError("xsd_version must be '1.0', '1.1', or None")
         if self.xslt_version not in (None, "1.0", "2.0", "3.0", "3.1"):
             raise ValueError("xslt_version must be '1.0', '2.0', '3.0', '3.1', or None")
+        if not isinstance(self.compatibility_mode, bool):
+            raise TypeError("compatibility_mode must be a boolean")
 
         object.__setattr__(self, "namespaces", namespaces)
         object.__setattr__(self, "variable_types", variable_types)

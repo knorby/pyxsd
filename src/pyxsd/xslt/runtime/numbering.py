@@ -19,7 +19,7 @@ from typing import Any, NoReturn
 from elementpath.helpers import is_ncname
 
 from pyxsd.xdm import XdmAtomic
-from pyxsd.xdm.legacy import legacy_number_from_string
+from pyxsd.xdm.legacy import ResultTreeFragment, legacy_number_from_string
 from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xslt.errors import XsltDynamicError, XsltStaticError
 
@@ -1219,8 +1219,12 @@ def _resolve_decimal_format(
 def _numeric_value(value: object, compatibility: bool = False) -> int | float | Decimal:
     if value is None:
         return float("nan")
+    if isinstance(value, ResultTreeFragment):
+        # A native 1.0 result tree fragment converts through the string value
+        # of its root (XSLT 1.0 §11.1).
+        value = XdmAtomic.string(value.string_value)
     if isinstance(value, XdmNode):
-        value = value.typed_value[0]
+        value = value.typed_value[0] if value.typed_value else XdmAtomic.string("")
     if isinstance(value, XdmAtomic):
         local = (
             value.type_name.partition("}")[2]

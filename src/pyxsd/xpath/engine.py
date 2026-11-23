@@ -1308,7 +1308,10 @@ class XPathEngine:
         free_variable_names = _expression_free_variable_names(root_token, static_context)
 
         plan: continuation.CompiledExpression | None = None
-        if self._version == "3.1":
+        if self._version == "3.1" and not static_context.compatibility_mode:
+            # The optional seam lowers a subset of XPath 3.1 to a continuation
+            # machine.  It does not model XPath 1.0 compatibility conversions,
+            # so a compatibility-mode expression keeps the full evaluator.
             try:
                 plan = continuation.compile_expression(
                     source,
@@ -1532,6 +1535,7 @@ def _parser_key(
         static_context.default_collation,
         static_context.xsd_version,
         static_context.xslt_version,
+        static_context.compatibility_mode,
         _decimal_formats_key(environment.decimal_formats),
         _override_key(environment.function_overrides),
     )
@@ -1659,6 +1663,7 @@ def _build_parser(
             "base_uri": base_uri if base_uri is not None else static_context.base_uri,
             "default_collation": static_context.default_collation,
             "xsd_version": static_context.xsd_version,
+            "compatibility_mode": static_context.compatibility_mode,
         }
         if decimal_formats and version != "2.0":
             options["decimal_formats"] = {
@@ -1683,6 +1688,8 @@ def _build_parser(
             _install_xpath20_regex_surface(parser)
         _register_schema_constructors(parser, static_context)
         _install_schema_kind_tests(parser)
+        if static_context.compatibility_mode:
+            _install_compatibility_comparisons(parser)
         # A declared type may be a user-defined schema type the parser can only
         # resolve once its pool proxy is bound; pyxsd validated the declaration
         # already (XPST0051/XPST0008), so assign the full map here instead of
@@ -2364,6 +2371,95 @@ def _register_key_function(parser: Any, holder: _BridgeHolder) -> None:
     token_class.nargs = (2, 3)
 
 
+def _active_context(token: Any, context: Any) -> Any:
+    stored = getattr(token, "context", None)
+    return context if stored is None else stored
+
+
+_COMPARISON_OPERATORS = {
+    "=": operator.eq,
+    "!=": operator.ne,
+    "<": operator.lt,
+    ">": operator.gt,
+    "<=": operator.le,
+    ">=": operator.ge,
+}
+
+
+def _legacy_general_comparison(
+    token: Any,
+    context: Any = None,
+    relational: bool | None = None,
+) -> bool:
+    """XPath 1.0 §3.4 general comparison over one evaluator token.
+
+    The shared 2.0+ comparison token atomizes both operands first, so an empty
+    node-set yields no pairs and loses the 1.0 rule that a node-set compared
+    with a boolean converts to a boolean; it also applies the boolean rule to
+    relational operators, which 1.0 defines numerically.  Both the native 1.0
+    grammar and XPath 1.0 compatibility mode use this evaluation.
+    """
+    op = _COMPARISON_OPERATORS[token.symbol]
+    if relational is None:
+        relational = token.symbol in ("<", ">", "<=", ">=")
+    active = _active_context(token, context)
+    left_items = list(token._items[0].select(active))
+    right_items = list(token._items[1].select(active))
+    left_nodes = _is_node_set(left_items)
+    right_nodes = _is_node_set(right_items)
+
+    if left_nodes and right_nodes:
+        for left in left_items:
+            left_value: Any = _legacy_string_value(left)
+            if relational:
+                left_value = legacy_number_from_string(left_value)
+            for right in right_items:
+                right_value: Any = _legacy_string_value(right)
+                if relational:
+                    right_value = legacy_number_from_string(right_value)
+                if op(left_value, right_value):
+                    return True
+        return False
+    if left_nodes or right_nodes:
+        nodes, other = (left_items, right_items) if left_nodes else (right_items, left_items)
+        nodes_first = left_nodes
+        if len(other) == 1 and isinstance(other[0], bool):
+            node_boolean = bool(nodes)
+            if relational:
+                other_number = _legacy_number_value(other[0])
+                return (
+                    op(float(node_boolean), other_number)
+                    if nodes_first
+                    else op(other_number, float(node_boolean))
+                )
+            return op(node_boolean, other[0]) if nodes_first else op(other[0], node_boolean)
+        if relational or (len(other) == 1 and is_legacy_number(other[0])):
+            target = _legacy_number_value(other[0]) if other else math.nan
+            for node in nodes:
+                value = _legacy_number_value(node)
+                if op(value, target) if nodes_first else op(target, value):
+                    return True
+            return False
+        other_text = _legacy_string_value(other[0]) if other else ""
+        for node in nodes:
+            text = _legacy_string_value(node)
+            if op(text, other_text) if nodes_first else op(other_text, text):
+                return True
+        return False
+
+    left = left_items[0] if left_items else None
+    right = right_items[0] if right_items else None
+    if relational:
+        return op(_legacy_number_value(left), _legacy_number_value(right))
+    if isinstance(left, bool) or isinstance(right, bool):
+        left, right = _legacy_boolean_value(left), _legacy_boolean_value(right)
+    elif is_legacy_number(left) or is_legacy_number(right):
+        left, right = _legacy_number_value(left), _legacy_number_value(right)
+    else:
+        left, right = _legacy_string_value(left), _legacy_string_value(right)
+    return op(left, right)
+
+
 def _install_legacy_1_0_overrides(parser: Any) -> None:
     """Install the XPath 1.0 conversions the shared token library leaves out.
 
@@ -2383,83 +2479,9 @@ def _install_legacy_1_0_overrides(parser: Any) -> None:
     def is_fragment(value: Any) -> bool:
         return isinstance(value, _LegacyRtfValue)
 
-    _COMPARISONS = {
-        "=": operator.eq,
-        "!=": operator.ne,
-        "<": operator.lt,
-        ">": operator.gt,
-        "<=": operator.le,
-        ">=": operator.ge,
-    }
-
     def legacy_comparison(self: Any, context: Any = None, relational: bool | None = None) -> bool:
-        """XPath 1.0 §3.4 general comparison.
-
-        The shared comparison token atomizes both operands first, so an empty
-        node-set yields no pairs and loses the 1.0 rule that a node-set compared
-        with a boolean converts to a boolean; it also applies the boolean rule
-        to relational operators, which 1.0 defines numerically.  The native
-        profile evaluates the value kinds directly.
-        """
-        op = _COMPARISONS[self.symbol]
-        if relational is None:
-            relational = self.symbol in ("<", ">", "<=", ">=")
-        active = active_context(self, context)
-        left_items = list(self._items[0].select(active))
-        right_items = list(self._items[1].select(active))
-        left_nodes = _is_node_set(left_items)
-        right_nodes = _is_node_set(right_items)
-
-        if left_nodes and right_nodes:
-            for left in left_items:
-                left_value: Any = _legacy_string_value(left)
-                if relational:
-                    left_value = legacy_number_from_string(left_value)
-                for right in right_items:
-                    right_value: Any = _legacy_string_value(right)
-                    if relational:
-                        right_value = legacy_number_from_string(right_value)
-                    if op(left_value, right_value):
-                        return True
-            return False
-        if left_nodes or right_nodes:
-            nodes, other = (left_items, right_items) if left_nodes else (right_items, left_items)
-            nodes_first = left_nodes
-            if len(other) == 1 and isinstance(other[0], bool):
-                node_boolean = bool(nodes)
-                if relational:
-                    other_number = _legacy_number_value(other[0])
-                    return (
-                        op(float(node_boolean), other_number)
-                        if nodes_first
-                        else op(other_number, float(node_boolean))
-                    )
-                return op(node_boolean, other[0]) if nodes_first else op(other[0], node_boolean)
-            if relational or (len(other) == 1 and is_legacy_number(other[0])):
-                target = _legacy_number_value(other[0]) if other else math.nan
-                for node in nodes:
-                    value = _legacy_number_value(node)
-                    if op(value, target) if nodes_first else op(target, value):
-                        return True
-                return False
-            other_text = _legacy_string_value(other[0]) if other else ""
-            for node in nodes:
-                text = _legacy_string_value(node)
-                if op(text, other_text) if nodes_first else op(other_text, text):
-                    return True
-            return False
-
-        left = left_items[0] if left_items else None
-        right = right_items[0] if right_items else None
-        if relational:
-            return op(_legacy_number_value(left), _legacy_number_value(right))
-        if isinstance(left, bool) or isinstance(right, bool):
-            left, right = _legacy_boolean_value(left), _legacy_boolean_value(right)
-        elif is_legacy_number(left) or is_legacy_number(right):
-            left, right = _legacy_number_value(left), _legacy_number_value(right)
-        else:
-            left, right = _legacy_string_value(left), _legacy_string_value(right)
-        return op(left, right)
+        """XPath 1.0 §3.4 general comparison (see the shared implementation)."""
+        return _legacy_general_comparison(self, context, relational)
 
     def legacy_relational(self: Any, context: Any = None) -> bool:
         return legacy_comparison(self, context, True)
@@ -2660,6 +2682,30 @@ def _install_legacy_1_0_overrides(parser: Any) -> None:
         evaluate=legacy_sum,
     )
     _install_legacy_path_operators(parser)
+
+
+def _install_compatibility_comparisons(parser: Any) -> None:
+    """Install the XPath 1.0 general comparison on a 2.0+ parser.
+
+    XSLT 3.0 §3.9.1 runs an effective-version-1.0 element's expressions with
+    XPath 1.0 compatibility mode.  elementpath's parsers apply the mode to
+    function arguments and arithmetic but leave general comparison to the
+    later operator table, so the six general comparison operators are
+    re-registered here.  Nothing else about the 2.0+ grammar changes.
+    """
+    for symbol in ("=", "!=", "<", ">", "<=", ">="):
+        base = parser.symbol_table.get(symbol)
+        if base is None:  # pragma: no cover - every supported parser has them
+            continue
+        parser._register(
+            symbol,
+            f"_PyxsdCompatibility{'_'.join(str(ord(c)) for c in symbol)}",
+            bases=(base,),
+            label=getattr(base, "label", symbol),
+            nargs=getattr(base, "nargs", 2),
+            sequence_types=getattr(base, "sequence_types", ()),
+            evaluate=_legacy_general_comparison,
+        )
 
 
 def _install_legacy_path_operators(parser: Any) -> None:
