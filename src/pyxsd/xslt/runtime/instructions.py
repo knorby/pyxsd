@@ -1349,7 +1349,7 @@ def copy_value(
         return (item,)
     content_context = replace(context, focus=content_focus)
     pool = invocation._package_schema_pool(context.package_name)
-    factory = _NodeFactory(base_uri=item.base_uri)
+    factory = _NodeFactory(base_uri=plan.instruction.base_uri)
     if item.kind is NodeKind.DOCUMENT:
         document = factory.document
         content = invocation._execute_plans(plan.children, context=content_context)
@@ -1375,7 +1375,9 @@ def copy_value(
         parent=None,
         deep=False,
         copy_namespaces=plan.copy_namespaces,
+        copy_attributes=False,
     )
+    clone._adopts_parent_base = clone.kind is NodeKind.ELEMENT
     if item.kind is NodeKind.ATTRIBUTE:
         check_copy_type(item, plan.type_name, pool)
     if item.kind is NodeKind.ELEMENT:

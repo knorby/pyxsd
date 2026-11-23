@@ -221,12 +221,15 @@ def _document_xml(node: XdmNode) -> str:
 
     A document (or any node) whose single child is an element yields that
     element's markup — the principal result is one node, not necessarily a
-    document; every other shape is described by the concatenated string values
-    of its children.
+    document; a document with top-level comments or processing instructions
+    beside its element yields each child's markup in order; every other shape
+    is described by the concatenated string values of its children.
     """
     elements = [child for child in node.children if child.kind is NodeKind.ELEMENT]
     if len(elements) == 1 and len(node.children) == 1:
         return _serialized_markup(elements[0])
+    if elements:
+        return "".join(_serialized_markup(child) for child in node.children)
     return escape("".join(child.string_value for child in node.children))
 
 

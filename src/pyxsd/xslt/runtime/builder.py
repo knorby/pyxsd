@@ -818,8 +818,13 @@ class _NodeFactory:
         parent: XdmNode | None,
         deep: bool = True,
         copy_namespaces: bool = True,
+        copy_attributes: bool = True,
     ) -> XdmNode:
-        """Copy one node (and its subtree) into this factory's document."""
+        """Copy one node (and its subtree) into this factory's document.
+
+        ``copy_attributes=False`` gives a shallow ``xsl:copy`` of an element:
+        the element keeps its name and namespaces but no attributes.
+        """
         if source.kind is NodeKind.DOCUMENT:
             return self._clone_document(
                 source,
@@ -842,19 +847,20 @@ class _NodeFactory:
                 namespace_uri=source.namespace_uri,
                 annotations=source.annotation,
             )
-            for attribute in source.attributes:
-                cloned_attribute = self.clone(attribute, parent=node)
-                if not copy_namespaces and cloned_attribute.namespace_uri is not None:
-                    cloned_attribute._prefix = (
-                        _prefix_for(
-                            cloned_attribute.namespace_uri,
-                            scope,
-                            is_attribute=True,
+            if copy_attributes:
+                for attribute in source.attributes:
+                    cloned_attribute = self.clone(attribute, parent=node)
+                    if not copy_namespaces and cloned_attribute.namespace_uri is not None:
+                        cloned_attribute._prefix = (
+                            _prefix_for(
+                                cloned_attribute.namespace_uri,
+                                scope,
+                                is_attribute=True,
+                            )
+                            or ""
                         )
-                        or ""
-                    )
-                cloned_attribute._in_scope_namespaces = MappingProxyType(scope)
-                node._append_attribute(cloned_attribute)
+                    cloned_attribute._in_scope_namespaces = MappingProxyType(scope)
+                    node._append_attribute(cloned_attribute)
             if copy_namespaces:
                 for namespace in source.namespace_nodes:
                     node._append_namespace_node(self.clone(namespace, parent=node))

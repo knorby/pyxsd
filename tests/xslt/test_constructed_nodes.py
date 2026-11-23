@@ -965,7 +965,7 @@ def test_copy_of_deep_retains_namespaces_prefixes_and_new_identity() -> None:
     assert item.children[0].name == "child"
 
 
-def test_shallow_copy_retains_name_attributes_and_namespaces_only() -> None:
+def test_shallow_copy_retains_name_and_namespaces_only() -> None:
     source = XdmDocument.parse(
         b'<a:root xmlns:a="urn:a"><b:item xmlns:b="urn:b" b:attr="1"><child/></b:item></a:root>'
     )
@@ -981,10 +981,23 @@ def test_shallow_copy_retains_name_attributes_and_namespaces_only() -> None:
     assert copied.name == "{urn:b}item"
     assert copied.prefix == "b"
     assert copied.children == ()
-    assert copied.attributes[0].name == "{urn:b}attr"
-    assert copied.attributes[0].prefix == "b"
+    assert copied.attributes == ()
     assert set(_namespace_prefixes(copied)) >= {"b", "xml"}
     assert all(namespace.parent is copied for namespace in copied.namespace_nodes)
+
+
+def test_copy_select_uses_the_selected_node_base_and_not_its_attributes() -> None:
+    source = XdmDocument.parse(b'<doc><item x="1" xml:base="http://source.example/"/></doc>')
+    result = _transform_source(
+        '<xsl:template name="main"><out xml:base="http://instr.example/">'
+        '<xsl:copy select="//item"/></out></xsl:template>',
+        source,
+    )
+
+    copied = result.principal_tree.root_element.children[0]
+    assert copied.name == "item"
+    assert copied.attributes == ()
+    assert copied.base_uri == "http://instr.example/"
 
 
 def test_copy_without_namespaces_drops_unused_bindings_but_keeps_name_ones() -> None:
