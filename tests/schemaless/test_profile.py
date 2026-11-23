@@ -6,6 +6,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
+from pyxsd._lexical import clone_lexical
 from pyxsd.locations import DataLocation, IssueLocation, PathStep
 from pyxsd.schemaless import (
     DocumentProfile,
@@ -52,6 +53,20 @@ def test_profile_limits_and_snapshots_are_explicit():
     assert profile.revision_id == doc.root.revision.revision_id
     assert profile.revision_dirty is False and doc.root.revision.dirty is True
     assert profile.at("/r/x").samples == ("1",)  # immutable old evidence
+
+
+def test_generic_clone_profile_reports_bounded_lexical_evidence():
+    doc = parse_xml(b"<r><x>1</x><x>2</x></r>", types=TypePolicy.infer())
+    clone = doc.transform(clone_lexical)
+    profile = clone.profile(ProfileLimits(max_samples=1, max_distinct=1))
+
+    row = profile.at("/r/x")
+    assert row.interpretation == "lexical"
+    assert row.occurrences == 2 and row.samples == ("1",)
+    assert not profile.complete
+    assert profile.revision_id == clone.root.revision.revision_id
+    assert profile.revision_id != doc.root.revision.revision_id
+    assert doc.profile().at("/r/x").interpretation == "inferred"
 
 
 def test_profile_models_are_exported_frozen_snapshots():

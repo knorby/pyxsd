@@ -10,6 +10,7 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from pyxsd import xsd_data_types as xsd
+from pyxsd._lexical import clone_lexical
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.schemaless import (
     ScalarAdapter,
@@ -33,6 +34,45 @@ def test_inference_is_conservative_and_lexical_storage_is_unchanged():
     assert doc.root.children[2].scalar_value() == "001"
     assert doc.root.attribute_value("a") == "02138"
     assert doc.to_string() == '<r a="02138"><i>12</i><b>true</b><s>001</s></r>'
+
+
+def test_generic_clone_reads_lexically_even_when_the_source_is_pinned():
+    policy = TypePolicy.infer().with_pin("/r/@a", "xs:integer")
+    doc = parse_xml(b'<r a="001">12</r>', types=policy)
+    clone = doc.transform(clone_lexical)
+
+    assert clone.root.scalar_value() == "12"
+    assert clone.root.attribute_value("a") == "001"
+    assert clone.root.attribute_value("absent") is None
+    assert doc.root.scalar_value() == 12
+    assert doc.root.attribute_value("a") == 1
+
+
+def test_generic_clone_pin_is_validated_and_isolated_from_the_source():
+    policy = TypePolicy.lexical().with_pin("/r/@a", "xs:integer")
+    doc = parse_xml(b'<r a="001">1</r>', types=policy)
+    clone = doc.transform(clone_lexical)
+    xdm = clone.to_xdm()
+
+    assert not clone.pin_type("/r", "xs:boolean").has_errors
+    clone_policy = clone.root.revision.types
+    for path, type_ref, code in (
+        ("/r[0]", "xs:integer", "invalid-scalar-path"),
+        ("/r", "xs:UUID", "unknown-scalar-type"),
+        ("/r/@missing", "xs:integer", "unknown-scalar-path"),
+    ):
+        report = clone.pin_type(path, type_ref)
+        assert [issue.code for issue in report.issues] == [code]
+        assert clone.root.revision.types is clone_policy
+
+    assert clone.root.scalar_value() is True
+    assert clone.revalidate().root.scalar_value() is True
+    assert clone.to_xdm() is xdm
+    assert not clone.root.revision.dirty
+    assert doc.root.revision.types is policy
+    assert doc.root.scalar_value() == "1"
+    assert doc.root.attribute_value("a") == 1
+    assert doc.report_current
 
 
 def test_explicit_pin_reports_failures_and_never_falls_back():

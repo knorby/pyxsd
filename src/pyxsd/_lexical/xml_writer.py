@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TypeVar, cast
 
-from pyxsd._lexical.tree import LexicalElement, LexicalRevision, NodeContext
+from pyxsd._lexical.tree import LexicalElement, NodeContext
 from pyxsd.namespaces import XML_NS, local_name, namespace_of
 from pyxsd.writers.xml_tag_writer import _escape_attribute, _escape_text
 
@@ -81,15 +81,16 @@ def serialize_lexical(root: LexicalElement) -> str:
 def clone_lexical(root: _NodeT) -> _NodeT:
     """Return an independent lexical copy of *root* with fresh contexts.
 
-    The clone belongs to a new revision with a new revision ID and copies the
-    source dirty flag.  Namespace frames, base URIs, and source occurrences are
-    copied so revalidation does not lose external lexical context.  The copy is
-    iterative, so deeply nested documents do not consume the Python stack.
+    The clone starts with its node family's default revision and copies the
+    source dirty flag, not the source's typed interpretation. Namespace frames,
+    base URIs, and source occurrences are copied so revalidation does not lose
+    external lexical context. The copy is iterative, so deeply nested documents
+    do not consume the Python stack.
     """
     if not isinstance(root, LexicalElement):
         raise TypeError("root must be a LexicalElement")
     source_revision = root.revision
-    revision = LexicalRevision()
+    revision = type(root)._create_revision()
     if source_revision.dirty:
         revision.mark_dirty()
     clone_root = type(root)._clone_new(root, revision)

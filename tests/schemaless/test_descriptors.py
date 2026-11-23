@@ -5,7 +5,6 @@ import io
 import pytest
 
 from pyxsd._lexical import clone_lexical
-from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.schemaless import (
     NodeMapping,
@@ -596,13 +595,24 @@ def test_detached_subtree_descriptors_are_lexical():
     assert detached.text_value() == "2"
 
 
-def test_generic_clone_descriptor_reads_require_a_typed_snapshot():
-    doc = parse_xml(b'<order id="1">note</order>', node_mapping=order_mapping())
+def test_generic_clone_descriptors_follow_the_clones_own_policy():
+    doc = parse_xml(
+        b'<order id="001">12</order>', node_mapping=order_mapping(), types=TypePolicy.infer()
+    )
     clone = doc.transform(clone_lexical)
-    with pytest.raises(PyXSDError, match="typed interpretation"):
-        clone.root.id  # noqa: B018
-    with pytest.raises(PyXSDError, match="typed interpretation"):
-        clone.root.note  # noqa: B018
+    assert (doc.root.id, doc.root.note) == (1, 12)
+    assert (clone.root.id, clone.root.note) == ("001", "12")
+
+    clone.root.id = "002"
+    clone.root.note = "fresh"
+    assert (clone.root.attribute_lexical("id"), clone.root.text_value()) == ("002", "fresh")
+    assert (clone.root.id, clone.root.note) == ("002", "fresh")
+
+    assert not clone.pin_type("/order/@id", "xs:integer").has_errors
+    assert clone.root.id == 2
+    clone.root.id = 3
+    assert clone.to_string() == '<order id="3">fresh</order>'
+    assert doc.to_string() == '<order id="001">12</order>'
 
 
 def test_descriptor_pins_are_isolated_per_document():

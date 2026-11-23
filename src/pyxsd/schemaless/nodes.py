@@ -13,7 +13,7 @@ never invents an interpretation that ordinary typed node access cannot see.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar, cast, overload
 
 from pyxsd._lexical import LexicalElement
 from pyxsd._lexical.tree import _check_name
@@ -195,12 +195,9 @@ def _effective_adapter(instance: SchemalessElement, attribute: str | None) -> Sc
 
     Descriptor reads delegate to the revision's typed snapshot, so a write must
     resolve the same occurrence pin, and the same inference fallback, rather
-    than a private copy of the declared type. A generic lexical clone has no
-    scalar policy and keeps lexical writes.
+    than a private copy of the declared type.
     """
-    revision = instance._revision
-    if not isinstance(revision, SchemalessRevision):
-        return None
+    revision = cast(SchemalessRevision, instance._revision)
     infer = revision.types.mode == "infer"
     if not infer and not revision._xml_pins:
         return None

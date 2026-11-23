@@ -23,7 +23,7 @@ from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
 from pyxsd.schemaless.errors import ScalarTypeError
 from pyxsd.schemaless.profile import DocumentProfile, ProfileLimits, _xml_profile
-from pyxsd.schemaless.tree import SchemalessElement, SchemalessRevision, _pinned_value, _XmlPath
+from pyxsd.schemaless.tree import SchemalessElement, _pinned_value, _XmlPath
 from pyxsd.schemaless.types import ScalarAdapter, TypePolicy, TypeRef
 from pyxsd.validation import ValidationReport
 from pyxsd.xdm.document import (
@@ -180,13 +180,11 @@ class SchemalessDocument(Document):
         """
         from pyxsd.schemaless.parser import _parse_captured_xml
 
-        revision = self.root.revision
         again = _parse_captured_xml(
             self._capture_projection(),
             xml_policy=self._xml_policy,
             xml_limits=self._xml_limits,
-            # A generic lexical clone retains node classes but not its typed view.
-            types=revision.types if isinstance(revision, SchemalessRevision) else None,
+            types=self.root.revision.types,
             node_mapping=self._node_mapping,
         )
         again.source = self.source
