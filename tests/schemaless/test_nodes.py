@@ -27,6 +27,21 @@ def test_mixin_identity_precedence_and_document_isolation():
     assert type(parse_xml(io.StringIO("<r><x/></r>")).root.children[0]) is SchemalessElement
 
 
+def test_mixin_method_overrides_node_base_method():
+    class TextView:
+        __slots__ = ()
+
+        def text_value(self):
+            return f"view: {super().text_value()}"
+
+    mapping = NodeMapping()
+    mapping.register(TextView, path="/r")
+    root = parse_xml(b"<r>original</r>", node_mapping=mapping).root
+
+    assert root.text_value() == "view: original"
+    assert SchemalessElement.text_value(root) == "original"
+
+
 def test_indexed_path_selects_one_occurrence():
     class Marker:
         pass

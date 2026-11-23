@@ -140,7 +140,7 @@ def _mixin_class(mixins: tuple[type, ...]) -> type[SchemalessElement]:
     name = "SchemalessElement_" + "_".join(mixin.__name__ for mixin in mixins)
     try:
         generated = type(
-            name, (SchemalessElement, *mixins), {"__slots__": (), "__module__": __name__}
+            name, (*mixins, SchemalessElement), {"__slots__": (), "__module__": __name__}
         )
     except TypeError as exc:
         raise TypeError(f"incompatible node mapping mixin bases: {exc}") from exc
