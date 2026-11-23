@@ -1472,7 +1472,18 @@ class XsltContextBridge:
         if len(arguments) > 2 and arguments[2]:
             name = _single_string(arguments, 2)
         formats = self.decimal_formats or {None: DecimalFormat()}
-        return (XdmAtomic.string(format_number(value, picture, name, formats, self.namespaces)),)
+        return (
+            XdmAtomic.string(
+                format_number(
+                    value,
+                    picture,
+                    name,
+                    formats,
+                    self.namespaces,
+                    compatibility=self.xslt_version == "1.0" or self.xpath_version == "1.0",
+                )
+            ),
+        )
 
     def _document_function(
         self,

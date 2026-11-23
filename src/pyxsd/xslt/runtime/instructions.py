@@ -1029,6 +1029,38 @@ def _number_values(sequence: XdmSequence) -> tuple[int, ...]:
     return tuple(numbers)
 
 
+def _legacy_number_values(sequence: XdmSequence) -> tuple[int | None, ...]:
+    """XSLT 1.0 behavior for ``xsl:number/@value`` (XSLT 3.0 §12.2).
+
+    Every item after the first is discarded.  An empty sequence becomes
+    ``NaN``, and a value that cannot be converted to an integer is formatted
+    as the literal ``NaN`` instead of raising ``XTDE0980``.
+    """
+    if not sequence:
+        return (None,)
+    first = sequence[0]
+    if isinstance(first, XdmNode):
+        atomics = [value for value in first.typed_value if isinstance(value, XdmAtomic)]
+    elif isinstance(first, XdmAtomic):
+        atomics = [first]
+    else:  # pragma: no cover - the XPath 1.0 grammar has no function items
+        raise XsltDynamicError(
+            "xsl:number value cannot atomize a function item",
+            code="FOTY0013",
+        )
+    if not atomics:
+        return (None,)
+    rounded = _rounded_integer(atomics[0])
+    if rounded is None:
+        return (None,)
+    if rounded < 0:
+        raise XsltDynamicError(
+            "xsl:number value must convert to a non-negative integer",
+            code="XTDE0980",
+        )
+    return (rounded,)
+
+
 def _rounded_integer(item: XdmAtomic) -> int | None:
     local = (
         item.type_name.partition("}")[2]
@@ -1687,7 +1719,11 @@ def execute_number(
 ) -> XdmSequence:
     if plan.value is not None:
         values = invocation._evaluate(plan.value, context)
-        numbers = _number_values(values)
+        profile = invocation.profile_for(plan.value.static_context.xslt_version)
+        if profile.legacy or profile.compatibility_mode:
+            numbers = _legacy_number_values(values)
+        else:
+            numbers = _number_values(values)
     else:
         if plan.select is not None:
             selected = invocation._evaluate(plan.select, context)
@@ -1716,7 +1752,8 @@ def execute_number(
     start_at = (
         invocation._value_source(plan.start_at, context) if plan.start_at is not None else None
     )
-    numbers = _rebase_place_marker(numbers, start_at)
+    if all(number is not None for number in numbers):
+        numbers = _rebase_place_marker(cast(Sequence[int], numbers), start_at)
     format_ = (
         plan.format
         if isinstance(plan.format, str)
