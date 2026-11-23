@@ -1002,10 +1002,22 @@ class XsltContextBridge:
         if isinstance(uri_sequence, str):
             uri_sequence = (XdmAtomic.string(uri_sequence),)
         base_node_uri = None if node is None else node.base_uri
+        if node is not None and base_node_uri is None:
+            # A second-argument node that is a tree root without an explicit
+            # base URI leaves the expression's static base URI as the only
+            # available base (the case a source document parsed from inline
+            # content exercises).  A non-root node without a base URI is an
+            # unresolvable reference and stays XTDE1162.
+            base_node_uri = self.base_uri if node.kind is NodeKind.DOCUMENT else None
         resolved: dict[int, XdmDocument] = {}
         for item in uri_sequence:
             if isinstance(item, XdmNode):
                 base = base_node_uri if node is not None else item.base_uri
+                if base is None and node is None and item.parent is not None:
+                    # A node inside a tree with no base URI still resolves
+                    # against the expression's static base; a parentless node
+                    # has no base at all and keeps XTDE1162.
+                    base = self.base_uri
                 for atomic in item.typed_value:
                     if not isinstance(atomic, XdmAtomic):  # pragma: no cover - XDM invariant
                         raise XsltDynamicError(
@@ -1021,7 +1033,7 @@ class XsltContextBridge:
                     "document() requires atomic values or nodes",
                     code="XPTY0004",
                 )
-            base = base_node_uri if node is not None else self.base_uri
+            base = self.base_uri if node is None else base_node_uri
             document = self._resolve_document_or_recover(_document_uri(item), base)
             if document is not None:
                 resolved[id(document)] = document

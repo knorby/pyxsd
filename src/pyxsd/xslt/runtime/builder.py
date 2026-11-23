@@ -1241,6 +1241,9 @@ def _append_complex_content(
             last_atomic = False
             continue
         clone = _clone_for_content(factory, item, parent)
+        if item._adopts_parent_base and clone.kind is NodeKind.ELEMENT:
+            clone._base_uri = parent.base_uri
+            clone._adopts_parent_base = False
         if clone.kind is NodeKind.ELEMENT:
             _attach_element(factory, parent, clone, inherit_namespaces=inherit_namespaces)
         else:

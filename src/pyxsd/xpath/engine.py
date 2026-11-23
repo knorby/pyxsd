@@ -308,6 +308,10 @@ class _XdmDocumentAdapter(DocumentNode, _NodeAdapterMixin):
     def string_value(self) -> str:
         return self._xdm.string_value
 
+    @property
+    def base_uri(self) -> str | None:
+        return self._xdm.base_uri
+
 
 class _XdmElementAdapter(ElementNode, _NodeAdapterMixin):
     __slots__ = ("_xdm",)
@@ -369,6 +373,10 @@ class _XdmElementAdapter(ElementNode, _NodeAdapterMixin):
         return bool(self._xdm.nilled)
 
     @property
+    def base_uri(self) -> str | None:
+        return self._xdm.base_uri
+
+    @property
     def iter_typed_values(self) -> Any:
         for item in self._xdm.typed_value:
             yield atomic_to_elementpath(cast(XdmAtomic, item))
@@ -405,7 +413,7 @@ class _XdmAttributeAdapter(AttributeNode, _NodeAdapterMixin):
 
     @property
     def base_uri(self) -> str | None:
-        return self.parent.base_uri if self.parent is not None else None
+        return self._xdm.base_uri
 
 
 class _XdmTextAdapter(TextNode, _NodeAdapterMixin):
@@ -420,6 +428,10 @@ class _XdmTextAdapter(TextNode, _NodeAdapterMixin):
         self.value = xdm.string_value
         self.parent = cast(ElementNode | None, parent)
         self.position = xdm.document_order
+
+    @property
+    def base_uri(self) -> str | None:
+        return self._xdm.base_uri
 
 
 class _XdmCommentAdapter(CommentNode, _NodeAdapterMixin):
@@ -436,6 +448,10 @@ class _XdmCommentAdapter(CommentNode, _NodeAdapterMixin):
         super().__init__(xdm.string_value, None, xdm.document_order)
         self.parent = parent
 
+    @property
+    def base_uri(self) -> str | None:
+        return self._xdm.base_uri
+
 
 class _XdmProcessingInstructionAdapter(ProcessingInstructionNode, _NodeAdapterMixin):
     __slots__ = ("_xdm",)
@@ -451,6 +467,10 @@ class _XdmProcessingInstructionAdapter(ProcessingInstructionNode, _NodeAdapterMi
         super().__init__(xdm.target or "", xdm.string_value, None, xdm.document_order)
         self.parent = parent
 
+    @property
+    def base_uri(self) -> str | None:
+        return self._xdm.base_uri
+
 
 class _XdmNamespaceAdapter(NamespaceNode, _NodeAdapterMixin):
     __slots__ = ("_xdm",)
@@ -459,6 +479,10 @@ class _XdmNamespaceAdapter(NamespaceNode, _NodeAdapterMixin):
         del factory
         self._xdm = xdm
         super().__init__(xdm.prefix, xdm.bound_uri or "", parent, xdm.document_order)
+
+    @property
+    def base_uri(self) -> str | None:
+        return self._xdm.base_uri
 
 
 def _adapter_node_name(xdm: XdmNode, *, is_attribute: bool) -> QName | None:

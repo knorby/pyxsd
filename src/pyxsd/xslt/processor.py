@@ -6972,7 +6972,7 @@ class _Invocation(Transformation):
             if parameter.has_as:
                 return self._execute_plans(parameter.children, context=default_context)
             sequence = self._execute_plans(parameter.children, context=default_context)
-            return (_build_result_tree(sequence),)
+            return (_build_result_tree(sequence, base_uri=parameter.instruction.base_uri),)
         if parameter.required:
             raise XsltError(
                 f"the required parameter {parameter.name!r} was not supplied",
@@ -7088,7 +7088,12 @@ class _Invocation(Transformation):
                         value = self._execute_plans(plan.body, context=context)
                     else:
                         sequence = self._execute_plans(plan.body, context=context)
-                        value = (_build_result_tree(sequence),)
+                        value = (
+                            _build_result_tree(
+                                sequence,
+                                base_uri=component.declaration.base_uri,
+                            ),
+                        )
                 elif plan.has_as:
                     value = ()
                 else:

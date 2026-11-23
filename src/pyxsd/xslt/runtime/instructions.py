@@ -1536,7 +1536,11 @@ def variable_value(
             plan.children,
             context=replace(context, final_output=False),
         )
-        value = sequence if plan.has_as else (_build_result_tree(sequence),)
+        value = (
+            sequence
+            if plan.has_as
+            else (_build_result_tree(sequence, base_uri=plan.instruction.base_uri),)
+        )
     elif plan.has_as:
         value = ()
     else:
