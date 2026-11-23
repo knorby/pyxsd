@@ -5,9 +5,11 @@ import json
 
 import pytest
 
+from pyxsd.data_conversion.export import bound_to_data
+from pyxsd.dict_export import bound_to_dict
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
-from pyxsd.schemaless import SchemalessDocument, parse_xml
+from pyxsd.schemaless import SchemalessDocument, SchemalessElement, parse_xml
 
 
 def test_schemaless_document_uses_shared_document_operations():
@@ -37,6 +39,42 @@ def test_native_typed_reads_and_export_keep_authoritative_lexical_strings():
     assert doc.to_dict() == {"@a": "02138", "c": "0012"}
     assert doc.to_data() == {"@a": "02138", "c": "0012"}
     assert json.loads(doc.to_json()) == {"@a": "02138", "c": "0012"}
+
+
+def test_export_reader_hooks_interpret_leaves_and_attributes():
+    doc = parse_xml(io.StringIO('<r a="02138"><c>0012</c></r>'))
+    readers = {
+        "scalar_reader": lambda node: "S",
+        "attribute_reader": lambda node, name: "A",
+    }
+
+    assert bound_to_dict(doc.root, **readers) == {"@a": "A", "c": "S"}
+    assert bound_to_data(doc.root, **readers) == {"@a": "A", "c": "S"}
+
+
+def test_schemaless_exports_use_the_lexical_reader_hooks(monkeypatch):
+    doc = parse_xml(io.StringIO('<r a="02138"><c>0012</c></r>'))
+    calls: list[tuple[str, str]] = []
+    original_scalar = SchemalessElement.scalar_value
+    original_attribute = SchemalessElement.attribute_value
+
+    def scalar_value(node):
+        calls.append(("scalar", node._name_))
+        return original_scalar(node)
+
+    def attribute_value(node, expanded_name):
+        calls.append(("attribute", expanded_name))
+        return original_attribute(node, expanded_name)
+
+    monkeypatch.setattr(SchemalessElement, "scalar_value", scalar_value)
+    monkeypatch.setattr(SchemalessElement, "attribute_value", attribute_value)
+
+    assert doc.to_dict() == {"@a": "02138", "c": "0012"}
+    assert calls == [("attribute", "a"), ("scalar", "c")]
+
+    calls.clear()
+    assert doc.to_data() == {"@a": "02138", "c": "0012"}
+    assert calls == [("attribute", "a"), ("scalar", "c")]
 
 
 def test_mixed_content_text_is_concatenated_in_document_order():
