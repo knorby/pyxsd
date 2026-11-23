@@ -1713,6 +1713,29 @@ def test_three_argument_tokenize_uses_the_profile_regex_flags() -> None:
     assert _error_code(tokenize_flag_error.value) == "FORX0001"
 
 
+def test_absolute_paths_and_following_work_from_non_element_focus() -> None:
+    document = _document(b"<root><!--one--><a x='1'>text</a><!--two--></root>")
+    root = document.root_element
+    element = next(child for child in root.children if child.kind is NodeKind.ELEMENT)
+    text = next(child for child in element.children if child.kind is NodeKind.TEXT)
+    attribute = element.attributes[0]
+
+    engine = XPathEngine("3.1")
+    absolute = engine.compile("count(//a)", NODE_CONTEXT)
+    following = engine.compile("count(following::comment())", NODE_CONTEXT)
+
+    for item in (text, attribute):
+        assert engine.evaluate(absolute, ExpressionEnvironment(), focus=Focus.singleton(item)) == (
+            XdmAtomic.integer(1),
+        )
+    assert engine.evaluate(
+        following, ExpressionEnvironment(), focus=Focus.singleton(attribute)
+    ) == (XdmAtomic.integer(1),)
+    assert engine.evaluate(following, ExpressionEnvironment(), focus=Focus.singleton(element)) == (
+        XdmAtomic.integer(1),
+    )
+
+
 def test_untyped_atomic_ordering_is_string_ordering() -> None:
     """Two untyped operands compare as strings, not as doubles.
 

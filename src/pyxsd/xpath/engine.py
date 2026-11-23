@@ -2857,6 +2857,34 @@ class _BridgeHolder:
         self.functions: Mapping[str, Any] = {}
 
 
+class _XsltXPathContext(XPathContext):
+    """The dynamic context with grounded non-element following semantics.
+
+    elementpath's ``following`` iterator only handles element context items.
+    The XSLT/XPath axes are defined for every node kind, and an attribute's
+    following axis begins with its owner element's children; the grounded
+    adapters therefore supply the generic document-order sweep that
+    ``iter_followings`` would otherwise skip.
+    """
+
+    def iter_followings(self) -> Any:
+        item = self.item
+        if isinstance(item, (ElementNode, DocumentNode)) or not isinstance(item, XPathNode):
+            yield from super().iter_followings()
+            return
+        root = self.root or item.root_node
+        status = self.axis
+        self.axis = "following"
+        try:
+            for node in root.iter_descendants(with_self=False):
+                if node.position > item.position:
+                    self.item = node
+                    yield node
+        finally:
+            self.item = item
+            self.axis = status
+
+
 def _build_context(
     static_context: XPathStaticContext,
     environment: ExpressionEnvironment,
@@ -2884,7 +2912,7 @@ def _build_context(
     if default_collection:
         kwargs["default_collection"] = default_collection
     if focus.kind is FocusKind.ABSENT:
-        context = XPathContext(item="", **kwargs)
+        context = _XsltXPathContext(item="", **kwargs)
         cast(Any, context).item = None
         context.root = None
         context.document = None
@@ -2893,13 +2921,17 @@ def _build_context(
     elif focus.item is not None and isinstance(focus.item, XdmNode):
         item = bridge.adapt_item(focus.item)
         if isinstance(item, DocumentNode):
-            context = XPathContext(root=item, item=item, **kwargs)
+            context = _XsltXPathContext(root=item, item=item, **kwargs)
         elif isinstance(item, ElementNode):
-            context = XPathContext(root=item.tree.root_node, item=item, **kwargs)
+            context = _XsltXPathContext(root=item.tree.root_node, item=item, **kwargs)
         else:
-            context = XPathContext(item=item, **kwargs)
+            root_node = item.root_node
+            if isinstance(root_node, (DocumentNode, ElementNode)):
+                context = _XsltXPathContext(root=root_node, item=item, **kwargs)
+            else:
+                context = _XsltXPathContext(item=item, **kwargs)
     elif focus.item is not None:
-        context = XPathContext(item=bridge.adapt_item(focus.item), **kwargs)
+        context = _XsltXPathContext(item=bridge.adapt_item(focus.item), **kwargs)
     else:  # pragma: no cover - Focus validates this
         raise ValueError("focus item is missing")
     if focus.kind is not FocusKind.ABSENT:
