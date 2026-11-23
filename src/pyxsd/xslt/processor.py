@@ -498,9 +498,10 @@ class XsltInvocationError(ValueError):
 class _KeyDefinition:
     name: str
     match: CompiledPattern
-    use: CompiledExpression
+    use: CompiledExpression | None
     owner: str | None
     composite: bool = False
+    body: tuple[_Plan, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1884,13 +1885,17 @@ def _compile_key(
     name = declaration.attribute("name")
     match = declaration.attribute("match")
     use = declaration.attribute("use")
-    assert name is not None and match is not None and use is not None
+    assert name is not None and match is not None
+    body = () if use is not None else _compile_sequence(declaration.children, context, module)
     return _KeyDefinition(
         name=_expanded_name(name, declaration.namespaces),
         match=compile_pattern(match, context, location=declaration.location),
-        use=compile_xpath(use, context, location=declaration.location),
+        use=(
+            compile_xpath(use, context, location=declaration.location) if use is not None else None
+        ),
         owner=owner,
         composite=(declaration.attribute("composite") or "").strip() in ("yes", "true", "1"),
+        body=body,
     )
 
 
@@ -7677,9 +7682,18 @@ class _Invocation(Transformation):
         package_name: str | None,
     ) -> XdmSequence:
         name_sequence = arguments[0]
-        if not name_sequence or not isinstance(name_sequence[0], XdmAtomic):
+        if len(name_sequence) != 1:
+            raise XsltDynamicError(
+                "the key name must be a single atomic value",
+                code="XPTY0004",
+            )
+        name_item = name_sequence[0]
+        if isinstance(name_item, XdmNode):
+            lexical = name_item.string_value
+        elif isinstance(name_item, XdmAtomic):
+            lexical = name_item.lexical
+        else:
             raise XsltDynamicError("a key name must be a string", code="XPTY0004")
-        lexical = name_sequence[0].lexical
         package = self.stylesheet._packages.get(package_name) or self.package
         expanded = _expanded_name(lexical, package.namespaces)
         definitions = tuple(
@@ -7692,9 +7706,9 @@ class _Invocation(Transformation):
                 f"the key {lexical!r} is not declared in this package",
                 code="XTDE1260",
             )
-        document = self._key_document(context_item, arguments)
+        root = self._key_root(context_item, arguments)
         composite = any(definition.composite for definition in definitions)
-        index = self._key_index(definitions, document, package_name)
+        index = self._key_index(definitions, root, package_name)
         nodes: list[XdmNode] = []
         atoms = _key_atomics(arguments[1])
         if composite:
@@ -7708,11 +7722,11 @@ class _Invocation(Transformation):
         ordered = sorted(unique.values(), key=lambda node: node.document_order)
         return tuple(ordered)
 
-    def _key_document(
+    def _key_root(
         self,
         context_item: XdmItem | None,
         arguments: tuple[XdmSequence, ...] = (),
-    ) -> XdmDocument:
+    ) -> XdmNode:
         if len(arguments) > 2:
             top = arguments[2]
             if len(top) != 1 or not isinstance(top[0], XdmNode):
@@ -7720,7 +7734,9 @@ class _Invocation(Transformation):
                     "key() requires a single node as its third argument",
                     code="XPTY0004",
                 )
-            return top[0].document
+            # XSLT 3.0 section 9.11: the third argument supplies the root of
+            # the subtree that is indexed, not merely a node in the document.
+            return top[0]
         if not isinstance(context_item, XdmNode):
             raise XsltDynamicError(
                 "key() with two arguments requires a context node",
@@ -7737,40 +7753,43 @@ class _Invocation(Transformation):
     def _key_index(
         self,
         definitions: tuple[_KeyDefinition, ...],
-        document: XdmDocument,
+        root: XdmNode,
         package_name: str | None,
     ) -> Mapping[Any, tuple[XdmNode, ...]]:
         name = definitions[0].name
-        key = (id(document), package_name, name)
+        key = (id(root), package_name, name)
         cached = self.key_indexes.get(key)
-        if cached is not None and self.key_index_documents.get(id(document)) is document:
+        if cached is not None and self.key_index_documents.get(id(root)) is root:
             return cached
         # XSLT 3.0 section 9.11: a key defined in terms of itself is a
         # circularity, and executing the participating instructions makes it a
         # dynamic error (XTDE0640).  A completed index is cached above, so a
-        # re-entrant build for the same key and document can only be a cycle.
-        # The document itself is retained beside the address: Python reuses
-        # addresses, and the guard must not collide across documents.
-        if self._key_builds.get(key) is document:
+        # re-entrant build for the same key and subtree can only be a cycle.
+        # The root itself is retained beside the address: Python reuses
+        # addresses, and the guard must not collide across trees.
+        if self._key_builds.get(key) is root:
             raise XsltCircularityError(
                 f"the key {name!r} is defined in terms of itself",
             )
-        self._key_builds[key] = document
+        self._key_builds[key] = root
         try:
             index: dict[Any, list[XdmNode]] = {}
             for definition in definitions:
                 matcher = PatternMatcher(definition.match)
                 environment = self._pattern_environment_for(definition.match, definition.owner)
-                for node in _document_nodes(document):
+                for node in _document_nodes(root):
                     if not matcher.matches(node, environment):
                         continue
                     with self._group_scope(None, None), self._merge_scope(None, None, ()):
-                        values = self._evaluate(
-                            definition.use,
-                            EvaluationContext(
-                                focus=Focus.singleton(node),
-                                package_name=package_name,
-                            ),
+                        evaluation_context = EvaluationContext(
+                            focus=Focus.singleton(node),
+                            package_name=package_name,
+                            final_output=False,
+                        )
+                        values = (
+                            self._evaluate(definition.use, evaluation_context)
+                            if definition.use is not None
+                            else self._execute_plans(definition.body, context=evaluation_context)
                         )
                     atomics = _key_atomics(values)
                     if definition.composite:
@@ -7782,7 +7801,7 @@ class _Invocation(Transformation):
                         index.setdefault(value.lexical, []).append(node)
             frozen = MappingProxyType({value: tuple(nodes) for value, nodes in index.items()})
             self.key_indexes[key] = frozen
-            self.key_index_documents[id(document)] = document
+            self.key_index_documents[id(root)] = root
             return frozen
         finally:
             del self._key_builds[key]
@@ -7887,20 +7906,26 @@ def _pattern_variable_names(pattern: CompiledPattern) -> set[str]:
     return names
 
 
-def _document_nodes(document: XdmDocument) -> Iterator[XdmNode]:
-    """Yield every node of *document* in document order.
+def _document_nodes(root: XdmNode) -> Iterator[XdmNode]:
+    """Yield every node of one document or subtree root in document order.
 
     The traversal includes element attributes and namespace nodes, which key
-    match patterns can select just like ordinary child nodes.
+    match patterns can select just like ordinary child nodes.  A subtree root
+    resulting from the third ``key()`` argument contributes only its own
+    subtree.
     """
-    yield document
-    root = document.root_element
-    if root is not None:
-        yield from _node_tree(root)
+    yield root
+    if root.kind is NodeKind.DOCUMENT:
+        element = cast(XdmDocument, root).root_element
+        if element is not None:
+            yield from _node_tree(element)
+    elif root.kind is NodeKind.ELEMENT:
+        yield from _node_tree(root, include_self=False)
 
 
-def _node_tree(node: XdmNode) -> Iterator[XdmNode]:
-    yield node
+def _node_tree(node: XdmNode, *, include_self: bool = True) -> Iterator[XdmNode]:
+    if include_self:
+        yield node
     if node.kind is NodeKind.ELEMENT:
         yield from node.attributes
         yield from node.namespace_nodes

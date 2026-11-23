@@ -1191,7 +1191,7 @@ def test_key_context_root_must_be_a_document() -> None:
     node = object.__new__(XdmNode)
     object.__setattr__(node, "_document", None)
     with pytest.raises(XsltError) as caught:
-        invocation._key_document(node)
+        invocation._key_root(node)
     assert caught.value.code == "XTDE1270"
 
 

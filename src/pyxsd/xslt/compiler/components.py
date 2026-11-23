@@ -31,7 +31,7 @@ from pyxsd.xslt.compiler.instructions import (
     TextNode,
     normalize_element,
 )
-from pyxsd.xslt.compiler.static import EffectiveElement, EffectiveModule
+from pyxsd.xslt.compiler.static import EffectiveElement, EffectiveModule, EffectiveText
 from pyxsd.xslt.errors import XsltStaticError
 from pyxsd.xslt.precedence import compare_precedence
 
@@ -648,10 +648,33 @@ def _parse_declaration(
                 element=element,
                 module=module,
             )
-        if element.attribute("match") is None or element.attribute("use") is None:
+        if element.attribute("match") is None:
             raise _error(
-                "xsl:key requires match and use attributes",
+                "xsl:key requires a match attribute",
                 "XTSE0010",
+                element=element,
+                module=module,
+            )
+        if element.attribute("use") is not None and (
+            element.elements
+            or any(
+                isinstance(child, EffectiveText) and child.value.strip()
+                for child in element.children
+            )
+        ):
+            # An xsl:template inside xsl:key is an element in the wrong place
+            # (XTSE0010); ordinary non-empty content beside @use is XTSE1205.
+            code = "XTSE0010" if element.elements else "XTSE1205"
+            raise _error(
+                "xsl:key does not accept both a use attribute and a sequence constructor",
+                code,
+                element=element,
+                module=module,
+            )
+        if element.attribute("use") is None and not element.elements:
+            raise _error(
+                "xsl:key requires a use attribute or a sequence constructor",
+                "XTSE1205",
                 element=element,
                 module=module,
             )

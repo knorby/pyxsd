@@ -2993,7 +2993,7 @@ def test_signature_minor_validation_errors() -> None:
     assert _raise_code(lambda: compile_package_set(accumulator)) == "XTSE0090"
 
     key = _package(BASE, '<xsl:key name="app:k" match="*"/>')
-    assert _raise_code(lambda: compile_package_set(key)) == "XTSE0010"
+    assert _raise_code(lambda: compile_package_set(key)) == "XTSE1205"
 
     character_map = _package(BASE, "<xsl:character-map/>")
     assert _raise_code(lambda: compile_package_set(character_map)) == "XTSE0010"

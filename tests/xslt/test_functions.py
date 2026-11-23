@@ -252,6 +252,17 @@ def test_key_declaration_requires_names_and_expressions_at_compile_time() -> Non
     with pytest.raises(XsltStaticError):
         XsltProcessor().compile(io.BytesIO(missing_use))
 
+    missing_match = stylesheet('<xsl:key name="k" use="."/>')
+    assert error_code(lambda: XsltProcessor().compile(io.BytesIO(missing_match))) == "XTSE0010"
+
+    use_with_text = stylesheet('<xsl:key name="k" match="item" use="@id">text</xsl:key>')
+    assert error_code(lambda: XsltProcessor().compile(io.BytesIO(use_with_text))) == "XTSE1205"
+
+    use_with_element = stylesheet(
+        '<xsl:key name="k" match="item" use="@id"><xsl:template match="/"/></xsl:key>'
+    )
+    assert error_code(lambda: XsltProcessor().compile(io.BytesIO(use_with_element))) == "XTSE0010"
+
 
 def test_generate_id_argument_and_context_error_arms() -> None:
     duplicate = stylesheet(
@@ -297,13 +308,26 @@ def test_key_error_arms_composite_keys_and_function_values() -> None:
     )
     assert error_code(lambda: transform(unknown, initial_template="main")) == "XTDE1260"
 
-    bad_name = stylesheet(
+    node_name = stylesheet(
         """
         <xsl:key name="k" match="item" use="@id"/>
         <xsl:template name="main"><xsl:sequence select="count(key(/*, 'x'))"/></xsl:template>
         """
     )
-    assert error_code(lambda: transform(bad_name, b"<doc/>", initial_template="main")) == "XPTY0004"
+    assert (
+        error_code(lambda: transform(node_name, b"<doc/>", initial_template="main")) == "XTDE1260"
+    )
+
+    multiple_names = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="@id"/>
+        <xsl:template name="main"><xsl:sequence select="count(key((1, 2), 'x'))"/></xsl:template>
+        """
+    )
+    assert (
+        error_code(lambda: transform(multiple_names, b"<doc/>", initial_template="main"))
+        == "XPTY0004"
+    )
 
     no_document = stylesheet(
         """
