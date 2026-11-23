@@ -4,7 +4,35 @@ from __future__ import annotations
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation
+from pyxsd.resource_policy import ResourcePolicyError
 from pyxsd.validation import ValidationReport
+
+
+class JsonParseError(PyXSDError):
+    """Malformed, ambiguous, or non-native JSON input or output.
+
+    ``line``, ``column``, and ``position`` carry the decoder's one-based text
+    position and zero-based character offset when the failure came from JSON
+    text; value-model failures (duplicate keys, non-finite numbers, unsupported
+    host objects) leave them ``None``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        line: int | None = None,
+        column: int | None = None,
+        position: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.line = line
+        self.column = column
+        self.position = position
+
+
+class JsonLimitError(ResourcePolicyError):
+    """Native JSON input exceeded one of its structural or byte budgets."""
 
 
 class SchemalessParseError(PyXSDError):

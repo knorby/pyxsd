@@ -25,6 +25,7 @@ from pyxsd._diagnostic_encoding import encode_number
 from pyxsd.exceptions import ValidationError
 from pyxsd.locations import (
     ConstraintInfo,
+    DataLocation,
     IssueLocation,
     LocationPrecision,
     PathStep,
@@ -109,13 +110,17 @@ class ValidationIssue:
         """Render the issue as one line, as shown by the CLI.
 
         A location with exact text-span evidence adds ``source:line:column``;
-        issues without a span keep their established rendering.
+        a JSON data location adds ``source#pointer`` instead of a fabricated
+        XML path; issues without a location keep their established rendering.
         """
         prefix = f"{self.severity.value}: [{self.code}]"
         location = self.location
-        span = location.span if location is not None else None
-        if location is not None and span is not None:
-            prefix = f"{prefix} {_source_position(location, span)}:"
+        if isinstance(location, DataLocation):
+            prefix = f"{prefix} {_data_position(location)}:"
+        else:
+            span = location.span if location is not None else None
+            if location is not None and span is not None:
+                prefix = f"{prefix} {_source_position(location, span)}:"
         if self.element is not None:
             return f"{prefix} {self.element}: {self.message}"
         return f"{prefix} {self.message}"
@@ -138,6 +143,13 @@ def _source_position(location: IssueLocation, span: SourceTextSpan) -> str:
     if location.source is None:
         return f"{span.line}:{span.column}"
     return f"{location.source}:{span.line}:{span.column}"
+
+
+def _data_position(location: DataLocation) -> str:
+    """Render a JSON data location as ``source#pointer`` or ``#pointer``."""
+    if location.source is None:
+        return f"#{location.pointer}"
+    return f"{location.source}#{location.pointer}"
 
 
 def _merge_diagnostics_complete(left: bool | None, right: bool | None) -> bool | None:
@@ -462,6 +474,17 @@ def _diagnostic_value(value: object) -> object:
             "end_line": value.end_line,
             "end_column": value.end_column,
         }
+    if isinstance(value, DataLocation):
+        data_encoded: dict[str, object] = {
+            "source": value.source,
+            "path": [_diagnostic_value(step) for step in value.path],
+            "attribute": value.attribute,
+            "pointer": value.pointer,
+            "schema_pointer": value.schema_pointer,
+        }
+        if value.span is not None:
+            data_encoded["span"] = _diagnostic_value(value.span)
+        return data_encoded
     if isinstance(value, IssueLocation):
         encoded: dict[str, object] = {
             "source": value.source,
