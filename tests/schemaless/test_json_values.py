@@ -76,6 +76,38 @@ def test_tuples_are_normalized_to_lists_and_containers_are_copied():
     assert detached == {"a": [{"b": 1}]}
 
 
+def test_cyclic_containers_are_rejected_by_copy_and_encode():
+    array = []
+    array.append(array)
+    with pytest.raises(JsonParseError, match="cyclic container"):
+        copy_native_data(array)
+    with pytest.raises(JsonParseError, match="cyclic container"):
+        encode_json(array)
+
+    mapping = {}
+    mapping["self"] = mapping
+    with pytest.raises(JsonParseError, match="cyclic container"):
+        copy_native_data(mapping)
+    with pytest.raises(JsonParseError, match="cyclic container"):
+        encode_json(mapping)
+
+
+def test_a_cycle_through_a_deeper_ancestor_is_rejected():
+    root = []
+    child = {"back": root}
+    root.append(child)
+    with pytest.raises(JsonParseError, match="cyclic container"):
+        copy_native_data(root)
+    with pytest.raises(JsonParseError, match="cyclic container"):
+        encode_json(root)
+
+
+def test_shared_acyclic_containers_are_not_mistaken_for_cycles():
+    shared = [1]
+    assert copy_native_data([shared, shared]) == [[1], [1]]
+    assert encode_json([shared, shared]) == "[[1], [1]]"
+
+
 def test_finite_floats_keep_their_float_type_and_spelling():
     copied = copy_native_data([1.5, float("1e308")])
     assert copied == [1.5, 1e308]
@@ -308,8 +340,21 @@ def test_encode_indents_containers_and_leaves_empty_containers_compact():
 def test_encode_escapes_strings_and_keys_as_json_text():
     assert encode_json("\n") == '"\\n"'
     assert encode_json({"a\n": 1}) == '{"a\\n": 1}'
-    assert encode_json(_non_ascii_json().strip('"')) == _non_ascii_json()
+    assert encode_json(_non_ascii_json().strip('"')) == '"\\u00e9"'
     assert decode_json(encode_json(_non_ascii_json().strip('"'))) == chr(0xE9)
+
+
+def test_encode_escapes_unpaired_surrogates_into_utf8_safe_json():
+    encoded = encode_json("\ud800")
+    assert encoded == '"\\ud800"'
+    assert encoded.encode("utf-8") == b'"\\ud800"'
+    assert decode_json(encoded) == "\ud800"
+    assert encode_json({"\ud800": "\udc00"}) == '{"\\ud800": "\\udc00"}'
+
+
+def test_encode_rejects_tuples_because_only_lists_are_arrays():
+    with pytest.raises(JsonParseError, match="unsupported native JSON value: tuple"):
+        encode_json((1, 2))
 
 
 @pytest.mark.parametrize(
@@ -336,11 +381,17 @@ def test_decimal_round_trip_preserves_value_without_float():
     assert json.loads(encode_json(Decimal("1.20"))) == 1.2
 
 
+class _Unreadable:
+    read = 1
+
+
 def test_decode_rejects_non_source_objects():
     with pytest.raises(TypeError, match="JSON source"):
         decode_json(42)
     with pytest.raises(TypeError, match="JSON source"):
         decode_json(["not", "a", "source"])
+    with pytest.raises(TypeError, match="JSON source"):
+        decode_json(_Unreadable())
 
 
 def test_json_error_types_have_expected_hierarchy():
@@ -356,6 +407,7 @@ def test_resolve_pointer_addresses_root_members_and_indices():
     assert resolve_pointer(value, "/a/0") == 1
     assert resolve_pointer([[7]], "/0/0") == 7
     assert resolve_pointer({"01": "literal key"}, "/01") == "literal key"
+    assert resolve_pointer(list(range(11)), "/10") == 10
 
 
 @pytest.mark.parametrize(
@@ -365,6 +417,11 @@ def test_resolve_pointer_addresses_root_members_and_indices():
 def test_resolve_pointer_rejects_invalid_or_absent_tokens(pointer):
     with pytest.raises(ValueError):
         resolve_pointer({"a": [1]}, pointer)
+
+
+def test_resolve_pointer_rejects_non_ascii_digits_as_indices():
+    with pytest.raises(ValueError, match="canonical array index"):
+        resolve_pointer([1], "/\u0660")
 
 
 def test_resolve_pointer_rejects_scalar_traversal_and_bad_types():
