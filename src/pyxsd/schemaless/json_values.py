@@ -140,6 +140,8 @@ def decode_json(
             column=exc.colno,
             position=exc.pos,
         ) from exc
+    except RecursionError as exc:
+        raise JsonLimitError("the JSON input exceeds the host parser recursion limit") from exc
     _enforce_value_limits(value, number_limits)
     return value
 

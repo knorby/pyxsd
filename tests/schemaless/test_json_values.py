@@ -8,6 +8,7 @@ import pytest
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.resource_policy import ResourcePolicyError
+from pyxsd.schemaless import json_values as json_values_module
 from pyxsd.schemaless.errors import JsonLimitError, JsonParseError
 from pyxsd.schemaless.json_values import (
     JsonLimits,
@@ -140,6 +141,19 @@ def test_duplicate_keys_name_the_repeated_member():
 def test_non_standard_constants_are_named():
     with pytest.raises(JsonParseError, match="NaN"):
         decode_json("NaN")
+
+
+class _RecursingDecoder:
+    """Stand-in for a host decoder that runs out of recursion."""
+
+    def decode(self, text):
+        raise RecursionError("maximum recursion depth exceeded while decoding JSON")
+
+
+def test_host_parser_recursion_limit_becomes_a_json_limit_error(monkeypatch):
+    monkeypatch.setattr(json_values_module, "_DECODER", _RecursingDecoder())
+    with pytest.raises(JsonLimitError, match="host parser recursion limit"):
+        decode_json("[1]")
 
 
 def test_utf8_bom_is_accepted_for_every_buffer_and_stream_form():
