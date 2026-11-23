@@ -365,19 +365,20 @@ class _XmlWalk:
             parent = None if parent_steps is None else (_steps_path(parent_steps), _ELEMENT)
             row = self._builder.row(_steps_path(steps), _ELEMENT, parent)
             if row is None:
-                break
+                # The path budget only bounds distinct rows: this unadmitted
+                # element path is new, so every descendant path is new too.
+                # Skip the subtree but keep the walk for admitted rows.
+                continue
             self._observe_element(row, node, steps, parent_steps)
-            exhausted = False
             for name, lexical in node.attributes.items():
                 attribute = self._builder.row(
                     f"{row.path}/@{name}", _ATTRIBUTE, (row.path, _ELEMENT)
                 )
                 if attribute is None:
-                    exhausted = True
-                    break
+                    # Skip this unadmitted attribute only; an admitted child
+                    # row may still occur under this element elsewhere.
+                    continue
                 self._observe_attribute(attribute, node, name, lexical, steps)
-            if exhausted:
-                break
             pending.extend(reversed(_child_occurrences(node, steps)))
         return self._builder.finish(self._revision.revision_id, self._revision.dirty)
 

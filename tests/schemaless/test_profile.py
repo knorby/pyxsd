@@ -211,6 +211,33 @@ def test_xml_profile_candidate_ranking_is_stable_and_addressable():
         row.candidate("xs:string")
 
 
+def test_profile_path_budget_keeps_admitted_rows_complete_and_marks_the_profile():
+    doc = parse_xml(b"<r><g><n/></g><g><n/></g><g/></r>")
+    profile = doc.profile(ProfileLimits(max_paths=2))
+    assert tuple(row.path for row in profile.rows) == ("/r", "/r/g")
+    root = profile.at("/r")
+    assert (root.occurrences, root.parents, root.truncated) == (1, 1, False)
+    row = profile.at("/r/g")
+    assert (row.occurrences, row.parents, row.min_occurs, row.max_occurs) == (3, 1, 3, 3)
+    assert row.missing == 0
+    assert row.truncated is False
+    assert profile.complete is False
+
+
+def test_profile_path_budget_skips_unadmitted_rows_but_continues_the_walk():
+    doc = parse_xml(b'<r><x a="1"><c/></x><x a="2" b="2"><c/></x></r>')
+    profile = doc.profile(ProfileLimits(max_paths=4))
+    assert tuple(row.path for row in profile.rows) == ("/r", "/r/x", "/r/x/@a", "/r/x/c")
+    assert profile.at("/r/x").occurrences == 2
+    assert profile.at("/r/x/@a").occurrences == 2
+    assert profile.at("/r/x/@a").truncated is False
+    child = profile.at("/r/x/c")
+    assert (child.occurrences, child.parents) == (2, 2)
+    assert (child.min_occurs, child.max_occurs) == (1, 1)
+    assert child.truncated is False
+    assert not profile.complete
+
+
 def test_profile_limits_bound_paths_distinct_samples_and_value_bytes():
     doc = parse_xml(b"<r><x>alpha</x><x>beta</x><x>alpha</x></r>")
     paths = doc.profile(ProfileLimits(max_paths=1))
