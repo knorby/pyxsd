@@ -47,18 +47,27 @@ class XmlLimits:
                 raise ValueError(f"{name} must be a positive integer or None")
 
 
-def enforce_tree_limits(root: ET.Element, limits: XmlLimits | None) -> None:
-    """Check library-built start tags without reparsing or changing contexts.
+def enforce_tree_limits(
+    root: ET.Element,
+    limits: XmlLimits | None,
+    *,
+    count_non_element_nodes: bool = True,
+) -> None:
+    """Check tree depth and node count without reparsing or changing contexts.
 
     Trees have no input-byte size. Depth and element counts use the parser's
-    inclusive bounds, with the root at depth one.
+    inclusive bounds, with the root at depth one. Schema imports count all
+    nodes as before; pass ``count_non_element_nodes=False`` to skip comments
+    and processing instructions and count only start tags, like the parser.
     """
-    if limits is None:
+    if limits is None or (limits.max_depth is None and limits.max_elements is None):
         return
     stack = [(root, 1)]
     count = 0
     while stack:
         node, depth = stack.pop()
+        if not count_non_element_nodes and node.tag in (ET.Comment, ET.ProcessingInstruction):
+            continue
         count += 1
         if limits.max_depth is not None and depth > limits.max_depth:
             raise XmlTreeLimitError(f"the XML input exceeds max_depth={limits.max_depth}")

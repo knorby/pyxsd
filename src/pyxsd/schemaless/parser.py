@@ -23,8 +23,8 @@ from pyxsd.xdm.document import CaptureSource
 from pyxsd.xml_policy import (
     XmlLimits,
     XmlParserPolicy,
-    XmlTreeLimitError,
     configure_expat_security,
+    enforce_tree_limits,
 )
 
 
@@ -54,7 +54,7 @@ def parse_xml(
     limits = xml_limits or XmlLimits()
     policy = xml_policy or XmlParserPolicy.default()
     if isinstance(source, ET.Element):
-        _check_etree_limits(source, limits)
+        enforce_tree_limits(source, limits, count_non_element_nodes=False)
         element = copy.deepcopy(source)
         element.tail = None  # A root's tail lies outside its document.
         captured = CaptureSource.from_input(element)
@@ -82,24 +82,6 @@ def parse_xml(
     return SchemalessDocument(
         root, captured.source_name, index, ValidationReport(diagnostics_complete=True), captured
     )
-
-
-def _check_etree_limits(root: ET.Element, limits: XmlLimits) -> None:
-    """Apply start-tag budgets to a caller-built tree, not to its comments or PIs."""
-    if limits.max_depth is None and limits.max_elements is None:
-        return
-    pending = [(root, 1)]
-    count = 0
-    while pending:
-        node, depth = pending.pop()
-        if node.tag in (ET.Comment, ET.ProcessingInstruction):
-            continue
-        count += 1
-        if limits.max_depth is not None and depth > limits.max_depth:
-            raise XmlTreeLimitError(f"the XML input exceeds max_depth={limits.max_depth}")
-        if limits.max_elements is not None and count > limits.max_elements:
-            raise XmlTreeLimitError(f"the XML input exceeds max_elements={limits.max_elements}")
-        pending.extend((child, depth + 1) for child in reversed(node))
 
 
 class _StopAtEntityReference(Exception):

@@ -9,7 +9,7 @@ from pyxsd import Schema
 from pyxsd.namespaces import parse_with_namespaces
 from pyxsd.relaxng import RelaxNGSchema
 from pyxsd.resource_policy import ResourcePolicyError
-from pyxsd.xml_policy import XmlLimits, enforce_tree_limits
+from pyxsd.xml_policy import XmlLimits, XmlTreeLimitError, enforce_tree_limits
 
 XSD = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <xs:element name="root" type="xs:anyType"/>
@@ -114,6 +114,56 @@ def test_tree_limit_check_is_iterative_and_does_not_modify_the_tree():
     assert len(list(root.iter())) == 1501
     with pytest.raises(ResourcePolicyError, match="max_depth=1500"):
         enforce_tree_limits(root, XmlLimits(max_depth=1500))
+
+
+@pytest.mark.parametrize("make_node", [ET.Comment, ET.ProcessingInstruction])
+def test_shared_tree_limits_can_count_only_start_tags(make_node):
+    root = ET.Element("root")
+    node = make_node("note")
+    root.append(node)
+    limits = XmlLimits(max_depth=1, max_elements=1)
+
+    # Schema imports retain the default: both nodes count, and depth wins
+    # when the same node breaches both limits.
+    with pytest.raises(XmlTreeLimitError, match=r"^the XML input exceeds max_depth=1$"):
+        enforce_tree_limits(root, limits)
+    with pytest.raises(XmlTreeLimitError, match=r"^the XML input exceeds max_elements=1$"):
+        enforce_tree_limits(root, XmlLimits(max_elements=1))
+
+    enforce_tree_limits(root, limits, count_non_element_nodes=False)
+    assert list(root) == [node]
+
+    ET.SubElement(root, "child")
+    with pytest.raises(XmlTreeLimitError, match=r"^the XML input exceeds max_depth=1$"):
+        enforce_tree_limits(root, limits, count_non_element_nodes=False)
+
+
+def test_schema_imports_keep_counting_non_element_nodes(policy_schema, monkeypatch):
+    from pyxsd.data_conversion import import_data
+    from pyxsd.relaxng import json_profile
+
+    schema = policy_schema(XmlLimits(max_elements=1))
+    if isinstance(schema, Schema):
+        convert = import_data.data_to_element
+
+        def append_comment(*args, **kwargs):
+            root = convert(*args, **kwargs)
+            root.append(ET.Comment("note"))
+            return root
+
+        monkeypatch.setattr(import_data, "data_to_element", append_comment)
+    else:
+        convert_rng = json_profile.data_to_relaxng_tree
+
+        def append_comment_rng(*args, **kwargs):
+            tree = convert_rng(*args, **kwargs)
+            tree.root.append(ET.Comment("note"))
+            return tree
+
+        monkeypatch.setattr(json_profile, "data_to_relaxng_tree", append_comment_rng)
+
+    with pytest.raises(XmlTreeLimitError, match=r"^the XML input exceeds max_elements=1$"):
+        schema.from_data(["root"], format="jsonml")
 
 
 def test_policy_import_preserves_relaxng_scalar_contexts(monkeypatch):
