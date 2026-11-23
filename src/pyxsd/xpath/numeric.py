@@ -74,6 +74,11 @@ def _is_single_precision(value: Any) -> bool:
     return getattr(type(value), "name", None) == "float"
 
 
+def _is_double_precision(value: Any) -> bool:
+    """Whether a numeric payload belongs to the binary64 value space."""
+    return isinstance(value, float) and not _is_single_precision(value)
+
+
 def _binary32(value: float) -> float:
     """*value* rounded to the nearest IEEE binary32 value."""
     try:
@@ -92,6 +97,8 @@ def _numeric_mod(left: Any, right: Any, *, legacy: bool = False) -> Any:
         return _float_mod(float(left), float(right))
     if isinstance(left, float) or isinstance(right, float):
         result = _float_mod(left, right)
+        if _is_double_precision(left) or _is_double_precision(right):
+            return result
         if _is_single_precision(left) or _is_single_precision(right):
             return Float(result)
         return result

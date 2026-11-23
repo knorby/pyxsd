@@ -149,8 +149,8 @@ def test_numeric_helpers_reject_non_numeric_payloads() -> None:
         _numeric_mod(Decimal(1), Decimal(0))
 
 
-def test_mod_promotes_to_float_when_either_operand_is_float() -> None:
-    """F&O 3.1 §4.2.6: the least common numeric type drives the result type."""
+def test_mod_promotes_with_the_least_common_numeric_type() -> None:
+    """F&O 3.1 §4.2.6: double wins over float, float over decimal/integer."""
     assert text("2 mod xs:float(1e0)") == "0"
     assert text("xs:decimal('5.0') mod xs:float(2e0)") == "1"
     assert text("((2 mod xs:float(1e0)) instance of xs:float)") == "true"
@@ -158,6 +158,14 @@ def test_mod_promotes_to_float_when_either_operand_is_float() -> None:
     assert text("((xs:float(5e0) mod 2) instance of xs:float)") == "true"
     assert text("((2 mod 2e0) instance of xs:double)") == "true"
     assert text("((2 mod 1) instance of xs:integer)") == "true"
+
+    # A double operand wins over a float one in either position.
+    assert text("2e0 mod xs:float(5e0)") == "2"
+    assert text("xs:float(5e0) mod 2e0") == "1"
+    assert text("((2e0 mod xs:float(5e0)) instance of xs:double)") == "true"
+    assert text("((2e0 mod xs:float(5e0)) instance of xs:float)") == "false"
+    assert text("((xs:float(5e0) mod 2e0) instance of xs:double)") == "true"
+    assert text("((xs:float(5e0) mod 2e0) instance of xs:float)") == "false"
 
 
 def test_round_casts_untyped_atomic_with_the_function_conversion_rules() -> None:
