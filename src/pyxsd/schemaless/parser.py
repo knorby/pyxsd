@@ -7,7 +7,7 @@ from codecs import BOM_UTF16_BE, BOM_UTF16_LE
 from contextlib import suppress
 from io import BytesIO
 from os import PathLike
-from typing import IO, TYPE_CHECKING
+from typing import IO
 from xml.etree import ElementTree as ET
 from xml.parsers import expat
 
@@ -18,6 +18,7 @@ from pyxsd.schemaless.document import SchemalessDocument
 from pyxsd.schemaless.errors import SchemalessParseError
 from pyxsd.schemaless.nodes import NodeMapping, _CompiledNodeMapping
 from pyxsd.schemaless.tree import SchemalessElement
+from pyxsd.schemaless.types import TypePolicy
 from pyxsd.source_spans import SourceIndex
 from pyxsd.validation import ValidationReport
 from pyxsd.xdm.document import CaptureSource
@@ -27,9 +28,6 @@ from pyxsd.xml_policy import (
     configure_expat_security,
     enforce_tree_limits,
 )
-
-if TYPE_CHECKING:
-    from pyxsd.schemaless.types import TypePolicy
 
 
 def parse_xml(
@@ -46,7 +44,9 @@ def parse_xml(
     A caller-built tree has no original byte spans. Malformed XML raises
     :class:`SchemalessParseError`; policy and budget errors propagate unchanged.
     By default scalar reads are lexical; pass *types* to change interpretation.
-    Pass *node_mapping* to add Python mixins to matching lexical occurrences.
+    Pass *node_mapping* to add Python mixins to matching lexical occurrences;
+    descriptor ``type=`` entries merge beneath *types* into the document's
+    effective scalar policy as occurrence pins.
     """
     if node_mapping is not None and not isinstance(node_mapping, NodeMapping):
         raise TypeError("node_mapping must be a NodeMapping or None")
@@ -123,8 +123,11 @@ def _bind_xml(
     )
     if node_mapping is not None and node_mapping.rules:
         root = node_mapping.apply(root)
-    if types is not None:
-        root.revision._set_types(types)
+    if types is not None or (node_mapping is not None and node_mapping.pins):
+        policy = types if types is not None else TypePolicy.lexical()
+        if node_mapping is not None:
+            policy = policy._with_default_pins(node_mapping.pins)
+        root.revision._set_types(policy)
     return SchemalessDocument(
         root,
         source_name,

@@ -3,7 +3,7 @@
 from pyxsd.schemaless.document import SchemalessDocument
 from pyxsd.schemaless.errors import ScalarTypeError, SchemalessParseError
 from pyxsd.schemaless.json_document import JsonDocument, from_data, from_json
-from pyxsd.schemaless.nodes import NodeMapping
+from pyxsd.schemaless.nodes import NodeMapping, attribute, child, children, text
 from pyxsd.schemaless.parser import parse_xml
 from pyxsd.schemaless.profile import DocumentProfile, PathProfile, ProfileLimits, TypeCandidate
 from pyxsd.schemaless.tree import SchemalessElement, SchemalessRevision
@@ -23,7 +23,11 @@ __all__ = [
     "SchemalessRevision",
     "TypeCandidate",
     "TypePolicy",
+    "attribute",
+    "child",
+    "children",
     "from_data",
     "from_json",
     "parse_xml",
+    "text",
 ]

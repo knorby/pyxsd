@@ -1,17 +1,198 @@
-"""Document-local Python mixins selected by lexical XML occurrences."""
+"""Document-local Python mixins selected by lexical XML occurrences.
+
+A :class:`NodeMapping` compiles the supplied mixin classes into
+:class:`~pyxsd.schemaless.tree.SchemalessElement` subclasses. The descriptor
+factories in this module declare data-centric fields on those mixins:
+:func:`attribute` and :func:`text` read and write one scalar through the
+document's current :class:`~pyxsd.schemaless.types.TypePolicy`, while
+:func:`child` and :func:`children` navigate the authoritative child sequence
+in document order. A descriptor never keeps a second copy of lexical data and
+never invents an interpretation that ordinary typed node access cannot see.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TypeVar, overload
+from typing import Any, TypeVar, overload
 
 from pyxsd._lexical import LexicalElement
+from pyxsd._lexical.tree import _check_name
 from pyxsd.locations import PathStep
-from pyxsd.schemaless.tree import SchemalessElement, _project_class, _XmlPath
+from pyxsd.schemaless.tree import (
+    SchemalessElement,
+    SchemalessRevision,
+    _current_path,
+    _project_class,
+    _XmlPath,
+)
+from pyxsd.schemaless.types import ScalarAdapter, TypePolicy, TypeRef
 
 _Mixin = TypeVar("_Mixin", bound=type)
 _Predicate = Callable[[SchemalessElement], bool]
 _Rule = tuple[type, _XmlPath | _Predicate]
+_Reader = Callable[[SchemalessElement], Any]
+_AdapterPin = tuple[str, ScalarAdapter]
+_DescriptorField = tuple["_NodeDescriptor", type]
+
+
+def attribute(name: str, *, type: TypeRef | None = None) -> Any:
+    """Declare one expanded-name attribute field.
+
+    Reads call :meth:`~pyxsd.schemaless.tree.SchemalessElement.attribute_value`
+    and therefore follow the document's effective scalar policy; a missing
+    attribute reads as ``None``. Writes format the value through that same
+    adapter and replace only that attribute. *name* is an expanded (Clark)
+    name, not a serialization prefix.
+    """
+    _check_name(name, "attribute")
+    return _AttributeDescriptor(name, _resolve_adapter(type))
+
+
+def text(*, type: TypeRef | None = None, default: Any = None) -> Any:
+    """Declare the element's leading character data as a scalar field.
+
+    Reads call :meth:`~pyxsd.schemaless.tree.SchemalessElement.scalar_value`
+    for present leading text and return *default* when there is none. Mixed
+    content stays mixed content: child tails are never concatenated into this
+    value. Writes replace only the leading text.
+    """
+    return _TextDescriptor(_resolve_adapter(type), default)
+
+
+def child(name: str) -> Any:
+    """Declare one child element field by expanded name.
+
+    The field reads ``None`` when no child has *name*. More than one matching
+    child is ambiguous and raises ``ValueError``, unless the same mapped class
+    also declares :func:`children` for that name: the list view then makes the
+    repetition explicit, and the singular field addresses its first element.
+    Navigation fields are read-only.
+    """
+    _check_name(name, "child element")
+    return _ChildDescriptor(name)
+
+
+def children(name: str) -> Any:
+    """Declare all child elements with one expanded name as a tuple.
+
+    Every read builds a new tuple from the current authoritative child
+    sequence, so the result follows document order after any edit.
+    """
+    _check_name(name, "child element")
+    return _ChildrenDescriptor(name)
+
+
+def _resolve_adapter(type_ref: TypeRef | None) -> ScalarAdapter | None:
+    return None if type_ref is None else TypePolicy.resolve(type_ref)
+
+
+class _NodeDescriptor:
+    """One field declaration owned by a node mapping mixin."""
+
+    __slots__ = ("_adapter", "_read")
+
+    def __init__(self, adapter: ScalarAdapter | None, read: _Reader) -> None:
+        self._adapter = adapter
+        self._read = read
+
+    def __get__(self, instance: SchemalessElement | None, owner: type[Any] | None = None) -> Any:
+        if instance is None:
+            return self
+        return self._read(instance)
+
+    def __set__(self, instance: SchemalessElement, value: Any) -> None:
+        raise AttributeError("this node mapping descriptor is read-only")
+
+    def _pin_path(self, path: str) -> str:
+        """Return the occurrence path this descriptor's declared type pins."""
+        return path
+
+
+class _AttributeDescriptor(_NodeDescriptor):
+    __slots__ = ("_expanded_name",)
+
+    def __init__(self, expanded_name: str, adapter: ScalarAdapter | None) -> None:
+        super().__init__(adapter, lambda node: node.attribute_value(expanded_name))
+        self._expanded_name = expanded_name
+
+    def __set__(self, instance: SchemalessElement, value: Any) -> None:
+        adapter = _effective_adapter(instance, self._expanded_name)
+        instance.set_attribute(self._expanded_name, _lexical_write(adapter, value))
+
+    def _pin_path(self, path: str) -> str:
+        return f"{path}/@{self._expanded_name}"
+
+
+class _TextDescriptor(_NodeDescriptor):
+    __slots__ = ()
+
+    def __init__(self, adapter: ScalarAdapter | None, default: Any) -> None:
+        super().__init__(
+            adapter,
+            lambda node: default if node.text_value() is None else node.scalar_value(),
+        )
+
+    def __set__(self, instance: SchemalessElement, value: Any) -> None:
+        instance.set_text(_lexical_write(_effective_adapter(instance, None), value))
+
+
+class _ChildDescriptor(_NodeDescriptor):
+    __slots__ = ()
+
+    def __init__(self, expanded_name: str) -> None:
+        super().__init__(None, lambda node: _single_child(node, expanded_name))
+
+
+class _ChildrenDescriptor(_NodeDescriptor):
+    __slots__ = ("_expanded_name",)
+
+    def __init__(self, expanded_name: str) -> None:
+        super().__init__(
+            None,
+            lambda node: tuple(child for child in node._children_ if child._name_ == expanded_name),
+        )
+        self._expanded_name = expanded_name
+
+
+def _single_child(node: SchemalessElement, name: str) -> SchemalessElement | None:
+    matches = [child for child in node._children_ if child._name_ == name]
+    if not matches:
+        return None
+    if len(matches) > 1 and not _has_children_view(type(node), name):
+        raise ValueError(f"multiple child elements named {name!r}")
+    return matches[0]
+
+
+def _has_children_view(node_class: type, name: str) -> bool:
+    """Whether the mapped class declares an explicit list view for *name*."""
+    for base in node_class.__mro__:
+        for value in vars(base).values():
+            if isinstance(value, _ChildrenDescriptor) and value._expanded_name == name:
+                return True
+    return False
+
+
+def _effective_adapter(instance: SchemalessElement, attribute: str | None) -> ScalarAdapter | None:
+    """Return the adapter the ordinary typed readers use for this occurrence.
+
+    Descriptor reads delegate to the revision's typed snapshot, so a write must
+    resolve the same occurrence pin rather than a private copy of the declared
+    type. A generic lexical clone has no scalar policy and keeps lexical writes.
+    """
+    revision = instance._revision
+    if not isinstance(revision, SchemalessRevision):
+        return None
+    root, path = _current_path(instance)
+    return revision._pin_for(root, path, attribute)
+
+
+def _lexical_write(adapter: ScalarAdapter | None, value: Any) -> str:
+    """Serialize one assignment through the effective adapter, if any."""
+    if adapter is None:
+        if not isinstance(value, str):
+            raise TypeError("a lexical node mapping write requires a string")
+        return value
+    return adapter.format(value)
 
 
 class NodeMapping:
@@ -20,6 +201,9 @@ class NodeMapping:
     Each parse uses the current rules as a snapshot; later registrations do
     not change existing documents. Later matching rules take precedence,
     and a mixin matched more than once appears only at its highest priority.
+    Descriptor ``type=`` entries compile into occurrence pins on the same
+    document policy; a later :meth:`~pyxsd.schemaless.document.SchemalessDocument.pin_type`
+    at that path replaces them for descriptor and ordinary reads alike.
     """
 
     def __init__(self) -> None:
@@ -56,6 +240,8 @@ class NodeMapping:
         Clark names for namespaces, and can specify one-based same-name
         indexes. If any step is indexed, omitted indexes default to one.
         A predicate sees the unprojected lexical node and must not edit it.
+        A descriptor ``type=`` requires a path selector because its pin has
+        to name the occurrences it applies to.
         """
         selector: _XmlPath | _Predicate
         if path is not None and predicate is None:
@@ -78,8 +264,12 @@ class NodeMapping:
         def register_class(cls: _Mixin) -> _Mixin:
             if not isinstance(cls, type) or issubclass(cls, LexicalElement):
                 raise TypeError("a node mapping mixin must be a class, not a lexical element type")
+            pins = _descriptor_pins(cls, path)
             target = _mixin_class((cls,))
-            compiled = _CompiledNodeMapping(((cls, selector), *self._compiled.rules))
+            compiled = _CompiledNodeMapping(
+                ((cls, selector), *self._compiled.rules),
+                (*self._compiled.pins, *pins),
+            )
             compiled.classes[(id(cls),)] = target
             self._compiled = compiled
             return cls
@@ -93,8 +283,9 @@ class NodeMapping:
 class _CompiledNodeMapping:
     """An immutable rule sequence with its own generated class cache."""
 
-    def __init__(self, rules: tuple[_Rule, ...]) -> None:
+    def __init__(self, rules: tuple[_Rule, ...], pins: tuple[_AdapterPin, ...] = ()) -> None:
         self.rules = rules
+        self.pins = pins
         self.classes: dict[tuple[int, ...], type[SchemalessElement]] = {}
 
     def apply(self, root: SchemalessElement) -> SchemalessElement:
@@ -136,7 +327,62 @@ class _CompiledNodeMapping:
         return root
 
 
+def _declared_descriptors(mixin: type) -> dict[str, _DescriptorField]:
+    """Return one mixin's descriptors, with its own MRO deciding overrides."""
+    found: dict[str, _DescriptorField] = {}
+    for base in mixin.__mro__:
+        for name, value in vars(base).items():
+            if isinstance(value, _NodeDescriptor) and name not in found:
+                found[name] = (value, base)
+    return found
+
+
+def _descriptor_fields(mixins: tuple[type, ...]) -> dict[str, _DescriptorField]:
+    """Combine the matching mixins' descriptors or reject incompatible ones.
+
+    A repeated declaration is compatible when it is the same descriptor object
+    or when one declaring class derives from the other, because registration
+    order then gives the generated class one deterministic MRO winner.
+    """
+    fields: dict[str, _DescriptorField] = {}
+    for mixin in mixins:
+        for name, declaration in _declared_descriptors(mixin).items():
+            previous = fields.get(name)
+            if previous is None:
+                fields[name] = declaration
+            elif not _same_declaration(previous, declaration):
+                raise TypeError(f"conflicting node mapping descriptors for field {name!r}")
+    return fields
+
+
+def _same_declaration(first: _DescriptorField, second: _DescriptorField) -> bool:
+    left, left_owner = first
+    right, right_owner = second
+    return (
+        left is right or issubclass(left_owner, right_owner) or issubclass(right_owner, left_owner)
+    )
+
+
+def _descriptor_pins(mixin: type, path: str | None) -> tuple[_AdapterPin, ...]:
+    """Compile one registration's descriptor types into occurrence pins."""
+    pins: list[_AdapterPin] = []
+    for descriptor, _owner in _declared_descriptors(mixin).values():
+        adapter = descriptor._adapter
+        if adapter is None:
+            continue
+        if path is None:
+            raise TypeError("a descriptor type pin requires a path selector")
+        pin_path = descriptor._pin_path(path)
+        try:
+            _XmlPath.parse(pin_path)
+        except ValueError as exc:
+            raise ValueError(f"invalid descriptor type path {pin_path!r}") from exc
+        pins.append((pin_path, adapter))
+    return tuple(pins)
+
+
 def _mixin_class(mixins: tuple[type, ...]) -> type[SchemalessElement]:
+    _descriptor_fields(mixins)  # Reject incompatible same-name declarations.
     name = "SchemalessElement_" + "_".join(mixin.__name__ for mixin in mixins)
     try:
         generated = type(

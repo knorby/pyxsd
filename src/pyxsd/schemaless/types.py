@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Literal, cast
@@ -119,6 +119,18 @@ class TypePolicy:
         pins.pop(path, None)
         pins[path] = self.resolve(type_ref)
         return replace(self, pins=pins)
+
+    def _with_default_pins(self, pins: Iterable[tuple[str, ScalarAdapter]]) -> TypePolicy:
+        """Return this policy with lower-priority pins beneath its own.
+
+        Node-mapping descriptors compile their ``type=`` entries into
+        occurrence pins. Those pins behave exactly like an explicit pin
+        supplied at parse time, except that a path already pinned by this
+        policy keeps its adapter.
+        """
+        merged = dict(pins)
+        merged.update(self.pins)
+        return replace(self, pins=merged)
 
     def json_adapter(
         self,
