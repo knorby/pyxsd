@@ -8,9 +8,8 @@ fail explicitly instead of implying validation. Traversal, XPath, lexical
 writing, transforms, and the native ``pyxsd`` data export are shared with the
 schema-bound document family.
 
-The default typed view is lexical. Every scalar read returns the authoritative
-character data as a string until a later type policy replaces that
-interpretation; the lexical stores are never rewritten by a read.
+The default typed view is lexical. An opt-in policy can infer types or pin
+them explicitly without rewriting the lexical stores.
 """
 
 from __future__ import annotations
@@ -22,7 +21,9 @@ from typing import IO, TYPE_CHECKING, Any, cast
 from pyxsd._lexical.xml_writer import serialize_lexical
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
-from pyxsd.schemaless.tree import SchemalessElement
+from pyxsd.schemaless.errors import ScalarTypeError
+from pyxsd.schemaless.tree import SchemalessElement, _pinned_value, _XmlPath
+from pyxsd.schemaless.types import ScalarAdapter, TypePolicy, TypeRef
 from pyxsd.validation import ValidationReport
 from pyxsd.xdm.document import (
     CapturedXdmDocument,
@@ -41,29 +42,6 @@ if TYPE_CHECKING:
 
 _BoundSnapshot = tuple[tuple["_NodeState", ...], tuple[SchemalessElement, ...]]
 _STALE_XDM = "the schemaless tree changed; call revalidate() for a coherent XDM view"
-
-
-class _LexicalScalarSnapshot:
-    """The default schemaless typed view: authoritative lexical strings.
-
-    The revision-owned snapshot protocol lets one document interpret a lexical
-    revision without storing a second value per node. Until a type policy
-    supplies inference or explicit pins, both scalar reads return the lexical
-    store unchanged, so ``"02138"`` never becomes a number.
-    """
-
-    __slots__ = ()
-
-    def scalar_value(self, node: SchemalessElement) -> str | None:
-        """Return the element's leading character data exactly as stored."""
-        return node.text_value()
-
-    def attribute_value(self, node: SchemalessElement, expanded_name: str) -> str | None:
-        """Return one present attribute's lexical value exactly as stored."""
-        return node.attribute_lexical(expanded_name)
-
-
-_LEXICAL_SNAPSHOT = _LexicalScalarSnapshot()
 
 
 class SchemalessDocument(Document):
@@ -101,8 +79,6 @@ class SchemalessDocument(Document):
         # Take the baseline before callers can edit the lexical stores. Building
         # the second tree is lazy, but the source/tree association is not.
         self._xdm_baseline = _bound_snapshot(root) if _xdm_baseline is None else _xdm_baseline
-        if root.revision._typed_snapshot is None:
-            root.revision._attach_typed_snapshot(_LEXICAL_SNAPSHOT)
 
     @property
     def report_current(self) -> bool:
@@ -113,6 +89,55 @@ class SchemalessDocument(Document):
         the document is parsed again.
         """
         return self._report_current and not self.root.revision.dirty
+
+    def test_type(self, path: str, type_ref: TypeRef) -> ValidationReport:
+        """Report every matching occurrence that rejects the proposed type."""
+        report, _ = self._check_type(path, type_ref)
+        return report
+
+    def pin_type(self, path: str, type_ref: TypeRef) -> ValidationReport:
+        """Install a pin even when some matching values reject the type.
+
+        Invalid selectors and unknown types or paths are reported but not
+        installed. Successful installation changes neither lexical data nor XDM.
+        """
+        report, adapter = self._check_type(path, type_ref)
+        if adapter is not None:
+            revision = self.root.revision
+            revision._set_types(revision.types.with_pin(path, adapter))
+        return report
+
+    def _check_type(
+        self, path: str, type_ref: TypeRef
+    ) -> tuple[ValidationReport, ScalarAdapter | None]:
+        report = ValidationReport(diagnostics_complete=True)
+        try:
+            selector = _XmlPath.parse(path)
+        except ValueError as exc:
+            report.add_error(str(exc), code="invalid-scalar-path")
+            return report, None
+        try:
+            adapter = TypePolicy.resolve(type_ref)
+        except ValueError as exc:
+            report.add_error(str(exc), code="unknown-scalar-type")
+            return report, None
+        root = cast(SchemalessElement, self.root.revision.root)
+        found = False
+        for node, exact_path, lexical in selector.values(root):
+            found = True
+            try:
+                _pinned_value(node, exact_path, selector.attribute, lexical, adapter)
+            except ScalarTypeError as exc:
+                report.add_error(
+                    str(exc),
+                    code="scalar-type-invalid",
+                    location=exc.location,
+                    location_precision="exact",
+                )
+        if not found:
+            report.add_error(f"no scalar occurrences match {path!r}", code="unknown-scalar-path")
+            return report, None
+        return report, adapter
 
     def to_xdm(self) -> XdmDocument:
         """Return the cached, untyped XDM view of this unedited revision.
@@ -151,7 +176,10 @@ class SchemalessDocument(Document):
         from pyxsd.schemaless.parser import _parse_captured_xml
 
         again = _parse_captured_xml(
-            self._capture_projection(), xml_policy=self._xml_policy, xml_limits=self._xml_limits
+            self._capture_projection(),
+            xml_policy=self._xml_policy,
+            xml_limits=self._xml_limits,
+            types=self.root.revision.types,
         )
         again.source = self.source
         return again
@@ -168,9 +196,8 @@ class SchemalessDocument(Document):
     def to_dict(self, *, typed: bool = True, always_list: bool = False) -> dict:
         """Returns the lexical tree as a plain dict.
 
-        ``typed=True`` still returns the authoritative lexical strings: the
-        default schemaless scalar view interprets nothing. ``typed=False``
-        returns the same strings through the generic lexical fallback.
+        ``typed=True`` applies the scalar policy to leaves and attributes.
+        ``typed=False`` exports the lexical strings.
         """
         from pyxsd.dict_export import bound_to_dict
 

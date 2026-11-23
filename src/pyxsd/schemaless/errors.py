@@ -1,4 +1,4 @@
-"""Failures that prevent a schemaless document from being built."""
+"""Failures while parsing or interpreting a schemaless document."""
 
 from __future__ import annotations
 
@@ -33,6 +33,14 @@ class JsonParseError(PyXSDError):
 
 class JsonLimitError(ResourcePolicyError):
     """Native JSON input exceeded one of its structural or byte budgets."""
+
+
+class ScalarTypeError(PyXSDError):
+    """The lexical value at an explicitly pinned location was rejected."""
+
+    def __init__(self, message: str, *, location: IssueLocation) -> None:
+        super().__init__(message)
+        self.location = location
 
 
 class SchemalessParseError(PyXSDError):
