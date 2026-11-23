@@ -43,6 +43,25 @@ class ScalarTypeError(PyXSDError):
         self.location = location
 
 
+class XmlMappingError(PyXSDError):
+    """A native JSON value cannot be projected with the supplied mapping.
+
+    ``report`` carries the structured diagnostics: each issue names the JSON
+    Pointer, the projected XML path, and any other evidence needed to repair
+    the mapping. Projection stops at the first fatal issue, so a failed
+    projection never returns a partial document.
+    """
+
+    def __init__(self, report: ValidationReport) -> None:
+        self.report = report
+        message = (
+            report.issues[0].format()
+            if report.issues
+            else "the JSON value cannot be projected into XML"
+        )
+        super().__init__(message)
+
+
 class SchemalessParseError(PyXSDError):
     """Malformed XML with a report, exact location, and open expanded names."""
 

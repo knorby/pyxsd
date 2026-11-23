@@ -84,6 +84,23 @@ class SchemalessDocument(Document):
         # the second tree is lazy, but the source/tree association is not.
         self._xdm_baseline = _bound_snapshot(root) if _xdm_baseline is None else _xdm_baseline
 
+    @classmethod
+    def _from_caller_tree(
+        cls,
+        root: SchemalessElement,
+        report: ValidationReport,
+        *,
+        node_mapping: _CompiledNodeMapping | None = None,
+    ) -> SchemalessDocument:
+        """Wrap a caller-built tree as a fresh document with no source evidence.
+
+        The tree owns its revision and must already be in its final shape:
+        there are no source bytes, no :class:`~pyxsd.source_spans.SourceIndex`,
+        and no original XDM capture. The report is current, so the document can
+        build its XDM view from the serialized lexical tree.
+        """
+        return cls(root, None, report, _node_mapping=node_mapping)
+
     @property
     def report_current(self) -> bool:
         """Whether the report still describes the current lexical revision.

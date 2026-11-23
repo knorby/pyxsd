@@ -39,6 +39,9 @@ from pyxsd.xdm.values import XdmAtomic, XdmSequence
 from pyxsd.xsd_data_types import qname_context
 
 if TYPE_CHECKING:
+    from pyxsd.schemaless.document import SchemalessDocument
+    from pyxsd.schemaless.mapping import XmlMapping
+    from pyxsd.schemaless.nodes import NodeMapping
     from pyxsd.schemaless.profile import DocumentProfile, ProfileLimits
 
 _JsonSource = str | bytes | bytearray | memoryview | IO[str] | IO[bytes]
@@ -212,6 +215,37 @@ class JsonDocument:
         round trip or a quoted string. A type policy never changes this text.
         """
         return encode_json(self._value, indent=indent)
+
+    def to_xml(
+        self, mapping: XmlMapping, *, node_mapping: NodeMapping | None = None
+    ) -> SchemalessDocument:
+        """Project this native value into a fresh XML document.
+
+        *mapping* names the root element and may rename occurrences by RFC 6901
+        JSON Pointer. Element-first projection turns object properties and
+        array members into elements, strings into escaped character data,
+        numbers and booleans into JSON-compatible lexical text, and null into
+        ``xsi:nil="true"``. The source value is never changed and edits to the
+        derived XML do not write back.
+
+        The result has no source bytes or source index. Its report is current
+        and holds non-fatal warnings for information the XML shape cannot
+        retain. Invalid names and other fatal mapping problems raise
+        :class:`~pyxsd.schemaless.errors.XmlMappingError` instead of being
+        repaired. JSON Pointer pins stay on this document: the projected tree
+        starts from a lexical policy.
+
+        Pass *node_mapping* to add Python mixins to matching projected
+        occurrences; descriptor ``type=`` entries become occurrence pins on the
+        derived document's policy, just as they do for :func:`parse_xml`.
+        """
+        from pyxsd.schemaless.mapping import XmlMapping, _project_document
+
+        if not isinstance(mapping, XmlMapping):
+            raise TypeError("mapping must be an XmlMapping")
+        return _project_document(
+            self._value, mapping, source=self.source, node_mapping=node_mapping
+        )
 
     def to_xdm(self) -> XdmSequence:
         """Return this document's native value as an XDM 3.1 sequence.
