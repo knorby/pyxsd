@@ -267,7 +267,7 @@ def test_multiple_match_failure_ignores_alternatives_of_one_union_rule() -> None
         <xsl:template match="/"><out><xsl:apply-templates select="//para" mode="c"/></out></xsl:template>
         """
     )
-    result = transform(source, b"<doc><para foo='1'>text</para></doc>")
+    result = transform(source, b"<doc><para><foo/>text</para></doc>")
     out = element_children(result.principal_tree)[0]
     assert [child.local_name for child in element_children(out)] == ["hit"]
 
@@ -967,18 +967,6 @@ def test_union_next_match_with_explicit_priority_does_not_reenter_the_rule() -> 
     alpha = element_children(result.principal_tree)[0]
     assert alpha.local_name == "alpha"
     assert [child.local_name for child in element_children(alpha)] == ["low"]
-
-
-def test_union_rule_alternatives_are_one_rule_for_multiple_match() -> None:
-    source = stylesheet(
-        """
-        <xsl:mode on-multiple-match="fail"/>
-        <xsl:template match="item|item"><alpha/></xsl:template>
-        <xsl:template match="/"><xsl:apply-templates select="/*/item"/></xsl:template>
-        """
-    )
-    result = transform(source, b"<doc><item/></doc>")
-    assert element_children(result.principal_tree)[0].local_name == "alpha"
 
 
 def test_shallow_skip_applies_attribute_rules_before_children() -> None:
