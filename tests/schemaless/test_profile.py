@@ -114,6 +114,30 @@ def test_xml_profile_counts_optional_attributes_across_occurrences():
     assert profile.at("/r/x").occurrences == 3
 
 
+def test_xml_profile_reports_attribute_interpretation_and_failure_locations():
+    doc = parse_xml(b'<r a="1" b="bad"><x a="2"/></r>', types=TypePolicy.infer())
+    profile = doc.profile()
+    inferred = profile.at("/r/@a")
+    assert inferred.kind == "attribute"
+    assert inferred.interpretations == ("inferred",)
+    assert inferred.interpretation == "inferred"
+    assert inferred.candidate("xs:integer").passed == 1
+    child = profile.at("/r/x/@a")
+    assert child.interpretations == ("inferred",)
+    assert child.candidate("xs:integer").passed == 1
+    failing = profile.at("/r/@b")
+    assert failing.interpretation == "lexical"
+    integer = failing.candidate("xs:integer")
+    assert (integer.passed, integer.failed) == (0, 1)
+    assert integer.first_failure == IssueLocation(doc.source, (PathStep("r", 1),), "b")
+    assert integer.first_failure.attribute == "b"
+    assert not doc.pin_type("/r/@a", "xs:integer").has_errors
+    pinned = doc.profile().at("/r/@a")
+    assert pinned.interpretations == ("pinned",)
+    assert pinned.interpretation == "pinned"
+    assert pinned.candidate("xs:integer").passed == 1
+
+
 def test_xml_profile_records_mixed_content_and_skips_container_text():
     doc = parse_xml(b"<r><p>hi<b>x</b>end</p><m><b>y</b>tail</m><q><c/></q><s>only</s></r>")
     profile = doc.profile()
@@ -309,6 +333,25 @@ def test_json_profile_reports_native_kinds_nulls_and_empty_values():
     assert values["/s"].candidate("xs:boolean").failed == 1
     assert values["/s"].candidate("xs:date").failed == 1
     assert from_data({"f": 1.25}).profile().at("/f").native_kinds == ("double",)
+
+
+def test_json_profile_evaluates_native_booleans_as_boolean_candidates():
+    profile = from_json('{"t":true,"f":false}').profile()
+    truthy = profile.at("/t")
+    assert truthy.native_kinds == ("boolean",)
+    assert truthy.samples == ("true",)
+    assert (truthy.candidate("xs:boolean").passed, truthy.candidate("xs:boolean").failed) == (1, 0)
+    assert truthy.candidate("xs:integer").failed == 1
+    falsy = profile.at("/f")
+    assert falsy.native_kinds == ("boolean",)
+    assert falsy.samples == ("false",)
+    assert (falsy.candidate("xs:boolean").passed, falsy.candidate("xs:boolean").failed) == (1, 0)
+    assert falsy.candidate("xs:date").failed == 1
+    items = from_json("[true,false]").profile().at("", kind="array-items")
+    assert items.native_kinds == ("boolean",)
+    assert items.samples == ("true", "false")
+    assert items.candidate("xs:boolean").passed == 2
+    assert items.candidate("xs:integer").failed == 2
 
 
 def test_json_profile_aggregates_array_members_at_the_array_pointer():
