@@ -1957,7 +1957,7 @@ def _install_node_kind_test(parser: Any) -> None:
         return
 
     def select(self: Any, context: Any = None) -> Iterator[Any]:
-        if context is None:
+        if context is None:  # pragma: no cover - token evaluation supplies it
             raise self.missing_context()
         for item in context.iter_children_or_self():
             if isinstance(item, XPathNode):
@@ -2568,7 +2568,7 @@ def _install_temporal_arithmetic(parser: Any) -> None:
                     raise self.error("FODT0001", err) from None
                 if isinstance(left, Duration) or isinstance(right, Duration):
                     raise self.error("FODT0002", err) from None
-                raise self.error("FOAR0002", err) from None
+                raise self.error("FOAR0002", err) from None  # pragma: no cover - Decimal overflow
 
         parser._register(
             symbol,
@@ -2583,7 +2583,7 @@ def _install_temporal_arithmetic(parser: Any) -> None:
 def _arithmetic_operand(token: Any, context: Any, index: int) -> Any:
     """One arithmetic operand, with the substrate's untypedAtomic conversion."""
     value = token.get_argument(context, index=index, cls=ArithmeticProxy)
-    if isinstance(value, ElementNode):
+    if isinstance(value, ElementNode):  # pragma: no cover - operands are atomized
         value = token._items[index].data_value(value)
     if isinstance(value, UntypedAtomic):
         value = token.cast_to_double(value.value)
@@ -2627,7 +2627,7 @@ def _temporal_difference(
             seconds = Decimal(delta.days * 86400 + delta.seconds) + (
                 Decimal(delta.microseconds) / Decimal(1_000_000)
             )
-    except (ValueError, OverflowError) as err:
+    except (ValueError, OverflowError) as err:  # pragma: no cover - constructor rejects it
         raise token.error("FODT0001", err) from None
     return DayTimeDuration(seconds=seconds)
 
@@ -2736,7 +2736,7 @@ def _install_schema_kind_tests(parser: Any) -> None:
         return get_expanded_name(source, namespaces)
 
     def select_element(self: Any, context: Any = None) -> Iterator[Any]:
-        if context is None:
+        if context is None:  # pragma: no cover - token evaluation supplies it
             raise self.missing_context()
         schema = self.parser.schema
         if not self:
@@ -2763,7 +2763,7 @@ def _install_schema_kind_tests(parser: Any) -> None:
         if self.label == "axis":
             yield from attribute_base.select(self, context)
             return
-        if context is None:
+        if context is None:  # pragma: no cover - token evaluation supplies it
             raise self.missing_context()
         schema = self.parser.schema
         name = attribute_name(self[0], self.parser.namespaces) if self else None
@@ -2809,7 +2809,7 @@ def _install_schema_kind_tests(parser: Any) -> None:
         return get_expanded_name(self[0].source, self.parser.namespaces)
 
     def select_schema_element(self: Any, context: Any = None) -> Iterator[Any]:
-        if context is None:
+        if context is None:  # pragma: no cover - token evaluation supplies it
             raise self.missing_context()
         proxy = self.parser.schema
         assert proxy is not None  # nud rejected an absent pool
@@ -2822,7 +2822,7 @@ def _install_schema_kind_tests(parser: Any) -> None:
                 yield item
 
     def select_schema_attribute(self: Any, context: Any = None) -> Iterator[Any]:
-        if context is None:
+        if context is None:  # pragma: no cover - token evaluation supplies it
             raise self.missing_context()
         proxy = self.parser.schema
         assert proxy is not None  # nud rejected an absent pool

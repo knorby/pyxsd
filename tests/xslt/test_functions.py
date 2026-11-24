@@ -1957,6 +1957,7 @@ def test_concat_and_replace_cover_empty_and_invalid_arguments() -> None:
         ("replace('a', '.*', 'x')", "FORX0003"),
         ("replace('a', 'a', '\\')", "FORX0004"),
         ("replace('a', 'a', '$x')", "FORX0004"),
+        ("replace('a', '[', 'x')", "FORX0002"),
     ):
         body = (
             '<xsl:template name="main">'
@@ -2006,17 +2007,56 @@ def test_arithmetic_operand_and_error_paths() -> None:
         ("xs:date('2003-01-01') + xs:date('2003-01-02')", "XPTY0004"),
         ("xs:date('2003-01-01') + 1", "XPTY0004"),
         ("1 div 0", "FOAR0001"),
+        ("2 - 1", None),
+    ):
+        body = f'<xsl:template name="main"><xsl:value-of select="{expression}"/></xsl:template>'
+        if code is None:
+            result = transform(stylesheet(body), initial_template="main")
+            assert result.principal[0].string_value == "1"
+        else:
+            assert (
+                error_code(lambda body=body: transform(stylesheet(body), initial_template="main"))
+                == code
+            )
+
+    for expression in (
+        "xs:dayTimeDuration('P1D') + xs:float(1.5)",
+        "xs:float(1.5) + xs:dayTimeDuration('P1D')",
     ):
         body = f'<xsl:template name="main"><xsl:value-of select="{expression}"/></xsl:template>'
         assert (
             error_code(lambda body=body: transform(stylesheet(body), initial_template="main"))
-            == code
+            == "XPTY0004"
         )
 
-    promoted = """
-        <xsl:template name="main">
-          <out><xsl:value-of select="xs:float(1.5) + xs:decimal('1.5')"/></out>
-        </xsl:template>
-    """
-    result = transform(stylesheet(promoted), initial_template="main")
-    assert result.principal[0].string_value == "3"
+    overflow = (
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"xs:dayTimeDuration('P99999999999999D') + "
+        "xs:dayTimeDuration('P99999999999999D')\"/>"
+        "</xsl:template>"
+    )
+    assert (
+        error_code(lambda: transform(stylesheet(overflow), initial_template="main")) == "FODT0002"
+    )
+
+    for expression in (
+        "xs:float(1.5) + xs:decimal('1.5')",
+        "xs:decimal('1.5') + xs:float(1.5)",
+    ):
+        body = (
+            '<xsl:template name="main">'
+            f'<out><xsl:value-of select="{expression}"/></out>'
+            "</xsl:template>"
+        )
+        result = transform(stylesheet(body), initial_template="main")
+        assert result.principal[0].string_value == "3"
+
+    element = (
+        '<xsl:template match="/"><out><xsl:value-of select="/doc/a + 1"/></out></xsl:template>'
+    )
+    result = transform(stylesheet(element), b"<doc><a>2</a></doc>", delivery="document")
+    assert result.principal_tree.root_element.string_value == "3"
+
+    empty = '<xsl:template name="main"><out><xsl:value-of select="() + 1"/></out></xsl:template>'
+    result = transform(stylesheet(empty), initial_template="main")
+    assert result.principal[0].string_value == ""

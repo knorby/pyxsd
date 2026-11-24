@@ -1210,7 +1210,7 @@ def test_2_0_format_integer_grouping_and_invalid_pictures() -> None:
     )
     assert _formatted(grouped) == "1,234"
 
-    for picture in ("x;c", "1;x", "#"):
+    for picture in ("x;c", "1;x", "#", "1;!", " 0"):
         invalid = (
             '<xsl:template name="main">'
             f"<xsl:value-of select=\"format-integer(1, '{picture}')\"/>"
@@ -1234,7 +1234,7 @@ def test_2_0_date_time_picture_error_paths() -> None:
             native_transform(body)
         assert caught.value.code == "FOFD1340"
 
-    for calendar in ("Q{}", "Q{bad"):
+    for calendar in ("Q{}", "Q{bad", "Q{urn:x}a:b"):
         body = (
             '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
             '<xsl:template name="main">'
@@ -1300,3 +1300,43 @@ def test_2_0_date_time_empty_and_multiple_values() -> None:
     with pytest.raises(XsltDynamicError) as caught:
         native_transform(multiple)
     assert caught.value.code == "XPTY0004"
+
+
+def test_format_helpers_validate_direct_arguments() -> None:
+    """The owning helpers reject unknown kinds and cast string/empty values."""
+    from elementpath.datatypes import UntypedAtomic
+
+    from pyxsd.xpath.functions import (
+        canonical_string_value,
+        format_datetime_value,
+        format_integer_value,
+    )
+
+    with pytest.raises(ValueError):
+        format_datetime_value("year", None, "[Y]")
+    assert format_datetime_value("date", None, "[Y]") == ""
+    assert format_datetime_value("date", "2003-12-07", "[Y]") == "2003"
+    with pytest.raises(Exception) as caught:
+        format_datetime_value("date", "not-a-date", "[Y]")
+    assert caught.value.code == "err:XPTY0004"
+
+    assert canonical_string_value(UntypedAtomic("x")) == "x"
+    for picture in ("x0", "0#", ";c", " 0", "\u0661\u0967"):
+        with pytest.raises(Exception) as caught:
+            format_integer_value(1, picture)
+        assert caught.value.code == "err:FODF1310"
+    assert format_integer_value(-3, "1") == "-3"
+
+
+def test_2_0_roman_width_and_bounded_fraction() -> None:
+    """Roman padding and a bounded fraction use the width modifier."""
+    body = (
+        '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2003-12-07T00:00:00.123456Z')\"/>"
+        '<xsl:template name="main">'
+        '<xsl:value-of separator="|" select="format-date($d, \'[Mi,4-4]\'), '
+        "format-dateTime($t, '[f,1-2]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == " xii|12"

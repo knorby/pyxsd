@@ -57,6 +57,7 @@ _SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:s="{SUP}"
   <xs:simpleType name="Base"><xs:restriction base="xs:string"/></xs:simpleType>
   <xs:simpleType name="Derived"><xs:restriction base="s:Base"/></xs:simpleType>
   <xs:element name="doc" type="s:myint"/>
+  <xs:element name="when" type="xs:date"/>
   <xs:attribute name="kind" type="xs:string"/>
   <xs:attribute name="id" type="xs:string"/>
   <xs:element name="rec">
@@ -434,6 +435,14 @@ def test_date_time_argument_enforces_cardinality_and_node_atomization(
         _date_time_argument(((typed.root_element,),), "date")
     assert caught.value.code == "XPTY0004"
 
+    simple = parse_typed_document(
+        f'<when xmlns="{SUP}">2003-12-07</when>'.encode(),
+        schema_pool=pool,
+        validation="strict",
+    )
+    argument = _date_time_argument(((simple.root_element,),), "date")
+    assert str(argument) == "2003-12-07"
+
     with pytest.raises(XsltError) as caught:
         _date_time_argument((("not-an-atomic",),), "date")
     assert caught.value.code == "XPTY0004"
@@ -452,5 +461,6 @@ def test_temporal_sort_key_errors_and_implicit_timezone() -> None:
 
     early = XdmAtomic(xsd.DateTime("2000-01-01T00:00:00"), f"{{{XSD_NS}}}dateTime", xsd.DateTime)
     late = XdmAtomic(xsd.DateTime("2000-01-02T00:00:00"), f"{{{XSD_NS}}}dateTime", xsd.DateTime)
+    assert _compare_datetime(early, late, None) < 0
     assert _compare_datetime(early, late, UTC) < 0
     assert _compare_datetime(late, early, UTC) > 0

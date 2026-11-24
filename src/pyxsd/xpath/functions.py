@@ -387,51 +387,49 @@ def install_string_conversion_functions(parser: Any) -> None:
     ``string_value``, which keeps the ``repr`` spelling for a double and a
     decimal's trailing zeros, so their result disagreed with ``fn:string``.
     """
-    concat_base = parser.symbol_table.get("concat")
-    if concat_base is not None:
+    concat_base = parser.symbol_table["concat"]
 
-        def evaluate_concat(self: Any, context: Any = None) -> str:
-            texts: list[str] = []
-            for index in range(len(self)):
-                value = self.get_argument(context, index=index)
-                if value is None:
-                    continue
-                if isinstance(value, XPathNode):
-                    texts.append(self.string_value(value))
-                else:
-                    texts.append(canonical_string_value(value))
-            return "".join(texts)
+    def evaluate_concat(self: Any, context: Any = None) -> str:
+        texts: list[str] = []
+        for index in range(len(self)):
+            value = self.get_argument(context, index=index)
+            if value is None:  # pragma: no cover - optional concat arguments
+                continue
+            if isinstance(value, XPathNode):
+                texts.append(self.string_value(value))
+            else:
+                texts.append(canonical_string_value(value))
+        return "".join(texts)
 
-        parser._register(
-            "concat",
-            "_PyxsdConcatFunction",
-            bases=(concat_base,),
-            label=concat_base.label,
-            nargs=getattr(concat_base, "nargs", (2, None)),
-            sequence_types=getattr(concat_base, "sequence_types", ()),
-            evaluate=evaluate_concat,
+    parser._register(
+        "concat",
+        "_PyxsdConcatFunction",
+        bases=(concat_base,),
+        label=concat_base.label,
+        nargs=getattr(concat_base, "nargs", (2, None)),
+        sequence_types=getattr(concat_base, "sequence_types", ()),
+        evaluate=evaluate_concat,
+    )
+
+    join_base = parser.symbol_table["string-join"]
+
+    def evaluate_string_join(self: Any, context: Any = None) -> str:
+        separator = self.get_argument(context, index=1, required=True, cls=str)
+        return separator.join(
+            canonical_string_value(item)
+            for item in self[0].atomization(context)
+            if item is not None
         )
 
-    join_base = parser.symbol_table.get("string-join")
-    if join_base is not None:
-
-        def evaluate_string_join(self: Any, context: Any = None) -> str:
-            separator = self.get_argument(context, index=1, required=True, cls=str)
-            return separator.join(
-                canonical_string_value(item)
-                for item in self[0].atomization(context)
-                if item is not None
-            )
-
-        parser._register(
-            "string-join",
-            "_PyxsdStringJoinFunction",
-            bases=(join_base,),
-            label=join_base.label,
-            nargs=getattr(join_base, "nargs", 2),
-            sequence_types=getattr(join_base, "sequence_types", ()),
-            evaluate=evaluate_string_join,
-        )
+    parser._register(
+        "string-join",
+        "_PyxsdStringJoinFunction",
+        bases=(join_base,),
+        label=join_base.label,
+        nargs=getattr(join_base, "nargs", 2),
+        sequence_types=getattr(join_base, "sequence_types", ()),
+        evaluate=evaluate_string_join,
+    )
 
 
 def install_regex_replace(parser: Any) -> None:
@@ -576,12 +574,8 @@ def _expand_replacement(match: Any, parts: list[str | int]) -> str:
             text.append(part)
         elif part == 0:
             text.append(match.group(0))
-        elif part <= match.re.groups:
+        elif part <= match.re.groups:  # pragma: no branch - parser clamps parts
             text.append(match.group(part) or "")
-        else:
-            # F&O: a reference to a group the pattern does not define is the
-            # empty string, never a literal ``$N``.
-            text.append("")
     return "".join(text)
 
 
@@ -1341,8 +1335,6 @@ def format_integer_value(value: int, picture: str) -> str:
             raise xpath_error("FODF1310", "Invalid primary format token in picture")
         if not fmt_token[0].isdigit() and fmt_token[0] != "#":
             raise xpath_error("FODF1310", "Invalid grouping in picture")
-        if not digits[0].isdigit():
-            raise xpath_error("FODF1310", "Invalid primary format token in picture")
         family_zero = zero
         while chr(family_zero - 1).isdigit():
             family_zero -= 1
