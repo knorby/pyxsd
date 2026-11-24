@@ -13,6 +13,14 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ### Added
 
+- A `pyxsd.schemaless` document family loads XML without a grammar as an
+  editable lexical tree and stores native JSON with arbitrary-precision
+  numbers. It exposes untyped XML and native maps and arrays as XDM for XSLT,
+  supports conservative inference, explicit type pins, profiles, and node
+  mappings, and projects JSON into XML through explicit, JSON Schema, or
+  OpenAPI-derived rules. JSON Schema and OpenAPI guidance require the optional
+  `pyxsd[jsonschema]` extra, which `pyxsd[mcp-all]` also installs; native XML
+  and native JSON remain available without it.
 - A native XSLT transformation engine covering XSLT 1.0, 2.0, and 3.0
   (non-streaming): templates, modes, keys, attribute sets, `xsl:number`
   formatting, result documents, packages, and the XPath 3.1 function library.

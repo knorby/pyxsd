@@ -13,13 +13,16 @@ pip install 'pyxsd[pydantic]'        # Pydantic >=2.12.5,<3
 pip install 'pyxsd[arrow]'           # PyArrow >=22, including Parquet
 pip install 'pyxsd[pydantic,arrow]'  # Both, independently usable
 pip install 'pyxsd[mcp]'             # Local stdio server only
-pip install 'pyxsd[mcp-all]'         # Server plus Pydantic and Arrow
+pip install 'pyxsd[mcp-all]'         # Server plus Pydantic, Arrow, and JSON Schema
 ```
 
 `pyxsd[mcp]` is the minimal server install. `pyxsd[mcp-all]` is its complete
-counterpart: the server dependencies plus both integration extras, so
-projected-model and Arrow record tools are available together. It still does
-not enable trusted-local transform execution.
+counterpart: the server dependencies plus both integration extras and the
+optional JSON Schema capability (`jsonschema>=4.25,<5`, also available alone as
+`pyxsd[jsonschema]`), so projected-model, Arrow record, and schema-guided JSON
+tools are available together. Native schemaless XML and native JSON need none
+of these extras; {doc}`schemaless-data` describes that base path. The aggregate
+still does not enable trusted-local transform execution.
 
 These extras support Python 3.11–3.15. The minimum versions above target
 3.11–3.14; on 3.15 the first releases with wheels for the compiled parts are

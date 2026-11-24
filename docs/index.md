@@ -25,6 +25,7 @@ the matching tag in the [repository](https://github.com/knorby/pyxsd/tags).
 
 - Inspect errors and their source occurrences: {doc}`validation`.
 - Understand namespaces and retained data: {doc}`binding` and {doc}`data-model`.
+- Load XML without a schema or work with native JSON: {doc}`schemaless-data`.
 - Use native RELAX NG schemas, alternatives, and grammar introspection:
   {doc}`relax-ng`.
 - Process several files: {doc}`batch`.
@@ -62,6 +63,7 @@ binding
 schema-resolution
 data-model
 validation
+schemaless-data
 relax-ng
 transforms/index
 batch

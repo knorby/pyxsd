@@ -169,6 +169,55 @@ runtime entry points:
    float, string, list of such values, or string-keyed dictionary of them.
 ```
 
+## Schemaless XML and native JSON
+
+See {doc}`schemaless-data` for schemaless XML, native JSON, XDM maps and
+arrays, typing and profiles, node mappings, explicit XML projection, JSON
+Schema guidance, and OpenAPI XML metadata.
+
+`pyxsd.schemaless` exports `parse_xml`, `from_json`, `from_data`,
+`SchemalessDocument`, `JsonDocument`, `TypePolicy`, `XmlMapping`,
+`MappingRule`, `NodeMapping`, the `attribute`/`text`/`child`/`children`
+descriptors, profile records, scalar adapters, and the family's error types.
+`SchemalessDocument.schema` is `None`; schema-directed operations fail
+explicitly rather than implying validation. Native JSON values remain
+mappings, lists, `int`/`Decimal`, booleans, strings, or null until
+`to_xdm()` or an explicit `to_xml()` projection is requested.
+
+```{eval-rst}
+.. py:function:: pyxsd.schemaless.parse_xml
+
+   Read schemaless XML from a path, bytes, stream, or caller-built element.
+
+.. py:function:: pyxsd.schemaless.from_json
+
+   Decode JSON text, bytes, or a stream into a native JSON document.
+
+.. py:function:: pyxsd.schemaless.from_data
+
+   Copy Python data into a native JSON document.
+
+.. py:class:: pyxsd.schemaless.SchemalessDocument
+
+   Editable lexical XML document with no XSD or RELAX NG binding.
+
+.. py:class:: pyxsd.schemaless.JsonDocument
+
+   Native JSON document addressed by RFC 6901 JSON Pointers.
+
+.. py:class:: pyxsd.schemaless.TypePolicy
+
+   Immutable, document-local scalar interpretation policy.
+
+.. py:class:: pyxsd.schemaless.XmlMapping
+
+   Root name and per-pointer rules for JSON-to-XML projection.
+
+.. py:class:: pyxsd.schemaless.NodeMapping
+
+   Document-local registry of descriptor mixins for XML occurrences.
+```
+
 ## Modes and the node protocol
 
 See {doc}`binding` for `BindingPolicy` and `ParseModes`. Some complex child
