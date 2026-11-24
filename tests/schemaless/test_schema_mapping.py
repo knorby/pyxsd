@@ -1,12 +1,14 @@
 """Project native JSON with occurrence-sensitive JSON Schema guidance."""
 
 from io import StringIO
+from pathlib import Path
 from sys import get_int_max_str_digits
 
 import pytest
 from referencing import Registry
 from referencing.jsonschema import DRAFT202012
 
+from pyxsd.locations import DataLocation
 from pyxsd.namespaces import XSI_NS
 from pyxsd.remote import RemoteResourcePolicy
 from pyxsd.schemaless import MappingRule, XmlMapping, from_data, from_json
@@ -406,3 +408,83 @@ def test_boolean_schema_falls_back_to_element_first_defaults():
     xml = from_json('{"value":1}').to_xml(mapping)
     assert xml.root.children[0]._name_ == "value"
     assert xml.root.children[0].text_value() == "1"
+
+
+def test_json_schema_format_assertion_is_independent_of_format_typing() -> None:
+    schema = {"properties": {"value": {"type": "integer", "format": "int32"}}}
+    doc = from_json('{"value":2147483648}', json_schema=schema)
+    assert doc.is_valid
+    mapping = XmlMapping.from_json_schema(schema, root_name="r", format_typing=True)
+    assert doc.to_xml(mapping).to_string() == "<r><value>2147483648</value></r>"
+
+    mapping = XmlMapping.from_json_schema(schema, root_name="r", format_assertion=True)
+    with pytest.raises(XmlMappingError, match="JSON Schema 'format'") as caught:
+        doc.to_xml(mapping)
+    (issue,) = caught.value.report.issues
+    location = issue.location
+    assert isinstance(location, DataLocation)
+    assert (issue.code, location.pointer, location.schema_pointer) == (
+        "json-schema-invalid",
+        "/value",
+        "/properties/value/format",
+    )
+
+
+def test_explicit_mapping_type_wins_over_the_applied_format() -> None:
+    schema = {"properties": {"amount": {"type": "number", "format": "float"}}}
+    doc = from_json('{"amount":16777217}')
+    mapping = XmlMapping.from_json_schema(
+        schema, root_name="r", format_typing=True, rules={"/amount": MappingRule(type="xs:double")}
+    )
+    assert doc.to_xml(mapping).to_string() == "<r><amount>16777217.0</amount></r>"
+
+
+@pytest.mark.parametrize(
+    ("alternatives", "expected"),
+    [
+        ([True, {"format": "double", "maximum": 0}], "9007199254740992.0"),
+        ([True, {"format": "double"}], "9007199254740993.00"),
+    ],
+    ids=["one-compatible-format", "conflicting-successful-formats"],
+)
+def test_projection_resolves_formats_from_successful_occurrence_schemas(
+    alternatives: list[bool | dict[str, object]], expected: str
+) -> None:
+    schema = {
+        "prefixItems": [{"anyOf": [{"type": "number", "format": "float"}, *alternatives]}],
+        "items": True,
+    }
+    mapping = XmlMapping.from_json_schema(schema, root_name="r", format_typing=True)
+    xml = from_json("[9007199254740993.00,1.0]").to_xml(mapping)
+    assert [node.text_value() for node in xml.root.children] == [expected, "1.0"]
+
+
+@pytest.mark.parametrize("mapping_typing", [True, False])
+def test_evaluation_is_reused_when_only_format_typing_differs(
+    tmp_path: Path, mapping_typing: bool
+) -> None:
+    child = tmp_path / "child.json"
+    child.write_text('{"type":"integer","format":"int32"}', encoding="utf-8")
+    schema = {"$ref": "child.json"}
+    base_uri = str(tmp_path / "root.json")
+    policy = RemoteResourcePolicy()
+    doc = from_json(
+        "1.0",
+        json_schema=schema,
+        base_uri=base_uri,
+        resource_policy=policy,
+        format_typing=not mapping_typing,
+    )
+    assert doc.is_valid
+    mapping = XmlMapping.from_json_schema(
+        schema,
+        root_name="r",
+        base_uri=base_uri,
+        resource_policy=policy,
+        format_typing=mapping_typing,
+    )
+    child.write_text("false", encoding="utf-8")
+    expected = "1" if mapping_typing else "1.0"
+    assert doc.to_xml(mapping).root.text_value() == expected
+    with pytest.raises(XmlMappingError, match="boolean schema"):
+        from_json("1.0").to_xml(mapping)

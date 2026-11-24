@@ -504,6 +504,7 @@ def compile_openapi_mapping(
     base_uri: str | None,
     reference_registry: SchemaRegistry | None,
     resource_policy: ResourcePolicy | None,
+    format_assertion: bool,
 ) -> tuple[SchemaGuidance, str | None, RuleCallable]:
     """Compile validation guidance plus the metadata rule lookup for a schema."""
     if dialect is not None and dialect.removesuffix("#") not in _OAS_DIALECTS | {_DRAFT}:
@@ -519,6 +520,7 @@ def compile_openapi_mapping(
         base_uri=base_uri,
         reference_registry=reference_registry,
         resource_policy=resource_policy,
+        format_assertion=format_assertion,
         _openapi_dialects=_OAS_DIALECTS,
     )
     if root_name is not None and not isinstance(root_name, str):

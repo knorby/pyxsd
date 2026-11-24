@@ -5,8 +5,10 @@ import pytest
 from referencing import Registry
 from referencing.jsonschema import DRAFT202012
 
+from pyxsd import xsd_data_types as xsd
+from pyxsd.locations import DataLocation
 from pyxsd.namespaces import XSI_NS
-from pyxsd.schemaless import MappingRule, XmlMapping, XmlMappingError, from_data
+from pyxsd.schemaless import MappingRule, XmlMapping, XmlMappingError, from_data, from_json
 
 
 def test_openapi_xml_object_controls_attributes_names_and_namespaces():
@@ -22,6 +24,80 @@ def test_openapi_xml_object_controls_attributes_names_and_namespaces():
     assert xml.root._name_ == "{urn:orders}order"
     assert xml.root.attribute_lexical("id") == "x"
     assert xml.root.children[0]._name_ == "{urn:orders}title"
+
+
+def test_openapi_formats_change_lexical_values_only_when_typing_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema = {
+        "xml": {"name": "r"},
+        "properties": {
+            "text": {"type": "string", "format": "int64", "xml": {"nodeType": "text"}},
+            "small": {
+                "type": "integer",
+                "format": "int32",
+                "xml": {"nodeType": "attribute", "name": "n", "namespace": "urn:x", "prefix": "p"},
+            },
+            "large": {"type": "integer", "format": "int64"},
+            "ratios": {
+                "type": "array",
+                "xml": {"wrapped": True},
+                "items": {"type": "number", "format": "float", "xml": {"name": "ratio"}},
+            },
+            "amount": {"type": "number", "format": "double"},
+            "legacy": {"type": "string", "format": "byte"},
+            "preferred": {"type": "string", "contentEncoding": "base64"},
+        },
+    }
+    doc = from_json(
+        '{"text":"0007","small":1.0,"large":9223372036854775807.0,'
+        '"ratios":[16777217],"amount":9007199254740993.00,"legacy":"YQ==","preferred":"Yg=="}'
+    )
+    # Strict base64 is already canonical. Track the real formatter to
+    # distinguish its output from the identical native text.
+    formatted = []
+    lexical = xsd.Base64Binary.lexical
+
+    def track_base64(value: xsd.Base64Binary) -> str:
+        formatted.append(str(value))
+        return lexical(value)
+
+    monkeypatch.setattr(xsd.Base64Binary, "lexical", track_base64)
+    assert doc.to_xml(XmlMapping.from_openapi(schema)).to_string() == (
+        '<r xmlns:p="urn:x" p:n="1.0">0007<large>9223372036854775807.0</large>'
+        "<ratios><ratio>16777217</ratio></ratios><amount>9007199254740993.00</amount>"
+        "<legacy>YQ==</legacy><preferred>Yg==</preferred></r>"
+    )
+    assert formatted == []
+    assert doc.to_xml(XmlMapping.from_openapi(schema, format_typing=True)).to_string() == (
+        '<r xmlns:p="urn:x" p:n="1">7<large>9223372036854775807</large>'
+        "<ratios><ratio>16777216.0</ratio></ratios><amount>9007199254740992.0</amount>"
+        "<legacy>YQ==</legacy><preferred>Yg==</preferred></r>"
+    )
+    assert formatted == ["YQ==", "Yg=="]
+
+
+def test_openapi_assertion_only_rejects_out_of_range_int32() -> None:
+    schema = {"xml": {"name": "r"}, "properties": {"value": {"format": "int32"}}}
+    mapping = XmlMapping.from_openapi(schema, format_assertion=True)
+    assert from_json('{"value":1.0}').to_xml(mapping).to_string() == "<r><value>1.0</value></r>"
+    with pytest.raises(XmlMappingError, match="JSON Schema 'format'") as caught:
+        from_data({"value": 2147483648}).to_xml(mapping)
+    (issue,) = caught.value.report.issues
+    location = issue.location
+    assert isinstance(location, DataLocation)
+    assert (location.pointer, location.schema_pointer) == (
+        "/value",
+        "/properties/value/format",
+    )
+
+
+def test_openapi_base64_content_encoding_remains_annotation_only() -> None:
+    schema = {"type": "string", "contentEncoding": "base64"}
+    mapping = XmlMapping.from_openapi(
+        schema, root_name="r", format_assertion=True, format_typing=True
+    )
+    assert from_data("Y Q==").to_xml(mapping).root.text_value() == "Y Q=="
 
 
 def test_inline_openapi_root_requires_a_name():

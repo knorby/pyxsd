@@ -30,9 +30,10 @@ from pyxsd.locations import DataLocation
 from pyxsd.namespaces import XML_NS, XSI_NS, NamespaceContext, clark, namespace_of
 from pyxsd.schemaless.document import SchemalessDocument
 from pyxsd.schemaless.errors import ScalarTypeError, XmlMappingError
+from pyxsd.schemaless.format_types import schema_format_adapter
 from pyxsd.schemaless.json_document import _typed_scalar
 from pyxsd.schemaless.json_values import NativeJsonValue, encode_json
-from pyxsd.schemaless.json_xdm import escape_pointer_segment
+from pyxsd.schemaless.json_xdm import _schema_scalar_text, escape_pointer_segment
 from pyxsd.schemaless.nodes import NodeMapping
 from pyxsd.schemaless.tree import SchemalessElement
 from pyxsd.schemaless.types import _PARSE_ERRORS, TypePolicy, TypeRef
@@ -117,7 +118,7 @@ class XmlMapping:
     because only then are their XML paths known.
     """
 
-    __slots__ = ("_default", "_derived", "_guidance", "_root_name", "_rules")
+    __slots__ = ("_default", "_derived", "_format_typing", "_guidance", "_root_name", "_rules")
 
     def __init__(
         self,
@@ -160,6 +161,7 @@ class XmlMapping:
         self._rules: Mapping[str, MappingRule] = MappingProxyType(checked)
         self._guidance: SchemaGuidance | None = None
         self._derived: RuleCallable | None = None
+        self._format_typing = False
 
     @property
     def root_name(self) -> str | None:
@@ -202,12 +204,16 @@ class XmlMapping:
         base_uri: str | None = None,
         reference_registry: SchemaRegistry | None = None,
         resource_policy: ResourcePolicy | None = None,
+        format_assertion: bool = False,
+        format_typing: bool = False,
     ) -> XmlMapping:
         """Compile Draft 2020-12 guidance for an element-first projection.
 
-        The schema must validate the instance at projection time. Only
-        applicable structural hints are considered; explicit rules take
-        precedence, and neither schema defaults nor scalar casts are applied.
+        The schema must validate the instance at projection time.
+        ``format_assertion`` checks recognized formats during validation;
+        ``format_typing`` independently uses compatible formats to write scalar
+        values. Explicit rules take precedence, and schema defaults are not
+        applied.
         """
         from pyxsd.schemaless.json_schema import SchemaGuidance
 
@@ -217,7 +223,9 @@ class XmlMapping:
             base_uri=base_uri,
             reference_registry=reference_registry,
             resource_policy=resource_policy,
+            format_assertion=format_assertion,
         )
+        mapping._format_typing = format_typing
         return mapping
 
     @classmethod
@@ -231,6 +239,8 @@ class XmlMapping:
         reference_registry: SchemaRegistry | None = None,
         resource_policy: ResourcePolicy | None = None,
         dialect: str | None = None,
+        format_assertion: bool = False,
+        format_typing: bool = False,
     ) -> XmlMapping:
         """Compile an element-first mapping from an OpenAPI Schema Object.
 
@@ -238,6 +248,9 @@ class XmlMapping:
         and array wrapping. ``root_name`` overrides the annotation's local
         name. If only an applicator supplies the root name, it is selected at
         projection time. Explicit rules override individual metadata fields.
+        ``format_assertion`` checks recognized formats during validation;
+        ``format_typing`` independently uses compatible formats to write scalar
+        values unless an explicit rule provides a type.
         """
         from pyxsd.schemaless.openapi import compile_openapi_mapping
 
@@ -250,6 +263,7 @@ class XmlMapping:
             base_uri=base_uri,
             reference_registry=reference_registry,
             resource_policy=resource_policy,
+            format_assertion=format_assertion,
         )
         # Reuse the direct constructor's rule checks without treating a dynamic
         # root name as a public constructor option.
@@ -257,6 +271,7 @@ class XmlMapping:
         mapping._root_name = selected
         mapping._derived = rule_at
         mapping._guidance = guidance
+        mapping._format_typing = format_typing
         return mapping
 
     def _rule_at(
@@ -814,11 +829,22 @@ class _Projector:
     def _lexical(self, value: _Scalar, rule: MappingRule, pointer: str, path: str) -> str:
         if isinstance(value, str):
             _check_xml_text(value, pointer, path, self._source)
-        if rule.type is None:
+        type_ref = rule.type
+        if type_ref is None and self._mapping._format_typing:
+            assert self._schema is not None  # Only schema-guided mappings opt in.
+            schemas = (
+                item.schema
+                for item in self._schema.occurrences_at(pointer)
+                if isinstance(item.schema, dict)
+            )
+            type_ref = schema_format_adapter(schemas, value, lambda: _schema_scalar_text(value))
+        if type_ref is None:
             return value if isinstance(value, str) else encode_json(value)
         try:
-            adapter = TypePolicy.resolve(rule.type)
-            lexical = adapter.format(_typed_scalar(self._source, pointer, adapter, value))
+            adapter = TypePolicy.resolve(type_ref)
+            lexical = adapter.format(
+                _typed_scalar(self._source, pointer, adapter, value, asserted=rule.type is None)
+            )
             if not isinstance(lexical, str):
                 raise TypeError("the scalar formatter did not return a string")
         except (ScalarTypeError, *_PARSE_ERRORS):
