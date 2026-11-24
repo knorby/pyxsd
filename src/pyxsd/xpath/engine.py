@@ -1326,6 +1326,7 @@ class _ValueBridge:
         context = self._context
         assert context is not None
         nargs = getattr(token, "nargs", None)
+        arity: int | tuple[int, int | None]
         if isinstance(nargs, tuple):
             arity = _arity_tuple(nargs)
         elif isinstance(nargs, int):
