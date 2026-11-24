@@ -10,6 +10,7 @@ reaches only through its schema-aware cases.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -25,10 +26,12 @@ from pyxsd.xpath.engine import (
     _DECLINED,
     _UNTYPED,
     _UNTYPED_ATOMIC,
+    _annotate_atomic_value,
     _build_parser,
     _match_annotated_atomic_type,
     _match_tolerant_sequence_type,
     _PoolSchemaProxy,
+    _record_annotation,
     _ValueBridge,
     _XdmAdapterRegistry,
 )
@@ -136,6 +139,35 @@ def test_annotated_atomic_type_applies_occurrence_and_rejects_untyped(
     assert _match_annotated_atomic_type([other], f"{{{SUP}}}myint", parser) is True
 
 
+def test_annotated_atomic_values_are_distinct_and_bounded() -> None:
+    from decimal import Decimal
+
+    from pyxsd.xpath import engine
+
+    first = _annotate_atomic_value("x", f"{{{SUP}}}A")
+    second = _annotate_atomic_value("x", f"{{{SUP}}}B")
+    assert first is not second
+    assert (first._pyxsd_type, second._pyxsd_type) == (f"{{{SUP}}}A", f"{{{SUP}}}B")
+    assert _annotate_atomic_value(Decimal("1.5"), f"{{{SUP}}}A")._pyxsd_type == f"{{{SUP}}}A"
+    assert _annotate_atomic_value(1.5, f"{{{SUP}}}A")._pyxsd_type == f"{{{SUP}}}A"
+    assert _annotate_atomic_value(True, f"{{{SUP}}}A") is True
+    assert _annotate_atomic_value(3, f"{{{SUP}}}A") == 3
+    derived = builtin_atomic_types["xs:normalizedString"]("x")
+    annotated = _annotate_atomic_value(derived, f"{{{SUP}}}A")
+    assert type(annotated) is type(derived)
+    assert annotated is not derived and annotated._pyxsd_type == f"{{{SUP}}}A"
+
+    annotations: dict[int, tuple[object, str]] = {}
+    monkey = engine._ANNOTATION_LIMIT
+    engine._ANNOTATION_LIMIT = 1
+    try:
+        _record_annotation(annotations, True, f"{{{SUP}}}A")
+        _record_annotation(annotations, False, f"{{{SUP}}}B")
+    finally:
+        engine._ANNOTATION_LIMIT = monkey
+    assert list(annotations.values()) == [(False, f"{{{SUP}}}B")]
+
+
 def test_annotated_atomic_type_declines_unrecorded_values(parser: object) -> None:
     unrecorded = builtin_atomic_types["xs:int"](1)
 
@@ -164,6 +196,11 @@ def test_registry_annotations_cross_evaluation_boundaries(parser: object) -> Non
     assert bridge._variable_value(value) is value
     converted = bridge.to_xdm_sequence(value)
     assert registry.annotations[id(converted[0])][1] == f"{{{SUP}}}myint"
+
+    attached = _annotate_atomic_value(builtin_atomic_types["xs:int"](1), f"{{{SUP}}}myint")
+    assert bridge._variable_value(attached) is attached
+    attached_xdm = bridge.to_xdm_sequence(attached)
+    assert registry.annotations[id(attached_xdm[0])][1] == f"{{{SUP}}}myint"
 
     document = XdmDocument.parse(f'<s:doc xmlns:s="{SUP}">5</s:doc>'.encode())
     adapter = bridge.adapt_item(document)
@@ -337,3 +374,45 @@ def test_text_nodes_are_adjacent_only_within_one_parent_chain() -> None:
     parent.children = [left, adjacent]
     assert _text_nodes_are_adjacent(left, adjacent)  # type: ignore[arg-type]
     assert not _text_nodes_are_adjacent(left, SimpleNamespace(parent=None))  # type: ignore[arg-type]
+
+
+def test_equal_string_values_keep_distinct_type_annotations(tmp_path: Path) -> None:
+    """Two user string types with the same payload do not overwrite each other."""
+    from pyxsd.xslt import XsltProcessor
+
+    (tmp_path / "types.xsd").write_text(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="{SUP}"
+               targetNamespace="{SUP}">
+             <xs:simpleType name="A"><xs:restriction base="xs:string"/></xs:simpleType>
+             <xs:simpleType name="B"><xs:restriction base="xs:string"/></xs:simpleType>
+           </xs:schema>""",
+        encoding="utf-8",
+    )
+    (tmp_path / "types.xsl").write_text(
+        f"""<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+               xmlns:xs="{XSD_NS}" xmlns:t="{SUP}" version="3.0">
+             <xsl:import-schema namespace="{SUP}" schema-location="types.xsd"/>
+             <xsl:template name="main">
+               <xsl:param name="t:a" as="t:A"/>
+               <xsl:param name="t:b" as="t:B"/>
+               <out>
+                 <xsl:value-of select="$t:a instance of t:A"/>
+                 <xsl:value-of select="$t:a instance of t:B"/>
+                 <xsl:value-of select="$t:b instance of t:A"/>
+                 <xsl:value-of select="$t:b instance of t:B"/>
+               </out>
+             </xsl:template>
+           </xsl:stylesheet>""",
+        encoding="utf-8",
+    )
+    compiled = XsltProcessor(language="3.0", xpath="3.1", schema_aware=True).compile(
+        tmp_path / "types.xsl"
+    )
+    result = compiled.transform(
+        initial_template="main",
+        template_parameters={
+            "t:a": XdmAtomic("x", f"{{{SUP}}}A", str),
+            "t:b": XdmAtomic("x", f"{{{SUP}}}B", str),
+        },
+    )
+    assert result.principal_entry.serialized.endswith(">truefalsefalsetrue</out>")

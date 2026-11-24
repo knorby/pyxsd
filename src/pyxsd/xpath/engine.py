@@ -796,6 +796,60 @@ class _FocusContextItemToken(ContextItemToken):
 # Schema pool bridge
 
 
+class _AnnotatedString(str):
+    """A unique string payload carrying its XDM type annotation."""
+
+
+class _AnnotatedDecimal(Decimal):
+    """A unique decimal payload carrying its XDM type annotation."""
+
+
+class _AnnotatedFloat(float):
+    """A unique double payload carrying its XDM type annotation."""
+
+
+#: Annotation entries retained for values that cannot carry an attribute
+#: (booleans and substrate values whose copy is not distinct).
+_ANNOTATION_LIMIT = 4096
+
+
+def _annotate_atomic_value(value: Any, annotation: str) -> Any:
+    """Return a distinct substrate value annotated with its XDM type.
+
+    ``elementpath`` returns the same object for equal string payloads, so an
+    identity-keyed side table cannot distinguish two declared types.  A
+    subclass instance is distinct for each adaptation and still satisfies the
+    substrate's value-space checks.  Values that cannot be subclassed or
+    copied keep the side table.
+    """
+    if isinstance(value, bool):
+        return value
+    if type(value) is str:
+        annotated: Any = _AnnotatedString(value)
+    elif isinstance(value, Decimal):
+        annotated = _AnnotatedDecimal(value)
+    elif type(value) is float:
+        annotated = _AnnotatedFloat(value)
+    else:
+        annotated = copy.copy(value)
+        if annotated is value:
+            return value
+    try:
+        annotated._pyxsd_type = annotation
+    except AttributeError:  # pragma: no cover - substrate scalar proxies
+        return value
+    return annotated
+
+
+def _record_annotation(
+    annotations: dict[int, tuple[Any, str]], value: Any, annotation: str
+) -> None:
+    """Record one annotation for a value that cannot carry an attribute."""
+    if len(annotations) >= _ANNOTATION_LIMIT:
+        del annotations[next(iter(annotations))]
+    annotations[id(value)] = (value, annotation)
+
+
 class _PoolSchemaProxy:
     """A schema proxy facade over every namespace in one SchemaPool."""
 
@@ -881,6 +935,9 @@ class _PoolSchemaProxy:
         XPath operation (not by a variable, parameter, or function result) has
         no record and keeps the substrate's value-space answer.
         """
+        attached = getattr(obj, "_pyxsd_type", None)
+        if isinstance(attached, str):
+            return attached
         holder = getattr(self._parser, "_pyxsd_bridge_holder", None)
         bridge = getattr(holder, "bridge", None) if holder is not None else None
         record = getattr(bridge, "_annotations", {}).get(id(obj)) if bridge is not None else None
@@ -1026,8 +1083,10 @@ class _ValueBridge:
             converted = atomic_to_elementpath(item)
             record = self._annotations.get(id(item))
             annotation = record[1] if record is not None else item.type_name
-            self._annotations[id(converted)] = (converted, annotation)
-            return converted
+            annotated = _annotate_atomic_value(converted, annotation)
+            if annotated is converted:
+                _record_annotation(self._annotations, converted, annotation)
+            return annotated
         if isinstance(item, ResultTreeFragment):
             return _LegacyRtfValue(item)
         if isinstance(item, XdmNode):
@@ -1128,7 +1187,9 @@ class _ValueBridge:
             if len(converted) == 1:
                 return converted[0]
             return converted
-        if not isinstance(value, XdmItem) and id(value) in self._annotations:
+        if not isinstance(value, XdmItem) and (
+            id(value) in self._annotations or getattr(value, "_pyxsd_type", None) is not None
+        ):
             return value
         return self.sequence_to_elementpath(as_xdm(value))
 
@@ -1173,12 +1234,13 @@ class _ValueBridge:
                     name=value.name or None,
                 ),
             )
-        record = self._annotations.get(id(value))
-        if record is not None:
+        annotation = getattr(value, "_pyxsd_type", None)
+        record = self._annotations.get(id(value)) if annotation is None else None
+        if annotation is not None or record is not None:
             converted = as_xdm(value)
-            # A recorded value is an atomic adapted by another evaluation;
-            # keep its schema-defined type beside the primitive XdmAtomic.
-            self._annotations[id(converted[0])] = (converted[0], record[1])
+            # An atomic adapted by another evaluation keeps its schema-defined
+            # annotation beside the primitive XdmAtomic.
+            _record_annotation(self._annotations, converted[0], annotation or record[1])
             return converted
         if isinstance(value, XPathClosure):
             return (_xpath_closure_to_xdm(value, self),)
