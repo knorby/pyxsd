@@ -130,6 +130,8 @@ from pyxsd.xpath.functions import (
     call_host_function,
     clone_function_token,
     function_arity,
+    install_date_time,
+    install_deep_equal,
     install_regex_replace,
     install_string_conversion_functions,
     install_string_function,
@@ -1324,7 +1326,16 @@ class _ValueBridge:
         context = self._context
         assert context is not None
         nargs = getattr(token, "nargs", None)
-        arity = (0, None) if nargs is None else _arity_tuple(nargs)
+        if isinstance(nargs, tuple):
+            arity = _arity_tuple(nargs)
+        elif isinstance(nargs, int):
+            arity = nargs
+        else:
+            # An anonymous inline function or a partial application carries no
+            # ``nargs``; its arity is its parsed parameter count.
+            arity = getattr(token, "arity", len(token))
+            if not isinstance(arity, int):  # pragma: no cover - defensive
+                arity = (0, None)
         name = getattr(token, "name", None)
         if not isinstance(name, str) or not name:
             name = _token_function_name(token)
@@ -1907,6 +1918,8 @@ def _build_parser(
         _install_lang_function(parser)
         install_string_function(parser)
         install_string_conversion_functions(parser)
+        install_deep_equal(parser)
+        install_date_time(parser)
         install_numeric_functions(parser)
         _install_instance_expression(parser)
         _install_temporal_components(parser)
@@ -2919,6 +2932,42 @@ def _install_schema_kind_tests(parser: Any) -> None:
     )
 
 
+def _external_function(
+    parser: Any,
+    callback: Callable[..., Any],
+    *,
+    name: str,
+    prefix: str | None,
+    sequence_types: tuple[str, ...],
+) -> Any:
+    """Register one declared function, allowing a reserved name when prefixed.
+
+    elementpath refuses every ``external_function`` whose symbol is in the
+    XPath reserved-name set, even though the restriction applies only to the
+    standard function namespace.  A stylesheet function such as ``my:node`` or
+    ``ns:function`` is therefore legal; the per-parser set is shadowed for the
+    registration and restored immediately.
+    """
+    if prefix is None or name not in parser.RESERVED_FUNCTION_NAMES:
+        return parser.external_function(
+            callback,
+            name=name,
+            prefix=prefix,
+            sequence_types=sequence_types,
+        )
+    reserved = parser.RESERVED_FUNCTION_NAMES
+    parser.RESERVED_FUNCTION_NAMES = reserved - {name}
+    try:
+        return parser.external_function(
+            callback,
+            name=name,
+            prefix=prefix,
+            sequence_types=sequence_types,
+        )
+    finally:
+        parser.RESERVED_FUNCTION_NAMES = reserved
+
+
 def _register_declared_function(
     parser: Any,
     name: str,
@@ -2949,7 +2998,8 @@ def _register_declared_function(
             )
         )
 
-    token_class = parser.external_function(
+    token_class = _external_function(
+        parser,
         callback,
         name=local,
         prefix=prefix,
@@ -2957,13 +3007,21 @@ def _register_declared_function(
     )
     token_class.label = "function"
     token_class.nargs = arity
-    inherited_evaluate = token_class.evaluate
 
     def evaluate(self: Any, context: Any = None) -> Any:
+        # Evaluate every argument expression as its full XDM sequence.  The
+        # elementpath external-function default converts all but a first
+        # ``item()*`` argument to one item, which would reject an ordinary
+        # sequence argument such as ``xs:integer*``; declared-function
+        # conversion belongs to the XSLT call boundary instead.
         previous = holder.xpath_context
         holder.xpath_context = context
         try:
-            return inherited_evaluate(self, context)
+            # ``select`` yields the full sequence for one argument and reads a
+            # partial application's placeholder value, which is what function
+            # conversion needs; ``evaluate`` would hand back the placeholder.
+            arguments = [list(child.select(context)) for child in self]
+            return self.callback(*arguments)
         finally:
             holder.xpath_context = previous
 

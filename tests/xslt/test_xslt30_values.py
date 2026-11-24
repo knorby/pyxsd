@@ -370,6 +370,153 @@ def test_a_map_in_simple_content_is_still_a_function_item_error() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Function items and declared-function conversion
+
+
+def test_declared_function_accepts_a_sequence_argument() -> None:
+    source = stylesheet(
+        """
+        <xsl:function name="my:total" as="xs:integer">
+          <xsl:param name="offset" as="xs:integer"/>
+          <xsl:param name="values" as="xs:integer*"/>
+          <xsl:param name="more" as="xs:integer*"/>
+          <xsl:sequence select="$offset + sum($values) + sum($more)"/>
+        </xsl:function>
+        <xsl:template name="main">
+          <xsl:sequence select="my:total(0, 1 to 4, 5 to 6)"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.integer(21),
+    )
+
+
+def test_partial_applications_keep_independent_closures_and_arity() -> None:
+    source = stylesheet(
+        """
+        <xsl:function name="my:scale" as="xs:integer">
+          <xsl:param name="factor" as="xs:integer"/>
+          <xsl:param name="n" as="xs:integer"/>
+          <xsl:sequence select="$factor * $n"/>
+        </xsl:function>
+        <xsl:template name="main">
+          <xsl:variable name="double" select="my:scale(2, ?)"/>
+          <xsl:variable name="triple" select="my:scale(3, ?)"/>
+          <xsl:sequence select="function-arity($double), function-arity($triple),
+            $double(10), $triple(10), $double(4)"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(20),
+        XdmAtomic.integer(30),
+        XdmAtomic.integer(8),
+    )
+
+
+def test_inline_function_items_keep_independent_focus_and_body() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:for-each select="(10, 100)">
+            <xsl:variable name="base" select="."/>
+            <xsl:variable name="add" select="function($x) { $x + $base }"/>
+            <xsl:sequence select="$add(1)"/>
+          </xsl:for-each>
+          <xsl:variable name="increment" select="function($x) { $x + 1 }"/>
+          <xsl:variable name="double" select="function($x) { $x * 2 }"/>
+          <xsl:sequence select="$increment(10), $double(10), $increment(10)"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.integer(11),
+        XdmAtomic.integer(101),
+        XdmAtomic.integer(11),
+        XdmAtomic.integer(20),
+        XdmAtomic.integer(11),
+    )
+
+
+def test_function_items_report_names_and_arity() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="absf" as="function(*)" select="abs#1"/>
+          <xsl:sequence select="local-name-from-QName(function-name($absf)),
+            function-arity($absf), $absf(-2)"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.string("abs"),
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(2),
+    )
+
+
+def test_anonymous_inline_function_item_reports_arity_and_no_name() -> None:
+    source = stylesheet(
+        """
+        <xsl:function name="my:adder" as="function(*)">
+          <xsl:param name="offset" as="xs:integer"/>
+          <xsl:sequence select="function($x) { $x + $offset }"/>
+        </xsl:function>
+        <xsl:template name="main">
+          <xsl:variable name="f" select="my:adder(5)"/>
+          <xsl:sequence select="function-arity($f), empty(function-name($f)), $f(1)"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.integer(1),
+        XdmAtomic.boolean(True),
+        XdmAtomic.integer(6),
+    )
+
+
+def test_declared_function_may_use_a_reserved_local_name() -> None:
+    """A namespace disambiguates a reserved XPath function name.
+
+    ``switch``/``typeswitch`` are reserved names with no parser token, so a
+    stylesheet function in a namespace can use them.  A name that also has a
+    parser token (``node``, ``function``) still collides with that token; see
+    the task report for that narrower residual.
+    """
+    source = stylesheet(
+        """
+        <xsl:function name="my:switch" as="xs:string">
+          <xsl:sequence select="'switch-function'"/>
+        </xsl:function>
+        <xsl:template name="main">
+          <xsl:sequence select="my:switch()"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.string("switch-function"),
+    )
+
+
+def test_date_time_in_xslt10_compatibility_uses_the_first_argument() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main" version="1.0">
+          <xsl:sequence select="string(dateTime(
+            (xs:date('1999-11-11'), xs:date('2006-05-11')),
+            (xs:time('01:02:03'), xs:time('22:22:22'))))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.string("1999-11-11T01:02:03"),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Generalized item-pattern execution
 
 

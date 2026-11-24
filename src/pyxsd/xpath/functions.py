@@ -43,6 +43,8 @@ from pyxsd import xsd_data_types as _xsd
 from pyxsd.namespaces import XSD_NS
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmItem, XdmSequence, as_xdm
 from pyxsd.xdm.values import canonical_decimal_string, canonical_float_string
+from pyxsd.xpath import continuation
+from pyxsd.xpath.continuation import XPathClosure
 
 __all__ = [
     "FUNCTION_SCOPE_ATTRIBUTE",
@@ -432,6 +434,171 @@ def install_string_conversion_functions(parser: Any) -> None:
     )
 
 
+def _xdm_node(value: Any) -> Any:
+    """The grounded XDM node behind one elementpath value, when it has one."""
+    if isinstance(value, XPathNode):
+        return getattr(value, "xdm", None)
+    return None
+
+
+def xdm_deep_equal(left: Iterable[Any], right: Iterable[Any]) -> bool:
+    """``fn:deep-equal`` over elementpath values with grounded XDM nodes.
+
+    elementpath compares a generic ``XPathNode`` by its ``value`` attribute;
+    pyxsd's grounded adapters keep an XDM node there, so two structurally equal
+    elements were never deep-equal.  Nodes are compared structurally here and
+    every other item keeps elementpath's own F&O rules (NaN equality, atomic
+    conversion, map and array comparison).  Namespace nodes do not participate
+    in element comparison, as XDM requires.
+    """
+    from elementpath.compare import deep_equal as _deep_equal
+
+    left_values = tuple(left)
+    right_values = tuple(right)
+    if len(left_values) != len(right_values):
+        return False
+    for first, second in zip(left_values, right_values, strict=True):
+        first_node = _xdm_node(first)
+        second_node = _xdm_node(second)
+        if first_node is not None or second_node is not None:
+            if first_node is None or second_node is None:
+                return False
+            if not _xdm_nodes_deep_equal(first_node, second_node):
+                return False
+            continue
+        if not _deep_equal((first,), (second,)):
+            return False
+    return True
+
+
+def _xdm_nodes_deep_equal(left: Any, right: Any) -> bool:
+    """Structural deep equality for two grounded XDM nodes."""
+    from pyxsd.xdm.nodes import NodeKind
+
+    if left.kind is not right.kind:
+        return False
+    if left.kind is NodeKind.ELEMENT:
+        if left.name != right.name:
+            return False
+        first_attributes = {attribute.name: attribute.string_value for attribute in left.attributes}
+        second_attributes = {
+            attribute.name: attribute.string_value for attribute in right.attributes
+        }
+        if first_attributes != second_attributes:
+            return False
+        return _xdm_children_deep_equal(left, right)
+    if left.kind is NodeKind.ATTRIBUTE:
+        return left.name == right.name and left.string_value == right.string_value
+    if left.kind in (NodeKind.TEXT, NodeKind.COMMENT):
+        return left.string_value == right.string_value
+    if left.kind is NodeKind.PROCESSING_INSTRUCTION:
+        return left.name == right.name and left.string_value == right.string_value
+    if left.kind is NodeKind.NAMESPACE:
+        return left.prefix == right.prefix and left.string_value == right.string_value
+    return _xdm_children_deep_equal(left, right)
+
+
+def _xdm_children_deep_equal(left: Any, right: Any) -> bool:
+    if len(left.children) != len(right.children):
+        return False
+    return all(
+        _xdm_nodes_deep_equal(first, second)
+        for first, second in zip(left.children, right.children, strict=True)
+    )
+
+
+def install_deep_equal(parser: Any) -> None:
+    """Install the XDM-aware two-argument ``fn:deep-equal``."""
+    base = parser.symbol_table["deep-equal"]
+
+    def evaluate_deep_equal(self: Any, context: Any = None) -> Any:
+        if len(self) != 2:
+            return base.evaluate(self, context)
+        return xdm_deep_equal(
+            self[0].select(context),
+            self[1].select(context),
+        )
+
+    parser._register(
+        "deep-equal",
+        "_PyxsdDeepEqualFunction",
+        bases=(base,),
+        label=base.label,
+        nargs=getattr(base, "nargs", 2),
+        sequence_types=getattr(base, "sequence_types", ()),
+        evaluate=evaluate_deep_equal,
+    )
+
+
+def install_date_time(parser: Any) -> None:
+    """Give ``fn:dateTime`` the XPath function-conversion rules.
+
+    elementpath's token reads both arguments with ``get_argument(cls=Date)``,
+    which rejects an untyped node argument instead of atomizing it and casting
+    an untyped atomic value to ``xs:date``/``xs:time``.  The two-argument form
+    converts both operands here and then delegates to the same normative
+    combine logic.
+    """
+    from elementpath.datatypes import Date, Time
+    from elementpath.xpath_tokens.tokens import ValueToken
+
+    base = parser.symbol_table["dateTime"]
+
+    def convert(self: Any, argument: Any, cls: type[Any]) -> Any:
+        if isinstance(argument, cls):
+            return argument
+        node = getattr(argument, "xdm", None)
+        if node is not None:
+            typed = node.typed_value
+            if len(typed) != 1:
+                raise self.error("XPTY0004", "a dateTime argument must be a single value")
+            argument = typed[0]
+        if isinstance(argument, XdmAtomic):
+            if isinstance(argument.value, cls):
+                return argument.value
+            if _local_atomic_name(argument.type_name) != "untypedAtomic":
+                raise self.error("XPTY0004", "a dateTime argument has the wrong type")
+            lexical = argument.lexical
+        elif isinstance(argument, UntypedAtomic):
+            lexical = str(argument)
+        else:
+            raise self.error("XPTY0004", "a dateTime argument has the wrong type")
+        try:
+            return cls.fromstring(lexical)
+        except (TypeError, ValueError) as exc:
+            raise self.error("FORG0001", str(exc)) from None
+
+    def evaluate_date_time(self: Any, context: Any = None) -> Any:
+        if len(self) != 2:
+            return base.evaluate(self, context)
+        values: list[Any] = []
+        for index, cls in ((0, Date), (1, Time)):
+            items = tuple(self[index].select(context))
+            if len(items) > 1 and not self.parser.compatibility_mode:
+                raise self.error("XPTY0004", "a dateTime argument must be a single value")
+            values.append(None if not items else convert(self, items[0], cls))
+        saved = list(self._items)
+        try:
+            self[0:] = tuple(ValueToken(self.parser, value=value) for value in values)
+            return base.evaluate(self, context)
+        finally:
+            self[0:] = tuple(saved)
+
+    parser._register(
+        "dateTime",
+        "_PyxsdDateTimeFunction",
+        bases=(base,),
+        label=base.label,
+        nargs=getattr(base, "nargs", (1, 2)),
+        sequence_types=getattr(base, "sequence_types", ()),
+        evaluate=evaluate_date_time,
+    )
+
+
+def _local_atomic_name(type_name: str) -> str:
+    return type_name.rpartition("}")[2].rpartition(":")[2]
+
+
 def install_regex_replace(parser: Any) -> None:
     """Give ``fn:replace`` the F&O replacement-string grammar.
 
@@ -679,6 +846,16 @@ def function_arity(target: Any) -> int | tuple[int, int | None]:
     return (minimum, maximum)
 
 
+def _host_function_qname(name: str | None) -> QName | None:
+    """The QName a host function item reports to ``fn:function-name``."""
+    if not name:
+        return None
+    if name.startswith("{"):
+        uri, _, local = name[1:].partition("}")
+        return QName(uri, local) if local else None
+    return QName(None, name)
+
+
 class HostFunctionToken(XPathFunction):
     """An invocation-local elementpath function item backed by host code.
 
@@ -718,7 +895,13 @@ class HostFunctionToken(XPathFunction):
         self._to_xdm = to_xdm
         self._host_name = name
         self.name = name or ""
+        self._qname = _host_function_qname(name)
         self.nargs = function_arity(target) if arity is None else arity
+
+    @property
+    def qname(self) -> QName | None:
+        """The function item's name, or ``None`` for an unnamed host callable."""
+        return self._qname
 
     @property
     def arity(self) -> int:
@@ -765,11 +948,24 @@ class HostFunctionToken(XPathFunction):
             return tuple(as_xdm(value) for value in values)
         return tuple(convert(value) for value in values)
 
+    def _invoke(self, target: Any, arguments: tuple[XdmSequence, ...]) -> XdmSequence:
+        """Invoke one host target, stepping a captured inline closure directly."""
+        closure = target.closure if isinstance(target, XdmFunction) else None
+        if isinstance(closure, XPathClosure):
+            native = tuple(
+                sequence_to_elementpath(argument, item_converter=self._item_converter)
+                for argument in arguments
+            )
+            result = continuation.evaluate_closure(closure, native)
+            convert = self._to_xdm
+            return as_xdm(result) if convert is None else convert(result)
+        return call_host_function(target, arguments)
+
     def __call__(self, *args: Any, context: Any = None) -> Any:
         target = self._invocation_target(context)
         self._check(len(args))
         arguments = self._arguments((_evaluate_token(value, context) for value in args), context)
-        result = call_host_function(target, arguments)
+        result = self._invoke(target, arguments)
         return sequence_to_elementpath(result, item_converter=self._item_converter)
 
     def evaluate(self, context: Any = None) -> Any:
@@ -778,7 +974,7 @@ class HostFunctionToken(XPathFunction):
             (self.get_argument(context, index=index) for index in range(len(self))),
             context,
         )
-        result = call_host_function(target, arguments)
+        result = self._invoke(target, arguments)
         return sequence_to_elementpath(result, item_converter=self._item_converter)
 
     def __repr__(self) -> str:
