@@ -39,6 +39,7 @@ from elementpath.xpath_nodes import XPathNode
 from elementpath.xpath_tokens.base import XPathToken
 from elementpath.xpath_tokens.functions import XPathFunction
 
+from pyxsd import xsd_data_types as _xsd
 from pyxsd.namespaces import XSD_NS
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmItem, XdmSequence, as_xdm
 from pyxsd.xdm.values import canonical_decimal_string, canonical_float_string
@@ -135,14 +136,36 @@ def atomic_to_elementpath(item: XdmAtomic) -> Any:
     local = _local_type_name(item.type_name)
     if local == "untypedAtomic":
         return UntypedAtomic(item.lexical)
+    value = item.value
+    if not _is_builtin_type_name(item.type_name):
+        # A schema-defined type has no elementpath class of its own; the value
+        # is bridged through its primitive root so operators, casts, and
+        # comparisons keep working.  The user type name stays in the XdmAtomic
+        # and the schema proxy consults the annotation recorded beside the
+        # converted object.
+        root = _root_builtin_local(value)
+        if root is not None:
+            local = root
     if local == "boolean":
         return bool(item.value)
-    value = item.value
-    if _is_builtin_type_name(item.type_name) and isinstance(value, AnyAtomicType):
+    if local in _EP_ROOT_BUILTIN_LOCALS or isinstance(value, AnyAtomicType):
         return _elementpath_datatype_value(value, local)
-    if isinstance(value, AnyAtomicType):
-        return value
     return item.lexical
+
+
+def _root_builtin_local(value: Any) -> str | None:
+    """The primitive built-in local name of one pyxsd datatype payload."""
+    from elementpath.datatypes import builtin_atomic_types
+
+    for base in type(value).__mro__:
+        if base.__module__ != _xsd.__name__:
+            # A generated or test datatype may carry a bookkeeping ``name``
+            # that deliberately disagrees with its primitive payload.
+            continue
+        name = base.__dict__.get("name")
+        if isinstance(name, str) and f"xs:{name}" in builtin_atomic_types:
+            return name
+    return None
 
 
 def _is_builtin_type_name(type_name: str) -> bool:
@@ -178,6 +201,52 @@ _EP_LEXICAL_DATATYPES = frozenset(
         "token",
     }
 )
+
+#: Elementpath classes whose payload can be built from a host value directly.
+_EP_ROOT_BUILTIN_LOCALS = frozenset(
+    {
+        "boolean",
+        "decimal",
+        "double",
+        "float",
+        "integer",
+        "string",
+    }
+    | {
+        "byte",
+        "int",
+        "long",
+        "negativeInteger",
+        "nonNegativeInteger",
+        "nonPositiveInteger",
+        "positiveInteger",
+        "short",
+        "unsignedByte",
+        "unsignedInt",
+        "unsignedLong",
+        "unsignedShort",
+    }
+    | {
+        "anyURI",
+        "base64Binary",
+        "date",
+        "dateTime",
+        "dateTimeStamp",
+        "dayTimeDuration",
+        "duration",
+        "gDay",
+        "gMonth",
+        "gMonthDay",
+        "gYear",
+        "gYearMonth",
+        "hexBinary",
+        "NOTATION",
+        "QName",
+        "time",
+        "yearMonthDuration",
+    }
+)
+
 
 #: Elementpath integer-derived classes: the payload is the Python integer.
 _EP_INTEGER_DATATYPES = frozenset(

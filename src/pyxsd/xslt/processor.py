@@ -5918,6 +5918,11 @@ def _coerce_atomic(
             ) from cast_exc
     local = required.rpartition("}")[2].rpartition(":")[2]
     item_local = item.type_name.rpartition("}")[2].rpartition(":")[2]
+    if schema_pool is not None and _is_user_derived_subtype(item, required, schema_pool, local):
+        # A schema type derived from the required type is used unchanged
+        # (subtype substitution), except for the F&O promotions: decimal to
+        # float/double and anyURI to string.
+        return item
     if is_xsd_subtype(item_local, local):
         # Function conversion (XPath 3.1 §3.1.5.2): a value whose type is the
         # required type or one of its subtypes is used unchanged.  Casting an
@@ -5939,6 +5944,44 @@ def _coerce_atomic(
             code,
             f"{label} requires {item_type}, cannot convert {item.lexical!r}",
         ) from exc
+
+
+def _is_user_derived_subtype(
+    item: XdmAtomic,
+    required: str,
+    schema_pool: SchemaPool,
+    required_local: str,
+) -> bool:
+    """Whether *item*'s schema type is a restriction-derived subtype of *required*.
+
+    The built-in ``is_xsd_subtype`` table cannot name a user-defined type, so
+    the schema pool's adapter classes decide.  The function-conversion
+    promotions to xs:float/xs:double from a decimal type and to xs:string from
+    xs:anyURI are casts, not subtype substitution, and are excluded here.
+    """
+    item_adapter = schema_pool.get_type(item.type_name)
+    required_adapter = schema_pool.get_type(required)
+    if item_adapter is None or required_adapter is None:
+        return False
+    item_class = getattr(item_adapter, "_type_class", None)
+    required_class = getattr(required_adapter, "_type_class", None)
+    if not (isinstance(item_class, type) and isinstance(required_class, type)):
+        return False
+    item_root = item_adapter.root_type
+    root_local = (
+        (item_root.name or "").rpartition("}")[2].rpartition(":")[2]
+        if item_root is not None
+        else ""
+    )
+    if root_local == required_local:
+        return True
+    if required_local in ("float", "double") and (
+        root_local in ("decimal", "float") or (required_local == "float" and root_local == "double")
+    ):
+        return False
+    if required_local == "string" and root_local == "anyURI":
+        return False
+    return issubclass(item_class, required_class)
 
 
 def _is_instance_of_type(item: XdmAtomic, adapter: Any) -> bool:

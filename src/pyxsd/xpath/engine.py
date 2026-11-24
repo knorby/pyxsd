@@ -55,7 +55,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
-from types import MethodType
+from types import MethodType, SimpleNamespace
 from typing import Any, cast
 
 from elementpath import XPathContext
@@ -624,6 +624,7 @@ class _XdmAdapterRegistry:
         "_nodes_built",
         "_reused",
         "_rootless",
+        "annotations",
         "nodes",
     )
 
@@ -640,6 +641,10 @@ class _XdmAdapterRegistry:
         #: The adapter holds its XDM node, so an id in this map is never
         #: recycled into another node.
         self.nodes: dict[int, Any] = {}
+        #: Type annotations of bridged atomic values, shared by every
+        #: evaluation in the transformation so a value passed to
+        #: ``xsl:evaluate`` keeps its schema-defined type.
+        self.annotations: dict[int, tuple[Any, str]] = {}
         self._documents: dict[int, _XdmDocumentAdapter] = {}
         #: Finalized element-rooted temporary trees, keyed by the identity of
         #: the document that carries them; the value is the admitted
@@ -794,11 +799,12 @@ class _FocusContextItemToken(ContextItemToken):
 class _PoolSchemaProxy:
     """A schema proxy facade over every namespace in one SchemaPool."""
 
-    __slots__ = ("_namespaces", "_pool")
+    __slots__ = ("_namespaces", "_parser", "_pool")
 
-    def __init__(self, pool: SchemaPool, namespaces: Mapping[str, str]) -> None:
+    def __init__(self, pool: SchemaPool, namespaces: Mapping[str, str], parser: Any = None) -> None:
         self._pool = pool
         self._namespaces = dict(namespaces)
+        self._parser = parser
 
     @property
     def xsd_version(self) -> str:
@@ -828,7 +834,57 @@ class _PoolSchemaProxy:
         adapter = self._pool.get_type(self.expand(type_qname))
         if adapter is None:
             raise KeyError(type_qname)
+        annotation = self._annotation(obj)
+        if annotation is not None:
+            return self._annotation_is_user_type(annotation, adapter)
+        from elementpath.datatypes import UntypedAtomic
+
+        if isinstance(obj, UntypedAtomic):
+            # XDM 3.1 section 2.7.2: xs:untypedAtomic is not derived from any
+            # other atomic type, and value-space validation does not change
+            # an item's dynamic type.
+            return (adapter.name or "").rpartition("}")[2] in (
+                "untypedAtomic",
+                "anyAtomicType",
+                "anySimpleType",
+            )
         return adapter.is_valid(obj, namespaces=self._namespaces)
+
+    def _annotation_is_user_type(self, annotation: str, adapter: Any) -> bool:
+        """Whether an XDM type annotation names *adapter*'s type or a subtype."""
+        if annotation == adapter.name:
+            return True
+        local = annotation.rpartition("}")[2].rpartition(":")[2]
+        required = (adapter.name or "").rpartition("}")[2].rpartition(":")[2]
+        if annotation == _UNTYPED:
+            return required == "anyType"
+        if annotation == _UNTYPED_ATOMIC:
+            return required in ("anyAtomicType", "anySimpleType", "anyType")
+        xsd_prefix = f"{{{_XSD_NS}}}"
+        if annotation.startswith(xsd_prefix) and (adapter.name or "").startswith(xsd_prefix):
+            from pyxsd.xdm.values import is_xsd_subtype
+
+            return is_xsd_subtype(local, required)
+        annotated = self._pool.get_type(annotation)
+        if annotated is None:
+            return False
+        recorded = SimpleNamespace(
+            type_name=annotation, actual_type=getattr(annotated, "_type_class", None)
+        )
+        return type_tests.derives_from(recorded, adapter.name, self._pool)
+
+    def _annotation(self, obj: Any) -> str | None:
+        """The XDM type annotation of one bridged value, when it has one.
+
+        The substrate's value classes carry no user-defined type name, so the
+        bridge records it beside the converted object.  A value produced by an
+        XPath operation (not by a variable, parameter, or function result) has
+        no record and keeps the substrate's value-space answer.
+        """
+        holder = getattr(self._parser, "_pyxsd_bridge_holder", None)
+        bridge = getattr(holder, "bridge", None) if holder is not None else None
+        record = getattr(bridge, "_annotations", {}).get(id(obj)) if bridge is not None else None
+        return None if record is None else record[1]
 
     def get_type(self, qname: str) -> Any:
         return self._pool.get_type(self.expand(qname))
@@ -907,6 +963,12 @@ class _ValueBridge:
         self._ephemeral: dict[int, Any] = {}
         self._registry = registry
         self._context: XPathContext | None = None
+        #: Type annotations of the XdmAtomic values converted for this
+        #: evaluation, shared with the transformation's adapter registry.  The
+        #: map holds the converted object so its id cannot be recycled while
+        #: the annotation is live; elementpath's schema proxy consults it
+        #: before falling back to a value-space test.
+        self._annotations = registry.annotations if registry is not None else {}
 
     # XDM -> elementpath
 
@@ -960,6 +1022,12 @@ class _ValueBridge:
         )
 
     def adapt_item(self, item: XdmItem) -> Any:
+        if isinstance(item, XdmAtomic):
+            converted = atomic_to_elementpath(item)
+            record = self._annotations.get(id(item))
+            annotation = record[1] if record is not None else item.type_name
+            self._annotations[id(converted)] = (converted, annotation)
+            return converted
         if isinstance(item, ResultTreeFragment):
             return _LegacyRtfValue(item)
         if isinstance(item, XdmNode):
@@ -1042,8 +1110,27 @@ class _ValueBridge:
                     to_xdm=self.to_xdm_sequence,
                 )
             else:
-                values[name] = self.sequence_to_elementpath(as_xdm(value))
+                values[name] = self._variable_value(value)
         return values
+
+    def _variable_value(self, value: Any) -> Any:
+        """Bind one variable, keeping an already-adapted typed atomic.
+
+        ``xsl:evaluate`` passes a value that was adapted by another evaluation
+        in the same transformation.  Re-wrapping it would replace its dynamic
+        type with the primitive payload class; the shared annotation record
+        keeps the schema-defined type.
+        """
+        if isinstance(value, (list, tuple)):
+            converted = [self._variable_value(item) for item in value]
+            if not converted:
+                return []
+            if len(converted) == 1:
+                return converted[0]
+            return converted
+        if not isinstance(value, XdmItem) and id(value) in self._annotations:
+            return value
+        return self.sequence_to_elementpath(as_xdm(value))
 
     # elementpath -> XDM
 
@@ -1086,6 +1173,13 @@ class _ValueBridge:
                     name=value.name or None,
                 ),
             )
+        record = self._annotations.get(id(value))
+        if record is not None:
+            converted = as_xdm(value)
+            # A recorded value is an atomic adapted by another evaluation;
+            # keep its schema-defined type beside the primitive XdmAtomic.
+            self._annotations[id(converted[0])] = (converted[0], record[1])
+            return converted
         if isinstance(value, XPathClosure):
             return (_xpath_closure_to_xdm(value, self),)
         if isinstance(value, continuation.HostFunction):
@@ -1685,6 +1779,7 @@ def _build_parser(
     _install_syntax_only_parse(parser)
     if version != "1.0":
         _install_node_kind_test(parser)
+        _install_descendant_path_order(parser)
     _install_focus_token(parser)
     _install_focus_functions(parser)
     _install_function_scope(parser)
@@ -1698,6 +1793,7 @@ def _build_parser(
         install_string_function(parser)
         install_string_conversion_functions(parser)
         install_numeric_functions(parser)
+        _install_instance_expression(parser)
         _install_temporal_components(parser)
         _install_temporal_arithmetic(parser)
         install_regex_replace(parser)
@@ -1753,6 +1849,33 @@ def _bind_kind_test_type_names(root: Any, default_namespace: str | None) -> None
                 value = type_token.value
                 type_token.name = f"{{{default_namespace}}}{value}" if default_namespace else value
         stack.extend(items)
+
+
+def _install_descendant_path_order(parser: Any) -> None:
+    """Return ``//`` results in document order.
+
+    ``A//B`` means ``A/descendant-or-self::node()/B``.  Applying ``B`` to an
+    ancestor yields that ancestor's matching children before the descendants'
+    matching children, so a naive traversal of ``//text()`` grouped the
+    element's own text children ahead of descendant text.  XPath requires the
+    node sequence of a path expression in document order; sorting by the
+    adapter's document position restores it.
+    """
+    base = parser.symbol_table.get("//")
+    if base is None:  # pragma: no cover - every supported parser declares it
+        return
+
+    def select(self: Any, context: Any = None) -> Iterator[Any]:
+        yield from sorted(base.select(self, context), key=lambda item: item.position)
+
+    parser._register(
+        "//",
+        "_PyxsdDescendantPath",
+        bases=(base,),
+        label=base.label,
+        bp=getattr(base, "bp", 75),
+        select=select,
+    )
 
 
 def _install_node_kind_test(parser: Any) -> None:
@@ -1998,6 +2121,278 @@ def _install_xpath20_regex_surface(parser: Any) -> None:
     )
 
 
+#: Sequence-type kind tests decided by the annotation-aware matcher.
+_ANNOTATION_KIND_TESTS = (
+    "schema-attribute(",
+    "schema-element(",
+    "namespace-node(",
+)
+
+
+def _install_instance_expression(parser: Any) -> None:
+    """Match ``instance of`` item by item against the declared sequence type.
+
+    The substrate evaluates the sequence-type token once with the *outer*
+    context, so a node kind test examines whatever the context item is rather
+    than each item of the left operand.  ``document-node(element(a))?`` then
+    answered true for a two-document sequence.  The sequence type's own source
+    text is matched against the whole value, which applies the occurrence
+    indicator and each item's kind test correctly.
+    """
+    from elementpath.sequence_types import match_sequence_type
+
+    base = parser.symbol_table.get("instance")
+    if base is None:  # pragma: no cover - every supported parser declares it
+        return
+
+    def evaluate(self: Any, context: Any = None) -> Any:
+        if getattr(self[1], "label", None) == "kind test":
+            sequence_type = _kind_test_source(self[1])
+        else:
+            sequence_type = self[1].source
+        values = list(self[0].select(context))
+        annotated = _match_annotated_atomic_type(values, sequence_type, self.parser)
+        if annotated is _DECLINED:
+            return base.evaluate(self, context)
+        if annotated is not None:
+            return annotated
+        if (
+            "schema-attribute(" in sequence_type
+            or "schema-element(" in sequence_type
+            or sequence_type.startswith(_ANNOTATION_KIND_TESTS)
+            or _needs_annotation_match(sequence_type)
+        ):
+            return bool(_match_tolerant_sequence_type(values, sequence_type, self.parser))
+        try:
+            return match_sequence_type(values, sequence_type, self.parser)
+        except (ElementPathError, KeyError, ValueError):  # pragma: no cover - substrate-only
+            return base.evaluate(self, context)
+
+    parser._register(
+        "instance",
+        "_PyxsdInstanceExpression",
+        bases=(base,),
+        label=base.label,
+        bp=getattr(base, "bp", 60),
+        evaluate=evaluate,
+    )
+
+
+#: Sentinel: the atomic target is known but the value's annotation is not.
+_DECLINED = object()
+
+
+def _match_annotated_atomic_type(
+    values: Sequence[Any],
+    sequence_type: str,
+    parser: Any,
+) -> bool | None:
+    """Match a plain atomic type test through the item's type annotation.
+
+    The substrate's ``is_instance`` decides a built-in atomic type from the
+    Python payload class, so a schema-defined type value (whose payload is the
+    primitive root) answers ``xs:int`` false.  The schema proxy knows the
+    recorded annotation and the derivation rules.  Returns ``None`` when the
+    sequence type is not a plain atomic type name.
+    """
+    from elementpath.namespaces import get_expanded_name
+
+    schema = getattr(parser, "schema", None)
+    if schema is None:
+        return None
+    occurrence = ""
+    if sequence_type[-1:] in ("*", "+", "?"):
+        occurrence = sequence_type[-1]
+        sequence_type = sequence_type[:-1]
+    try:
+        expanded = get_expanded_name(sequence_type, parser.namespaces)
+    except (KeyError, ValueError):
+        return None
+    adapter = schema.get_type(expanded)
+    if adapter is None or not adapter.is_atomic():
+        return None
+    if values and any(schema._annotation(value) is None for value in values):
+        # The value did not come through the bridge (for example a cast inside
+        # one expression), so its dynamic type is unknown here.  The base
+        # sequence-type token is the pre-existing, correct answer.
+        return _DECLINED
+    matched = all(bool(schema.is_instance(value, expanded)) for value in values)
+    if not matched:
+        return False
+    if occurrence == "":
+        return len(values) == 1
+    if occurrence == "?":
+        return len(values) <= 1
+    if occurrence == "+":
+        return bool(values)
+    return True
+
+
+def _needs_annotation_match(sequence_type: str) -> bool:
+    """Whether a kind test carries a type name to match by annotation.
+
+    An ``element(N, T)``/``attribute(N, T)`` test is a type-annotation test
+    (XPath 3.1 sections 2.5.5.3 and 2.5.5.5), including for built-in types such
+    as ``xs:anyType`` and list types; a value-space test on the atomized value
+    mis-answers them.  A name-only test keeps the substrate's matcher, which
+    also covers nodes from a host function's own elementpath tree.
+    """
+    if sequence_type.startswith("document-node("):
+        return _needs_annotation_match(sequence_type[len("document-node(") : -1])
+    if not sequence_type.startswith(("element(", "attribute(")):
+        return False
+    inner = sequence_type[sequence_type.find("(") + 1 : -1]
+    return "," in inner
+
+
+def _kind_test_source(token: Any) -> str:
+    """Reconstruct a kind test's sequence type from its token tree.
+
+    The substrate's ``source`` property writes ``attribute *`` for
+    ``attribute(*)`` and ``my:filetype attribute xs:NOTATION`` for a
+    two-argument attribute test, which is not valid sequence-type syntax.  The
+    children already carry the correct name and type sources.
+    """
+    symbol = getattr(token, "symbol", "")
+    arguments = ", ".join(
+        source
+        for child in token
+        for source in (getattr(child, "source", ""),)
+        if isinstance(source, str) and source
+    )
+    occurrence = getattr(token, "occurrence", "") or ""
+    return f"{symbol}({arguments}){occurrence}"
+
+
+def _match_tolerant_sequence_type(
+    values: Sequence[Any],
+    sequence_type: str,
+    parser: Any,
+) -> bool | None:
+    """Match node-kind sequence types against each item's type annotation.
+
+    ``match_sequence_type`` decides ``element(N, T)`` and ``attribute(N, T)``
+    through ``is_instance`` on the atomized value, which mis-answers annotation
+    tests (``xs:anyType``, list and notation types, user-defined types) and has
+    no ``schema-element``/``schema-attribute`` kind tests.  This matcher applies
+    the same predicates the parser's kind tests use, to every item of the
+    sequence, and then the occurrence indicator.  It returns ``None`` for a
+    sequence type outside its scope.
+    """
+    from elementpath.namespaces import get_expanded_name
+
+    from pyxsd.xdm import type_tests
+    from pyxsd.xdm.nodes import NodeKind, XdmNode
+
+    occurrence = ""
+    if sequence_type[-1:] in ("*", "+", "?"):
+        occurrence = sequence_type[-1]
+        sequence_type = sequence_type[:-1]
+
+    schema = getattr(parser, "schema", None)
+
+    def node_of(item: Any) -> XdmNode | None:
+        node = getattr(item, "xdm", None)
+        if isinstance(node, XdmNode):
+            return node
+        return item if isinstance(item, XdmNode) else None
+
+    def expanded(name: str) -> str:
+        return get_expanded_name(name, parser.namespaces)
+
+    def element_test(inner: str, item: Any) -> bool:
+        node = node_of(item)
+        if node is None or node.kind is not NodeKind.ELEMENT:
+            return False
+        name, _, type_name = inner.partition(",")
+        name = name.strip()
+        type_name = type_name.strip() or None
+        nillable = type_name is not None and type_name.endswith("?")
+        if type_name is not None:
+            type_name = type_name.rstrip("?")
+        expanded_name = None if name in ("", "*") else expanded(name)
+        expanded_type = None if type_name is None else expanded(type_name)
+        if schema is None:
+            return type_tests.matches_element_test(
+                node, expanded_name, expanded_type, nillable, None
+            )
+        return bool(schema.matches_element_test(node, expanded_name, expanded_type, nillable))
+
+    def attribute_test(inner: str, item: Any) -> bool:
+        node = node_of(item)
+        if node is None or node.kind is not NodeKind.ATTRIBUTE:
+            return False
+        name, _, type_text = inner.partition(",")
+        name = name.strip()
+        type_name = type_text.strip() or None
+        expanded_name = None if name in ("", "*") else expanded(name)
+        expanded_type = None if type_name is None else expanded(type_name)
+        if schema is None:
+            return type_tests.matches_attribute_test(node, expanded_name, expanded_type, None)
+        return bool(schema.matches_attribute_test(node, expanded_name, expanded_type))
+
+    def declaration_test(kind: str, inner: str, item: Any) -> bool:
+        node = node_of(item)
+        if node is None:
+            return False
+        name = expanded(inner.strip())
+        assert schema is not None
+        if kind == "schema-attribute":
+            return bool(schema.matches_schema_attribute(node, name))
+        return bool(schema.matches_schema_element(node, name))
+
+    def document_test(inner: str, item: Any) -> bool:
+        node = node_of(item)
+        if node is None or node.kind is not NodeKind.DOCUMENT:
+            return False
+        if not inner:
+            return True
+        if inner.startswith("schema-element("):
+            return any(
+                declaration_test("schema-element", inner[len("schema-element(") : -1], child)
+                for child in node.children
+            )
+        element_inner = inner[len("element(") : -1]
+        return any(element_test(element_inner, child) for child in node.children)
+
+    if sequence_type.startswith("document-node("):
+        kind, inner = "document-node", sequence_type[len("document-node(") : -1]
+    elif sequence_type.startswith("element("):
+        kind, inner = "element", sequence_type[len("element(") : -1]
+    elif sequence_type.startswith("attribute("):
+        kind, inner = "attribute", sequence_type[len("attribute(") : -1]
+    elif sequence_type.startswith(("schema-attribute(", "schema-element(")):
+        kind, _, inner = sequence_type.partition("(")
+        inner = inner[:-1]
+    elif sequence_type.startswith("namespace-node("):
+        kind, inner = "namespace-node", ""
+    else:
+        return None
+
+    if kind == "document-node":
+        matched = all(document_test(inner, item) for item in values)
+    elif kind == "element":
+        matched = all(element_test(inner, item) for item in values)
+    elif kind == "attribute":
+        matched = all(attribute_test(inner, item) for item in values)
+    elif kind == "namespace-node":
+        matched = all(
+            (node := node_of(item)) is not None and node.kind is NodeKind.NAMESPACE
+            for item in values
+        )
+    else:
+        matched = all(declaration_test(kind, inner, item) for item in values)
+    if not matched:
+        return False
+    if occurrence == "":
+        return len(values) == 1
+    if occurrence == "?":
+        return len(values) <= 1
+    if occurrence == "+":
+        return bool(values)
+    return True
+
+
 def _install_temporal_components(parser: Any) -> None:
     """Return the exact fractional second of a dateTime or time.
 
@@ -2216,7 +2611,7 @@ def _register_schema_constructors(parser: Any, static_context: XPathStaticContex
     pool = static_context.schema
     if pool is None:
         return
-    parser.schema = _PoolSchemaProxy(pool, parser.namespaces)
+    parser.schema = _PoolSchemaProxy(pool, parser.namespaces, parser)
     from elementpath.namespaces import get_prefixed_name
 
     for adapter in pool.types.values():

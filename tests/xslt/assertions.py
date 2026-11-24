@@ -303,20 +303,53 @@ def _raw_items(result: ResultSnapshot) -> tuple[Any, ...]:
     return ()
 
 
+def _assertion_xml_parser() -> ET.XMLParser:
+    """A parser that keeps comments and processing instructions.
+
+    ``ET.fromstring`` defaults drop both node kinds, so an assertion such as
+    ``comment() = "..."`` or ``processing-instruction(x) = "..."`` could never
+    see a result's comments or PIs even though the transformation emitted them.
+    """
+    return ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True))
+
+
 def _parse_actual_xml(xml: str) -> ET.Element:
     try:
-        return ET.fromstring(xml)
+        return ET.fromstring(xml, parser=_assertion_xml_parser())
     except ET.ParseError:
         try:
-            return ET.fromstring(f"<{_WRAPPER}>{xml}</{_WRAPPER}>")
+            return ET.fromstring(f"<{_WRAPPER}>{xml}</{_WRAPPER}>", parser=_assertion_xml_parser())
         except ET.ParseError as exc:
             raise AssertionFailure(f"actual XML result is not well formed: {exc}") from exc
+
+
+def _flatten_comment_tails(element: ET.Element) -> None:
+    """Move text that follows a comment/PI into ordinary text content.
+
+    ``ET.TreeBuilder(insert_comments=True)`` stores text after a comment or PI
+    in that node's ``tail``.  elementpath's element string value walks only
+    element text and child tails, so without this the text disappeared from
+    ``string()`` even though the comment node was present.  Re-associating the
+    tail keeps both the comment and the text visible to assertions.
+    """
+    previous: ET.Element | None = None
+    for child in list(element):
+        _flatten_comment_tails(child)
+        if callable(child.tag) and child.tail:
+            if previous is None:
+                element.text = (element.text or "") + child.tail
+            else:
+                previous.tail = (previous.tail or "") + child.tail
+            child.tail = None
+        previous = child
 
 
 def _document_node(xml: str) -> Any:
     if not xml.strip():
         return build_node_tree(ET.ElementTree())
-    return build_node_tree(ET.ElementTree(_parse_actual_xml(xml)))
+    root = _parse_actual_xml(xml)
+    _flatten_comment_tails(root)
+    return build_node_tree(ET.ElementTree(root))
 
 
 def _xpath_value(value: Any, parser: XPath31Parser) -> Any:
@@ -633,9 +666,10 @@ def _node_context(result: ResultSnapshot) -> Any | None:
     if len(_raw_items(result)) != 1 or result.xml is None:
         return None
     try:
-        parsed = ET.fromstring(result.xml)
+        parsed = ET.fromstring(result.xml, parser=_assertion_xml_parser())
     except ET.ParseError:
         return None
+    _flatten_comment_tails(parsed)
     return build_node_tree(ET.ElementTree(parsed))
 
 
@@ -899,6 +933,19 @@ def _unwrap(node: _CanonicalNode) -> tuple[_CanonicalNode, ...]:
     return children
 
 
+def _significant_children(node: _CanonicalNode) -> tuple[_CanonicalNode, ...]:
+    """Element children without insignificant whitespace-only text.
+
+    ``assert-xml`` expectations are frequently pretty-printed while a
+    non-indenting serializer emits compact markup; a whitespace-only text node
+    is not significant result content (a test that needs significant
+    whitespace asserts a string value instead).
+    """
+    return tuple(
+        child for child in node.children if not (child.kind == "text" and not child.value.strip())
+    )
+
+
 def _canonical_equal(left: _CanonicalNode, right: _CanonicalNode, ignore_prefixes: bool) -> bool:
     if left.kind != right.kind:
         return False
@@ -909,11 +956,13 @@ def _canonical_equal(left: _CanonicalNode, right: _CanonicalNode, ignore_prefixe
             return False
         if left.attributes != right.attributes:
             return False
-        if len(left.children) != len(right.children):
+        left_children = _significant_children(left)
+        right_children = _significant_children(right)
+        if len(left_children) != len(right_children):
             return False
         return all(
             _canonical_equal(a, b, ignore_prefixes)
-            for a, b in zip(left.children, right.children, strict=True)
+            for a, b in zip(left_children, right_children, strict=True)
         )
     if left.kind in ("text", "comment"):
         return left.value == right.value
@@ -1001,8 +1050,8 @@ def _element_difference(
         return ("element prefixes differ", path, expected, actual)
     if expected.attributes != actual.attributes:
         return ("attributes differ", path, expected, actual)
-    left_children = expected.children
-    right_children = actual.children
+    left_children = _significant_children(expected)
+    right_children = _significant_children(actual)
     left_segments = _path_segments(left_children)
     right_segments = _path_segments(right_children)
     for index in range(max(len(left_children), len(right_children))):

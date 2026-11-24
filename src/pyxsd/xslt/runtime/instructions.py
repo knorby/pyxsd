@@ -907,9 +907,22 @@ def _diagnostic_error_code(
 
 
 def _item_string(item: XdmItem) -> str:
+    """The string value of one simple-content item.
+
+    XSLT 2.0 §5.7.2 atomizes the sequence before casting to string, so a
+    schema-typed element or attribute contributes its *typed value*: a
+    canonical xs:duration rather than the source lexical form.  A node whose
+    atomization is not one atomic value (an element with complex content)
+    falls back to its string value, which is also what an untyped node yields.
+    """
     if isinstance(item, XdmAtomic):
         return item.string_value
-    if isinstance(item, (XdmNode, ResultTreeFragment)):
+    if isinstance(item, XdmNode):
+        typed = item.typed_value
+        if len(typed) == 1 and isinstance(typed[0], XdmAtomic):
+            return typed[0].string_value
+        return item.string_value
+    if isinstance(item, ResultTreeFragment):
         return item.string_value
     raise XsltError(
         "atomization of a function item is not permitted here",
@@ -917,18 +930,51 @@ def _item_string(item: XdmItem) -> str:
     )
 
 
+def _text_nodes_are_adjacent(left: XdmNode, right: XdmNode) -> bool:
+    """Whether two text nodes are adjacent in their own tree.
+
+    XSLT 2.0 §5.7.2 merges *adjacent* text nodes before atomization; source
+    text nodes from different parents are separate items and the separator
+    applies between them.  Text nodes constructed by a sequence constructor are
+    parentless until attached, so two parentless text nodes are adjacent.
+    """
+    left_parent = left.parent
+    right_parent = right.parent
+    if left_parent is None and right_parent is None:
+        return True
+    if left_parent is None or left_parent is not right_parent:
+        return False
+    children = left_parent.children
+    try:
+        index = children.index(left)
+    except ValueError:  # pragma: no cover - the node is in its parent's children
+        return False
+    return index + 1 < len(children) and children[index + 1] is right
+
+
 def _simple_content_string(sequence: XdmSequence, separator: str) -> str:
     values: list[str] = []
     pending_text = ""
+    pending_node: XdmNode | None = None
     for item in sequence:
         if isinstance(item, XdmNode) and item.kind is NodeKind.TEXT:
-            pending_text += item.string_value
+            if not item.string_value:
+                # XSLT 2.0 section 5.7.2 discards zero-length text nodes.
+                continue
+            if pending_node is not None and _text_nodes_are_adjacent(pending_node, item):
+                pending_text += item.string_value
+            else:
+                if pending_node is not None:
+                    values.append(pending_text)
+                pending_text = item.string_value
+                pending_node = item
             continue
-        if pending_text:
+        if pending_node is not None:
             values.append(pending_text)
             pending_text = ""
+            pending_node = None
         values.append(_item_string(item))
-    if pending_text:
+    if pending_node is not None:
         values.append(pending_text)
     return separator.join(values)
 

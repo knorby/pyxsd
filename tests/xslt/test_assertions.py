@@ -1568,3 +1568,21 @@ def test_context_root_for_document_element_text_and_attribute_nodes() -> None:
     assert _context_root(TextNode("x", parent=document)) is document
     assert _context_root(TextNode("x")) is None
     assert _context_root(1) is None
+
+
+def test_xml_assertion_ignores_insignificant_whitespace() -> None:
+    """A pretty-printed expectation matches compact markup."""
+    assertion = AssertionXML(expected="<out>\n  <e>true</e>\n  <f>false</f>\n</out>")
+    result = ResultSnapshot(xml="<out><e>true</e><f>false</f></out>")
+    assert assertion.evaluate_verdict(AssertionContext(result)).passed
+
+
+def test_xpath_assertion_sees_result_comments_and_processing_instructions() -> None:
+    """The assertion tree keeps comments and PIs with their surrounding text."""
+    result = ResultSnapshot(xml="<out><e><!--note-->hello</e><f><?pi data?></f></out>")
+    for expression in (
+        "/out/e[comment()='note']='hello'",
+        "/out/f[processing-instruction('pi')='data']",
+    ):
+        assertion = AssertionXPath(expression=expression)
+        assert assertion.evaluate_verdict(AssertionContext(result)).passed

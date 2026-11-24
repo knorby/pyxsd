@@ -1760,3 +1760,135 @@ def test_replace_uses_the_fo_replacement_string_grammar() -> None:
         error_code(lambda: transform(stylesheet(invalid, version="2.0"), initial_template="main"))
         == "FORX0004"
     )
+
+
+def test_instance_of_document_node_applies_occurrence_and_element_test() -> None:
+    """A document-node item test matches each item, not the outer focus."""
+    body = """
+        <xsl:variable name="a"><a/></xsl:variable>
+        <xsl:variable name="b"><b/></xsl:variable>
+        <xsl:template name="main">
+          <out>
+            <xsl:value-of separator="|" select="
+                ($a, $b) instance of document-node(element(*))*,
+                ($a, $b) instance of document-node(element(*))+,
+                ($a, $b) instance of document-node(element(*))?,
+                ($a, $b) instance of document-node(element(a))*"/>
+          </out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "true|true|false|false"
+
+
+def test_value_of_separator_joins_text_nodes_from_different_parents() -> None:
+    """The default separator applies between separate text-node items."""
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="/doc/a/text() | /doc/b/text()"/></out>
+        </xsl:template>
+    """
+    result = transform(
+        stylesheet(body),
+        b"<doc><a>x</a><b>y</b></doc>",
+        initial_template="main",
+        delivery="document",
+    )
+    assert result.principal_tree.root_element.string_value == "x y"
+
+
+def test_descendant_path_returns_document_order() -> None:
+    """``//text()`` interleaves an element's text with its descendants' text."""
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="
+              string-join(for $t in /doc//text() return string($t), '|')"/></out>
+        </xsl:template>
+    """
+    result = transform(
+        stylesheet(body),
+        b"<doc>a<e>b</e>c<f>d</f>e</doc>",
+        initial_template="main",
+        delivery="document",
+    )
+    assert result.principal_tree.root_element.string_value == "a|b|c|d|e"
+
+
+def test_as_coercion_preserves_and_promotes_schema_types(tmp_path: Path) -> None:
+    """A subtype is substituted; a numeric promotion produces the base type."""
+    (tmp_path / "types.xsd").write_text(
+        """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+               targetNamespace="urn:types" xmlns:t="urn:types"
+               elementFormDefault="qualified">
+             <xs:simpleType name="myint">
+               <xs:restriction base="xs:int"><xs:minInclusive value="0"/></xs:restriction>
+             </xs:simpleType>
+             <xs:element name="root" type="t:myint"/>
+           </xs:schema>""",
+        encoding="utf-8",
+    )
+    (tmp_path / "types.xsl").write_text(
+        """<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+               xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:t="urn:types"
+               version="2.0">
+             <xsl:import-schema namespace="urn:types" schema-location="types.xsd"/>
+             <xsl:variable name="sub" as="xs:decimal" select="/t:root"/>
+             <xsl:variable name="promoted" as="xs:double" select="/t:root"/>
+             <xsl:template name="main"><out>
+               <a><xsl:value-of select="$sub instance of t:myint"/>
+                  <xsl:value-of select="$sub instance of xs:decimal"/></a>
+               <b><xsl:value-of select="$promoted instance of t:myint"/>
+                  <xsl:value-of select="$promoted instance of xs:double"/></b>
+             </out></xsl:template>
+           </xsl:stylesheet>""",
+        encoding="utf-8",
+    )
+    compiled = XsltProcessor(language="2.0", xpath="2.0", schema_aware=True).compile(
+        tmp_path / "types.xsl"
+    )
+    result = compiled.transform(
+        source=io.BytesIO(b'<t:root xmlns:t="urn:types">5</t:root>'),
+        initial_template="main",
+        delivery="document",
+        validation="strict",
+    )
+    values = [
+        element.string_value for element in element_children(result.principal_tree.root_element)
+    ]
+    assert values == ["truetrue", "falsetrue"]
+
+
+def test_value_of_discards_zero_length_text_nodes() -> None:
+    """An empty text item contributes neither a value nor a separator."""
+    body = """
+        <xsl:variable name="empty" as="text()"><xsl:text/></xsl:variable>
+        <xsl:template name="main">
+          <out><xsl:value-of select="('a', $empty, 'b')" separator="|"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "a|b"
+
+
+def test_instance_of_an_inline_cast_uses_the_base_sequence_type_test() -> None:
+    """A cast inside one expression has no bridge annotation to consult."""
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="(8 cast as xs:int) instance of xs:int"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "true"
+
+
+def test_instance_of_a_typed_element_uses_the_annotation_matcher() -> None:
+    """``element(*, T)`` is a type-annotation test, not a value-space test."""
+    body = """
+        <xsl:variable name="e"><a/></xsl:variable>
+        <xsl:template name="main">
+          <out><xsl:value-of select="$e/a instance of element(*, xs:anyType)"/>
+               <xsl:value-of select="$e/a instance of element(*, xs:string)"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "truefalse"

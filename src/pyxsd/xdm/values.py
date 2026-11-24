@@ -268,6 +268,12 @@ def _xsd_type_name(datatype: type[Any]) -> str:
     local = _datatype_local_name(datatype)
     if datatype in _BUILTIN_DATATYPES.values():
         return f"{{{XSD_NS}}}{local}"
+    if issubclass(datatype, _xsd.XsdDataType):
+        # A generated schema type carries its target namespace; keeping only
+        # the local name would lose the identity the type annotation needs.
+        from pyxsd.xdm.annotations import schema_type_name
+
+        return schema_type_name(datatype) or local
     return local
 
 
