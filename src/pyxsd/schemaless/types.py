@@ -84,8 +84,6 @@ _JSON_PRIMITIVES = {
     "number": "decimal",
     "string": "string",
 }
-_JSON_FORMATS = {"date": "date", "date-time": "dateTime", "time": "time", "uri": "anyURI"}
-_JSON_ENCODINGS = {"base64": "base64Binary"}
 
 
 def _json_asserted_type(assertion: str | list[str], value: object) -> str:
@@ -100,14 +98,6 @@ def _json_asserted_type(assertion: str | list[str], value: object) -> str:
         # integralness for conversion. The evaluator proved this type applied.
         kind = "number" if "number" in allowed else "integer"
     return _JSON_PRIMITIVES[kind]
-
-
-def _json_annotation_types(schema: Mapping[str, Any]) -> Iterable[str]:
-    """Suggest XSD lexical tests, not conversions, for recognized annotations."""
-    for keyword, names in (("format", _JSON_FORMATS), ("contentEncoding", _JSON_ENCODINGS)):
-        name = names.get(schema.get(keyword, ""))
-        if name is not None:
-            yield f"xs:{name}"
 
 
 def _asserted_integer(lexical: str) -> xsd.Integer:
@@ -209,7 +199,7 @@ class TypePolicy:
     ) -> ScalarAdapter | None:
         """Resolve the adapter for one native JSON scalar at *pointer*.
 
-        Precedence is an explicit pointer pin, *asserted* guidance from an
+        Precedence is an explicit pointer pin, schema guidance from an
         evaluated schema, conservative inference of a string leaf, and then the
         native kind (no adapter). ``asserted`` is the document layer's
         extension point for a schema that proves this occurrence's type;

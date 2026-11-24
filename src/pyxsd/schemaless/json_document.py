@@ -24,6 +24,7 @@ from typing import IO, TYPE_CHECKING, Any, Literal, overload
 from pyxsd.exceptions import ValidationError
 from pyxsd.locations import DataLocation
 from pyxsd.schemaless.errors import JsonParseError, ScalarTypeError
+from pyxsd.schemaless.format_types import format_annotation_types, schema_format_adapter
 from pyxsd.schemaless.json_values import (
     JsonLimits,
     NativeJsonValue,
@@ -44,7 +45,6 @@ from pyxsd.schemaless.types import (
     ScalarAdapter,
     TypePolicy,
     TypeRef,
-    _json_annotation_types,
     _json_asserted_type,
     _json_schema_adapter,
 )
@@ -131,6 +131,7 @@ class JsonDocument:
     _types: TypePolicy
     _report: ValidationReport
     _applied_schema: _AppliedSchema | None = None
+    _format_typing: bool = False
     source: str
 
     def __init__(
@@ -269,7 +270,7 @@ class JsonDocument:
 
         Objects become maps with ``xs:string`` keys, arrays become arrays whose
         members keep their nesting, and null becomes the empty sequence. A
-        scalar uses an explicit pointer pin, an unambiguous schema assertion,
+        scalar uses an explicit pointer pin, unambiguous schema guidance,
         conservative string inference, or its exact native atomic kind, in
         that order. An invalid instance uses only pins and native kinds. A
         pin that rejects its value raises :class:`ScalarTypeError` with the
@@ -372,24 +373,35 @@ class JsonDocument:
             return ()
         return self._applied_schema.occurrences_at(pointer)
 
-    def _schema_candidates(self, pointer: str) -> tuple[str, ...]:
+    def _schema_candidates(self, pointer: str, value: _ScalarValue) -> tuple[str, ...]:
         return tuple(
             dict.fromkeys(
                 name
                 for item in self._schema_occurrences(pointer)
                 if isinstance(item.schema, dict)
-                for name in _json_annotation_types(item.schema)
+                for name in format_annotation_types(item.schema, value)
             )
         )
 
     def _asserted_adapter(self, pointer: str, value: _ScalarValue) -> ScalarAdapter | None:
-        """Choose a schema adapter only when all applicable hints agree."""
-        hints: set[str] = set()
-        for item in self._schema_occurrences(pointer):
-            if isinstance(item.schema, dict) and "type" in item.schema:
-                hint = _json_asserted_type(item.schema["type"], value)
-                hints.add(hint)
-        return _json_schema_adapter(hints, lambda: _schema_scalar_text(value))
+        """Prefer a compatible specific adapter over primitive guidance."""
+        schemas = tuple(
+            item.schema
+            for item in self._schema_occurrences(pointer)
+            if isinstance(item.schema, dict)
+        )
+
+        def lexical() -> str:
+            return _schema_scalar_text(value)
+
+        if self._format_typing:
+            adapter = schema_format_adapter(schemas, value, lexical)
+            if adapter is not None:
+                return adapter
+        hints = {
+            _json_asserted_type(schema["type"], value) for schema in schemas if "type" in schema
+        }
+        return _json_schema_adapter(hints, lexical)
 
     def _resolution_at(self, pointer: str, value: _ScalarValue) -> tuple[ScalarAdapter | None, str]:
         """Resolve one native scalar and its current interpretation source."""
@@ -445,6 +457,7 @@ def from_data(
     reference_registry: SchemaRegistry | None = None,
     resource_policy: ResourcePolicy | None = None,
     format_assertion: bool = False,
+    format_typing: bool = False,
 ) -> JsonDocument:
     """Copy host data into a new native JSON document.
 
@@ -471,6 +484,7 @@ def from_data(
         reference_registry,
         resource_policy,
         format_assertion,
+        format_typing,
     )
 
 
@@ -484,6 +498,7 @@ def from_json(
     reference_registry: SchemaRegistry | None = None,
     resource_policy: ResourcePolicy | None = None,
     format_assertion: bool = False,
+    format_typing: bool = False,
 ) -> JsonDocument:
     """Decode JSON text, bytes, or a stream into a new native JSON document.
 
@@ -507,6 +522,10 @@ def from_json(
     unless *format_assertion* is true. Invalid schemas or unresolved references
     raise :class:`~pyxsd.schemaless.errors.JsonSchemaError`; instance failures
     are recorded in the document's report.
+
+    *format_typing* independently enables supported format and content
+    encoding annotations for typed reads and XDM conversion of valid
+    instances. It never changes validation, native storage, or JSON output.
     """
     source_name = _source_name(source)
     try:
@@ -523,6 +542,7 @@ def from_json(
         reference_registry,
         resource_policy,
         format_assertion,
+        format_typing,
     )
 
 
@@ -536,8 +556,10 @@ def _build_document(
     reference_registry: SchemaRegistry | None,
     resource_policy: ResourcePolicy | None,
     format_assertion: bool,
+    format_typing: bool,
 ) -> JsonDocument:
     document = JsonDocument._from_owned(value, source=source, types=types)
+    document._format_typing = format_typing
     if json_schema is not None:
         from pyxsd.schemaless.json_schema import SchemaGuidance
 

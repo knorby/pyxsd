@@ -6,11 +6,12 @@ import pytest
 from referencing import Registry
 from referencing.jsonschema import DRAFT202012
 
+from pyxsd import xsd_data_types as xsd
 from pyxsd.remote import RemoteResourcePolicy
 from pyxsd.schemaless import TypePolicy, from_data, from_json
 from pyxsd.schemaless.json_schema import SchemaGuidance
 from pyxsd.schemaless.json_xdm import json_to_xdm
-from pyxsd.xdm import XdmAtomic
+from pyxsd.xdm import XdmArray, XdmAtomic
 
 
 def test_integer_assertion_guides_xdm_without_changing_native_json():
@@ -469,3 +470,94 @@ def test_annotation_hints_only_come_from_applied_branches_and_string_occurrences
     assert "xs:anyURI" not in numeric.profile().at("").candidate_names
     invalid = from_data("not integer", json_schema={"type": "integer", "format": "uri"})
     assert "xs:anyURI" not in invalid.profile().at("").candidate_names
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "expected_type", "xdm_type"),
+    [
+        ("int32", "int32", xsd.Int, xsd.Int),
+        ("int32", "int64", Decimal, xsd.Decimal),
+        ("int32", "unused-format", xsd.Int, xsd.Int),
+    ],
+)
+def test_specific_formats_refine_primitive_guidance_only_when_compatible(
+    first, second, expected_type, xdm_type
+):
+    doc = from_data(
+        1.0,
+        json_schema={"type": "number", "allOf": [True, {"format": first}, {"format": second}]},
+        format_typing=True,
+    )
+    assert type(doc.value_at("", typed=True)) is expected_type
+    atomic = doc.to_xdm()[0]
+    assert isinstance(atomic, XdmAtomic) and atomic.datatype is xdm_type
+    assert doc.profile().at("").interpretation == "schema-guided"
+    assert not doc.pin_type("", "xs:double").has_errors
+    pinned = doc.to_xdm()[0]
+    assert isinstance(pinned, XdmAtomic) and pinned.datatype is xsd.Double
+    assert doc.profile().at("").interpretation == "pinned"
+
+
+def test_only_applied_accepted_specific_formats_take_part_in_resolution():
+    schema = {
+        "allOf": [
+            {"anyOf": [{"format": "double", "maximum": 1}, {"format": "int64"}]},
+            {"format": "float"},
+        ]
+    }
+    # The double branch fails validation, and the int64 format overflows.
+    doc = from_data(2**63, json_schema=schema, format_typing=True)
+    assert doc.is_valid
+    assert type(doc.value_at("", typed=True)) is xsd.Float
+    # Both applicable formats accept 2, so neither can refine the native value.
+    ambiguous = from_data(2.0, json_schema=schema, format_typing=True)
+    assert ambiguous.is_valid
+    assert type(ambiguous.value_at("", typed=True)) is float
+    assert ambiguous.profile().at("").interpretation == "native"
+
+
+def test_byte_and_content_encoding_coalesce_as_one_specific_type():
+    doc = from_data(
+        "YQ==",
+        json_schema={"type": "string", "format": "byte", "contentEncoding": "base64"},
+        format_typing=True,
+    )
+    assert type(doc.value_at("", typed=True)) is xsd.Base64Binary
+
+
+def test_invalid_asserted_format_suppresses_guidance_for_the_whole_instance():
+    schema = {
+        "prefixItems": [{"type": "number", "format": "int32"}, {"type": "string", "format": "uuid"}]
+    }
+    uuid = "123E4567-E89B-12D3-A456-426614174000"
+    native = [2**31, uuid]
+    doc = from_data(native, json_schema=schema, format_typing=True)
+    assert doc.is_valid
+    assert type(doc.value_at("/0", typed=True)) is Decimal
+    assert doc.profile().at("/1").interpretation == "schema-guided"
+
+    strict = from_data(native, json_schema=schema, format_assertion=True, format_typing=True)
+    assert not strict.is_valid
+    assert type(strict.value_at("/0", typed=True)) is int
+    assert type(strict.value_at("/1", typed=True)) is str
+    array = strict.to_xdm()[0]
+    assert isinstance(array, XdmArray) and array.get(2) == (XdmAtomic.string(uuid),)
+    assert strict.profile().at("/1").interpretation == "native"
+
+
+@pytest.mark.parametrize(
+    ("format_name", "value", "candidate"),
+    [
+        ("date", "2024-02-29", "xs:date"),
+        ("date-time", "2024-02-29T12:34:56Z", "xs:dateTime"),
+        ("time", "12:34:56Z", "xs:time"),
+    ],
+)
+def test_rfc3339_annotations_do_not_cast_even_with_format_typing(format_name, value, candidate):
+    doc = from_data(
+        value, json_schema={"format": format_name}, format_assertion=True, format_typing=True
+    )
+    assert doc.is_valid
+    assert type(doc.value_at("", typed=True)) is str
+    assert doc.to_xdm() == (XdmAtomic.string(value),)
+    assert doc.profile().at("").candidate(candidate).from_schema_annotation

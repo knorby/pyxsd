@@ -513,8 +513,8 @@ class _JsonWalk:
             )
 
     def _suggest(self, row: _Row, pointer: str, value: NativeJsonValue) -> None:
-        if isinstance(value, str):
-            self._builder.suggest(row, self._document._schema_candidates(pointer))
+        if value is not None and not isinstance(value, (dict, list)):
+            self._builder.suggest(row, self._document._schema_candidates(pointer, value))
 
 
 def _steps_path(steps: tuple[PathStep, ...]) -> str:

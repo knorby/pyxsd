@@ -34,6 +34,64 @@ CANDIDATE_NAMES = (
 )
 
 
+@pytest.mark.parametrize("format_typing", [False, True])
+def test_json_profile_suggests_formats_by_native_kind_before_counting_array_items(format_typing):
+    doc = from_json(
+        '[true,"1",null,{},2,3,"004",1.25,2.5,"YQ==","Yg==","!"]',
+        json_schema={
+            "prefixItems": [
+                {"format": "int32"},
+                {"format": "int32"},
+                {"format": "int32"},
+                {"format": "int32"},
+                {"format": "int32"},
+                {"format": "int64"},
+                {"format": "int64"},
+                {"format": "float"},
+                {"format": "double"},
+                {"format": "byte"},
+                {"contentEncoding": "base64"},
+                {"contentEncoding": "base64"},
+            ]
+        },
+        format_typing=format_typing,
+    )
+    profile = doc.profile()
+    for index in range(4):
+        assert "xs:int" not in profile.at(f"/{index}").candidate_names
+    expected_names = (
+        "xs:int",
+        "xs:long",
+        "xs:long",
+        "xs:float",
+        "xs:double",
+        "xs:base64Binary",
+        "xs:base64Binary",
+        "xs:base64Binary",
+    )
+    for index, name in enumerate(expected_names, start=4):
+        row = profile.at(f"/{index}")
+        candidate = row.candidate(name)
+        assert candidate.from_schema_annotation
+        assert (candidate.passed, candidate.failed) == ((0, 1) if index == 11 else (1, 0))
+        assert row.interpretation == ("schema-guided" if format_typing and index < 11 else "native")
+
+    items = profile.at("", "array-items")
+    assert items.candidate_names == (
+        *CANDIDATE_NAMES,
+        "xs:int",
+        "xs:long",
+        "xs:float",
+        "xs:base64Binary",
+    )
+    integer = items.candidate("xs:int")
+    assert (integer.passed, integer.failed, integer.first_failure) == (
+        4,
+        6,
+        DataLocation(doc.source, "/0"),
+    )
+
+
 def test_xml_profile_groups_occurrences_and_type_failures():
     doc = parse_xml(io.StringIO("<r><x>1</x><x>bad</x><x/></r>"))
     profile = doc.profile()
