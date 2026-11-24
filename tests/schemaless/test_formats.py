@@ -1,6 +1,7 @@
 """Format assertions are deterministic with the plain JSON Schema extra."""
 
 import sys
+from decimal import Decimal
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -17,6 +18,7 @@ from pyxsd.schemaless.formats import (
 
 def test_assertion_checker_preserves_other_draft_formats_without_mutating_the_draft():
     translated = {"date", "date-time", "time", "uuid", "ipv4", "ipv6", "json-pointer", "regex"}
+    translated.update({"int32", "int64", "float", "double", "byte"})
     draft = Draft202012Validator.FORMAT_CHECKER
     original = draft.checkers.copy()
     checker = assertion_checker()
@@ -246,3 +248,147 @@ def test_json_pointer_assertion_is_opt_in():
     assert isinstance(invalid.report.issues[0].location, DataLocation)
     assert invalid.report.issues[0].location.schema_pointer == "/format"
     assert from_data("/a/00", json_schema=schema, format_assertion=True).is_valid
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [
+        (-(2**31), True),
+        (2**31 - 1, True),
+        (-(2**31) - 1, False),
+        (2**31, False),
+        (Decimal("1.0"), True),
+        (Decimal("1.5"), False),
+        (Decimal("1e999999999"), False),
+        (Decimal("-1e999999999"), False),
+        (Decimal("1e-999999999"), False),
+        (Decimal("sNaN"), False),
+        (1.0, True),
+        (1.5, False),
+        (float(-(2**31)), True),
+        (float(-(2**31) - 1), False),
+        (float(2**31), False),
+        ("not a number", True),
+        (True, True),
+    ],
+)
+def test_int32_checks_mathematical_integers_in_signed_range(value, valid):
+    assert formats.is_int32(value) is valid
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [
+        (-(2**63), True),
+        (2**63 - 1, True),
+        (-(2**63) - 1, False),
+        (2**63, False),
+        (Decimal("9223372036854775807.0"), True),
+        (Decimal("9223372036854775808.0"), False),
+        (Decimal("1.5"), False),
+        ("-9223372036854775808", True),
+        ("9223372036854775807", True),
+        ("-9223372036854775809", False),
+        ("9223372036854775808", False),
+        ("+1", False),
+        (" 1", False),
+        ("1.0", False),
+        ("1e3", False),
+        ("\u0661", False),
+        ("", False),
+        ("-", False),
+        ("-0", True),
+        pytest.param("0" * 5000 + "1", True, id="long-leading-zeros"),
+        pytest.param("9" * 5000, False, id="too-many-significant-digits"),
+        (True, True),
+        (False, True),
+    ],
+)
+def test_int64_checks_numeric_and_ascii_decimal_integers(value, valid):
+    assert formats.is_int64(value) is valid
+
+
+@pytest.mark.parametrize("name", ["is_float", "is_double"])
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [
+        (42, True),
+        (Decimal("0.1"), True),
+        (0.1, True),
+        (Decimal("1e-999999999"), True),
+        (Decimal("1e999999999"), False),
+        pytest.param(1 << 4096, False, id="huge-int"),
+        (float("inf"), False),
+        (Decimal("sNaN"), False),
+        (True, True),
+        ("not a number", True),
+    ],
+)
+def test_float_and_double_allow_rounding_and_underflow_but_not_infinity(name, value, valid):
+    assert getattr(formats, name)(value) is valid
+
+
+def test_float_and_double_use_different_binary_ranges():
+    # A value just above binary32's maximum finite value can round back to it.
+    assert formats.is_float(float.fromhex("0x1.fffffe8p+127"))
+    assert not formats.is_float(3.5e38)
+    assert not formats.is_float(Decimal("3.5e38"))
+    assert formats.is_double(Decimal("3.5e38"))
+    assert formats.is_double(sys.float_info.max)
+
+
+def test_float_overflow_threshold_is_not_rounded_early_for_exact_numbers():
+    midpoint = 2**128 - 2**103
+    assert formats.is_float(midpoint - 1)
+    assert formats.is_float(Decimal(-midpoint + 1))
+    assert not formats.is_float(midpoint)
+    assert not formats.is_float(-midpoint - 1)
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [
+        ("", True),
+        ("YQ==", True),
+        ("YWJj", True),
+        ("Y Q==", False),
+        ("YQ==\n", False),
+        ("YQ=", False),
+        ("YWJj=", False),
+        ("_w==", False),
+        ("Y\u00e9==", False),
+        ("YR==", False),
+        (None, True),
+    ],
+)
+def test_base64_requires_the_canonical_ascii_spelling(value, valid):
+    assert formats.is_base64(value) is valid
+
+
+@pytest.mark.parametrize(
+    ("kind", "name", "valid_value", "invalid_value"),
+    [
+        ("integer", "int32", 2**31 - 1, 2**31),
+        pytest.param("integer", "int32", 0, 10**5000, id="huge-integer"),
+        ("string", "int64", "9223372036854775807", "9223372036854775808"),
+        ("number", "float", Decimal("3.3e38"), Decimal("3.5e38")),
+        ("number", "double", Decimal("3.5e38"), Decimal("1e999999999")),
+        ("string", "byte", "YQ==", "YR=="),
+    ],
+)
+def test_openapi_numeric_and_byte_format_assertions_are_opt_in(
+    kind, name, valid_value, invalid_value
+):
+    schema = {"type": kind, "format": name}
+    assert from_data(valid_value, json_schema=schema, format_assertion=True).is_valid
+    assert from_data(invalid_value, json_schema=schema).is_valid
+    invalid = from_data(invalid_value, json_schema=schema, format_assertion=True)
+    assert not invalid.is_valid
+    location = invalid.report.issues[0].location
+    assert isinstance(location, DataLocation)
+    assert location.schema_pointer == "/format"
+
+
+def test_base64_content_encoding_stays_annotation_only():
+    schema = {"type": "string", "contentEncoding": "base64"}
+    assert from_data("YR==", json_schema=schema, format_assertion=True).is_valid
