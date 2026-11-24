@@ -3017,10 +3017,14 @@ def _register_declared_function(
         previous = holder.xpath_context
         holder.xpath_context = context
         try:
-            # ``select`` yields the full sequence for one argument and reads a
-            # partial application's placeholder value, which is what function
-            # conversion needs; ``evaluate`` would hand back the placeholder.
-            arguments = [list(child.select(context)) for child in self]
+            # ``evaluate`` returns a single value for most expressions and a
+            # sequence for the rest; the bridge flattens either.  A partial
+            # application's ``?`` placeholder is represented by its ``select``
+            # value, because evaluating it returns the placeholder token.
+            arguments = [
+                list(child.select(context)) if child.symbol == "?" else child.evaluate(context)
+                for child in self
+            ]
             return self.callback(*arguments)
         finally:
             holder.xpath_context = previous
