@@ -1245,6 +1245,24 @@ def format_datetime_value(
             raise xpath_error("FOFD1340", f"Invalid place argument {place!r}") from None
         value = value.astimezone(zone)
 
+    if round_fractional:
+        fractional = [_marker_parts(marker) for marker in markers if marker and marker[0] == "f"]
+        if fractional:
+            digits = max(
+                _fractional_digits(presentation, width) for _, presentation, width in fractional
+            )
+            if digits < 6:
+                factor = 10 ** (6 - digits)
+                micro = ((value.microsecond + factor // 2) // factor) * factor
+                if micro >= 1_000_000:
+                    # The rounded fraction is a whole second: advance the
+                    # value so the carry reaches seconds and the date.
+                    from elementpath.datatypes import DayTimeDuration
+
+                    value = value + DayTimeDuration(seconds=1)
+                    micro = 0
+                value = _RoundedFraction(value, micro)
+
     pieces: list[str] = []
     if notes:
         pieces.append("[" + ", ".join(notes) + "]")
@@ -1259,14 +1277,7 @@ def format_datetime_value(
             # measured against the width: the substrate applies the numeric
             # width before converting the digits to letters.
             source = marker[: -(len(width) + 1)] if width and presentation in ("i", "I") else marker
-            marker_value: Any = value
-            if round_fractional and component == "f":
-                digits = _fractional_digits(presentation, width)
-                if digits < 6:
-                    factor = 10 ** (6 - digits)
-                    micro = ((value.microsecond + factor // 2) // factor) * factor
-                    marker_value = _RoundedFraction(value, min(micro, 999999))
-            formatted = parse_datetime_marker(f"[{source}]", marker_value, language)
+            formatted = parse_datetime_marker(f"[{source}]", value, language)
         if presentation in ("i", "I"):
             formatted = _with_presentation_width(formatted, component, presentation, width)
         pieces.append(formatted)

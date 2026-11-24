@@ -409,6 +409,18 @@ def test_2_0_date_time_timezone_pictures() -> None:
     assert _formatted(half) == "GMT-05:30"
 
 
+def test_2_0_fractional_rounding_carries_into_seconds() -> None:
+    """Rounding a fractional second can advance the whole second."""
+    body = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2003-12-07T00:00:00.99996')\"/>"
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-dateTime($t, '[H01]:[m01]:[s01].[f1]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "00:00:01.0"
+
+
 def test_2_0_date_time_am_pm_pictures() -> None:
     """English am/pm uses the F&O words, with max-width truncation only."""
     body = (
