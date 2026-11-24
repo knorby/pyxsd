@@ -203,6 +203,112 @@ def test_guide_documents_deterministic_rfc3339_format_assertion():
     assert "for `date`, `date-time`, and `time`" in prose
     assert "do not require `rfc3339-validator`" in prose
     assert "never casts a formatted string without an explicit `TypePolicy`" in prose
+    assert "RFC 3339 formats still do not cast automatically" in prose
+
+
+def test_guide_names_every_deterministic_format_and_python_regex_boundary():
+    prose = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    for name in (
+        "uuid",
+        "ipv4",
+        "ipv6",
+        "json-pointer",
+        "regex",
+        "int32",
+        "int64",
+        "float",
+        "double",
+        "byte",
+    ):
+        assert f"`{name}`" in prose
+    assert "Python's `re` syntax rather than ECMA-262" in prose
+    assert (
+        "unlisted formats remain annotations whose assertion depends on the installed "
+        "`jsonschema` environment" in prose
+    )
+    assert "complete Format-Assertion vocabulary claim" in prose
+
+    namespace = _load("python_pattern.is_valid")
+    assert namespace["annotated_pointer"].is_valid
+    assert not namespace["asserted_pointer"].is_valid
+    assert namespace["python_pattern"].is_valid
+
+
+def test_guide_separates_format_assertion_from_format_typing():
+    prose = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    assert "`format_typing=True` is a separate opt-in" in prose
+    assert "never changes native storage, and never changes `to_data()` or `to_json()`" in prose
+    assert "Explicit `TypePolicy` pins and `MappingRule.type` always win" in prose
+
+    namespace = _load('"not-a-uuid"')
+    assert [document.is_valid for document in namespace["results"]] == [True, True, False, False]
+    assert [document.value_at("", typed=True) for document in namespace["results"]] == [
+        "not-a-uuid"
+    ] * 4
+
+
+def test_guide_maps_uuid_and_ip_formats_to_stdlib_values_with_string_xdm():
+    from ipaddress import IPv4Address, IPv6Address
+    from uuid import UUID
+
+    from pyxsd.xdm import XdmAtomic
+
+    prose = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    assert "`uuid.UUID`" in prose
+    assert "`ipaddress.IPv4Address`" in prose
+    assert "`ipaddress.IPv6Address`" in prose
+    assert "canonical `xs:string`" in prose
+
+    address_typed = _load("address_typed")["address_typed"]
+    assert address_typed.value_at("/id", typed=True) == UUID("123e4567-e89b-12d3-a456-426614174000")
+    assert address_typed.value_at("/host", typed=True) == IPv4Address("192.0.2.1")
+    assert address_typed.value_at("/peer", typed=True) == IPv6Address("2001:db8::1")
+    root = address_typed.to_xdm()[0]
+    for name, canonical in (
+        ("id", "123e4567-e89b-12d3-a456-426614174000"),
+        ("host", "192.0.2.1"),
+        ("peer", "2001:db8::1"),
+    ):
+        (atomic,) = root.get(XdmAtomic.string(name))
+        assert atomic.type_name == "{http://www.w3.org/2001/XMLSchema}string"
+        assert atomic.value == canonical
+
+
+def test_guide_maps_openapi_formats_to_simple_types_in_projection():
+    prose = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    for phrase in (
+        "`int32` becomes `xs:int`",
+        "`int64` becomes `xs:long`",
+        "`float` becomes `xs:float`",
+        "`double` becomes `xs:double`",
+        "`byte` or `contentEncoding: base64` becomes `xs:base64Binary`",
+    ):
+        assert phrase in prose
+
+    namespace = _load("format_measurement")
+    assert namespace["native_format_xml"].to_string() == (
+        "<measurement><count>1.0</count><total>9223372036854775807.0</total>"
+        "<ratio>16777217</ratio><score>0.125</score><payload>YQ==</payload></measurement>"
+    )
+    assert namespace["typed_format_xml"].to_string() == (
+        "<measurement><count>1</count><total>9223372036854775807</total>"
+        "<ratio>16777216.0</ratio><score>0.125</score><payload>YQ==</payload></measurement>"
+    )
+
+
+def test_guide_documents_string_int64_legacy_byte_and_no_automatic_decode():
+    prose = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    assert (
+        "`int64` accepts a JSON number or a string that matches an optional `-` plus ASCII digits"
+        in prose
+    )
+    assert "`byte` is the legacy OpenAPI 3.0 spelling" in prose
+    assert "prefer `contentEncoding: base64`" in prose
+    assert "never decodes base64 automatically" in prose
+
+    namespace = _load("encoded_package")
+    assert namespace["encoded_package"].value_at("/payload") == "SGVsbG8="
+    assert namespace["encoded_xml"].to_string() == "<package><payload>SGVsbG8=</payload></package>"
 
 
 def test_openapi_example_maps_a_property_to_an_attribute():

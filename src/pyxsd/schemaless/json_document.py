@@ -519,13 +519,22 @@ def from_json(
     text. Relative references use the schema's *base_uri*, not the instance
     source. External resources must be registered in *reference_registry*
     or authorized and read by *resource_policy*. Format is an annotation
-    unless *format_assertion* is true. Invalid schemas or unresolved references
-    raise :class:`~pyxsd.schemaless.errors.JsonSchemaError`; instance failures
-    are recorded in the document's report.
+    unless *format_assertion* is true. Assertion uses deterministic checks for
+    ``date``, ``date-time``, and ``time`` plus ``uuid``, ``ipv4``, ``ipv6``,
+    ``json-pointer``, ``regex``, ``int32``, ``int64``, ``float``, ``double``,
+    and ``byte``; ``regex`` follows Python ``re`` syntax, and unlisted formats
+    depend on the installed ``jsonschema`` environment. Invalid schemas or
+    unresolved references raise
+    :class:`~pyxsd.schemaless.errors.JsonSchemaError`; instance failures are
+    recorded in the document's report.
 
     *format_typing* independently enables supported format and content
     encoding annotations for typed reads and XDM conversion of valid
-    instances. It never changes validation, native storage, or JSON output.
+    instances. ``uuid``, ``ipv4``, and ``ipv6`` return standard-library values
+    with canonical ``xs:string`` XDM; ``int32``, ``int64``, ``float``,
+    ``double``, and ``byte`` or ``contentEncoding: base64`` reuse their XSD
+    SimpleTypes. It never changes validation, native storage, or JSON output,
+    and unsupported or rejected values keep their native interpretation.
     """
     source_name = _source_name(source)
     try:

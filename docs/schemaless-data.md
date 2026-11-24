@@ -402,10 +402,150 @@ assert annotated.is_valid
 assert not asserted.is_valid
 ```
 
+### Format assertion and typing
+
 With `format_assertion=True`, pyxsd uses its own deterministic RFC 3339 checks
 for `date`, `date-time`, and `time`. These checks do not require
-`rfc3339-validator`. Format assertion never casts a formatted string without an
-explicit `TypePolicy`.
+`rfc3339-validator`. pyxsd likewise owns deterministic checks for `uuid`,
+`ipv4`, `ipv6`, `json-pointer`, `regex`, `int32`, `int64`, `float`, `double`,
+and the legacy `byte` name; none requires `jsonpointer` or a format-validation
+extra. Other, unlisted formats remain annotations whose assertion depends on
+the installed `jsonschema` environment. This is not a complete
+Format-Assertion vocabulary claim.
+
+`regex` follows Python's `re` syntax rather than ECMA-262. A pattern that is
+valid in Python but invalid in JavaScript passes assertion here, and
+JavaScript-only syntax such as `\p{L}` fails.
+
+```python
+from pyxsd.schemaless import from_json
+
+pointer_schema = {"type": "string", "format": "json-pointer"}
+regex_schema = {"type": "string", "format": "regex"}
+
+annotated_pointer = from_json('"not a pointer"', json_schema=pointer_schema)
+asserted_pointer = from_json('"not a pointer"', json_schema=pointer_schema, format_assertion=True)
+python_pattern = from_json('"(?P<name>x)"', json_schema=regex_schema, format_assertion=True)
+
+assert annotated_pointer.is_valid
+assert not asserted_pointer.is_valid
+assert python_pattern.is_valid
+```
+
+`format_typing=True` is a separate opt-in. It never validates, never changes
+native storage, and never changes `to_data()` or `to_json()`. On a valid
+instance, a recognized format supplies a typed read only when the applied
+schemas agree on one compatible format for the native JSON kind and the value
+satisfies it; otherwise the existing primitive, inference, or native behavior
+remains. Explicit `TypePolicy` pins and `MappingRule.type` always win, and an
+invalid instance receives no schema-guided conversion.
+
+The four combinations are distinct:
+
+| `format_assertion` | `format_typing` | Result for an invalid annotated value |
+| --- | --- | --- |
+| `False` | `False` | Valid; native value |
+| `False` | `True` | Valid; native fallback |
+| `True` | `False` | Invalid; native value |
+| `True` | `True` | Invalid; native fallback |
+
+```python
+from pyxsd.schemaless import from_json
+
+uuid_schema = {"type": "string", "format": "uuid"}
+results = [
+    from_json('"not-a-uuid"', json_schema=uuid_schema),
+    from_json('"not-a-uuid"', json_schema=uuid_schema, format_typing=True),
+    from_json('"not-a-uuid"', json_schema=uuid_schema, format_assertion=True),
+    from_json(
+        '"not-a-uuid"',
+        json_schema=uuid_schema,
+        format_assertion=True,
+        format_typing=True,
+    ),
+]
+
+assert [document.is_valid for document in results] == [True, True, False, False]
+assert [document.value_at("", typed=True) for document in results] == ["not-a-uuid"] * 4
+```
+
+| Format | Assertion | Typed read and XDM |
+| --- | --- | --- |
+| `uuid` | Canonical hyphenated RFC 4122 spelling | `uuid.UUID`; canonical `xs:string` |
+| `ipv4` | Dotted decimal, no leading zeros | `ipaddress.IPv4Address`; canonical `xs:string` |
+| `ipv6` | IPv6 without a scope ID | `ipaddress.IPv6Address`; canonical `xs:string` |
+| `json-pointer` | RFC 6901 pointer syntax | `str`; no format-specific XSD type |
+| `regex` | Python `re` syntax | `str`; no format-specific XSD type |
+| `int32` | Signed 32-bit mathematical integer | `xs:int` |
+| `int64` | Signed 64-bit mathematical integer or matching string | `xs:long` |
+| `float` | Finite binary32 value | `xs:float` |
+| `double` | Finite binary64 value | `xs:double` |
+| `byte` | Strict RFC 4648 base64 | `xs:base64Binary` |
+
+UUID and IP formats return standard-library values, but their XDM atomics stay
+canonical `xs:string` values, so a stylesheet sees text rather than a new
+datatype:
+
+```python
+from ipaddress import IPv4Address, IPv6Address
+from uuid import UUID
+
+from pyxsd.schemaless import from_json
+from pyxsd.xdm import XdmAtomic, XdmMap
+
+address_schema = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "format": "uuid"},
+        "host": {"type": "string", "format": "ipv4"},
+        "peer": {"type": "string", "format": "ipv6"},
+    },
+}
+address_typed = from_json(
+    '{"id": "123E4567-E89B-12D3-A456-426614174000",'
+    ' "host": "192.0.2.1", "peer": "2001:0DB8:0:0:0:0:0:1"}',
+    json_schema=address_schema,
+    format_typing=True,
+)
+
+assert isinstance(address_typed.value_at("/id", typed=True), UUID)
+assert address_typed.value_at("/host", typed=True) == IPv4Address("192.0.2.1")
+assert address_typed.value_at("/peer", typed=True) == IPv6Address("2001:db8::1")
+root = address_typed.to_xdm()[0]
+assert isinstance(root, XdmMap)
+for key in ("id", "host", "peer"):
+    (atomic,) = root.get(XdmAtomic.string(key))
+    assert atomic.type_name == "{http://www.w3.org/2001/XMLSchema}string"
+assert root.get(XdmAtomic.string("peer")) == (XdmAtomic.string("2001:db8::1"),)
+```
+
+`int64` accepts a JSON number or a string that matches an optional `-` plus
+ASCII digits; whitespace, `+`, decimal points, and exponents are not valid.
+`byte` is the legacy OpenAPI 3.0 spelling. For new schemas, prefer
+`contentEncoding: base64`, as OpenAPI 3.1 recommends. Both use strict RFC 4648
+content and map to `xs:base64Binary` only when typing is enabled;
+`contentEncoding` is never asserted. pyxsd never decodes base64 automatically:
+native storage and `to_json()` keep the encoded string.
+
+```python
+from pyxsd.schemaless import XmlMapping, from_json
+
+encoded_schema = {
+    "type": "object",
+    "xml": {"name": "package"},
+    "properties": {"payload": {"type": "string", "contentEncoding": "base64"}},
+}
+encoded_package = from_json('{"payload": "SGVsbG8="}')
+encoded_xml = encoded_package.to_xml(XmlMapping.from_openapi(encoded_schema, format_typing=True))
+
+assert encoded_package.value_at("/payload") == "SGVsbG8="  # still base64 text
+assert encoded_xml.to_string() == "<package><payload>SGVsbG8=</payload></package>"
+```
+
+RFC 3339 formats still do not cast automatically, even with
+`format_typing=True`. Format assertion never casts a formatted string without
+an explicit `TypePolicy`; a pin remains the way to request `xs:date`,
+`xs:dateTime`, or `xs:time` values.
 
 ### Reference security
 
@@ -457,6 +597,48 @@ resolved by the same evaluator. The schema must validate the instance before
 schema-derived mapping applies. Conflicting XML metadata across successful
 applicator branches is reported as ambiguous; `allOf` metadata combines only
 when the result is unambiguous.
+
+`format_assertion` and `format_typing` apply to projection exactly as they do
+to `from_json()`. With typing enabled, the five OpenAPI SimpleTypes replace
+native lexical text: `int32` becomes `xs:int`, `int64` becomes `xs:long`,
+`float` becomes `xs:float`, `double` becomes `xs:double`, and `byte` or
+`contentEncoding: base64` becomes `xs:base64Binary`. An explicit
+`MappingRule.type` still wins. A value that does not satisfy its annotated
+format keeps the native spelling, and an assertion failure raises
+`XmlMappingError` before projection.
+
+```python
+from pyxsd.schemaless import XmlMapping, from_json
+
+format_schema = {
+    "type": "object",
+    "xml": {"name": "measurement"},
+    "properties": {
+        "count": {"type": "integer", "format": "int32"},
+        "total": {"type": "integer", "format": "int64"},
+        "ratio": {"type": "number", "format": "float"},
+        "score": {"type": "number", "format": "double"},
+        "payload": {"type": "string", "format": "byte"},
+    },
+}
+format_measurement = from_json(
+    '{"count": 1.0, "total": 9223372036854775807.0,'
+    ' "ratio": 16777217, "score": 0.125, "payload": "YQ=="}'
+)
+native_format_xml = format_measurement.to_xml(XmlMapping.from_openapi(format_schema))
+typed_format_xml = format_measurement.to_xml(
+    XmlMapping.from_openapi(format_schema, format_typing=True)
+)
+
+assert native_format_xml.to_string() == (
+    "<measurement><count>1.0</count><total>9223372036854775807.0</total>"
+    "<ratio>16777217</ratio><score>0.125</score><payload>YQ==</payload></measurement>"
+)
+assert typed_format_xml.to_string() == (
+    "<measurement><count>1</count><total>9223372036854775807</total>"
+    "<ratio>16777216.0</ratio><score>0.125</score><payload>YQ==</payload></measurement>"
+)
+```
 
 ## XDM coherence and revalidation
 

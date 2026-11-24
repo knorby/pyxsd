@@ -22,8 +22,16 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   `pyxsd[jsonschema]` extra, which `pyxsd[mcp-all]` also installs; native XML
   and native JSON remain available without it.
   Opt-in format assertion uses pyxsd's deterministic RFC 3339 checks for
-  `date`, `date-time`, and `time`, without requiring `rfc3339-validator`.
-  A formatted string is never cast without an explicit type policy.
+  `date`, `date-time`, and `time`, and owns deterministic checks for `uuid`,
+  `ipv4`, `ipv6`, `json-pointer`, `regex`, `int32`, `int64`, `float`, `double`,
+  and legacy `byte`, without requiring `rfc3339-validator`, `jsonpointer`, or a
+  format-validation extra. A separate opt-in `format_typing` supplies
+  `uuid.UUID`, `ipaddress.IPv4Address`, `ipaddress.IPv6Address`, `xs:int`,
+  `xs:long`, `xs:float`, `xs:double`, and `xs:base64Binary` views for valid
+  annotated values, including in JSON Schema and OpenAPI XML projection.
+  `regex` follows Python `re` semantics rather than ECMA-262, unlisted formats
+  remain environment-dependent, and native storage and JSON output never
+  change. Validation and conversion each require their own opt-in.
 - A native XSLT transformation engine covering XSLT 1.0, 2.0, and 3.0
   (non-streaming): templates, modes, keys, attribute sets, `xsl:number`
   formatting, result documents, packages, and the XPath 3.1 function library.

@@ -211,9 +211,10 @@ class XmlMapping:
 
         The schema must validate the instance at projection time.
         ``format_assertion`` checks recognized formats during validation;
-        ``format_typing`` independently uses compatible formats to write scalar
-        values. Explicit rules take precedence, and schema defaults are not
-        applied.
+        ``format_typing`` independently formats compatible values through the
+        mapped XSD SimpleTypes or canonical UUID and IP text. Explicit rules
+        take precedence, rejected values keep the native spelling, and schema
+        defaults are not applied.
         """
         from pyxsd.schemaless.json_schema import SchemaGuidance
 
@@ -249,8 +250,9 @@ class XmlMapping:
         name. If only an applicator supplies the root name, it is selected at
         projection time. Explicit rules override individual metadata fields.
         ``format_assertion`` checks recognized formats during validation;
-        ``format_typing`` independently uses compatible formats to write scalar
-        values unless an explicit rule provides a type.
+        ``format_typing`` independently formats compatible values through the
+        mapped XSD SimpleTypes unless an explicit rule provides a type, and
+        rejected values keep the native spelling.
         """
         from pyxsd.schemaless.openapi import compile_openapi_mapping
 
