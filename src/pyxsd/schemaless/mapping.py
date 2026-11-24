@@ -268,13 +268,16 @@ class XmlMapping:
         xml_path: str,
         *,
         item_name: str | None = None,
+        wrapper_item_name: str | None = None,
     ) -> tuple[MappingRule, tuple[OpenApiMetadataWarning, ...]]:
         """Return policy and nonfatal metadata warnings for one occurrence."""
         explicit = self._rules.get(pointer)
         if self._derived is None:
             return (_DEFAULT_RULE if explicit is None else explicit), ()
         assert schema is not None  # from_openapi always projects with a validated schema.
-        return self._derived(pointer, schema, value, explicit, item_name, source, xml_path)
+        return self._derived(
+            pointer, schema, value, explicit, item_name, wrapper_item_name, source, xml_path
+        )
 
 
 def _pointer_problem(pointer: str) -> str:
@@ -537,7 +540,14 @@ class _Projector:
         self, target: _Target, rule: MappingRule, value: NativeJsonValue, pointer: str
     ) -> None:
         if isinstance(value, (dict, list)):
-            self._children(target, rule, value, pointer)
+            # Only an emitted array property has a wrapper name to use as an
+            # OpenAPI default. The XML document root does not name root items.
+            wrapper_item_name = (
+                _split_name(target.element.tag)[1]
+                if pointer and isinstance(value, list) and self._mapping._derived is not None
+                else None
+            )
+            self._children(target, rule, value, pointer, wrapper_item_name=wrapper_item_name)
         elif value is None:
             if rule.null == "empty":
                 self._warn_null("empty", "element", pointer, target.path)
@@ -594,6 +604,8 @@ class _Projector:
         value: dict[str, NativeJsonValue] | list[NativeJsonValue],
         pointer: str,
         item_default: _Name = _ITEM,
+        *,
+        wrapper_item_name: str | None = None,
     ) -> None:
         if isinstance(value, dict):
             if not value:
@@ -631,6 +643,7 @@ class _Projector:
                 f"{pointer}/{index}",
                 pointer,
                 item_name=rule.item_name,
+                wrapper_item_name=wrapper_item_name,
             )
 
     def _emit(
@@ -642,6 +655,7 @@ class _Projector:
         origin: str,
         *,
         item_name: str | None = None,
+        wrapper_item_name: str | None = None,
     ) -> None:
         rule, warnings = self._mapping._rule_at(
             pointer,
@@ -650,6 +664,7 @@ class _Projector:
             self._source,
             parent.path,
             item_name=item_name,
+            wrapper_item_name=wrapper_item_name,
         )
         kind = rule.kind
         if kind is None:

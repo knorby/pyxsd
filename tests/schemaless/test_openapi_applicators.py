@@ -671,3 +671,114 @@ def test_conflicting_direct_defaults_fail_unless_overridden():
     assert doc.to_xml(mapping).to_string() == "<r><child><v>1</v></child></r>"
     schema["patternProperties"]["^child$"]["xml"] = {"nodeType": "none"}
     assert doc.to_xml(XmlMapping.from_openapi(schema)).to_string() == "<r><v>1</v></r>"
+
+
+@pytest.mark.parametrize(
+    ("item_xml", "expected_item_name"), [({}, "aliens"), ({"name": "animal"}, "animal")]
+)
+def test_wrapped_openapi_array_items_default_to_the_resolved_wrapper_name(
+    item_xml, expected_item_name
+):
+    schema = {
+        "xml": {"name": "document"},
+        "properties": {
+            "animals": {
+                "type": "array",
+                "xml": {"nodeType": "element", "name": "aliens"},
+                "items": {"type": "string", "xml": item_xml},
+            }
+        },
+    }
+    xml = from_data({"animals": ["dog", "cat"]}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == (
+        f"<document><aliens><{expected_item_name}>dog</{expected_item_name}>"
+        f"<{expected_item_name}>cat</{expected_item_name}></aliens></document>"
+    )
+    assert not xml.report.issues
+
+
+@pytest.mark.parametrize(
+    ("item_xml", "item_tag", "serialized_item"),
+    [
+        ({}, "aliens", "<aliens>dog</aliens>"),
+        (
+            {"namespace": "urn:item", "prefix": "i"},
+            "{urn:item}aliens",
+            '<i:aliens xmlns:i="urn:item">dog</i:aliens>',
+        ),
+    ],
+)
+def test_wrapped_openapi_arrays_infer_only_the_local_item_name(item_xml, item_tag, serialized_item):
+    schema = {
+        "xml": {"name": "document"},
+        "properties": {
+            "animals": {
+                "type": "array",
+                "allOf": [
+                    {"xml": {"nodeType": "element", "name": "aliens"}},
+                    {"xml": {"namespace": "urn:wrapper", "prefix": "w"}},
+                    {"items": {"type": "string", "xml": item_xml}},
+                ],
+            }
+        },
+    }
+    xml = from_data({"animals": ["dog"]}).to_xml(XmlMapping.from_openapi(schema))
+    (wrapper,) = xml.root.children
+    (item,) = wrapper.children
+    assert (wrapper._name_, item._name_) == ("{urn:wrapper}aliens", item_tag)
+    assert xml.to_string() == (
+        f'<document><w:aliens xmlns:w="urn:wrapper">{serialized_item}</w:aliens></document>'
+    )
+
+
+def test_caller_resolved_wrapper_name_is_the_fallback_but_explicit_item_policy_wins():
+    schema = {
+        "xml": {"name": "r"},
+        "properties": {
+            "v": {
+                "type": "array",
+                "xml": {"nodeType": "element", "name": "schema"},
+                "items": True,
+            }
+        },
+    }
+    data = from_data({"v": ["x"]})
+    mapping = XmlMapping.from_openapi(schema, rules={"/v": MappingRule("caller")})
+    assert data.to_xml(mapping).to_string() == "<r><caller><caller>x</caller></caller></r>"
+    mapping = XmlMapping.from_openapi(
+        schema, rules={"/v": MappingRule("caller", item_name="explicit")}
+    )
+    assert data.to_xml(mapping).to_string() == "<r><caller><explicit>x</explicit></caller></r>"
+
+
+def test_wrapper_naming_does_not_change_non_openapi_array_defaults():
+    schema = {"properties": {"animals": {"type": "array", "items": {"type": "string"}}}}
+    rules = {"/animals": MappingRule(name="aliens")}
+    data = from_data({"animals": ["dog"]})
+    for mapping in (
+        XmlMapping("r", rules=rules),
+        XmlMapping.from_json_schema(schema, root_name="r", rules=rules),
+    ):
+        assert data.to_xml(mapping).to_string() == "<r><aliens><item>dog</item></aliens></r>"
+
+
+def test_wrapper_name_is_not_used_for_array_items_projected_as_attributes():
+    schema = {
+        "xml": {"name": "r"},
+        "properties": {
+            "v": {
+                "type": "array",
+                "xml": {"nodeType": "element", "name": "renamed"},
+                "prefixItems": [{"xml": {"nodeType": "attribute"}}],
+            }
+        },
+    }
+    data = from_data({"v": ["x"]})
+    assert data.to_xml(XmlMapping.from_openapi(schema)).to_string() == '<r><renamed v="x"/></r>'
+
+
+def test_unmodeled_openapi_array_keeps_generic_item_names():
+    mapping = XmlMapping.from_openapi({"xml": {"name": "r"}})
+    assert from_data({"animals": ["dog"]}).to_xml(mapping).to_string() == (
+        "<r><animals><item>dog</item></animals></r>"
+    )

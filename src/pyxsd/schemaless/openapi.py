@@ -79,7 +79,7 @@ class OpenApiMetadataWarning:
 
 
 RuleCallable = Callable[
-    [str, "_AppliedSchema", NativeJsonValue, MappingRule | None, str | None, str, str],
+    [str, "_AppliedSchema", NativeJsonValue, MappingRule | None, str | None, str | None, str, str],
     tuple[MappingRule, tuple[OpenApiMetadataWarning, ...]],
 ]
 
@@ -356,6 +356,7 @@ class _OpenApiMapping:
         document: NativeJsonValue,
         override: MappingRule | None,
         item_name: str | None,
+        wrapper_item_name: str | None,
         source: str,
         xml_path: str,
     ) -> tuple[MappingRule, tuple[OpenApiMetadataWarning, ...]]:
@@ -465,7 +466,11 @@ class _OpenApiMapping:
             if isinstance(resolve_pointer(document, parent), list) and (
                 occurrences or applied.occurrences_at(parent)
             ):
-                name = _inferred_item_name(pointer, document, xml_path, source)
+                # OAS 3.2 XML Arrays: unnamed elements use the wrapper's
+                # local name. Namespace and prefix still come from the item.
+                name = wrapper_item_name if kind == "element" else None
+                if name is None:
+                    name = _inferred_item_name(pointer, document, xml_path, source)
                 if name is None:
                     schema = (occurrences or applied.occurrences_at(parent))[0]
                     report = ValidationReport(diagnostics_complete=True)
