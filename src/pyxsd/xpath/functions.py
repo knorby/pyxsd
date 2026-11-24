@@ -42,6 +42,7 @@ from elementpath.xpath_tokens.functions import XPathFunction
 from pyxsd import xsd_data_types as _xsd
 from pyxsd.namespaces import XSD_NS
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmItem, XdmSequence, as_xdm
+from pyxsd.xdm.nodes import XdmNode
 from pyxsd.xdm.values import canonical_decimal_string, canonical_float_string
 from pyxsd.xpath import continuation
 from pyxsd.xpath.continuation import XPathClosure
@@ -435,7 +436,9 @@ def install_string_conversion_functions(parser: Any) -> None:
 
 
 def _xdm_node(value: Any) -> Any:
-    """The grounded XDM node behind one elementpath value, when it has one."""
+    """The grounded XDM node behind one value, when it has one."""
+    if isinstance(value, XdmNode):
+        return value
     if isinstance(value, XPathNode):
         return getattr(value, "xdm", None)
     return None
@@ -544,30 +547,6 @@ def install_date_time(parser: Any) -> None:
 
     base = parser.symbol_table["dateTime"]
 
-    def convert(self: Any, argument: Any, cls: type[Any]) -> Any:
-        if isinstance(argument, cls):
-            return argument
-        node = getattr(argument, "xdm", None)
-        if node is not None:
-            typed = node.typed_value
-            if len(typed) != 1:
-                raise self.error("XPTY0004", "a dateTime argument must be a single value")
-            argument = typed[0]
-        if isinstance(argument, XdmAtomic):
-            if isinstance(argument.value, cls):
-                return argument.value
-            if _local_atomic_name(argument.type_name) != "untypedAtomic":
-                raise self.error("XPTY0004", "a dateTime argument has the wrong type")
-            lexical = argument.lexical
-        elif isinstance(argument, UntypedAtomic):
-            lexical = str(argument)
-        else:
-            raise self.error("XPTY0004", "a dateTime argument has the wrong type")
-        try:
-            return cls.fromstring(lexical)
-        except (TypeError, ValueError) as exc:
-            raise self.error("FORG0001", str(exc)) from None
-
     def evaluate_date_time(self: Any, context: Any = None) -> Any:
         if len(self) != 2:
             return base.evaluate(self, context)
@@ -576,7 +555,7 @@ def install_date_time(parser: Any) -> None:
             items = tuple(self[index].select(context))
             if len(items) > 1 and not self.parser.compatibility_mode:
                 raise self.error("XPTY0004", "a dateTime argument must be a single value")
-            values.append(None if not items else convert(self, items[0], cls))
+            values.append(None if not items else _date_time_argument(self, items[0], cls))
         saved = list(self._items)
         try:
             self[0:] = tuple(ValueToken(self.parser, value=value) for value in values)
@@ -593,6 +572,32 @@ def install_date_time(parser: Any) -> None:
         sequence_types=getattr(base, "sequence_types", ()),
         evaluate=evaluate_date_time,
     )
+
+
+def _date_time_argument(token: Any, argument: Any, cls: type[Any]) -> Any:
+    """Apply function conversion to one ``fn:dateTime`` operand."""
+    if isinstance(argument, cls):
+        return argument
+    node = getattr(argument, "xdm", None)
+    if node is not None:
+        typed = node.typed_value
+        if len(typed) != 1:
+            raise token.error("XPTY0004", "a dateTime argument must be a single value")
+        argument = typed[0]
+    if isinstance(argument, XdmAtomic):
+        if isinstance(argument.value, cls):
+            return argument.value
+        if _local_atomic_name(argument.type_name) != "untypedAtomic":
+            raise token.error("XPTY0004", "a dateTime argument has the wrong type")
+        lexical = argument.lexical
+    elif isinstance(argument, UntypedAtomic):
+        lexical = str(argument)
+    else:
+        raise token.error("XPTY0004", "a dateTime argument has the wrong type")
+    try:
+        return cls.fromstring(lexical)
+    except (TypeError, ValueError) as exc:
+        raise token.error("FORG0001", str(exc)) from None
 
 
 def _local_atomic_name(type_name: str) -> str:
