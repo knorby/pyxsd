@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from pyxsd.schemaless.json_document import JsonDocument, _JsonSchemaInput
     from pyxsd.schemaless.json_schema import SchemaGuidance, _AppliedSchema
     from pyxsd.schemaless.nodes import _CompiledNodeMapping
+    from pyxsd.schemaless.openapi import OpenApiMetadataWarning
 
 _XSI_NIL = f"{{{XSI_NS}}}nil"
 _XMLNS_NS = "http://www.w3.org/2000/xmlns/"
@@ -158,7 +159,13 @@ class XmlMapping:
         self._default = "elements"
         self._rules: Mapping[str, MappingRule] = MappingProxyType(checked)
         self._guidance: SchemaGuidance | None = None
-        self._derived: Callable[[str, MappingRule | None], MappingRule | None] | None = None
+        self._derived: (
+            Callable[
+                [str, NativeJsonValue, MappingRule | None, bool],
+                tuple[MappingRule | None, tuple[OpenApiMetadataWarning, ...]],
+            ]
+            | None
+        ) = None
 
     @property
     def root_name(self) -> str:
@@ -254,13 +261,15 @@ class XmlMapping:
         mapping._guidance = guidance
         return mapping
 
-    def _rule_at(self, pointer: str) -> MappingRule:
-        """Return explicit policy, or metadata, or the default for *pointer*."""
+    def _rule_at(
+        self, pointer: str, value: NativeJsonValue, *, item_name_explicit: bool = False
+    ) -> tuple[MappingRule, tuple[OpenApiMetadataWarning, ...]]:
+        """Return policy and nonfatal metadata warnings for one occurrence."""
         explicit = self._rules.get(pointer)
         if self._derived is None:
-            return _DEFAULT_RULE if explicit is None else explicit
-        derived = self._derived(pointer, explicit)
-        return _DEFAULT_RULE if derived is None else derived
+            return (_DEFAULT_RULE if explicit is None else explicit), ()
+        derived, warnings = self._derived(pointer, value, explicit, item_name_explicit)
+        return (_DEFAULT_RULE if derived is None else derived), warnings
 
 
 def _pointer_problem(pointer: str) -> str:
@@ -465,11 +474,15 @@ class _Projector:
         self._schema = schema
         self._bindings: dict[ET.Element, dict[str, str]] = {}
         self._uses_xsi = False
+        self._document_value: NativeJsonValue = None
+        self._reported_metadata: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
 
     def build(self, value: NativeJsonValue) -> SchemalessElement:
-        rule = self._mapping._rule_at("")
+        self._document_value = value
+        rule, warnings = self._mapping._rule_at("", value)
         name, path = self._resolve_name(_Name(self._mapping.root_name), rule, "", None, "element")
         self._check_rule(rule, value, "element" if rule.kind is None else rule.kind, "", path)
+        self._emit_metadata_warnings(warnings, "", path)
         if rule.kind not in (None, "element") or rule.array == "unwrapped":
             self._invalid("the root must be a single element", "", path)
         if value is None and rule.null == "omit":
@@ -587,12 +600,28 @@ class _Projector:
         if not value:
             self._warn_empty("array", pointer, target.path)
         for index, member in enumerate(value):
-            self._emit(target, item, member, f"{pointer}/{index}", pointer)
+            self._emit(
+                target,
+                item,
+                member,
+                f"{pointer}/{index}",
+                pointer,
+                item_name_explicit=rule.item_name is not None,
+            )
 
     def _emit(
-        self, parent: _Target, default: _Name, value: NativeJsonValue, pointer: str, origin: str
+        self,
+        parent: _Target,
+        default: _Name,
+        value: NativeJsonValue,
+        pointer: str,
+        origin: str,
+        *,
+        item_name_explicit: bool = False,
     ) -> None:
-        rule = self._mapping._rule_at(pointer)
+        rule, warnings = self._mapping._rule_at(
+            pointer, self._document_value, item_name_explicit=item_name_explicit
+        )
         kind = rule.kind
         if kind is None:
             compact_property = self._mapping.default == "compact" and not default.explicit
@@ -606,6 +635,7 @@ class _Projector:
         else:
             name, path = self._resolve_name(default, rule, pointer, parent, kind)
         self._check_rule(rule, value, kind, pointer, path)
+        self._emit_metadata_warnings(warnings, pointer, path)
 
         if kind == "none":
             if isinstance(value, (dict, list)):
@@ -821,7 +851,24 @@ class _Projector:
             json_kind=kind,
         )
 
-    def _warn(self, code: str, message: str, pointer: str, path: str, **details: str) -> None:
+    def _emit_metadata_warnings(
+        self, warnings: tuple[OpenApiMetadataWarning, ...], pointer: str, path: str
+    ) -> None:
+        for warning in warnings:
+            identity = (warning.schema_pointers, warning.constructs)
+            if identity in self._reported_metadata:
+                continue
+            self._reported_metadata.add(identity)
+            self._warn(
+                "openapi-metadata-unresolved",
+                warning.message,
+                pointer,
+                path,
+                schema_pointers=warning.schema_pointers,
+                constructs=warning.constructs,
+            )
+
+    def _warn(self, code: str, message: str, pointer: str, path: str, **details: object) -> None:
         self._report.add_warning(
             message,
             code=code,

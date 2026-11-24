@@ -10,16 +10,22 @@ OAS 3.2 defaults are honored: an ``$ref``, ``$dynamicRef``, or array schema
 defaults to ``nodeType: "none"`` and every other schema to ``"element"``.
 Names are inferred from a JSON property (or the property that owns array
 items), while a root or component name comes from ``root_name`` or
-``xml.name``. CDATA becomes ordinary text because XDM has no distinct CDATA
-node. Deprecated ``attribute`` and ``wrapped`` fields remain compatible when
-no ``nodeType`` is present.
+``xml.name``. An array item without property context, ``xml.name``, or an
+explicit rule cannot be named and fails. CDATA becomes ordinary text because
+XDM has no distinct CDATA node. Deprecated ``attribute`` and ``wrapped`` fields
+remain compatible when no ``nodeType`` is present.
+
+When instance descent crosses XML metadata that cannot be resolved yet
+(``$ref``, ``$dynamicRef``, ``patternProperties``, or an applicator branch),
+projection reports ``openapi-metadata-unresolved`` and continues with the
+metadata it can apply.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from pyxsd.locations import DataLocation
@@ -27,7 +33,7 @@ from pyxsd.namespaces import clark
 from pyxsd.relaxng.uris import is_uri_reference
 from pyxsd.schemaless.errors import XmlMappingError
 from pyxsd.schemaless.json_schema import SchemaGuidance
-from pyxsd.schemaless.json_values import copy_native_data
+from pyxsd.schemaless.json_values import NativeJsonValue, copy_native_data
 from pyxsd.schemaless.json_xdm import escape_pointer_segment
 from pyxsd.schemaless.mapping import MappingRule
 from pyxsd.validation import ValidationReport
@@ -40,6 +46,16 @@ if TYPE_CHECKING:
 _XmlSchema = Mapping[str, Any] | bool
 _NODE_TYPES = frozenset({"element", "attribute", "text", "cdata", "none"})
 _ABSOLUTE_IRI = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+_APPLICATOR_BRANCHES = (
+    "allOf",
+    "anyOf",
+    "oneOf",
+    "then",
+    "else",
+    "dependentSchemas",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+)
 _SINGLE_SCHEMAS = (
     "additionalProperties",
     "items",
@@ -55,7 +71,27 @@ _SINGLE_SCHEMAS = (
 _SCHEMA_SEQUENCES = ("allOf", "anyOf", "oneOf", "prefixItems")
 _SCHEMA_MAPS = ("properties", "patternProperties", "$defs", "dependentSchemas")
 
-RuleCallable = Callable[[str, MappingRule | None], MappingRule | None]
+#: ASCII characters that cannot appear literally in a namespace name because a
+#: URI reference must percent-encode them. Mirrors the shared mapping policy.
+_NS_FORBIDDEN_ASCII = frozenset(
+    [chr(code) for code in range(0x20)]
+    + [" ", "<", ">", '"', "{", "}", "|", "\\", "^", "`", "\x7f"]
+)
+
+
+@dataclass(frozen=True, slots=True)
+class OpenApiMetadataWarning:
+    """XML metadata that projection could not consult at one occurrence."""
+
+    message: str
+    schema_pointers: tuple[str, ...]
+    constructs: tuple[str, ...]
+
+
+RuleCallable = Callable[
+    [str, NativeJsonValue, MappingRule | None, bool],
+    tuple[MappingRule | None, tuple[OpenApiMetadataWarning, ...]],
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +123,19 @@ def _fail(code: str, message: str, schema_pointer: str, **details: object) -> No
     raise XmlMappingError(report)
 
 
+def _fail_unnamed(pointer: str, schema_pointer: str) -> NoReturn:
+    """Reject an array item with no property context and no explicit name."""
+    report = ValidationReport(diagnostics_complete=True)
+    report.add_error(
+        "OpenAPI array items need xml.name or an explicit name",
+        code="unnamed-openapi-array-item",
+        location=DataLocation(None, pointer),
+        location_precision="exact",
+        details={"json_pointer": pointer, "schema_pointer": schema_pointer},
+    )
+    raise XmlMappingError(report)
+
+
 def _declares_array(schema: Mapping[str, Any]) -> bool:
     """Whether a schema declares the array type, including a nullable union."""
     declared = schema.get("type")
@@ -96,8 +145,9 @@ def _declares_array(schema: Mapping[str, Any]) -> bool:
 
 
 def _check_namespace(namespace: str, pointer: str) -> None:
-    """Require OAS 3.2's non-relative IRI for an XML namespace name."""
-    if not _ABSOLUTE_IRI.match(namespace) or not is_uri_reference(namespace):
+    """Require OAS 3.2's non-relative, literal namespace IRI."""
+    literal = not any(ord(char) <= 0x7F and char in _NS_FORBIDDEN_ASCII for char in namespace)
+    if not _ABSOLUTE_IRI.match(namespace) or not literal or not is_uri_reference(namespace):
         _fail(
             "invalid-openapi-namespace",
             f"an OpenAPI XML namespace must be a non-relative IRI; got {namespace!r}",
@@ -192,9 +242,16 @@ def _node_type(schema: Mapping[str, Any], xml: _XmlObject) -> str:
 
 
 def _merge(base: MappingRule, override: MappingRule | None) -> MappingRule:
-    """Layer explicit user policy over metadata, field by field."""
+    """Layer explicit user policy over metadata, field by field.
+
+    An explicit ``none`` or ``text`` kind replaces the metadata rule: those
+    kinds cannot carry the naming, binding, array, or value fields that an
+    element or attribute rule may hold.
+    """
     if override is None:
         return base
+    if override.kind in ("none", "text"):
+        return override
     return MappingRule(
         name=override.name if override.name is not None else base.name,
         kind=override.kind if override.kind is not None else base.kind,
@@ -230,6 +287,72 @@ def _schema_children(schema: Mapping[str, Any], pointer: str) -> Iterator[tuple[
                 yield cast(_XmlSchema, child), f"{pointer}/{keyword}/{escape_pointer_segment(name)}"
 
 
+def _has_xml(schema: _XmlSchema) -> bool:
+    """Whether *schema* or any schema it can reach carries an XML Object."""
+    if isinstance(schema, bool):
+        return False
+    return "xml" in schema or any(_has_xml(child) for child, _ in _schema_children(schema, ""))
+
+
+def _local_target(root: _XmlSchema, ref: str) -> tuple[_XmlSchema, str] | None:
+    """Resolve a local JSON Pointer reference, without resolving anchors."""
+    if not isinstance(ref, str) or not ref.startswith("#/"):
+        return None
+    pointer = ref[1:]
+    value: object = root
+    for raw in pointer[1:].split("/"):
+        token = raw.replace("~1", "/").replace("~0", "~")
+        if isinstance(value, Mapping) and token in value:
+            value = value[token]
+        elif isinstance(value, list) and token.isdigit() and int(token) < len(value):
+            value = value[int(token)]
+        else:
+            return None  # pragma: no cover - an unresolvable pointer cannot validate an instance
+    if isinstance(value, (Mapping, bool)):
+        return value, pointer
+    return None  # pragma: no cover - a reference to a non-schema cannot validate an instance
+
+
+def _anchor_target(root: _XmlSchema, ref: str) -> tuple[_XmlSchema, str] | None:
+    """Find a local ``$dynamicAnchor`` or ``$anchor`` target for warning purposes."""
+    if not isinstance(ref, str) or not ref.startswith("#") or ref.startswith("#/"):
+        return None
+    anchor = ref[1:]
+    if not anchor:
+        return root, ""
+    stack: list[tuple[_XmlSchema, str]] = [(root, "")]
+    while stack:
+        schema, pointer = stack.pop()
+        if isinstance(schema, bool):
+            continue  # pragma: no cover - booleans carry no anchors
+        if anchor in (schema.get("$dynamicAnchor"), schema.get("$anchor")):
+            return schema, pointer
+        stack.extend(_schema_children(schema, pointer))
+    return None  # pragma: no cover - an unresolved anchor cannot validate an instance
+
+
+def _applicator_children(
+    schema: Mapping[str, Any], pointer: str
+) -> Iterator[tuple[_XmlSchema, str, str]]:
+    """Yield branches whose annotations this adapter does not reconcile yet."""
+    for keyword in _APPLICATOR_BRANCHES:
+        if keyword not in schema:
+            continue
+        children = schema[keyword]
+        if keyword == "dependentSchemas":
+            for name, child in children.items():
+                yield (
+                    cast(_XmlSchema, child),
+                    f"{pointer}/{keyword}/{escape_pointer_segment(name)}",
+                    keyword,
+                )
+        elif keyword in ("allOf", "anyOf", "oneOf"):
+            for index, child in enumerate(children):
+                yield cast(_XmlSchema, child), f"{pointer}/{keyword}/{index}", keyword
+        else:
+            yield cast(_XmlSchema, children), f"{pointer}/{keyword}", keyword
+
+
 class _OpenApiMapping:
     """Compiled metadata lookup for one selected OpenAPI Schema Object."""
 
@@ -249,30 +372,104 @@ class _OpenApiMapping:
     def _xml_for(self, schema: Mapping[str, Any]) -> _XmlObject:
         return self._xml.get(id(schema), _EMPTY_XML)
 
-    def rule_at(self, pointer: str, override: MappingRule | None) -> MappingRule | None:
+    def rule_at(
+        self,
+        pointer: str,
+        document_value: NativeJsonValue,
+        override: MappingRule | None,
+        item_name_explicit: bool,
+    ) -> tuple[MappingRule | None, tuple[OpenApiMetadataWarning, ...]]:
         """Return the metadata rule at an instance pointer layered under *override*."""
+        warnings: list[OpenApiMetadataWarning] = []
         if not pointer:
-            return _merge(MappingRule(prefix=self._root_prefix), override)
-        located = self._locate(pointer)
+            if not isinstance(self._schema, bool):
+                warnings.extend(self._unresolved_at(self._schema, "", None, document_value))
+            base = MappingRule(prefix=self._root_prefix)
+            return _merge(base, override), tuple(warnings)
+        located = self._locate(pointer, document_value, warnings)
         if located is None:
-            return override
-        schema, inferred = located
-        return _merge(self._rule_for(schema, inferred), override)
+            return override, tuple(warnings)
+        schema, inferred, schema_pointer = located
+        merged = _merge(self._rule_for(schema, inferred), override)
+        if item_name_explicit and (override is None or override.name is None):
+            merged = replace(merged, name=None)
+        if (
+            merged.kind in ("element", "attribute")
+            and merged.name is None
+            and not item_name_explicit
+        ):
+            _fail_unnamed(pointer, schema_pointer)
+        return merged, tuple(warnings)
 
-    def _locate(self, pointer: str) -> tuple[_XmlSchema, str | None] | None:
-        """Follow properties and array items to the schema at *pointer*."""
+    def _unresolved_at(
+        self,
+        schema: Mapping[str, Any],
+        schema_pointer: str,
+        token: str | None,
+        value: NativeJsonValue,
+    ) -> tuple[OpenApiMetadataWarning, ...]:
+        """Report XML metadata hidden behind constructs Task 19 will resolve."""
+        pointers: list[str] = []
+        constructs: list[str] = []
+        for keyword in ("$ref", "$dynamicRef"):
+            if keyword not in schema:
+                continue
+            ref = schema[keyword]
+            target = _local_target(self._schema, ref) or _anchor_target(self._schema, ref)
+            if target is None or _has_xml(target[0]):
+                pointers.append(target[1] if target is not None else f"{schema_pointer}/{keyword}")
+                constructs.append(keyword)
+        if isinstance(value, Mapping) and token is not None:
+            patterns = schema.get("patternProperties")
+            if isinstance(patterns, Mapping):
+                for pattern, child in patterns.items():
+                    if re.search(pattern, token) is not None and _has_xml(child):
+                        pointers.append(
+                            f"{schema_pointer}/patternProperties/{escape_pointer_segment(pattern)}"
+                        )
+                        constructs.append("patternProperties")
+        for child, child_pointer, keyword in _applicator_children(schema, schema_pointer):
+            if _has_xml(child):
+                pointers.append(child_pointer)
+                constructs.append(keyword)
+        if not pointers:
+            return ()
+        message = (
+            "OpenAPI XML metadata at "
+            + ", ".join(dict.fromkeys(pointers))
+            + " was not applied because "
+            + ", ".join(dict.fromkeys(constructs))
+            + " is not resolved"
+        )
+        return (
+            OpenApiMetadataWarning(
+                message,
+                tuple(dict.fromkeys(pointers)),
+                tuple(dict.fromkeys(constructs)),
+            ),
+        )
+
+    def _locate(
+        self, pointer: str, document_value: NativeJsonValue, warnings: list[OpenApiMetadataWarning]
+    ) -> tuple[_XmlSchema, str | None, str] | None:
+        """Follow object members and array items by the actual native value kind."""
         schema = self._schema
+        schema_pointer = ""
         inferred: str | None = None
+        value = document_value
         for token in _pointer_tokens(pointer):
             if isinstance(schema, bool):
                 return None
-            located = _member_schema(schema, token)
+            warnings.extend(self._unresolved_at(schema, schema_pointer, token, value))
+            located = _member_schema(schema, schema_pointer, token, value)
             if located is None:
                 return None
-            schema, is_item = located
+            schema, schema_pointer, is_item, value = located
             if not is_item:
                 inferred = token
-        return schema, inferred
+        if not isinstance(schema, bool):
+            warnings.extend(self._unresolved_at(schema, schema_pointer, None, value))
+        return schema, inferred, schema_pointer
 
     def _rule_for(self, schema: _XmlSchema, inferred: str | None) -> MappingRule:
         if isinstance(schema, bool):
@@ -298,22 +495,40 @@ class _OpenApiMapping:
         )
 
 
-def _member_schema(schema: Mapping[str, Any], token: str) -> tuple[_XmlSchema, bool] | None:
-    """Follow one pointer token, preferring a named property over an index."""
-    properties = schema.get("properties")
-    if isinstance(properties, Mapping) and token in properties:
-        return cast(_XmlSchema, properties[token]), False
-    if _declares_array(schema) or "items" in schema or "prefixItems" in schema:
+def _member_schema(
+    schema: Mapping[str, Any],
+    schema_pointer: str,
+    token: str,
+    value: NativeJsonValue,
+) -> tuple[_XmlSchema, str, bool, NativeJsonValue] | None:
+    """Follow one pointer token according to the native container that owns it."""
+    if isinstance(value, dict):
+        properties = schema.get("properties")
+        if isinstance(properties, Mapping) and token in properties:
+            pointer = f"{schema_pointer}/properties/{escape_pointer_segment(token)}"
+            return cast(_XmlSchema, properties[token]), pointer, False, value[token]
+        if "additionalProperties" in schema:
+            return (
+                cast(_XmlSchema, schema["additionalProperties"]),
+                f"{schema_pointer}/additionalProperties",
+                False,
+                value[token],
+            )
+        return None
+    if isinstance(value, list):
         index = int(token)
         prefix = schema.get("prefixItems")
         if isinstance(prefix, list) and index < len(prefix):
-            return cast(_XmlSchema, prefix[index]), True
+            return (
+                cast(_XmlSchema, prefix[index]),
+                f"{schema_pointer}/prefixItems/{index}",
+                True,
+                value[index],
+            )
         if "items" in schema:
-            return cast(_XmlSchema, schema["items"]), True
-        return {}, True
-    if "additionalProperties" in schema:
-        return cast(_XmlSchema, schema["additionalProperties"]), False
-    return None
+            return cast(_XmlSchema, schema["items"]), f"{schema_pointer}/items", True, value[index]
+        return {}, f"{schema_pointer}/items", True, value[index]
+    return None  # pragma: no cover - a present pointer cannot descend below a scalar
 
 
 def compile_openapi_mapping(

@@ -218,11 +218,110 @@ def test_openapi_prefix_items_name_ordered_elements():
     assert [node._name_ for node in xml.root.children] == ["One", "Two"]
 
 
-def test_openapi_root_array_items_have_no_inferred_name():
+def test_openapi_unnamed_root_array_items_fail():
     schema = {"type": "array", "items": {"type": "string"}}
-    xml = from_data(["a"]).to_xml(XmlMapping.from_openapi(schema, root_name="rows"))
-    assert xml.root._name_ == "rows"
-    assert [node._name_ for node in xml.root.children] == ["item"]
+    mapping = XmlMapping.from_openapi(schema, root_name="rows")
+    with pytest.raises(XmlMappingError, match="xml.name or an explicit"):
+        from_data(["a"]).to_xml(mapping)
+
+
+@pytest.mark.parametrize(
+    ("schema", "rules"),
+    [
+        (
+            {
+                "type": "array",
+                "items": {"type": "string", "xml": {"name": "row"}},
+            },
+            None,
+        ),
+        ({"type": "array", "items": {"type": "string"}}, {"/0": MappingRule(name="row")}),
+        ({"type": "array", "items": {"type": "string"}}, {"": MappingRule(item_name="row")}),
+    ],
+)
+def test_openapi_root_array_items_accept_a_name(schema, rules):
+    mapping = XmlMapping.from_openapi(schema, root_name="rows", rules=rules)
+    xml = from_data(["a"]).to_xml(mapping)
+    assert [node._name_ for node in xml.root.children] == ["row"]
+
+
+def test_openapi_object_with_items_uses_object_member_descent():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "items": {"type": "string", "xml": {"name": "ignored"}},
+        "additionalProperties": {
+            "type": "object",
+            "properties": {"id": {"type": "string", "xml": {"nodeType": "attribute"}}},
+        },
+    }
+    xml = from_data({"member": {"id": "x"}}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == '<r><member id="x"/></r>'
+
+
+def test_openapi_dynamic_ref_defaults_to_none():
+    schema = {
+        "$id": "https://example.test/orders",
+        "type": "object",
+        "xml": {"name": "r"},
+        "$defs": {
+            "node": {
+                "$dynamicAnchor": "node",
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+            }
+        },
+        "properties": {"child": {"$dynamicRef": "#node"}},
+        "additionalProperties": True,
+    }
+    xml = from_data({"child": {"id": "x"}}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == "<r><id>x</id></r>"
+    assert not [issue for issue in xml.report.issues if issue.code == "openapi-metadata-unresolved"]
+
+
+def test_openapi_nullable_array_declaration_defaults_to_none():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {
+            "rows": {
+                "type": ["array", "null"],
+                "items": {"type": "string", "xml": {"name": "row"}},
+            }
+        },
+    }
+    xml = from_data({"rows": ["a"]}).to_xml(XmlMapping.from_openapi(schema))
+    assert [node._name_ for node in xml.root.children] == ["row"]
+
+
+def test_openapi_additional_properties_without_xml_name_use_the_instance_key():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "additionalProperties": {"type": "string"},
+    }
+    xml = from_data({"other": "x"}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == "<r><other>x</other></r>"
+
+
+def test_openapi_non_ascii_namespace_name_is_valid():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {"value": {"type": "string", "xml": {"namespace": "urn:é"}}},
+    }
+    xml = from_data({"value": "v"}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.root.children[0]._name_ == "{urn:é}value"
+
+
+def test_openapi_absolute_namespace_must_still_be_a_uri_reference():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {"value": {"type": "string", "xml": {"namespace": "urn:bad space"}}},
+    }
+    with pytest.raises(XmlMappingError, match="non-relative"):
+        XmlMapping.from_openapi(schema)
 
 
 @pytest.mark.parametrize(
@@ -323,6 +422,317 @@ def test_openapi_explicit_rules_override_metadata_fields():
     assert xml.root.children[0]._name_ == "{urn:x}identifier"
 
 
+def test_openapi_explicit_none_kind_drops_metadata_naming():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {
+            "flat": {
+                "type": "object",
+                "xml": {"name": "skip", "namespace": "urn:skip", "prefix": "s"},
+                "properties": {"a": {"type": "string"}},
+            }
+        },
+    }
+    mapping = XmlMapping.from_openapi(schema, rules={"/flat": MappingRule(kind="none")})
+    xml = from_data({"flat": {"a": "v"}}).to_xml(mapping)
+    assert xml.to_string() == "<r><a>v</a></r>"
+
+
+def test_openapi_explicit_text_kind_drops_metadata_naming():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {
+            "label": {
+                "type": "string",
+                "xml": {"name": "renamed", "namespace": "urn:skip", "prefix": "s"},
+            }
+        },
+    }
+    mapping = XmlMapping.from_openapi(schema, rules={"/label": MappingRule(kind="text")})
+    xml = from_data({"label": "v"}).to_xml(mapping)
+    assert xml.to_string() == "<r>v</r>"
+
+
+def test_openapi_rule_overrides_metadata_name():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {"value": {"type": "string", "xml": {"name": "meta"}}},
+    }
+    mapping = XmlMapping.from_openapi(schema, rules={"/value": MappingRule(name="user")})
+    xml = from_data({"value": "v"}).to_xml(mapping)
+    assert [node._name_ for node in xml.root.children] == ["user"]
+
+
+def test_openapi_rule_overrides_metadata_namespace():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {"value": {"type": "string", "xml": {"namespace": "urn:meta"}}},
+    }
+    mapping = XmlMapping.from_openapi(schema, rules={"/value": MappingRule(namespace="urn:user")})
+    xml = from_data({"value": "v"}).to_xml(mapping)
+    assert xml.root.children[0]._name_ == "{urn:user}value"
+
+
+def test_openapi_rule_overrides_metadata_prefix():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {
+            "value": {"type": "string", "xml": {"namespace": "urn:meta", "prefix": "m"}}
+        },
+    }
+    mapping = XmlMapping.from_openapi(schema, rules={"/value": MappingRule(prefix="p")})
+    xml = from_data({"value": "v"}).to_xml(mapping)
+    assert xml.root.children[0].namespaces == {"p": "urn:meta"}
+
+
+def test_openapi_rule_overrides_metadata_array_wrapping():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {
+            "rows": {
+                "type": "array",
+                "xml": {"nodeType": "element"},
+                "items": {"type": "string", "xml": {"name": "row"}},
+            }
+        },
+    }
+    mapping = XmlMapping.from_openapi(schema, rules={"/rows": MappingRule(array="unwrapped")})
+    xml = from_data({"rows": ["a"]}).to_xml(mapping)
+    assert xml.to_string() == "<r><row>a</row></r>"
+
+
+def test_openapi_item_name_overrides_metadata_item_name():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {
+            "rows": {
+                "type": "array",
+                "items": {"type": "string", "xml": {"name": "meta"}},
+            }
+        },
+    }
+    mapping = XmlMapping.from_openapi(schema, rules={"/rows": MappingRule(item_name="user")})
+    xml = from_data({"rows": ["a"]}).to_xml(mapping)
+    assert xml.to_string() == "<r><user>a</user></r>"
+
+
+def test_openapi_rule_overrides_metadata_null_policy():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {"value": {"type": ["string", "null"]}},
+    }
+    mapping = XmlMapping.from_openapi(schema, rules={"/value": MappingRule(null="omit")})
+    xml = from_data({"value": None}).to_xml(mapping)
+    assert not xml.root.children
+    assert [(issue.code, issue.details["json_pointer"]) for issue in xml.report.issues] == [
+        ("null-omitted", "/value")
+    ]
+
+
+def test_openapi_rule_overrides_metadata_type():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {"value": {"type": "string"}},
+    }
+    mapping = XmlMapping.from_openapi(schema, rules={"/value": MappingRule(type="xs:integer")})
+    xml = from_data({"value": "0007"}).to_xml(mapping)
+    assert xml.root.children[0].text_value() == "7"
+
+
+def test_openapi_rule_overrides_metadata_order():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+    }
+    mapping = XmlMapping.from_openapi(schema, rules={"": MappingRule(order=("b", "a"))})
+    xml = from_data({"a": 1, "b": 2}).to_xml(mapping)
+    assert [node._name_ for node in xml.root.children] == ["b", "a"]
+
+
+def test_openapi_ref_with_xml_metadata_warns_and_projects_unchanged():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "$defs": {
+            "child": {
+                "type": "object",
+                "properties": {"id": {"type": "string", "xml": {"nodeType": "attribute"}}},
+            }
+        },
+        "properties": {"child": {"$ref": "#/$defs/child"}},
+    }
+    xml = from_data({"child": {"id": "x"}}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == "<r><id>x</id></r>"
+    (issue,) = [item for item in xml.report.issues if item.code == "openapi-metadata-unresolved"]
+    assert issue.location.pointer == "/child"
+    assert issue.details["schema_pointers"] == ("/$defs/child",)
+    assert issue.details["constructs"] == ("$ref",)
+    assert issue.details["xml_path"] == "/r[1]"
+
+
+def test_openapi_dynamic_ref_with_xml_metadata_warns():
+    schema = {
+        "$id": "https://example.test/orders",
+        "type": "object",
+        "xml": {"name": "r"},
+        "$defs": {
+            "node": {
+                "$dynamicAnchor": "node",
+                "type": "object",
+                "properties": {"id": {"type": "string", "xml": {"nodeType": "attribute"}}},
+            }
+        },
+        "properties": {"child": {"$dynamicRef": "#node"}},
+    }
+    xml = from_data({"child": {"id": "x"}}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == "<r><id>x</id></r>"
+    (issue,) = [item for item in xml.report.issues if item.code == "openapi-metadata-unresolved"]
+    assert issue.location.pointer == "/child"
+    assert issue.details["schema_pointers"] == ("/$defs/node",)
+    assert issue.details["constructs"] == ("$dynamicRef",)
+
+
+def test_openapi_ref_through_an_array_pointer_warns():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "allOf": [
+            {
+                "type": "object",
+                "properties": {"id": {"type": "string", "xml": {"nodeType": "attribute"}}},
+            }
+        ],
+        "properties": {"child": {"$ref": "#/allOf/0"}},
+    }
+    xml = from_data({"child": {"id": "x"}}).to_xml(XmlMapping.from_openapi(schema))
+    refs = [
+        issue
+        for issue in xml.report.issues
+        if issue.code == "openapi-metadata-unresolved" and issue.details["constructs"] == ("$ref",)
+    ]
+    assert [issue.details["schema_pointers"] for issue in refs] == [("/allOf/0",)]
+
+
+def test_openapi_ref_to_the_root_warns_once():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {"child": {"$ref": "#"}},
+    }
+    xml = from_data({"child": {}}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == "<r/>"
+    (issue,) = [item for item in xml.report.issues if item.code == "openapi-metadata-unresolved"]
+    assert issue.details["schema_pointers"] == ("",)
+    assert issue.details["constructs"] == ("$ref",)
+
+
+def test_openapi_pattern_properties_with_xml_metadata_warns_and_projects_unchanged():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "patternProperties": {"^x": {"type": "string", "xml": {"name": "renamed"}}},
+    }
+    xml = from_data({"xa": "v"}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == "<r><xa>v</xa></r>"
+    (issue,) = [item for item in xml.report.issues if item.code == "openapi-metadata-unresolved"]
+    assert issue.location.pointer == "/xa"
+    assert issue.details["schema_pointers"] == ("/patternProperties/^x",)
+    assert issue.details["constructs"] == ("patternProperties",)
+
+
+def test_openapi_applicator_with_xml_metadata_warns_and_projects_unchanged():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {
+            "child": {
+                "type": "object",
+                "allOf": [
+                    {"properties": {"id": {"type": "string", "xml": {"nodeType": "attribute"}}}}
+                ],
+            }
+        },
+    }
+    xml = from_data({"child": {"id": "x"}}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == "<r><child><id>x</id></child></r>"
+    (issue,) = [item for item in xml.report.issues if item.code == "openapi-metadata-unresolved"]
+    assert issue.location.pointer == "/child"
+    assert issue.details["schema_pointers"] == ("/properties/child/allOf/0",)
+    assert issue.details["constructs"] == ("allOf",)
+
+
+def test_openapi_applicator_without_xml_metadata_does_not_warn():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {
+            "child": {
+                "type": "object",
+                "allOf": [True, {"properties": {"id": {"type": "string"}}}],
+            }
+        },
+    }
+    xml = from_data({"child": {"id": "x"}}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == "<r><child><id>x</id></child></r>"
+    assert not xml.report.issues
+
+
+def test_openapi_dependent_schemas_with_xml_metadata_warns():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {"a": {"type": "integer"}, "id": {"type": "string"}},
+        "dependentSchemas": {
+            "a": {"properties": {"id": {"type": "string", "xml": {"nodeType": "attribute"}}}}
+        },
+    }
+    xml = from_data({"a": 1, "id": "x"}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == "<r><a>1</a><id>x</id></r>"
+    (issue,) = [item for item in xml.report.issues if item.code == "openapi-metadata-unresolved"]
+    assert issue.details["schema_pointers"] == ("/dependentSchemas/a",)
+    assert issue.details["constructs"] == ("dependentSchemas",)
+
+
+def test_openapi_then_branch_with_xml_metadata_warns():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "properties": {"choose": {"const": "x"}, "id": {"type": "string"}},
+        "if": {"properties": {"choose": {"const": "x"}}},
+        "then": {"properties": {"id": {"type": "string", "xml": {"nodeType": "attribute"}}}},
+    }
+    xml = from_data({"choose": "x", "id": "v"}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == "<r><choose>x</choose><id>v</id></r>"
+    (issue,) = [item for item in xml.report.issues if item.code == "openapi-metadata-unresolved"]
+    assert issue.details["schema_pointers"] == ("/then",)
+    assert issue.details["constructs"] == ("then",)
+
+
+def test_openapi_pattern_properties_without_xml_metadata_do_not_warn():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r"},
+        "patternProperties": {
+            "^x": {"type": "string", "xml": {"name": "renamed"}},
+            "^o": {"type": "string"},
+        },
+        "additionalProperties": {"type": "string"},
+    }
+    xml = from_data({"other": "v"}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == "<r><other>v</other></r>"
+    assert not xml.report.issues
+
+
 def test_openapi_root_name_overrides_xml_name_but_not_namespace():
     schema = {"type": "object", "xml": {"name": "doc", "namespace": "urn:d"}}
     xml = from_data({}).to_xml(XmlMapping.from_openapi(schema, root_name="r"))
@@ -386,6 +796,37 @@ def test_openapi_boolean_schema_needs_an_explicit_root_name():
 def test_openapi_malformed_xml_objects_are_rejected(xml, message):
     with pytest.raises(XmlMappingError, match=message):
         XmlMapping.from_openapi({"type": "object", "xml": xml}, root_name="r")
+
+
+@pytest.mark.parametrize(
+    ("keyword", "container"),
+    [
+        ("contains", "schema"),
+        ("propertyNames", "schema"),
+        ("not", "schema"),
+        ("if", "schema"),
+        ("then", "schema"),
+        ("else", "schema"),
+        ("unevaluatedItems", "schema"),
+        ("unevaluatedProperties", "schema"),
+        ("patternProperties", "map"),
+        ("dependentSchemas", "map"),
+        ("allOf", "list"),
+        ("anyOf", "list"),
+        ("oneOf", "list"),
+    ],
+)
+def test_openapi_validates_xml_objects_under_schema_keywords(keyword, container):
+    nested = {"xml": "not-an-object"}
+    if container == "map":
+        value = {"x": nested}
+    elif container == "list":
+        value = [nested]
+    else:
+        value = nested
+    schema = {"type": "object", "xml": {"name": "r"}, keyword: value}
+    with pytest.raises(XmlMappingError, match="xml field must be an object"):
+        XmlMapping.from_openapi(schema)
 
 
 def test_openapi_root_name_must_be_a_string():
