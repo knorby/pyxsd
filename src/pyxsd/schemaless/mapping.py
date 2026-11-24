@@ -18,7 +18,7 @@ a non-fatal warning on the derived document's report.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from decimal import Decimal
 from types import MappingProxyType
@@ -116,7 +116,7 @@ class XmlMapping:
     because only then are their XML paths known.
     """
 
-    __slots__ = ("_default", "_guidance", "_root_name", "_rules")
+    __slots__ = ("_default", "_derived", "_guidance", "_root_name", "_rules")
 
     def __init__(
         self,
@@ -158,6 +158,7 @@ class XmlMapping:
         self._default = "elements"
         self._rules: Mapping[str, MappingRule] = MappingProxyType(checked)
         self._guidance: SchemaGuidance | None = None
+        self._derived: Callable[[str, MappingRule | None], MappingRule | None] | None = None
 
     @property
     def root_name(self) -> str:
@@ -217,6 +218,49 @@ class XmlMapping:
             resource_policy=resource_policy,
         )
         return mapping
+
+    @classmethod
+    def from_openapi(
+        cls,
+        schema_object: Mapping[str, object] | bool,
+        *,
+        root_name: str | None = None,
+        rules: Mapping[str, MappingRule] | None = None,
+        base_uri: str | None = None,
+        reference_registry: SchemaRegistry | None = None,
+        resource_policy: ResourcePolicy | None = None,
+        dialect: str | None = None,
+    ) -> XmlMapping:
+        """Compile an element-first mapping from an OpenAPI Schema Object.
+
+        XML Objects on the selected schema and the properties, items, and
+        prefix items it names directly supply node kinds, names, namespaces,
+        and array wrapping. ``root_name`` takes precedence over ``xml.name``
+        for the document element. Explicit rules override individual metadata
+        fields, and the schema still validates the instance before projection.
+        """
+        from pyxsd.schemaless.openapi import compile_openapi_mapping
+
+        guidance, selected, rule_at = compile_openapi_mapping(
+            schema_object,
+            root_name=root_name,
+            dialect=dialect,
+            base_uri=base_uri,
+            reference_registry=reference_registry,
+            resource_policy=resource_policy,
+        )
+        mapping = cls(selected, rules=rules)
+        mapping._derived = rule_at
+        mapping._guidance = guidance
+        return mapping
+
+    def _rule_at(self, pointer: str) -> MappingRule:
+        """Return explicit policy, or metadata, or the default for *pointer*."""
+        explicit = self._rules.get(pointer)
+        if self._derived is None:
+            return _DEFAULT_RULE if explicit is None else explicit
+        derived = self._derived(pointer, explicit)
+        return _DEFAULT_RULE if derived is None else derived
 
 
 def _pointer_problem(pointer: str) -> str:
@@ -423,7 +467,7 @@ class _Projector:
         self._uses_xsi = False
 
     def build(self, value: NativeJsonValue) -> SchemalessElement:
-        rule = self._mapping.rules.get("", _DEFAULT_RULE)
+        rule = self._mapping._rule_at("")
         name, path = self._resolve_name(_Name(self._mapping.root_name), rule, "", None, "element")
         self._check_rule(rule, value, "element" if rule.kind is None else rule.kind, "", path)
         if rule.kind not in (None, "element") or rule.array == "unwrapped":
@@ -548,7 +592,7 @@ class _Projector:
     def _emit(
         self, parent: _Target, default: _Name, value: NativeJsonValue, pointer: str, origin: str
     ) -> None:
-        rule = self._mapping.rules.get(pointer, _DEFAULT_RULE)
+        rule = self._mapping._rule_at(pointer)
         kind = rule.kind
         if kind is None:
             compact_property = self._mapping.default == "compact" and not default.explicit
