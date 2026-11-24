@@ -1219,3 +1219,84 @@ def test_2_0_format_integer_grouping_and_invalid_pictures() -> None:
         with pytest.raises(XsltDynamicError) as caught:
             native_transform(invalid)
         assert caught.value.code == "FODF1310"
+
+
+def test_2_0_date_time_picture_error_paths() -> None:
+    """Malformed brackets, calendars, and widths report FOFD1340."""
+    for picture in ("[Y", "[Y[x]", "]"):
+        body = (
+            '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
+            '<xsl:template name="main">'
+            f"<xsl:value-of select=\"format-date($d, '{picture}')\"/>"
+            "</xsl:template>"
+        )
+        with pytest.raises(XsltDynamicError) as caught:
+            native_transform(body)
+        assert caught.value.code == "FOFD1340"
+
+    for calendar in ("Q{}", "Q{bad"):
+        body = (
+            '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
+            '<xsl:template name="main">'
+            f"<xsl:value-of select=\"format-date($d, '[Y]', 'en', '{calendar}', ())\"/>"
+            "</xsl:template>"
+        )
+        with pytest.raises(XsltDynamicError) as caught:
+            native_transform(body)
+        assert caught.value.code == "FOFD1340"
+
+
+def test_2_0_date_time_roman_and_fraction_widths() -> None:
+    """A roman numeral and a fraction accept empty/bounded widths."""
+    body = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2003-12-07T12:34:56.123456Z')\"/>"
+        '<xsl:template name="main">'
+        '<xsl:value-of separator="|" select="format-dateTime($t, \'[Mi]\'), '
+        "format-dateTime($t, '[f,2-*]'), format-dateTime($t, '[ZN]')\"/>"
+        "</xsl:template>"
+    )
+    formatted = _formatted(body)
+    assert formatted.split("|")[0] == "xii"
+    assert formatted.split("|")[1].startswith("12")
+
+
+def test_2_0_format_integer_edge_pictures() -> None:
+    """Empty arguments, ordinals, negatives, and bad pictures are covered."""
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:value-of separator="|" select="format-integer((), \'1\'), '
+        "format-integer(-12, '1'), format-integer(3, '1;o')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "|-12|3rd"
+
+    for picture in (";c", "0#", "x0", "\u0661\u0967"):
+        body = (
+            '<xsl:template name="main">'
+            f"<xsl:value-of select=\"format-integer(1, '{picture}')\"/>"
+            "</xsl:template>"
+        )
+        with pytest.raises(XsltDynamicError) as caught:
+            native_transform(body)
+        assert caught.value.code == "FODF1310"
+
+
+def test_2_0_date_time_empty_and_multiple_values() -> None:
+    """The format functions enforce one atomic argument."""
+    body = (
+        '<xsl:template name="main">'
+        "<out><xsl:value-of select=\"format-date((), '[Y]')\"/>"
+        "<xsl:value-of select=\"format-integer((), '1')\"/></out>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == ""
+
+    multiple = (
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-date((xs:date('2003-01-01'), xs:date('2004-01-01')), '[Y]')\"/>"
+        "</xsl:template>"
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        native_transform(multiple)
+    assert caught.value.code == "XPTY0004"

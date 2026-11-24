@@ -1939,3 +1939,84 @@ def test_descendant_text_orders_items_across_documents() -> None:
     """
     result = transform(stylesheet(body), initial_template="main")
     assert result.principal[0].string_value == "first|second"
+
+
+def test_concat_and_replace_cover_empty_and_invalid_arguments() -> None:
+    """Empty concat items, regex flags, and bad replacements use F&O codes."""
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="concat((), 'x')"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "x"
+
+    for expression, code in (
+        ("replace('Abc', 'b', 'x', 'i')", None),
+        ("replace('a', 'a', 'x', 'z')", "FORX0001"),
+        ("replace('a', '.*', 'x')", "FORX0003"),
+        ("replace('a', 'a', '\\')", "FORX0004"),
+        ("replace('a', 'a', '$x')", "FORX0004"),
+    ):
+        body = (
+            '<xsl:template name="main">'
+            f'<out><xsl:value-of select="{expression}"/></out>'
+            "</xsl:template>"
+        )
+        if code is None:
+            result = transform(stylesheet(body), initial_template="main")
+            assert result.principal[0].string_value == "Axc"
+        else:
+            assert (
+                error_code(lambda body=body: transform(stylesheet(body), initial_template="main"))
+                == code
+            )
+
+    non_strict = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="replace('a', 'a', '\\q')"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(non_strict), initial_template="main")
+    assert result.principal[0].string_value == "\\q"
+
+    absent_group = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="replace('a', '(a)', '[$9]')"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(absent_group), initial_template="main")
+    assert result.principal[0].string_value == "[]"
+
+
+def test_seconds_without_a_fraction_return_an_integer() -> None:
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="seconds-from-dateTime(xs:dateTime('2002-06-15T12:27:30'))"/>
+               <xsl:value-of select="seconds-from-time(xs:time('12:27:30'))"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "3030"
+
+
+def test_arithmetic_operand_and_error_paths() -> None:
+    """Date/date addition, incompatible operands, and division errors report codes."""
+    for expression, code in (
+        ("xs:date('2003-01-01') + xs:date('2003-01-02')", "XPTY0004"),
+        ("xs:date('2003-01-01') + 1", "XPTY0004"),
+        ("1 div 0", "FOAR0001"),
+    ):
+        body = f'<xsl:template name="main"><xsl:value-of select="{expression}"/></xsl:template>'
+        assert (
+            error_code(lambda body=body: transform(stylesheet(body), initial_template="main"))
+            == code
+        )
+
+    promoted = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="xs:float(1.5) + xs:decimal('1.5')"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(promoted), initial_template="main")
+    assert result.principal[0].string_value == "3"

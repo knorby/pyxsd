@@ -416,3 +416,41 @@ def test_equal_string_values_keep_distinct_type_annotations(tmp_path: Path) -> N
         },
     )
     assert result.principal_entry.serialized.endswith(">truefalsefalsetrue</out>")
+
+
+def test_date_time_argument_enforces_cardinality_and_node_atomization(
+    pool: SchemaPool,
+) -> None:
+    from pyxsd.xslt.runtime.functions import _date_time_argument
+
+    with pytest.raises(XsltError) as caught:
+        _date_time_argument(((XdmAtomic.string("a"), XdmAtomic.string("b")),), "date")
+    assert caught.value.code == "XPTY0004"
+
+    typed = parse_typed_document(
+        f'<a xmlns="{SUP}"><b>x</b></a>'.encode(), schema_pool=pool, validation="strict"
+    )
+    with pytest.raises(XsltError) as caught:
+        _date_time_argument(((typed.root_element,),), "date")
+    assert caught.value.code == "XPTY0004"
+
+    with pytest.raises(XsltError) as caught:
+        _date_time_argument((("not-an-atomic",),), "date")
+    assert caught.value.code == "XPTY0004"
+
+
+def test_temporal_sort_key_errors_and_implicit_timezone() -> None:
+    from datetime import UTC
+
+    from pyxsd import xsd_data_types as xsd
+    from pyxsd.xslt.runtime.iteration import _compare_datetime
+
+    invalid = SimpleNamespace(lexical="not-a-date", type_name=f"{{{XSD_NS}}}date")
+    with pytest.raises(XsltError) as caught:
+        _compare_datetime(invalid, invalid, None)
+    assert caught.value.code == "XTDE1030"
+
+    early = XdmAtomic(xsd.DateTime("2000-01-01T00:00:00"), f"{{{XSD_NS}}}dateTime", xsd.DateTime)
+    late = XdmAtomic(xsd.DateTime("2000-01-02T00:00:00"), f"{{{XSD_NS}}}dateTime", xsd.DateTime)
+    assert _compare_datetime(early, late, UTC) < 0
+    assert _compare_datetime(late, early, UTC) > 0
