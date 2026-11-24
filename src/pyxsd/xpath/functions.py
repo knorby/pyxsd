@@ -561,7 +561,13 @@ def install_date_time(parser: Any) -> None:
             values.append(None if not items else _date_time_argument(self, items[0], cls))
         saved = list(self._items)
         try:
-            self[0:] = tuple(ValueToken(self.parser, value=value) for value in values)
+            # ValueToken keeps ``None`` as the class sentinel, so an empty
+            # operand must be represented by an empty list; otherwise select()
+            # yields the literal string ``'(value)'`` and the base token reports
+            # a spurious type error instead of returning the empty sequence.
+            self[0:] = tuple(
+                ValueToken(self.parser, value=[] if value is None else value) for value in values
+            )
             return base.evaluate(self, context)
         finally:
             self[0:] = tuple(saved)

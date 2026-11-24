@@ -1145,3 +1145,33 @@ def test_error_namespace_code_is_normalized_for_assertions_and_dynamic_errors() 
     from pyxsd.xslt.errors import expanded_error_code
 
     assert expanded_error_code("err:XTMM9001") == f"{{{ERROR_NS}}}XTMM9001"
+
+
+def test_dynamic_static_analysis_error_is_xtde3160_and_catchable() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:try>
+            <xsl:evaluate xpath="'1 instance of my:unknown'" schema-aware="no"/>
+            <xsl:catch select="'caught'"/>
+          </xsl:try>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.string("caught"),
+    )
+
+
+def test_dynamic_with_params_missing_variable_keeps_xpst0008() -> None:
+    source = stylesheet(
+        """
+        <xsl:param name="expression" select="'$p1 + $p2'"/>
+        <xsl:template name="main">
+          <xsl:evaluate xpath="$expression" with-params="map{xs:QName('p3'): 3}">
+            <xsl:with-param name="p1" select="1"/>
+          </xsl:evaluate>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(source, initial_template="main")) == "XPST0008"

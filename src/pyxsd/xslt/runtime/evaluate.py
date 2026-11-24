@@ -313,6 +313,7 @@ def evaluate_dynamic(
     *,
     focus: Focus,
     cache: DynamicExpressionCache,
+    dynamic_variables: bool = False,
 ) -> XdmSequence:
     """Compile and evaluate one target expression through the Task 11 engine."""
     if not isinstance(environment, ExpressionEnvironment):
@@ -332,10 +333,19 @@ def evaluate_dynamic(
         if is_budget_alarm(exc):
             raise
         code = error_code_from_exception(exc)
-        if code == "XPST0008":
+        if code == "XPST0008" and not dynamic_variables:
             raise XsltDynamicError(
                 f"the dynamic XPath expression {expression!r} references a "
                 f"variable that is not visible: {exc}",
+                code="XTDE3160",
+                cause=exc,
+            ) from exc
+        if code is not None and code.startswith("XPST") and code != "XPST0008":
+            # A static analysis error in the target expression is XTDE3160
+            # (XSLT 3.0 §10.4), not the original XPST code; elementpath raises
+            # some of them lazily while evaluating ``instance of``/casts.
+            raise XsltDynamicError(
+                f"the dynamic XPath expression {expression!r} is not valid: {exc}",
                 code="XTDE3160",
                 cause=exc,
             ) from exc
@@ -496,6 +506,7 @@ def execute_dynamic_evaluate(
         environment,
         focus=expression_focus,
         cache=invocation.dynamic_expressions,
+        dynamic_variables=plan.with_params_expression is not None,
     )
     if plan.sequence_type is not None:
         result = invocation._coerce(

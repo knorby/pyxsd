@@ -1325,18 +1325,7 @@ class _ValueBridge:
     def _function_item(self, token: XPathFunction) -> XdmFunction:
         context = self._context
         assert context is not None
-        nargs = getattr(token, "nargs", None)
-        arity: int | tuple[int, int | None]
-        if isinstance(nargs, tuple):
-            arity = _arity_tuple(nargs)
-        elif isinstance(nargs, int):
-            arity = nargs
-        else:
-            # An anonymous inline function or a partial application carries no
-            # ``nargs``; its arity is its parsed parameter count.
-            arity = getattr(token, "arity", len(token))
-            if not isinstance(arity, int):  # pragma: no cover - defensive
-                arity = (0, None)
+        arity = _function_item_arity(token)
         name = getattr(token, "name", None)
         if not isinstance(name, str) or not name:
             name = _token_function_name(token)
@@ -2931,6 +2920,21 @@ def _install_schema_kind_tests(parser: Any) -> None:
         nud=nud_schema_attribute,
         select=select_schema_attribute,
     )
+
+
+def _function_item_arity(token: XPathFunction) -> int | tuple[int, int | None]:
+    """The arity one function token reports when converted to an XDM item.
+
+    A reference or variadic token has an explicit ``nargs`` (an integer or a
+    ``(minimum, maximum)`` range).  An anonymous inline function and a partial
+    application have no ``nargs``; their parsed parameter count is the arity.
+    """
+    nargs = getattr(token, "nargs", None)
+    if isinstance(nargs, tuple):
+        return _arity_tuple(nargs)
+    if isinstance(nargs, int):
+        return nargs
+    return len(token)
 
 
 def _external_function(

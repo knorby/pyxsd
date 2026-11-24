@@ -18,6 +18,7 @@ from tests.xslt.support import transform
 
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmMap
 from pyxsd.xdm.nodes import XdmDocument
+from pyxsd.xpath.engine import _function_item_arity
 from pyxsd.xpath.functions import _date_time_argument, xdm_deep_equal
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltStaticError
@@ -702,6 +703,56 @@ def test_deep_equal_with_a_collation_uses_the_substrate_rule() -> None:
     )
     assert transform(source, initial_template="main", delivery="raw").principal == (
         XdmAtomic.boolean(True),
+    )
+
+
+def test_date_time_returns_empty_for_an_empty_operand() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="empty(dateTime((), xs:time('01:02:03'))),
+            empty(dateTime(xs:date('2020-01-01'), ())),
+            empty(dateTime((), ())),
+            empty(dateTime(/*/@missing, /*/t))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(
+        source, b"<doc><t>01:02:03</t></doc>", initial_template="main", delivery="raw"
+    ).principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+    )
+
+
+def test_function_item_arity_helper_accepts_every_nargs_shape() -> None:
+    class Token:
+        def __init__(self, nargs: Any, count: int) -> None:
+            self.nargs = nargs
+            self._count = count
+
+        def __len__(self) -> int:
+            return self._count
+
+    assert _function_item_arity(Token((1, 2), 0)) == (1, 2)  # type: ignore[arg-type]
+    assert _function_item_arity(Token(2, 0)) == 2  # type: ignore[arg-type]
+    assert _function_item_arity(Token(None, 3)) == 3  # type: ignore[arg-type]
+
+
+def test_function_item_keeps_a_variadic_core_function_arity() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="f" select="function-lookup(
+            QName('http://www.w3.org/2005/xpath-functions', 'key'), 2)"/>
+          <xsl:sequence select="function-arity($f)"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.integer(2),
     )
 
 
