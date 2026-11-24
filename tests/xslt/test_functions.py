@@ -1903,3 +1903,39 @@ def test_instance_of_a_typed_element_uses_the_annotation_matcher() -> None:
     """
     result = transform(stylesheet(body), initial_template="main")
     assert result.principal[0].string_value == "truefalse"
+
+
+def test_replace_with_q_flag_keeps_backslash_and_dollar_literal() -> None:
+    """A literal pattern protects the replacement from group expansion."""
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="replace('a.b', '.', '\\$0', 'q')"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "a\\$0b"
+
+
+def test_seconds_from_an_empty_sequence_is_empty() -> None:
+    """A missing date/time argument yields an empty sequence, not an error."""
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="seconds-from-dateTime(()), seconds-from-time(())"
+                               separator="|"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == ""
+
+
+def test_descendant_text_orders_items_across_documents() -> None:
+    """``//`` keeps each document's own order when the sequence spans trees."""
+    body = """
+        <xsl:variable name="a">first</xsl:variable>
+        <xsl:variable name="b">second</xsl:variable>
+        <xsl:template name="main">
+          <out><xsl:value-of select="($a, $b)//text()" separator="|"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "first|second"

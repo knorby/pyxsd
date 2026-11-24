@@ -1176,3 +1176,46 @@ def test_native_rejects_static_variables() -> None:
         XsltProcessor(**NATIVE).compile(io.BytesIO(source))
     assert caught.value.code == "XTSE0090"
     assert "static" in str(caught.value)
+
+
+def test_2_0_date_time_place_argument_uses_a_timezone() -> None:
+    """The fifth argument shifts the value into the named IANA zone."""
+    formatter = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2003-12-07T12:00:00Z')\"/>"
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-dateTime($t, '[H01]', 'en', (), 'Europe/London')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(formatter) == "12"
+
+    invalid = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2003-12-07T12:00:00Z')\"/>"
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-dateTime($t, '[H01]', 'en', (), 'Nowhere/Nothing')\"/>"
+        "</xsl:template>"
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        native_transform(invalid)
+    assert caught.value.code == "FOFD1340"
+
+
+def test_2_0_format_integer_grouping_and_invalid_pictures() -> None:
+    """Decimal grouping pictures work and malformed pictures are FODF1310."""
+    grouped = (
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-integer(1234, '#,##0')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(grouped) == "1,234"
+
+    for picture in ("x;c", "1;x", "#"):
+        invalid = (
+            '<xsl:template name="main">'
+            f"<xsl:value-of select=\"format-integer(1, '{picture}')\"/>"
+            "</xsl:template>"
+        )
+        with pytest.raises(XsltDynamicError) as caught:
+            native_transform(invalid)
+        assert caught.value.code == "FODF1310"
