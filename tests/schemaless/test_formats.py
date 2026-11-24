@@ -392,3 +392,51 @@ def test_openapi_numeric_and_byte_format_assertions_are_opt_in(
 def test_base64_content_encoding_stays_annotation_only():
     schema = {"type": "string", "contentEncoding": "base64"}
     assert from_data("YR==", json_schema=schema, format_assertion=True).is_valid
+
+
+def test_float_assertion_rejects_host_float_at_binary32_overflow_midpoint():
+    value = float.fromhex("0x1.ffffffp+127")
+    schema = {"format": "float"}
+    assert from_data(value, json_schema=schema).is_valid
+    invalid = from_data(value, json_schema=schema, format_assertion=True)
+    assert not invalid.is_valid
+    location = invalid.report.issues[0].location
+    assert isinstance(location, DataLocation)
+    assert location.schema_pointer == "/format"
+
+
+def test_int64_assertion_accepts_host_float_at_exact_lower_boundary():
+    value = float(-(2**63))
+    schema = {"type": "integer", "format": "int64"}
+    assert from_data(value, json_schema=schema, format_assertion=True).is_valid
+
+
+def test_nested_float_assertion_distinguishes_host_float_from_its_decimal_spelling():
+    host_float = float.fromhex("0x1.ffffffp+127")
+    decimal = Decimal(str(host_float))
+    schema = {
+        "properties": {
+            "values": {"items": {"format": "float", "const": decimal}},
+        },
+    }
+    invalid = from_data(
+        {"values": [decimal, host_float]}, json_schema=schema, format_assertion=True
+    )
+    assert not invalid.is_valid
+    (issue,) = invalid.report.issues
+    location = issue.location
+    assert isinstance(location, DataLocation)
+    assert location.pointer == "/values/1"
+    assert location.schema_pointer == "/properties/values/items/format"
+    stored_decimal = invalid.value_at("/values/0")
+    stored_float = invalid.value_at("/values/1")
+    assert type(stored_decimal) is Decimal
+    assert type(stored_float) is float
+    assert stored_decimal == decimal
+    assert stored_float == host_float
+
+
+@pytest.mark.parametrize("format_assertion", [False, True])
+def test_format_assertion_keeps_decimal_normalization_for_other_keywords(format_assertion):
+    schema = '{"type":"number","format":"double","multipleOf":0.1,"const":0.3,"maximum":0.3}'
+    assert from_data(0.3, json_schema=schema, format_assertion=format_assertion).is_valid

@@ -80,18 +80,36 @@ class _EvaluationInteger(int):
         return integer_to_decimal(self)
 
 
-def _evaluation_numbers(value: NativeJsonValue) -> NativeJsonValue:
+class _EvaluationFloat(Decimal):
+    """Keep the shortest decimal for evaluation and the host float for formats."""
+
+    original: float
+
+    def __new__(cls, value: float) -> _EvaluationFloat:
+        normalized = super().__new__(cls, str(value))
+        normalized.original = value
+        return normalized
+
+
+def _evaluation_numbers(
+    value: NativeJsonValue, *, preserve_host_floats: bool = False
+) -> NativeJsonValue:
     """Adapt numbers for evaluation and diagnostics without changing storage."""
     if isinstance(value, float):
-        return Decimal(str(value))
+        return _EvaluationFloat(value) if preserve_host_floats else Decimal(str(value))
     # jsonschema interpolates repr() before we can translate its diagnostics.
     # 2,048 bits is below Python's smallest nonzero limit of 640 digits.
     if isinstance(value, int) and value.bit_length() > 2048:
         return _EvaluationInteger(value)
     if isinstance(value, dict):
-        return {key: _evaluation_numbers(child) for key, child in value.items()}
+        return {
+            key: _evaluation_numbers(child, preserve_host_floats=preserve_host_floats)
+            for key, child in value.items()
+        }
     if isinstance(value, list):
-        return [_evaluation_numbers(child) for child in value]
+        return [
+            _evaluation_numbers(child, preserve_host_floats=preserve_host_floats) for child in value
+        ]
     return value
 
 
@@ -401,12 +419,19 @@ def _evaluator(schemas: _Schemas) -> Any:
     """Extend only the upstream boundary for native numbers and exact locations."""
     api = schemas.api
     draft = schemas.draft
+    draft_format = draft.VALIDATORS["format"]
 
     def multiple_of(validator: Any, divisor: Any, instance: Any, schema: Any) -> Iterator[Any]:
         if validator.is_type(instance, "number") and not _is_multiple(
             Decimal(instance), Decimal(divisor)
         ):
             yield api.ValidationError("The value is not a multiple of the required number")
+
+    def check_format(
+        validator: Any, name: str, instance: NativeJsonValue, schema: Schema
+    ) -> Iterator[Any]:
+        value = instance.original if isinstance(instance, _EvaluationFloat) else instance
+        return draft_format(validator, name, value, schema)
 
     def locate(keyword: str, evaluate: Any) -> Any:
         def evaluate_located(
@@ -421,6 +446,7 @@ def _evaluator(schemas: _Schemas) -> Any:
         return evaluate_located
 
     keywords = {key: locate(key, evaluate) for key, evaluate in draft.VALIDATORS.items()}
+    keywords["format"] = locate("format", check_format)
     keywords["multipleOf"] = locate("multipleOf", multiple_of)
     evaluator = _keep_extensions(
         api.validators.extend(draft, validators=keywords, type_checker=schemas.integer_checker)
@@ -784,7 +810,9 @@ class SchemaGuidance:
         try:
             with policy_compilation(self._policy, root_read=False):
                 validator = self._validator.evolve(_resolver=self._resolver.for_evaluation())
-                normalized = _evaluation_numbers(value)
+                normalized = _evaluation_numbers(
+                    value, preserve_host_floats=validator.format_checker is not None
+                )
                 failures = sorted(validator.iter_errors(normalized), key=_error_order)
         except RecursionError as exc:
             raise JsonSchemaError(
