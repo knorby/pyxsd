@@ -1140,6 +1140,19 @@ def test_host_argument_shapes_and_invalid_target() -> None:
         call_host_function(object(), ())
 
 
+def test_function_item_arity_accepts_a_variadic_host_token() -> None:
+    from pyxsd.xpath.engine import _build_parser, _function_item_arity
+
+    parser = _build_parser("3.1", XPathStaticContext(), key=False)
+    token = HostFunctionToken(
+        parser,
+        lambda *args: args,
+        item_converter=lambda item: item,
+    )
+    assert token.nargs == (0, None)
+    assert _function_item_arity(token) == (0, None)
+
+
 def test_function_arity_signatures(monkeypatch: pytest.MonkeyPatch) -> None:
     from pyxsd.xpath.functions import function_arity
 
