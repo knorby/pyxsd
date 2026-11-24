@@ -434,6 +434,7 @@ class SchemaOccurrence:
     instance_pointer: str
     schema_pointer: str
     _schema_source: str | None = field(default=None, kw_only=True, repr=False, compare=False)
+    _is_direct: bool = field(default=False, kw_only=True, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,6 +443,7 @@ class _Application:
 
     validator: Any
     path: _Path
+    is_direct: bool = False
 
     def child(self, schema: Schema, *path: str | int) -> _Application:
         resolver = self.validator._resolver
@@ -583,6 +585,7 @@ class _AppliedSchema:
             _schema_source=item.validator._resolver.schemas.locations.get(id(schema), ((), None))[
                 1
             ],
+            _is_direct=item.is_direct,
         )
 
     def metadata_gaps_at(
@@ -599,7 +602,8 @@ class _AppliedSchema:
                 candidates: list[_Application] = []
                 for item in self._initial(pointer):
                     path = item.path
-                    candidates.extend(self._expand(item, selected, set()))
+                    direct = replace(item, is_direct=True)
+                    candidates.extend(self._expand(direct, selected, set()))
                 applications = tuple(candidates)
             except (JsonSchemaError, RecursionError, _GuidanceCycle, re.error, OverflowError):
                 # Validation could short-circuit an alternative whose

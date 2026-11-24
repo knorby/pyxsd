@@ -562,3 +562,112 @@ def test_legacy_attribute_false_does_not_wrap_an_array():
     }
     xml = from_data({"v": ["x"]}).to_xml(XmlMapping.from_openapi(schema))
     assert xml.to_string() == "<r><v>x</v></r>"
+
+
+def test_property_oneof_ref_preserves_the_property_element():
+    schema = {
+        "xml": {"name": "pet"},
+        "properties": {"animal": {"oneOf": [{"$ref": "#/$defs/Cat"}]}},
+        "$defs": {
+            "Cat": {
+                "type": "object",
+                "properties": {"kind": {"const": "cat"}, "meow": {"type": "string"}},
+            }
+        },
+    }
+    xml = from_data({"animal": {"kind": "cat", "meow": "m"}}).to_xml(
+        XmlMapping.from_openapi(schema)
+    )
+    assert xml.to_string() == "<pet><animal><kind>cat</kind><meow>m</meow></animal></pet>"
+    assert not xml.report.issues
+
+
+def test_property_anyof_selects_a_ref_without_flattening_the_property():
+    schema = {
+        "xml": {"name": "pet"},
+        "properties": {"animal": {"anyOf": [{"$ref": "#/$defs/Dog"}, {"$ref": "#/$defs/Cat"}]}},
+        "$defs": {
+            "Dog": {
+                "properties": {
+                    "kind": {"const": "dog"},
+                    "sound": {"xml": {"name": "bark"}},
+                },
+                "required": ["kind"],
+            },
+            "Cat": {
+                "properties": {
+                    "kind": {"const": "cat"},
+                    "sound": {"xml": {"name": "meow"}},
+                },
+                "required": ["kind"],
+            },
+        },
+    }
+    xml = from_data({"animal": {"kind": "cat", "sound": "m"}}).to_xml(
+        XmlMapping.from_openapi(schema)
+    )
+    assert xml.to_string() == "<pet><animal><kind>cat</kind><meow>m</meow></animal></pet>"
+    assert not xml.report.issues
+
+
+def test_property_allof_ref_preserves_the_extending_object_element():
+    schema = {
+        "xml": {"name": "r"},
+        "$defs": {"base": {"type": "object", "properties": {"v": {"type": "integer"}}}},
+        "properties": {
+            "child": {
+                "type": "object",
+                "allOf": [{"$ref": "#/$defs/base"}],
+                "properties": {"w": {"type": "integer"}},
+            }
+        },
+    }
+    xml = from_data({"child": {"v": 1, "w": 2}}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == "<r><child><v>1</v><w>2</w></child></r>"
+    assert not xml.report.issues
+
+
+def test_array_ref_under_allof_preserves_the_property_wrapper():
+    schema = {
+        "xml": {"name": "r"},
+        "$defs": {"rows": {"type": "array", "items": {"xml": {"name": "row"}}}},
+        "properties": {"wrapper": {"allOf": [{"$ref": "#/$defs/rows"}]}},
+    }
+    xml = from_data({"wrapper": [1, 2]}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == "<r><wrapper><row>1</row><row>2</row></wrapper></r>"
+    assert not xml.report.issues
+
+
+def test_direct_ref_and_array_defaults_still_inline_members():
+    schema = {
+        "xml": {"name": "r"},
+        "$defs": {"base": {"type": "object", "properties": {"v": {"type": "integer"}}}},
+        "properties": {
+            "child": {"$ref": "#/$defs/base"},
+            "rows": {"type": "array", "items": {"xml": {"name": "row"}}},
+        },
+    }
+    xml = from_data({"child": {"v": 1}, "rows": [2]}).to_xml(XmlMapping.from_openapi(schema))
+    assert xml.to_string() == "<r><v>1</v><row>2</row></r>"
+    assert not xml.report.issues
+
+
+def test_conflicting_direct_defaults_fail_unless_overridden():
+    schema = {
+        "xml": {"name": "r"},
+        "$defs": {"base": {"type": "object", "properties": {"v": {"type": "integer"}}}},
+        "properties": {"child": {"$ref": "#/$defs/base"}},
+        "patternProperties": {"^child$": {"type": "object"}},
+    }
+    doc = from_data({"child": {"v": 1}})
+    with pytest.raises(XmlMappingError, match="ambiguous") as caught:
+        doc.to_xml(XmlMapping.from_openapi(schema))
+    (issue,) = caught.value.report.issues
+    assert issue.location.pointer == "/child"
+    assert issue.details["field"] == "kind"
+    assert issue.details["schema_pointers"] == ("/properties/child", "/patternProperties/^child$")
+
+    mapping = XmlMapping.from_openapi(schema, rules={"/child": MappingRule(kind="element")})
+    assert doc.to_xml(mapping).to_string() == "<r><child><v>1</v></child></r>"
+    schema["patternProperties"]["^child$"]["xml"] = {"nodeType": "none"}
+    assert doc.to_xml(XmlMapping.from_openapi(schema)).to_string() == "<r><v>1</v></r>"

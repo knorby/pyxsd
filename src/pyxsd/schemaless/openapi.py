@@ -387,9 +387,24 @@ class _OpenApiMapping:
                 )
             kind = "element" if override.kind is None else override.kind
         elif kind is None:
-            # Defaults are not assertions. In particular a plain reference must
-            # not suppress the XML Object on the schema it applies.
-            has_named_metadata = any(
+            # Same-location expansions contribute XML fields, not defaults for
+            # the enclosing member. Each direct Schema Object has its own default.
+            kind = (
+                _pick(
+                    "kind",
+                    (
+                        ("none" if a.transparent else "element", a.occurrence)
+                        for a in annotations
+                        if a.occurrence._is_direct
+                    ),
+                    pointer,
+                    source,
+                )
+                or "element"
+            )
+            # A transparent schema must not suppress a named XML Object on a
+            # referenced or otherwise applied schema.
+            if kind == "none" and any(
                 not a.transparent
                 and (
                     a.xml.name is not None
@@ -397,12 +412,8 @@ class _OpenApiMapping:
                     or a.xml.prefix is not None
                 )
                 for a in annotations
-            )
-            kind = (
-                "none"
-                if not has_named_metadata and any(a.transparent for a in annotations)
-                else "element"
-            )
+            ):
+                kind = "element"
         if kind in ("none", "text"):
             return replace(override, kind=kind), warnings
 
