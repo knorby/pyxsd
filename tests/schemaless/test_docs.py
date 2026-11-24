@@ -5,6 +5,7 @@ XML, JSON, or schema fixture. The assertions below then name the behaviors the
 guide must demonstrate, so a prose-only rewrite cannot silently drop them.
 """
 
+import io
 import os
 import re
 from pathlib import Path
@@ -82,6 +83,10 @@ def test_failed_pin_guide_qualifies_which_exports_stay_available():
     assert "default typed `to_dict()` and `to_data()` raise `ScalarTypeError`" in prose
     assert "native exports requested with `typed=False`" in prose
     assert "untyped XDM" in prose
+    assert (
+        "until a later `pin_type()` replaces the failing pin or the document is reparsed" in prose
+    )
+    assert "pin is removed" not in prose
 
     inferred = _load("pin_failure")["inferred"]
     assert inferred.root.children[1].text_value() == "true"
@@ -91,6 +96,32 @@ def test_failed_pin_guide_qualifies_which_exports_stay_available():
         with pytest.raises(ScalarTypeError):
             export()
     assert inferred.to_xdm() is not None
+
+    assert not inferred.pin_type("/r/active", "xs:string").has_errors
+    assert inferred.to_dict() == {"id": "02138", "active": "true", "note": 12}
+
+
+def test_guide_distinguishes_xml_attribute_normalization_from_xsd_rules():
+    from pyxsd.schemaless import parse_xml
+
+    prose = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    assert "applies no XSD whitespace normalization" in prose
+    assert "XML's own attribute-value normalization still applies" in prose
+    assert "normalize attribute values" not in prose
+
+    document = parse_xml(io.StringIO('<r a="x\ny\tz" b="  padded  "/>'))
+    assert document.root.attribute_lexical("a") == "x y z"
+    assert document.root.attribute_lexical("b") == "  padded  "
+
+
+def test_guide_qualifies_a_paired_singular_child_and_lists_api_entry_points():
+    prose = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    assert (
+        "raises instead of choosing one unless the same class also declares the matching "
+        "`children()` view" in prose
+    )
+    assert "Public signatures" not in prose
+    assert "Public entry points and reference classes" in prose
 
 
 def test_json_parse_error_guide_distinguishes_positions_from_value_failures():

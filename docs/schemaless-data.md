@@ -45,7 +45,10 @@ until an operation asks for schema guidance. The optional extra is
 `parse_xml()` accepts a path, bytes, text or binary streams, or a caller-built
 ElementTree element. It applies the opt-in parser policy and limits described
 in {doc}`xml-security`. The lexical stores remain authoritative: parsing does
-not trim text, normalize attribute values, or interpret leading zeros.
+not interpret leading zeros and applies no XSD whitespace normalization to
+element or attribute content. XML's own attribute-value normalization still
+applies, so a literal newline or tab inside an attribute value is stored as a
+space.
 
 ```python
 import io
@@ -107,8 +110,8 @@ non-strict booleans such as `True`; candidates are ranked deterministically.
 in the document's policy: typed reads at the failing occurrences raise
 `ScalarTypeError`. Lexical reads, writing, untyped XDM, and native exports
 requested with `typed=False` remain available; the default typed `to_dict()`
-and `to_data()` raise `ScalarTypeError` until the pin is removed or those
-exports are requested lexically. Built-in XSD scalar types and custom
+and `to_data()` raise `ScalarTypeError` until a later `pin_type()` replaces the
+failing pin or the document is reparsed. Built-in XSD scalar types and custom
 `ScalarAdapter` objects are supported; there is no built-in UUID type.
 
 `profile()` walks one current revision and returns a bounded, immutable
@@ -159,10 +162,11 @@ assert mapped.root.note == ""
 Registrations are document-local. Matching classes combine in deterministic
 registration order, class identity stays stable for the document's lifetime,
 and there is no process-global type registry. A singular `child()` that sees
-repeated elements raises instead of choosing one; there is no unrestricted
-attribute lookup that could hide method, namespace, or mixed-content
-ambiguity. See {doc}`extensions` for the established mixin precedence
-discipline.
+repeated elements raises instead of choosing one unless the same class also
+declares the matching `children()` view, which makes the repetition explicit.
+There is no unrestricted attribute lookup that could hide method, namespace,
+or mixed-content ambiguity. See {doc}`extensions` for the established mixin
+precedence discipline.
 
 ## Native JSON
 
@@ -502,4 +506,4 @@ or stay in XDM when source-complete document-centric XML must survive editing.
   {doc}`data-conversion`.
 - Mixin selectors and precedence: {doc}`extensions`.
 - Optional integration installs: {doc}`integrations`.
-- Public signatures and reference classes: {doc}`api`.
+- Public entry points and reference classes: {doc}`api`.
