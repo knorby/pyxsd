@@ -21,7 +21,7 @@ jobs:
       fail-fast: false
       matrix:
         archive: [wheel, sdist]
-        extra: ["", mcp, mcp-all]
+        extra: ["", jsonschema, mcp, mcp-all]
     env:
       ARCHIVE: ${{ matrix.archive }}
       EXTRA: ${{ matrix.extra }}
@@ -70,8 +70,28 @@ jobs:
               assert importlib.util.find_spec("pyarrow") is not None
           else:
               assert importlib.util.find_spec("pyarrow") is None
-          assert (importlib.util.find_spec("mcp") is not None) == bool(os.environ["EXTRA"])
-          if os.environ["EXTRA"]:
+          mcp_extra = os.environ["EXTRA"] in {"mcp", "mcp-all"}
+          assert (importlib.util.find_spec("mcp") is not None) == mcp_extra
+          if os.environ["EXTRA"] == "jsonschema":
+              assert importlib.util.find_spec("jsonschema") is not None
+              from pyxsd.schemaless import XmlMapping, from_data
+
+              guidance = {
+                  "type": "object",
+                  "properties": {
+                      "id": {"type": "integer"},
+                      "lines": {"type": "array", "items": {"type": "integer"}},
+                  },
+              }
+              document = from_data({"id": 7, "lines": [1, 2]}, json_schema=guidance)
+              assert document.is_valid
+              projected = document.to_xml(XmlMapping.from_json_schema(guidance, root_name="order"))
+              assert projected.to_string() == (
+                  "<order><id>7</id><lines><item>1</item><item>2</item></lines></order>"
+              )
+          elif os.environ["EXTRA"] == "":
+              assert importlib.util.find_spec("jsonschema") is None
+          if mcp_extra:
               import anyio
               from mcp import ClientSession, StdioServerParameters
               from mcp.client.stdio import stdio_client
@@ -97,7 +117,7 @@ jobs:
               anyio.run(check_tools)
           PY
           "$RUNNER_TEMP/pyxsd-release-smoke/bin/pyxsd" --version
-          if [ -n "$EXTRA" ]; then
+          if [ "$EXTRA" = mcp ] || [ "$EXTRA" = mcp-all ]; then
             "$RUNNER_TEMP/pyxsd-release-smoke/bin/pyxsd-mcp" --help
           fi
 

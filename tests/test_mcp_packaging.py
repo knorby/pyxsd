@@ -25,14 +25,16 @@ def optional_requirements(extra: str) -> set[tuple[str, str]]:
     }
 
 
-def test_mcp_all_is_exact_union_of_mcp_pydantic_and_arrow():
+def test_mcp_all_is_exact_union_of_mcp_pydantic_arrow_and_jsonschema():
     assert optional_requirements("mcp-all") == (
         optional_requirements("mcp")
         | optional_requirements("pydantic")
         | optional_requirements("arrow")
+        | optional_requirements("jsonschema")
     )
     assert ("pyarrow", ">=22") in optional_requirements("mcp-all")
     assert "pyarrow" not in enabled_requirement_names("mcp")
+    assert "jsonschema" not in enabled_requirement_names("mcp")
 
 
 def test_mcp_extra_resolves_without_installing_arrow():
