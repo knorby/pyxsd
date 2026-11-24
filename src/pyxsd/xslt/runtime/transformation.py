@@ -577,7 +577,6 @@ class Transformation:
                     or name is None
                     or arity is None
                     or component.hidden
-                    or component.abstract
                 ):
                     continue
                 table[(name, arity)] = HostFunction(
@@ -605,12 +604,7 @@ class Transformation:
         if package is not None:
             for component in package.components.values():
                 name = component.name
-                if (
-                    component.kind != "function"
-                    or name is None
-                    or component.hidden
-                    or component.abstract
-                ):
+                if component.kind != "function" or name is None or component.hidden:
                     continue
                 components.setdefault(name, []).append(component)
         table = {

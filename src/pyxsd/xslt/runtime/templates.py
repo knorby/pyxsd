@@ -1278,8 +1278,8 @@ def resolve_template(
         if target is not None:
             if target.abstract:
                 raise XsltDynamicError(
-                    "the abstract component has no executable original implementation",
-                    code="XTDE0040",
+                    "an invocation of an abstract component is not permitted",
+                    code="XTDE3052",
                 )
             return target
     stylesheet = getattr(invocation, "stylesheet", None)

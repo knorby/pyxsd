@@ -5786,6 +5786,16 @@ def _transitive_dependencies(package: CompiledPackage) -> tuple[CompiledPackage,
 
 
 def _initial_mode(package: CompiledPackage, name: str) -> Mode:
+    if name == "#default":
+        # The top-level default mode is eligible even when it is private; the
+        # declaration itself is what makes it the initial mode.
+        mode = _default_mode(package)
+        if mode is None:
+            raise XsltError(
+                "the initial mode '#default' has no default mode in the stylesheet",
+                code="XTDE0045",
+            )
+        return mode
     wanted = None if name == "#unnamed" else name
     mode = package.mode(wanted)
     if mode is None:
@@ -5795,8 +5805,8 @@ def _initial_mode(package: CompiledPackage, name: str) -> Mode:
         )
     if (
         mode.name is not None
-        and mode.declared
         and mode.visibility == "private"
+        and (mode.declared or mode.exposed)
         and mode.name != package.default_mode
     ):
         raise XsltError(
@@ -6386,8 +6396,8 @@ class _Invocation(Transformation):
     ) -> Frame:
         if component.abstract:
             raise XsltDynamicError(
-                "the abstract component has no executable original implementation",
-                code="XTDE0040",
+                "an invocation of an abstract component is not permitted",
+                code="XTDE3052",
             )
         if plan is None:
             plan = context.original_plans.get((component.kind, component.name, component.arity))

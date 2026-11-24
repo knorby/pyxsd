@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from functools import cmp_to_key
 from types import MappingProxyType
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pyxsd.locations import IssueLocation
 from pyxsd.xslt.compiler.components import (
@@ -27,6 +27,7 @@ from pyxsd.xslt.compiler.components import (
     _default_accepted_visibility,
     _error,
     _expand_name,
+    _exposed_visibility,
     _GroupedDeclaration,
     _Lookup,
     _matching_tokens,
@@ -108,6 +109,8 @@ class Mode:
     containing: str | None
     declared: bool = False
     declared_visibility: str | None = None
+    #: True when an explicit xsl:expose rule set an implicit mode's visibility.
+    exposed: bool = False
     rule_layers: tuple[ModeRuleLayer, ...] = ()
     properties: Mapping[str, str] = field(default_factory=dict)
     property_namespaces: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
@@ -562,6 +565,7 @@ def _build_local_modes(
     accepted_modes: dict[ModeKey, Mode],
     hidden_accepted_modes: Mapping[HiddenModeKey, Mode],
     local_visibility: Mapping[ComponentKey, str],
+    exposes: tuple[Any, ...] = (),
 ) -> tuple[dict[ModeKey, Mode], dict[ModeKey, tuple[ModeRule, ...]]]:
     mode_groups = [group for group in groups if group.kind == "mode"]
     local_modes: dict[ModeKey, Mode] = {}
@@ -658,12 +662,23 @@ def _build_local_modes(
             )
         else:
             default_visibility = "private" if mode_name is None or descriptor.explicit else "public"
+            expose_matches = (
+                [] if mode_name is None else _matching_tokens(exposes, "mode", mode_name, None)
+            )
+            visibility = (
+                default_visibility
+                if not expose_matches
+                else _exposed_visibility(
+                    "mode", mode_name, None, default_visibility, expose_matches
+                )
+            )
             local_modes[mode_name] = Mode(
                 name=mode_name,
-                visibility=default_visibility,
+                visibility=visibility,
                 owner=descriptor.name,
                 containing=descriptor.name,
                 declared=False,
+                exposed=bool(expose_matches),
                 namespaces=rules[0].declaration.namespaces if rules else {},
                 rule_layers=(
                     ModeRuleLayer(

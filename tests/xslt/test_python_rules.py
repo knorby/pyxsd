@@ -199,7 +199,7 @@ def test_abstract_accepted_component_is_completed_but_has_no_original() -> None:
     )
     with pytest.raises(XsltDynamicError) as caught:
         compiled.transform(initial_template="Q{urn:example:app}target")
-    assert code(caught.value) == "XTDE0040"
+    assert code(caught.value) == "XTDE3052"
 
 
 def test_private_and_final_targets_are_rejected() -> None:
@@ -929,7 +929,7 @@ def test_nested_original_body_cannot_execute_an_abstract_component() -> None:
     )
     with pytest.raises(XsltDynamicError) as caught:
         compiled.transform(initial_template="Q{urn:example:app}b")
-    assert code(caught.value) == "XTDE0040"
+    assert code(caught.value) == "XTDE3052"
 
 
 def test_public_mode_rule_on_an_ordinary_stylesheet() -> None:
@@ -1011,4 +1011,4 @@ def test_nested_original_function_cannot_execute_an_abstract_component() -> None
             initial_function="Q{urn:example:app}b",
             initial_function_arguments=("x",),
         )
-    assert code(caught.value) == "XTDE0040"
+    assert code(caught.value) == "XTDE3052"

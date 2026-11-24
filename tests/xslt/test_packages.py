@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from pyxsd.locations import IssueLocation
+from pyxsd.xdm import XdmAtomic
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.modules import ModuleLoader
 from pyxsd.xslt.compiler.packages import (
@@ -28,7 +29,7 @@ from pyxsd.xslt.compiler.packages import (
     compile_package_set,
 )
 from pyxsd.xslt.compiler.static import StaticPreprocessor
-from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltStaticError
 from pyxsd.xslt.inspection import inspect_stylesheet
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -181,6 +182,34 @@ def test_final_override_target_is_rejected() -> None:
         '<xsl:template name="app:start" visibility="final"><base/></xsl:template>',
     )
     assert _raise_code(lambda: compile_package_set(base, USING_OVERRIDE)) == "XTSE3060"
+
+
+def test_override_rule_needs_the_used_package_to_declare_the_mode_public() -> None:
+    """The override rule follows the used package's declared visibility.
+
+    A public mode is accepted privately by default, which still allows the
+    using package to supply overriding template rules (XSLT 3.0 §3.6.4); only
+    the used package's own visibility decides XTSE3060.
+    """
+    base = _package(
+        BASE,
+        '<xsl:mode name="app:m" visibility="public"/><xsl:template match="doc:a" mode="app:m"/>',
+        package_version="1.0.0",
+    )
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:override><xsl:template match="doc:a" mode="app:m"/></xsl:override>'
+        "</xsl:use-package>",
+        package_version="1.0.0",
+        attributes=' declared-modes="no"',
+    )
+    compiled = compile_package_set(base, using)
+    mode = compiled.mode("app:m")
+    assert mode.declared_visibility == "public"
+    assert mode.visibility == "private"
+    assert mode.rule_layers[0].owner == USING
+    assert mode.rule_layers[-1].owner == BASE
 
 
 def test_implicit_package_is_one_package_and_public_by_default() -> None:
@@ -859,6 +888,44 @@ def test_xsl_original_is_unavailable_for_abstract_targets() -> None:
 
 # ---------------------------------------------------------------------------
 # Abstract completion
+
+
+def _abstract_invocation_result(body: str) -> tuple[object, str | None]:
+    base = _package(BASE, body, package_version="1.0.0")
+    using = _package(
+        USING,
+        '<xsl:use-package name="urn:example:base">'
+        '<xsl:accept component="template" names="app:main" visibility="public"/>'
+        "</xsl:use-package>",
+        package_version="1.0.0",
+        attributes=' declared-modes="no"',
+    )
+    compiled = XsltProcessor(resolver=PackageResolver.from_sources(base)).compile(
+        io.BytesIO(using.encode())
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(initial_template="app:main", delivery="raw")
+    return caught.value, caught.value.code
+
+
+def test_invoking_an_abstract_named_template_is_XTDE3052() -> None:
+    _, code = _abstract_invocation_result(
+        '<xsl:template name="app:t" visibility="abstract"/>'
+        '<xsl:template name="app:main" visibility="public">'
+        '<xsl:call-template name="app:t"/>'
+        "</xsl:template>"
+    )
+    assert code == "XTDE3052"
+
+
+def test_invoking_an_abstract_function_is_XTDE3052() -> None:
+    _, code = _abstract_invocation_result(
+        '<xsl:function name="app:f" visibility="abstract"/>'
+        '<xsl:template name="app:main" visibility="public">'
+        '<xsl:sequence select="app:f()"/>'
+        "</xsl:template>"
+    )
+    assert code == "XTDE3052"
 
 
 def test_abstract_components_are_completed_by_override() -> None:
@@ -2294,6 +2361,55 @@ def test_expose_reached_through_import_is_rejected(tmp_path: Path) -> None:
     assert _raise_code(lambda: compile_package_set(path)) == "XTSE0010"
 
 
+def test_initial_default_mode_resolves_the_package_default_mode() -> None:
+    principal = _raw_package(
+        "urn:example:principal",
+        '<xsl:mode name="app:start" visibility="private"/>'
+        '<xsl:template match="." mode="app:start"><xsl:sequence select="."/></xsl:template>',
+        attributes=' declared-modes="no" default-mode="app:start"',
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(principal.encode()))
+    result = compiled.transform(
+        initial_mode="#default",
+        initial_match_selection=42,
+        delivery="raw",
+    )
+    assert result.principal == (XdmAtomic.integer(42),)
+
+
+def test_implicit_mode_is_eligible_unless_exposed_private() -> None:
+    template = '<xsl:template match="." mode="app:start"><xsl:sequence select="."/></xsl:template>'
+    plain = _raw_package(
+        "urn:example:principal",
+        template,
+        attributes=' declared-modes="no"',
+    )
+    eligible = (
+        XsltProcessor()
+        .compile(io.BytesIO(plain.encode()))
+        .transform(
+            initial_mode="app:start",
+            initial_match_selection=42,
+            delivery="raw",
+        )
+    )
+    assert eligible.principal == (XdmAtomic.integer(42),)
+
+    exposed_private = _raw_package(
+        "urn:example:principal",
+        '<xsl:expose component="mode" names="*" visibility="private"/>' + template,
+        attributes=' declared-modes="no"',
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(exposed_private.encode()))
+    with pytest.raises(XsltError) as caught:
+        compiled.transform(
+            initial_mode="app:start",
+            initial_match_selection=42,
+            delivery="raw",
+        )
+    assert caught.value.code == "XTDE0045"
+
+
 def test_named_template_and_mode_rule_override_together() -> None:
     base = _package(
         BASE,
@@ -2332,6 +2448,9 @@ def test_override_unknown_mode_and_private_accept_mode() -> None:
     )
     assert _raise_code(lambda: compile_package_set(base, unknown)) == "XTSE3060"
 
+    # An accept reduces the mode's visibility in the using package, not the
+    # used package's public declaration, so extra template rules remain legal
+    # (override-m-016 records the same clarification).
     private = _package(
         USING,
         '<xsl:use-package name="urn:example:base">'
@@ -2339,8 +2458,10 @@ def test_override_unknown_mode_and_private_accept_mode() -> None:
         '<xsl:override><xsl:template match="doc:a" mode="app:m"/></xsl:override>'
         "</xsl:use-package>",
         package_version="1.0.0",
+        attributes=' declared-modes="no"',
     )
-    assert _raise_code(lambda: compile_package_set(base, private)) == "XTSE3060"
+    compiled = compile_package_set(base, private)
+    assert compiled.mode("app:m").rule_layers[0].owner == USING
 
 
 def test_attribute_set_original_unavailable_for_abstract_target() -> None:

@@ -661,6 +661,17 @@ def _descriptor(module: EffectiveModule) -> PackageDescriptor:
     )
 
 
+def _mode_accepts_override_rules(mode: Mode) -> bool:
+    """Whether a using package may add template rules to an acquired mode.
+
+    Only the mode's declared visibility in the used package decides XTSE3060:
+    ``xsl:accept`` changes the visibility of the component in the *using*
+    package, not the used package's declaration (XSLT 3.0 §3.5.4 and the 2019
+    clarification for override-m-016).
+    """
+    return mode.declared_visibility in ("public", "abstract")
+
+
 class PackageResolver:
     """An explicit registry for packages available to ``xsl:use-package``.
 
@@ -1714,12 +1725,13 @@ class _PackageCompiler:
             accepted_modes,
             hidden_accepted_modes,
             local_visibility,
+            local.exposes,
         )
         for mode_name, rules in override_rule_layers.items():
             current_mode = modes.get(mode_name)
-            if current_mode is None or current_mode.visibility != "public":
+            if current_mode is None or not _mode_accepts_override_rules(current_mode):
                 raise _error(
-                    f"the mode {mode_name!r} is not public after acceptance",
+                    f"the mode {mode_name!r} is not public in the used package",
                     "XTSE3060",
                     element=local.sites[0].element if local.sites else descriptor.module.root,
                     module=descriptor.module,
