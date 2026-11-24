@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Iterator, Mapping
 from copy import copy
 from dataclasses import dataclass, replace
@@ -20,7 +21,14 @@ from pyxsd.resource_policy import (
 )
 from pyxsd.resource_refs import classify_resource
 from pyxsd.schemaless.errors import JsonLimitError, JsonParseError, JsonSchemaError
-from pyxsd.schemaless.json_values import JsonLimits, NativeJsonValue, copy_native_data, decode_json
+from pyxsd.schemaless.json_values import (
+    JsonLimits,
+    NativeJsonValue,
+    _pointer_token,
+    copy_native_data,
+    decode_json,
+    resolve_pointer,
+)
 from pyxsd.schemaless.json_xdm import escape_pointer_segment
 from pyxsd.validation import ValidationReport
 
@@ -214,7 +222,7 @@ class _Resolver:
     parent: str | None
     scope: tuple[str, ...]
     runtime: _Resources
-    false_path: _Path = ()
+    boolean_path: _Path = ()
 
     def lookup(self, ref: str) -> _Resolved:
         from referencing.exceptions import Unresolvable
@@ -245,11 +253,14 @@ class _Resolver:
         parent = None
         if isinstance(target, dict):
             parent = self.schemas.locations[id(target)][1]
-        false_path: _Path = ()
-        if target is False and fragment.startswith("/"):
+        boolean_path: _Path = ()
+        if isinstance(target, bool) and fragment.startswith("/"):
             prefix = self.schemas.locations[id(resource.contents)][0]
             parts = unquote(fragment[1:]).split("/")
-            false_path = (*prefix, *(part.replace("~1", "/").replace("~0", "~") for part in parts))
+            boolean_path = (
+                *prefix,
+                *(part.replace("~1", "/").replace("~0", "~") for part in parts),
+            )
         return _Resolved(
             contents=target,
             resolver=_Resolver(
@@ -259,7 +270,7 @@ class _Resolver:
                 parent,
                 tuple(reversed([base for base, _ in resolved.resolver.dynamic_scope()])),
                 self.runtime,
-                false_path,
+                boolean_path,
             ),
         )
 
@@ -297,10 +308,10 @@ class _Resources:
     def retrieve(self, registry: SchemaRegistry, uri: str, parent: str | None) -> SchemaRegistry:
         from referencing.exceptions import Unresolvable
 
-        if self.policy is None:
-            raise Unresolvable(ref=uri)
         key = (uri, parent)
         if key not in self.loaded:
+            if self.policy is None:
+                raise Unresolvable(ref=uri)
             try:
                 data = self.policy.read(_policy_locator(uri, parent), base=parent, purpose="schema")
             except (ResourcePolicyError, OSError) as exc:
@@ -385,11 +396,177 @@ def _evaluator(schemas: _Schemas) -> Any:
                 if schema_path is not None:
                     error.schema_path.appendleft(schema_path)
                 if resolver is not None:
-                    error._pyxsd_path = resolver.false_path
+                    error._pyxsd_path = resolver.boolean_path
             yield error
 
     evaluator.descend = descend_located
     return evaluator
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaOccurrence:
+    """A schema applied at an instance pointer, with its resource-local pointer."""
+
+    schema: Schema
+    instance_pointer: str
+    schema_pointer: str
+
+
+@dataclass(frozen=True, slots=True)
+class _Application:
+    """An applied schema and the evaluator's reference context at that point."""
+
+    validator: Any
+    path: _Path
+
+    def child(self, schema: Schema, *path: str | int) -> _Application:
+        resolver = self.validator._resolver
+        resolver = resolver.in_subresource(resolver.schemas.specification.create_resource(schema))
+        return _Application(
+            self.validator.evolve(schema=schema, _resolver=resolver), (*self.path, *path)
+        )
+
+    def in_place(self, value: NativeJsonValue) -> Iterator[_Application]:
+        """Find same-instance applications; never treat tests or negations as hints."""
+        schema = self.validator.schema
+        if isinstance(schema, bool):
+            return
+        if "$ref" in schema:
+            ref = schema["$ref"]
+            resolved = self.validator._resolver.lookup(ref)
+            target, resolver = resolved.contents, resolved.resolver
+            if isinstance(target, bool):
+                yield _Application(
+                    self.validator.evolve(schema=target, _resolver=resolver), resolver.boolean_path
+                )
+            elif target.get("$dynamicAnchor") != urldefrag(ref)[1]:
+                yield _Application(
+                    self.validator.evolve(schema=target, _resolver=resolver),
+                    resolver.schemas.locations[id(target)][0],
+                )
+        for index, branch in enumerate(schema.get("allOf", ())):
+            yield self.child(branch, "allOf", index)
+        for keyword in ("anyOf", "oneOf"):
+            if keyword in schema:
+                yield from self._successful(schema[keyword], keyword, value)
+        if "if" in schema:
+            # Match the evaluator's predicate context. It evolves in place for
+            # the test and enters a subresource only for the selected branch.
+            branch = (
+                "then" if self.validator.evolve(schema=schema["if"]).is_valid(value) else "else"
+            )
+            if branch in schema:
+                yield self.child(schema[branch], branch)
+        if isinstance(value, dict):
+            for key, dependent in schema.get("dependentSchemas", {}).items():
+                if key in value:
+                    yield self.child(dependent, "dependentSchemas", key)
+
+    def _successful(
+        self, branches: Iterable[Schema], keyword: str, value: NativeJsonValue
+    ) -> list[_Application]:
+        successful = []
+        for index, schema in enumerate(branches):
+            child = self.child(schema, keyword, index)
+            if child.validator.is_valid(value):
+                successful.append(child)
+                if keyword == "oneOf":
+                    # The whole instance validated, so the evaluator already
+                    # checked uniqueness after this first successful branch.
+                    break
+        return successful
+
+    def at_member(self, value: NativeJsonValue, token: str) -> Iterator[_Application]:
+        """Follow only rules known to apply to this particular child address."""
+        schema = self.validator.schema
+        if isinstance(schema, bool):
+            return
+        if isinstance(value, dict):
+            properties = schema.get("properties", {})
+            matched = token in properties
+            if matched:
+                yield self.child(properties[token], "properties", token)
+            for pattern, member in schema.get("patternProperties", {}).items():
+                if re.search(pattern, token):
+                    matched = True
+                    yield self.child(member, "patternProperties", pattern)
+            if not matched and "additionalProperties" in schema:
+                # Require agreement with the evaluator (which can combine
+                # patterns differently when they contain backreferences).
+                find_additional_properties = import_module(
+                    "jsonschema._utils"
+                ).find_additional_properties
+                if next(find_additional_properties((token,), schema), None) == token:
+                    yield self.child(schema["additionalProperties"], "additionalProperties")
+        else:  # A validated child pointer can only descend into an object or array.
+            index = int(token)
+            prefix = schema.get("prefixItems", ())
+            if index < len(prefix):
+                yield self.child(prefix[index], "prefixItems", index)
+            elif "items" in schema:
+                yield self.child(schema["items"], "items")
+        # $dynamicRef and unevaluatedProperties/Items deliberately supply no
+        # guidance. The latter need cross-applicator evaluation annotations.
+
+
+class _GuidanceCycle(Exception):
+    """An applied schema re-entered the same instance without descending."""
+
+
+class _AppliedSchema:
+    """A validated instance and its resource snapshot, with lazy pointer guidance."""
+
+    def __init__(self, validator: Any, value: NativeJsonValue) -> None:
+        self._root = _Application(validator, ())
+        self._value = value
+        self._at: dict[str, tuple[_Application, ...]] = {}
+
+    def occurrences_at(self, pointer: str) -> tuple[SchemaOccurrence, ...]:
+        return tuple(
+            SchemaOccurrence(item.validator.schema, pointer, _pointer(item.path))
+            for item in self._applications(pointer)
+        )
+
+    def _applications(self, pointer: str) -> tuple[_Application, ...]:
+        if pointer not in self._at:
+            try:
+                selected = resolve_pointer(self._value, pointer)
+                applications = tuple(
+                    occurrence
+                    for item in self._initial(pointer)
+                    for occurrence in self._expand(item, selected, set())
+                )
+            except (JsonSchemaError, RecursionError, _GuidanceCycle, re.error, OverflowError):
+                # Validation could short-circuit an alternative whose
+                # assertions or resources cannot be inspected. Do not publish
+                # a partial set of candidates or affect the validation verdict.
+                applications = ()
+            self._at[pointer] = applications
+        return self._at[pointer]
+
+    def _initial(self, pointer: str) -> Iterator[_Application]:
+        if not pointer:
+            yield self._root
+            return
+        parent, _, raw = pointer.rpartition("/")
+        token = _pointer_token(raw, pointer)
+        value = resolve_pointer(self._value, parent)
+        for item in self._applications(parent):
+            yield from item.at_member(value, token)
+
+    def _expand(
+        self, item: _Application, value: NativeJsonValue, active: set[int]
+    ) -> Iterator[_Application]:
+        identity = id(item.validator.schema)
+        if identity in active:
+            raise _GuidanceCycle
+        yield item
+        active.add(identity)
+        try:
+            for child in item.in_place(value):
+                yield from self._expand(child, value, active)
+        finally:
+            active.remove(identity)
 
 
 @dataclass(frozen=True)
@@ -444,6 +621,25 @@ class SchemaGuidance:
 
     def validate(self, value: NativeJsonValue) -> ValidationReport:
         """Return path-sorted assertion diagnostics without changing the value."""
+        return self._evaluate(value)[0]
+
+    def occurrences_at(self, pointer: str, value: NativeJsonValue) -> tuple[SchemaOccurrence, ...]:
+        """Return soundly applicable schemas at *pointer* in the full instance.
+
+        An invalid instance supplies no guidance. Pointers must address a
+        present value. Returned schemas are copies, independent of evaluation.
+        """
+        resolve_pointer(value, pointer)
+        _, applied = self._evaluate(value)
+        if applied is None:
+            return ()
+        return tuple(
+            replace(item, schema=_as_schema(copy_native_data(item.schema)))
+            for item in applied.occurrences_at(pointer)
+        )
+
+    def _evaluate(self, value: NativeJsonValue) -> tuple[ValidationReport, _AppliedSchema | None]:
+        """Validate once and retain the authorized inputs for optional guidance."""
         report = new_validation_report(self._policy)
         report._tighten_issue_retention(
             None if self._limits is None else self._limits.max_diagnostics
@@ -451,9 +647,8 @@ class SchemaGuidance:
         try:
             with policy_compilation(self._policy, root_read=False):
                 validator = self._validator.evolve(_resolver=self._resolver.for_evaluation())
-                failures = sorted(
-                    validator.iter_errors(_evaluation_numbers(value)), key=_error_order
-                )
+                normalized = _evaluation_numbers(value)
+                failures = sorted(validator.iter_errors(normalized), key=_error_order)
         except RecursionError as exc:
             raise JsonSchemaError(
                 "JSON Schema evaluation exceeded the host recursion limit"
@@ -475,7 +670,10 @@ class SchemaGuidance:
                 location_precision="exact",
             )
         report._set_diagnostics_complete(report.suppressed_count == 0)
-        return report
+        # Guidance may need to inspect alternatives the evaluator did not
+        # visit. Only resources authorized during this evaluation are reusable.
+        validator._resolver.runtime.policy = None
+        return report, None if report.has_errors else _AppliedSchema(validator, normalized)
 
 
 def _error_paths(error: Any) -> tuple[_Path, _Path]:

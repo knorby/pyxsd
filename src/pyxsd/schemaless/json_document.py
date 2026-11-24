@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from decimal import Decimal
 from typing import IO, TYPE_CHECKING, Any, Literal, overload
 
 from pyxsd.exceptions import ValidationError
@@ -33,8 +32,22 @@ from pyxsd.schemaless.json_values import (
     encode_json,
     resolve_pointer,
 )
-from pyxsd.schemaless.json_xdm import escape_pointer_segment, json_to_xdm
-from pyxsd.schemaless.types import _PARSE_ERRORS, ScalarAdapter, TypePolicy, TypeRef
+from pyxsd.schemaless.json_xdm import (
+    _scalar_text,
+    _ScalarValue,
+    _schema_scalar_text,
+    escape_pointer_segment,
+    json_to_xdm,
+)
+from pyxsd.schemaless.types import (
+    _PARSE_ERRORS,
+    ScalarAdapter,
+    TypePolicy,
+    TypeRef,
+    _json_annotation_types,
+    _json_asserted_type,
+    _json_schema_adapter,
+)
 from pyxsd.validation import ValidationReport
 from pyxsd.xdm.values import XdmAtomic, XdmSequence
 from pyxsd.xsd_data_types import qname_context
@@ -44,13 +57,13 @@ if TYPE_CHECKING:
 
     from pyxsd.resource_policy import ResourcePolicy
     from pyxsd.schemaless.document import SchemalessDocument
+    from pyxsd.schemaless.json_schema import SchemaOccurrence, _AppliedSchema
     from pyxsd.schemaless.mapping import XmlMapping
     from pyxsd.schemaless.nodes import NodeMapping
     from pyxsd.schemaless.profile import DocumentProfile, ProfileLimits
 
 _JsonSource = str | bytes | bytearray | memoryview | IO[str] | IO[bytes]
 _JsonSchemaInput = bool | Mapping[str, object] | str
-_ScalarValue = bool | int | float | Decimal | str
 _POINTER_BAD_ESCAPE = re.compile(r"~(?:[^01]|$)")
 
 
@@ -79,27 +92,20 @@ def _pointer_syntax(pointer: str) -> str:
     return ""
 
 
-def _scalar_text(value: _ScalarValue) -> str:
-    """Return the lossless text of a native scalar for adapter parsing."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, Decimal):
-        # JSON's exponent spelling is not an XSD decimal lexical form, and
-        # "f" keeps the exact value without a float round trip.
-        return format(value, "f")
-    if isinstance(value, float):
-        return repr(value)
-    return value
-
-
-def _typed_scalar(source: str, pointer: str, adapter: ScalarAdapter, value: _ScalarValue) -> Any:
+def _typed_scalar(
+    source: str,
+    pointer: str,
+    adapter: ScalarAdapter,
+    value: _ScalarValue,
+    *,
+    asserted: bool = False,
+) -> Any:
     """Parse one native scalar with *adapter*, naming its pointer on failure."""
     try:
         # JSON has no in-scope namespace bindings for a QName lexical value.
         with qname_context({}):
-            return adapter.parse(_scalar_text(value))
+            text = _schema_scalar_text(value) if asserted else _scalar_text(value)
+            return adapter.parse(text)
     except _PARSE_ERRORS as exc:
         location = DataLocation(source, pointer)
         raise ScalarTypeError(
@@ -124,6 +130,7 @@ class JsonDocument:
     _value: NativeJsonValue
     _types: TypePolicy
     _report: ValidationReport
+    _applied_schema: _AppliedSchema | None = None
     source: str
 
     def __init__(
@@ -260,9 +267,10 @@ class JsonDocument:
 
         Objects become maps with ``xs:string`` keys, arrays become arrays whose
         members keep their nesting, and null becomes the empty sequence. A
-        scalar uses the policy's adapter: an explicit pointer pin, a
-        conservative inferred string, or the exact native atomic kind. A pin
-        that rejects its value raises :class:`ScalarTypeError` with the
+        scalar uses an explicit pointer pin, an unambiguous schema assertion,
+        conservative string inference, or its exact native atomic kind, in
+        that order. An invalid instance uses only pins and native kinds. A
+        pin that rejects its value raises :class:`ScalarTypeError` with the
         pointer. Nothing is wrapped in an XML document.
         """
         return json_to_xdm(self._value, converter=self._convert_scalar)
@@ -357,27 +365,47 @@ class JsonDocument:
             )
         return report, adapter
 
-    def _asserted_adapter(self, pointer: str, value: object) -> ScalarAdapter | None:
-        """Return sound schema-asserted guidance for this scalar, if any.
+    def _schema_occurrences(self, pointer: str) -> tuple[SchemaOccurrence, ...]:
+        if self._applied_schema is None or not self.is_valid:
+            return ()
+        return self._applied_schema.occurrences_at(pointer)
 
-        An evaluated JSON Schema is a later layer. Until it supplies an
-        occurrence-proven adapter, the document asserts no type and the policy
-        falls through to inference and the native kind.
-        """
-        return None
+    def _schema_candidates(self, pointer: str) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                name
+                for item in self._schema_occurrences(pointer)
+                if isinstance(item.schema, dict)
+                for name in _json_annotation_types(item.schema)
+            )
+        )
 
-    def _adapter_at(self, pointer: str, value: _ScalarValue) -> ScalarAdapter | None:
-        """Resolve the effective adapter for one native JSON scalar."""
-        return self._resolution_at(pointer, value)[0]
-
-    def _interpretation_at(self, pointer: str, value: _ScalarValue) -> str:
-        """Name the policy source that interprets one native JSON scalar."""
-        return self._resolution_at(pointer, value)[1]
+    def _asserted_adapter(self, pointer: str, value: _ScalarValue) -> ScalarAdapter | None:
+        """Choose a schema adapter only when all applicable hints agree."""
+        hints: set[str] = set()
+        for item in self._schema_occurrences(pointer):
+            if isinstance(item.schema, dict) and "type" in item.schema:
+                hint = _json_asserted_type(item.schema["type"], value)
+                hints.add(hint)
+        return _json_schema_adapter(hints, lambda: _schema_scalar_text(value))
 
     def _resolution_at(self, pointer: str, value: _ScalarValue) -> tuple[ScalarAdapter | None, str]:
         """Resolve one native scalar and its current interpretation source."""
-        asserted = self._asserted_adapter(pointer, value)
-        return self._types._json_adapter_source(pointer, value, asserted=asserted)
+        asserted = (
+            self._asserted_adapter(pointer, value)
+            if self.is_valid and pointer not in self._types.pins
+            else None
+        )
+        return self._types._json_adapter_source(
+            pointer, value, asserted=asserted, allow_inference=self.is_valid
+        )
+
+    def _adapt_scalar(
+        self, pointer: str, value: _ScalarValue, adapter: ScalarAdapter, interpretation: str
+    ) -> Any:
+        return _typed_scalar(
+            self.source, pointer, adapter, value, asserted=interpretation == "schema-guided"
+        )
 
     def _typed_tree(self, value: NativeJsonValue, pointer: str) -> Any:
         """Build an independent typed view of *value* at *pointer*."""
@@ -392,17 +420,17 @@ class JsonDocument:
             ]
         if value is None:
             return None
-        adapter = self._adapter_at(pointer, value)
+        adapter, interpretation = self._resolution_at(pointer, value)
         if adapter is None:
             return value
-        return _typed_scalar(self.source, pointer, adapter, value)
+        return self._adapt_scalar(pointer, value, adapter, interpretation)
 
     def _convert_scalar(self, pointer: str, value: _ScalarValue) -> XdmAtomic | None:
         """Convert one native scalar through the effective policy adapter."""
-        adapter = self._adapter_at(pointer, value)
+        adapter, interpretation = self._resolution_at(pointer, value)
         if adapter is None:
             return None
-        return adapter.to_xdm(_typed_scalar(self.source, pointer, adapter, value))
+        return adapter.to_xdm(self._adapt_scalar(pointer, value, adapter, interpretation))
 
 
 def from_data(
@@ -520,7 +548,7 @@ def _build_document(
             resource_policy=resource_policy,
             format_assertion=format_assertion,
         )
-        document._report = guidance.validate(value)
+        document._report, document._applied_schema = guidance._evaluate(value)
     return document
 
 

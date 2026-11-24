@@ -24,6 +24,7 @@ from decimal import Decimal
 
 from pyxsd.schemaless.json_values import NativeJsonValue
 from pyxsd.xdm.values import XdmArray, XdmAtomic, XdmMap, XdmSequence, as_xdm
+from pyxsd.xsd_data_types import integer_to_decimal
 
 #: One native JSON scalar, as passed to the internal converter hook.
 _ScalarValue = bool | int | float | Decimal | str
@@ -32,6 +33,25 @@ _ScalarValue = bool | int | float | Decimal | str
 #: convertible by :func:`~pyxsd.xdm.values.as_xdm`), or ``None`` for the
 #: document's native mapping. The hook is not a public typing surface.
 _ScalarConverter = Callable[[str, _ScalarValue], object]
+
+
+def _scalar_text(value: _ScalarValue) -> str:
+    """Return the lexical text used by explicit pins and profiles."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return integer_to_decimal(value)
+    if isinstance(value, Decimal):
+        # XSD decimal has no exponent notation.
+        return format(value, "f")
+    if isinstance(value, float):
+        return repr(value)
+    return value
+
+
+def _schema_scalar_text(value: _ScalarValue) -> str:
+    """Keep compact decimal exponents for the schema-specific adapters."""
+    return str(value) if isinstance(value, Decimal) else _scalar_text(value)
 
 
 def json_to_xdm(

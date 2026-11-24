@@ -6,6 +6,7 @@ import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
@@ -76,6 +77,65 @@ _TYPE_NAMES = {
     for name, adapter in _BUILTINS.items()
     for spelling in (name, f"xs:{name}", f"{{{XSD_NS}}}{name}")
 }
+
+_JSON_PRIMITIVES = {
+    "boolean": "boolean",
+    "integer": "integer",
+    "number": "decimal",
+    "string": "string",
+}
+_JSON_FORMATS = {"date": "date", "date-time": "dateTime", "time": "time", "uri": "anyURI"}
+_JSON_ENCODINGS = {"base64": "base64Binary"}
+
+
+def _json_asserted_type(assertion: str | list[str], value: object) -> str:
+    """Map a successful primitive assertion to the matching XSD scalar kind."""
+    allowed = (assertion,) if isinstance(assertion, str) else assertion
+    if isinstance(value, bool):
+        kind = "boolean"
+    elif isinstance(value, str):
+        kind = "string"
+    else:
+        # "number" includes integer; a union of the two does not establish
+        # integralness for conversion. The evaluator proved this type applied.
+        kind = "number" if "number" in allowed else "integer"
+    return _JSON_PRIMITIVES[kind]
+
+
+def _json_annotation_types(schema: Mapping[str, Any]) -> Iterable[str]:
+    """Suggest XSD lexical tests, not conversions, for recognized annotations."""
+    for keyword, names in (("format", _JSON_FORMATS), ("contentEncoding", _JSON_ENCODINGS)):
+        name = names.get(schema.get(keyword, ""))
+        if name is not None:
+            yield f"xs:{name}"
+
+
+def _asserted_integer(lexical: str) -> xsd.Integer:
+    # A short JSON exponent can represent an impractically large integer.
+    # Bound implicit expansion (explicit pins retain their own semantics).
+    number = Decimal(lexical)
+    if not number:
+        return xsd.Integer(0)
+    if number.adjusted() >= max(4300, len(number.as_tuple().digits)):
+        raise ValueError("JSON Schema integer guidance would expand the native number")
+    return xsd.Integer(int(number))
+
+
+_JSON_ASSERTED_ADAPTERS = {
+    **_BUILTINS,
+    "integer": ScalarAdapter(_asserted_integer, str, XdmAtomic.integer),
+    # Accept native decimal/float exponent spelling without rendering all the
+    # zeros of a compact Decimal merely to parse them back.
+    "decimal": ScalarAdapter(Decimal, str, XdmAtomic.decimal),
+}
+
+
+def _json_schema_adapter(hints: set[str], lexical: Callable[[], str]) -> ScalarAdapter | None:
+    """A unique applicable type hint must also accept the native value."""
+    if len(hints) != 1:
+        return None
+    adapter = _JSON_ASSERTED_ADAPTERS[next(iter(hints))]
+    return adapter if adapter.test(lexical()) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +223,7 @@ class TypePolicy:
         value: object,
         *,
         asserted: ScalarAdapter | None = None,
+        allow_inference: bool = True,
     ) -> tuple[ScalarAdapter | None, str]:
         """Resolve one native scalar and name the policy source that decided it.
 
@@ -175,7 +236,7 @@ class TypePolicy:
             return pinned, "pinned"
         if asserted is not None:
             return asserted, "schema-guided"
-        if self.mode == "infer" and isinstance(value, str):
+        if allow_inference and self.mode == "infer" and isinstance(value, str):
             inferred = _infer_adapter((value,))
             if inferred is not None:
                 return inferred, "inferred"

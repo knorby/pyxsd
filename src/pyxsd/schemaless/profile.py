@@ -21,11 +21,10 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pyxsd.locations import DataLocation, IssueLocation, PathStep
-from pyxsd.schemaless.json_document import _scalar_text
 from pyxsd.schemaless.json_values import NativeJsonValue
-from pyxsd.schemaless.json_xdm import escape_pointer_segment
+from pyxsd.schemaless.json_xdm import _scalar_text, escape_pointer_segment
 from pyxsd.schemaless.tree import SchemalessElement, SchemalessRevision, _current_path
-from pyxsd.schemaless.types import ScalarAdapter, _ranked_candidates
+from pyxsd.schemaless.types import ScalarAdapter, TypePolicy, _ranked_candidates
 
 if TYPE_CHECKING:
     from pyxsd.schemaless.document import SchemalessDocument
@@ -84,13 +83,15 @@ class TypeCandidate:
     ``first_failure`` is the first rejecting occurrence in document order, in
     the same location family the document uses for diagnostics: an XML
     :class:`~pyxsd.locations.IssueLocation` or a JSON
-    :class:`~pyxsd.locations.DataLocation`.
+    :class:`~pyxsd.locations.DataLocation`. ``from_schema_annotation`` is
+    true when at least one applied JSON Schema annotation suggested the type.
     """
 
     name: str
     passed: int
     failed: int
     first_failure: IssueLocation | None = None
+    from_schema_annotation: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,8 +112,9 @@ class PathProfile:
 
     ``distinct_values`` and ``samples`` hold bounded lexical text in document
     order (samples may repeat), ``native_kinds`` holds the observed native JSON
-    kinds, and ``candidates`` holds every ranked built-in scalar type with its
-    pass/fail evidence. A row without scalar evidence reports zero candidate
+    kinds, and ``candidates`` holds the ranked built-in scalar types followed
+    by any extra schema-suggested types, with their pass/fail evidence.
+    A row without scalar evidence reports zero candidate
     counts: an XML occurrence with element children contributes character data
     only through ``mixed``, and a JSON array aggregate evaluates its scalar
     members while nulls and containers contribute only kinds and counts.
@@ -197,9 +199,11 @@ class DocumentProfile:
 
 @dataclass(slots=True)
 class _CandidateCount:
+    adapter: ScalarAdapter
     passed: int = 0
     failed: int = 0
     first_failure: IssueLocation | None = None
+    from_schema_annotation: bool = False
 
 
 @dataclass(slots=True)
@@ -252,7 +256,12 @@ class _Builder:
         if self.limits.max_paths is not None and len(self.rows) >= self.limits.max_paths:
             self.truncated = True
             return None
-        row = _Row(path, kind, parent, {name: _CandidateCount() for name, _ in self._candidates})
+        row = _Row(
+            path,
+            kind,
+            parent,
+            {name: _CandidateCount(adapter) for name, adapter in self._candidates},
+        )
         self.rows[key] = row
         return row
 
@@ -282,14 +291,20 @@ class _Builder:
                 row.distinct.append(stored)
             else:
                 self.truncate(row)
-        for name, adapter in self._candidates:
-            counts = row.candidates[name]
-            if adapter.test(text):
+        for counts in row.candidates.values():
+            if counts.adapter.test(text):
                 counts.passed += 1
             else:
                 counts.failed += 1
                 if counts.first_failure is None:
                     counts.first_failure = location
+
+    def suggest(self, row: _Row, names: tuple[str, ...]) -> None:
+        """Register extra schema candidates before examining a row's values."""
+        for name in names:
+            if name not in row.candidates:
+                row.candidates[name] = _CandidateCount(TypePolicy.resolve(name))
+            row.candidates[name].from_schema_annotation = True
 
     def truncate(self, row: _Row) -> None:
         """Mark one row and the whole snapshot as truncated."""
@@ -333,11 +348,12 @@ class _Builder:
             candidates=tuple(
                 TypeCandidate(
                     name,
-                    row.candidates[name].passed,
-                    row.candidates[name].failed,
-                    row.candidates[name].first_failure,
+                    counts.passed,
+                    counts.failed,
+                    counts.first_failure,
+                    counts.from_schema_annotation,
                 )
-                for name, _ in self._candidates
+                for name, counts in row.candidates.items()
             ),
             interpretations=tuple(row.interpretations),
             truncated=row.truncated,
@@ -470,6 +486,8 @@ class _JsonWalk:
                     break
                 aggregate.occurrences = len(value)
                 for index, member in enumerate(value):
+                    self._suggest(aggregate, f"{pointer}/{index}", member)
+                for index, member in enumerate(value):
                     self._observe_native(aggregate, f"{pointer}/{index}", member)
                 pending.extend(
                     reversed([(member, f"{pointer}/{index}") for index, member in enumerate(value)])
@@ -488,10 +506,15 @@ class _JsonWalk:
         else:
             if isinstance(value, str) and value == "":
                 row.empties += 1
-            row.add_interpretation(self._document._interpretation_at(pointer, value))
+            self._suggest(row, pointer, value)
+            row.add_interpretation(self._document._resolution_at(pointer, value)[1])
             self._builder.observe_text(
                 row, _scalar_text(value), _json_location(self._document, pointer)
             )
+
+    def _suggest(self, row: _Row, pointer: str, value: NativeJsonValue) -> None:
+        if isinstance(value, str):
+            self._builder.suggest(row, self._document._schema_candidates(pointer))
 
 
 def _steps_path(steps: tuple[PathStep, ...]) -> str:
