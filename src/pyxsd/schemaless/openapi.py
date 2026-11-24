@@ -1,25 +1,4 @@
-"""Translate OpenAPI XML Objects into the shared JSON-to-XML mapping.
-
-The adapter stays at selected Schema Object scope. It reads the ``xml``
-annotation on that schema and the schemas it names directly through
-``properties``, ``items``, and ``prefixItems``. Reference resolution,
-applicator reconciliation, and ordering remain the evaluator's job, so no
-second schema reader is introduced here.
-
-OAS 3.2 defaults are honored: an ``$ref``, ``$dynamicRef``, or array schema
-defaults to ``nodeType: "none"`` and every other schema to ``"element"``.
-Names are inferred from a JSON property (or the property that owns array
-items), while a root or component name comes from ``root_name`` or
-``xml.name``. An array item without property context, ``xml.name``, or an
-explicit rule cannot be named and fails. CDATA becomes ordinary text because
-XDM has no distinct CDATA node. Deprecated ``attribute`` and ``wrapped`` fields
-remain compatible when no ``nodeType`` is present.
-
-When instance descent crosses XML metadata that cannot be resolved yet
-(``$ref``, ``$dynamicRef``, ``patternProperties``, or an applicator branch),
-projection reports ``openapi-metadata-unresolved`` and continues with the
-metadata it can apply.
-"""
+"""Translate applied OpenAPI XML annotations into the shared XML projection."""
 
 from __future__ import annotations
 
@@ -32,30 +11,41 @@ from pyxsd.locations import DataLocation
 from pyxsd.namespaces import clark
 from pyxsd.relaxng.uris import is_uri_reference
 from pyxsd.schemaless.errors import XmlMappingError
-from pyxsd.schemaless.json_schema import SchemaGuidance
-from pyxsd.schemaless.json_values import NativeJsonValue, copy_native_data
+from pyxsd.schemaless.json_schema import _DRAFT, SchemaGuidance
+from pyxsd.schemaless.json_values import NativeJsonValue, _pointer_token, resolve_pointer
 from pyxsd.schemaless.json_xdm import escape_pointer_segment
-from pyxsd.schemaless.mapping import MappingRule
+from pyxsd.schemaless.mapping import MappingRule, _check_local_name
 from pyxsd.validation import ValidationReport
 
 if TYPE_CHECKING:
     from referencing.jsonschema import SchemaRegistry
 
     from pyxsd.resource_policy import ResourcePolicy
+    from pyxsd.schemaless.json_schema import SchemaOccurrence, _AppliedSchema
 
 _XmlSchema = Mapping[str, Any] | bool
 _NODE_TYPES = frozenset({"element", "attribute", "text", "cdata", "none"})
 _ABSOLUTE_IRI = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-_APPLICATOR_BRANCHES = (
+_OAS_DIALECTS = frozenset(
+    {
+        "https://spec.openapis.org/oas/3.1/dialect/base",
+        "https://spec.openapis.org/oas/3.1/dialect/2024-10-25",
+        "https://spec.openapis.org/oas/3.1/dialect/2024-11-10",
+        "https://spec.openapis.org/oas/3.2/dialect/2025-09-17",
+        "https://spec.openapis.org/oas/3.2/dialect/2026-02-26",
+    }
+)
+_ROOT_APPLICATORS = (
+    "$ref",
+    "$dynamicRef",
     "allOf",
     "anyOf",
     "oneOf",
     "then",
     "else",
     "dependentSchemas",
-    "unevaluatedProperties",
-    "unevaluatedItems",
 )
+_UNNAMED_ROOT = "an inline OpenAPI schema needs root_name or xml.name to name the root element"
 _SINGLE_SCHEMAS = (
     "additionalProperties",
     "items",
@@ -89,8 +79,8 @@ class OpenApiMetadataWarning:
 
 
 RuleCallable = Callable[
-    [str, NativeJsonValue, MappingRule | None, bool],
-    tuple[MappingRule | None, tuple[OpenApiMetadataWarning, ...]],
+    [str, "_AppliedSchema", NativeJsonValue, MappingRule | None, str | None, str, str],
+    tuple[MappingRule, tuple[OpenApiMetadataWarning, ...]],
 ]
 
 
@@ -110,28 +100,29 @@ _EMPTY_XML = _XmlObject()
 _MISSING = object()
 
 
-def _fail(code: str, message: str, schema_pointer: str, **details: object) -> NoReturn:
-    """Raise one fatal construction diagnostic addressed by schema pointer."""
+def _fail(
+    code: str,
+    message: str,
+    schema_pointer: str,
+    *,
+    occurrence: SchemaOccurrence | None = None,
+    source: str | None = None,
+) -> NoReturn:
+    """Raise a diagnostic at the XML Object field and, when known, its instance."""
+    details: dict[str, object] = {"schema_pointer": schema_pointer}
+    location = DataLocation(source, schema_pointer)
+    if occurrence is not None:
+        location = DataLocation(source, occurrence.instance_pointer, schema_pointer=schema_pointer)
+        details.update(
+            json_pointer=occurrence.instance_pointer, schema_source=occurrence._schema_source
+        )
     report = ValidationReport(diagnostics_complete=True)
     report.add_error(
         message,
         code=code,
-        location=DataLocation(None, schema_pointer),
+        location=location,
         location_precision="exact",
-        details={"schema_pointer": schema_pointer, **details},
-    )
-    raise XmlMappingError(report)
-
-
-def _fail_unnamed(pointer: str, schema_pointer: str) -> NoReturn:
-    """Reject an array item with no property context and no explicit name."""
-    report = ValidationReport(diagnostics_complete=True)
-    report.add_error(
-        "OpenAPI array items need xml.name or an explicit name",
-        code="unnamed-openapi-array-item",
-        location=DataLocation(None, pointer),
-        location_precision="exact",
-        details={"json_pointer": pointer, "schema_pointer": schema_pointer},
+        details=details,
     )
     raise XmlMappingError(report)
 
@@ -144,130 +135,82 @@ def _declares_array(schema: Mapping[str, Any]) -> bool:
     return isinstance(declared, list) and "array" in declared
 
 
-def _check_namespace(namespace: str, pointer: str) -> None:
-    """Require OAS 3.2's non-relative, literal namespace IRI."""
+def _valid_namespace(namespace: str) -> bool:
+    """OAS requires a non-relative, literal namespace IRI."""
     literal = not any(ord(char) <= 0x7F and char in _NS_FORBIDDEN_ASCII for char in namespace)
-    if not _ABSOLUTE_IRI.match(namespace) or not literal or not is_uri_reference(namespace):
-        _fail(
-            "invalid-openapi-namespace",
-            f"an OpenAPI XML namespace must be a non-relative IRI; got {namespace!r}",
-            pointer,
-        )
+    return bool(_ABSOLUTE_IRI.match(namespace) and literal and is_uri_reference(namespace))
 
 
-def _read_xml(schema: Mapping[str, Any], pointer: str) -> _XmlObject:
+def _read_xml(
+    schema: Mapping[str, Any],
+    pointer: str,
+    *,
+    occurrence: SchemaOccurrence | None = None,
+    source: str | None = None,
+) -> _XmlObject:
     """Validate one XML Object and return its fixed fields."""
     raw = schema.get("xml", _MISSING)
     if raw is _MISSING:
         return _EMPTY_XML
     xml_pointer = f"{pointer}/xml"
+
+    def invalid(
+        message: str, field: str = "", *, code: str = "invalid-openapi-xml-object"
+    ) -> NoReturn:
+        _fail(code, message, xml_pointer + field, occurrence=occurrence, source=source)
+
     if not isinstance(raw, Mapping):
-        _fail(
-            "invalid-openapi-xml-object",
-            "the OpenAPI xml field must be an object",
-            xml_pointer,
-        )
+        invalid("the OpenAPI xml field must be an object")
     node_type = raw.get("nodeType")
     if node_type is not None and (not isinstance(node_type, str) or node_type not in _NODE_TYPES):
-        _fail(
-            "invalid-openapi-xml-object",
+        invalid(
             f"the OpenAPI nodeType {node_type!r} is not one of element, attribute, "
             "text, cdata, or none",
-            f"{xml_pointer}/nodeType",
+            "/nodeType",
         )
     name = raw.get("name")
     if name is not None and not isinstance(name, str):
-        _fail(
-            "invalid-openapi-xml-object",
-            "the OpenAPI XML name must be a string",
-            f"{xml_pointer}/name",
-        )
+        invalid("the OpenAPI XML name must be a string", "/name")
     namespace = raw.get("namespace")
     if namespace is not None:
         if not isinstance(namespace, str):
-            _fail(
-                "invalid-openapi-xml-object",
-                "the OpenAPI XML namespace must be a string",
-                f"{xml_pointer}/namespace",
+            invalid("the OpenAPI XML namespace must be a string", "/namespace")
+        if not _valid_namespace(namespace):
+            invalid(
+                f"an OpenAPI XML namespace must be a non-relative IRI; got {namespace!r}",
+                "/namespace",
+                code="invalid-openapi-namespace",
             )
-        _check_namespace(namespace, f"{xml_pointer}/namespace")
     prefix = raw.get("prefix")
     if prefix is not None and not isinstance(prefix, str):
-        _fail(
-            "invalid-openapi-xml-object",
-            "the OpenAPI XML prefix must be a string",
-            f"{xml_pointer}/prefix",
-        )
+        invalid("the OpenAPI XML prefix must be a string", "/prefix")
     attribute = raw.get("attribute")
     if attribute is not None and not isinstance(attribute, bool):
-        _fail(
-            "invalid-openapi-xml-object",
-            "the OpenAPI XML attribute field must be a boolean",
-            f"{xml_pointer}/attribute",
-        )
+        invalid("the OpenAPI XML attribute field must be a boolean", "/attribute")
     wrapped = raw.get("wrapped")
     if wrapped is not None and not isinstance(wrapped, bool):
-        _fail(
-            "invalid-openapi-xml-object",
-            "the OpenAPI XML wrapped field must be a boolean",
-            f"{xml_pointer}/wrapped",
-        )
+        invalid("the OpenAPI XML wrapped field must be a boolean", "/wrapped")
     if node_type is not None and (attribute is not None or wrapped is not None):
-        _fail(
-            "invalid-openapi-xml-object",
+        invalid(
             "the OpenAPI XML nodeType cannot be combined with the deprecated "
-            "attribute or wrapped fields",
-            xml_pointer,
+            "attribute or wrapped fields"
         )
     if wrapped is not None and not _declares_array(schema):
-        _fail(
-            "invalid-openapi-xml-object",
-            "the OpenAPI XML wrapped field applies only to an array schema",
-            f"{xml_pointer}/wrapped",
-        )
+        invalid("the OpenAPI XML wrapped field applies only to an array schema", "/wrapped")
     return _XmlObject(node_type, name, namespace, prefix, attribute, wrapped)
 
 
-def _node_type(schema: Mapping[str, Any], xml: _XmlObject) -> str:
-    """Resolve the XML node kind, applying OAS 3.2 and legacy defaults."""
+def _explicit_kind(xml: _XmlObject, *, transparent: bool) -> str | None:
+    """Normalize legacy fields and CDATA before checking compatibility."""
     if xml.node_type is not None:
-        return xml.node_type
-    if xml.legacy_attribute is True:
+        return "text" if xml.node_type == "cdata" else xml.node_type
+    if xml.legacy_attribute:
         return "attribute"
-    if xml.legacy_wrapped is True:
-        return "element"
-    if "$ref" in schema or "$dynamicRef" in schema or _declares_array(schema):
-        return "none"
-    return "element"
-
-
-def _merge(base: MappingRule, override: MappingRule | None) -> MappingRule:
-    """Layer explicit user policy over metadata, field by field.
-
-    An explicit ``none`` or ``text`` kind replaces the metadata rule: those
-    kinds cannot carry the naming, binding, array, or value fields that an
-    element or attribute rule may hold.
-    """
-    if override is None:
-        return base
-    if override.kind in ("none", "text"):
-        return override
-    return MappingRule(
-        name=override.name if override.name is not None else base.name,
-        kind=override.kind if override.kind is not None else base.kind,
-        namespace=override.namespace if override.namespace is not None else base.namespace,
-        prefix=override.prefix if override.prefix is not None else base.prefix,
-        array=override.array if override.array is not None else base.array,
-        item_name=override.item_name if override.item_name is not None else base.item_name,
-        null=override.null if override.null is not None else base.null,
-        type=override.type if override.type is not None else base.type,
-        order=override.order if override.order is not None else base.order,
-    )
-
-
-def _pointer_tokens(pointer: str) -> tuple[str, ...]:
-    """Decode RFC 6901 tokens from one of the projector's JSON Pointers."""
-    return tuple(token.replace("~1", "/").replace("~0", "~") for token in pointer[1:].split("/"))
+    if xml.legacy_wrapped is not None:
+        return "element" if xml.legacy_wrapped else "none"
+    if xml.legacy_attribute is False:
+        return "none" if transparent else "element"
+    return None
 
 
 def _schema_children(schema: Mapping[str, Any], pointer: str) -> Iterator[tuple[_XmlSchema, str]]:
@@ -287,261 +230,267 @@ def _schema_children(schema: Mapping[str, Any], pointer: str) -> Iterator[tuple[
                 yield cast(_XmlSchema, child), f"{pointer}/{keyword}/{escape_pointer_segment(name)}"
 
 
-def _has_xml(schema: _XmlSchema) -> bool:
-    """Whether *schema* or any schema it can reach carries an XML Object."""
-    if isinstance(schema, bool):
-        return False
-    return "xml" in schema or any(_has_xml(child) for child, _ in _schema_children(schema, ""))
-
-
-def _local_target(root: _XmlSchema, ref: str) -> tuple[_XmlSchema, str] | None:
-    """Resolve a local JSON Pointer reference, without resolving anchors."""
-    if not isinstance(ref, str) or not ref.startswith("#/"):
-        return None
-    pointer = ref[1:]
-    value: object = root
-    for raw in pointer[1:].split("/"):
-        token = raw.replace("~1", "/").replace("~0", "~")
-        if isinstance(value, Mapping) and token in value:
-            value = value[token]
-        elif isinstance(value, list) and token.isdigit() and int(token) < len(value):
-            value = value[int(token)]
-        else:
-            return None  # pragma: no cover - an unresolvable pointer cannot validate an instance
-    if isinstance(value, (Mapping, bool)):
-        return value, pointer
-    return None  # pragma: no cover - a reference to a non-schema cannot validate an instance
-
-
-def _anchor_target(root: _XmlSchema, ref: str) -> tuple[_XmlSchema, str] | None:
-    """Find a local ``$dynamicAnchor`` or ``$anchor`` target for warning purposes."""
-    if not isinstance(ref, str) or not ref.startswith("#") or ref.startswith("#/"):
-        return None
-    anchor = ref[1:]
-    if not anchor:
-        return root, ""
-    stack: list[tuple[_XmlSchema, str]] = [(root, "")]
-    while stack:
-        schema, pointer = stack.pop()
-        if isinstance(schema, bool):
-            continue  # pragma: no cover - booleans carry no anchors
-        if anchor in (schema.get("$dynamicAnchor"), schema.get("$anchor")):
-            return schema, pointer
-        stack.extend(_schema_children(schema, pointer))
-    return None  # pragma: no cover - an unresolved anchor cannot validate an instance
-
-
-def _applicator_children(
-    schema: Mapping[str, Any], pointer: str
-) -> Iterator[tuple[_XmlSchema, str, str]]:
-    """Yield branches whose annotations this adapter does not reconcile yet."""
-    for keyword in _APPLICATOR_BRANCHES:
-        if keyword not in schema:
-            continue
-        children = schema[keyword]
-        if keyword == "dependentSchemas":
-            for name, child in children.items():
-                yield (
-                    cast(_XmlSchema, child),
-                    f"{pointer}/{keyword}/{escape_pointer_segment(name)}",
-                    keyword,
-                )
-        elif keyword in ("allOf", "anyOf", "oneOf"):
-            for index, child in enumerate(children):
-                yield cast(_XmlSchema, child), f"{pointer}/{keyword}/{index}", keyword
-        else:
-            yield cast(_XmlSchema, children), f"{pointer}/{keyword}", keyword
-
-
-class _OpenApiMapping:
-    """Compiled metadata lookup for one selected OpenAPI Schema Object."""
-
-    def __init__(self, schema: _XmlSchema) -> None:
-        self._schema = schema
-        self._xml: dict[int, _XmlObject] = {}
-        self._walk(schema, "")
-        self._root_prefix = None if isinstance(schema, bool) else self._xml_for(schema).prefix
-
-    def _walk(self, schema: _XmlSchema, pointer: str) -> None:
-        if isinstance(schema, bool):
-            return
-        self._xml[id(schema)] = _read_xml(schema, pointer)
+def _validate_xml_tree(schema: _XmlSchema, pointer: str = "") -> None:
+    """Check authored XML Objects, without trying to apply any subschema."""
+    if not isinstance(schema, bool):
+        _read_xml(schema, pointer)
         for child, child_pointer in _schema_children(schema, pointer):
-            self._walk(child, child_pointer)
+            _validate_xml_tree(child, child_pointer)
 
-    def _xml_for(self, schema: Mapping[str, Any]) -> _XmlObject:
-        return self._xml.get(id(schema), _EMPTY_XML)
+
+def _may_have_xml(schema: _XmlSchema) -> bool:
+    """Include unknown ref targets when checking unsupported applicators."""
+    return not isinstance(schema, bool) and (
+        any(key in schema for key in ("xml", "$ref", "$dynamicRef"))
+        or any(_may_have_xml(child) for child, _ in _schema_children(schema, ""))
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Annotation:
+    occurrence: SchemaOccurrence
+    xml: _XmlObject
+    kind: str | None
+    transparent: bool
+
+
+def _annotations(occurrences: tuple[SchemaOccurrence, ...], source: str) -> Iterator[_Annotation]:
+    for occurrence in occurrences:
+        schema = occurrence.schema
+        if not isinstance(schema, bool):
+            xml = _read_xml(schema, occurrence.schema_pointer, occurrence=occurrence, source=source)
+            transparent = _declares_array(schema) or "$ref" in schema or "$dynamicRef" in schema
+            yield _Annotation(
+                occurrence, xml, _explicit_kind(xml, transparent=transparent), transparent
+            )
+
+
+def _pick(
+    field: str,
+    candidates: Iterator[tuple[str | None, SchemaOccurrence]],
+    pointer: str,
+    source: str,
+) -> str | None:
+    """Merge one annotation field without privileging a successful branch."""
+    choices = [(value, occurrence) for value, occurrence in candidates if value is not None]
+    values = tuple(dict.fromkeys(value for value, _ in choices))
+    if len(values) > 1:
+        origins = tuple(
+            dict.fromkeys((item.schema_pointer, item._schema_source) for _, item in choices)
+        )
+        report = ValidationReport(diagnostics_complete=True)
+        report.add_error(
+            f"ambiguous OpenAPI XML {field}; supply an explicit rule at this pointer",
+            code="ambiguous-openapi-mapping",
+            location=DataLocation(source, pointer),
+            location_precision="exact",
+            details={
+                "json_pointer": pointer,
+                "field": field,
+                "values": values,
+                "schema_pointers": tuple(path for path, _ in origins),
+                "schema_sources": tuple(uri for _, uri in origins),
+            },
+        )
+        raise XmlMappingError(report)
+    return values[0] if values else None
+
+
+def _name_parts(name: str | None) -> tuple[str | None, str | None]:
+    """Allow compatible Clark and separate name/namespace annotations to merge."""
+    if name is not None and name.startswith("{") and "}" in name:
+        uri, _, local = name[1:].partition("}")
+        return local, uri
+    return name, None
+
+
+def _inferred_item_name(
+    pointer: str, document: NativeJsonValue, xml_path: str, source: str
+) -> str | None:
+    """Use the nearest owning object key, not an array index, as the item name."""
+    ancestor = pointer
+    while ancestor:
+        parent, _, raw = ancestor.rpartition("/")
+        if isinstance(resolve_pointer(document, parent), dict):
+            name = _pointer_token(raw, ancestor)
+            _check_local_name(name, pointer, xml_path, source)
+            return name
+        ancestor = parent
+    return None
+
+
+def _warnings_at(applied: _AppliedSchema, pointer: str) -> tuple[OpenApiMetadataWarning, ...]:
+    incomplete, unevaluated = applied.metadata_gaps_at(pointer)
+    warnings = []
+    if incomplete is not None:
+        warnings.append(
+            OpenApiMetadataWarning(
+                "OpenAPI XML metadata could not be resolved from every applicable schema",
+                (incomplete,),
+                ("applicators",),
+            )
+        )
+    for keyword, item in unevaluated:
+        if _may_have_xml(item.schema):
+            warnings.append(
+                OpenApiMetadataWarning(
+                    f"OpenAPI XML metadata from {keyword} cannot be resolved",
+                    (item.schema_pointer,),
+                    (keyword,),
+                )
+            )
+    return tuple(warnings)
+
+
+@dataclass(frozen=True, slots=True)
+class _OpenApiMapping:
+    """Reconcile only the facts the shared evaluator applies at this pointer."""
+
+    root_name: str | None
+    root_xml: _XmlObject
 
     def rule_at(
         self,
         pointer: str,
-        document_value: NativeJsonValue,
+        applied: _AppliedSchema,
+        document: NativeJsonValue,
         override: MappingRule | None,
-        item_name_explicit: bool,
-    ) -> tuple[MappingRule | None, tuple[OpenApiMetadataWarning, ...]]:
-        """Return the metadata rule at an instance pointer layered under *override*."""
-        warnings: list[OpenApiMetadataWarning] = []
-        if not pointer:
-            if not isinstance(self._schema, bool):
-                warnings.extend(self._unresolved_at(self._schema, "", None, document_value))
-            base = MappingRule(prefix=self._root_prefix)
-            return _merge(base, override), tuple(warnings)
-        located = self._locate(pointer, document_value, warnings)
-        if located is None:
-            return override, tuple(warnings)
-        schema, inferred, schema_pointer = located
-        merged = _merge(self._rule_for(schema, inferred), override)
-        if item_name_explicit and (override is None or override.name is None):
-            merged = replace(merged, name=None)
-        if (
-            merged.kind in ("element", "attribute")
-            and merged.name is None
-            and not item_name_explicit
-        ):
-            _fail_unnamed(pointer, schema_pointer)
-        return merged, tuple(warnings)
+        item_name: str | None,
+        source: str,
+        xml_path: str,
+    ) -> tuple[MappingRule, tuple[OpenApiMetadataWarning, ...]]:
+        occurrences = applied.occurrences_at(pointer)
+        warnings = _warnings_at(applied, pointer)
+        override = override or MappingRule()
+        if override.kind in ("none", "text"):
+            return override, warnings
 
-    def _unresolved_at(
-        self,
-        schema: Mapping[str, Any],
-        schema_pointer: str,
-        token: str | None,
-        value: NativeJsonValue,
-    ) -> tuple[OpenApiMetadataWarning, ...]:
-        """Report XML metadata hidden behind constructs Task 19 will resolve."""
-        pointers: list[str] = []
-        constructs: list[str] = []
-        for keyword in ("$ref", "$dynamicRef"):
-            if keyword not in schema:
-                continue
-            ref = schema[keyword]
-            target = _local_target(self._schema, ref) or _anchor_target(self._schema, ref)
-            if target is None or _has_xml(target[0]):
-                pointers.append(target[1] if target is not None else f"{schema_pointer}/{keyword}")
-                constructs.append(keyword)
-        if isinstance(value, Mapping) and token is not None:
-            patterns = schema.get("patternProperties")
-            if isinstance(patterns, Mapping):
-                for pattern, child in patterns.items():
-                    if re.search(pattern, token) is not None and _has_xml(child):
-                        pointers.append(
-                            f"{schema_pointer}/patternProperties/{escape_pointer_segment(pattern)}"
-                        )
-                        constructs.append("patternProperties")
-        for child, child_pointer, keyword in _applicator_children(schema, schema_pointer):
-            if _has_xml(child):
-                pointers.append(child_pointer)
-                constructs.append(keyword)
-        if not pointers:
-            return ()
-        message = (
-            "OpenAPI XML metadata at "
-            + ", ".join(dict.fromkeys(pointers))
-            + " was not applied because "
-            + ", ".join(dict.fromkeys(constructs))
-            + " is not resolved"
-        )
-        return (
-            OpenApiMetadataWarning(
-                message,
-                tuple(dict.fromkeys(pointers)),
-                tuple(dict.fromkeys(constructs)),
-            ),
-        )
-
-    def _locate(
-        self, pointer: str, document_value: NativeJsonValue, warnings: list[OpenApiMetadataWarning]
-    ) -> tuple[_XmlSchema, str | None, str] | None:
-        """Follow object members and array items by the actual native value kind."""
-        schema = self._schema
-        schema_pointer = ""
-        inferred: str | None = None
-        value = document_value
-        for token in _pointer_tokens(pointer):
-            if isinstance(schema, bool):
-                return None
-            warnings.extend(self._unresolved_at(schema, schema_pointer, token, value))
-            located = _member_schema(schema, schema_pointer, token, value)
-            if located is None:
-                return None
-            schema, schema_pointer, is_item, value = located
-            if not is_item:
-                inferred = token
-        if not isinstance(schema, bool):
-            warnings.extend(self._unresolved_at(schema, schema_pointer, None, value))
-        return schema, inferred, schema_pointer
-
-    def _rule_for(self, schema: _XmlSchema, inferred: str | None) -> MappingRule:
-        if isinstance(schema, bool):
-            node_type = "element"
-            xml = _EMPTY_XML
+        annotations = tuple(_annotations(occurrences, source))
+        kind: str | None
+        if override.kind is not None:
+            kind = override.kind
+        elif override.array is not None:
+            # The caller selected array layout, so don't reconcile schema wrapping.
+            kind = "element"
         else:
-            xml = self._xml_for(schema)
-            node_type = _node_type(schema, xml)
-        if node_type in ("text", "cdata"):
-            return MappingRule(kind="text")
-        if node_type == "none":
-            return MappingRule(kind="none")
-        name = xml.name if xml.name is not None else inferred
-        if node_type == "attribute":
-            return MappingRule(name, kind="attribute", namespace=xml.namespace, prefix=xml.prefix)
-        wrapped = not isinstance(schema, bool) and _declares_array(schema)
-        return MappingRule(
-            name,
-            kind="element",
-            namespace=xml.namespace,
-            prefix=xml.prefix,
-            array="wrapped" if wrapped else None,
+            kind = _pick("kind", ((a.kind, a.occurrence) for a in annotations), pointer, source)
+        if not pointer:
+            # The document always has a root element, even for an array or nodeType none.
+            if kind == "attribute" and override.kind is None:
+                origin = next(a.occurrence for a in annotations if a.kind == "attribute")
+                _fail(
+                    "invalid-openapi-xml-object",
+                    "an OpenAPI root cannot be an attribute",
+                    f"{origin.schema_pointer}/xml",
+                    occurrence=origin,
+                    source=source,
+                )
+            kind = "element" if override.kind is None else override.kind
+        elif kind is None:
+            # Defaults are not assertions. In particular a plain reference must
+            # not suppress the XML Object on the schema it applies.
+            has_named_metadata = any(
+                not a.transparent
+                and (
+                    a.xml.name is not None
+                    or a.xml.namespace is not None
+                    or a.xml.prefix is not None
+                )
+                for a in annotations
+            )
+            kind = (
+                "none"
+                if not has_named_metadata and any(a.transparent for a in annotations)
+                else "element"
+            )
+        if kind in ("none", "text"):
+            return replace(override, kind=kind), warnings
+
+        # Names on an annotation that explicitly produces no named node are ignored.
+        named = tuple(
+            a
+            for a in annotations
+            if not pointer
+            or a.kind in ("element", "attribute")
+            or (a.kind is None and not a.transparent)
         )
-
-
-def _member_schema(
-    schema: Mapping[str, Any],
-    schema_pointer: str,
-    token: str,
-    value: NativeJsonValue,
-) -> tuple[_XmlSchema, str, bool, NativeJsonValue] | None:
-    """Follow one pointer token according to the native container that owns it."""
-    if isinstance(value, dict):
-        properties = schema.get("properties")
-        if isinstance(properties, Mapping) and token in properties:
-            pointer = f"{schema_pointer}/properties/{escape_pointer_segment(token)}"
-            return cast(_XmlSchema, properties[token]), pointer, False, value[token]
-        if "additionalProperties" in schema:
-            return (
-                cast(_XmlSchema, schema["additionalProperties"]),
-                f"{schema_pointer}/additionalProperties",
-                False,
-                value[token],
+        names = tuple((_name_parts(a.xml.name), a) for a in named)
+        explicit_name, explicit_uri = _name_parts(override.name)
+        root_name, root_uri = _name_parts(self.root_name if not pointer else None)
+        name = explicit_name if override.name is not None else root_name
+        if name is None and item_name is None:
+            name = _pick(
+                "name", ((local, a.occurrence) for (local, _), a in names), pointer, source
             )
-        return None
-    if isinstance(value, list):
-        index = int(token)
-        prefix = schema.get("prefixItems")
-        if isinstance(prefix, list) and index < len(prefix):
-            return (
-                cast(_XmlSchema, prefix[index]),
-                f"{schema_pointer}/prefixItems/{index}",
-                True,
-                value[index],
+        namespace = override.namespace if override.namespace is not None else explicit_uri
+        if namespace is None and override.name is None:
+            _, namespace = _name_parts(item_name)
+        if namespace is None:
+            namespace = _pick(
+                "namespace",
+                (
+                    (uri, a.occurrence)
+                    for (_, embedded), a in names
+                    for uri in (a.xml.namespace, embedded)
+                ),
+                pointer,
+                source,
             )
-        if "items" in schema:
-            return cast(_XmlSchema, schema["items"]), f"{schema_pointer}/items", True, value[index]
-        return {}, f"{schema_pointer}/items", True, value[index]
-    return None  # pragma: no cover - a present pointer cannot descend below a scalar
+        prefix = override.prefix
+        if prefix is None:
+            prefix = _pick("prefix", ((a.xml.prefix, a.occurrence) for a in named), pointer, source)
+        if not pointer:
+            if name is None:
+                name = self.root_xml.name
+            if name is None:
+                _fail("unnamed-openapi-schema", _UNNAMED_ROOT, "", source=source)
+            if not occurrences:
+                namespace = self.root_xml.namespace if namespace is None else namespace
+                prefix = self.root_xml.prefix if prefix is None else prefix
+            if root_uri is not None and override.name is None and override.namespace is None:
+                name = clark(root_uri, name)
+        elif name is None and item_name is None:
+            parent = pointer.rpartition("/")[0]
+            if isinstance(resolve_pointer(document, parent), list) and (
+                occurrences or applied.occurrences_at(parent)
+            ):
+                name = _inferred_item_name(pointer, document, xml_path, source)
+                if name is None:
+                    schema = (occurrences or applied.occurrences_at(parent))[0]
+                    report = ValidationReport(diagnostics_complete=True)
+                    report.add_error(
+                        "OpenAPI array items need xml.name or an explicit name",
+                        code="unnamed-openapi-array-item",
+                        location=DataLocation(
+                            source, pointer, schema_pointer=schema.schema_pointer
+                        ),
+                        location_precision="exact",
+                        details={"json_pointer": pointer, "schema_pointer": schema.schema_pointer},
+                    )
+                    raise XmlMappingError(report)
+
+        # Preserve caller policy (including a Clark override name's spelling).
+        return replace(
+            override,
+            name=name if override.name is None else override.name,
+            kind=kind,
+            namespace=namespace,
+            prefix=prefix,
+        ), warnings
 
 
 def compile_openapi_mapping(
     schema_object: object,
     *,
     root_name: str | None,
+    root_override: MappingRule | None,
     dialect: str | None,
     base_uri: str | None,
     reference_registry: SchemaRegistry | None,
     resource_policy: ResourcePolicy | None,
-) -> tuple[SchemaGuidance, str, RuleCallable]:
+) -> tuple[SchemaGuidance, str | None, RuleCallable]:
     """Compile validation guidance plus the metadata rule lookup for a schema."""
-    if dialect is not None:
+    if dialect is not None and dialect.removesuffix("#") not in _OAS_DIALECTS | {_DRAFT}:
         _fail(
             "unsupported-openapi-dialect",
             f"custom OpenAPI dialect {dialect!r} is not supported",
@@ -549,33 +498,39 @@ def compile_openapi_mapping(
         )
     if not isinstance(schema_object, (Mapping, bool)):
         raise TypeError("the OpenAPI schema_object must be a loaded mapping or boolean schema")
-    copied = cast(_XmlSchema, copy_native_data(schema_object))
     guidance = SchemaGuidance.compile(
-        copied,
+        schema_object,
         base_uri=base_uri,
         reference_registry=reference_registry,
         resource_policy=resource_policy,
+        _openapi_dialects=_OAS_DIALECTS,
     )
-    if isinstance(copied, bool):
+    if root_name is not None and not isinstance(root_name, str):
+        raise TypeError("root_name must be a string")
+    if isinstance(schema_object, bool):
         root_xml = _EMPTY_XML
     else:
-        root_xml = _read_xml(copied, "")
-        if _node_type(copied, root_xml) == "attribute":
+        _validate_xml_tree(schema_object)
+        root_xml = _read_xml(schema_object, "")
+        if _explicit_kind(root_xml, transparent=False) == "attribute" and (
+            root_override is None or (root_override.kind is None and root_override.array is None)
+        ):
             _fail(
                 "invalid-openapi-xml-object",
                 "an OpenAPI root schema cannot describe an attribute",
                 "/xml",
             )
-    selected = root_name if root_name is not None else root_xml.name
+    selected = root_override.name if root_override is not None else None
     if selected is None:
-        _fail(
-            "unnamed-openapi-schema",
-            "an inline OpenAPI schema needs root_name or xml.name to name the root element",
-            "",
-        )
-    if not isinstance(selected, str):
-        raise TypeError("root_name must be a string")
-    if root_xml.namespace is not None:
+        selected = root_name if root_name is not None else root_xml.name
+    if selected is None:
+        if isinstance(schema_object, bool) or not any(
+            key in schema_object for key in _ROOT_APPLICATORS
+        ):
+            _fail("unnamed-openapi-schema", _UNNAMED_ROOT, "")
+    elif root_xml.namespace is not None and (
+        root_override is None or (root_override.namespace is None and root_override.name is None)
+    ):
         if selected.startswith("{"):
             uri, separator, _ = selected[1:].partition("}")
             if not separator or uri != root_xml.namespace:
@@ -586,7 +541,7 @@ def compile_openapi_mapping(
                 )
         else:
             selected = clark(root_xml.namespace, selected)
-    return guidance, selected, _OpenApiMapping(copied).rule_at
+    return guidance, selected, _OpenApiMapping(root_name, root_xml).rule_at
 
 
 __all__ = ["compile_openapi_mapping"]

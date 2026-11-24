@@ -589,7 +589,7 @@ def test_openapi_rule_overrides_metadata_order():
     assert [node._name_ for node in xml.root.children] == ["b", "a"]
 
 
-def test_openapi_ref_with_xml_metadata_warns_and_projects_unchanged():
+def test_openapi_ref_applies_target_xml_metadata():
     schema = {
         "type": "object",
         "xml": {"name": "r"},
@@ -602,15 +602,11 @@ def test_openapi_ref_with_xml_metadata_warns_and_projects_unchanged():
         "properties": {"child": {"$ref": "#/$defs/child"}},
     }
     xml = from_data({"child": {"id": "x"}}).to_xml(XmlMapping.from_openapi(schema))
-    assert xml.to_string() == "<r><id>x</id></r>"
-    (issue,) = [item for item in xml.report.issues if item.code == "openapi-metadata-unresolved"]
-    assert issue.location.pointer == "/child"
-    assert issue.details["schema_pointers"] == ("/$defs/child",)
-    assert issue.details["constructs"] == ("$ref",)
-    assert issue.details["xml_path"] == "/r[1]"
+    assert xml.to_string() == '<r id="x"/>'
+    assert not xml.report.issues
 
 
-def test_openapi_dynamic_ref_with_xml_metadata_warns():
+def test_openapi_dynamic_ref_applies_target_xml_metadata():
     schema = {
         "$id": "https://example.test/orders",
         "type": "object",
@@ -625,14 +621,11 @@ def test_openapi_dynamic_ref_with_xml_metadata_warns():
         "properties": {"child": {"$dynamicRef": "#node"}},
     }
     xml = from_data({"child": {"id": "x"}}).to_xml(XmlMapping.from_openapi(schema))
-    assert xml.to_string() == "<r><id>x</id></r>"
-    (issue,) = [item for item in xml.report.issues if item.code == "openapi-metadata-unresolved"]
-    assert issue.location.pointer == "/child"
-    assert issue.details["schema_pointers"] == ("/$defs/node",)
-    assert issue.details["constructs"] == ("$dynamicRef",)
+    assert xml.to_string() == '<r id="x"/>'
+    assert not xml.report.issues
 
 
-def test_openapi_ref_through_an_array_pointer_warns():
+def test_openapi_ref_through_an_array_pointer_applies_target_xml_metadata():
     schema = {
         "type": "object",
         "xml": {"name": "r"},
@@ -645,42 +638,33 @@ def test_openapi_ref_through_an_array_pointer_warns():
         "properties": {"child": {"$ref": "#/allOf/0"}},
     }
     xml = from_data({"child": {"id": "x"}}).to_xml(XmlMapping.from_openapi(schema))
-    refs = [
-        issue
-        for issue in xml.report.issues
-        if issue.code == "openapi-metadata-unresolved" and issue.details["constructs"] == ("$ref",)
-    ]
-    assert [issue.details["schema_pointers"] for issue in refs] == [("/allOf/0",)]
+    assert xml.to_string() == '<r id="x"/>'
+    assert not xml.report.issues
 
 
-def test_openapi_ref_to_the_root_warns_once():
+def test_openapi_ref_to_the_root_uses_its_name_without_spurious_warnings():
     schema = {
         "type": "object",
         "xml": {"name": "r"},
         "properties": {"child": {"$ref": "#"}},
     }
     xml = from_data({"child": {}}).to_xml(XmlMapping.from_openapi(schema))
-    assert xml.to_string() == "<r/>"
-    (issue,) = [item for item in xml.report.issues if item.code == "openapi-metadata-unresolved"]
-    assert issue.details["schema_pointers"] == ("",)
-    assert issue.details["constructs"] == ("$ref",)
+    assert xml.to_string() == "<r><r/></r>"
+    assert [issue.code for issue in xml.report.issues] == ["empty-object"]
 
 
-def test_openapi_pattern_properties_with_xml_metadata_warns_and_projects_unchanged():
+def test_openapi_pattern_properties_apply_xml_metadata():
     schema = {
         "type": "object",
         "xml": {"name": "r"},
         "patternProperties": {"^x": {"type": "string", "xml": {"name": "renamed"}}},
     }
     xml = from_data({"xa": "v"}).to_xml(XmlMapping.from_openapi(schema))
-    assert xml.to_string() == "<r><xa>v</xa></r>"
-    (issue,) = [item for item in xml.report.issues if item.code == "openapi-metadata-unresolved"]
-    assert issue.location.pointer == "/xa"
-    assert issue.details["schema_pointers"] == ("/patternProperties/^x",)
-    assert issue.details["constructs"] == ("patternProperties",)
+    assert xml.to_string() == "<r><renamed>v</renamed></r>"
+    assert not xml.report.issues
 
 
-def test_openapi_applicator_with_xml_metadata_warns_and_projects_unchanged():
+def test_openapi_allof_applies_xml_metadata():
     schema = {
         "type": "object",
         "xml": {"name": "r"},
@@ -694,11 +678,8 @@ def test_openapi_applicator_with_xml_metadata_warns_and_projects_unchanged():
         },
     }
     xml = from_data({"child": {"id": "x"}}).to_xml(XmlMapping.from_openapi(schema))
-    assert xml.to_string() == "<r><child><id>x</id></child></r>"
-    (issue,) = [item for item in xml.report.issues if item.code == "openapi-metadata-unresolved"]
-    assert issue.location.pointer == "/child"
-    assert issue.details["schema_pointers"] == ("/properties/child/allOf/0",)
-    assert issue.details["constructs"] == ("allOf",)
+    assert xml.to_string() == '<r><child id="x"/></r>'
+    assert not xml.report.issues
 
 
 def test_openapi_applicator_without_xml_metadata_does_not_warn():
@@ -717,7 +698,7 @@ def test_openapi_applicator_without_xml_metadata_does_not_warn():
     assert not xml.report.issues
 
 
-def test_openapi_dependent_schemas_with_xml_metadata_warns():
+def test_openapi_dependent_schemas_apply_xml_metadata():
     schema = {
         "type": "object",
         "xml": {"name": "r"},
@@ -727,13 +708,11 @@ def test_openapi_dependent_schemas_with_xml_metadata_warns():
         },
     }
     xml = from_data({"a": 1, "id": "x"}).to_xml(XmlMapping.from_openapi(schema))
-    assert xml.to_string() == "<r><a>1</a><id>x</id></r>"
-    (issue,) = [item for item in xml.report.issues if item.code == "openapi-metadata-unresolved"]
-    assert issue.details["schema_pointers"] == ("/dependentSchemas/a",)
-    assert issue.details["constructs"] == ("dependentSchemas",)
+    assert xml.to_string() == '<r id="x"><a>1</a></r>'
+    assert not xml.report.issues
 
 
-def test_openapi_then_branch_with_xml_metadata_warns():
+def test_openapi_then_branch_applies_xml_metadata():
     schema = {
         "type": "object",
         "xml": {"name": "r"},
@@ -742,10 +721,8 @@ def test_openapi_then_branch_with_xml_metadata_warns():
         "then": {"properties": {"id": {"type": "string", "xml": {"nodeType": "attribute"}}}},
     }
     xml = from_data({"choose": "x", "id": "v"}).to_xml(XmlMapping.from_openapi(schema))
-    assert xml.to_string() == "<r><choose>x</choose><id>v</id></r>"
-    (issue,) = [item for item in xml.report.issues if item.code == "openapi-metadata-unresolved"]
-    assert issue.details["schema_pointers"] == ("/then",)
-    assert issue.details["constructs"] == ("then",)
+    assert xml.to_string() == '<r id="v"><choose>x</choose></r>'
+    assert not xml.report.issues
 
 
 def test_openapi_pattern_properties_without_xml_metadata_do_not_warn():

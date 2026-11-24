@@ -157,12 +157,15 @@ def _keep_extensions(validator_class: Any) -> Any:
 class _Schemas:
     """Checked resources and their diagnostic locations for one compilation."""
 
-    def __init__(self, api: Any, limits: JsonLimits | None) -> None:
+    def __init__(
+        self, api: Any, limits: JsonLimits | None, openapi_dialects: frozenset[str]
+    ) -> None:
         from referencing.jsonschema import DRAFT202012
 
         self.api = api
         self.specification = DRAFT202012
         self.limits = limits
+        self.openapi_dialects = openapi_dialects
         self.draft = api.Draft202012Validator
         self.vocabularies = self.draft.META_SCHEMA["$vocabulary"]
         self.locations: dict[int, tuple[_Path, str | None]] = {}
@@ -198,9 +201,8 @@ class _Schemas:
     def _check_dialect_tree(self, schema: Schema) -> None:
         if isinstance(schema, bool):
             return
-        dialect = schema.get("$schema", _DRAFT)
-        validator = self.api.validators.validator_for(schema, default=self.draft)
-        if dialect.removesuffix("#") != _DRAFT or validator is not self.draft:
+        dialect = schema.get("$schema", _DRAFT).removesuffix("#")
+        if dialect != _DRAFT and dialect not in self.openapi_dialects:
             raise JsonSchemaError(
                 f"Unsupported JSON Schema dialect {dialect!r}; expected Draft 2020-12"
             )
@@ -453,15 +455,21 @@ class _Application:
         schema = self.validator.schema
         if isinstance(schema, bool):
             return
-        if "$ref" in schema:
-            ref = schema["$ref"]
-            resolved = self.validator._resolver.lookup(ref)
+        current = self.validator._resolver
+        for keyword in ("$ref", "$dynamicRef") if current.schemas.openapi_dialects else ("$ref",):
+            if keyword not in schema:
+                continue
+            ref = schema[keyword]
+            resolved = current.lookup(ref)
             target, resolver = resolved.contents, resolved.resolver
             if isinstance(target, bool):
                 yield _Application(
                     self.validator.evolve(schema=target, _resolver=resolver), resolver.boolean_path
                 )
-            elif target.get("$dynamicAnchor") != urldefrag(ref)[1]:
+            elif (
+                current.schemas.openapi_dialects
+                or target.get("$dynamicAnchor") != urldefrag(ref)[1]
+            ):
                 yield _Application(
                     self.validator.evolve(schema=target, _resolver=resolver),
                     resolver.schemas.locations[id(target)][0],
@@ -527,8 +535,23 @@ class _Application:
                 yield self.child(prefix[index], "prefixItems", index)
             elif "items" in schema:
                 yield self.child(schema["items"], "items")
-        # $dynamicRef and unevaluatedProperties/Items deliberately supply no
-        # guidance. The latter need cross-applicator evaluation annotations.
+            if self.validator._resolver.schemas.openapi_dialects and "contains" in schema:
+                # contains tests members via evolve, without entering a new scope.
+                matching = self.validator.evolve(schema=schema["contains"])
+                if matching.is_valid(cast(list[NativeJsonValue], value)[index]):
+                    yield _Application(matching, (*self.path, "contains"))
+        # unevaluatedProperties/Items need cross-applicator annotations.
+
+    def evaluated_members(self, value: NativeJsonValue, keyword: str) -> frozenset[str | int]:
+        """Ask the evaluator what was covered before this unevaluated keyword."""
+        utils = import_module("jsonschema._utils")
+        find = (
+            utils.find_evaluated_property_keys_by_schema
+            if keyword == "unevaluatedProperties"
+            else utils.find_evaluated_item_indexes_by_schema
+        )
+        schema = {key: child for key, child in self.validator.schema.items() if key != keyword}
+        return frozenset(find(self.validator, value, schema))
 
 
 class _GuidanceCycle(Exception):
@@ -543,34 +566,47 @@ class _AppliedSchema:
         self._root = _Application(validator, ())
         self._value = value
         self._at: dict[str, tuple[_Application, ...]] = {}
+        self._incomplete: dict[str, str] = {}
+        self._unevaluated: dict[str, list[tuple[str, SchemaOccurrence]]] = {}
+        self._evaluated_members: dict[tuple[str, int], frozenset[str | int]] = {}
 
     def occurrences_at(self, pointer: str) -> tuple[SchemaOccurrence, ...]:
-        return tuple(
-            SchemaOccurrence(
-                item.validator.schema,
-                pointer,
-                _pointer(item.path),
-                _schema_source=item.validator._resolver.schemas.locations.get(
-                    id(item.validator.schema), ((), None)
-                )[1],
-            )
-            for item in self._applications(pointer)
+        return tuple(self._occurrence(item, pointer) for item in self._applications(pointer))
+
+    @staticmethod
+    def _occurrence(item: _Application, pointer: str) -> SchemaOccurrence:
+        schema = item.validator.schema
+        return SchemaOccurrence(
+            schema,
+            pointer,
+            _pointer(item.path),
+            _schema_source=item.validator._resolver.schemas.locations.get(id(schema), ((), None))[
+                1
+            ],
         )
+
+    def metadata_gaps_at(
+        self, pointer: str
+    ) -> tuple[str | None, tuple[tuple[str, SchemaOccurrence], ...]]:
+        """Distinguish uninspectable alternatives from an empty annotation set."""
+        return self._incomplete.get(pointer), tuple(self._unevaluated.get(pointer, ()))
 
     def _applications(self, pointer: str) -> tuple[_Application, ...]:
         if pointer not in self._at:
+            path: _Path = ()
             try:
                 selected = resolve_pointer(self._value, pointer)
-                applications = tuple(
-                    occurrence
-                    for item in self._initial(pointer)
-                    for occurrence in self._expand(item, selected, set())
-                )
+                candidates: list[_Application] = []
+                for item in self._initial(pointer):
+                    path = item.path
+                    candidates.extend(self._expand(item, selected, set()))
+                applications = tuple(candidates)
             except (JsonSchemaError, RecursionError, _GuidanceCycle, re.error, OverflowError):
                 # Validation could short-circuit an alternative whose
                 # assertions or resources cannot be inspected. Do not publish
                 # a partial set of candidates or affect the validation verdict.
                 applications = ()
+                self._incomplete[pointer] = _pointer(path)
             self._at[pointer] = applications
         return self._at[pointer]
 
@@ -583,6 +619,24 @@ class _AppliedSchema:
         value = resolve_pointer(self._value, parent)
         for item in self._applications(parent):
             yield from item.at_member(value, token)
+            if item.validator._resolver.schemas.openapi_dialects:
+                self._record_unevaluated(item, parent, pointer, token, value)
+
+    def _record_unevaluated(
+        self, item: _Application, parent: str, pointer: str, token: str, value: NativeJsonValue
+    ) -> None:
+        """Record possible metadata gaps, not unevaluated keyword applications."""
+        keyword = "unevaluatedProperties" if isinstance(value, dict) else "unevaluatedItems"
+        schema = item.validator.schema
+        if isinstance(schema, bool) or keyword not in schema:
+            return
+        key = (parent, id(item))
+        if key not in self._evaluated_members:
+            self._evaluated_members[key] = item.evaluated_members(value, keyword)
+        member = token if isinstance(value, dict) else int(token)
+        if member not in self._evaluated_members[key]:
+            entry = self._occurrence(item.child(schema[keyword], keyword), pointer)
+            self._unevaluated.setdefault(pointer, []).append((keyword, entry))
 
     def _expand(
         self, item: _Application, value: NativeJsonValue, active: set[int]
@@ -620,10 +674,11 @@ class SchemaGuidance:
         reference_registry: SchemaRegistry | None = None,
         resource_policy: ResourcePolicy | None = None,
         format_assertion: bool = False,
+        _openapi_dialects: frozenset[str] = frozenset(),
     ) -> SchemaGuidance:
         api = _load_optional()
         try:
-            schemas = _Schemas(api, limits)
+            schemas = _Schemas(api, limits, _openapi_dialects)
             runtime = _Resources(schemas, resource_policy)
             root = _read_schema(schema, limits)
             resource = schemas.resource(root, base_uri)
@@ -674,6 +729,7 @@ class SchemaGuidance:
             self._resolver.parent != other._resolver.parent
             or self._policy is not other._policy
             or self._validator.format_checker is not other._validator.format_checker
+            or self._resolver.schemas.openapi_dialects != other._resolver.schemas.openapi_dialects
         ):
             return False
         # Compare the compiled snapshots, not caller registry identities:

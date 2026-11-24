@@ -18,7 +18,7 @@ a non-fatal warning on the derived document's report.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field, replace
 from decimal import Decimal
 from types import MappingProxyType
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from pyxsd.schemaless.json_document import JsonDocument, _JsonSchemaInput
     from pyxsd.schemaless.json_schema import SchemaGuidance, _AppliedSchema
     from pyxsd.schemaless.nodes import _CompiledNodeMapping
-    from pyxsd.schemaless.openapi import OpenApiMetadataWarning
+    from pyxsd.schemaless.openapi import OpenApiMetadataWarning, RuleCallable
 
 _XSI_NIL = f"{{{XSI_NS}}}nil"
 _XMLNS_NS = "http://www.w3.org/2000/xmlns/"
@@ -155,21 +155,15 @@ class XmlMapping:
                 raise TypeError("mapping rule values must be MappingRule instances")
             checked[pointer] = rule
 
-        self._root_name = root_name
+        self._root_name: str | None = root_name
         self._default = "elements"
         self._rules: Mapping[str, MappingRule] = MappingProxyType(checked)
         self._guidance: SchemaGuidance | None = None
-        self._derived: (
-            Callable[
-                [str, NativeJsonValue, MappingRule | None, bool],
-                tuple[MappingRule | None, tuple[OpenApiMetadataWarning, ...]],
-            ]
-            | None
-        ) = None
+        self._derived: RuleCallable | None = None
 
     @property
-    def root_name(self) -> str:
-        """The required element name of the projected document."""
+    def root_name(self) -> str | None:
+        """The static root name, or None when OpenAPI selects it per instance."""
         return self._root_name
 
     @property
@@ -240,36 +234,47 @@ class XmlMapping:
     ) -> XmlMapping:
         """Compile an element-first mapping from an OpenAPI Schema Object.
 
-        XML Objects on the selected schema and the properties, items, and
-        prefix items it names directly supply node kinds, names, namespaces,
-        and array wrapping. ``root_name`` takes precedence over ``xml.name``
-        for the document element. Explicit rules override individual metadata
-        fields, and the schema still validates the instance before projection.
+        XML Objects on applicable schemas supply node kinds, names, namespaces,
+        and array wrapping. ``root_name`` overrides the annotation's local
+        name. If only an applicator supplies the root name, it is selected at
+        projection time. Explicit rules override individual metadata fields.
         """
         from pyxsd.schemaless.openapi import compile_openapi_mapping
 
+        root_override = rules.get("") if isinstance(rules, Mapping) else None
         guidance, selected, rule_at = compile_openapi_mapping(
             schema_object,
             root_name=root_name,
+            root_override=root_override if isinstance(root_override, MappingRule) else None,
             dialect=dialect,
             base_uri=base_uri,
             reference_registry=reference_registry,
             resource_policy=resource_policy,
         )
-        mapping = cls(selected, rules=rules)
+        # Reuse the direct constructor's rule checks without treating a dynamic
+        # root name as a public constructor option.
+        mapping = cls("_" if selected is None else selected, rules=rules)
+        mapping._root_name = selected
         mapping._derived = rule_at
         mapping._guidance = guidance
         return mapping
 
     def _rule_at(
-        self, pointer: str, value: NativeJsonValue, *, item_name_explicit: bool = False
+        self,
+        pointer: str,
+        schema: _AppliedSchema | None,
+        value: NativeJsonValue,
+        source: str,
+        xml_path: str,
+        *,
+        item_name: str | None = None,
     ) -> tuple[MappingRule, tuple[OpenApiMetadataWarning, ...]]:
         """Return policy and nonfatal metadata warnings for one occurrence."""
         explicit = self._rules.get(pointer)
         if self._derived is None:
             return (_DEFAULT_RULE if explicit is None else explicit), ()
-        derived, warnings = self._derived(pointer, value, explicit, item_name_explicit)
-        return (_DEFAULT_RULE if derived is None else derived), warnings
+        assert schema is not None  # from_openapi always projects with a validated schema.
+        return self._derived(pointer, schema, value, explicit, item_name, source, xml_path)
 
 
 def _pointer_problem(pointer: str) -> str:
@@ -476,18 +481,23 @@ class _Projector:
         self._name_prefixes: dict[ET.Element, dict[str | None, str]] = {}
         self._uses_xsi = False
         self._document_value: NativeJsonValue = None
-        self._reported_metadata: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
 
     def build(self, value: NativeJsonValue) -> SchemalessElement:
         self._document_value = value
-        rule, warnings = self._mapping._rule_at("", value)
-        name, path = self._resolve_name(_Name(self._mapping.root_name), rule, "", None, "element")
+        rule, warnings = self._mapping._rule_at("", self._schema, value, self._source, "/")
+        root_name = self._mapping.root_name if rule.name is None else rule.name
+        if root_name is None:
+            # A deferred name and an explicit non-element rule cannot form a root.
+            self._invalid("the root must be a single element", "", "/")
+        name, path = self._resolve_name(_Name(root_name), rule, "", None, "element")
         self._check_rule(rule, value, "element" if rule.kind is None else rule.kind, "", path)
         self._emit_metadata_warnings(warnings, "", path)
         if rule.kind not in (None, "element") or rule.array == "unwrapped":
             self._invalid("the root must be a single element", "", path)
         if value is None and rule.null == "omit":
             self._invalid("the root element cannot be omitted", "", path)
+        if value is None:
+            self._check_null_shape("", path)
         root = ET.Element(name.value)
         self._bind(root, name, "", path)
         self._fill(_Target(root, path), rule, value, "")
@@ -529,7 +539,6 @@ class _Projector:
         if isinstance(value, (dict, list)):
             self._children(target, rule, value, pointer)
         elif value is None:
-            self._check_null_shape(pointer, target.path)
             if rule.null == "empty":
                 self._warn_null("empty", "element", pointer, target.path)
                 target.element.text = ""
@@ -621,7 +630,7 @@ class _Projector:
                 member,
                 f"{pointer}/{index}",
                 pointer,
-                item_name_explicit=rule.item_name is not None,
+                item_name=rule.item_name,
             )
 
     def _emit(
@@ -632,10 +641,15 @@ class _Projector:
         pointer: str,
         origin: str,
         *,
-        item_name_explicit: bool = False,
+        item_name: str | None = None,
     ) -> None:
         rule, warnings = self._mapping._rule_at(
-            pointer, self._document_value, item_name_explicit=item_name_explicit
+            pointer,
+            self._schema,
+            self._document_value,
+            self._source,
+            parent.path,
+            item_name=item_name,
         )
         kind = rule.kind
         if kind is None:
@@ -651,6 +665,8 @@ class _Projector:
             name, path = self._resolve_name(default, rule, pointer, parent, kind)
         self._check_rule(rule, value, kind, pointer, path)
         self._emit_metadata_warnings(warnings, pointer, path)
+        if value is None:
+            self._check_null_shape(pointer, path)
 
         if kind == "none":
             if isinstance(value, (dict, list)):
@@ -874,10 +890,6 @@ class _Projector:
         self, warnings: tuple[OpenApiMetadataWarning, ...], pointer: str, path: str
     ) -> None:
         for warning in warnings:
-            identity = (warning.schema_pointers, warning.constructs)
-            if identity in self._reported_metadata:
-                continue
-            self._reported_metadata.add(identity)
             self._warn(
                 "openapi-metadata-unresolved",
                 warning.message,
