@@ -1662,7 +1662,14 @@ def _resolve_mode_accumulators(
         namespaces,
         uri=mode.module,
         location=mode.location,
+        streamable_context=_mode_streamable(mode),
     )
+
+
+def _mode_streamable(mode: Mode) -> bool:
+    """Whether the mode is declared streamable, so accumulator names must be."""
+    value = (mode.properties.get("streamable") or "").strip()
+    return value in ("yes", "true", "1")
 
 
 def _declared_streamable(component: Component) -> bool:
@@ -1678,8 +1685,16 @@ def _compile_use_accumulators(
     value: str | None,
     context: StaticContext,
     instruction: Instruction,
+    *,
+    streamable_context: bool = False,
 ) -> frozenset[AccumulatorKey]:
-    """Resolve one instruction's ``use-accumulators`` attribute at compile time."""
+    """Resolve one instruction's ``use-accumulators`` attribute at compile time.
+
+    *streamable_context* is true only when the instruction itself streams the
+    document it restricts (``xsl:source-document`` or ``xsl:merge-source``
+    with ``streamable="yes"``); a non-streaming processor applies every
+    accumulator to a grounded tree and must not demand streamability there.
+    """
     if value is None:
         return frozenset()
     package = context.package
@@ -1696,6 +1711,7 @@ def _compile_use_accumulators(
         instruction.namespaces,
         uri=instruction.module,
         location=instruction.location,
+        streamable_context=streamable_context,
     )
 
 
@@ -1706,8 +1722,14 @@ def _resolve_use_accumulators(
     *,
     uri: str | None,
     location: IssueLocation | None,
+    streamable_context: bool = False,
 ) -> frozenset[AccumulatorKey]:
-    """Resolve and validate one ``use-accumulators`` token list."""
+    """Resolve and validate one ``use-accumulators`` token list.
+
+    A name that resolves to a non-streamable accumulator is an error only in a
+    streamable context (XTSE3300 via the declaration constraint); grounded
+    trees accept every accumulator, which is the normal non-streaming usage.
+    """
     try:
         tokens = parse_accumulator_names(value)
     except ValueError as exc:
@@ -1747,7 +1769,7 @@ def _resolve_use_accumulators(
                 uri=uri,
                 location=location,
             )
-        if not _declared_streamable(component):
+        if streamable_context and not _declared_streamable(component):
             raise XsltStaticError(
                 f"the accumulator {token!r} is not declared streamable",
                 code="XTSE3300",
@@ -3002,6 +3024,7 @@ def _compile_merge_source(
             use_accumulators,
             context,
             instruction,
+            streamable_context=streamable,
         ),
     )
 
@@ -3135,6 +3158,7 @@ def _compile_source_document(
             instruction.attribute("use-accumulators"),
             context,
             instruction,
+            streamable_context=streamable,
         ),
     )
 

@@ -322,9 +322,10 @@ def _merge_mode_properties(
             assert local is not None
             if local in ("name", "visibility") or attribute.name.startswith("_"):
                 continue
-            entries.setdefault(local, []).append(
-                (declaration.precedence, attribute.value, declaration)
-            )
+            value = attribute.value
+            if local == "use-accumulators":
+                value = _accumulator_property_key(value, declaration.element.in_scope_namespaces)
+            entries.setdefault(local, []).append((declaration.precedence, value, declaration))
     properties: dict[str, str] = {}
     property_namespaces: dict[str, Mapping[str, str]] = {}
     for local, values in entries.items():
@@ -345,6 +346,25 @@ def _merge_mode_properties(
         properties[local] = value
         property_namespaces[local] = declaration.element.in_scope_namespaces
     return MappingProxyType(properties), MappingProxyType(property_namespaces)
+
+
+def _accumulator_property_key(value: str, namespaces: Mapping[str, str]) -> str:
+    """Normalize a mode's ``use-accumulators`` list for property agreement.
+
+    Two declarations agree when they name the same expanded accumulator names,
+    regardless of prefix spelling or order (mode-1514); a different set is a
+    conflict even when the lexical tokens match (mode-1515).  An invalid list
+    stays verbatim so its own declaration reports XTSE3300 later.
+    """
+    from pyxsd.xslt.runtime.accumulators import expand_accumulator_name, parse_accumulator_names
+
+    try:
+        tokens = parse_accumulator_names(value)
+        if tokens == ("#all",):
+            return "#all"
+        return " ".join(sorted({expand_accumulator_name(token, namespaces) for token in tokens}))
+    except ValueError:
+        return value
 
 
 def _normalized_mode_property(value: str, local: str, declaration: _Declaration) -> str:

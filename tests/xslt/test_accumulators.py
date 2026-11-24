@@ -1136,7 +1136,6 @@ def test_mode_use_accumulators_errors() -> None:
         <xsl:template match="/"/>
     """
     cases = (
-        ('<xsl:mode use-accumulators="app:a"/>', "XTSE3300"),
         ('<xsl:mode use-accumulators="app:missing"/>', "XTSE3300"),
         ('<xsl:mode use-accumulators="app:b app:b"/>', "XTSE3300"),
         ('<xsl:mode use-accumulators="#all app:b"/>', "XTSE3300"),
@@ -1165,9 +1164,7 @@ def test_source_document_use_accumulator_errors() -> None:
     """
     policy = MappingPolicy({"urn:doc": b"<doc><n/></doc>"})
     cases = (
-        ("app:a", "XTSE3300"),
         ("app:missing", "XTSE3300"),
-        ("app:a app:a", "XTSE3300"),
         ("app:b app2:b", "XTSE3300"),
         ("#all app:a", "XTSE3300"),
         ("1bad", "XTSE3300"),
@@ -1441,6 +1438,44 @@ def test_merge_source_use_accumulators_is_static() -> None:
     assert error_code(lambda: compiled(stylesheet(body))) == "XTSE3300"
 
 
+def test_grounded_merge_source_accepts_a_non_streamable_accumulator() -> None:
+    body = """
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:template name="main">
+          <xsl:merge>
+            <xsl:merge-source for-each-source="('urn:a')" select="/doc/n"
+              use-accumulators="app:a">
+              <xsl:merge-key select="@k"/>
+            </xsl:merge-source>
+            <xsl:merge-action>
+              <xsl:sequence select="current-merge-group()/@k"/>
+            </xsl:merge-action>
+          </xsl:merge>
+        </xsl:template>
+    """
+    compile_stylesheet(stylesheet(body))
+
+
+def test_streamable_merge_source_still_requires_a_streamable_accumulator() -> None:
+    body = """
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:template name="main">
+          <xsl:merge>
+            <xsl:merge-source for-each-source="('urn:a')" select="/doc/n"
+              streamable="yes" use-accumulators="app:a">
+              <xsl:merge-key select="@k"/>
+            </xsl:merge-source>
+            <xsl:merge-action/>
+          </xsl:merge>
+        </xsl:template>
+    """
+    assert error_code(lambda: compiled(stylesheet(body))) == "XTSE3300"
+
+
 @pytest.mark.parametrize("form", ("true", "1", " yes "))
 def test_streamable_boolean_forms_are_accepted_by_use_accumulators(form: str) -> None:
     body = f"""
@@ -1456,6 +1491,108 @@ def test_streamable_boolean_forms_are_accepted_by_use_accumulators(form: str) ->
         </xsl:template>
     """
     assert values(transform(stylesheet(body), b'<doc xmlns="urn:example:doc"><n/></doc>')) == ("1",)
+
+
+def test_mode_use_accumulators_agrees_by_expanded_names() -> None:
+    body = """
+        <xsl:mode name="app:m" use-accumulators="app:a app2:b"/>
+        <xsl:mode name="app:m" use-accumulators="alt2:b alta:a"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="doc:n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:accumulator name="app2:b" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="doc:n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:template match="/"/>
+    """
+    alternate = partial(
+        stylesheet,
+        namespaces={"app": APP_NS, "app2": APP_NS, "doc": DOC_NS, "alt2": APP_NS, "alta": APP_NS},
+    )
+    compile_stylesheet(alternate(body))
+
+    conflicting = """
+        <xsl:mode name="app:m" use-accumulators="app:a app2:b"/>
+        <xsl:mode name="app:m" use-accumulators="alt2:b app:a"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="doc:n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:accumulator name="app2:b" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="doc:n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:template match="/"/>
+    """
+    other = partial(
+        stylesheet,
+        namespaces={
+            "app": APP_NS,
+            "app2": APP_NS,
+            "doc": DOC_NS,
+            "alt2": "urn:example:other-app",
+            "alta": APP_NS,
+        },
+    )
+    assert error_code(lambda: compile_stylesheet(other(conflicting))) == "XTSE0545"
+
+
+def test_grounded_mode_accepts_a_non_streamable_accumulator() -> None:
+    """A non-streaming processor still applies accumulators to grounded trees."""
+    body = """
+        <xsl:mode use-accumulators="app:a"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="doc:n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:template match="/">
+          <xsl:for-each select="doc:doc/doc:n[1]">
+            <xsl:sequence select="accumulator-before('app:a')"/>
+          </xsl:for-each>
+        </xsl:template>
+    """
+    assert values(transform(stylesheet(body), b'<doc xmlns="urn:example:doc"><n/></doc>')) == ("1",)
+
+
+def test_grounded_source_document_accepts_a_non_streamable_accumulator() -> None:
+    body = """
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:template name="main">
+          <xsl:source-document href="urn:doc" use-accumulators="app:a">
+            <xsl:for-each select="doc/n">
+              <xsl:sequence select="accumulator-before('app:a')"/>
+            </xsl:for-each>
+          </xsl:source-document>
+        </xsl:template>
+    """
+    policy = MappingPolicy({"urn:doc": b"<doc><n/><n/></doc>"})
+    result = compiled(stylesheet(body), resource_policy=policy).transform(
+        delivery="document",
+        initial_template="main",
+    )
+    assert values(result) == ("1", "2")
+
+
+def test_streamable_mode_still_requires_a_streamable_accumulator() -> None:
+    body = """
+        <xsl:mode streamable="yes" use-accumulators="app:a"/>
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="doc:n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:template match="/"/>
+    """
+    assert error_code(lambda: compiled(stylesheet(body))) == "XTSE3300"
+
+
+def test_streamable_source_document_still_requires_a_streamable_accumulator() -> None:
+    body = """
+        <xsl:accumulator name="app:a" as="xs:integer" initial-value="0">
+          <xsl:accumulator-rule match="n" select="$value + 1"/>
+        </xsl:accumulator>
+        <xsl:template name="main">
+          <xsl:source-document href="urn:doc" streamable="yes" use-accumulators="app:a"/>
+        </xsl:template>
+    """
+    assert error_code(lambda: compiled(stylesheet(body))) == "XTSE3300"
 
 
 def test_source_document_use_accumulators_accepts_streamable_true() -> None:
