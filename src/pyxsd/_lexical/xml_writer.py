@@ -9,9 +9,11 @@ generated indentation would become character data in mixed content.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import replace
 from typing import TypeVar, cast
 
-from pyxsd._lexical.tree import LexicalElement, NodeContext
+from pyxsd._lexical.tree import LexicalElement
 from pyxsd.namespaces import XML_NS, local_name, namespace_of
 from pyxsd.writers.xml_tag_writer import _escape_attribute, _escape_text
 
@@ -25,8 +27,9 @@ def serialize_lexical(root: LexicalElement) -> str:
     """Serialize a lexical subtree as a well-formed XML fragment.
 
     Expanded names become lexical names using the element's recorded namespace
-    frame.  Bindings that are absent from the recorded frame are generated
-    deterministically.  Recorded declarations are emitted where they differ
+    frame. An explicit name preference takes precedence if still bound to
+    the name's namespace. Missing bindings are generated deterministically.
+    Recorded declarations are emitted where they differ
     from the output's inherited scope, so prefixed QNames in lexical values
     still resolve to the same namespace URI after reparsing.
 
@@ -48,11 +51,13 @@ def serialize_lexical(root: LexicalElement) -> str:
         node = cast(LexicalElement, payload)
         frame = dict(cast("dict[str, str]", inherited))
         declarations: dict[str, str] = {}
-        _apply_recorded_frame(node, frame, declarations)
-        lexical_name = _element_name(node._name_, frame, declarations)
+        context = node.revision.context_for(node)
+        prefixes = context.name_prefixes or {}
+        _apply_recorded_frame(context.namespaces, frame, declarations)
+        lexical_name = _element_name(node._name_, frame, declarations, prefixes.get(None))
         attributes = [
             (
-                _attribute_name(expanded, frame, declarations),
+                _attribute_name(expanded, frame, declarations, prefixes.get(expanded)),
                 value,
             )
             for expanded, value in sorted(node._attribs_.items())
@@ -83,9 +88,8 @@ def clone_lexical(root: _NodeT) -> _NodeT:
 
     The clone starts with its node family's default revision and copies the
     source dirty flag, not the source's typed interpretation. Namespace frames,
-    base URIs, and source occurrences are copied so revalidation does not lose
-    external lexical context. The copy is iterative, so deeply nested documents
-    do not consume the Python stack.
+    name prefixes, base URIs, and source occurrences are copied. The copy is
+    iterative, so deeply nested documents do not consume the Python stack.
     """
     if not isinstance(root, LexicalElement):
         raise TypeError("root must be a LexicalElement")
@@ -98,7 +102,7 @@ def clone_lexical(root: _NodeT) -> _NodeT:
     stack: list[tuple[LexicalElement, LexicalElement]] = [(root, clone_root)]
     while stack:
         source, target = stack.pop()
-        revision._register_context(target, _copy_context(source.revision.context_for(source)))
+        revision._register_context(target, replace(source.revision.context_for(source)))
         for source_child in source._children_:
             child = type(source_child)._clone_new(source_child, revision)
             target._children_.append(child)
@@ -107,19 +111,13 @@ def clone_lexical(root: _NodeT) -> _NodeT:
     return clone_root
 
 
-def _copy_context(context: NodeContext) -> NodeContext:
-    namespaces = None if context.namespaces is None else dict(context.namespaces)
-    return NodeContext(namespaces, context.base_uri, context.source)
-
-
 def _declaration_key(item: tuple[str, str]) -> tuple[bool, str]:
     return (item[0] != "", item[0])
 
 
 def _apply_recorded_frame(
-    node: LexicalElement, frame: dict[str, str], declarations: dict[str, str]
+    recorded: Mapping[str, str] | None, frame: dict[str, str], declarations: dict[str, str]
 ) -> None:
-    recorded = node.revision.context_for(node).namespaces
     if recorded is None:
         return
     for prefix, uri in sorted(recorded.items(), key=_declaration_key):
@@ -135,7 +133,9 @@ def _apply_recorded_frame(
         frame[prefix] = uri
 
 
-def _element_name(name: str, frame: dict[str, str], declarations: dict[str, str]) -> str:
+def _element_name(
+    name: str, frame: dict[str, str], declarations: dict[str, str], preferred: str | None
+) -> str:
     uri = namespace_of(name)
     if uri is None:
         if ":" not in name:
@@ -147,13 +147,15 @@ def _element_name(name: str, frame: dict[str, str], declarations: dict[str, str]
         return local
     if uri == XML_NS:
         return f"xml:{local}"
-    prefix = _bound_prefix(frame, uri, allow_default=True)
+    prefix = _bound_prefix(frame, uri, preferred, allow_default=True)
     if prefix is None:
         prefix = _generate_prefix(frame, uri, declarations)
     return f"{prefix}:{local}" if prefix else local
 
 
-def _attribute_name(name: str, frame: dict[str, str], declarations: dict[str, str]) -> str:
+def _attribute_name(
+    name: str, frame: dict[str, str], declarations: dict[str, str], preferred: str | None
+) -> str:
     uri = namespace_of(name)
     if uri is None:
         return name
@@ -162,7 +164,7 @@ def _attribute_name(name: str, frame: dict[str, str], declarations: dict[str, st
         return local
     if uri == XML_NS:
         return f"xml:{local}"
-    prefix = _bound_prefix(frame, uri, allow_default=False)
+    prefix = _bound_prefix(frame, uri, preferred or None, allow_default=False)
     if prefix is None:
         prefix = _generate_prefix(frame, uri, declarations)
     return f"{prefix}:{local}"
@@ -174,7 +176,11 @@ def _undeclare_default(frame: dict[str, str], declarations: dict[str, str]) -> N
         frame[""] = ""
 
 
-def _bound_prefix(frame: dict[str, str], uri: str, *, allow_default: bool) -> str | None:
+def _bound_prefix(
+    frame: dict[str, str], uri: str, preferred: str | None, *, allow_default: bool
+) -> str | None:
+    if preferred is not None and frame.get(preferred) == uri:
+        return preferred
     candidates = sorted(
         (prefix for prefix, bound in frame.items() if bound == uri and (allow_default or prefix)),
         key=lambda prefix: (prefix != "", prefix),

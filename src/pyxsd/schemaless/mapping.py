@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import KW_ONLY, dataclass, field
+from dataclasses import KW_ONLY, dataclass, field, replace
 from decimal import Decimal
 from types import MappingProxyType
 from typing import TYPE_CHECKING, NoReturn
@@ -473,6 +473,7 @@ class _Projector:
         self._report = report
         self._schema = schema
         self._bindings: dict[ET.Element, dict[str, str]] = {}
+        self._name_prefixes: dict[ET.Element, dict[str | None, str]] = {}
         self._uses_xsi = False
         self._document_value: NativeJsonValue = None
         self._reported_metadata: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
@@ -490,7 +491,21 @@ class _Projector:
         root = ET.Element(name.value)
         self._bind(root, name, "", path)
         self._fill(_Target(root, path), rule, value, "")
-        return SchemalessElement.from_etree(root, namespaces=self._namespace_context(root))
+        projected = SchemalessElement.from_etree(root, namespaces=self._namespace_context(root))
+        if self._name_prefixes:
+            self._apply_name_prefixes(root, projected)
+        return projected
+
+    def _apply_name_prefixes(self, root: ET.Element, projected: SchemalessElement) -> None:
+        # from_etree copies the projector's element-only tree in the same order.
+        revision = projected.revision
+        stack = [(root, projected)]
+        while stack:
+            source, node = stack.pop()
+            if prefixes := self._name_prefixes.get(source):
+                context = revision.context_for(node)
+                revision._replace_context(node, replace(context, name_prefixes=prefixes))
+            stack.extend(zip(source, node.children, strict=True))
 
     def _namespace_context(self, root: ET.Element) -> NamespaceContext | None:
         if self._uses_xsi:
@@ -750,7 +765,9 @@ class _Projector:
             if len(set(rule.order)) != len(rule.order):
                 self._invalid("order cannot list a property twice", pointer, path)
 
-    def _bind(self, element: ET.Element, name: _Name, pointer: str, path: str) -> None:
+    def _bind(
+        self, element: ET.Element, name: _Name, pointer: str, path: str, *, attribute: bool = False
+    ) -> None:
         if name.prefix is None:
             return
         uri = namespace_of(name.value)
@@ -760,6 +777,8 @@ class _Projector:
             self._invalid(
                 f"prefix {name.prefix!r} has conflicting bindings on one element", pointer, path
             )
+        key = name.value if attribute else None
+        self._name_prefixes.setdefault(element, {})[key] = name.prefix
 
     def _lexical(self, value: _Scalar, rule: MappingRule, pointer: str, path: str) -> str:
         if isinstance(value, str):
@@ -812,7 +831,7 @@ class _Projector:
                 path,
                 self._source,
             )
-        self._bind(parent.element, name, pointer, path)
+        self._bind(parent.element, name, pointer, path, attribute=True)
         parent.element.set(name.value, lexical)
 
     def _text(

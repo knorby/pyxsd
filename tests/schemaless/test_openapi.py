@@ -29,6 +29,36 @@ def test_inline_openapi_root_requires_a_name():
         XmlMapping.from_openapi({"type": "object"})
 
 
+def test_openapi_xml_prefix_controls_the_element_and_attribute_qnames():
+    schema = {
+        "type": "object",
+        "xml": {"name": "r", "namespace": "urn:x", "prefix": "p"},
+        "properties": {
+            "label": {"type": "string", "xml": {"namespace": "urn:x", "prefix": "q"}},
+            "id": {
+                "type": "integer",
+                "xml": {"nodeType": "attribute", "namespace": "urn:x", "prefix": "z"},
+            },
+        },
+    }
+    doc = from_data({"label": "x", "id": 7}).to_xml(XmlMapping.from_openapi(schema))
+
+    assert doc.to_string() == (
+        '<p:r xmlns:p="urn:x" xmlns:z="urn:x" z:id="7"><q:label xmlns:q="urn:x">x</q:label></p:r>'
+    )
+    assert doc.root._name_ == "{urn:x}r"
+    assert doc.root.children[0]._name_ == "{urn:x}label"
+    assert doc.root.attribute_lexical("{urn:x}id") == "7"
+    root = doc.to_xdm().root_element
+    (child,) = root.children
+    (attribute,) = root.attributes
+    assert [(node.name, node.namespace_uri, node.prefix) for node in (root, child, attribute)] == [
+        ("{urn:x}r", "urn:x", "p"),
+        ("{urn:x}label", "urn:x", "q"),
+        ("{urn:x}id", "urn:x", "z"),
+    ]
+
+
 def test_openapi_node_types_cover_element_attribute_text_and_cdata():
     schema = {
         "type": "object",

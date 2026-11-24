@@ -65,16 +65,21 @@ class NodeContext:
     after any ``xml:base`` values.  ``source`` links the occurrence to its
     original document position for diagnostics.  The namespace mapping is
     copied into an immutable view so later caller mutations cannot change a
-    recorded frame.
+    recorded frame. ``name_prefixes`` optionally selects lexical prefixes for
+    individual names: ``None`` keys the element and expanded names key its
+    attributes. These preferences do not change expanded names or bindings.
     """
 
     namespaces: Mapping[str, str] | None = None
     base_uri: str | None = None
     source: IssueLocation | None = None
+    name_prefixes: Mapping[str | None, str] | None = None
 
     def __post_init__(self) -> None:
         if self.namespaces is not None:
             object.__setattr__(self, "namespaces", MappingProxyType(dict(self.namespaces)))
+        if self.name_prefixes is not None:
+            object.__setattr__(self, "name_prefixes", MappingProxyType(dict(self.name_prefixes)))
 
 
 _EMPTY_CONTEXT = NodeContext()
@@ -482,9 +487,7 @@ class LexicalElement:
         if not isinstance(mappings, Mapping):
             raise TypeError("namespace bindings must be a mapping")
         context = self._revision.context_for(self)
-        self._revision._replace_context(
-            self, NodeContext(mappings, context.base_uri, context.source)
-        )
+        self._revision._replace_context(self, replace(context, namespaces=mappings))
         self._touch()
 
     def set_base_uri(self, base_uri: str | None) -> None:
@@ -492,9 +495,7 @@ class LexicalElement:
         if base_uri is not None and not isinstance(base_uri, str):
             raise TypeError("base_uri must be a string or None")
         context = self._revision.context_for(self)
-        self._revision._replace_context(
-            self, NodeContext(context.namespaces, base_uri, context.source)
-        )
+        self._revision._replace_context(self, replace(context, base_uri=base_uri))
         self._touch()
 
     def append_child(self, child: Self) -> None:

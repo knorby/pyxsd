@@ -5,8 +5,10 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
+from pyxsd._lexical import clone_lexical, serialize_lexical
 from pyxsd.locations import DataLocation
 from pyxsd.schemaless import MappingRule, ScalarAdapter, XmlMapping, XmlMappingError, from_data
+from pyxsd.xdm.annotations import UNTYPED, UNTYPED_ATOMIC
 
 XSI_NIL = "{http://www.w3.org/2001/XMLSchema-instance}nil"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
@@ -260,6 +262,80 @@ def test_namespaces_use_scoped_lexical_writer_bindings():
         '<l:line xmlns:l="urn:lines">2</l:line><o:second xmlns:o="urn:other">3</o:second></r>'
     )
     assert doc.root.children[0].children[0].namespaces[""] == ""
+
+
+def test_explicit_child_prefix_wins_over_the_inherited_default_namespace():
+    rules = {
+        "": MappingRule(namespace="urn:x", prefix=""),
+        "/child": MappingRule(namespace="urn:x", prefix="p"),
+    }
+    doc = from_data({"child": 1}).to_xml(XmlMapping("r", rules=rules))
+
+    assert doc.to_string() == '<r xmlns="urn:x"><p:child xmlns:p="urn:x">1</p:child></r>'
+    assert doc.source is None and doc.source_index is None
+    assert doc.root._name_ == "{urn:x}r"
+    assert doc.root.children[0]._name_ == "{urn:x}child"
+    root = doc.to_xdm().root_element
+    (child,) = root.children
+    assert (root.name, root.namespace_uri, root.prefix) == ("{urn:x}r", "urn:x", "")
+    assert (child.name, child.namespace_uri, child.prefix) == ("{urn:x}child", "urn:x", "p")
+    assert child.annotation.type_name == UNTYPED
+
+
+def test_nested_prefix_wins_locally_without_changing_unrequested_alias_selection():
+    rules = {
+        "/a": MappingRule(namespace="urn:x", prefix="p"),
+        "/a/b": MappingRule(namespace="urn:x", prefix="q"),
+        "/a/b/c": MappingRule(namespace="urn:x"),
+    }
+    doc = from_data({"a": {"b": {"c": 1}}}).to_xml(XmlMapping("r", rules=rules))
+    expected = '<r><p:a xmlns:p="urn:x"><q:b xmlns:q="urn:x"><p:c>1</p:c></q:b></p:a></r>'
+
+    assert doc.to_string() == expected
+    assert serialize_lexical(clone_lexical(doc.root)) == expected
+    (a,) = doc.root.children
+    (b,) = a.children
+    (c,) = b.children
+    assert [node._name_ for node in (a, b, c)] == ["{urn:x}a", "{urn:x}b", "{urn:x}c"]
+    (xdm_a,) = doc.to_xdm().root_element.children
+    (xdm_b,) = xdm_a.children
+    (xdm_c,) = xdm_b.children
+    assert [(node.name, node.namespace_uri, node.prefix) for node in (xdm_a, xdm_b, xdm_c)] == [
+        ("{urn:x}a", "urn:x", "p"),
+        ("{urn:x}b", "urn:x", "q"),
+        ("{urn:x}c", "urn:x", "p"),
+    ]
+
+
+def test_element_and_attribute_with_the_same_expanded_name_can_use_different_prefixes():
+    rules = {
+        "": MappingRule(namespace="urn:x", prefix="p"),
+        "/id": MappingRule(kind="attribute", name="{urn:x}r", prefix="q"),
+    }
+    doc = from_data({"id": 7}).to_xml(XmlMapping("r", rules=rules))
+    doc.root.set_base_uri("https://example.test/")
+    doc.root.set_namespace_bindings({"a": "urn:x", "p": "urn:x", "q": "urn:x"})
+
+    assert doc.to_string() == '<p:r xmlns:a="urn:x" xmlns:p="urn:x" xmlns:q="urn:x" q:r="7"/>'
+    root = doc.revalidate().to_xdm().root_element
+    (attribute,) = root.attributes
+    assert (root.name, root.namespace_uri, root.prefix) == ("{urn:x}r", "urn:x", "p")
+    assert (attribute.name, attribute.namespace_uri, attribute.prefix) == (
+        "{urn:x}r",
+        "urn:x",
+        "q",
+    )
+    assert attribute.annotation.type_name == UNTYPED_ATOMIC
+
+
+def test_rebound_prefix_does_not_change_the_expanded_name_after_a_namespace_edit():
+    rules = {"": MappingRule(namespace="urn:x", prefix="p")}
+    doc = from_data({}).to_xml(XmlMapping("r", rules=rules))
+    doc.root.set_namespace_bindings({"a": "urn:x", "p": "urn:y"})
+
+    assert doc.to_string() == '<a:r xmlns:a="urn:x" xmlns:p="urn:y"/>'
+    root = doc.revalidate().to_xdm().root_element
+    assert (root.name, root.namespace_uri, root.prefix) == ("{urn:x}r", "urn:x", "a")
 
 
 def test_nil_still_serializes_when_the_conventional_prefix_is_in_use():
