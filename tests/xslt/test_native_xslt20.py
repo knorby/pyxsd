@@ -1336,10 +1336,10 @@ def test_2_0_roman_width_and_bounded_fraction() -> None:
         "select=\"xs:dateTime('2003-12-07T00:00:00.123456Z')\"/>"
         '<xsl:template name="main">'
         '<xsl:value-of separator="|" select="format-date($d, \'[Mi,4-4]\'), '
-        "format-dateTime($t, '[f,1-2]')\"/>"
+        "format-date($d, '[Mi,1-1]'), format-dateTime($t, '[f,1-2]')\"/>"
         "</xsl:template>"
     )
-    assert _formatted(body) == " xii|12"
+    assert _formatted(body) == " xii|xii|12"
 
 
 def test_2_0_am_pm_and_timezone_unbounded_widths() -> None:
