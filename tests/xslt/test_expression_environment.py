@@ -1880,3 +1880,28 @@ def test_constructor_error_codes_keep_upstream_precedence() -> None:
         with pytest.raises(Exception) as caught:
             engine.evaluate(engine.compile(source), ExpressionEnvironment())
         assert _error_code(caught.value) == "FOCA0002", source
+
+
+def test_a_lookup_expression_is_a_path_step() -> None:
+    """XPath 3.1 section 3.3.1.2: ``E?*`` is a PostfixExpr, so ``?*/child`` is legal."""
+    document = _document(
+        b"<doc><item><price>1</price></item><item><price>2</price></item>"
+        b"<extra><price>3</price></extra></doc>"
+    )
+    engine = XPathEngine("3.1")
+    compiled = engine.compile(
+        "string-join([/doc/item, /doc/extra]?* / price, ' ')"
+        " || '|' || string-join([/doc/item[1]]?* / price, ' ')",
+        XPathStaticContext(),
+    )
+    values = engine.evaluate(compiled, ExpressionEnvironment(), focus=document)
+    assert values == (XdmAtomic.string("1 2 3|1"),)
+
+
+def test_a_lookup_path_step_rejects_a_non_node_intermediate() -> None:
+    """Only nodes can be path steps; an atomic lookup result is XPTY0019."""
+    engine = XPathEngine("3.1")
+    compiled = engine.compile("count([1, 2]?* / self::node())", XPathStaticContext())
+    with pytest.raises(Exception) as caught:
+        engine.evaluate(compiled, ExpressionEnvironment(), focus=XdmAtomic.integer(0))
+    assert _error_code(caught.value) == "XPTY0019"

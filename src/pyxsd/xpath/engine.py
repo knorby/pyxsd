@@ -1896,6 +1896,7 @@ def _build_parser(
     if version != "1.0":
         _install_node_kind_test(parser)
         _install_descendant_path_order(parser)
+        _install_lookup_path_step(parser)
     _install_focus_token(parser)
     _install_focus_functions(parser)
     _install_function_scope(parser)
@@ -1994,6 +1995,21 @@ def _install_descendant_path_order(parser: Any) -> None:
         bp=getattr(base, "bp", 75),
         select=select,
     )
+
+
+def _install_lookup_path_step(parser: Any) -> None:
+    """Let a lookup expression be a path step (XPath 3.1 section 3.3.1.2).
+
+    ``E?*`` is a ``PostfixExpr``, and the grammar makes every ``PostfixExpr``
+    a ``StepExpr``, so ``array?* / child`` is legal.  elementpath's ``/`` only
+    admits a fixed symbol set as its left step, so a lookup token is rejected
+    with ``XPST0003``; the lookup symbol joins that set on this parser
+    instance, leaving the shared parser class untouched.
+    """
+    path_steps = getattr(parser, "PATH_STEP_SYMBOLS", None)
+    if path_steps is None or "?" in path_steps:  # pragma: no cover - XPath 2.0+ only
+        return
+    parser.PATH_STEP_SYMBOLS = path_steps | {"?"}
 
 
 def _install_node_kind_test(parser: Any) -> None:
