@@ -2178,15 +2178,21 @@ def _install_instance_expression(parser: Any) -> None:
     )
 
 
+class _Declined:
+    """The atomic type target is known but the value has no annotation."""
+
+    __slots__ = ()
+
+
 #: Sentinel: the atomic target is known but the value's annotation is not.
-_DECLINED = object()
+_DECLINED = _Declined()
 
 
 def _match_annotated_atomic_type(
     values: Sequence[Any],
     sequence_type: str,
     parser: Any,
-) -> bool | None:
+) -> bool | _Declined | None:
     """Match a plain atomic type test through the item's type annotation.
 
     The substrate's ``is_instance`` decides a built-in atomic type from the
@@ -2304,9 +2310,9 @@ def _match_tolerant_sequence_type(
         node = node_of(item)
         if node is None or node.kind is not NodeKind.ELEMENT:
             return False
-        name, _, type_name = inner.partition(",")
+        name, _, type_text = inner.partition(",")
         name = name.strip()
-        type_name = type_name.strip() or None
+        type_name = type_text.strip() or None
         nillable = type_name is not None and type_name.endswith("?")
         if type_name is not None:
             type_name = type_name.rstrip("?")

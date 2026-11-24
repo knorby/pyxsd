@@ -692,7 +692,7 @@ def _compare_datetime(left: XdmAtomic, right: XdmAtomic, implicit_timezone: Any)
             f"sort keys {left.lexical!r} and {right.lexical!r} are not comparable",
             code="XTDE1030",
         )
-    datatype = {"date": Date, "time": Time}.get(local, DateTime)
+    datatype = cast(Any, {"date": Date, "time": Time}.get(local, DateTime))
     try:
         first = datatype.fromstring(left.lexical)
         second = datatype.fromstring(right.lexical)
