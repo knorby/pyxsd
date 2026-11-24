@@ -59,7 +59,16 @@ from types import MethodType
 from typing import Any, cast
 
 from elementpath import XPathContext
-from elementpath.datatypes import AnyAtomicType, QName, UntypedAtomic
+from elementpath.datatypes import (
+    AbstractDateTime,
+    AnyAtomicType,
+    ArithmeticProxy,
+    DayTimeDuration,
+    Duration,
+    QName,
+    UntypedAtomic,
+)
+from elementpath.datatypes.datetime import get_comparable_datetimes
 from elementpath.exceptions import ElementPathError
 from elementpath.helpers import upper_camel_case
 from elementpath.namespaces import get_expanded_name
@@ -121,6 +130,8 @@ from pyxsd.xpath.functions import (
     call_host_function,
     clone_function_token,
     function_arity,
+    install_regex_replace,
+    install_string_conversion_functions,
     install_string_function,
     sequence_to_elementpath,
 )
@@ -1672,6 +1683,8 @@ def _build_parser(
         parser = parser_class(**options)
     parser._pyxsd_bridge_holder = holder
     _install_syntax_only_parse(parser)
+    if version != "1.0":
+        _install_node_kind_test(parser)
     _install_focus_token(parser)
     _install_focus_functions(parser)
     _install_function_scope(parser)
@@ -1683,7 +1696,11 @@ def _build_parser(
         _install_comparison_string_atomization(parser)
         _install_lang_function(parser)
         install_string_function(parser)
+        install_string_conversion_functions(parser)
         install_numeric_functions(parser)
+        _install_temporal_components(parser)
+        _install_temporal_arithmetic(parser)
+        install_regex_replace(parser)
         if version == "2.0":
             _install_xpath20_regex_surface(parser)
         _register_schema_constructors(parser, static_context)
@@ -1736,6 +1753,36 @@ def _bind_kind_test_type_names(root: Any, default_namespace: str | None) -> None
                 value = type_token.value
                 type_token.name = f"{{{default_namespace}}}{value}" if default_namespace else value
         stack.extend(items)
+
+
+def _install_node_kind_test(parser: Any) -> None:
+    """Let ``node()`` match a document node reached through a variable.
+
+    The substrate yields a document node only when it is the context root, so
+    ``parent::node()`` and ``instance of node()`` failed for a document loaded
+    by ``document()`` or held in a variable.  XPath 2.0 and later match every
+    node, so the test yields the document node too; XPath 1.0 keeps the
+    substrate's dummy-document masking.
+    """
+    base = parser.symbol_table.get("node")
+    if base is None:  # pragma: no cover - every supported parser declares it
+        return
+
+    def select(self: Any, context: Any = None) -> Iterator[Any]:
+        if context is None:
+            raise self.missing_context()
+        for item in context.iter_children_or_self():
+            if isinstance(item, XPathNode):
+                yield item
+
+    parser._register(
+        "node",
+        "_PyxsdNodeKindTest",
+        bases=(base,),
+        label=base.label,
+        nargs=getattr(base, "nargs", 0),
+        select=select,
+    )
 
 
 def _install_focus_token(parser: Any) -> None:
@@ -1949,6 +1996,169 @@ def _install_xpath20_regex_surface(parser: Any) -> None:
         sequence_types=getattr(tokenize, "sequence_types", ()),
         evaluate=flags_checked(tokenize, 2),
     )
+
+
+def _install_temporal_components(parser: Any) -> None:
+    """Return the exact fractional second of a dateTime or time.
+
+    The substrate builds ``Decimal('{}.{}'.format(second, microsecond))``, so a
+    fractional second of ``30.012`` becomes ``30.12000`` and canonicalises to
+    ``30.12``.  The F&O value is the second plus the six-digit fraction, which
+    is what the W3C component-extraction cases require.
+    """
+    from elementpath.datatypes import DateTime, Time
+
+    for symbol, expected in (
+        ("seconds-from-dateTime", DateTime),
+        ("seconds-from-time", Time),
+    ):
+        base = parser.symbol_table.get(symbol)
+        if base is None:  # pragma: no cover - every supported parser declares them
+            continue
+
+        def evaluate(self: Any, context: Any = None, _expected: Any = expected) -> Any:
+            item = self.get_argument(context, cls=_expected)
+            if item is None:
+                return []
+            if item.microsecond:
+                fraction = f"{item.microsecond:06d}".rstrip("0")
+                return Decimal(f"{item.second}.{fraction}")
+            return item.second
+
+        parser._register(
+            symbol,
+            f"_Pyxsd{symbol.title().replace('-', '')}",
+            bases=(base,),
+            label=base.label,
+            nargs=getattr(base, "nargs", 1),
+            sequence_types=getattr(base, "sequence_types", ()),
+            evaluate=evaluate,
+        )
+
+
+def _install_temporal_arithmetic(parser: Any) -> None:
+    """Add and subtract date/time values without mutating the operands.
+
+    The substrate's binary operator applies the implicit timezone by assigning
+    ``tzinfo`` on the operand objects.  A variable's bridged value is one such
+    object, so a later reading of the variable observed the added timezone.
+    Its ``fromtimedelta`` also concatenates a negative duration's microseconds
+    onto the already-rounded seconds (``-44.7s`` became ``-45.3s``), and a
+    ``dayTimeDuration + dateTime`` raises instead of adding.
+
+    This override evaluates the operands once, applies the implicit timezone to
+    copies for a date/time difference, keeps the duration/date operands'
+    timezone rules, and maps an out-of-range result to FODT0001/FODT0002.
+    """
+    import operator
+
+    for symbol, operation in (("+", operator.add), ("-", operator.sub)):
+        base = parser.symbol_table[symbol]
+
+        def evaluate(
+            self: Any,
+            context: Any = None,
+            _operation: Any = operation,
+            _base: Any = base,
+        ) -> Any:
+            del _operation
+            if len(self) != 2:
+                return _base.evaluate(self, context)
+            left = _arithmetic_operand(self, context, 0)
+            right = _arithmetic_operand(self, context, 1)
+            if left is None or right is None:
+                return []
+            if isinstance(left, AbstractDateTime) and isinstance(right, AbstractDateTime):
+                if self.symbol == "+":
+                    raise self.error("XPTY0004", "cannot add two date/time values")
+                return _temporal_difference(self, left, right, context)
+            if (
+                self.symbol == "+"
+                and isinstance(left, Duration)
+                and isinstance(right, AbstractDateTime)
+            ):
+                # Addition is symmetric; the substrate's DayTimeDuration only
+                # accepts a date/time as its right-hand operand.
+                left, right = right, left
+            # Numeric promotion from the substrate's operand normalization: a
+            # float paired with a Decimal or a Duration is converted to that
+            # operand's type before the Python operation.
+            if isinstance(left, float) and isinstance(right, Duration):
+                left = Decimal(left)
+            if isinstance(right, float) and isinstance(left, Duration):
+                right = Decimal(right)
+            if isinstance(left, float) and isinstance(right, Decimal):
+                right = type(left)(right)
+            elif isinstance(right, float) and isinstance(left, Decimal):
+                left = type(right)(left)
+            try:
+                if self.symbol == "+":
+                    return left + right
+                return left - right
+            except TypeError as err:
+                raise self.error("XPTY0004", err) from None
+            except (ValueError, OverflowError) as err:
+                if isinstance(left, AbstractDateTime) or isinstance(right, AbstractDateTime):
+                    raise self.error("FODT0001", err) from None
+                if isinstance(left, Duration) or isinstance(right, Duration):
+                    raise self.error("FODT0002", err) from None
+                raise self.error("FOAR0002", err) from None
+
+        parser._register(
+            symbol,
+            f"_Pyxsd{'Plus' if symbol == '+' else 'Minus'}Operator",
+            bases=(base,),
+            label=base.label,
+            bp=getattr(base, "bp", 40),
+            evaluate=evaluate,
+        )
+
+
+def _arithmetic_operand(token: Any, context: Any, index: int) -> Any:
+    """One arithmetic operand, with the substrate's untypedAtomic conversion."""
+    value = token.get_argument(context, index=index, cls=ArithmeticProxy)
+    if isinstance(value, ElementNode):
+        value = token._items[index].data_value(value)
+    if isinstance(value, UntypedAtomic):
+        value = token.cast_to_double(value.value)
+    return value
+
+
+def _temporal_difference(
+    token: Any,
+    left: AbstractDateTime,
+    right: AbstractDateTime,
+    context: Any,
+) -> DayTimeDuration:
+    """The exact duration between two date/time values.
+
+    The operands are copied before the implicit timezone is applied, so a
+    variable's stored value keeps its own timezone.  The microseconds are
+    summed with the whole seconds rather than appended, which keeps a negative
+    fractional difference exact.
+    """
+    from copy import copy
+
+    first = copy(left)
+    second = copy(right)
+    timezone = getattr(context, "timezone", None) if context is not None else None
+    if timezone is not None:
+        if first.tzinfo is None:
+            first.tzinfo = timezone
+        if second.tzinfo is None:
+            second.tzinfo = timezone
+    try:
+        if 1 <= first.year <= 9999 and 1 <= second.year <= 9999:
+            start, end = get_comparable_datetimes(first._dt, second._dt)
+            delta = start - end
+            seconds = Decimal(delta.days * 86400 + delta.seconds) + (
+                Decimal(delta.microseconds) / Decimal(1_000_000)
+            )
+        else:
+            seconds = first.todelta() - second.todelta()
+    except (ValueError, OverflowError) as err:
+        raise token.error("FODT0001", err) from None
+    return DayTimeDuration(seconds=seconds)
 
 
 def _install_lang_function(parser: Any) -> None:

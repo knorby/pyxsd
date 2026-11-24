@@ -1664,3 +1664,99 @@ def test_format_number_atomizes_a_node_or_result_tree_fragment_argument() -> Non
         with pytest.raises(XsltError) as caught:
             transform(invalid, initial_template="main")
         assert caught.value.code == "XPTY0004"
+
+
+# ---------------------------------------------------------------------------
+# Date/time components and arithmetic
+
+
+def test_seconds_from_date_time_keeps_the_fractional_precision() -> None:
+    body = """
+        <xsl:template name="main">
+          <xsl:value-of select="
+              seconds-from-dateTime(xs:dateTime('2002-06-15T12:27:30.012+03:00')),
+              seconds-from-time(xs:time('12:27:30.45'))" separator="|"/>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert [item.string_value for item in result.principal] == ["30.012|30.45"]
+
+
+def test_date_time_difference_keeps_a_negative_fraction_exact() -> None:
+    body = """
+        <xsl:template name="main">
+          <xsl:sequence select="xs:time('00:11:15.3Z') - xs:time('00:12:00Z')"/>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "-PT44.7S"
+
+
+def test_day_time_duration_plus_date_time_is_symmetric() -> None:
+    body = """
+        <xsl:template name="main">
+          <xsl:sequence select="
+              xs:dayTimeDuration('P5DT4H0M0.5S') + xs:dateTime('2004-02-29T00:12:00Z')"/>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "2004-03-05T04:12:00.5Z"
+
+
+def test_date_arithmetic_overflow_reports_fodt0001() -> None:
+    body = """
+        <xsl:template name="main">
+          <xsl:sequence select="xs:date('2003-12-07') + xs:yearMonthDuration('P9999Y')"/>
+        </xsl:template>
+    """
+    assert error_code(lambda: transform(stylesheet(body), initial_template="main")) == "FODT0001"
+
+
+def test_date_time_variable_keeps_its_timezone_after_a_difference() -> None:
+    """A difference must not assign the implicit timezone to the operands."""
+    body = """
+        <xsl:template name="main">
+          <xsl:for-each select="1 to 1">
+            <xsl:variable name="n" select="xs:date('2004-03-01') + xs:dayTimeDuration('P1D')"/>
+            <xsl:value-of select="string($n), string($n - xs:date('1901-01-06')), string($n)"
+                          separator="|"/>
+          </xsl:for-each>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "2004-03-02|P37676D|2004-03-02"
+
+
+def test_concat_and_string_join_use_the_canonical_string_conversion() -> None:
+    """Both spelling functions agree with ``fn:string`` for numeric values."""
+    body = """
+        <xsl:template name="main">
+          <xsl:value-of select="
+              concat(xs:double(1000000), '+', xs:double('1e-13'), '+', xs:float(-0.00175)),
+              string-join((xs:double(1000000), xs:double('1e-13')), '+')" separator="|"/>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == ("1.0E6+1.0E-13+-0.00175|1.0E6+1.0E-13")
+
+
+def test_replace_uses_the_fo_replacement_string_grammar() -> None:
+    """Escaped backslashes and missing group references follow F&O."""
+    body = r"""
+        <xsl:template name="main">
+          <xsl:value-of select="
+              replace('a?b', '\?', '\\$0\\'),
+              replace('abc', '(a)(b)', '[$1][$3][$25]')" separator="|"/>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == r"a\?\b|[a][][b5]c"
+    invalid = r"""
+        <xsl:template name="main">
+          <xsl:value-of select="replace('input', '(unparsed)', '\n')"/>
+        </xsl:template>
+    """
+    assert (
+        error_code(lambda: transform(stylesheet(invalid, version="2.0"), initial_template="main"))
+        == "FORX0004"
+    )

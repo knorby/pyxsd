@@ -310,33 +310,186 @@ def test_native_function_library_is_2_0() -> None:
     )
 
 
-def test_2_0_formatting_functions_are_a_known_engine_gap() -> None:
+def test_2_0_formatting_functions_are_declared() -> None:
     """``format-integer`` and the date/time formatters are XSLT 2.0 §16.5.
 
-    They are not implemented behind this engine's XPath 2.0 parser, so the
-    native profile cannot call them.  That is a pre-existing engine-wide gap,
-    not an XSLT 3.0 addition: the default 3.0 processor evaluates the same
-    calls through its XPath 3.1 parser.  This test records the gap rather than
-    asserting the absence as a 2.0 rule; ``function-available`` reports the
-    implementation gap under both processors.
+    They are F&O 2.0 functions with no symbol in the XPath 2.0 parser, so the
+    native 2.0 profile declares and implements them itself instead of treating
+    their absence as a 2.0 rule.
     """
-    assert native_transform(
+    result = native_transform(
         '<xsl:template name="main">'
         "<xsl:sequence select=\"function-available('fn:format-integer')\"/>"
         "<xsl:sequence select=\"function-available('fn:format-date')\"/>"
-        "</xsl:template>"
-    ).principal == (XdmAtomic.boolean(False), XdmAtomic.boolean(False))
-
-    body = (
-        '<xsl:template name="main">'
-        "<xsl:sequence select=\"format-integer(3, '001')\"/>"
+        "<xsl:sequence select=\"function-available('fn:format-time')\"/>"
+        "<xsl:sequence select=\"function-available('fn:format-dateTime')\"/>"
         "</xsl:template>"
     )
-    with pytest.raises(XsltStaticError) as caught:
-        native_compile(body)
-    assert caught.value.code == "XPST0017"
-    modern = XsltProcessor().compile(io.BytesIO(stylesheet(body, version="2.0")))
-    assert modern.transform(initial_template="main").principal == (XdmAtomic.string("003"),)
+    assert result.principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+    )
+
+
+def _formatted(body: str, **options: Any) -> str:
+    result = native_transform(body, source=b"<doc/>", **options)
+    return "".join(item.string_value for item in result.principal)
+
+
+def test_2_0_date_time_numeric_pictures() -> None:
+    """Numeric pictures cover year/month/day and hour/minute/second."""
+    assert (
+        _formatted(
+            '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
+            '<xsl:template name="main">'
+            "<xsl:value-of select=\"format-date($d, '[Y]-[M01]-[D]')\"/>"
+            "</xsl:template>"
+        )
+        == "2003-12-7"
+    )
+    assert (
+        _formatted(
+            '<xsl:param name="t" as="xs:time" select="xs:time(\'01:02:03\')"/>'
+            '<xsl:template name="main">'
+            "<xsl:value-of select=\"format-time($t, '[H01]:[m01]:[s01]')\"/>"
+            "</xsl:template>"
+        )
+        == "01:02:03"
+    )
+    assert (
+        _formatted(
+            '<xsl:param name="t" as="xs:dateTime" '
+            "select=\"xs:dateTime('0985-03-01T09:15:06')\"/>"
+            '<xsl:template name="main">'
+            "<xsl:value-of select=\"format-dateTime($t, '[Y]-[M01]-[D]')\"/>"
+            "</xsl:template>"
+        )
+        == "985-03-1"
+    )
+
+
+def test_2_0_date_time_width_modifiers() -> None:
+    """A width modifier pads and truncates a numeric or roman value."""
+    body = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('0985-03-01T09:15:06')\"/>"
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-dateTime($t, '[Y,4-4]|[Y,2-2]|[M,2-2]|[D,1-1]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "0985|85|03|1"
+    roman = (
+        '<xsl:param name="t" as="xs:date" select="xs:date(\'1004-01-01\')"/>'
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-date($t, '[Yi,4-4]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(roman) == "miv "
+
+
+def test_2_0_date_time_timezone_pictures() -> None:
+    """The timezone pictures omit zero minutes only under a narrow width."""
+    body = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2002-06-15T12:27:30+03:00')\"/>"
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-dateTime($t, '[Z]|[z]|[z,2-2]|[z,6-6]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "+03:00|GMT+03:00|GMT+03|GMT+03:00"
+    half = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2002-06-15T12:27:30-05:30')\"/>"
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-dateTime($t, '[z,2-2]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(half) == "GMT-05:30"
+
+
+def test_2_0_date_time_am_pm_pictures() -> None:
+    """English am/pm uses the F&O words, with max-width truncation only."""
+    body = (
+        '<xsl:param name="t" as="xs:time" select="xs:time(\'00:00:00\')"/>'
+        '<xsl:template name="main">'
+        "<xsl:value-of select="
+        "\"format-time($t, '[H01]:[m01] = [h][P]|[PN,2-2]|[Pn,2-2]|[PNn,2-2]|[PNn,1-1]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "00:00 = 12am|AM|am|Am|A"
+
+
+def test_2_0_date_time_picture_escaping() -> None:
+    """``[[`` and ``]]`` are literal brackets in a picture string."""
+    body = (
+        '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-date($d, '[[[Y0001]]]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "[2003]"
+
+
+def test_2_0_date_time_invalid_picture() -> None:
+    """An unknown component or a malformed picture reports XSLT's code."""
+    for picture, code in (("[bla]", "FOFD1340"), ("[Y,0]", "FOFD1340")):
+        body = (
+            '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
+            '<xsl:template name="main">'
+            f"<xsl:value-of select=\"format-date($d, '{picture}')\"/>"
+            "</xsl:template>"
+        )
+        with pytest.raises(XsltDynamicError) as caught:
+            native_transform(body)
+        assert caught.value.code == code
+    unavailable = (
+        '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-date($d, '[H]')\"/>"
+        "</xsl:template>"
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        native_transform(unavailable)
+    assert caught.value.code == "FOFD1350"
+
+
+def test_2_0_date_time_language_and_calendar_fallback() -> None:
+    """An unsupported language or calendar names its implementation fallback."""
+    body = (
+        '<xsl:param name="d" as="xs:date" select="xs:date(\'2006-03-01\')"/>'
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-date($d, '[MNn]', 'xib', (), ())\"/>"
+        "<xsl:value-of select=\"format-date($d, '[M01]', 'en', 'CB', ())\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "[Language: en]March[Calendar: AD]03"
+
+
+def test_2_0_format_integer_pictures() -> None:
+    """``format-integer`` covers decimal, alphabetic, roman, and words."""
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:value-of separator="|" select="'
+        "format-integer(3, '1'), format-integer(3, '001'), "
+        "format-integer(4, 'a'), format-integer(4, 'A'), "
+        "format-integer(4, 'i'), format-integer(4, 'I'), "
+        "format-integer(21, 'w;o'), format-integer(1, 'w;o')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "3|003|d|D|iv|IV|twenty-first|first"
+
+
+def test_2_0_format_integer_words_case() -> None:
+    """The word pictures select lower, upper, and title case."""
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:value-of separator="," select="format-integer(21, \'w\'), '
+        "format-integer(21, 'W'), format-integer(21, 'Ww')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "twenty-one,TWENTY-ONE,Twenty-One"
 
 
 @pytest.mark.parametrize(

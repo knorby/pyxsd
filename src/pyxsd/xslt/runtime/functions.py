@@ -47,7 +47,12 @@ from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.legacy import ResultTreeFragment
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xpath.environment import Focus, FunctionArity
-from pyxsd.xpath.functions import ContextFunction
+from pyxsd.xpath.functions import (
+    ContextFunction,
+    atomic_to_elementpath,
+    format_datetime_value,
+    format_integer_value,
+)
 from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltSerializationError
 from pyxsd.xslt.runtime.numbering import DecimalFormat, format_number
 from pyxsd.xslt.serialization import SerializationParameters, Serializer
@@ -254,7 +259,11 @@ XSLT_FUNCTION_ARITIES: Mapping[str, FunctionArity] = MappingProxyType(
         "current-merge-key": 0,
         "document": (1, 2),
         "element-available": 1,
+        "format-date": (2, 5),
+        "format-dateTime": (2, 5),
+        "format-integer": 2,
         "format-number": (2, 3),
+        "format-time": (2, 5),
         "function-available": (1, 2),
         "key": (2, 3),
         "regex-group": 1,
@@ -276,7 +285,11 @@ _FUNCTION_MINIMUM_VERSION: Mapping[str, str] = MappingProxyType(
         "current-merge-key": "3.0",
         "document": "1.0",
         "element-available": "1.0",
+        "format-date": "2.0",
+        "format-dateTime": "2.0",
+        "format-integer": "2.0",
         "format-number": "1.0",
+        "format-time": "2.0",
         "function-available": "1.0",
         "regex-group": "2.0",
         "system-property": "1.0",
@@ -286,6 +299,10 @@ _FUNCTION_MINIMUM_VERSION: Mapping[str, str] = MappingProxyType(
 )
 
 _PROFILE_VERSIONS = frozenset({"1.0", "2.0", "3.0", "3.1"})
+
+#: Formatting functions the XPath 3.1 parser already provides.  A 3.0 profile
+#: keeps the native symbols; a native 2.0 profile declares and implements them.
+_NATIVE_FORMATTERS = frozenset({"format-date", "format-time", "format-dateTime", "format-integer"})
 
 #: Lexical names of functions that need the XSLT bridge rather than the
 #: continuation machine's static host-function table.
@@ -305,6 +322,8 @@ def _version_at_least(version: str, minimum: str) -> bool:
 def _declaration_arity(local: str, version: str) -> FunctionArity:
     if local == "document":
         return 1 if version == "1.0" else (1, 2)
+    if local == "format-integer":
+        return 2 if not _version_at_least(version, "3.0") else (2, 3)
     if local == "format-number":
         return 2 if version == "1.0" else (2, 3)
     if local == "function-available":
@@ -330,6 +349,11 @@ def xslt_function_declarations(version: str) -> Mapping[str, FunctionArity]:
     declarations: dict[str, FunctionArity] = {}
     for local, minimum in _FUNCTION_MINIMUM_VERSION.items():
         if not _version_at_least(effective, minimum):
+            continue
+        if local in _NATIVE_FORMATTERS and _version_at_least(effective, "3.0"):
+            # The XPath 3.1 parser owns these symbols natively.  Declaring them
+            # again would register a host proxy over the built-in token, so the
+            # 3.0 surface keeps the native functions.
             continue
         declarations[f"fn:{local}"] = _declaration_arity(local, effective)
     if not _version_at_least(effective, "3.0"):
@@ -665,7 +689,14 @@ class XsltContextBridge:
             f"{{{FN_NS}}}transform": ContextFunction(
                 self._transform_function, self._transform_function
             ),
+            f"{{{FN_NS}}}format-date": ContextFunction(self._format_date_function("date")),
+            f"{{{FN_NS}}}format-time": ContextFunction(self._format_date_function("time")),
+            f"{{{FN_NS}}}format-dateTime": ContextFunction(self._format_date_function("dateTime")),
         }
+        if self._native_pre_30():
+            # ``format-integer``'s language argument arrived with the 3.0
+            # library; the XPath 3.1 parser keeps its own implementation.
+            table[f"{{{FN_NS}}}format-integer"] = ContextFunction(self._format_integer_function)
         if "type-available" in legal:
             table[f"{{{FN_NS}}}type-available"] = ContextFunction(self._type_available_function)
         if "available-system-properties" in legal:
@@ -822,6 +853,10 @@ class XsltContextBridge:
 
     def current_group(self) -> XdmSequence:
         if isinstance(self.group, _Absent):
+            if self._native_pre_30():
+                # XSLT 2.0 §14.3: outside a grouping instruction current-group()
+                # is the empty sequence.  XSLT 3.0 makes that XTDE1061.
+                return ()
             raise XsltDynamicError(
                 "current-group() is not inside an xsl:for-each-group instruction",
                 code="XTDE1061",
@@ -830,6 +865,10 @@ class XsltContextBridge:
 
     def current_grouping_key(self) -> XdmSequence:
         if isinstance(self.grouping_key, _Absent):
+            if self._native_pre_30():
+                # A positional grouping (group-starting-with/group-ending-with)
+                # has no grouping key; XSLT 2.0 returns empty and 3.0 raises.
+                return ()
             raise XsltDynamicError(
                 "current-grouping-key() is not inside a grouped xsl:for-each-group",
                 code="XTDE1071",
@@ -907,6 +946,18 @@ class XsltContextBridge:
         if local == "supports-dynamic-evaluation":
             return "yes" if self._dynamic_evaluation_enabled() else "no"
         return SYSTEM_PROPERTIES.get(f"xsl:{local}", "")
+
+    def _native_pre_30(self) -> bool:
+        """Whether this bridge runs under a native pre-3.0 processor.
+
+        A bridge unit test may supply a placeholder transformation without the
+        profile service; the bridge's own language version is then the only
+        identity available.
+        """
+        profile_for = getattr(self.transformation, "profile_for", None)
+        if callable(profile_for):
+            return bool(profile_for().native)
+        return self.version in ("1.0", "2.0")
 
     def _dynamic_evaluation_enabled(self) -> bool:
         stylesheet = getattr(self.transformation, "stylesheet", None)
@@ -1485,6 +1536,54 @@ class XsltContextBridge:
                 )
             ),
         )
+
+    def _format_date_function(
+        self, kind: str
+    ) -> Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence]:
+        """One ``format-date``/``format-time``/``format-dateTime`` callback.
+
+        The implementation lives in the XPath formatting component so both the
+        native 2.0 profile and the 3.0 profile share one picture grammar; this
+        callback applies the XSLT function conversion rules and returns XDM.
+        """
+
+        def callback(
+            context_item: XdmItem | None,
+            arguments: tuple[XdmSequence, ...],
+        ) -> XdmSequence:
+            del context_item
+            value = _date_time_argument(arguments, kind)
+            picture = _argument_string(arguments, 1, label="date/time picture")
+            language = _optional_atomic_string(arguments, 2, "format language")
+            calendar = _optional_atomic_string(arguments, 3, "format calendar")
+            place = _optional_atomic_string(arguments, 4, "format place")
+            return (
+                XdmAtomic.string(
+                    format_datetime_value(
+                        kind,
+                        value,
+                        picture,
+                        language,
+                        calendar,
+                        place,
+                        round_fractional=self.transformation.profile_for().native,
+                    )
+                ),
+            )
+
+        return callback
+
+    def _format_integer_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        if not arguments[0]:
+            return (XdmAtomic.string(""),)
+        value = _single_integer(arguments, 0)
+        picture = _argument_string(arguments, 1, label="integer picture")
+        return (XdmAtomic.string(format_integer_value(value, picture)),)
 
     def _document_function(
         self,
@@ -2178,6 +2277,41 @@ def _single_node(sequence: XdmSequence, label: str) -> XdmNode:
             code="XPTY0004",
         )
     return sequence[0]
+
+
+def _date_time_argument(
+    arguments: tuple[XdmSequence, ...],
+    kind: str,
+) -> Any:
+    """One ``xs:date``/``xs:time``/``xs:dateTime`` argument, atomized and cast.
+
+    Function conversion atomizes a node argument and casts an untyped value to
+    the declared type; the formatting component performs the cast so this
+    helper only has to enforce the cardinality rules and hand over an
+    elementpath atomic.
+    """
+    if not arguments or not arguments[0]:
+        return None
+    if len(arguments[0]) != 1:
+        raise XsltDynamicError(
+            f"format-{kind} requires at most one {kind} value",
+            code="XPTY0004",
+        )
+    item = arguments[0][0]
+    if isinstance(item, XdmNode):
+        typed = item.typed_value
+        if len(typed) != 1 or not isinstance(typed[0], XdmAtomic):
+            raise XsltDynamicError(
+                f"format-{kind} requires a single atomic value",
+                code="XPTY0004",
+            )
+        item = typed[0]
+    if not isinstance(item, XdmAtomic):
+        raise XsltDynamicError(
+            f"format-{kind} requires an atomic value",
+            code="XPTY0004",
+        )
+    return atomic_to_elementpath(item)
 
 
 def _single_string(arguments: tuple[XdmSequence, ...], index: int) -> str:

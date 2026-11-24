@@ -10,6 +10,17 @@ Task 7.
 :func:`install_string_function` corrects the substrate's ``fn:string``
 conversion for floats and doubles, which elementpath spells with the shortest
 binary64 ``repr`` instead of the F&O 3.1 §19.1.1 canonical form.
+
+:func:`format_datetime_value` and :func:`format_integer_value` are the reusable
+formatting components behind ``fn:format-date``, ``fn:format-time``,
+``fn:format-dateTime``, and ``fn:format-integer``.  A native XSLT 2.0 processor
+must supply those F&O 2.0 functions itself because its XPath 2.0 parser has no
+symbol for them.  The component reuses the engine's date/time substrate for the
+picture grammar and marker evaluation and supplies the rules that substrate
+does not: escaped picture brackets, width padding for roman numerals, the
+XSLT 2.0 timezone "omit zero minutes" form, ``am``/``pm`` words, and the
+implementation-defined locale fallbacks that the corresponding W3C tests
+expect.
 """
 
 from __future__ import annotations
@@ -22,7 +33,9 @@ from decimal import Decimal
 from types import MethodType
 from typing import Any, cast
 
-from elementpath.datatypes import AnyAtomicType, UntypedAtomic
+from elementpath.datatypes import AnyAtomicType, Date, DateTime, QName, Time, UntypedAtomic
+from elementpath.exceptions import xpath_error
+from elementpath.xpath_nodes import XPathNode
 from elementpath.xpath_tokens.base import XPathToken
 from elementpath.xpath_tokens.functions import XPathFunction
 
@@ -38,8 +51,13 @@ __all__ = [
     "XdmFunctionTarget",
     "atomic_to_elementpath",
     "call_host_function",
+    "canonical_string_value",
     "clone_function_token",
+    "format_datetime_value",
+    "format_integer_value",
     "function_arity",
+    "install_regex_replace",
+    "install_string_conversion_functions",
     "install_string_function",
     "sequence_to_elementpath",
 ]
@@ -243,6 +261,27 @@ def _elementpath_datatype_value(value: Any, local: str) -> Any:
     return value  # pragma: no cover - every built-in XSD atomic type has a rule above
 
 
+def canonical_string_value(obj: Any) -> str:
+    """The F&O canonical conversion for one atomic value.
+
+    ``fn:string`` and every construct that spells an atomic value as text (the
+    ``concat`` arguments, the items of ``string-join``, and XSLT text
+    construction) share this conversion.  Floats and doubles use the shortest
+    binary form with F&O's scientific spelling, and a decimal drops trailing
+    fractional zeros.
+    """
+    if isinstance(obj, bool):
+        return "true" if obj else "false"
+    if isinstance(obj, float):
+        single = getattr(type(obj), "name", None) == "float"
+        return canonical_float_string(float(obj), single=single)
+    if isinstance(obj, Decimal):
+        return canonical_decimal_string(Decimal(obj))
+    if isinstance(obj, UntypedAtomic):
+        return obj.value
+    return str(obj)
+
+
 def install_string_function(parser: Any) -> None:
     """Give ``fn:string``/``xs:string`` the F&O canonical float/double form.
 
@@ -256,13 +295,8 @@ def install_string_function(parser: Any) -> None:
     base = parser.symbol_table["string"]
 
     def string_value(self: Any, obj: Any) -> str:
-        if isinstance(obj, bool):
-            return "true" if obj else "false"
-        if isinstance(obj, float):
-            single = getattr(type(obj), "name", None) == "float"
-            return canonical_float_string(float(obj), single=single)
-        if isinstance(obj, Decimal):
-            return canonical_decimal_string(Decimal(obj))
+        if isinstance(obj, (bool, float, Decimal, UntypedAtomic)):
+            return canonical_string_value(obj)
         return base.string_value(self, obj)
 
     parser._register(
@@ -274,6 +308,212 @@ def install_string_function(parser: Any) -> None:
         sequence_types=getattr(base, "sequence_types", ()),
         string_value=string_value,
     )
+
+
+def install_string_conversion_functions(parser: Any) -> None:
+    """Give ``concat`` and ``string-join`` the canonical atomic conversion.
+
+    Both functions spell every argument/item as a string, so they must use the
+    same conversion as ``fn:string``.  The substrate calls its own
+    ``string_value``, which keeps the ``repr`` spelling for a double and a
+    decimal's trailing zeros, so their result disagreed with ``fn:string``.
+    """
+    concat_base = parser.symbol_table.get("concat")
+    if concat_base is not None:
+
+        def evaluate_concat(self: Any, context: Any = None) -> str:
+            texts: list[str] = []
+            for index in range(len(self)):
+                value = self.get_argument(context, index=index)
+                if value is None:
+                    continue
+                if isinstance(value, XPathNode):
+                    texts.append(self.string_value(value))
+                else:
+                    texts.append(canonical_string_value(value))
+            return "".join(texts)
+
+        parser._register(
+            "concat",
+            "_PyxsdConcatFunction",
+            bases=(concat_base,),
+            label=concat_base.label,
+            nargs=getattr(concat_base, "nargs", (2, None)),
+            sequence_types=getattr(concat_base, "sequence_types", ()),
+            evaluate=evaluate_concat,
+        )
+
+    join_base = parser.symbol_table.get("string-join")
+    if join_base is not None:
+
+        def evaluate_string_join(self: Any, context: Any = None) -> str:
+            separator = self.get_argument(context, index=1, required=True, cls=str)
+            return separator.join(
+                canonical_string_value(item)
+                for item in self[0].atomization(context)
+                if item is not None
+            )
+
+        parser._register(
+            "string-join",
+            "_PyxsdStringJoinFunction",
+            bases=(join_base,),
+            label=join_base.label,
+            nargs=getattr(join_base, "nargs", 2),
+            sequence_types=getattr(join_base, "sequence_types", ()),
+            evaluate=evaluate_string_join,
+        )
+
+
+def install_regex_replace(parser: Any) -> None:
+    """Give ``fn:replace`` the F&O replacement-string grammar.
+
+    The substrate translates a group reference only when it is not preceded by
+    a backslash, so ``\\\\$0`` (an escaped backslash followed by group zero)
+    became a literal ``$0``.  It also leaves a reference to a group the pattern
+    does not define in the result, where F&O substitutes the empty string.
+    This parses the replacement once into literal text and group references and
+    expands each match from that form.  A ``q`` (literal pattern) call keeps the
+    substrate's replacement handling, because that path deliberately protects
+    every backslash from the regular-expression engine.
+    """
+    import re
+
+    from elementpath.regex import RegexError, translate_pattern
+
+    base = parser.symbol_table.get("replace")
+    if base is None:  # pragma: no cover - every supported parser declares it
+        return
+
+    def replace_function(self: Any, context: Any = None) -> str:
+        input_string: str = self.get_argument(context, default="", cls=str)
+        pattern: str = self.get_argument(context, 1, required=True, cls=str)
+        replacement: str = self.get_argument(context, 2, required=True, cls=str)
+        flags = 0
+        literal_pattern = False
+        if len(self) > 3:
+            for character in self.get_argument(context, 3, required=True, cls=str):
+                if character in "smix":
+                    flags |= getattr(re, character.upper())
+                elif character == "q" and self.parser.version not in ("1.0", "2.0"):
+                    literal_pattern = True
+                else:
+                    raise self.error("FORX0001", f"Invalid regular expression flag {character!r}")
+        try:
+            translated = (
+                re.escape(pattern)
+                if literal_pattern
+                else translate_pattern(pattern, flags, self.parser.xsd_version)
+            )
+            compiled = re.compile(translated, flags=flags)
+        except (re.error, RegexError, OverflowError) as err:
+            raise self.error("FORX0002", f"Invalid regular expression: {err}") from None
+        if compiled.search(""):
+            raise self.error(
+                "FORX0003", f"Regular expression {pattern!r} matches zero-length string"
+            )
+        if literal_pattern:
+            # ``q`` makes the whole pattern literal.  The replacement is taken
+            # literally too, so no backslash or ``$`` is an escape here.
+            return compiled.sub(lambda match: replacement, input_string)
+        holder = getattr(self.parser, "_pyxsd_bridge_holder", None)
+        bridge = getattr(holder, "bridge", None) if holder is not None else None
+        static = getattr(bridge, "static_context", None)
+        xslt_version = getattr(static, "xslt_version", None)
+        if xslt_version is None:
+            strict = self.parser.version in ("1.0", "2.0")
+        else:
+            strict = xslt_version in ("1.0", "2.0")
+        parts = _replacement_parts(replacement, self, compiled.groups, strict=strict)
+        return compiled.sub(lambda match: _expand_replacement(match, parts), input_string)
+
+    parser._register(
+        "replace",
+        "_PyxsdReplaceFunction",
+        bases=(base,),
+        label=base.label,
+        nargs=getattr(base, "nargs", (3, 4)),
+        sequence_types=getattr(base, "sequence_types", ()),
+        evaluate=replace_function,
+    )
+
+
+def _replacement_parts(
+    replacement: str,
+    token: Any,
+    groups: int,
+    *,
+    strict: bool,
+) -> list[str | int]:
+    """Split one F&O replacement string into literal text and group numbers.
+
+    A reference is the longest digit run that names a group, so ``$25`` with
+    eleven groups is group 2 followed by the literal ``5``; a run whose first
+    digit already exceeds the group count is the empty string.  F&O 2.0 rejects
+    a backslash before any character other than ``\\`` or ``$`` (FORX0004); the
+    3.0 replacement grammar keeps both characters.
+    """
+    parts: list[str | int] = []
+    literal: list[str] = []
+
+    def flush() -> None:
+        if literal:
+            parts.append("".join(literal))
+            literal.clear()
+
+    index = 0
+    while index < len(replacement):
+        character = replacement[index]
+        if character == "\\":
+            if index + 1 >= len(replacement):
+                raise token.error("FORX0004", f"Invalid replacement string {replacement!r}")
+            escaped = replacement[index + 1]
+            if escaped in ("\\", "$"):
+                literal.append(escaped)
+            elif strict:
+                raise token.error("FORX0004", f"Invalid replacement string {replacement!r}")
+            else:
+                literal.extend(("\\", escaped))
+            index += 2
+            continue
+        if character == "$":
+            end = index + 1
+            while end < len(replacement) and replacement[end].isdigit():
+                end += 1
+            if end == index + 1:
+                raise token.error("FORX0004", f"Invalid replacement string {replacement!r}")
+            digits = replacement[index + 1 : end]
+            width = len(digits)
+            while width and int(digits[:width]) > groups:
+                width -= 1
+            flush()
+            if width == 0:
+                parts.append("")
+            else:
+                parts.append(int(digits[:width]))
+                literal.append(digits[width:])
+            index = end
+            continue
+        literal.append(character)
+        index += 1
+    flush()
+    return parts
+
+
+def _expand_replacement(match: Any, parts: list[str | int]) -> str:
+    text: list[str] = []
+    for part in parts:
+        if isinstance(part, str):
+            text.append(part)
+        elif part == 0:
+            text.append(match.group(0))
+        elif part <= match.re.groups:
+            text.append(match.group(part) or "")
+        else:
+            # F&O: a reference to a group the pattern does not define is the
+            # empty string, never a literal ``$N``.
+            text.append("")
+    return "".join(text)
 
 
 def sequence_to_elementpath(
@@ -656,3 +896,383 @@ def _clone_token_tree(value: Any) -> Any:
         if getattr(method, "__self__", None) is value and function is not None:
             setattr(clone, attribute, MethodType(function, clone))
     return clone
+
+
+# ---------------------------------------------------------------------------
+# F&O formatting components
+#
+# A native XSLT 2.0 processor has no ``fn:format-date`` and friends in its
+# XPath 2.0 parser, so the XSLT layer supplies them.  The substrate already
+# owns the XPath 3.0 picture grammar and the marker value computation; these
+# helpers add the rules its implementation does not provide.  Calendar and
+# language support are deliberately implementation-defined: the fallback is
+# English and the proleptic Gregorian (AD) calendar, and every fallback is
+# declared in the result exactly as F&O requires.
+
+
+#: Components a date value has no data for.  ``format-date`` raises FOFD1350.
+_DATE_INVALID_COMPONENTS = frozenset("HhPmsf")
+
+#: Components a time value has no data for.  ``format-time`` raises FOFD1350.
+_TIME_INVALID_COMPONENTS = frozenset("YMDdFWwCE")
+
+#: Calendars this implementation understands.  ``ISO`` and ``OS`` are the
+#: XSLT 2.0 spellings of the proleptic Gregorian calendar.
+_IMPLEMENTED_CALENDARS = frozenset({"AD", "ISO", "OS"})
+
+#: Languages the substrate has name tables for.  Every other language uses
+#: the implementation-defined English fallback.
+_IMPLEMENTED_LANGUAGES = frozenset({"en", "it"})
+
+_DATETIME_CLASSES: dict[str, type[Any]] = {
+    "date": Date,
+    "time": Time,
+    "dateTime": DateTime,
+}
+
+
+def _picture_parts(picture: str) -> tuple[list[str], list[str]]:
+    """Split a picture into literals and markers, honouring ``[[``/``]]``.
+
+    A ``[[`` or ``]]`` pair is a literal bracket, so a marker after or before
+    one is still recognised: ``[[[Y0001]]]`` is ``[`` + ``[Y0001]`` + ``]``.
+    The substrate's splitter treats the ``[`` of ``[[`` as the start of a
+    literal ``[QQQ]`` marker, which makes an escaped marker picture an error.
+    """
+    literals: list[str] = []
+    markers: list[str] = []
+    buffer: list[str] = []
+    index = 0
+    while index < len(picture):
+        character = picture[index]
+        if character == "[":
+            if index + 1 < len(picture) and picture[index + 1] == "[":
+                buffer.append("[")
+                index += 2
+                continue
+            close = picture.find("]", index + 1)
+            if close < 0:
+                raise xpath_error("FOFD1340", "Invalid character '[' in picture literal")
+            marker = picture[index + 1 : close]
+            if "[" in marker:
+                raise xpath_error("FOFD1340", "Invalid character '[' in picture literal")
+            literals.append("".join(buffer))
+            buffer = []
+            markers.append(marker.replace(" ", "").replace("\n", "").replace("\t", ""))
+            index = close + 1
+            continue
+        if character == "]":
+            if index + 1 < len(picture) and picture[index + 1] == "]":
+                buffer.append("]")
+                index += 2
+                continue
+            raise xpath_error("FOFD1340", "Invalid character ']' in picture literal")
+        buffer.append(character)
+        index += 1
+    literals.append("".join(buffer))
+    return literals, markers
+
+
+def _marker_parts(marker: str) -> tuple[str, str, str]:
+    """Return the component, presentation, and width of one marker."""
+    component = marker[0]
+    token = marker[1:]
+    presentation, separator, width = token.rpartition(",")
+    if not separator:
+        return component, token, ""
+    return component, presentation, width
+
+
+def _parse_width(width: str) -> tuple[int, int | None]:
+    from elementpath.xpath30.xpath30_helpers import parse_width
+
+    return parse_width(width)
+
+
+def _with_presentation_width(
+    text: str,
+    component: str,
+    presentation: str,
+    width: str,
+) -> str:
+    """Pad one textual presentation to its width modifier.
+
+    The substrate applies the width only to the numeric spelling; a roman
+    numeral is returned as-is.  F&O applies the minimum width to every
+    presentation: the year is padded on the right, every other component on
+    the left.  A maximum does not truncate a roman numeral: the W3C
+    ``format-date`` width cases require ``dcccxvii`` to survive ``[Yi,4-4]``.
+    """
+    del presentation
+    if not width:
+        return text
+    minimum, _maximum = _parse_width(width)
+    if len(text) < minimum:
+        padding = " " * (minimum - len(text))
+        text = text + padding if component == "Y" else padding + text
+    return text
+
+
+def _fractional_digits(presentation: str, width: str) -> int:
+    """How many fractional-second digits a picture requests.
+
+    A bounded width asks for its maximum; an unbounded width keeps the value's
+    full precision; a presentation without a width asks for the number of
+    digits it spells (the default one).
+    """
+    if width:
+        minimum, maximum = _parse_width(width)
+        if maximum is not None:
+            return maximum
+        del minimum
+        return 6
+    digits = sum(character.isdigit() for character in presentation)
+    return digits or 1
+
+
+class _RoundedFraction:
+    """A value with one substituted microsecond field for the ``f`` marker.
+
+    ``parse_datetime_marker`` reads the fractional component only through the
+    ``microsecond`` attribute, so a narrow proxy lets the 2.0 rounding rule
+    reuse the substrate's presentation grammar instead of a second copy.
+    """
+
+    __slots__ = ("_value", "microsecond")
+
+    def __init__(self, value: Any, microsecond: int) -> None:
+        self._value = value
+        self.microsecond = microsecond
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._value, name)
+
+
+def _am_pm(value: Any, presentation: str, width: str) -> str:
+    """The ``P`` component in F&O's ``am``/``pm`` words.
+
+    The substrate returns ``a.m.``/``p.m.``, which is not the XSLT 2.0 value.
+    A width modifier caps the word (``[PNn,1-1]`` is ``A``); it never pads it,
+    because the longest word is two characters.
+    """
+    word = "am" if value.hour < 12 else "pm"
+    if presentation == "N":
+        word = word.upper()
+    elif presentation == "Nn":
+        word = word.title()
+    if width:
+        _, maximum = _parse_width(width)
+        if maximum is not None:
+            word = word[:maximum]
+    return word
+
+
+def _timezone_component(value: Any, component: str, presentation: str, width: str) -> str | None:
+    """The ``Z``/``z`` component, including the XSLT 2.0 errata form.
+
+    With an empty presentation and a width that cannot hold ``:MM``, an
+    integral-hour offset has no minute part: ``[z,2-2]`` is ``GMT-05`` for a
+    whole-hour offset and ``GMT-05:30`` otherwise.  Every other presentation
+    keeps the substrate's full ``-05:00`` form.
+    """
+    if component not in ("Z", "z"):
+        return None
+    if presentation:
+        return None
+    if not width:
+        return None
+    _, maximum = _parse_width(width)
+    if maximum is None or maximum > 2:
+        return None
+    tzinfo = getattr(value, "tzinfo", None)
+    offset = None if tzinfo is None else tzinfo.utcoffset(None)
+    total = 0 if offset is None else offset.days * 1440 + offset.seconds // 60
+    sign = "-" if total < 0 else "+"
+    magnitude = abs(total)
+    hours, minutes = divmod(magnitude, 60)
+    text = f"{sign}{hours:02d}" if component == "Z" else f"GMT{sign}{hours:02d}"
+    if minutes:
+        text += f":{minutes:02d}"
+    return text
+
+
+def _is_eqname(value: str) -> bool:
+    """Whether *value* is a syntactically valid EQName or lexical QName."""
+    if value.startswith("Q{"):
+        close = value.find("}")
+        if close < 0:
+            return False
+        local = value[close + 1 :]
+        return bool(local) and ":" not in local and QName.is_valid(f"x:{local}")
+    return QName.is_valid(value)
+
+
+def format_datetime_value(
+    kind: str,
+    value: Any,
+    picture: str,
+    language: str | None = None,
+    calendar: str | None = None,
+    place: str | None = None,
+    *,
+    round_fractional: bool = False,
+) -> str:
+    """Format one date, time, or dateTime value with an F&O picture string.
+
+    *kind* is ``"date"``, ``"time"``, or ``"dateTime"``.  *value* is the
+    engine's value for that type or ``None`` for an empty sequence.  An
+    unsupported language or calendar is reported in the result with the
+    implementation fallback (English and the proleptic Gregorian calendar),
+    never treated as an error; a syntactically invalid calendar is FOFD1340.
+    *round_fractional* selects the XSLT 2.0 rule for the ``f`` component
+    (round to the requested precision); the XPath 3.1 rule truncates.
+    """
+    from elementpath.xpath30.xpath30_helpers import parse_datetime_marker, parse_datetime_picture
+
+    if kind not in _DATETIME_CLASSES:
+        raise ValueError(f"unknown date/time kind {kind!r}")
+    if value is None:
+        return ""
+    datatype = _DATETIME_CLASSES[kind]
+    if not isinstance(value, datatype):
+        try:
+            value = datatype.fromstring(str(value))
+        except (TypeError, ValueError):
+            raise xpath_error("XPTY0004", f"a {kind} value is required") from None
+
+    literals, markers = _picture_parts(picture)
+    invalid = _DATE_INVALID_COMPONENTS if kind == "date" else _TIME_INVALID_COMPONENTS
+    if kind == "dateTime":
+        invalid = frozenset()
+    notes: list[str] = []
+    if language is not None and language not in _IMPLEMENTED_LANGUAGES:
+        language = "en"
+        notes.append("Language: en")
+    if calendar is not None and calendar not in _IMPLEMENTED_CALENDARS:
+        if calendar.startswith("Q{}"):
+            calendar = calendar[3:]
+        if not _is_eqname(calendar):
+            raise xpath_error("FOFD1340", f"Invalid calendar argument {calendar!r}")
+        # An implementation-defined calendar is used instead; F&O requires the
+        # result to name it so a caller can recognise the substitution.
+        notes.append("Calendar: AD")
+        calendar = "AD"
+    for marker in markers:
+        # Validate the presentation and width with the substrate's grammar so
+        # both profiles report the same F&O diagnostic for a bad picture.
+        parse_datetime_picture(f"[{marker}]")
+        if marker and marker[0] in invalid:
+            raise xpath_error(
+                "FOFD1350",
+                f"Invalid date formatting component '[{marker}]' for a {kind} value",
+            )
+
+    if place is not None:
+        import zoneinfo
+
+        try:
+            zone = zoneinfo.ZoneInfo(place.strip())
+        except (ValueError, zoneinfo.ZoneInfoNotFoundError):
+            raise xpath_error("FOFD1340", f"Invalid place argument {place!r}") from None
+        value = value.astimezone(zone)
+
+    pieces: list[str] = []
+    if notes:
+        pieces.append("[" + ", ".join(notes) + "]")
+    for index, marker in enumerate(markers):
+        pieces.append(literals[index])
+        component, presentation, width = _marker_parts(marker)
+        formatted = _timezone_component(value, component, presentation, width)
+        if formatted is None and component == "P":
+            formatted = _am_pm(value, presentation, width)
+        if formatted is None:
+            # A roman numeral is computed from the unpadded value and then
+            # measured against the width: the substrate applies the numeric
+            # width before converting the digits to letters.
+            source = marker[: -(len(width) + 1)] if width and presentation in ("i", "I") else marker
+            marker_value: Any = value
+            if round_fractional and component == "f":
+                digits = _fractional_digits(presentation, width)
+                if digits < 6:
+                    factor = 10 ** (6 - digits)
+                    micro = ((value.microsecond + factor // 2) // factor) * factor
+                    marker_value = _RoundedFraction(value, min(micro, 999999))
+            formatted = parse_datetime_marker(f"[{source}]", marker_value, language)
+        if presentation in ("i", "I"):
+            formatted = _with_presentation_width(formatted, component, presentation, width)
+        pieces.append(formatted)
+    pieces.append(literals[-1])
+    return "".join(pieces)
+
+
+def format_integer_value(value: int, picture: str) -> str:
+    """Format one integer with an F&O 2.0 ``format-integer`` picture.
+
+    The F&O 2.0 picture vocabulary is the decimal spelling, an alphabetic or
+    roman sequence, or a word sequence, each with an optional ``;o``/``;c``
+    modifier and optional grouping separators.  This is the native-2.0
+    replacement for the XPath 2.0 parser's missing symbol; the XPath 3.1
+    parser keeps its own implementation.
+    """
+    from elementpath.xpath30.xpath30_helpers import (
+        DECIMAL_DIGIT_PATTERN,
+        MODIFIER_PATTERN,
+        UNICODE_DIGIT_PATTERN,
+        int_to_alphabetic,
+        int_to_roman,
+        int_to_words,
+        ordinal_suffix,
+    )
+
+    fmt_token, separator, fmt_modifier = picture.rpartition(";")
+    if not separator:
+        fmt_token, fmt_modifier = picture, ""
+    if MODIFIER_PATTERN.match(fmt_modifier) is None:
+        raise xpath_error("FODF1310", f"Invalid format modifier in picture {picture!r}")
+    if not fmt_token:
+        raise xpath_error("FODF1310", "the picture has no primary format token")
+
+    if fmt_token in ("a", "A", "i", "I", "w", "W", "Ww"):
+        if fmt_token == "a":
+            result = int_to_alphabetic(value)
+        elif fmt_token == "A":
+            result = int_to_alphabetic(value).upper()
+        elif fmt_token == "i":
+            result = int_to_roman(value).lower()
+        elif fmt_token == "I":
+            result = int_to_roman(value)
+        else:
+            words = int_to_words(value, "en", fmt_modifier)
+            if fmt_token == "W":
+                return words.upper()
+            if fmt_token == "Ww":
+                return words.title()
+            return words
+    else:
+        from elementpath.xpath30.xpath30_helpers import format_digits
+
+        digits = UNICODE_DIGIT_PATTERN.findall(fmt_token)
+        if DECIMAL_DIGIT_PATTERN.search(fmt_token) is None or not digits:
+            raise xpath_error("FODF1310", "Invalid primary format token in picture")
+        zero = ord(digits[0])
+        if any((ord(character) - zero) > 10 for character in digits[1:]):
+            raise xpath_error("FODF1310", "The picture mixes digits from different families")
+        if fmt_token[0].isdigit() and "#" in fmt_token:
+            raise xpath_error("FODF1310", "Invalid primary format token in picture")
+        if not fmt_token[0].isdigit() and fmt_token[0] != "#":
+            raise xpath_error("FODF1310", "Invalid grouping in picture")
+        if not digits[0].isdigit():
+            raise xpath_error("FODF1310", "Invalid primary format token in picture")
+        family_zero = zero
+        while chr(family_zero - 1).isdigit():
+            family_zero -= 1
+        family = "".join(chr(family_zero + offset) for offset in range(10))
+        signed = str(abs(value))
+        if value < 0:
+            result = "-" + format_digits(signed, fmt_token, family)
+        else:
+            result = format_digits(signed, fmt_token, family)
+
+    if fmt_modifier.startswith("o"):
+        return f"{result}{ordinal_suffix(value)}"
+    return result

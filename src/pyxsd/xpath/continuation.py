@@ -584,6 +584,12 @@ def compile_expression(
     # expanded symbol.  That write must land in this parser's own table, never
     # in the class-level one every later parser inherits.
     parser.symbol_table = copy.copy(parser.symbol_table)
+    # The continuation machine re-evaluates arithmetic through the token class
+    # recorded in the plan, so a scheduled expression needs the same temporal
+    # operator semantics the full evaluator installs on its parser instance.
+    from pyxsd.xpath.engine import _install_temporal_arithmetic
+
+    _install_temporal_arithmetic(parser)
     _register_static_functions(parser, functions, namespace_map)
     token = parser.parse(source)
     plan = _Compiler(parser).compile(token)

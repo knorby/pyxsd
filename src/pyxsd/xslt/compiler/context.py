@@ -516,6 +516,10 @@ class StaticContext:
                 "fn:key",
                 "fn:format-number",
                 "fn:generate-id",
+                "fn:format-date",
+                "fn:format-time",
+                "fn:format-dateTime",
+                "fn:format-integer",
             ):
                 # The XPath 3.1 parser already provides these; declaring them
                 # again would fail registration.  The bridge overrides their
