@@ -1240,7 +1240,10 @@ class _ValueBridge:
             converted = as_xdm(value)
             # An atomic adapted by another evaluation keeps its schema-defined
             # annotation beside the primitive XdmAtomic.
-            _record_annotation(self._annotations, converted[0], annotation or record[1])
+            if annotation is None:
+                assert record is not None
+                annotation = record[1]
+            _record_annotation(self._annotations, converted[0], annotation)
             return converted
         if isinstance(value, XPathClosure):
             return (_xpath_closure_to_xdm(value, self),)
