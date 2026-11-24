@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import IO, Any, TypeAlias
 
 from pyxsd.schemaless.errors import JsonLimitError, JsonParseError
+from pyxsd.xsd_data_types import _integer_from_digits, integer_to_decimal
 
 #: A value in the native JSON data model.
 #:
@@ -106,9 +107,29 @@ def _reject_duplicate_keys(pairs: list[tuple[str, NativeJsonValue]]) -> dict[str
     return result
 
 
+def _parse_integer(token: str) -> int:
+    """Decode an integer token already checked by the JSON scanner."""
+    if len(token) <= 9:
+        return int(token)
+    if token.startswith("-"):
+        return -_integer_from_digits(token[1:])
+    return _integer_from_digits(token)
+
+
+def _parse_decimal(token: str) -> Decimal:
+    try:
+        number = Decimal(token)
+    except InvalidOperation as exc:
+        raise JsonParseError("a JSON number exceeds the native decimal range") from exc
+    if not number.is_finite():
+        # With the caller's InvalidOperation trap disabled, Decimal returns NaN.
+        raise JsonParseError("a JSON number exceeds the native decimal range")
+    return number
+
+
 _DECODER = json.JSONDecoder(
-    parse_float=Decimal,
-    parse_int=int,
+    parse_float=_parse_decimal,
+    parse_int=_parse_integer,
     parse_constant=_reject_constant,
     object_pairs_hook=_reject_duplicate_keys,
 )
@@ -253,7 +274,7 @@ def _unsupported(value: object) -> JsonParseError:
 
 def _copy_value(value: Any, depth: int, budget: _ValueBudget) -> NativeJsonValue:
     """Copy one value's scalar or container shell, charging the budget."""
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         budget.accept(depth)
         return {}
     if isinstance(value, (list, tuple)):
@@ -339,7 +360,7 @@ def copy_native_data(value: object, *, limits: JsonLimits | None = None) -> Nati
 
 def _container_items(source: Any) -> Iterator[tuple[Any, Any]]:
     """Yield a container's ``(key, value)`` or ``(index, value)`` items."""
-    if isinstance(source, dict):
+    if isinstance(source, Mapping):
         return iter(source.items())
     return iter(enumerate(source))
 
@@ -351,33 +372,49 @@ def encode_json(value: NativeJsonValue, *, indent: int | str | None = None) -> s
     which keeps the result UTF-8 encodable even for an unpaired surrogate.
     Finite floats use Python's shortest round-trip spelling, and finite
     :class:`Decimal` values emit their exact exponent and trailing-zero
-    spelling. ``indent`` follows :func:`json.dumps`: ``None`` emits compact
-    single-line containers and a non-negative integer or string supplies one
-    level of indentation. Cyclic containers and values outside the native model
-    raise :class:`~pyxsd.schemaless.errors.JsonParseError` instead of being
-    stringified.
+    spelling. ``None`` emits compact single-line containers; an integer
+    supplies spaces and a string supplies JSON whitespace for one level of
+    indentation. Non-whitespace indents, cyclic containers and values outside
+    the native model raise :class:`~pyxsd.schemaless.errors.JsonParseError`.
     """
-    return _encode(value, _indent_unit(indent), 0, set())
+    unit = _indent_unit(indent)
+    parts: list[str] = []
+    active: set[int | None] = set()
+    stack: list[tuple[int | None, Iterator[str | tuple[object]]]] = [(None, iter(((value,),)))]
+    while stack:
+        identity, tokens = stack[-1]
+        token = next(tokens, None)
+        if token is None:
+            stack.pop()
+            active.discard(identity)
+        elif isinstance(token, str):
+            parts.append(token)
+        else:
+            (node,) = token
+            if isinstance(node, (list, dict)):
+                identity = id(node)
+                if identity in active:
+                    raise JsonParseError("the value contains a cyclic container")
+                active.add(identity)
+                stack.append((identity, _container_tokens(node, unit, len(stack) - 1)))
+            else:
+                parts.append(_encode_scalar(node))
+    return "".join(parts)
 
 
 def _indent_unit(indent: int | str | None) -> str | None:
-    if indent is None or isinstance(indent, str):
-        return indent
-    return " " * indent
+    if isinstance(indent, str) and indent.strip(" \t\r\n"):
+        raise JsonParseError("a string indent must contain only JSON whitespace")
+    return " " * indent if isinstance(indent, int) else indent
 
 
-def _check_cycle(value: object, active: set[int]) -> None:
-    if id(value) in active:
-        raise JsonParseError("the value contains a cyclic container")
-
-
-def _encode(value: object, unit: str | None, level: int, active: set[int]) -> str:
+def _encode_scalar(value: object) -> str:
     if value is None:
         return "null"
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
-        return str(value)
+        return integer_to_decimal(value)
     if isinstance(value, float):
         if not math.isfinite(value):
             raise JsonParseError("non-finite floats are not valid JSON")
@@ -388,47 +425,36 @@ def _encode(value: object, unit: str | None, level: int, active: set[int]) -> st
         return str(value)
     if isinstance(value, str):
         return json.dumps(value)
-    if isinstance(value, (list, dict)):
-        _check_cycle(value, active)
-        active.add(id(value))
-        try:
-            if isinstance(value, list):
-                return _encode_sequence(value, unit, level, active, "[", "]")
-            return _encode_object(value, unit, level, active)
-        finally:
-            active.discard(id(value))
     raise _unsupported(value)
 
 
-def _encode_sequence(
-    items: list[Any],
-    unit: str | None,
-    level: int,
-    active: set[int],
-    opening: str,
-    closing: str,
-) -> str:
-    if not items:
-        return opening + closing
-    encoded = [_encode(item, unit, level + 1, active) for item in items]
-    if unit is None:
-        return opening + ", ".join(encoded) + closing
-    inner = unit * (level + 1)
-    return opening + "\n" + inner + (",\n" + inner).join(encoded) + "\n" + unit * level + closing
-
-
-def _encode_object(members: dict[Any, Any], unit: str | None, level: int, active: set[int]) -> str:
-    if not members:
-        return "{}"
-    encoded: list[str] = []
-    for key, item in members.items():
-        if not isinstance(key, str):
-            raise JsonParseError(f"a JSON object key must be a string, not {type(key).__name__}")
-        encoded.append(json.dumps(key) + ": " + _encode(item, unit, level + 1, active))
-    if unit is None:
-        return "{" + ", ".join(encoded) + "}"
-    inner = unit * (level + 1)
-    return "{\n" + inner + (",\n" + inner).join(encoded) + "\n" + unit * level + "}"
+def _container_tokens(
+    value: dict[Any, Any] | list[Any], unit: str | None, level: int
+) -> Iterator[str | tuple[object]]:
+    """Yield literal syntax or a wrapped child for the encoder to visit."""
+    if isinstance(value, dict):
+        yield "{"
+        items: Iterable[tuple[object, object]] = value.items()
+        closing = "}"
+    else:
+        yield "["
+        items = enumerate(value)
+        closing = "]"
+    for index, (key, child) in enumerate(items):
+        if index:
+            yield ", " if unit is None else ","
+        if unit is not None:
+            yield "\n" + unit * (level + 1)
+        if isinstance(value, dict):
+            if not isinstance(key, str):
+                raise JsonParseError(
+                    f"a JSON object key must be a string, not {type(key).__name__}"
+                )
+            yield json.dumps(key) + ": "
+        yield (child,)
+    if value and unit is not None:
+        yield "\n" + unit * level
+    yield closing
 
 
 def resolve_pointer(value: NativeJsonValue, pointer: str) -> NativeJsonValue:

@@ -324,8 +324,10 @@ class Document:
         evidence (a caller-built tree, a custom policy parse) stays
         lexical-only instead of inventing an empty declaration set.
 
-        A schemaless document has no schema to bind against and raises
-        :class:`~pyxsd.exceptions.PyXSDError` instead.
+        A plain ``Document(schema=None)`` raises
+        :class:`~pyxsd.exceptions.PyXSDError` because there is no schema to
+        bind against. Use ``SchemalessDocument.revalidate()`` to refresh a
+        schemaless document from its current lexical tree.
         """
         if self.schema is None:
             raise PyXSDError("this document has no schema to revalidate against")

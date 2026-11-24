@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from pyxsd.schemaless import from_data, from_json
+from pyxsd.schemaless import JsonParseError, from_data, from_json
 from pyxsd.schemaless.json_xdm import json_to_xdm
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmMap
 
@@ -122,6 +122,18 @@ def test_values_outside_the_native_model_are_rejected():
 def test_object_keys_must_be_strings():
     with pytest.raises(TypeError, match="JSON object key must be a string"):
         json_to_xdm({1: "x"})  # type: ignore[arg-type]
+
+
+def test_direct_xdm_conversion_rejects_cycles_but_accepts_shared_subtrees():
+    child = {"n": 1}
+    [root] = json_to_xdm([child, child])
+    for member in root.members:
+        assert member[0].get(XdmAtomic.string("n")) == (XdmAtomic.integer(1),)
+
+    cycle = []
+    cycle.append({"next": cycle})
+    with pytest.raises(JsonParseError, match="cyclic container"):
+        json_to_xdm(cycle)
 
 
 @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf], ids=["nan", "inf", "-inf"])

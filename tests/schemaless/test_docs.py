@@ -220,6 +220,16 @@ def test_xdm_fidelity_example_stales_xdm_and_revalidates_the_projection():
     assert "<!--" not in namespace["refreshed"].to_string()
 
 
+def test_base_revalidation_docs_distinguish_the_schemaless_refresh():
+    from inspect import getdoc
+
+    from pyxsd.document import Document
+
+    prose = getdoc(Document.revalidate)
+    assert "Document(schema=None)" in prose
+    assert "SchemalessDocument.revalidate" in prose
+
+
 def test_guide_documents_the_numeric_contract_of_parse_json():
     text = GUIDE.read_text(encoding="utf-8")
     for phrase in ("parse-json", "xs:double", "Decimal"):

@@ -138,6 +138,17 @@ def test_only_supported_or_optional_vocabularies_are_accepted():
         from_data(1, json_schema={"$vocabulary": {"invalid": 1}})
 
 
+def test_required_format_assertion_vocabulary_needs_assertion_mode():
+    vocabulary = "https://json-schema.org/draft/2020-12/vocab/format-assertion"
+    schema = {"$vocabulary": {vocabulary: True}, "format": "date"}
+    assert from_data("2026-11-24", json_schema=schema, format_assertion=True).is_valid
+    invalid = from_data("not-a-date", json_schema=schema, format_assertion=True)
+    assert invalid.report.issues[0].location.schema_pointer == "/format"
+
+    with pytest.raises(schemaless.JsonSchemaError, match=r"required vocabulary.*format-assertion"):
+        from_data("2026-11-24", json_schema=schema, format_assertion=False)
+
+
 def test_annotation_objects_are_not_inspected_as_dialects():
     schema = {"const": {"$schema": "https://example.com/not-a-dialect"}}
     assert from_data(schema["const"], json_schema=schema).is_valid
@@ -170,6 +181,23 @@ def test_integer_is_mathematical_not_the_native_storage_type():
     assert document.to_json() == "9007199254740993.00"
     assert not from_json("1.01", json_schema={"type": "integer"}).is_valid
     assert not from_json("true", json_schema={"type": "integer"}).is_valid
+
+
+def test_huge_integers_in_schema_errors_keep_evaluation_and_diagnostics_working():
+    number = 10**5000
+    token = "1" + "0" * 5000
+    schema = {"anyOf": [{"type": "string"}, {"const": number}]}
+    document = from_json(token, json_schema=schema)
+    assert document.is_valid
+    assert type(document.value_at("")) is int
+    assert document.value_at("") == number
+
+    invalid = from_data(
+        {"number": number}, json_schema={"properties": {"number": {"minimum": number + 1}}}
+    )
+    issue = invalid.report.issues[0]
+    assert issue.location.pointer == "/number"
+    assert issue.location.schema_pointer == "/properties/number/minimum"
 
 
 def test_native_decimal_and_host_float_schema_numbers_compare_exactly():
@@ -214,6 +242,29 @@ def test_internal_reference_reports_the_keyword_in_the_referenced_schema():
     schema = {"$defs": {"a/b": {"type": "integer"}}, "$ref": "#/$defs/a~1b"}
     issue = from_data("x", json_schema=schema).report.issues[0]
     assert issue.location.schema_pointer == "/$defs/a~1b/type"
+
+
+@pytest.mark.parametrize("index", ["-1", "00", "%30%30", "+0", "0%20", "%D9%A0"])
+def test_refs_reject_noncanonical_array_indices(index):
+    schema = {"allOf": [{"type": "integer"}], "$ref": f"#/allOf/{index}"}
+    with pytest.raises(schemaless.JsonSchemaError, match="Cannot resolve JSON Schema reference"):
+        from_data(7, json_schema=schema)
+
+
+def test_refs_accept_canonical_array_indices_and_digit_named_object_members():
+    schema = {
+        "$defs": {
+            "00": {"const": 7},
+            "choices": {"allOf": [{"const": 0}, {"const": 7}]},
+        },
+        "allOf": [{"$ref": "#/$defs/00"}, {"$ref": "#/$defs/choices/allOf/1"}],
+    }
+    assert from_data(7, json_schema=schema).is_valid
+    errors = from_data(0, json_schema=schema).report.issues
+    assert [issue.location.schema_pointer for issue in errors] == [
+        "/$defs/00/const",
+        "/$defs/choices/allOf/1/const",
+    ]
 
 
 def test_false_subschema_keeps_its_instance_and_schema_occurrence():

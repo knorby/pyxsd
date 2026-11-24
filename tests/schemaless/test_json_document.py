@@ -1,15 +1,20 @@
 """Behavior of the native JSON document: ownership, pointers, and serialization."""
 
 import io
-from decimal import Decimal
+import json
+from collections import UserDict
+from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation, localcontext
+from types import MappingProxyType
 
 import pytest
 
 from pyxsd.document import Document
 from pyxsd.exceptions import ValidationError
-from pyxsd.schemaless import JsonDocument, from_data, from_json
+from pyxsd.schemaless import JsonDocument, XmlMapping, from_data, from_json
 from pyxsd.schemaless.errors import JsonLimitError, JsonParseError
 from pyxsd.schemaless.json_values import JsonLimits
+from pyxsd.xdm import XdmArray, XdmAtomic, XdmMap
 
 
 class _Named(io.StringIO):
@@ -168,3 +173,155 @@ def test_direct_construction_copies_host_storage():
     source["x"].append(2)
     assert doc.to_data() == {"x": [1]}
     assert doc.source == "<memory>"
+
+
+@pytest.mark.parametrize("sign", [1, -1])
+def test_huge_integer_tokens_round_trip_without_the_host_digit_limit(sign):
+    token = ("-" if sign < 0 else "") + "1" + "0" * 4999 + "7"
+    doc = from_json(token)
+    number = doc.value_at("")
+    assert type(number) is int
+    assert number == sign * (10**5000 + 7)
+    assert doc.to_json() == token
+
+
+def test_huge_host_integer_keeps_its_value_across_document_views():
+    number = 10**5000 + 7
+    token = "1" + "0" * 4999 + "7"
+    doc = from_data({"n": number})
+    assert doc.value_at("/n") == number
+    assert doc.to_json() == '{"n": ' + token + "}"
+    assert not doc.pin_type("/n", "xs:integer").has_errors
+    assert doc.value_at("", typed=True) == {"n": number}
+    assert doc.to_xdm()[0].get(XdmAtomic.string("n")) == (XdmAtomic.integer(number),)
+    row = doc.profile().at("/n")
+    assert row.samples == (token,)
+    assert row.candidate("xs:integer").passed == 1
+    assert doc.to_xml(XmlMapping.elements("root")).root.children[0].text_value() == token
+
+
+@pytest.mark.parametrize("trap", [True, False])
+def test_number_outside_native_decimal_range_reports_a_parse_error(trap):
+    with localcontext() as context, pytest.raises(JsonParseError, match=r"^<memory>: .*number"):
+        context.traps[InvalidOperation] = trap
+        from_json("1e" + "9" * 24)
+
+
+class _CustomMapping(Mapping):
+    def __init__(self, backing):
+        self.backing = backing
+
+    def __iter__(self):
+        return iter(self.backing)
+
+    def __len__(self):
+        return len(self.backing)
+
+    def __getitem__(self, key):
+        return self.backing[key]
+
+
+@pytest.mark.parametrize("wrap", [MappingProxyType, UserDict, _CustomMapping])
+def test_document_copies_general_mappings_and_nested_shared_mappings(wrap):
+    backing = {"number": 1}
+    child = wrap(backing)
+    doc = from_data(wrap({"a": child, "b": [child]}))
+    backing["number"] = 2
+    data = doc.to_data()
+    assert type(data) is dict
+    assert type(data["a"]) is type(data["b"][0]) is dict
+    assert data == {"a": {"number": 1}, "b": [{"number": 1}]}
+    assert data["a"] is not data["b"][0]
+
+
+def test_mapping_cycles_use_the_documented_error():
+    backing = {}
+    mapping = MappingProxyType(backing)
+    backing["recur"] = UserDict({"next": [mapping]})
+    with pytest.raises(JsonParseError, match="cyclic container"):
+        from_data(mapping)
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        (UserDict({"nested": MappingProxyType({1: 2})}), "key must be a string"),
+        (_CustomMapping({"unsupported": object()}), "unsupported native JSON value"),
+    ],
+)
+def test_invalid_mapping_members_use_the_documented_error(data, message):
+    with pytest.raises(JsonParseError, match=message):
+        from_data(data)
+
+
+@pytest.mark.parametrize(
+    ("limits", "message"),
+    [(JsonLimits(max_depth=2), "max_depth"), (JsonLimits(max_values=2), "max_values")],
+)
+def test_mapping_values_count_toward_structural_budgets(limits, message):
+    data = MappingProxyType({"nested": _CustomMapping({"number": 1})})
+    with pytest.raises(JsonLimitError, match=message):
+        from_data(data, limits=limits)
+
+
+@pytest.fixture(params=["array", "object", "mixed"])
+def deep_document(request):
+    shapes = tuple(
+        request.param == "array" or (request.param == "mixed" and index % 2 == 0)
+        for index in range(1100)
+    )
+    value = 7
+    for is_array in reversed(shapes):
+        value = [value] if is_array else {"a/~": value}
+    return from_data(value), shapes
+
+
+def test_deep_document_serialization_does_not_recurse(deep_document):
+    doc, shapes = deep_document
+    opening = "".join("[" if is_array else '{"a/~": ' for is_array in shapes)
+    closing = "".join("]" if is_array else "}" for is_array in reversed(shapes))
+    assert doc.to_json() == opening + "7" + closing
+
+
+def test_deep_document_xdm_conversion_does_not_recurse(deep_document):
+    doc, shapes = deep_document
+    pointer = "".join("/0" if is_array else "/a~1~0" for is_array in shapes)
+    assert not doc.pin_type(pointer, "xs:string").has_errors
+    items = doc.to_xdm()
+    for is_array in shapes:
+        [item] = items
+        if is_array:
+            assert isinstance(item, XdmArray) and item.size == 1
+            items = item.get(1)
+        else:
+            assert isinstance(item, XdmMap) and item.size == 1
+            items = item.get(XdmAtomic.string("a/~"))
+    assert items == (XdmAtomic.string("7"),)
+
+
+def test_deep_document_typed_view_does_not_recurse(deep_document):
+    doc, shapes = deep_document
+    pointer = "".join("/0" if is_array else "/a~1~0" for is_array in shapes)
+    assert not doc.pin_type(pointer, "xs:string").has_errors
+    # Convert a selected subtree; its original pointer still governs the pin.
+    first = "/0" if shapes[0] else "/a~1~0"
+    view = doc.value_at(first, typed=True)
+    for is_array in shapes[1:]:
+        view = view[0] if is_array else view["a/~"]
+    assert view == "7"
+    assert doc.value_at(pointer) == 7
+
+
+def test_json_whitespace_indent_stays_utf8_and_parseable():
+    indent = " \t\r\n"
+    result = from_data([1, 2]).to_json(indent=indent)
+    assert result == "[\n" + indent + "1,\n" + indent + "2\n]"
+    assert json.loads(result.encode("utf-8")) == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "indent", ["x", "\ud800", "\v"], ids=["letter", "surrogate", "vertical-tab"]
+)
+def test_invalid_json_indent_is_rejected(indent):
+    with pytest.raises(JsonParseError, match=r"indent.*JSON whitespace"):
+        from_data([1]).to_json(indent=indent)

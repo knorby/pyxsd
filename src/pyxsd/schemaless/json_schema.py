@@ -32,12 +32,14 @@ from pyxsd.schemaless.json_values import (
 )
 from pyxsd.schemaless.json_xdm import escape_pointer_segment
 from pyxsd.validation import ValidationReport
+from pyxsd.xsd_data_types import integer_to_decimal
 
 if TYPE_CHECKING:
     from referencing.jsonschema import Schema, SchemaRegistry, SchemaResource
 
 _Path = tuple[str | int, ...]
 _DRAFT = "https://json-schema.org/draft/2020-12/schema"
+_FORMAT_ASSERTION = "https://json-schema.org/draft/2020-12/vocab/format-assertion"
 
 
 def _pointer(path: Iterable[str | int]) -> str:
@@ -71,10 +73,21 @@ def _as_schema(value: object) -> Schema:
     return value
 
 
+class _EvaluationInteger(int):
+    """An exact integer whose representation is safe in upstream diagnostics."""
+
+    def __repr__(self) -> str:
+        return integer_to_decimal(self)
+
+
 def _evaluation_numbers(value: NativeJsonValue) -> NativeJsonValue:
-    """Use a float's JSON spelling for comparison without changing storage."""
+    """Adapt numbers for evaluation and diagnostics without changing storage."""
     if isinstance(value, float):
         return Decimal(str(value))
+    # jsonschema interpolates repr() before we can translate its diagnostics.
+    # 2,048 bits is below Python's smallest nonzero limit of 640 digits.
+    if isinstance(value, int) and value.bit_length() > 2048:
+        return _EvaluationInteger(value)
     if isinstance(value, dict):
         return {key: _evaluation_numbers(child) for key, child in value.items()}
     if isinstance(value, list):
@@ -159,7 +172,12 @@ class _Schemas:
     """Checked resources and their diagnostic locations for one compilation."""
 
     def __init__(
-        self, api: Any, limits: JsonLimits | None, openapi_dialects: frozenset[str]
+        self,
+        api: Any,
+        limits: JsonLimits | None,
+        openapi_dialects: frozenset[str],
+        *,
+        format_assertion: bool,
     ) -> None:
         from referencing.jsonschema import DRAFT202012
 
@@ -168,7 +186,9 @@ class _Schemas:
         self.limits = limits
         self.openapi_dialects = openapi_dialects
         self.draft = api.Draft202012Validator
-        self.vocabularies = self.draft.META_SCHEMA["$vocabulary"]
+        self.vocabularies = set(self.draft.META_SCHEMA["$vocabulary"])
+        if format_assertion:
+            self.vocabularies.add(_FORMAT_ASSERTION)
         self.locations: dict[int, tuple[_Path, str | None]] = {}
         self.checked: dict[int, Schema] = {}
         default_types = self.draft.TYPE_CHECKER
@@ -260,8 +280,13 @@ class _Resolver:
                 registry = self.runtime.retrieve(registry, uri, self.parent)
             resource = registry[uri]
             target_uri = self.runtime.aliases.get(uri, uri)
-            # Keep the reference's actual fragment syntax and dynamic scope
-            # under the upstream resolver (including pointers and anchors).
+            if fragment.startswith("/"):
+                # The upstream resolver uses int() to index arrays, accepting
+                # spellings such as -1 and 00 that RFC 6901 prohibits.
+                contents = cast(NativeJsonValue, registry[target_uri].contents)
+                resolve_pointer(contents, unquote(fragment))
+            # Leave resource scoping, anchors and dynamic references to the
+            # upstream resolver after checking the pointer syntax.
             resolver = registry.resolver()
             for seen in (*self.scope, self.uri):
                 resolver = resolver._evolve(base_uri=seen, registry=registry)
@@ -683,7 +708,7 @@ class SchemaGuidance:
     ) -> SchemaGuidance:
         api = _load_optional()
         try:
-            schemas = _Schemas(api, limits, _openapi_dialects)
+            schemas = _Schemas(api, limits, _openapi_dialects, format_assertion=format_assertion)
             runtime = _Resources(schemas, resource_policy)
             root = _read_schema(schema, limits)
             resource = schemas.resource(root, base_uri)

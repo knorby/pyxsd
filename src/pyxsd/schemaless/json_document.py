@@ -33,10 +33,10 @@ from pyxsd.schemaless.json_values import (
     resolve_pointer,
 )
 from pyxsd.schemaless.json_xdm import (
+    _fold_json,
     _scalar_text,
     _ScalarValue,
     _schema_scalar_text,
-    escape_pointer_segment,
     json_to_xdm,
 )
 from pyxsd.schemaless.types import (
@@ -221,10 +221,10 @@ class JsonDocument:
     def to_json(self, indent: int | str | None = None) -> str:
         """Serialize the native value as JSON text.
 
-        ``indent`` follows :func:`json.dumps`: ``None`` emits compact
-        containers and a non-negative integer or string supplies one level of
-        indentation. Numbers use their exact native spelling, never a float
-        round trip or a quoted string. A type policy never changes this text.
+        ``None`` emits compact containers. An integer supplies spaces and a
+        string supplies JSON whitespace for one level of indentation. A
+        non-whitespace indent raises :class:`JsonParseError`. A type policy
+        never changes the exact native scalar spellings.
         """
         return encode_json(self._value, indent=indent)
 
@@ -411,15 +411,15 @@ class JsonDocument:
 
     def _typed_tree(self, value: NativeJsonValue, pointer: str) -> Any:
         """Build an independent typed view of *value* at *pointer*."""
-        if isinstance(value, dict):
-            return {
-                key: self._typed_tree(member, f"{pointer}/{escape_pointer_segment(key)}")
-                for key, member in value.items()
-            }
-        if isinstance(value, list):
-            return [
-                self._typed_tree(member, f"{pointer}/{index}") for index, member in enumerate(value)
-            ]
+        return _fold_json(
+            value,
+            pointer,
+            scalar=self._typed_leaf,
+            object_value=lambda members: members,
+            array_value=lambda members: members,
+        )
+
+    def _typed_leaf(self, pointer: str, value: _ScalarValue | None) -> Any:
         if value is None:
             return None
         adapter, interpretation = self._resolution_at(pointer, value)
