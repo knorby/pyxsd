@@ -1692,6 +1692,17 @@ def test_date_time_difference_keeps_a_negative_fraction_exact() -> None:
     assert result.principal[0].string_value == "-PT44.7S"
 
 
+def test_extended_year_date_difference_is_a_day_time_duration() -> None:
+    """The extended-year branch converts its timedelta to duration seconds."""
+    body = """
+        <xsl:template name="main">
+          <xsl:sequence select="xs:date('-0001-01-01') - xs:date('-0002-01-01')"/>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "P365D"
+
+
 def test_day_time_duration_plus_date_time_is_symmetric() -> None:
     body = """
         <xsl:template name="main">

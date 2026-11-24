@@ -2550,7 +2550,12 @@ def _temporal_difference(
                 Decimal(delta.microseconds) / Decimal(1_000_000)
             )
         else:
-            seconds = first.todelta() - second.todelta()
+            # Extended years have no ``datetime`` equivalent; subtract the
+            # Gregorian day offsets directly, as the in-range branch does.
+            delta = first.todelta() - second.todelta()
+            seconds = Decimal(delta.days * 86400 + delta.seconds) + (
+                Decimal(delta.microseconds) / Decimal(1_000_000)
+            )
     except (ValueError, OverflowError) as err:
         raise token.error("FODT0001", err) from None
     return DayTimeDuration(seconds=seconds)
