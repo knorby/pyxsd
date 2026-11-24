@@ -230,7 +230,7 @@ class CompiledPattern:
                 names.update(value.variable_names)
                 return
             if isinstance(value, FunctionArgument) and value.kind == "variable":
-                if value.name is not None:
+                if value.name is not None:  # pragma: no branch - variable arguments are named
                     names.add(value.name)
                 return
             if is_dataclass(value) and not isinstance(value, type):

@@ -1989,6 +1989,14 @@ def test_concat_and_replace_cover_empty_and_invalid_arguments() -> None:
     result = transform(stylesheet(absent_group), initial_template="main")
     assert result.principal[0].string_value == "[]"
 
+    leading_group = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="replace('ab', '(a)(b)', '$1x$2')"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(leading_group), initial_template="main")
+    assert result.principal[0].string_value == "axb"
+
 
 def test_seconds_without_a_fraction_return_an_integer() -> None:
     body = """

@@ -1960,7 +1960,7 @@ def _install_node_kind_test(parser: Any) -> None:
         if context is None:  # pragma: no cover - token evaluation supplies it
             raise self.missing_context()
         for item in context.iter_children_or_self():
-            if isinstance(item, XPathNode):
+            if isinstance(item, XPathNode):  # pragma: no branch - iter yields nodes
                 yield item
 
     parser._register(

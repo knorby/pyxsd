@@ -1340,3 +1340,16 @@ def test_2_0_roman_width_and_bounded_fraction() -> None:
         "</xsl:template>"
     )
     assert _formatted(body) == " xii|12"
+
+
+def test_2_0_am_pm_and_timezone_unbounded_widths() -> None:
+    body = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2003-12-07T12:34:56+01:00')\"/>"
+        '<xsl:template name="main">'
+        '<xsl:value-of separator="|" select="format-dateTime($t, \'[P,1-*]\'), '
+        "format-dateTime($t, '[z,1-*]')\"/>"
+        "</xsl:template>"
+    )
+    formatted = _formatted(body)
+    assert formatted.startswith("pm|")
