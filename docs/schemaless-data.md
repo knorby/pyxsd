@@ -398,9 +398,10 @@ assert annotated.is_valid
 assert not asserted.is_valid
 ```
 
-`format_assertion=True` checks the value without casting it to a Python date or
-other host type. Even with assertion enabled, producing a typed value remains a
-separate `TypePolicy` choice.
+With `format_assertion=True`, pyxsd uses its own deterministic RFC 3339 checks
+for `date`, `date-time`, and `time`. These checks do not require
+`rfc3339-validator`. Format assertion never casts a formatted string without an
+explicit `TypePolicy`.
 
 ### Reference security
 

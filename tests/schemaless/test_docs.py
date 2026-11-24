@@ -166,6 +166,14 @@ def test_json_schema_example_reports_instances_and_format_assertion():
     assert not formats["asserted"].is_valid
 
 
+def test_guide_documents_deterministic_rfc3339_format_assertion():
+    prose = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    assert "pyxsd uses its own deterministic RFC 3339 checks" in prose
+    assert "for `date`, `date-time`, and `time`" in prose
+    assert "do not require `rfc3339-validator`" in prose
+    assert "never casts a formatted string without an explicit `TypePolicy`" in prose
+
+
 def test_openapi_example_maps_a_property_to_an_attribute():
     namespace = _load('xml.root.attribute_lexical("id") == "02138"')
     xml = namespace["xml"]

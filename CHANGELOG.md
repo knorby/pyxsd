@@ -21,6 +21,9 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   OpenAPI-derived rules. JSON Schema and OpenAPI guidance require the optional
   `pyxsd[jsonschema]` extra, which `pyxsd[mcp-all]` also installs; native XML
   and native JSON remain available without it.
+  Opt-in format assertion uses pyxsd's deterministic RFC 3339 checks for
+  `date`, `date-time`, and `time`, without requiring `rfc3339-validator`.
+  A formatted string is never cast without an explicit type policy.
 - A native XSLT transformation engine covering XSLT 1.0, 2.0, and 3.0
   (non-streaming): templates, modes, keys, attribute sets, `xsl:number`
   formatting, result documents, packages, and the XPath 3.1 function library.

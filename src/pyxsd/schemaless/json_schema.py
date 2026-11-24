@@ -21,6 +21,7 @@ from pyxsd.resource_policy import (
 )
 from pyxsd.resource_refs import classify_resource
 from pyxsd.schemaless.errors import JsonLimitError, JsonParseError, JsonSchemaError
+from pyxsd.schemaless.formats import assertion_checker
 from pyxsd.schemaless.json_values import (
     JsonLimits,
     NativeJsonValue,
@@ -700,7 +701,7 @@ class SchemaGuidance:
                 root,
                 _resolver=resolver,
                 registry=registry,
-                format_checker=schemas.draft.FORMAT_CHECKER if format_assertion else None,
+                format_checker=assertion_checker() if format_assertion else None,
             )
         except RecursionError as exc:
             raise JsonSchemaError(
