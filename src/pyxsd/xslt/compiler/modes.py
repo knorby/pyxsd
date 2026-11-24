@@ -8,7 +8,7 @@ descriptor and component table; this module never builds a second graph.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from functools import cmp_to_key
@@ -290,16 +290,18 @@ def _merged_mode_property(
     *,
     code: str,
     message: str,
+    normalize: Callable[[str, _Declaration], str] | None = None,
 ) -> tuple[str, _Declaration]:
     highest = max((entry[0] for entry in entries), key=cmp_to_key(compare_precedence))
-    chosen: tuple[str, _Declaration] | None = None
+    chosen: tuple[str, str, _Declaration] | None = None
     for precedence, value, declaration in entries:
         if precedence != highest:
             continue
+        key = value if normalize is None else normalize(value, declaration)
         if chosen is None:
-            chosen = (value, declaration)
+            chosen = (value, key, declaration)
             continue
-        if chosen[0] != value:
+        if chosen[1] != key:
             raise _error(
                 message,
                 code,
@@ -307,7 +309,7 @@ def _merged_mode_property(
                 module=declaration.module,
             )
     assert chosen is not None
-    return chosen
+    return chosen[0], chosen[2]
 
 
 def _merge_mode_properties(
@@ -325,10 +327,9 @@ def _merge_mode_properties(
             assert local is not None
             if local in ("name", "visibility") or attribute.name.startswith("_"):
                 continue
-            value = attribute.value
-            if local == "use-accumulators":
-                value = _accumulator_property_key(value, declaration.element.in_scope_namespaces)
-            entries.setdefault(local, []).append((declaration.precedence, value, declaration))
+            entries.setdefault(local, []).append(
+                (declaration.precedence, attribute.value, declaration)
+            )
     properties: dict[str, str] = {}
     property_namespaces: dict[str, Mapping[str, str]] = {}
     for local, values in entries.items():
@@ -336,6 +337,7 @@ def _merge_mode_properties(
             values,
             code="XTSE0545",
             message=f"mode declarations disagree about {local!r}",
+            normalize=(_accumulator_property_normalizer if local == "use-accumulators" else None),
         )
         if local == "typed":
             value = _typed_mode_value(value, declaration)
@@ -349,6 +351,11 @@ def _merge_mode_properties(
         properties[local] = value
         property_namespaces[local] = declaration.element.in_scope_namespaces
     return MappingProxyType(properties), MappingProxyType(property_namespaces)
+
+
+def _accumulator_property_normalizer(value: str, declaration: _Declaration) -> str:
+    """The comparison key for one declaration's ``use-accumulators`` value."""
+    return _accumulator_property_key(value, declaration.element.in_scope_namespaces)
 
 
 def _accumulator_property_key(value: str, namespaces: Mapping[str, str]) -> str:
