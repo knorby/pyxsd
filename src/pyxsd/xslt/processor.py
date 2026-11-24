@@ -107,7 +107,6 @@ from pyxsd.xslt.compiler.packages import (
     PackageResolver,
     compile_package_set,
 )
-from pyxsd.xslt.compiler.pattern_syntax import FunctionArgument
 from pyxsd.xslt.compiler.patterns import (
     CompiledPattern,
     PatternMatcher,
@@ -8022,33 +8021,8 @@ def _unknown_variable_name(error: BaseException) -> str | None:
 
 
 def _pattern_variable_names(pattern: CompiledPattern) -> set[str]:
-    names: set[str] = set()
-
-    def visit(value: object) -> None:
-        if isinstance(value, CompiledExpression):
-            names.update(value.variable_names)
-            return
-        if isinstance(value, CompiledPattern):
-            for alternative in value.alternatives:
-                visit(alternative)
-            return
-        if isinstance(value, FunctionArgument) and value.kind == "variable":
-            # A rooted doc()/id()/key() pattern argument can only be a literal
-            # or a variable reference.  The pattern environment must bind the
-            # variable, or the rooted base is silently empty.
-            assert value.name is not None
-            names.add(value.name)
-            return
-        if is_dataclass(value) and not isinstance(value, type):
-            for item in fields(value):
-                visit(getattr(value, item.name))
-            return
-        if isinstance(value, (tuple, list)):
-            for item in value:
-                visit(item)
-
-    visit(pattern)
-    return names
+    """The variable names one pattern references (see CompiledPattern)."""
+    return set(pattern.variable_names)
 
 
 def _document_nodes(root: XdmNode) -> Iterator[XdmNode]:

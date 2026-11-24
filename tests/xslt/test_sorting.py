@@ -802,3 +802,56 @@ def test_uca_secondary_strength_ignores_case_and_numeric_compare() -> None:
     with pytest.raises(XsltDynamicError) as missing:
         resolve_collation("relative", code="XTDE1035", base_uri=None)
     assert missing.value.code == "XTDE1035"
+
+
+# ---------------------------------------------------------------------------
+# Date/time ordering
+
+
+def test_sort_times_uses_the_timeline_not_the_lexical_form() -> None:
+    """Zoned times sort by their timeline value, not their lexical spelling."""
+    body = """
+        <xsl:template name="main">
+          <xsl:perform-sort select="
+                xs:time('18:00:00Z'),
+                xs:time('19:00:30+01:00'),
+                xs:time('18:15:00Z'),
+                xs:time('17:59:00Z')">
+            <xsl:sort select="."/>
+          </xsl:perform-sort>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert [item.lexical for item in result.principal] == [
+        "17:59:00Z",
+        "18:00:00Z",
+        "19:00:30+01:00",
+        "18:15:00Z",
+    ]
+
+
+def test_sort_duration_reports_xtde1030() -> None:
+    """``xs:duration`` is not an ordered type, so a sort key reports XTDE1030."""
+    body = """
+        <xsl:template name="main">
+          <xsl:perform-sort select="xs:duration('P1Y'), xs:duration('P12M')">
+            <xsl:sort select="."/>
+          </xsl:perform-sort>
+        </xsl:template>
+    """
+    assert error_code(lambda: transform(stylesheet(body), initial_template="main")) == "XTDE1030"
+
+
+def test_datetime_sort_comparison_applies_the_implicit_timezone() -> None:
+    """A time without a timezone is compared using the implicit timezone."""
+    from elementpath.datatypes.datetime import Timezone
+
+    from pyxsd import xsd_data_types as xsd
+    from pyxsd.xslt.runtime.iteration import _compare_datetime
+
+    naive = XdmAtomic.typed(xsd.Time("18:00:00"), xsd.Time)
+    zoned = XdmAtomic.typed(xsd.Time("10:00:00Z"), xsd.Time)
+    # 18:00 at +14:00 is 04:00Z, which precedes 10:00Z.
+    assert _compare_datetime(naive, zoned, Timezone.fromstring("+14:00")) == -1
+    # 18:00 at -10:00 is 04:00Z the next day, which follows 10:00Z.
+    assert _compare_datetime(naive, zoned, Timezone.fromstring("-10:00")) == 1

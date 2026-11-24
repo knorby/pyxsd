@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from decimal import Decimal
 from functools import cache
 from typing import Any, Literal, cast
@@ -214,6 +214,36 @@ class CompiledPattern:
     @property
     def default_priorities(self) -> tuple[Decimal, ...]:
         return tuple(alternative.priority for alternative in self.alternatives)
+
+    @property
+    def variable_names(self) -> frozenset[str]:
+        """Every variable an alternative's predicate or rooted base references.
+
+        A grouping pattern is evaluated in the caller's local scope, so a
+        reference such as ``*[@cont = $p]`` needs the invocation's variables;
+        a pattern without one keeps the shared cached environment.
+        """
+        names: set[str] = set()
+
+        def visit(value: object) -> None:
+            if isinstance(value, CompiledExpression):
+                names.update(value.variable_names)
+                return
+            if isinstance(value, FunctionArgument) and value.kind == "variable":
+                if value.name is not None:
+                    names.add(value.name)
+                return
+            if is_dataclass(value) and not isinstance(value, type):
+                for item in fields(value):
+                    visit(getattr(value, item.name))
+                return
+            if isinstance(value, (tuple, list)):
+                for item in value:
+                    visit(item)
+
+        for alternative in self.alternatives:
+            visit(alternative)
+        return frozenset(names)
 
 
 # ---------------------------------------------------------------------------
