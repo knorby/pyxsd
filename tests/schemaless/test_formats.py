@@ -1,10 +1,12 @@
-"""RFC 3339 assertions are deterministic with the plain JSON Schema extra."""
+"""Format assertions are deterministic with the plain JSON Schema extra."""
+
+import sys
 
 import pytest
 from jsonschema import Draft202012Validator
 
 from pyxsd.locations import DataLocation
-from pyxsd.schemaless import from_data
+from pyxsd.schemaless import formats, from_data
 from pyxsd.schemaless.formats import (
     assertion_checker,
     is_rfc3339_date,
@@ -14,7 +16,7 @@ from pyxsd.schemaless.formats import (
 
 
 def test_assertion_checker_preserves_other_draft_formats_without_mutating_the_draft():
-    translated = {"date", "date-time", "time"}
+    translated = {"date", "date-time", "time", "uuid", "ipv4", "ipv6", "json-pointer", "regex"}
     draft = Draft202012Validator.FORMAT_CHECKER
     original = draft.checkers.copy()
     checker = assertion_checker()
@@ -56,6 +58,11 @@ def test_assertion_checker_is_process_stable_and_overrides_translated_formats():
     assert first.checkers["date-time"][0] is is_rfc3339_date_time
     assert first.checkers["date"][0] is is_rfc3339_date
     assert first.checkers["time"][0] is is_rfc3339_time
+    assert first.checkers["uuid"][0] is formats.is_uuid
+    assert first.checkers["ipv4"][0] is formats.is_ipv4
+    assert first.checkers["ipv6"][0] is formats.is_ipv6
+    assert first.checkers["json-pointer"][0] is formats.is_json_pointer
+    assert first.checkers["regex"][0] is formats.is_regex
 
 
 @pytest.mark.parametrize(
@@ -143,3 +150,99 @@ def test_format_assertion_is_opt_in_for_all_rfc3339_formats(name, value):
     assert location.schema_pointer == "/format"
     assert annotated.to_data() == asserted.to_data() == value
     assert from_data(42, json_schema=schema, format_assertion=True).is_valid
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [
+        ("f81d4fae-7dec-11d0-a765-00a0c91e6bf6", True),
+        ("F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6", True),
+        ("urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6", False),
+        ("{f81d4fae-7dec-11d0-a765-00a0c91e6bf6}", False),
+        ("f81d4fae7dec11d0a76500a0c91e6bf6", False),
+        ("f81d4fa-e7dec-11d0-a765-00a0c91e6bf6", False),
+        ("g81d4fae-7dec-11d0-a765-00a0c91e6bf6", False),
+        ("+81d4fae-7dec-11d0-a765-00a0c91e6bf6", False),
+        ("\u066181d4fae-7dec-11d0-a765-00a0c91e6bf6", False),
+        (None, True),
+    ],
+)
+def test_uuid_plain_hyphenated_spelling(value, valid):
+    assert formats.is_uuid(value) is valid
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [
+        ("192.0.2.1", True),
+        ("192.168.001.1", False),
+        ("127.1", False),
+        ("999.1.1.1", False),
+        (42, True),
+    ],
+)
+def test_ipv4_dotted_decimal_spelling(value, valid):
+    assert formats.is_ipv4(value) is valid
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [
+        ("2001:db8::1", True),
+        ("::ffff:192.0.2.1", True),
+        ("fe80::1%eth0", False),
+        ("2001:db8:::1", False),
+        ([], True),
+    ],
+)
+def test_ipv6_spelling_without_scope_id(value, valid):
+    assert formats.is_ipv6(value) is valid
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [
+        ("", True),
+        ("/", True),
+        ("/a~0b/~1c", True),
+        ("/a/00", True),
+        ("a", False),
+        ("/a~2b", False),
+        ("/a~", False),
+        ({}, True),
+    ],
+)
+def test_json_pointer_checks_token_syntax_not_array_indexes(value, valid):
+    assert formats.is_json_pointer(value) is valid
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [
+        ("^[a-z]+$", True),
+        ("(?P<name>x)", True),
+        ("[", False),
+        (r"\p{L}", False),
+        pytest.param("x{18446744073709551616}", False, id="repetition-overflow"),
+        pytest.param("x{" + "9" * 5000 + "}", False, id="repetition-digit-limit"),
+        pytest.param(
+            "(" * sys.getrecursionlimit() + "x" + ")" * sys.getrecursionlimit(),
+            False,
+            id="excessive-nesting",
+        ),
+        (False, True),
+    ],
+)
+def test_regex_uses_python_re_syntax(value, valid):
+    assert formats.is_regex(value) is valid
+
+
+def test_json_pointer_assertion_is_opt_in():
+    schema = {"format": "json-pointer"}
+    assert from_data("/a~2b", json_schema=schema).is_valid
+
+    invalid = from_data("/a~2b", json_schema=schema, format_assertion=True)
+    assert not invalid.is_valid
+    assert isinstance(invalid.report.issues[0].location, DataLocation)
+    assert invalid.report.issues[0].location.schema_pointer == "/format"
+    assert from_data("/a/00", json_schema=schema, format_assertion=True).is_valid
