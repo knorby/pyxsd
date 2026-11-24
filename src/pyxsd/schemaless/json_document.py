@@ -250,6 +250,10 @@ class JsonDocument:
         JSON Pointer pins stay on this document: the projected tree starts from
         a lexical policy.
 
+        A schema-backed mapping requires a valid instance for its own schema.
+        If validation fails, ``XmlMappingError.report`` contains the JSON
+        Schema diagnostics. Other mappings do not require schema validation.
+
         Pass *node_mapping* to add Python mixins to matching projected
         occurrences; descriptor ``type=`` entries become occurrence pins on the
         derived document's policy, just as they do for :func:`parse_xml`.
@@ -258,9 +262,7 @@ class JsonDocument:
 
         if not isinstance(mapping, XmlMapping):
             raise TypeError("mapping must be an XmlMapping")
-        return _project_document(
-            self._value, mapping, source=self.source, node_mapping=node_mapping
-        )
+        return _project_document(self, mapping, node_mapping=node_mapping)
 
     def to_xdm(self) -> XdmSequence:
         """Return this document's native value as an XDM 3.1 sequence.

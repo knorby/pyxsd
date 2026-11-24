@@ -39,6 +39,11 @@ from pyxsd.schemaless.types import _PARSE_ERRORS, TypePolicy, TypeRef
 from pyxsd.validation import ValidationReport
 
 if TYPE_CHECKING:
+    from referencing.jsonschema import SchemaRegistry
+
+    from pyxsd.resource_policy import ResourcePolicy
+    from pyxsd.schemaless.json_document import JsonDocument, _JsonSchemaInput
+    from pyxsd.schemaless.json_schema import SchemaGuidance, _AppliedSchema
     from pyxsd.schemaless.nodes import _CompiledNodeMapping
 
 _XSI_NIL = f"{{{XSI_NS}}}nil"
@@ -111,7 +116,7 @@ class XmlMapping:
     because only then are their XML paths known.
     """
 
-    __slots__ = ("_default", "_root_name", "_rules")
+    __slots__ = ("_default", "_guidance", "_root_name", "_rules")
 
     def __init__(
         self,
@@ -152,6 +157,7 @@ class XmlMapping:
         self._root_name = root_name
         self._default = "elements"
         self._rules: Mapping[str, MappingRule] = MappingProxyType(checked)
+        self._guidance: SchemaGuidance | None = None
 
     @property
     def root_name(self) -> str:
@@ -182,6 +188,34 @@ class XmlMapping:
         """Map scalar object properties to attributes unless overridden."""
         mapping = cls(root_name, rules=rules)
         mapping._default = "compact"
+        return mapping
+
+    @classmethod
+    def from_json_schema(
+        cls,
+        schema: _JsonSchemaInput,
+        *,
+        root_name: str,
+        rules: Mapping[str, MappingRule] | None = None,
+        base_uri: str | None = None,
+        reference_registry: SchemaRegistry | None = None,
+        resource_policy: ResourcePolicy | None = None,
+    ) -> XmlMapping:
+        """Compile Draft 2020-12 guidance for an element-first projection.
+
+        The schema must validate the instance at projection time. Only
+        applicable structural hints are considered; explicit rules take
+        precedence, and neither schema defaults nor scalar casts are applied.
+        """
+        from pyxsd.schemaless.json_schema import SchemaGuidance
+
+        mapping = cls(root_name, rules=rules)
+        mapping._guidance = SchemaGuidance.compile(
+            schema,
+            base_uri=base_uri,
+            reference_registry=reference_registry,
+            resource_policy=resource_policy,
+        )
         return mapping
 
 
@@ -330,20 +364,16 @@ def _fail(
     pointer: str,
     xml_path: str,
     source: str | None,
-    *,
-    character: str | None = None,
+    **details: object,
 ) -> NoReturn:
     """Raise one fatal mapping diagnostic with both addresses."""
-    details: dict[str, object] = {"json_pointer": pointer, "xml_path": xml_path}
-    if character is not None:
-        details["character"] = character
     report = ValidationReport(diagnostics_complete=True)
     report.add_error(
         message,
         code=code,
         location=DataLocation(source, pointer),
         location_precision="exact",
-        details=details,
+        details={"json_pointer": pointer, "xml_path": xml_path, **details},
     )
     raise XmlMappingError(report)
 
@@ -378,10 +408,17 @@ _ITEM = _Name("item")
 class _Projector:
     """Apply one immutable mapping, tracking XML and JSON addresses separately."""
 
-    def __init__(self, mapping: XmlMapping, source: str, report: ValidationReport) -> None:
+    def __init__(
+        self,
+        mapping: XmlMapping,
+        source: str,
+        report: ValidationReport,
+        schema: _AppliedSchema | None,
+    ) -> None:
         self._mapping = mapping
         self._source = source
         self._report = report
+        self._schema = schema
         self._bindings: dict[ET.Element, dict[str, str]] = {}
         self._uses_xsi = False
 
@@ -420,6 +457,7 @@ class _Projector:
         if isinstance(value, (dict, list)):
             self._children(target, rule, value, pointer)
         elif value is None:
+            self._check_null_shape(pointer, target.path)
             if rule.null == "empty":
                 self._warn_null("empty", "element", pointer, target.path)
                 target.element.text = ""
@@ -428,6 +466,45 @@ class _Projector:
                 self._uses_xsi = True
         else:
             target.element.text = self._lexical(value, rule, pointer, target.path)
+
+    def _check_null_shape(self, pointer: str, path: str) -> None:
+        """Reject incompatible structural hints where the instance has no shape.
+
+        Native non-null values already determine the element-first layout.
+        Nullable type assertions can name an underlying shape, but neither
+        null alone nor an unconstrained schema asserts one. Scalar types all
+        share the same XML structure.
+        """
+        if self._schema is None or pointer in self._mapping.rules:
+            return
+        hints: list[set[str]] = []
+        pointers: list[str] = []
+        sources: list[str | None] = []
+        for occurrence in self._schema.occurrences_at(pointer):
+            if isinstance(occurrence.schema, bool):
+                continue
+            declared = occurrence.schema.get("type", ())
+            types = (declared,) if isinstance(declared, str) else declared
+            shapes = {
+                kind if kind in ("object", "array") else "scalar"
+                for kind in types
+                if kind != "null"
+            }
+            if shapes:
+                hints.append(shapes)
+                pointers.append(occurrence.schema_pointer)
+                sources.append(occurrence._schema_source)
+        if hints and not set.intersection(*hints):
+            _fail(
+                "ambiguous-schema-mapping",
+                "ambiguous JSON Schema shapes for null; supply an explicit rule at this pointer",
+                pointer,
+                path,
+                self._source,
+                schema_pointers=tuple(pointers),
+                schema_sources=tuple(sources),
+                schema_shapes=tuple(tuple(sorted(shapes)) for shapes in hints),
+            )
 
     def _children(
         self,
@@ -715,17 +792,25 @@ class _Projector:
 
 
 def _project_document(
-    value: NativeJsonValue,
+    document: JsonDocument,
     mapping: XmlMapping,
     *,
-    source: str,
     node_mapping: NodeMapping | None,
 ) -> SchemalessDocument:
     """Build one fresh XML document from a native value and its mapping."""
     if node_mapping is not None and not isinstance(node_mapping, NodeMapping):
         raise TypeError("node_mapping must be a NodeMapping or None")
+    applied = None
+    if mapping._guidance is not None:
+        applied = document._applied_schema
+        if applied is None or not mapping._guidance._matches(applied.guidance):
+            validation, applied = mapping._guidance._evaluate(
+                document._value, source=document.source
+            )
+            if applied is None:
+                raise XmlMappingError(validation)
     report = ValidationReport(diagnostics_complete=True)
-    root = _Projector(mapping, source, report).build(value)
+    root = _Projector(mapping, document.source, report, applied).build(document._value)
     compiled: _CompiledNodeMapping | None = None
     if node_mapping is not None:
         compiled = node_mapping._compiled

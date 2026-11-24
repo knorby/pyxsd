@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from copy import copy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from importlib import import_module
 from os.path import dirname, isabs, relpath
@@ -79,6 +79,27 @@ def _evaluation_numbers(value: NativeJsonValue) -> NativeJsonValue:
     if isinstance(value, list):
         return [_evaluation_numbers(child) for child in value]
     return value
+
+
+def _same_schema_value(left: NativeJsonValue, right: NativeJsonValue) -> bool:
+    """Compare copied JSON values without conflating booleans and numbers.
+
+    Keep numeric types and mapping order: the evaluator combines
+    ``patternProperties`` expressions in declaration order.
+    """
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        obj = cast(dict[str, NativeJsonValue], right)
+        return tuple(left) == tuple(obj) and all(
+            _same_schema_value(member, obj[key]) for key, member in left.items()
+        )
+    if isinstance(left, list):
+        arr = cast(list[NativeJsonValue], right)
+        return len(left) == len(arr) and all(
+            _same_schema_value(one, two) for one, two in zip(left, arr, strict=True)
+        )
+    return left == right
 
 
 def _schema_objects(
@@ -410,6 +431,7 @@ class SchemaOccurrence:
     schema: Schema
     instance_pointer: str
     schema_pointer: str
+    _schema_source: str | None = field(default=None, kw_only=True, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -516,14 +538,22 @@ class _GuidanceCycle(Exception):
 class _AppliedSchema:
     """A validated instance and its resource snapshot, with lazy pointer guidance."""
 
-    def __init__(self, validator: Any, value: NativeJsonValue) -> None:
+    def __init__(self, guidance: SchemaGuidance, validator: Any, value: NativeJsonValue) -> None:
+        self.guidance = guidance
         self._root = _Application(validator, ())
         self._value = value
         self._at: dict[str, tuple[_Application, ...]] = {}
 
     def occurrences_at(self, pointer: str) -> tuple[SchemaOccurrence, ...]:
         return tuple(
-            SchemaOccurrence(item.validator.schema, pointer, _pointer(item.path))
+            SchemaOccurrence(
+                item.validator.schema,
+                pointer,
+                _pointer(item.path),
+                _schema_source=item.validator._resolver.schemas.locations.get(
+                    id(item.validator.schema), ((), None)
+                )[1],
+            )
             for item in self._applications(pointer)
         )
 
@@ -638,7 +668,28 @@ class SchemaGuidance:
             for item in applied.occurrences_at(pointer)
         )
 
-    def _evaluate(self, value: NativeJsonValue) -> tuple[ValidationReport, _AppliedSchema | None]:
+    def _matches(self, other: SchemaGuidance) -> bool:
+        """Whether an applied evaluation is reusable in this compiled context."""
+        if (
+            self._resolver.parent != other._resolver.parent
+            or self._policy is not other._policy
+            or self._validator.format_checker is not other._validator.format_checker
+        ):
+            return False
+        # Compare the compiled snapshots, not caller registry identities:
+        # resources can contain mutable objects even in an immutable registry.
+        left, right = self._resolver.registry, other._resolver.registry
+        return left.keys() == right.keys() and all(
+            _same_schema_value(
+                cast(NativeJsonValue, left[uri].contents),
+                cast(NativeJsonValue, right[uri].contents),
+            )
+            for uri in left
+        )
+
+    def _evaluate(
+        self, value: NativeJsonValue, *, source: str | None = None
+    ) -> tuple[ValidationReport, _AppliedSchema | None]:
         """Validate once and retain the authorized inputs for optional guidance."""
         report = new_validation_report(self._policy)
         report._tighten_issue_retention(
@@ -665,7 +716,9 @@ class SchemaGuidance:
                 message,
                 code="json-schema-invalid",
                 location=DataLocation(
-                    self._source, _pointer(instance), schema_pointer=_pointer(schema)
+                    self._source if source is None else source,
+                    _pointer(instance),
+                    schema_pointer=_pointer(schema),
                 ),
                 location_precision="exact",
             )
@@ -673,7 +726,7 @@ class SchemaGuidance:
         # Guidance may need to inspect alternatives the evaluator did not
         # visit. Only resources authorized during this evaluation are reusable.
         validator._resolver.runtime.policy = None
-        return report, None if report.has_errors else _AppliedSchema(validator, normalized)
+        return report, None if report.has_errors else _AppliedSchema(self, validator, normalized)
 
 
 def _error_paths(error: Any) -> tuple[_Path, _Path]:
