@@ -2945,9 +2945,11 @@ def _external_function(
 
     elementpath refuses every ``external_function`` whose symbol is in the
     XPath reserved-name set, even though the restriction applies only to the
-    standard function namespace.  A stylesheet function such as ``my:node`` or
-    ``ns:function`` is therefore legal; the per-parser set is shadowed for the
-    registration and restored immediately.
+    standard function namespace.  A namespaced function whose local name is
+    reserved but has no parser token (``my:switch``) is therefore legal; the
+    per-parser set is shadowed for the registration and restored immediately.
+    A name that also owns a grammar token (``node``, ``function``) still
+    collides with that token and stays a parser-level residual.
     """
     if prefix is None or name not in parser.RESERVED_FUNCTION_NAMES:
         return parser.external_function(

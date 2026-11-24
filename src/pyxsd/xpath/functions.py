@@ -60,10 +60,13 @@ __all__ = [
     "format_datetime_value",
     "format_integer_value",
     "function_arity",
+    "install_date_time",
+    "install_deep_equal",
     "install_regex_replace",
     "install_string_conversion_functions",
     "install_string_function",
     "sequence_to_elementpath",
+    "xdm_deep_equal",
 ]
 
 
