@@ -12,11 +12,13 @@ from functools import partial
 from typing import Any
 
 import pytest
+from elementpath.datatypes import Date, Time, UntypedAtomic
 from tests.xslt.support import stylesheet as _stylesheet
 from tests.xslt.support import transform
 
 from pyxsd.xdm import XdmAtomic, XdmFunction, XdmMap
 from pyxsd.xdm.nodes import XdmDocument
+from pyxsd.xpath.functions import _date_time_argument, xdm_deep_equal
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltStaticError
 from pyxsd.xslt.runtime.instructions import (
@@ -300,6 +302,19 @@ def test_array_dynamic_call_casts_an_untyped_key_to_integer() -> None:
 
 
 def test_map_dynamic_call_requires_exactly_one_atomic_key() -> None:
+    empty_key = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="m" as="map(*)" select="map{'1': '1st'}"/>
+          <xsl:sequence select="$m(())"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        error_code(lambda: transform(empty_key, initial_template="main", delivery="raw"))
+        == "XPTY0004"
+    )
+
     multi_key = stylesheet(
         """
         <xsl:template name="main">
@@ -341,6 +356,71 @@ def test_array_dynamic_call_requires_one_integer_position() -> None:
             lambda source=source: transform(source, initial_template="main", delivery="raw")
         )
         assert code == ("FOAY0001" if expression == "$a(0)" else "XPTY0004")
+
+
+def test_array_dynamic_call_rejects_an_invalid_untyped_position() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="a" as="array(*)" select="['first', 'second']"/>
+          <xsl:sequence select="$a(/*/e/@ref)"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        error_code(
+            lambda: transform(
+                source, b'<doc><e ref="first"/></doc>', initial_template="main", delivery="raw"
+            )
+        )
+        == "FORG0001"
+    )
+
+
+def test_xdm_deep_equal_compares_grounded_nodes_structurally() -> None:
+    text = b'<d xmlns:p="urn:p" xmlns:q="urn:q" a="1" b="2"><!--c--><?pi v?>text<e>child</e></d>'
+    left = XdmDocument.parse(text)
+    right = XdmDocument.parse(text)
+    left_root = left.root_element
+    right_root = right.root_element
+    assert left_root is not None and right_root is not None
+
+    assert xdm_deep_equal((left,), (right,)) is True
+    assert xdm_deep_equal((left_root,), (right_root,)) is True
+    assert xdm_deep_equal((), (left_root,)) is False
+    assert xdm_deep_equal((left_root,), (XdmAtomic.string("text"),)) is False
+    assert xdm_deep_equal((XdmAtomic.integer(1),), (XdmAtomic.integer(1),)) is True
+    assert xdm_deep_equal((XdmAtomic.integer(1),), (XdmAtomic.integer(2),)) is False
+
+    # Element name, attribute map, and child count differences.
+    renamed = XdmDocument.parse(
+        b'<x xmlns:p="urn:p" xmlns:q="urn:q" a="1" b="2"><!--c--><?pi v?>text<e>child</e></x>'
+    ).root_element
+    assert renamed is not None
+    assert xdm_deep_equal((left_root,), (renamed,)) is False
+    changed_attribute = XdmDocument.parse(
+        b'<d xmlns:p="urn:p" xmlns:q="urn:q" a="9" b="2"><!--c--><?pi v?>text<e>child</e></d>'
+    ).root_element
+    assert changed_attribute is not None
+    assert xdm_deep_equal((left_root,), (changed_attribute,)) is False
+    shorter = XdmDocument.parse(b'<d xmlns:p="urn:p" xmlns:q="urn:q" a="1" b="2"/>').root_element
+    assert shorter is not None
+    assert xdm_deep_equal((left_root,), (shorter,)) is False
+
+    # Attribute, processing instruction, comment, text, and namespace nodes.
+    assert xdm_deep_equal((left_root.attributes[0],), (right_root.attributes[0],)) is True
+    assert xdm_deep_equal((left_root.attributes[0],), (changed_attribute.attributes[0],)) is False
+    assert xdm_deep_equal((left_root.children[0],), (right_root.children[0],)) is True
+    assert xdm_deep_equal((left_root.children[1],), (right_root.children[1],)) is True
+    assert xdm_deep_equal((left_root.children[2],), (right_root.children[2],)) is True
+    assert xdm_deep_equal((left_root.children[0],), (left_root.children[1],)) is False
+    assert xdm_deep_equal((left_root.children[2],), (left_root.children[0],)) is False
+    assert xdm_deep_equal((left_root.children[2],), (left_root.children[1],)) is False
+    left_namespace = next(node for node in left_root.namespace_nodes if node.prefix == "p")
+    right_namespace = next(node for node in right_root.namespace_nodes if node.prefix == "p")
+    other_namespace = next(node for node in right_root.namespace_nodes if node.prefix == "q")
+    assert xdm_deep_equal((left_namespace,), (right_namespace,)) is True
+    assert xdm_deep_equal((left_namespace,), (other_namespace,)) is False
 
 
 def test_array_is_atomized_in_simple_content() -> None:
@@ -513,6 +593,128 @@ def test_date_time_in_xslt10_compatibility_uses_the_first_argument() -> None:
     )
     assert transform(source, initial_template="main", delivery="raw").principal == (
         XdmAtomic.string("1999-11-11T01:02:03"),
+    )
+
+
+def test_date_time_rejects_a_sequence_argument_outside_compatibility_mode() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="dateTime(
+            (xs:date('1999-11-11'), xs:date('2006-05-11')),
+            xs:time('01:02:03'))"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        error_code(lambda: transform(source, initial_template="main", delivery="raw")) == "XPTY0004"
+    )
+
+
+def test_date_time_conversion_rejects_wrong_argument_types() -> None:
+    wrong_atomic = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="dateTime(xs:integer(1), xs:time('01:02:03'))"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        error_code(lambda: transform(wrong_atomic, initial_template="main", delivery="raw"))
+        == "XPTY0004"
+    )
+
+    function_item = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="dateTime(function() { 1 }, xs:time('01:02:03'))"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        error_code(lambda: transform(function_item, initial_template="main", delivery="raw"))
+        == "XPTY0004"
+    )
+
+    invalid_lexical = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="dateTime(/*/@d, /*/t)"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        error_code(
+            lambda: transform(
+                invalid_lexical,
+                b'<doc d="not-a-date"><t>01:02:03</t></doc>',
+                initial_template="main",
+                delivery="raw",
+            )
+        )
+        == "FORG0001"
+    )
+
+
+def test_date_time_argument_conversion_covers_every_operand_shape() -> None:
+    class Token:
+        def error(self, code: str, message: str) -> None:
+            raise ValueError(code)
+
+    class Node:
+        def __init__(self, typed: tuple[Any, ...]) -> None:
+            self.typed_value = typed
+
+    class Adapter:
+        def __init__(self, typed: tuple[Any, ...]) -> None:
+            self.xdm = Node(typed)
+
+    token = Token()
+    first = Date.fromstring("2020-01-01")
+    assert _date_time_argument(token, first, Date) is first
+    typed_date = XdmAtomic(first, f"{{{XSD_NS}}}date", Date)
+    assert _date_time_argument(token, Adapter((typed_date,)), Date) is first
+    assert _date_time_argument(token, XdmAtomic.untyped_atomic("2020-01-01"), Date) == first
+    assert _date_time_argument(token, UntypedAtomic("2020-01-01"), Date) == first
+
+    for argument in (Adapter(()), Adapter((typed_date, typed_date))):
+        with pytest.raises(ValueError, match="XPTY0004"):
+            _date_time_argument(token, argument, Date)
+    with pytest.raises(ValueError, match="XPTY0004"):
+        _date_time_argument(token, Adapter((XdmAtomic.integer(1),)), Date)
+    with pytest.raises(ValueError, match="FORG0001"):
+        _date_time_argument(token, XdmAtomic.untyped_atomic("2020-01-01"), Time)
+    with pytest.raises(ValueError, match="XPTY0004"):
+        _date_time_argument(token, object(), Date)
+    with pytest.raises(ValueError, match="FORG0001"):
+        _date_time_argument(token, XdmAtomic.untyped_atomic("not-a-date"), Date)
+
+
+def test_deep_equal_with_a_collation_uses_the_substrate_rule() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="deep-equal(
+            (1, 2), (1, 2),
+            'http://www.w3.org/2005/xpath-functions/collation/codepoint')"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.boolean(True),
+    )
+
+
+def test_date_time_constructor_keeps_the_one_argument_form() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="string(xs:dateTime('2020-01-01T00:00:00'))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.string("2020-01-01T00:00:00"),
     )
 
 

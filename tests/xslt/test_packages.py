@@ -2377,6 +2377,22 @@ def test_initial_default_mode_resolves_the_package_default_mode() -> None:
     assert result.principal == (XdmAtomic.integer(42),)
 
 
+def test_initial_default_mode_requires_a_declared_default_mode() -> None:
+    principal = _raw_package(
+        "urn:example:principal",
+        '<xsl:template match="." mode="app:start"><xsl:sequence select="."/></xsl:template>',
+        attributes=' declared-modes="no"',
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(principal.encode()))
+    with pytest.raises(XsltError) as caught:
+        compiled.transform(
+            initial_mode="#default",
+            initial_match_selection=42,
+            delivery="raw",
+        )
+    assert caught.value.code == "XTDE0045"
+
+
 def test_implicit_mode_is_eligible_unless_exposed_private() -> None:
     template = '<xsl:template match="." mode="app:start"><xsl:sequence select="."/></xsl:template>'
     plain = _raw_package(
