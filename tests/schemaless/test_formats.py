@@ -3,6 +3,7 @@
 import pytest
 from jsonschema import Draft202012Validator
 
+from pyxsd.locations import DataLocation
 from pyxsd.schemaless import from_data
 from pyxsd.schemaless.formats import (
     assertion_checker,
@@ -35,10 +36,9 @@ def test_format_assertion_rejects_invalid_rfc3339_without_optional_validator():
     assert valid.is_valid
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="2026 is not a Gregorian leap year")
 def test_rfc3339_checker_owns_date_time_and_time_boundaries():
     assert is_rfc3339_date("2026-11-23")
-    assert is_rfc3339_date_time("2026-02-29T00:00:00Z")
+    assert is_rfc3339_date_time("2024-02-29T00:00:00Z")
     assert is_rfc3339_date_time("2026-11-23t12:34:60z")
     assert is_rfc3339_time("12:34:56-00:00")
 
@@ -138,6 +138,8 @@ def test_format_assertion_is_opt_in_for_all_rfc3339_formats(name, value):
     asserted = from_data(value, json_schema=schema, format_assertion=True)
     assert annotated.is_valid
     assert not asserted.is_valid
-    assert asserted.report.issues[0].location.schema_pointer == "/format"
+    location = asserted.report.issues[0].location
+    assert isinstance(location, DataLocation)
+    assert location.schema_pointer == "/format"
     assert annotated.to_data() == asserted.to_data() == value
     assert from_data(42, json_schema=schema, format_assertion=True).is_valid
