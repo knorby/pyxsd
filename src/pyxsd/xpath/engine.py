@@ -288,6 +288,56 @@ def _token_function_name(token: Any) -> str | None:
 # Grounded XDM node adapters
 
 
+class _XdmMapValue(XPathMap):
+    """A bridged XDM map whose dynamic call applies function conversion.
+
+    XPath 3.1 treats a map as a function ``function(xs:anyAtomicType) as
+    item()*``; a dynamic call therefore atomizes its argument (so a node key
+    is looked up by typed value), converts an untyped atomic key to
+    ``xs:string``, and rejects any other cardinality with ``XPTY0004``.
+    elementpath's own map call accepts only an already-adapted atomic and
+    reports the wrong code otherwise, so the bridge owns the conversion.
+    """
+
+    def _call_key(self, args: tuple[Any, ...]) -> Any:
+        values: list[Any] = []
+        if len(args) == 1:
+            values = list(self.atomize_item(args[0]))
+        if len(values) != 1:
+            raise self.error("XPTY0004", "a map call requires exactly one atomic argument")
+        key = values[0]
+        return str(key) if isinstance(key, UntypedAtomic) else key
+
+    def __call__(self, *args: Any, context: Any = None) -> Any:
+        return super().__call__(self._call_key(args), context=context)
+
+
+class _XdmArrayValue(XPathArray):
+    """A bridged XDM array whose dynamic call applies function conversion.
+
+    An array behaves as ``function(xs:integer) as item()*``: the argument is
+    atomized, an untyped atomic value is cast to ``xs:integer``, and any other
+    cardinality or type is ``XPTY0004``.
+    """
+
+    def _call_position(self, args: tuple[Any, ...]) -> int:
+        values: list[Any] = []
+        if len(args) == 1:
+            values = list(self.atomize_item(args[0]))
+        if len(values) != 1:
+            raise self.error("XPTY0004", "an array call requires exactly one xs:integer argument")
+        position = values[0]
+        if isinstance(position, UntypedAtomic):
+            try:
+                return int(_xsd.Integer(str(position)))
+            except (TypeError, ValueError) as exc:
+                raise self.error("FORG0001", str(exc)) from None
+        return position
+
+    def __call__(self, *args: Any, context: Any = None) -> Any:
+        return super().__call__(self._call_position(args), context=context)
+
+
 class _NodeAdapterMixin:
     """Base for grounded adapters; every concrete node kind adds its protocol."""
 
@@ -1134,9 +1184,9 @@ class _ValueBridge:
                 (atomic_to_elementpath(key), self.sequence_to_elementpath(value))
                 for key, value in item.entries
             ]
-            return XPathMap(self.parser, items=entries)
+            return _XdmMapValue(self.parser, items=entries)
         if isinstance(item, XdmArray):
-            return XPathArray(
+            return _XdmArrayValue(
                 self.parser,
                 items=[self.sequence_to_elementpath(member) for member in item.members],
             )

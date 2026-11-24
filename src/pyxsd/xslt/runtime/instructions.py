@@ -914,6 +914,9 @@ def _item_string(item: XdmItem) -> str:
     canonical xs:duration rather than the source lexical form.  A node whose
     atomization is not one atomic value (an element with complex content)
     falls back to its string value, which is also what an untyped node yields.
+    With the XPath 3.1 feature an array is atomized by atomizing its members
+    recursively (XSLT 3.0 §27.7.1), so it contributes their strings rather than
+    a FOTY0013; a map or other function item still raises FOTY0013.
     """
     if isinstance(item, XdmAtomic):
         return item.string_value
@@ -922,12 +925,31 @@ def _item_string(item: XdmItem) -> str:
         if len(typed) == 1 and isinstance(typed[0], XdmAtomic):
             return typed[0].string_value
         return item.string_value
+    if isinstance(item, XdmArray):
+        return " ".join(_array_member_strings(item))
     if isinstance(item, ResultTreeFragment):
         return item.string_value
     raise XsltError(
         "atomization of a function item is not permitted here",
         code="FOTY0013",
     )
+
+
+def _array_member_strings(item: XdmArray) -> list[str]:
+    """Atomize one array's members into the strings simple content uses."""
+    return [
+        text
+        for member in item.members
+        for member_item in member
+        for text in _atomized_strings(member_item)
+    ]
+
+
+def _atomized_strings(item: XdmItem) -> list[str]:
+    """Atomize one item, flattening arrays but never a map or other function."""
+    if isinstance(item, XdmArray):
+        return _array_member_strings(item)
+    return [_item_string(item)]
 
 
 def _text_nodes_are_adjacent(left: XdmNode, right: XdmNode) -> bool:
@@ -973,6 +995,11 @@ def _simple_content_string(sequence: XdmSequence, separator: str) -> str:
             values.append(pending_text)
             pending_text = ""
             pending_node = None
+        if isinstance(item, XdmArray):
+            # Atomization flattens arrays in place, so a custom separator
+            # applies between each flattened member, not just between arrays.
+            values.extend(_array_member_strings(item))
+            continue
         values.append(_item_string(item))
     if pending_node is not None:
         values.append(pending_text)

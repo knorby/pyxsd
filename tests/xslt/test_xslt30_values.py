@@ -270,6 +270,106 @@ def test_map_rejects_a_select_attribute() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dynamic calls on maps and arrays
+
+
+def test_map_dynamic_call_atomizes_a_node_key() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="m" as="map(*)" select="map{'1': '1st', '2': '2nd'}"/>
+          <xsl:sequence select="$m(/*/e/@ref)"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b'<doc><e ref="1"/></doc>', initial_template="main", delivery="raw")
+    assert result.principal == (XdmAtomic.string("1st"),)
+
+
+def test_array_dynamic_call_casts_an_untyped_key_to_integer() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="a" as="array(*)" select="['first', 'second']"/>
+          <xsl:sequence select="$a(/*/e/@ref)"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b'<doc><e ref="2"/></doc>', initial_template="main", delivery="raw")
+    assert result.principal == (XdmAtomic.string("second"),)
+
+
+def test_map_dynamic_call_requires_exactly_one_atomic_key() -> None:
+    multi_key = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="m" as="map(*)" select="map{'1': '1st'}"/>
+          <xsl:sequence select="$m(('1', '2'))"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        error_code(lambda: transform(multi_key, initial_template="main", delivery="raw"))
+        == "XPTY0004"
+    )
+
+    extra_argument = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="m" as="map(*)" select="map{'1': '1st'}"/>
+          <xsl:sequence select="$m('1', '2')"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        error_code(lambda: transform(extra_argument, initial_template="main", delivery="raw"))
+        == "XPTY0004"
+    )
+
+
+def test_array_dynamic_call_requires_one_integer_position() -> None:
+    for expression in ("$a(('1', '2'))", "$a('1')", "$a(1, 2)", "$a(0)"):
+        source = stylesheet(
+            f"""
+            <xsl:template name="main">
+              <xsl:variable name="a" as="array(*)" select="['first', 'second']"/>
+              <xsl:sequence select="{expression}"/>
+            </xsl:template>
+            """
+        )
+        code = error_code(
+            lambda source=source: transform(source, initial_template="main", delivery="raw")
+        )
+        assert code == ("FOAY0001" if expression == "$a(0)" else "XPTY0004")
+
+
+def test_array_is_atomized_in_simple_content() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="a" as="array(*)" select="[1, (2, 3), [4]]"/>
+          <out avt="{$a}"><xsl:value-of select="$a" separator=","/></out>
+        </xsl:template>
+        """
+    )
+    result = transform(source, initial_template="main", delivery="document")
+    out = result.principal[0]
+    assert out.attributes[0].string_value == "1 2 3 4"
+    assert out.children[0].string_value == "1,2,3,4"
+
+
+def test_a_map_in_simple_content_is_still_a_function_item_error() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <out avt="{map{'a': 1}}"/>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(source, initial_template="main")) == "FOTY0013"
+
+
+# ---------------------------------------------------------------------------
 # Generalized item-pattern execution
 
 
