@@ -105,9 +105,11 @@ that path accepts it. It declines leading-zero integers, `NaN`/`INF`, and
 non-strict booleans such as `True`; candidates are ranked deterministically.
 `test_type()` reports failures without installing a pin. A failed pin remains
 in the document's policy: typed reads at the failing occurrences raise
-`ScalarTypeError`, while lexical reads, writing, native data, and XDM remain
-available. Built-in XSD scalar types and custom `ScalarAdapter` objects are
-supported; there is no built-in UUID type.
+`ScalarTypeError`. Lexical reads, writing, untyped XDM, and native exports
+requested with `typed=False` remain available; the default typed `to_dict()`
+and `to_data()` raise `ScalarTypeError` until the pin is removed or those
+exports are requested lexically. Built-in XSD scalar types and custom
+`ScalarAdapter` objects are supported; there is no built-in UUID type.
 
 `profile()` walks one current revision and returns a bounded, immutable
 snapshot. Candidate counts are evidence only: profiling never installs a pin.
@@ -182,8 +184,12 @@ assert payload.value_at("/flags/1") is None
 assert payload.to_json() == '{"id": "02138", "total": 10.50, "flags": [true, null]}'
 ```
 
-Malformed input, duplicate object keys, `NaN`/`Infinity` extensions, and
-non-UTF-8 bytes raise `JsonParseError` with source and parser position.
+Malformed JSON text raises `JsonParseError` with the decoder's line, column,
+and offset when it reports them. Value-model failures—duplicate object keys
+and non-finite constants—also raise `JsonParseError`, but they have no text
+location: `line`, `column`, and `position` are `None`. Non-UTF-8 byte input may
+report only a byte offset.
+
 `value_at()` returns deep copies of containers, so a read cannot mutate
 authoritative storage. `to_data()` returns native values, including `Decimal`;
 `to_json()` emits their exact spelling. Input member order is retained for

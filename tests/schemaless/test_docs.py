@@ -75,6 +75,45 @@ def test_failed_type_pin_is_reported_and_blocks_typed_reads():
     assert namespace["pin_failure"] is not None
 
 
+def test_failed_pin_guide_qualifies_which_exports_stay_available():
+    from pyxsd.schemaless import ScalarTypeError
+
+    prose = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    assert "default typed `to_dict()` and `to_data()` raise `ScalarTypeError`" in prose
+    assert "native exports requested with `typed=False`" in prose
+    assert "untyped XDM" in prose
+
+    inferred = _load("pin_failure")["inferred"]
+    assert inferred.root.children[1].text_value() == "true"
+    assert inferred.to_data(typed=False) == {"id": "02138", "active": "true", "note": "12"}
+    assert inferred.to_dict(typed=False) == {"id": "02138", "active": "true", "note": "12"}
+    for export in (inferred.to_dict, inferred.to_data):
+        with pytest.raises(ScalarTypeError):
+            export()
+    assert inferred.to_xdm() is not None
+
+
+def test_json_parse_error_guide_distinguishes_positions_from_value_failures():
+    from pyxsd.schemaless import JsonParseError, from_json
+
+    prose = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    assert "`line`, `column`, and `position` are `None`" in prose
+    assert "Value-model failures" in prose
+
+    with pytest.raises(JsonParseError) as malformed:
+        from_json('{"a": }')
+    assert malformed.value.line is not None
+    assert malformed.value.column is not None
+    assert malformed.value.position is not None
+
+    for source in ('{"a": 1, "a": 2}', '{"a": NaN}'):
+        with pytest.raises(JsonParseError) as failure:
+            from_json(source)
+        assert failure.value.line is None
+        assert failure.value.column is None
+        assert failure.value.position is None
+
+
 def test_profile_example_reports_occurrences_and_candidate_failures():
     namespace = _load('row.candidate("xs:integer").failed == 1')
     assert namespace["row"].samples == ("1", "2")
