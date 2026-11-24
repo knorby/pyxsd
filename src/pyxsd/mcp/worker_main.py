@@ -174,7 +174,7 @@ def _parse_without_schema(
             _raise_operational(instance_error, code, cache.limits.message_bytes)
         code = "not_found" if _missing_file(exc) else "invalid_schema"
         _raise_operational(exc, code, cache.limits.message_bytes)
-    require_complete_schema(document.schema)
+    require_complete_schema(cast(CompiledSchema, document.schema))
     return document
 
 
