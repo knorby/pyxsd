@@ -1586,3 +1586,21 @@ def test_xpath_assertion_sees_result_comments_and_processing_instructions() -> N
     ):
         assertion = AssertionXPath(expression=expression)
         assert assertion.evaluate_verdict(AssertionContext(result)).passed
+
+
+def test_xml_assertion_keeps_whitespace_significant_for_compact_expectations() -> None:
+    """Whitespace normalization is scoped to a pretty-printed expectation."""
+    assertion = AssertionXML(expected="<out><e>true</e></out>")
+    result = ResultSnapshot(xml="<out>\n  <e>true</e>\n</out>")
+
+    verdict = assertion.evaluate_verdict(AssertionContext(result))
+    assert not verdict.passed
+
+
+def test_xml_assertion_does_not_hide_actual_indentation() -> None:
+    """A pretty expectation is normalized; actual extra text still differs."""
+    assertion = AssertionXML(expected="<out>\n  <e>true</e>\n</out>")
+    result = ResultSnapshot(xml="<out>\n  <e>true</e>\n  extra\n</out>")
+
+    verdict = assertion.evaluate_verdict(AssertionContext(result))
+    assert not verdict.passed

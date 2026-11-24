@@ -871,6 +871,11 @@ def _split_attribute_name(name: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def _is_pretty_printed(xml: str) -> bool:
+    """Whether an expected document indents markup across lines."""
+    return re.search(r">\s*\n\s*<", xml) is not None
+
+
 def _canonicalize(text: str) -> _CanonicalNode:
     document = _strip_xml_declaration(text)
     payload = f"<{_WRAPPER}>{document}</{_WRAPPER}>"
@@ -933,16 +938,28 @@ def _unwrap(node: _CanonicalNode) -> tuple[_CanonicalNode, ...]:
     return children
 
 
-def _significant_children(node: _CanonicalNode) -> tuple[_CanonicalNode, ...]:
-    """Element children without insignificant whitespace-only text.
+def _strip_pretty_whitespace(node: _CanonicalNode) -> _CanonicalNode:
+    """Remove indentation text from a pretty-printed expected tree.
 
-    ``assert-xml`` expectations are frequently pretty-printed while a
-    non-indenting serializer emits compact markup; a whitespace-only text node
-    is not significant result content (a test that needs significant
-    whitespace asserts a string value instead).
+    Only the expectation side of the comparison is normalized: a compact
+    expectation keeps every text node, and a whitespace-only text node in the
+    actual result remains significant.
     """
-    return tuple(
-        child for child in node.children if not (child.kind == "text" and not child.value.strip())
+    if not node.children:
+        return node
+    children = tuple(
+        _strip_pretty_whitespace(child)
+        for child in node.children
+        if not (child.kind == "text" and not child.value.strip())
+    )
+    return _CanonicalNode(
+        node.kind,
+        namespace=node.namespace,
+        local=node.local,
+        prefix=node.prefix,
+        value=node.value,
+        attributes=node.attributes,
+        children=children,
     )
 
 
@@ -956,13 +973,11 @@ def _canonical_equal(left: _CanonicalNode, right: _CanonicalNode, ignore_prefixe
             return False
         if left.attributes != right.attributes:
             return False
-        left_children = _significant_children(left)
-        right_children = _significant_children(right)
-        if len(left_children) != len(right_children):
+        if len(left.children) != len(right.children):
             return False
         return all(
             _canonical_equal(a, b, ignore_prefixes)
-            for a, b in zip(left_children, right_children, strict=True)
+            for a, b in zip(left.children, right.children, strict=True)
         )
     if left.kind in ("text", "comment"):
         return left.value == right.value
@@ -975,6 +990,9 @@ def _xml_equal(expected: str, actual: str, ignore_prefixes: bool) -> bool:
         actual_node = _canonicalize(actual)
     except AssertionDispute as exc:
         raise AssertionFailure(f"actual XML result is not well formed: {exc}") from exc
+    if _is_pretty_printed(expected):
+        expected_node = _strip_pretty_whitespace(expected_node)
+        actual_node = _strip_pretty_whitespace(actual_node)
     expected_children = _unwrap(expected_node)
     actual_children = _unwrap(actual_node)
     if len(expected_children) != len(actual_children):
@@ -1050,8 +1068,8 @@ def _element_difference(
         return ("element prefixes differ", path, expected, actual)
     if expected.attributes != actual.attributes:
         return ("attributes differ", path, expected, actual)
-    left_children = _significant_children(expected)
-    right_children = _significant_children(actual)
+    left_children = expected.children
+    right_children = actual.children
     left_segments = _path_segments(left_children)
     right_segments = _path_segments(right_children)
     for index in range(max(len(left_children), len(right_children))):
@@ -1087,8 +1105,13 @@ def _first_difference(
     expected: str, actual: str, ignore_prefixes: bool
 ) -> tuple[str, str, _CanonicalNode | None, _CanonicalNode | None] | None:
     """The first difference between two serialized XML documents."""
-    left = _CanonicalNode("element", children=_unwrap(_canonicalize(expected)))
-    right = _CanonicalNode("element", children=_unwrap(_canonicalize(actual)))
+    expected_node = _canonicalize(expected)
+    actual_node = _canonicalize(actual)
+    if _is_pretty_printed(expected):
+        expected_node = _strip_pretty_whitespace(expected_node)
+        actual_node = _strip_pretty_whitespace(actual_node)
+    left = _CanonicalNode("element", children=_unwrap(expected_node))
+    right = _CanonicalNode("element", children=_unwrap(actual_node))
     difference = _element_difference(left, right, "", ignore_prefixes)
     if difference is None:
         return None
