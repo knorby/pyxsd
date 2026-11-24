@@ -20,7 +20,7 @@ from tests.xslt.support import (
 
 from pyxsd.source_spans import SourceIndex
 from pyxsd.xdm import XdmAtomic
-from pyxsd.xdm.nodes import XdmDocument
+from pyxsd.xdm.nodes import NodeKind, XdmDocument
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.packages import PackageResolver
 from pyxsd.xslt.errors import ERROR_NAMESPACE, XsltError, XsltStaticError
@@ -2068,3 +2068,86 @@ def test_arithmetic_operand_and_error_paths() -> None:
     empty = '<xsl:template name="main"><out><xsl:value-of select="() + 1"/></out></xsl:template>'
     result = transform(stylesheet(empty), initial_template="main")
     assert result.principal[0].string_value == ""
+
+
+def test_copy_of_returns_a_deep_copy_with_fresh_node_identity() -> None:
+    """XSLT 3.0 section 18.3: copy-of copies each item of the sequence."""
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence select="(
+            copy-of(/doc) is /doc,
+            count(copy-of(/doc/*)) = 1,
+            deep-equal(copy-of(/doc), /doc),
+            copy-of(/doc/x/self::x)/@a
+          )"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=b'<doc a="1"><x a="2">t</x></doc>')
+
+    assert result.principal[0] == XdmAtomic.boolean(False)
+    assert result.principal[1] == XdmAtomic.boolean(True)
+    assert result.principal[2] == XdmAtomic.boolean(True)
+    copied = result.principal[3]
+    assert copied.string_value == "2"
+    assert copied.parent is not None and copied.parent.kind is NodeKind.ELEMENT
+    # The attribute is copied alone: its new parent is the copy, not the source.
+    assert copied.parent.parent is None
+
+
+def test_copy_of_defaults_to_the_context_item() -> None:
+    body = stylesheet(
+        """
+        <xsl:template match="/doc/x">
+          <xsl:sequence select="(name(copy-of()), copy-of() is .)"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=b"<doc><x>t</x></doc>")
+
+    assert result.principal == (XdmAtomic.string("x"), XdmAtomic.boolean(False))
+
+
+def test_copy_of_leaves_atomic_and_function_items_unchanged() -> None:
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="(
+            copy-of((1, 'a', true())),
+            let $f := copy-of(abs#1) return (local-name-from-QName(function-name($f)),
+                                              function-arity($f),
+                                              $f(-2))
+          )"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, initial_template="main", delivery="raw")
+
+    assert [item.string_value for item in result.principal[:3]] == ["1", "a", "true"]
+    assert result.principal[3] == XdmAtomic.string("abs")
+    assert result.principal[4].string_value == "1"
+    assert result.principal[5].string_value == "2"
+
+
+def test_copy_of_without_a_context_item_is_xpdy0002() -> None:
+    body = stylesheet(
+        """
+        <xsl:function name="my:copy">
+          <xsl:param name="n"/>
+          <xsl:sequence select="copy-of()"/>
+        </xsl:function>
+        <xsl:template match="/">
+          <xsl:sequence select="my:copy(.)"/>
+        </xsl:template>
+        """,
+        namespaces={"my": MY_NS},
+    )
+    assert error_code(lambda: transform(body, input_source=b"<doc/>")) == "XPDY0002"
+
+
+def test_copy_of_a_parentless_namespace_sensitive_attribute_is_xtte0950() -> None:
+    """copy-of always preserves; a parentless QName attribute cannot keep it."""
+    with pytest.raises(XsltError) as caught:
+        _typed_argument_result("copy-of(/*/@qn)")
+    assert caught.value.code == "XTTE0950"

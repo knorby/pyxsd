@@ -252,6 +252,7 @@ XSLT_FUNCTION_ARITIES: Mapping[str, FunctionArity] = MappingProxyType(
         "available-system-properties": 0,
         "accumulator-after": 1,
         "accumulator-before": 1,
+        "copy-of": (0, 1),
         "current": 0,
         "current-group": 0,
         "current-grouping-key": 0,
@@ -278,6 +279,7 @@ _FUNCTION_MINIMUM_VERSION: Mapping[str, str] = MappingProxyType(
         "available-system-properties": "3.0",
         "accumulator-after": "3.0",
         "accumulator-before": "3.0",
+        "copy-of": "3.0",
         "current": "1.0",
         "current-group": "2.0",
         "current-grouping-key": "2.0",
@@ -661,6 +663,7 @@ class XsltContextBridge:
         legal = {name.partition(":")[2] for name in xslt_function_declarations(self.version)}
         table: dict[str, ContextFunction] = {
             f"{{{FN_NS}}}current": ContextFunction(self._direct_current, self._dynamic_current),
+            f"{{{FN_NS}}}copy-of": ContextFunction(self._copy_of_function, self._copy_of_function),
             f"{{{FN_NS}}}document": ContextFunction(self._document_function),
             f"{{{FN_NS}}}doc": ContextFunction(self._doc_function),
             f"{{{FN_NS}}}in-scope-prefixes": ContextFunction(self._in_scope_prefixes_function),
@@ -841,6 +844,33 @@ class XsltContextBridge:
             has_description=description is not None,
             value=value,
         )
+
+    def _copy_of_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """Deep-copy each item of the argument, or of the context item.
+
+        XSLT 3.0 section 18.3 defines the one-argument form as
+        ``$input ! internal:copy-item(.)`` and the zero-argument form as a copy
+        of the context item, so an absent context item is ``XPDY0002`` rather
+        than an empty result.  The copy rules themselves belong to the deep-copy
+        instruction (section 11.9.2); the import is deferred because the
+        instruction module reaches the runtime bridge this module owns.
+        """
+        from pyxsd.xslt.runtime.instructions import deep_copy_item
+
+        if arguments:
+            items = arguments[0]
+        elif context_item is None:
+            raise XsltDynamicError(
+                "copy-of() requires a context item",
+                code="XPDY0002",
+            )
+        else:
+            items = (context_item,)
+        return tuple(deep_copy_item(item, self.transformation) for item in items)
 
     def current(self) -> XdmItem:
         """The instruction-level current item, never a predicate focus item."""

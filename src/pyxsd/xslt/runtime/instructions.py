@@ -1466,7 +1466,12 @@ def copy_value(
             inherit_namespaces=plan.inherit_namespaces,
         )
         document._finalize_document_order()
-        check_namespace_sensitive_copy(document, plan)
+        check_namespace_sensitive_copy(
+            document,
+            validation=plan.validation,
+            type_name=plan.type_name,
+            copy_namespaces=plan.copy_namespaces,
+        )
         return (
             validate_delivered(
                 document,
@@ -1501,7 +1506,12 @@ def copy_value(
                 allow_attributes=True,
                 inherit_namespaces=plan.inherit_namespaces,
             )
-    check_namespace_sensitive_copy(clone, plan)
+    check_namespace_sensitive_copy(
+        clone,
+        validation=plan.validation,
+        type_name=plan.type_name,
+        copy_namespaces=plan.copy_namespaces,
+    )
     validate_constructed(
         clone,
         validation=plan.validation,
@@ -1516,7 +1526,10 @@ def copy_value(
 
 def check_namespace_sensitive_copy(
     node: XdmNode,
-    plan: _CopyPlan | _CopyOfPlan,
+    *,
+    validation: str,
+    type_name: str | None,
+    copy_namespaces: bool,
 ) -> None:
     """Reject a copy that cannot preserve namespace-sensitive content.
 
@@ -1525,20 +1538,84 @@ def check_namespace_sensitive_copy(
     attribute with a QName or NOTATION typed value: an attribute node has no
     namespace nodes of its own, so the value's prefix would no longer resolve.
     """
-    if plan.validation != "preserve" or plan.type_name is not None:
+    if validation != "preserve" or type_name is not None:
         return
     if node.kind is NodeKind.ATTRIBUTE and namespace_sensitive(node):
         raise XsltDynamicError(
             "namespace-sensitive content cannot be copied without a parent element",
             code="XTTE0950",
         )
-    if plan.copy_namespaces:
+    if copy_namespaces:
         return
     if namespace_sensitive(node):
         raise XsltDynamicError(
             "namespace-sensitive content cannot be copied without namespace nodes",
             code="XTTE0950",
         )
+
+
+def deep_copy_item(
+    item: XdmItem,
+    invocation: _Invocation,
+    *,
+    copy_namespaces: bool = True,
+    copy_accumulators: bool = True,
+    validation: str = "preserve",
+    type_name: str | None = None,
+    schema_pool: Any = None,
+) -> XdmItem:
+    """Copy one item according to XSLT 3.0 section 11.9.2.
+
+    Defaults are ``fn:copy-of``'s fixed options (section 18.3):
+    ``copy-namespaces="yes"``, ``copy-accumulators="yes"``, and
+    ``validation="preserve"``.  ``xsl:copy-of`` passes its own attributes.
+    An atomic value or function item is returned unchanged, and a copy is a
+    new node in a new temporary tree, never the original.
+    """
+    if isinstance(item, ResultTreeFragment):
+        # XSLT 1.0 §11.1: copying a result tree fragment copies its
+        # children, never the fragment's root node.
+        item = item.document
+    if not isinstance(item, XdmNode):
+        return item
+    check_copy_type(item, type_name, schema_pool)
+    factory = _NodeFactory()
+    clone = factory.clone(
+        item,
+        parent=None,
+        deep=True,
+        copy_namespaces=copy_namespaces,
+    )
+    names = accumulator_copy_names(invocation) if copy_accumulators else ()
+    invocation.accumulators.copy_values(
+        item,
+        clone,
+        enabled=copy_accumulators,
+        names=names,
+    )
+    check_namespace_sensitive_copy(
+        clone,
+        validation=validation,
+        type_name=type_name,
+        copy_namespaces=copy_namespaces,
+    )
+    if clone.kind is NodeKind.DOCUMENT:
+        return validate_delivered(
+            cast(XdmDocument, clone),
+            validation=validation,
+            type_name=type_name,
+            schema_pool=schema_pool,
+        )
+    validate_constructed(
+        clone,
+        validation=validation,
+        type_name=type_name,
+        schema_pool=schema_pool,
+        operation="copy-of",
+    )
+    if clone.kind is NodeKind.ELEMENT:
+        factory.finalize_root(clone)
+    return clone
 
 
 def copy_of_value(
@@ -1548,52 +1625,18 @@ def copy_of_value(
 ) -> XdmSequence:
     items = invocation._evaluate(plan.select, context)
     pool = invocation._package_schema_pool(context.package_name)
-    result: list[XdmItem] = []
-    for item in items:
-        if isinstance(item, ResultTreeFragment):
-            # XSLT 1.0 §11.1: copying a result tree fragment copies its
-            # children, never the fragment's root node.
-            item = item.document
-        if not isinstance(item, XdmNode):
-            result.append(item)
-            continue
-        check_copy_type(item, plan.type_name, pool)
-        factory = _NodeFactory()
-        clone = factory.clone(
+    return tuple(
+        deep_copy_item(
             item,
-            parent=None,
-            deep=True,
+            invocation,
             copy_namespaces=plan.copy_namespaces,
-        )
-        names = accumulator_copy_names(invocation) if plan.copy_accumulators else ()
-        invocation.accumulators.copy_values(
-            item,
-            clone,
-            enabled=plan.copy_accumulators,
-            names=names,
-        )
-        check_namespace_sensitive_copy(clone, plan)
-        if clone.kind is NodeKind.DOCUMENT:
-            result.append(
-                validate_delivered(
-                    cast(XdmDocument, clone),
-                    validation=plan.validation,
-                    type_name=plan.type_name,
-                    schema_pool=pool,
-                )
-            )
-            continue
-        validate_constructed(
-            clone,
+            copy_accumulators=plan.copy_accumulators,
             validation=plan.validation,
             type_name=plan.type_name,
             schema_pool=pool,
-            operation="copy-of",
         )
-        if clone.kind is NodeKind.ELEMENT:
-            factory.finalize_root(clone)
-        result.append(clone)
-    return tuple(result)
+        for item in items
+    )
 
 
 def check_copy_type(

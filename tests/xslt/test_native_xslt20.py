@@ -291,6 +291,7 @@ def test_native_function_library_is_2_0() -> None:
         <xsl:template name="main">
           <xsl:sequence select="function-available('fn:key')"/>
           <xsl:sequence select="function-available('fn:format-number')"/>
+          <xsl:sequence select="function-available('fn:copy-of')"/>
           <xsl:sequence select="element-available('xsl:try')"/>
           <xsl:sequence select="element-available('xsl:analyze-string')"/>
           <xsl:sequence select="format-number(1.5, '0.00')"/>
@@ -301,6 +302,7 @@ def test_native_function_library_is_2_0() -> None:
     assert result.principal == (
         XdmAtomic.boolean(True),
         XdmAtomic.boolean(True),
+        XdmAtomic.boolean(False),
         XdmAtomic.boolean(False),
         XdmAtomic.boolean(True),
         XdmAtomic.string("1.50"),
