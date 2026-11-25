@@ -2090,12 +2090,17 @@ def execute_message(
     invocation: _Invocation,
     context: EvaluationContext,
 ) -> None:
+    content: XdmDocument | None = None
     try:
         values = () if plan.select is None else invocation._evaluate(plan.select, context)
         values += invocation._execute_plans(
             plan.children, context=replace(context, final_output=False)
         )
-        text = _build_result_tree(values).string_value
+        # XSLT 3.0 section 18.1: the sequence constructor builds a document
+        # node whose string value is the displayed text; a listener or a
+        # conformance assertion inspects that node, not only the text.
+        content = _build_result_tree(values)
+        text = content.string_value
     except (XsltError, ElementPathError, XPathEvaluationError) as error:
         if catchable_error(invocation, error, invocation.diagnostics) is None:
             raise
@@ -2113,7 +2118,7 @@ def execute_message(
             default="XTMM9000",
         )
     )
-    invocation.messages.append(Message(text, code=code, terminate=terminating))
+    invocation.messages.append(Message(text, code=code, terminate=terminating, content=content))
     if terminating:
         raise XsltDynamicError(text, code=code, location=plan.instruction.location)
 

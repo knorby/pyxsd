@@ -60,6 +60,7 @@ from tests.xslt.catalog import load_catalog
 from tests.xslt.model import Environment, Invocation
 from tests.xslt.model import TestCase as XmlTestCase
 from tests.xslt.outcomes import Outcome
+from tests.xslt.suite import SUITE_PROFILES, run_case
 
 FIXTURES = Path(__file__).parent / "fixtures"
 XSD = "http://www.w3.org/2001/XMLSchema"
@@ -718,6 +719,24 @@ def test_assertions_recover_test_set_and_assertion_local_namespaces() -> None:
 
     assert result.outcome is Outcome.PASS
     assert result.coverage == frozenset({"xpath"})
+
+
+def test_a_message_assertion_inspects_the_message_document() -> None:
+    """A message's value is the document node its constructor builds.
+
+    XSLT 3.0 section 18.1 defines the message content as a document node, so
+    ``assert-message`` can read its nodes: an absolute path, markup that spans
+    several top-level nodes, and a comment-only message.  The case is a
+    synthetic catalog case that executes end to end; the message family in the
+    coverage proves the assertions ran instead of being skipped as a gap.
+    """
+    catalog = load_catalog(FIXTURES / "assertions" / "assertion-test-set.xml")
+    case = catalog.cases["assertion/message-001"]
+
+    result = run_case(case, SUITE_PROFILES["xslt30"])
+
+    assert result.outcome is Outcome.PASS
+    assert result.coverage == frozenset({"xpath", "string", "xml", "message"})
 
 
 def test_parse_result_recovers_namespaces_from_serialized_xml() -> None:

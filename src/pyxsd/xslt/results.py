@@ -61,12 +61,20 @@ class ResultShapeError(PyXSDError):
 
 @dataclass(frozen=True, slots=True)
 class Message:
-    """One stylesheet message or diagnostic event."""
+    """One stylesheet message or diagnostic event.
+
+    ``text`` is the message's string value (what a serializer or console emits).
+    ``content`` is the document node an ``xsl:message`` sequence constructor
+    builds, which XSLT 3.0 section 18.1 makes the message's value: a listener
+    or a conformance assertion inspects its nodes, not just the text.  It is
+    ``None`` only when the message constructor failed before producing content.
+    """
 
     text: str
     code: str | None = None
     uri: str | None = None
     terminate: bool = False
+    content: XdmDocument | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.text, str):
@@ -76,6 +84,8 @@ class Message:
                 raise TypeError(f"a message {label} must be a string or None")
         if not isinstance(self.terminate, bool):
             raise TypeError("a message terminate flag must be a boolean")
+        if self.content is not None and not isinstance(self.content, XdmDocument):
+            raise TypeError("a message content must be a document node or None")
 
 
 def _absolute_uri(value: str, label: str) -> str:

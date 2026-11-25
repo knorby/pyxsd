@@ -48,6 +48,7 @@ from pyxsd.xpath.engine import XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
 from pyxsd.xslt import (
     CompiledStylesheet,
+    Message,
     TransformationResult,
     XsltInvocationError,
     XsltProcessor,
@@ -307,6 +308,20 @@ def _snapshot_entry(entry: Any) -> ResultSnapshot:
     )
 
 
+def _message_xml(message: Message) -> str:
+    """One message's content as the assertion layer's XML view.
+
+    XSLT 3.0 section 18.1 makes the message's value a document node built from
+    its sequence constructor, so ``assert-xml`` and a path assertion compare
+    that markup.  A message whose constructor failed has no content node and
+    keeps its text.  The text view stays the string value, so a ``.``-based or
+    ``assert-string-value`` expectation is unchanged.
+    """
+    if message.content is None:
+        return message.text
+    return "".join(_serialized_markup(child) for child in message.content.children)
+
+
 def _snapshot(result: TransformationResult, output_uri: str | None = None) -> ResultSnapshot:
     """The assertion view of one result, matching the ``fn:transform`` map.
 
@@ -330,7 +345,13 @@ def _snapshot(result: TransformationResult, output_uri: str | None = None) -> Re
         entry = result.secondary[output_uri]
     view = _snapshot_entry(entry)
     messages = tuple(
-        ResultSnapshot(raw=(message.text,), xml=message.text) for message in result.messages
+        ResultSnapshot(
+            raw=(message.text,),
+            xml=_message_xml(message),
+            result_items=(message.content,) if message.content is not None else (),
+            engine_node_context=message.content is not None,
+        )
+        for message in result.messages
     )
     return ResultSnapshot(
         raw=view.raw,

@@ -189,6 +189,11 @@ class ResultSnapshot:
     #: ``ResultSnapshot`` equality; two runs of one artifact agree on the
     #: comparison view, not on object identity.
     result_items: tuple[Any, ...] = field(default=(), compare=False)
+    #: Whether ``result_items`` are engine nodes the elementpath view cannot
+    #: bind.  A message's value is a document node (XSLT 3.0 section 18.1)
+    #: whose ``raw`` stays its string value; an assertion that needs a node
+    #: context evaluates those items through the engine instead.
+    engine_node_context: bool = False
     serialized: str | None = None
     messages: tuple[ResultSnapshot, ...] | None = None
     secondary: Mapping[str, ResultSnapshot] | None = None
@@ -631,6 +636,21 @@ def _evaluate_schema_aware(
     ``(/) instance of ...`` answers.  An empty result keeps ``$result`` empty
     while focusing an empty document node, exactly as the reference does.
     """
+    return _evaluate_engine_items(expression, declarations, items, pool=pool)
+
+
+def _evaluate_engine_items(
+    expression: str,
+    declarations: Sequence[tuple[str, str]],
+    items: tuple[Any, ...],
+    *,
+    pool: SchemaPool | None = None,
+) -> Any:
+    """Evaluate one assertion over engine XDM items under the runner's rule.
+
+    Shared by the schema-aware route and by a snapshot whose delivered items
+    the elementpath view cannot bind (a message's content document).
+    """
     if len(items) > 1:
         raise AssertionGap("an XPath assertion context is absent for a multi-item result")
     context_item = _result_context_item(items)
@@ -638,7 +658,7 @@ def _evaluate_schema_aware(
     static = XPathStaticContext(
         namespaces=_namespace_map(declarations),
         schema=pool,
-        xsd_version=pool.xsd_version,
+        xsd_version=None if pool is None else pool.xsd_version,
     )
     engine = XPathEngine(ASSERTION_XPATH_VERSION)
     compiled = engine.compile(expression, static)
@@ -703,6 +723,12 @@ def _evaluate(
             if pool is not None:
                 return _evaluate_schema_aware(expression, declarations, pool, result.result_items)
         items = _raw_items(result)
+        if result.engine_node_context and _context_node_path(ast):
+            # The result's delivered items are engine nodes the elementpath
+            # view cannot bind (a message's content document).  Only a node
+            # context is affected: every other assertion keeps the exact path
+            # it had, so a decided verdict cannot move.
+            return _evaluate_engine_items(expression, declarations, result.result_items)
         context_item = _context_item(items, parser)
         root = _context_root(context_item)
         if root is None and _context_node_path(ast):

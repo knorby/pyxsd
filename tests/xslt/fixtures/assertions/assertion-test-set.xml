@@ -13,4 +13,28 @@
          </all-of>
       </result>
    </test-case>
+   <test-case name="message-001">
+      <description>A message's content is a document node an assertion can inspect.</description>
+      <test>
+         <stylesheet file="message-001.xsl"/>
+         <initial-template name="main"/>
+      </test>
+      <result>
+         <all-of>
+            <assert-xml><![CDATA[<out/>]]></assert-xml>
+            <assert-message>
+               <assert>/smart = 'Smart element'</assert>
+            </assert-message>
+            <assert-message>
+               <assert-xml><![CDATA[<smart>Smart element</smart>]]></assert-xml>
+            </assert-message>
+            <assert-message>
+               <assert>/comment() = 'Chicken legs'</assert>
+            </assert-message>
+            <assert-message>
+               <assert-string-value>plain text</assert-string-value>
+            </assert-message>
+         </all-of>
+      </result>
+   </test-case>
 </test-set>
