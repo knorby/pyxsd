@@ -324,7 +324,6 @@ def _escape_attribute(value: str, *, codec: str) -> str:
 
 
 def _escape_html_attribute(value: str, *, codec: str) -> str:
-    _reject_html_control(value, label="an attribute value")
     escaped = value.replace("&", "&amp;").replace('"', "&quot;")
     return _character_references(escaped, codec)
 
@@ -418,6 +417,8 @@ def attribute_value(
     escape: Callable[..., str]
     if method == "html":
         numeric_c1 = _is_html5(parameters, "html")
+        if not numeric_c1:
+            _reject_html_control(value, label="an attribute value")
 
         def escape(raw: str, *, codec: str) -> str:
             escaped = _escape_html_attribute(raw, codec=codec)
@@ -856,7 +857,7 @@ def _render_element(
                 return f"{start} />" if method == "xhtml" else f"{start}>"
             return f"{start}></{name}>"
         if html:
-            return f"{start}>"
+            return f"{start}></{name}>"
         return f"{start} />" if method == "xhtml" else f"{start}/>"
 
     def render_child(child: XdmNode) -> str:

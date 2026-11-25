@@ -1778,15 +1778,8 @@ def variable_value(
             code="XTTE0570",
             label=f"variable {plan.name!r}",
             package_name=context.package_name,
+            clear_output_escaping=True,
         )
-    # A variable binds a value; disable-output-escaping annotations belong to
-    # text nodes constructed directly in the result and are not retained
-    # through a variable binding (XSLT 3.0 section 26.2).
-    for item in value:
-        if isinstance(item, XdmNode):
-            for node in (item, *item.descendants):
-                if node.kind is NodeKind.TEXT:
-                    node._disable_output_escaping = False
     invocation.profile_for().check_xdm_2_0_value(value, f"the value of the variable {plan.name!r}")
     return value
 

@@ -1936,13 +1936,51 @@ def test_html5_foreign_prefixes_and_default_namespaces() -> None:
         omit_xml_declaration=True,
         include_content_type=False,
     )
-    assert serialized.startswith(
+    assert serialized == (
         '<!DOCTYPE html><html xmlns:n="NamespaceN" xmlns:m="NamespaceM"><body>'
+        "<n:zzz>foreign</n:zzz>"
+        '<p class="x" m:zzz="value">attribute</p>'
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1"></svg>'
+        "<input></body></html>"
     )
-    assert "<n:zzz>foreign</n:zzz>" in serialized
-    assert '<p class="x" m:zzz="value">attribute</p>' in serialized
-    assert '<svg xmlns="http://www.w3.org/2000/svg" width="1">' in serialized
-    assert "<input>" in serialized
+
+
+def test_html5_foreign_empty_element_is_closed_before_a_sibling() -> None:
+    document = _document(
+        b'<html><body><svg xmlns="http://www.w3.org/2000/svg"/><p>x</p></body></html>'
+    )
+    serialized = _serialize(
+        (document,),
+        method="html",
+        html_version="5.0",
+        omit_xml_declaration=True,
+        include_content_type=False,
+    )
+    assert serialized == (
+        '<!DOCTYPE html><html><body><svg xmlns="http://www.w3.org/2000/svg"></svg>'
+        "<p>x</p></body></html>"
+    )
+
+
+def test_html5_attribute_c1_controls_become_numeric_references() -> None:
+    document = _document(b'<p title="&#x96;"/>')
+    assert (
+        _serialize(
+            (document,),
+            method="html",
+            html_version="5.0",
+            omit_xml_declaration=True,
+        )
+        == '<p title="&#x96;"></p>'
+    )
+
+
+def test_html_attribute_c1_control_is_sere0014_below_html5() -> None:
+    document = _document(b'<p title="&#x96;"/>')
+    assert (
+        _error_code(lambda: _serialize((document,), method="html", omit_xml_declaration=True))
+        == "SERE0014"
+    )
 
 
 def test_xhtml5_attribute_prefixes_are_declared_where_used() -> None:
@@ -1993,16 +2031,17 @@ def test_fully_normalized_result_rejects_a_leading_combining_character() -> None
     )
 
 
-def test_component_result_type_drops_disable_output_escaping() -> None:
+def test_function_result_type_drops_disable_output_escaping() -> None:
     source = (
-        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:f="urn:f" '
+        'exclude-result-prefixes="f" version="3.0">'
         '<xsl:output method="xml" omit-xml-declaration="yes"/>'
         '<xsl:template name="xsl:initial-template">'
-        '<out><xsl:call-template name="raw"/></out>'
+        '<out><xsl:copy-of select="f:raw()"/></out>'
         "</xsl:template>"
-        '<xsl:template name="raw" as="text()">'
+        '<xsl:function name="f:raw" as="text()">'
         '<xsl:value-of select="\'&lt;\'" disable-output-escaping="yes"/>'
-        "</xsl:template>"
+        "</xsl:function>"
         "</xsl:stylesheet>"
     )
     result = transform(source.encode(), delivery="stylesheet")
@@ -2054,3 +2093,25 @@ def test_a_top_level_text_node_marked_unescaped_is_not_reencoded() -> None:
 
     text = _NodeFactory().text("<raw>", disable_output_escaping=True)
     assert _serialize((text,), omit_xml_declaration=True) == "<raw>"
+
+
+def test_a_text_coercion_does_not_clear_escaping_on_a_shared_tree() -> None:
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:f="urn:f" '
+        'exclude-result-prefixes="f" version="3.0">'
+        '<xsl:output method="xml" omit-xml-declaration="yes"/>'
+        '<xsl:template name="xsl:initial-template">'
+        '<xsl:variable name="tree" select="f:tree()"/>'
+        '<xsl:variable name="v" as="text()" select="$tree/text()"/>'
+        "<out>"
+        '<xsl:copy-of select="$tree"/>'
+        '<xsl:value-of select="$v"/>'
+        "</out>"
+        "</xsl:template>"
+        '<xsl:function name="f:tree" as="element(e)">'
+        '<e><xsl:text disable-output-escaping="yes">&lt;raw&gt;</xsl:text></e>'
+        "</xsl:function>"
+        "</xsl:stylesheet>"
+    )
+    result = transform(source.encode(), delivery="stylesheet")
+    assert result.principal_entry.serialized == ("<out><e><raw></e>&lt;raw&gt;</out>")

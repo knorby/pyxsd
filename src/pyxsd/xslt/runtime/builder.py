@@ -1211,6 +1211,7 @@ def _append_complex_content(
     *,
     allow_attributes: bool,
     inherit_namespaces: bool = True,
+    preserve_disable_output_escaping: bool = True,
 ) -> None:
     """Apply XSLT complex-content construction to *sequence* under *parent*."""
     last_atomic = False
@@ -1257,7 +1258,7 @@ def _append_complex_content(
             last_atomic = False
             continue
         if item.kind is NodeKind.TEXT:
-            if item.disable_output_escaping:
+            if item.disable_output_escaping and preserve_disable_output_escaping:
                 factory._append(
                     parent,
                     factory.text(
@@ -1619,6 +1620,7 @@ class ResultBuilder:
         sequence: Iterable[object],
         *,
         inherit_namespaces: bool = True,
+        preserve_disable_output_escaping: bool = True,
     ) -> None:
         """Attach one sequence as complex content of the current parent."""
         parent = self.current
@@ -1628,6 +1630,7 @@ class ResultBuilder:
             sequence,
             allow_attributes=parent.kind is not NodeKind.DOCUMENT,
             inherit_namespaces=inherit_namespaces,
+            preserve_disable_output_escaping=preserve_disable_output_escaping,
         )
 
     def clone(
@@ -1874,13 +1877,19 @@ class ResultBuilder:
         )
         items = tuple(_flatten_arrays(sequence))
         if item_separator is None:
-            builder.append(items)
+            builder.append(items, preserve_disable_output_escaping=False)
         else:
             for index, item in enumerate(items):
                 if index:
                     builder.text(item_separator)
-                builder.append((item,))
-        return builder.to_tree()
+                builder.append((item,), preserve_disable_output_escaping=False)
+        tree = builder.to_tree()
+        # Sequence normalization constructs new text nodes; a marker copied
+        # from an element subtree does not survive into the new tree.
+        for node in (tree, *tree.descendants):
+            if node.kind is NodeKind.TEXT:
+                node._disable_output_escaping = False
+        return tree
 
 
 def build_result_tree(

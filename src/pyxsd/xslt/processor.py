@@ -6150,6 +6150,29 @@ def _matches_item_type(
     return False  # pragma: no cover - every ItemType kind is handled above
 
 
+def _without_disable_output_escaping(sequence: XdmSequence) -> XdmSequence:
+    """Copy flagged top-level text nodes so a coercion cannot mutate a source.
+
+    XSLT 3.0 section 26.2 makes disable-output-escaping construction metadata
+    that a declared result type does not retain.  The value may contain nodes
+    shared with a source tree or another variable, so the unmarked value is a
+    fresh text node; unflagged items keep their identity.
+    """
+    result: list[XdmItem] = []
+    changed = False
+    for item in sequence:
+        if (
+            isinstance(item, XdmNode)
+            and item.kind is NodeKind.TEXT
+            and item.disable_output_escaping
+        ):
+            result.append(_NodeFactory().text(item.string_value, base_uri=item.base_uri))
+            changed = True
+        else:
+            result.append(item)
+    return tuple(result) if changed else sequence
+
+
 def _require_absolute(uri: str, label: str) -> str:
     if not isinstance(uri, str) or not uri or not urlsplit(uri).scheme:
         raise XsltInvocationError(f"{label} must be a non-empty absolute URI, got {uri!r}")
@@ -6489,7 +6512,9 @@ class _Invocation(Transformation):
             and signature.return_type is not None
         ):
             conversion = lambda value: self._coerce_component_result(  # noqa: E731
-                component, cast(XdmSequence, value)
+                component,
+                cast(XdmSequence, value),
+                final_output=component_context.final_output,
             )
         effective_group, effective_grouping_key = self._inherited_group(
             group,
@@ -7088,17 +7113,21 @@ class _Invocation(Transformation):
         code: str,
         label: str,
         package_name: str | None = None,
+        clear_output_escaping: bool = False,
     ) -> XdmSequence:
         """Apply one compiled sequence type through the invocation's coercion."""
         if sequence_type is None:
             return value
-        return _coerce_sequence(
+        coerced = _coerce_sequence(
             value,
             sequence_type,
             code=code,
             label=label,
             schema_pool=self._package_schema_pool(package_name),
         )
+        if clear_output_escaping:
+            return _without_disable_output_escaping(coerced)
+        return coerced
 
     def _coerce_parameter(
         self,
@@ -7122,6 +7151,8 @@ class _Invocation(Transformation):
         self,
         component: Component,
         value: XdmSequence,
+        *,
+        final_output: bool,
     ) -> XdmSequence:
         declaration_as = component.declaration.attribute("as")
         signature = component.signature
@@ -7136,16 +7167,13 @@ class _Invocation(Transformation):
             label=label,
             schema_pool=self._package_schema_pool(component.owner),
         )
-        # A declared result type constructs a new value: a top-level text node
-        # no longer carries the source constructor's disable-output-escaping
-        # annotation (XSLT 3.0 section 26.2).
-        for item in coerced:
-            if (
-                isinstance(item, XdmNode)
-                and item.kind is NodeKind.TEXT
-                and item.disable_output_escaping
-            ):
-                item._disable_output_escaping = False
+        # A declared result type evaluated in temporary output state constructs
+        # a new value without the source constructor's disable-output-escaping
+        # annotation (XSLT 3.0 section 26.2).  A function body always runs in
+        # temporary output state.  Copy flagged text rather than mutating a
+        # node another value may still reach.
+        if component.kind == "function" or not final_output:
+            return _without_disable_output_escaping(coerced)
         return coerced
 
     def _parameter_default(

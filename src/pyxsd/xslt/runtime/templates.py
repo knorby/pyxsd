@@ -538,6 +538,7 @@ def rule_frame(
             code="XTTE0505",
             label="template rule result",
             package_name=body.owner,
+            clear_output_escaping=not context.final_output,
         )
     active_rule = _RuleContext(
         match=match,
@@ -609,6 +610,7 @@ def apply_frame(
     mode_package: str | None = None,
     group: object = _INHERIT,
     grouping_key: object = _INHERIT,
+    final_output: bool = True,
 ) -> Frame:
     effective_group, effective_grouping_key = invocation._inherited_group(group, grouping_key)
     state = _ApplyState(
@@ -629,6 +631,7 @@ def apply_frame(
             package_name=package_name,
             mode=mode,
             tunnel_parameters=tunnel_parameters,
+            final_output=final_output,
         ),
         tail=tail,
         group=effective_group,
@@ -686,6 +689,7 @@ def step_apply(invocation: _Invocation, frame: Frame) -> FrameResult:
             focus=focus,
             package_name=state.package_name,
             tunnel_parameters=state.tunnel_parameters,
+            final_output=frame.context.final_output,
         ),
         state.template_parameters,
         mode_package=state.mode_package,
@@ -739,6 +743,7 @@ def builtin_step(
                 mode_package=state.mode_package,
                 group=state.group,
                 grouping_key=state.grouping_key,
+                final_output=resume.context.final_output,
             )
             return Call(child, resume=resume, tail=tail)
         return None
@@ -761,6 +766,7 @@ def builtin_step(
                 mode_package=state.mode_package,
                 group=state.group,
                 grouping_key=state.grouping_key,
+                final_output=resume.context.final_output,
             )
             return Call(child, resume=resume, tail=tail)
         if isinstance(item, XdmNode) and item.kind in (NodeKind.TEXT, NodeKind.ATTRIBUTE):
@@ -792,6 +798,7 @@ def builtin_step(
                 mode_package=state.mode_package,
                 group=state.group,
                 grouping_key=state.grouping_key,
+                final_output=resume.context.final_output,
             )
             return Call(child, resume=resume, tail=tail)
         return None
@@ -830,6 +837,7 @@ def builtin_step(
                 mode_package=state.mode_package,
                 group=state.group,
                 grouping_key=state.grouping_key,
+                final_output=resume.context.final_output,
             )
             return Call(child, resume=resume, tail=tail)
         return None
@@ -1253,6 +1261,7 @@ def apply_templates(
     *,
     package_name: str | None = None,
     mode_package: str | None = None,
+    final_output: bool = True,
 ) -> XdmSequence:
     invocation._check_typed_mode(items, mode, mode_package)
     frame = apply_frame(
@@ -1263,6 +1272,7 @@ def apply_templates(
         tunnel_parameters,
         package_name=package_name,
         mode_package=mode_package,
+        final_output=final_output,
     )
     with invocation._merge_scope(None, None, ()):
         return cast(XdmSequence, invocation.execute_frame(frame))
@@ -1387,4 +1397,5 @@ def execute_apply_templates(
         {**context.tunnel_parameters, **tunnel},
         package_name=context.package_name,
         mode_package=mode_package,
+        final_output=context.final_output,
     )
