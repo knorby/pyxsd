@@ -1576,14 +1576,12 @@ def install_subsequence(parser: Any) -> None:
     def select(self: Any, context: Any = None) -> Iterator[Any]:
         if len(self) > 1:
             start = tuple(self[1].select(context))
+            # Function conversion requires one starting position.  Numeric
+            # conversion and XPath 1.0 compatibility casting remain the base
+            # token's decision; the substrate only fails when the sequence is
+            # empty and it indexes with ``None``.
             if not start:
-                raise self.error("XPTY0004", "the starting position must be a single numeric value")
-            if len(start) != 1:
-                raise self.error("XPTY0004", "the starting position must be a single numeric value")
-        if len(self) > 2:
-            length = tuple(self[2].select(context))
-            if len(length) > 1:
-                raise self.error("XPTY0004", "the length must be a single numeric value")
+                raise self.error("XPTY0004", "the starting position must be a single value")
         yield from base.select(self, context)
 
     parser._register(

@@ -285,6 +285,15 @@ class DocumentResources:
         self._variants[key] = filtered
         return filtered
 
+    def document_variants(self, package: str | None) -> dict[str, XdmDocument]:
+        """The package-filtered variants of documents already resolved.
+
+        A pattern's ``doc()`` must match the same node the invoking package's
+        ``doc()`` delivered; strip/preserve-space rules make that a different
+        tree from the shared unfiltered registry entry.
+        """
+        return {key[0]: document for key, document in self._variants.items() if key[-1] == package}
+
     def read_text(
         self,
         uri: str,

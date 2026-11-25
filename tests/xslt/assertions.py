@@ -539,8 +539,33 @@ def _context_item(items: tuple[Any, ...], parser: XPath31Parser) -> Any:
     raise AssertionGap("an XPath assertion context is absent for a multi-item result")
 
 
+_EQNAME = re.compile(r"Q\{([^}]*)\}([A-Za-z_][A-Za-z0-9_.-]*)")
+
+
+class _AssertionParser(XPath31Parser):
+    """An assertion parser that accepts EQNames in sequence-type tests.
+
+    elementpath's kind-test grammar takes a lexical QName or ``*``; XPath 3.1
+    also permits ``Q{uri}local``.  The JSON cases use that spelling inside
+    ``element(Q{...}name)``, which the substrate rejects with XPST0003.  Bind a
+    generated prefix for each EQName before parsing so the assertion measures
+    the result rather than the harness grammar.
+    """
+
+    def parse(self, source: str) -> Any:
+        counter = 0
+        for uri, local in _EQNAME.findall(source):
+            prefix = next((p for p, bound in self.namespaces.items() if bound == uri and p), None)
+            if prefix is None:
+                counter += 1
+                prefix = f"eq{counter}"
+                self.namespaces[prefix] = uri
+            source = source.replace(f"Q{{{uri}}}{local}", f"{prefix}:{local}")
+        return super().parse(source)
+
+
 def _parser(declarations: Sequence[tuple[str, str]]) -> XPath31Parser:
-    return XPath31Parser(namespaces=_namespace_map(declarations))
+    return _AssertionParser(namespaces=_namespace_map(declarations))
 
 
 def _is_gap(exc: BaseException) -> bool:

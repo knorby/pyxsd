@@ -466,20 +466,26 @@ class Transformation:
         """
         result: dict[str, object] = {}
         for name, value in variables.items():
-            converted = self.sequence_to_native(value)
+            converted = self.sequence_to_native(value, nodes=False)
             if converted is None:
                 return None
             result[name] = converted
         return result
 
-    def sequence_to_native(self, value: object) -> object | None:
-        """Convert one XDM sequence to the machine's native value convention."""
+    def sequence_to_native(self, value: object, *, nodes: bool = True) -> object | None:
+        """Convert one XDM sequence to the machine's native value convention.
+
+        ``nodes`` permits grounded nodes for a suspended frame's result.  The
+        machine's initial variable environment keeps the historical atomic and
+        closure subset, because elementpath cannot use a node sequence as its
+        context item.
+        """
         if isinstance(value, XPathClosure):
             return value
         if isinstance(value, tuple):
             members: list[object] = []
             for item in value:
-                converted = self._item_to_native(item)
+                converted = self._item_to_native(item, nodes=nodes)
                 if converted is None:
                     return None
                 members.append(converted)
@@ -491,19 +497,19 @@ class Transformation:
         if isinstance(value, list):
             members = []
             for item in value:
-                converted = self.sequence_to_native(item)
+                converted = self.sequence_to_native(item, nodes=nodes)
                 if converted is None:
                     return None
                 members.append(converted)
             return tuple(members)
-        converted = self._item_to_native(value)
+        converted = self._item_to_native(value, nodes=nodes)
         if converted is None:
             return None
         return converted
 
-    def _item_to_native(self, item: object) -> object | None:
+    def _item_to_native(self, item: object, *, nodes: bool = True) -> object | None:
         if isinstance(item, XdmNode):
-            return self._node_to_native(item)
+            return self._node_to_native(item) if nodes else None
         if isinstance(item, XdmAtomic):
             return atomic_to_elementpath(item)
         if isinstance(item, XdmFunction):

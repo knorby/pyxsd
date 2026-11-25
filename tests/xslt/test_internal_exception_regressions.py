@@ -11,6 +11,7 @@ import io
 from pathlib import Path
 
 import pytest
+from tests.xslt.assertions import _parser
 from tests.xslt.support import stylesheet, transform
 
 from pyxsd.schema import Schema
@@ -232,3 +233,66 @@ def test_function_step_result_is_not_sorted_as_a_node() -> None:
       <xsl:template match="/"><out><xsl:value-of select="//name()"/></out></xsl:template>
     """
     assert "> doc a</out>" in _serialized(stylesheet(body), b"<doc><a/></doc>")
+
+
+def test_assertion_parser_accepts_an_eqname_kind_test() -> None:
+    # json-to-xml escape cases assert element(Q{fn}string); the assertion
+    # grammar must measure the result rather than report a harness gap.
+    ast = _parser([("fn", FN_NS)]).parse(f"* instance of element(Q{{{FN_NS}}}string)")
+    assert ast is not None
+
+
+def test_doc_pattern_uses_the_package_stripped_variant(tmp_path: Path) -> None:
+    # match-052: strip-space makes doc() deliver a filtered variant; the
+    # pattern's doc() must match that same tree, not the unfiltered registry.
+    source = tmp_path / "loaded.xml"
+    source.write_text("<doc> <a/> </doc>", encoding="utf-8")
+    uri = source.resolve().as_uri()
+    body = f"""
+      <xsl:strip-space elements="*"/>
+      <xsl:template match="/"><out><xsl:apply-templates select="doc('{uri}')"/></out></xsl:template>
+      <xsl:template match="doc('{uri}')"><first><xsl:apply-templates/></first></xsl:template>
+      <xsl:template match="doc('{uri}')/doc/a"><two/></xsl:template>
+    """
+    serialized = _serialized(stylesheet(body), b"<dummy/>")
+    assert "<first>" in serialized and "<two/>" in serialized
+
+
+def test_private_component_reference_inside_original_stays_in_its_package() -> None:
+    # override-t-007/as-002: the base body's private template/attribute-set
+    # reference resolves in the base package even when invoked through
+    # xsl:original from the overriding package.
+    def package(name: str, body: str, version: str = "1.0.0") -> str:
+        return (
+            f'<xsl:package name="{name}" package-version="{version}" version="3.0" '
+            f'xmlns:xsl="{XSLT_NS}" xmlns:app="{APP}">{body}</xsl:package>'
+        )
+
+    base = package(
+        BASE,
+        """
+        <xsl:template name="app:t" visibility="public"><xsl:call-template name="app:private"/></xsl:template>
+        <xsl:template name="app:private"><base/></xsl:template>
+        <xsl:attribute-set name="app:private-as" visibility="private"><xsl:attribute name="a" select="'base'"/></xsl:attribute-set>
+        <xsl:template name="app:uses-private-as" visibility="public"><x xsl:use-attribute-sets="app:private-as"/></xsl:template>
+        """,
+    )
+    using = package(
+        "urn:example:using",
+        f"""
+        <xsl:use-package name="{BASE}"><xsl:override>
+          <xsl:template name="app:t" visibility="public"><override><xsl:call-template name="xsl:original"/></override></xsl:template>
+        </xsl:override></xsl:use-package>
+        <xsl:template name="app:main" visibility="public">
+          <out><xsl:call-template name="app:t"/><xsl:call-template name="app:uses-private-as"/></out>
+        </xsl:template>
+        """,
+    )
+    compiled = XsltProcessor(resolver=PackageResolver.from_sources(base)).compile(
+        io.BytesIO(using.encode())
+    )
+    result = compiled.transform(initial_template="app:main", delivery="stylesheet")
+    serialized = result.principal_entry.serialized
+    assert serialized is not None
+    assert "<override><base/></override>" in serialized
+    assert 'a="base"' in serialized

@@ -1151,6 +1151,7 @@ def _compile_stylesheet(
         for package_name, current_package in packages.items()
     }
     components: dict[tuple[Any, ...], _ComponentPlan] = {}
+    deferred_original_plans: list[tuple[tuple[Any, ...], _ComponentPlan]] = []
     keys: dict[str | None, list[_KeyDefinition]] = {}
     accumulators: dict[AccumulatorKey, AccumulatorDefinition] = {}
     for package_name, current_package in packages.items():
@@ -1158,12 +1159,18 @@ def _compile_stylesheet(
         original_ids = {id(component) for component in originals}
         candidates = (*current_package.components.values(), *originals)
         for component in candidates:
-            # Local declarations and the hidden ``xsl:original`` copies belong
-            # to this package's plan table.  An accepted copy keeps the used
-            # package's references and is compiled there; compiling it again
-            # under the using package would rebind them.
-            if component.owner != package_name and id(component) not in original_ids:
-                continue
+            # Local declarations belong to this package's plan table.  An
+            # accepted copy keeps the used package's references and is
+            # compiled there.  A hidden ``xsl:original`` copy needs its own
+            # plan only when the used package itself was not in the composed
+            # map (two versions of one library name); otherwise the original
+            # package's plan is the authoritative one and keeps its private
+            # references in that package.
+            if component.owner != package_name:
+                if id(component) not in original_ids:
+                    continue
+                if (component.owner, component.kind, component.name, component.arity) in components:
+                    continue
             module = _component_module(component, modules, principal)
             owner_package = packages.get(component.owner, package)
             context = _context_for(
@@ -1242,22 +1249,14 @@ def _compile_stylesheet(
                 original_functions=original_functions,
                 original_variable=original_variable,
             )
-            components[
-                (
-                    component.owner,
-                    component.containing,
-                    component.kind,
-                    component.name,
-                    component.arity,
-                )
-            ] = plan_entry
-            # An accepted copy keeps the used package's plan and references;
-            # the legacy owner key is the fallback a copy in another package
-            # uses when no plan was compiled for its containing package.
-            components.setdefault(
-                (component.owner, component.kind, component.name, component.arity),
-                plan_entry,
-            )
+            key = (component.owner, component.kind, component.name, component.arity)
+            if component.owner == package_name:
+                components[key] = plan_entry
+            else:
+                deferred_original_plans.append((key, plan_entry))
+
+    for key, plan_entry in deferred_original_plans:
+        components.setdefault(key, plan_entry)
 
     _validate_accumulator_graph(accumulators, packages)
     package_modes: dict[str | None, dict[ModeKey, tuple[_ModeLayerPlan, ...]]] = {
@@ -6447,16 +6446,6 @@ class _Invocation(Transformation):
     # -- components and parameters ----------------------------------------
 
     def _component_plan(self, component: Component) -> _ComponentPlan:
-        exact = (
-            component.owner,
-            component.containing,
-            component.kind,
-            component.name,
-            component.arity,
-        )
-        plan = self.stylesheet._components.get(exact)
-        if plan is not None:
-            return plan
         return self.stylesheet._components[
             (component.owner, component.kind, component.name, component.arity)
         ]
@@ -7063,6 +7052,10 @@ class _Invocation(Transformation):
         *,
         locals_: Mapping[str, XdmSequence] | None = None,
     ) -> ExpressionEnvironment:
+        documents = {
+            **self.documents,
+            **self.document_resources.document_variants(package_name),
+        }
         if locals_ is not None:
             return replace(
                 self._environment(
@@ -7074,6 +7067,7 @@ class _Invocation(Transformation):
                     regex_captures=None,
                 ),
                 base_uri=pattern.context.base_uri,
+                documents=documents,
             )
         key = id(pattern)
         environment = None if "doc(" in pattern.source else self._pattern_environments.get(key)
@@ -7086,6 +7080,7 @@ class _Invocation(Transformation):
                     regex_captures=None,
                 ),
                 base_uri=pattern.context.base_uri,
+                documents=documents,
             )
             if "doc(" not in pattern.source:
                 self._pattern_environments[key] = environment
