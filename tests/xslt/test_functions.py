@@ -2372,3 +2372,54 @@ def test_snapshot_of_a_node_in_a_parentless_tree_stops_at_its_root() -> None:
         "true",
         "1",
     ]
+
+
+def test_parse_xml_returns_an_engine_document_node() -> None:
+    """F&O 3.1 section 14.7.1: parse-xml builds an XDM document, not empty.
+
+    The returned document must survive the bridge into an XSLT variable: the
+    substrate builds its own tree, which the XDM conversion cannot represent,
+    so an unhandled result was silently dropped.
+    """
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="doc" select="parse-xml('&lt;doc a=&quot;1&quot;&gt;&lt;x/&gt;&lt;x/&gt;&lt;/doc&gt;')"/>
+          <xsl:sequence select="(
+            $doc instance of document-node(element(doc)),
+            count($doc//x) = 2,
+            name($doc/*),
+            string($doc/*/@a),
+            empty(parse-xml(()))
+          )"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, initial_template="main", delivery="raw")
+
+    assert result.principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.string("doc"),
+        XdmAtomic.string("1"),
+        XdmAtomic.boolean(True),
+    )
+
+    direct = stylesheet(
+        '<xsl:template name="main">'
+        '<xsl:sequence select="name(parse-xml(&quot;&lt;doc&gt;&lt;x/&gt;&lt;/doc&gt;&quot;)/*)"/>'
+        "</xsl:template>"
+    )
+    assert transform(direct, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.string("doc"),
+    )
+
+
+def test_parse_xml_error_codes() -> None:
+    def code(expression: str) -> str | None:
+        body = f'<xsl:template name="main"><xsl:sequence select="{expression}"/></xsl:template>'
+        return error_code(lambda: transform(stylesheet(body), initial_template="main"))
+
+    assert code("parse-xml('&lt;broken')") == "FODC0006"
+    assert code("parse-xml(1)") == "XPTY0004"
+    assert code("parse-xml(('&lt;a/&gt;', '&lt;b/&gt;'))") == "XPTY0004"

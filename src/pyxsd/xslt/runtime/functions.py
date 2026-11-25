@@ -40,6 +40,7 @@ from elementpath.xpath3 import XPath31Parser
 
 from pyxsd import __version__
 from pyxsd import xsd_data_types as _xsd
+from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import local_name as _local_name
 from pyxsd.namespaces import namespace_of as _namespace_of
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
@@ -670,6 +671,9 @@ class XsltContextBridge:
                 self._snapshot_function, self._snapshot_function
             ),
             f"{{{FN_NS}}}root": ContextFunction(self._root_function, self._root_function),
+            f"{{{FN_NS}}}parse-xml": ContextFunction(
+                self._parse_xml_function, self._parse_xml_function
+            ),
             f"{{{FN_NS}}}document": ContextFunction(self._document_function),
             f"{{{FN_NS}}}doc": ContextFunction(self._doc_function),
             f"{{{FN_NS}}}in-scope-prefixes": ContextFunction(self._in_scope_prefixes_function),
@@ -940,6 +944,32 @@ class XsltContextBridge:
                 code="XPTY0004",
             )
         return (item.root,)
+
+    def _parse_xml_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """Parse one lexical XML document into a document node.
+
+        F&O 3.1 section 14.7.1: the argument is an optional string, the static
+        base URI is both the parser's base and the returned document node's
+        base URI, the document URI stays absent, and malformed content is
+        ``FODC0006``.  The substrate's own ``parse-xml`` builds an elementpath
+        tree that this bridge cannot convert, so the document is parsed into
+        the engine's XDM here.
+        """
+        del context_item
+        text = _optional_atomic_string(arguments, 0, "parse-xml() argument")
+        if text is None:
+            return ()
+        try:
+            return (XdmDocument.parse(text.encode("utf-8"), base_uri=self.base_uri),)
+        except PyXSDError as exc:
+            raise XsltDynamicError(
+                f"parse-xml() content is not a well-formed XML document: {exc}",
+                code="FODC0006",
+            ) from exc
 
     def current(self) -> XdmItem:
         """The instruction-level current item, never a predicate focus item."""
