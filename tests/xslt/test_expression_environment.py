@@ -1923,9 +1923,11 @@ def test_a_union_of_temporary_trees_uses_creation_order_in_both_operand_orders()
         <xsl:template name="main">
           <xsl:variable name="first"><settings><setting1/></settings></xsl:variable>
           <xsl:variable name="second"><settings><setting2/></settings></xsl:variable>
+          <xsl:variable name="third"><settings><setting3/></settings></xsl:variable>
           <xsl:sequence select="(
             ($first | $second)/settings/*/name(),
-            ($second | $first)/settings/*/name()
+            ($second | $first)/settings/*/name(),
+            ($third | $second | $first)/settings/*/name()
           )"/>
         </xsl:template>
         """
@@ -1938,6 +1940,9 @@ def test_a_union_of_temporary_trees_uses_creation_order_in_both_operand_orders()
         "setting2",
         "setting1",
         "setting2",
+        "setting1",
+        "setting2",
+        "setting3",
     )
 
 
