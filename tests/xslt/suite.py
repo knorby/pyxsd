@@ -274,6 +274,38 @@ def _value_sequence(sequence: Any) -> Any:
     return values[0] if len(values) == 1 else values
 
 
+_BOM_ENCODINGS = frozenset(
+    {
+        "utf-8",
+        "utf-16",
+        "utf-16-le",
+        "utf-16-be",
+        "utf-32",
+        "utf-32-le",
+        "utf-32-be",
+    }
+)
+_TRUE_PARAMETER_VALUES = frozenset({"yes", "true", "1"})
+
+
+def _serialized_text_with_bom(entry: Any) -> tuple[str | None, bool]:
+    """The assertion view of a serialized result, including its BOM.
+
+    The serializer's returned string is encoding-neutral; the byte-order mark
+    belongs to the encoded result and is therefore added only for the view a
+    catalog assertion compares.
+    """
+    value = entry.serialized
+    raw = entry.serialization.get("byte-order-mark")
+    requested = raw is True or (
+        isinstance(raw, str) and raw.strip().lower() in _TRUE_PARAMETER_VALUES
+    )
+    encoding = str(entry.serialization.get("encoding", "UTF-8")).strip().lower()
+    if value is None or not requested or encoding not in _BOM_ENCODINGS:
+        return value, False
+    return "\ufeff" + value, True
+
+
 def _snapshot_entry(entry: Any) -> ResultSnapshot:
     # Ruled precedence: the delivered items are the raw sequence; the tree
     # enters only when that sequence is empty.  ``raw``/``xml`` stay the
@@ -281,13 +313,15 @@ def _snapshot_entry(entry: Any) -> ResultSnapshot:
     items = tuple(entry.raw) if entry.raw else ((entry.tree,) if entry.tree is not None else ())
     method = entry.serialization.get("method")
     encoding = entry.serialization.get("encoding")
+    serialized, bom = _serialized_text_with_bom(entry)
     if entry.tree is not None:
         return ResultSnapshot(
             xml=_document_xml(entry.tree),
             result_items=items,
-            serialized=entry.serialized,
+            serialized=serialized,
             serialization_method=method,
             serialization_encoding=encoding,
+            serialization_bom=bom,
             messages=(),
             warnings=(),
         )
@@ -301,9 +335,10 @@ def _snapshot_entry(entry: Any) -> ResultSnapshot:
         raw=tuple(_value(item) for item in entry.raw),
         xml=None if node is None else _node_xml(node),
         result_items=items,
-        serialized=entry.serialized,
+        serialized=serialized,
         serialization_method=method,
         serialization_encoding=encoding,
+        serialization_bom=bom,
         messages=(),
         warnings=(),
     )
@@ -370,6 +405,7 @@ def _snapshot(
         warnings=result.warnings,
         serialization_method=view.serialization_method,
         serialization_encoding=view.serialization_encoding,
+        serialization_bom=view.serialization_bom,
     )
 
 
