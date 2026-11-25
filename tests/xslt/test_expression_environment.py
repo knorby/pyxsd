@@ -21,6 +21,7 @@ from elementpath import XPathContext
 from elementpath.datatypes import UntypedAtomic
 from elementpath.xpath3 import XPath31Parser
 from elementpath.xpath_tokens import XPathArray, XPathMap
+from tests.xslt.support import stylesheet as _stylesheet
 
 import pyxsd.xpath.engine as engine_module
 from pyxsd.schema import Schema
@@ -37,6 +38,7 @@ from pyxsd.xpath.environment import (
     XPathStaticContext,
 )
 from pyxsd.xpath.functions import HostFunctionToken
+from pyxsd.xslt import XsltProcessor
 
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 MONEY = "urn:money"
@@ -1905,3 +1907,35 @@ def test_a_lookup_path_step_rejects_a_non_node_intermediate() -> None:
     with pytest.raises(Exception) as caught:
         engine.evaluate(compiled, ExpressionEnvironment(), focus=XdmAtomic.integer(0))
     assert _error_code(caught.value) == "XPTY0019"
+
+
+def test_a_union_of_temporary_trees_uses_creation_order_in_both_operand_orders() -> None:
+    """Cross-tree document order is total and stable, not hash order.
+
+    elementpath sorts a union by each adapter's ``position``; a document node is
+    position 0 in every tree, so two temporary trees tie and the hash-ordered
+    ``set`` decided the result.  Each tree's own range position keeps the
+    result a document order: the earlier-created tree first, whatever the
+    operand order.
+    """
+    body = _stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="first"><settings><setting1/></settings></xsl:variable>
+          <xsl:variable name="second"><settings><setting2/></settings></xsl:variable>
+          <xsl:sequence select="(
+            ($first | $second)/settings/*/name(),
+            ($second | $first)/settings/*/name()
+          )"/>
+        </xsl:template>
+        """
+    )
+    compiled = XsltProcessor().compile(io.BytesIO(body))
+    result = compiled.transform(initial_template="main", delivery="raw")
+
+    assert tuple(item.string_value for item in result.principal) == (
+        "setting1",
+        "setting2",
+        "setting1",
+        "setting2",
+    )

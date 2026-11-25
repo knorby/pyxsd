@@ -1903,6 +1903,7 @@ def _build_parser(
     _install_focus_token(parser)
     _install_focus_functions(parser)
     _install_function_scope(parser)
+    _install_node_set_order(parser)
     if version == "1.0":
         _install_legacy_1_0_overrides(parser)
         install_numeric_functions(parser, include_round=False)
@@ -2013,6 +2014,64 @@ def _install_lookup_path_step(parser: Any) -> None:
     if path_steps is None or "?" in path_steps:  # pragma: no cover - XPath 2.0+ only
         return
     parser.PATH_STEP_SYMBOLS = path_steps | {"?"}
+
+
+def _install_node_set_order(parser: Any) -> None:
+    """Order the set operators by the engine's cross-tree document order.
+
+    elementpath sorts the union/intersect/except results by ``node.position``.
+    A pyxsd adapter carries the node's XDM document order there, but a document
+    node is position 0 in *every* tree, so a union of two temporary trees has
+    equal keys and the hash-ordered ``set`` decides the result order.  That
+    order then varies between processes and moves otherwise deterministic
+    verdicts (``evaluate/evaluate-002``).  A tree's first order position (*its
+    document node's*) makes the result a document order again: each temporary
+    tree owns a unique range, so the key is total and stable.
+    """
+    for symbol in ("union", "|"):
+        base = parser.symbol_table.get(symbol)
+        if base is None:  # pragma: no cover - every supported parser declares one
+            continue
+
+        def select(self: Any, context: Any = None, _base: Any = base) -> Iterator[Any]:
+            if context is None:
+                raise self.missing_context()
+            results: set[Any] = set()
+            for index in range(2):
+                for item in self[index].select(copy.copy(context)):
+                    if not isinstance(item, XPathNode):
+                        raise self.error("XPTY0004", "only XPath nodes are allowed")
+                    results.add(item)
+            if getattr(self, "concatenated", False):
+                yield from results
+            else:
+                yield from sorted(results, key=_node_order_key)
+
+        parser._register(
+            symbol,
+            f"_PyxsdNodeSetOrder_{symbol.replace('|', 'or')}",
+            bases=(base,),
+            label=base.label,
+            bp=getattr(base, "bp", 55),
+            select=select,
+        )
+
+
+def _node_order_key(node: Any) -> tuple[int, int]:
+    """A total order over nodes of one evaluation, in document order.
+
+    A node's own XDM document order is unique within its tree; a document node
+    reports 0 by design (the adapter registry uses that as its finalized
+    marker), so it sorts at its tree's first range position instead.
+    """
+    xdm = getattr(node, "xdm", None)
+    if xdm is None:  # pragma: no cover - every adapter carries its XDM item
+        return (-1, getattr(node, "position", 0))
+    order = xdm.document_order
+    if order > 0:
+        return (0, order)
+    document = xdm.document
+    return (0, getattr(document, "_order_base", 0))
 
 
 def _install_node_kind_test(parser: Any) -> None:
