@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
+
+from sphinx.domains.python import PythonDomain
+from sphinx.ext import viewcode
+from sphinx.util.nodes import make_refnode
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 if str(SRC) not in sys.path:
@@ -13,10 +18,10 @@ project = "pyxsd"
 copyright = "2026, the pyxsd contributors"
 author = "the pyxsd contributors"
 
-from pyxsd import __version__  # noqa: E402
+import pyxsd  # noqa: E402
 
 #: Full version (MAJOR.MINOR.MICRO) shown in the docs header and search.
-release = __version__
+release = pyxsd.__version__
 #: Short form (MAJOR.MINOR) Sphinx uses for the version banner.
 version = ".".join(release.split(".")[:2])
 
@@ -26,6 +31,8 @@ extensions = [
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
+    # Load viewcode after AutoAPI so existing source links use Sphinx's analyzer.
+    "autoapi.extension",
     "sphinx.ext.viewcode",
     "sphinx_copybutton",
     "sphinx_llms_txt",
@@ -94,6 +101,161 @@ intersphinx_mapping = {
 # --- Autodoc ---------------------------------------------------------------
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
+
+# Scan implementation modules so AutoAPI can resolve facade re-exports.
+# Publish only supported import paths, not the entire implementation tree.
+autoapi_dirs = ["../src/pyxsd"]
+autoapi_python_use_implicit_namespaces = True
+autoapi_add_toctree_entry = False
+autoapi_template_dir = "_templates/autoapi"
+# These optional adapters are not needed to resolve the public facades.
+autoapi_ignore = ["*/pyxsd/mcp/*", "*/pyxsd/relaxng/pydantic_adapter.py"]
+autoapi_options = ["members", "undoc-members", "imported-members", "show-module-summary"]
+PUBLIC_API_MODULES = frozenset(
+    {
+        "pyxsd",
+        "pyxsd.batch",
+        "pyxsd.integrations",
+        "pyxsd.introspection",
+        "pyxsd.relaxng",
+        "pyxsd.resource_policy",
+        "pyxsd.schemaless",
+        "pyxsd.stubs",
+        "pyxsd.transforms",
+        "pyxsd.validation",
+        "pyxsd.xdm",
+        "pyxsd.xpath",
+        "pyxsd.xslt",
+    }
+)
+
+
+def skip_api_member(app, what, name, obj, skip, options):
+    if what in {"module", "package"} and name not in PUBLIC_API_MODULES:
+        return True
+    return None
+
+
+def is_generated_api(docname):
+    return docname.startswith("autoapi/")
+
+
+class ReferencePythonDomain(PythonDomain):
+    """Keep both pages' anchors, but prefer hand-authored cross-reference targets."""
+
+    def note_object(self, name, objtype, node_id, aliased=False, location=None):
+        generated = is_generated_api(self.env.current_document.docname)
+        if previous := self.objects.get(name):
+            was_generated = is_generated_api(previous.docname)
+            if generated and not was_generated:
+                return
+            if was_generated and not generated:
+                del self.objects[name]
+        # Autodoc's short annotation names would otherwise match both public
+        # paths for these classes, which the guide already documents by module.
+        if generated and name in {"pyxsd.XmlLimits", "pyxsd.XmlParserPolicy"}:
+            aliased = True
+        super().note_object(name, objtype, node_id, aliased, location)
+
+    def note_module(self, name, node_id, synopsis, platform, deprecated):
+        previous = self.modules.get(name)
+        if not (
+            is_generated_api(self.env.current_document.docname)
+            and previous
+            and not is_generated_api(previous.docname)
+        ):
+            super().note_module(name, node_id, synopsis, platform, deprecated)
+
+
+class StaticImportFilter(logging.Filter):
+    """Ignore internal registry cycles regardless of which module is scanned first."""
+
+    def filter(self, record):
+        if getattr(record, "subtype", None) != "python_import_resolution":
+            return True
+        prefix = "Cannot resolve cyclic import: "
+        message = record.getMessage()
+        if not message.startswith(prefix):
+            return True
+        modules = message.removeprefix(prefix).split(", ")
+        # The final module repeats at the start of the cycle. Ignore only
+        # cycles involving the XSD registry, not unrelated import warnings.
+        cycle = modules[modules.index(modules[-1]) :]
+        return (
+            "pyxsd.element_representatives.element_representative" not in cycle
+            or not PUBLIC_API_MODULES.isdisjoint(cycle)
+        )
+
+
+def prepare_api_templates(env):
+    # AutoAPI cannot see imports guarded by TYPE_CHECKING. Autodoc can
+    # resolve these exports directly through the package's lazy __getattr__.
+    env.globals["lazy_exports"] = [
+        (name, "class" if isinstance(getattr(pyxsd, name), type) else "function")
+        for name in pyxsd.__all__
+        if not name.startswith("_")
+    ]
+
+
+autoapi_prepare_jinja_env = prepare_api_templates
+
+
+def resolve_generated_type(app, env, node, content):
+    """Link implementation names to their public re-exports where possible."""
+    if node.get("refdomain") != "py":
+        return None
+
+    docname = node["refdoc"]
+    target = node["reftarget"]
+    domain = env.get_domain("py")
+    parent, _, member = target.rpartition(".")
+    for symbol in getattr(env, "autoapi_all_objects", {}).values():
+        origin = symbol.obj.get("original_path")
+        if origin and origin in (target, parent):
+            public_name = symbol.id if origin == target else f"{symbol.id}.{member}"
+            if entry := domain.objects.get(public_name):
+                return make_refnode(app.builder, docname, entry.docname, entry.node_id, content)
+
+    # AutoAPI signatures also describe types that have no public reference
+    # page. Keep inferred annotations readable; explicit roles stay checked.
+    if is_generated_api(docname) and (
+        "refexplicit" not in node or (node.get("reftype") == "class" and not node.get("refwarn"))
+    ):
+        return content
+    return None
+
+
+def isolate_api_annotations(app, docname, source):
+    # AutoAPI's type fields must not replace autodoc's on the existing pages.
+    if not is_generated_api(docname):
+        app.env.temp_data.pop("annotations", None)
+
+
+def reference_viewcode(app, doctree):
+    # Viewcode builds backlinks using defining modules, not the public
+    # aliases used by AutoAPI. Keep source links on the existing pages.
+    if not is_generated_api(app.env.current_document.docname):
+        viewcode.doctree_read(app, doctree)
+
+
+def finish_api_build(app, exception):
+    logging.getLogger("sphinx.autoapi._mapper").removeFilter(app._static_import_filter)
+
+
+def setup(app):
+    app.add_domain(ReferencePythonDomain, override=True)
+    for listener in app.events.listeners["doctree-read"]:
+        if listener.handler is viewcode.doctree_read:
+            app.disconnect(listener.id)
+            app.connect("doctree-read", reference_viewcode, priority=listener.priority)
+            break
+    app.connect("autoapi-skip-member", skip_api_member)
+    app.connect("source-read", isolate_api_annotations, priority=600)
+    app.connect("missing-reference", resolve_generated_type)
+    app._static_import_filter = StaticImportFilter()
+    logging.getLogger("sphinx.autoapi._mapper").addFilter(app._static_import_filter)
+    app.connect("build-finished", finish_api_build)
+
 
 # Strict cross-references: repair public targets in the docs, not broad ignores.
 nitpicky = True

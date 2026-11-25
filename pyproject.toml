@@ -79,6 +79,7 @@ docs = [
     "furo>=2025.7",
     "sphinx-copybutton>=0.5.2",
     "sphinx-llms-txt>=0.7.1",
+    "sphinx-autoapi>=3.9",
 ]
 # Runnable consumer examples are examples-only environments; these are not
 # published extras and must never be installed by library users implicitly.

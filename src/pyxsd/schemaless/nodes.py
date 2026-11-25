@@ -38,7 +38,7 @@ _DescriptorField = tuple["_NodeDescriptor", type]
 def attribute(name: str, *, type: TypeRef | None = None) -> Any:
     """Declare one expanded-name attribute field.
 
-    Reads call :meth:`~pyxsd.schemaless.tree.SchemalessElement.attribute_value`
+    Reads call ``SchemalessElement.attribute_value``
     and therefore follow the document's effective scalar policy; a missing
     attribute reads as ``None``. Writes format the value through that same
     adapter and replace only that attribute. *name* is an expanded (Clark)
@@ -51,7 +51,7 @@ def attribute(name: str, *, type: TypeRef | None = None) -> Any:
 def text(*, type: TypeRef | None = None, default: Any = None) -> Any:
     """Declare the element's leading character data as a scalar field.
 
-    Reads call :meth:`~pyxsd.schemaless.tree.SchemalessElement.scalar_value`
+    Reads call ``SchemalessElement.scalar_value``
     for present leading text and return *default* when there is none. Mixed
     content stays mixed content: child tails are never concatenated into this
     value. Writes replace only the leading text.

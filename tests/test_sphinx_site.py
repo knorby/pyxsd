@@ -1,5 +1,6 @@
 """Rendered documentation contracts; install the docs group to run these tests."""
 
+import logging
 import os
 import re
 import runpy
@@ -7,10 +8,13 @@ import subprocess
 import sys
 from html import unescape
 from pathlib import Path
+from urllib.parse import urljoin
 
 import pytest
 
 pytest.importorskip("sphinx")
+
+from sphinx.util.inventory import InventoryFile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -164,6 +168,39 @@ def test_conf_has_no_regex_suppression():
     assert not conf.get("nitpick_ignore_regex")
 
 
+@pytest.mark.parametrize(
+    ("subtype", "message", "visible"),
+    [
+        (
+            "python_import_resolution",
+            "Cannot resolve cyclic import: pyxsd.identity, pyxsd.schema_base, "
+            "pyxsd.element_representatives.attribute, "
+            "pyxsd.element_representatives.element_representative, "
+            "pyxsd.element_representatives.attribute",
+            False,
+        ),
+        (
+            "python_import_resolution",
+            "Cannot resolve cyclic import: pyxsd.batch, "
+            "pyxsd.element_representatives.element_representative, pyxsd.batch",
+            True,
+        ),
+        (
+            "python_import_resolution",
+            "Cannot resolve cyclic import: "
+            "pyxsd.element_representatives.element_representative, x, y, x",
+            True,
+        ),
+        ("python_import_resolution", "Cannot resolve import of unknown module x", True),
+        ("other", "Other AutoAPI warning", True),
+    ],
+)
+def test_autoapi_filters_only_internal_registry_cycles(subtype, message, visible):
+    conf = runpy.run_path(str(ROOT / "docs/conf.py"))
+    record = logging.makeLogRecord({"msg": message, "subtype": subtype})
+    assert conf["StaticImportFilter"]().filter(record) is visible
+
+
 def test_api_summary_links_resolve_to_unique_anchors(docs_build):
     html = (docs_build / "api.html").read_text(encoding="utf-8")
     tables = re.findall(r'<table[^>]*class="[^"]*autosummary[^"]*".*?</table>', html, re.S)
@@ -190,6 +227,50 @@ def test_api_summary_links_resolve_to_unique_anchors(docs_build):
             anchor = f"{cls}.{name}"
             assert html.count(f'id="{anchor}"') == 1, anchor
             assert f'href="#{anchor}"' in "".join(tables), anchor
+
+
+def test_generated_python_api(docs_build):
+    for page in ("index.html", "api.html"):
+        html = (docs_build / page).read_text(encoding="utf-8")
+        assert 'href="autoapi/pyxsd/index.html"' in html
+
+    for module, symbols in (
+        ("pyxsd", ("parse", "Schema", "Schema.parse")),
+        ("pyxsd.relaxng", ("compile", "RelaxNGSchema.compile")),
+        ("pyxsd.schemaless", ("from_json",)),
+        ("pyxsd.xslt", ("XsltProcessor",)),
+    ):
+        page = docs_build / "autoapi" / module.replace(".", "/") / "index.html"
+        html = page.read_text(encoding="utf-8")
+        for symbol in symbols:
+            assert f'id="{module}.{symbol}"' in html
+
+    assert not (docs_build / "autoapi/pyxsd/xslt/compiler/index.html").exists()
+    assert not (docs_build / "autoapi/pyxsd/_lexical/index.html").exists()
+
+    with (docs_build / "objects.inv").open("rb") as stream:
+        inventory = InventoryFile.load(stream, "", urljoin)
+    functions = inventory["py:function"]
+    assert functions["pyxsd.schemaless.from_json"].uri == "api.html#pyxsd.schemaless.from_json"
+    assert inventory["py:method"]["pyxsd.relaxng.RelaxNGSchema.compile"].uri == (
+        "autoapi/pyxsd/relaxng/index.html#pyxsd.relaxng.RelaxNGSchema.compile"
+    )
+    modules = inventory["py:module"]
+    assert modules["pyxsd.introspection"].uri == "api.html#module-pyxsd.introspection"
+
+
+def test_existing_api_page_has_contents(docs_build):
+    html = (docs_build / "api.html").read_text(encoding="utf-8")
+    contents = re.search(r'<nav[^>]+class="[^"]*\bcontents\b[^"]*"[^>]*>.*?</nav>', html, re.S)
+    assert contents is not None
+    for target in (
+        "schema-and-documents",
+        "relax-ng",
+        "schemaless-xml-and-native-json",
+        "transforms",
+    ):
+        assert f'href="#{target}"' in contents[0]
+        assert f'id="{target}"' in html
 
 
 def test_real_site_channel_banner(docs_build):

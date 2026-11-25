@@ -88,6 +88,7 @@ skills
 :caption: Reference and limits
 
 api
+Python API <autoapi/pyxsd/index>
 cli
 supported
 xml-security

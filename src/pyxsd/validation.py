@@ -45,7 +45,7 @@ class CompileContextProtocol(Protocol):
     Annotation-only structural view of
     :class:`~pyxsd.schema_composition.CompositionContext`, which
     satisfies it without inheriting from it: the declaration and
-    derivation checks in :mod:`pyxsd.schema_checks` accept this
+    derivation checks in ``pyxsd.schema_checks`` accept this
     protocol, so they depend on the attributes they actually touch
     rather than on the concrete pipeline context.
 
