@@ -216,6 +216,15 @@ def test_result_shape_error_is_a_pyxsd_error() -> None:
     assert "no tree" in str(error)
 
 
+def test_message_carries_its_content_document() -> None:
+    """A message's value is the document node its constructor builds."""
+    content = _build_result_tree((XdmAtomic.string("text"),))
+    message = Message("text", code="XTMM9000", content=content)
+
+    assert message.content is content
+    assert message.content.string_value == "text"
+
+
 def test_message_is_immutable() -> None:
     message = Message("text", code="XTMM9000")
 
@@ -233,6 +242,8 @@ def test_message_validation_branches() -> None:
         Message("x", uri=1)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="terminate"):
         Message("x", terminate="no")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="message content"):
+        Message("x", content="<doc/>")  # type: ignore[arg-type]
 
 
 def test_result_entry_rejects_empty_uri_and_bad_parameter_mapping() -> None:
