@@ -32,6 +32,7 @@ import os
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from decimal import Decimal, InvalidOperation
 from functools import cmp_to_key
 from types import MappingProxyType
 from typing import Any, Literal, TypeAlias
@@ -1921,6 +1922,30 @@ def _group_constructs(
     return tuple(groups)
 
 
+def _validate_constant_output_attributes(
+    group: _GroupedDeclaration, attributes: Mapping[str, str]
+) -> None:
+    """Validate constant serialization attributes owned by the schema type.
+
+    ``html-version`` is an ``xs:decimal`` on ``xsl:output``.  A constant value
+    outside the lexical space is an invalid attribute value (XTSE0020), not a
+    serializer parameter failure.
+    """
+    value = attributes.get("html-version")
+    if value is None or "{" in value:
+        return
+    try:
+        Decimal(value.strip())
+    except (InvalidOperation, ValueError) as error:
+        declaration = group.declarations[0]
+        raise _error(
+            f"the html-version attribute value {value!r} is not a decimal",
+            "XTSE0020",
+            element=declaration.element,
+            module=declaration.module,
+        ) from error
+
+
 def _build_constructs(
     groups: tuple[_GroupedDeclaration, ...],
     kind: ConstructKind,
@@ -1985,6 +2010,8 @@ def _build_constructs(
                 code=code,
                 message=f"conflicting {kind} attribute {local!r}",
             )
+        if kind == "output":
+            _validate_constant_output_attributes(group, attributes)
         result.append(
             PackageConstruct(
                 kind=kind,

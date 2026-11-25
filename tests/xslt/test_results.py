@@ -16,7 +16,7 @@ from tests.xslt.support import element_children as _element_children
 from pyxsd.exceptions import PyXSDError
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmMap
 from pyxsd.xdm.nodes import NodeKind, XdmDocument
-from pyxsd.xslt.errors import XsltError
+from pyxsd.xslt.errors import XsltError, XsltSerializationError
 from pyxsd.xslt.results import (
     Message,
     ResultEntry,
@@ -370,3 +370,45 @@ def test_namespace_prefix_generation_and_collision() -> None:
     )
     assert occupied_default.prefix == "ns1"
     assert occupied_default.in_scope_namespaces["ns1"] == "urn:new"
+
+
+def test_principal_and_secondary_serialize_with_independent_parameters() -> None:
+    principal = ResultEntry(
+        (_document(b"<principal>text</principal>"),),
+        output_uri=OUT_URI,
+        serialization={"method": "xml"},
+    )
+    secondary = ResultEntry(
+        (_document(b"<secondary>text</secondary>"),),
+        output_uri=SECONDARY_URI,
+        serialization={"method": "text"},
+    )
+    result = TransformationResult(principal, secondary={SECONDARY_URI: secondary})
+
+    assert (result.serialize() or "").startswith('<?xml version="1.0"')
+    assert result.serialize(SECONDARY_URI) == "text"
+
+
+def test_invalid_secondary_parameters_cannot_change_the_principal_serialization() -> None:
+    principal = ResultEntry(
+        (_document(b"<principal/>"),),
+        output_uri=OUT_URI,
+        serialization={"method": "xml", "omit-xml-declaration": "yes"},
+    )
+    secondary = ResultEntry(
+        (_document(b"<secondary/>"),),
+        output_uri=SECONDARY_URI,
+        serialization={"method": "xml"},
+    )
+    result = TransformationResult(principal, secondary={SECONDARY_URI: secondary})
+    assert result.serialize() == "<principal/>"
+
+    bad_secondary = ResultEntry(
+        (_document("<secondary><!--caf\u00e9--></secondary>".encode()),),
+        output_uri=SECONDARY_URI,
+        serialization={"method": "xml", "encoding": "ascii"},
+    )
+    bad_result = TransformationResult(principal, secondary={SECONDARY_URI: bad_secondary})
+    with pytest.raises(XsltSerializationError):
+        bad_result.serialize(SECONDARY_URI)
+    assert bad_result.serialize() == "<principal/>"

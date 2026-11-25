@@ -5560,7 +5560,7 @@ def _prepare_invocation(
         mode = _default_mode(package)
     else:
         entry = "template"
-        template_component = package.named_template("xsl:initial-template")
+        template_component = package.named_template(f"Q{{{XSLT_NS}}}initial-template")
         if template_component is not None and template_component.visibility not in (
             "public",
             "final",
@@ -6174,6 +6174,11 @@ class _Invocation(Transformation):
         super().__init__(stylesheet, options, limits=limits, shared=shared)
         self._mode_dispatchers: dict[tuple[str | None, str | None], RuleDispatcher] = {}
         self._pattern_environments: dict[int, ExpressionEnvironment] = {}
+        #: The URI of the output destination currently being written.  It is
+        #: the base output URI for the principal result and the target URI while
+        #: an xsl:result-document instruction evaluates its content.
+        self._current_output_uri = options.output_uri
+        self._legacy_serialization = LanguageProfile.from_options(stylesheet.profile).legacy
         #: Key indexes currently under construction, keyed like the completed
         #: cache and holding the document beside its address (XSLT 3.0
         #: section 9.11 circularity guard).
@@ -6259,6 +6264,7 @@ class _Invocation(Transformation):
         tree = None
         if self.options.delivery == "document" or (
             self.options.delivery == "stylesheet"
+            and self._can_build_result_tree(sequence)
             and self._build_tree(
                 self.output_attributes.get("build-tree"),
                 self.output_attributes.get("method", "xml"),
@@ -6292,6 +6298,7 @@ class _Invocation(Transformation):
             tree=tree,
             serialization=self.output_attributes,
             character_maps=self.character_maps,
+            legacy=self._legacy_serialization,
         )
         secondary = self.secondary
         if self.options.delivery == "stylesheet":
@@ -6307,6 +6314,11 @@ class _Invocation(Transformation):
             warnings=tuple(self.warnings),
             _output_policy=policy,
         )
+
+    @staticmethod
+    def _can_build_result_tree(sequence: XdmSequence) -> bool:
+        """Whether sequence normalization can form a document without errors."""
+        return not any(isinstance(item, (XdmMap, XdmFunction)) for item in sequence)
 
     def _check_output_budget(self, sequence: XdmSequence) -> None:
         """Charge every delivered node when a node budget is configured."""
@@ -6942,7 +6954,7 @@ class _Invocation(Transformation):
     ) -> ExpressionEnvironment:
         if locals_ is not None:
             return self._environment(
-                EvaluationContext(locals=locals_, package_name=package_name),
+                EvaluationContext(locals=locals_, package_name=package_name, final_output=False),
                 referenced=_pattern_variable_names(pattern),
                 static_context=pattern.context,
                 regex_captures=None,
@@ -6951,7 +6963,7 @@ class _Invocation(Transformation):
         environment = self._pattern_environments.get(key)
         if environment is None:
             environment = self._environment(
-                EvaluationContext(package_name=package_name),
+                EvaluationContext(package_name=package_name, final_output=False),
                 referenced=_pattern_variable_names(pattern),
                 static_context=pattern.context,
                 regex_captures=None,
@@ -7576,6 +7588,8 @@ class _Invocation(Transformation):
                 code="XTDE1490",
             )
         self.final_uris.add(uri)
+        previous_output_uri = self._current_output_uri
+        self._current_output_uri = uri
         try:
             sequence = self._execute_plans(
                 plan.children,
@@ -7588,7 +7602,9 @@ class _Invocation(Transformation):
             )
             tree = None
             pool = self._package_schema_pool(context.package_name)
-            if self._build_tree(build_tree, effective_method):
+            if self._build_tree(build_tree, effective_method) and self._can_build_result_tree(
+                sequence
+            ):
                 tree = _build_result_tree(sequence, output_uri=uri)
                 tree = validate_delivered(
                     tree,
@@ -7598,6 +7614,15 @@ class _Invocation(Transformation):
                 )
             serialization = dict(base_attributes)
             serialization.update(evaluated)
+            for name in ("cdata-section-elements", "suppress-indentation"):
+                if name in evaluated:
+                    # XSLT 3.0 section 25.1: the instruction's QName list adds
+                    # to the selected output declaration's list.
+                    merged = list(base_attributes.get(name, "").split())
+                    for token in evaluated[name].split():
+                        if token not in merged:
+                            merged.append(token)
+                    serialization[name] = " ".join(merged)
             if "use-character-maps" in evaluated:
                 # XSLT 3.0 section 25.1: instruction maps supplement the
                 # selected output definition and take precedence over it.
@@ -7605,7 +7630,13 @@ class _Invocation(Transformation):
                 serialization["use-character-maps"] = " ".join(
                     (*inherited, *evaluated["use-character-maps"].split())
                 )
-            serialization["method"] = effective_method
+            # ``#absent`` makes a serialization attribute absent even when the
+            # selected named output declaration supplies it.
+            for name, value in evaluated.items():
+                if value.strip() == "#absent":
+                    serialization.pop(name, None)
+            if method is not None or "method" in base_attributes:
+                serialization["method"] = effective_method
             if build_tree is not None:
                 serialization["build-tree"] = build_tree
             self.secondary[uri] = ResultEntry(
@@ -7616,11 +7647,14 @@ class _Invocation(Transformation):
                 character_maps=self.package.character_map_pairs(
                     serialization.get("use-character-maps")
                 ),
+                legacy=self._legacy_serialization,
             )
         except BaseException:
             self.final_uris.discard(uri)
             self.secondary.pop(uri, None)
             raise
+        finally:
+            self._current_output_uri = previous_output_uri
 
     def _secondary_uri(self, href: str) -> str:
         base = self.options.output_uri
@@ -7762,6 +7796,7 @@ class _Invocation(Transformation):
             static_context,
             regex_captures=regex_captures,
             decimal_formats=decimal_formats,
+            final_output=context.final_output,
         )
         overrides: dict[str, Any] = dict(bridge.function_overrides())
         return ExpressionEnvironment(
@@ -7808,6 +7843,7 @@ class _Invocation(Transformation):
         *,
         regex_captures: object | None = _INHERIT,
         decimal_formats: Mapping[str | None, DecimalFormat] | None = None,
+        final_output: bool = True,
     ) -> XsltContextBridge:
         package = self.stylesheet._packages.get(package_name) or self.package
         static = (
@@ -7841,6 +7877,7 @@ class _Invocation(Transformation):
             namespaces=package.namespaces if static is None else static.namespaces,
             default_namespace=None if static is None else static.default_namespace,
             base_uri=None if static is None else static.base_uri,
+            current_output_uri=(self._current_output_uri if final_output else None),
             xpath_version=(
                 expression.version
                 if expression is not None

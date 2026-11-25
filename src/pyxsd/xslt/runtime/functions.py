@@ -259,6 +259,7 @@ XSLT_FUNCTION_ARITIES: Mapping[str, FunctionArity] = MappingProxyType(
         "current-grouping-key": 0,
         "current-merge-group": (0, 1),
         "current-merge-key": 0,
+        "current-output-uri": 0,
         "document": (1, 2),
         "element-available": 1,
         "format-date": (2, 5),
@@ -287,6 +288,7 @@ _FUNCTION_MINIMUM_VERSION: Mapping[str, str] = MappingProxyType(
         "current-grouping-key": "2.0",
         "current-merge-group": "3.0",
         "current-merge-key": "3.0",
+        "current-output-uri": "2.0",
         "document": "1.0",
         "element-available": "1.0",
         "format-date": "2.0",
@@ -516,6 +518,7 @@ class XsltContextBridge:
     namespaces: Mapping[str, str] = field(default_factory=dict)
     default_namespace: str | None = None
     base_uri: str | None = None
+    current_output_uri: str | None = None
     xpath_version: str = "3.1"
     xslt_version: str | None = None
     key_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence] | None = None
@@ -583,6 +586,8 @@ class XsltContextBridge:
             )
         if self.base_uri is not None and not isinstance(self.base_uri, str):
             raise TypeError("base_uri must be a string or None")
+        if self.current_output_uri is not None and not isinstance(self.current_output_uri, str):
+            raise TypeError("current_output_uri must be a string or None")
         if self.package_name is not None and not isinstance(self.package_name, str):
             raise TypeError("package_name must be a string or None")
         if self.key_lookup is not None and not callable(self.key_lookup):
@@ -715,6 +720,11 @@ class XsltContextBridge:
         if "available-system-properties" in legal:
             table[f"{{{FN_NS}}}available-system-properties"] = ContextFunction(
                 self._available_system_properties_function
+            )
+        if "current-output-uri" in legal:
+            table[f"{{{FN_NS}}}current-output-uri"] = ContextFunction(
+                self._current_output_uri_function,
+                self._current_output_uri_function,
             )
         if "current-group" in legal:
             table[f"{{{FN_NS}}}current-group"] = ContextFunction(
@@ -1831,6 +1841,16 @@ class XsltContextBridge:
         text = resources.read_text(uri, base=self.base_uri)
         value = _parse_json_document(text)
         return () if value is None else (value,)
+
+    def _current_output_uri_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item, arguments
+        if self.current_output_uri is None:
+            return ()
+        return (XdmAtomic.string(self.current_output_uri),)
 
     def _system_property_function(
         self,

@@ -1221,7 +1221,9 @@ def continuation_match(
 ) -> RuleMatch | None:
     """Select the continuation rule for one role-specific operation."""
     dispatcher = invocation._dispatcher(rule_context.mode, rule_context.mode_package)
-    environment = invocation._environment(EvaluationContext(package_name=rule_context.package_name))
+    environment = invocation._environment(
+        EvaluationContext(package_name=rule_context.package_name, final_output=False)
+    )
     item = rule_context.focus.item
     assert item is not None
     if kind == "next-match":
