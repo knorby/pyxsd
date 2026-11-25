@@ -22,14 +22,15 @@
 # Adjudication: docs/superpowers/sdd/2026-11-15-xslt-adapter-gap-closure/task-7-brief.md
 # The harness executes local resource declarations; it refuses only a text
 # read of a remote URI with no local fixture. The unparsed-text-20 environment
-# declares two HTTP resources by @file URL, so the corpus ships no local file,
-# and document-20's identical declarations are never read by its cases. The
-# xslt10 cases the previous entry claimed now execute and pass.
+# declares two HTTP resources by @file URL, so the corpus ships no local file.
+# The 3.0 profile reaches the refusal; the native 2.0 profile fails earlier
+# because its XPath 2.0 evaluation does not install unparsed-text() (see
+# xslt20-native-profile-function-surface).
 [[dispositions]]
 id = "remote-text-resources-without-fixtures"
 title = "unparsed-text cases read HTTP resources the corpus does not ship"
 category = "declared-non-goal"
-profiles = ["xslt30", "xslt20"]
+profiles = ["xslt30"]
 cases = [
   "unparsed-text/unparsed-text-2002",
   "unparsed-text/unparsed-text-2003",
@@ -39,19 +40,6 @@ links = [
   "https://www.w3.org/TR/xslt-30/#func-unparsed-text",
   "https://www.w3.org/TR/xpath-functions-31/#func-unparsed-text-available",
 ]
-
-# Adjudication: docs/superpowers/sdd/2026-11-15-xslt-adapter-gap-closure/task-1j-brief.md
-# A catalog <source select="..."> is a test-driver expression, not a source
-# document the harness can read.  id-043 also needs id302.xml, so only the
-# context-item declaration is a driver expression; keep the refusal.
-[[dispositions]]
-id = "catalog-driver-source-expression"
-title = "the harness reads a context source from a file or inline content, never a driver expression"
-category = "adapter-limit"
-profiles = ["xslt30", "xslt20"]
-cases = ["id/id-043"]
-reason = "id-043's environment declares <source select=\"parse-xml('<root/>')\" role=\".\"/>; evaluating a catalog driver expression needs the test driver's own XPath context, which the harness does not provide."
-links = ["https://www.w3.org/TR/xpath-functions-31/#func-parse-xml"]
 
 # key285 declares key101.xml as the context source and each case adds
 # key306.xml.  runner/run-tests.xsl applies get-source-documents to every
@@ -245,12 +233,20 @@ title = "the native XSLT 1.0 profile rejects XSLT 2.0 instructions"
 category = "declared-non-goal"
 profiles = ["xslt10"]
 cases = [
+  "apply-templates/conflict-resolution-1202a",
+  "bug/bug-1203",
+  "for-each-group/for-each-group-091",
+  "key/key-036",
   "namespace/namespace-2614",
   "namespace/namespace-2615",
   "namespace-alias/namespace-alias-0902",
+  "node/node-1904",
+  "whitespace/whitespace-001",
+  "whitespace/whitespace-004",
 ]
-reason = "These cases use xsl:namespace or xsl:sequence, which XSLT 1.0 does not define; the native 1.0 profile reports the unsupported instruction and, without xsl:fallback, refuses the case. The 1.0 profile's declared surface is the authority."
+reason = "These cases use xsl:next-match, xsl:analyze-string, xsl:for-each-group, xsl:namespace, or xsl:sequence, none of which XSLT 1.0 defines; the native 1.0 profile reports the unsupported instruction and, without xsl:fallback, refuses the case. The 1.0 profile's declared surface is the authority, so these are profile limits rather than missing 1.0 semantics."
 links = [
+  "https://www.w3.org/TR/xslt#section-Forwards-Compatible-Processing",
   "https://www.w3.org/TR/xslt-30/#element-namespace",
   "https://www.w3.org/TR/xslt-30/#element-sequence",
 ]
@@ -276,3 +272,1024 @@ profiles = ["xslt30"]
 cases = ["initial-template/initial-template-004"]
 reason = "<output tree=\"no\" result-var=\"result\"/> asks the driver to bind the raw principal sequence to $result (test-driver capability from bug 30196); suite.execute_case refuses that shape before running, and the refusal is a pinned contract (test_ci_contract's unsupported-shape test), so this task records it rather than changing the contract."
 links = ["https://github.com/w3c/xslt30-test/blob/master/tests/misc/initial-template/_initial-template-test-set.xml"]
+
+# ---------------------------------------------------------------------------
+# Final residual adjudication (2026-11-25)
+#
+# Every entry below was reviewed against the committed baselines and a fresh
+# unfiltered census.  Cases not claimed here stay visibly unclassified and are
+# listed, with their signatures, in the final results ledger and residual
+# ledger: they are cheap, actionable follow-ups rather than accepted behavior.
+# ---------------------------------------------------------------------------
+[[dispositions]]
+id = "xslt10-native-profile-excludes-xpath-2-0-expressions"
+title = "the native XPath 1.0 profile rejects XPath 2.0 expressions and functions"
+category = "declared-non-goal"
+profiles = ["xslt10"]
+cases = [
+  "attribute-set/attribute-set-1813",
+  "attribute-set/attribute-set-1814",
+  "attribute/attribute-0806",
+  "attribute/attribute-0902",
+  "attribute/attribute-1301",
+  "boolean/boolean-026",
+  "boolean/boolean-027",
+  "choose/choose-0103",
+  "choose/choose-0104",
+  "copy/copy-3702",
+  "current/current-001",
+  "document/document-1003",
+  "document/document-1004",
+  "expression/expression-0906",
+  "expression/expression-1601",
+  "key/key-037",
+  "key/key-077",
+  "number/number-0820",
+  "number/number-5003",
+  "number/number-5004",
+  "number/number-5007",
+  "number/number-5008",
+  "number/number-5011",
+  "number/number-5012",
+  "number/number-5017",
+  "number/number-5018",
+  "number/number-5019",
+  "number/number-5020",
+  "number/number-5021",
+  "number/number-5022",
+  "number/number-5023",
+  "number/number-5024",
+  "number/number-5025",
+  "number/number-5026",
+  "number/number-5029",
+  "number/number-5030",
+  "number/number-5033",
+  "number/number-5034",
+  "number/number-5037",
+  "number/number-5038",
+  "number/number-5041",
+  "number/number-5042",
+  "number/number-5047",
+  "number/number-5048",
+  "number/number-5049",
+  "number/number-5050",
+  "number/number-5053",
+  "number/number-5054",
+  "number/number-5057",
+  "number/number-5058",
+  "number/number-5059",
+  "number/number-5060",
+  "number/number-5061",
+  "number/number-5062",
+  "number/number-5065",
+  "number/number-5066",
+  "number/number-5067",
+  "number/number-5068",
+  "number/number-5069",
+  "number/number-5070",
+  "number/number-5071",
+  "number/number-5072",
+  "number/number-5073",
+  "number/number-5074",
+  "number/number-5075",
+  "number/number-5076",
+  "number/number-5077",
+  "number/number-5078",
+  "number/number-5079",
+  "number/number-5080",
+  "number/number-5081",
+  "number/number-5082",
+  "number/number-5083",
+  "number/number-5084",
+  "number/number-5085",
+  "number/number-5086",
+  "number/number-5087",
+  "number/number-5088",
+  "number/number-5089",
+  "number/number-5090",
+  "number/number-5091",
+  "number/number-5092",
+  "number/number-5093",
+  "number/number-5094",
+  "number/number-5095",
+  "number/number-5096",
+  "number/number-5097",
+  "number/number-5098",
+  "number/number-5099",
+  "number/number-5100",
+  "number/number-5101",
+  "number/number-5102",
+  "predicate/predicate-053",
+  "predicate/predicate-055",
+  "type/type-0138",
+  "variable/variable-1012",
+  "version/version-017",
+  "whitespace/whitespace-015",
+]
+reason = "The native 1.0 profile compiles and evaluates XPath 1.0 only. These stylesheets use 2.0 grammar or functions: 'eq'/'lt'/'ge' comparisons, 'for ... return', the 'to' range operator, sequence commas, 'instance of', function calls in path steps, QName variables, type tests such as element(*), and 2.0 functions (doc(), doc-available(), deep-equal(), static-base-uri(), string-to-codepoints(), escape-html-uri(), namespace-uri-for-prefix(), two-argument id()). The 1.0 profile reports a static XPST0003/XPST0017/XPST0008 or the declared unsupported-instruction error, which is the profile contract rather than a defect. The number-5xxx rows share the version-2.0 number-5000.xsl stylesheet and therefore fail at its '$from to $to' range expression."
+links = ["https://www.w3.org/TR/xslt#section-Expressions", "https://www.w3.org/TR/xpath/"]
+
+[[dispositions]]
+id = "xslt20-native-profile-excludes-xpath-3-0-syntax"
+title = "the native XPath 2.0 profile rejects XPath 3.0 operators and map syntax"
+category = "declared-non-goal"
+profiles = ["xslt20"]
+cases = [
+  "character-map/character-map-026",
+  "disable-output-escaping/doe-0409",
+  "for-each-group/for-each-group-084",
+  "function/function-0302",
+  "id/id-041",
+  "match/match-248",
+  "match/match-254",
+  "match/match-287",
+]
+reason = "The cases use XPath 3.0-only syntax: the lookup operator '?', the simple map operator '!', the string concatenation operator '||', and map constructors. The native 2.0 profile parses XPath 2.0 and reports XPST0003, which is the profile contract; several of these stylesheets also declare version='3.0' while the catalog marks them XSLT20-applicable, so the catalog applicability is broader than the profile's expression grammar."
+links = ["https://www.w3.org/TR/xpath-30/", "https://www.w3.org/TR/xslt20/"]
+
+[[dispositions]]
+id = "xslt20-profile-excludes-xslt-3-0-elements-and-attributes"
+title = "the native XSLT 2.0 profile rejects XSLT 3.0 elements and attributes"
+category = "declared-non-goal"
+profiles = ["xslt20"]
+cases = [
+  "collations/collations-0128",
+  "collection/collection-005",
+  "function/function-1902",
+  "output/output-0725",
+  "output/output-0726",
+  "use-when/use-when-0122",
+  "validation/validation-0215",
+]
+reason = "The cases declare XSLT20 applicability but use XSLT 3.0 surface: xsl:evaluate, xsl:mode, expand-text on xsl:message, html-version on xsl:output, item-separator on xsl:output, and an extension attribute on xsl:value-of. A native XSLT 2.0 processor has no such element or attribute and reports XTSE0010/XTSE0090; the 2.0 profile's declared surface is the authority for the refusal."
+links = ["https://www.w3.org/TR/xslt20/", "https://www.w3.org/TR/xslt-30/"]
+
+[[dispositions]]
+id = "xslt20-native-profile-function-surface"
+title = "XSLT 2.0 evaluation installs only part of the XSLT function library"
+category = "implementation-gap"
+profiles = ["xslt20"]
+cases = [
+  "error/error-1270c",
+  "format-number/format-number-038",
+  "format-number/format-number-039",
+  "format-number/format-number-040",
+  "format-number/format-number-041",
+  "function-available/function-available-1008",
+  "function-available/function-available-1010",
+  "function-available/function-available-1015",
+  "function-available/function-available-1016",
+  "function/function-2002",
+  "key/key-002",
+  "key/key-073",
+  "key/key-074",
+  "key/key-075",
+  "message/message-0313",
+  "normalize-unicode/normalize-unicode-008",
+  "number/number-1401",
+  "result-document/result-document-1101",
+  "result-document/result-document-1102",
+  "result-document/result-document-1103",
+  "result-document/result-document-1104",
+  "result-document/result-document-1105",
+  "result-document/result-document-1106",
+  "result-document/result-document-1107",
+  "result-document/result-document-1108",
+  "result-document/result-document-1109",
+  "result-document/result-document-1110",
+  "result-document/result-document-1111",
+  "unparsed-text/unparsed-text-17",
+  "unparsed-text/unparsed-text-18",
+  "unparsed-text/unparsed-text-19",
+  "unparsed-text/unparsed-text-2001",
+  "unparsed-text/unparsed-text-2002",
+  "unparsed-text/unparsed-text-2003",
+]
+reason = "When the processor evaluates with xpath='2.0', the XSLT function overrides are installed at fewer arities and names than the 3.0 path: unparsed-text()/unparsed-text-lines() are unknown; function-available() has only arity 1; key() has only arity 2; format-number() has only arity 2. The result-document-1101..1111 and error-1270c rows fail on a three-argument key() call before reaching their declared XTDE1480/XTDE1270 behaviour. This is a contained registration seam in the XPath 2.0 parser installation, not a per-case semantic problem."
+links = ["https://www.w3.org/TR/xslt20/#unparsed-text", "https://www.w3.org/TR/xslt20/#function-key"]
+
+[[dispositions]]
+id = "xslt20-profile-excludes-xslt-3-0-functions"
+title = "the native XSLT 2.0 profile does not expose XSLT 3.0 functions"
+category = "declared-non-goal"
+profiles = ["xslt20"]
+cases = [
+  "id/id-043",
+  "unparsed-entity-uri/unparsed-entity-01",
+  "unparsed-entity-uri/unparsed-entity-05",
+  "unparsed-entity-uri/unparsed-entity-06",
+]
+reason = "unparsed-entity-public-id() and parse-xml() arrived with XSLT 3.0. The unparsed-entity cases call the 3.0 public-id function and id-043's environment declares parse-xml(); a native XSLT 2.0 processor reports XPST0017. The catalog marks these rows XSLT20-applicable even though the stylesheets or environments use 3.0-only functions."
+links = ["https://www.w3.org/TR/xslt-30/#func-unparsed-entity-public-id", "https://www.w3.org/TR/xpath-functions-31/#func-parse-xml"]
+
+[[dispositions]]
+id = "capability-conditional-extended-year-duration-cases"
+title = "duration cases expect FODT0001 because they assume a processor without extended years"
+category = "queried-corpus"
+profiles = ["xslt30", "xslt20"]
+cases = [
+  "as/as-0106a",
+  "as/as-0110a",
+  "as/as-0111a",
+  "as/as-0112a",
+  "as/as-0501a",
+  "as/as-0801a",
+  "as/as-0802a",
+]
+reason = "The a-suffixed as cases expect FODT0001 when the processor cannot represent the requested negative or high year. pyxsd accepts extended years, so the operation succeeds; the b/n/o alternatives in the same catalog express the passing behaviour. The two expectations are mutually exclusive capabilities, and this engine deliberately implements the extended-year side."
+links = ["https://www.w3.org/TR/xpath-functions-31/#dt-date", "https://www.w3.org/TR/xpath-functions-31/#ERRFODT0001"]
+
+[[dispositions]]
+id = "capability-conditional-extended-year-date-cases"
+title = "date cases expect FODT0001 because they assume a processor without extended years"
+category = "queried-corpus"
+profiles = ["xslt30"]
+cases = [
+  "date/date-094b",
+  "date/date-094c",
+  "date/date-094d",
+  "date/date-095b",
+  "date/date-095c",
+  "date/date-095d",
+]
+reason = "As with the as cases, these variants expect FODT0001 when the processor cannot represent the requested year. pyxsd accepts extended years, so the constructor and arithmetic succeed; the n/o variants carry the alternative expectation."
+links = ["https://www.w3.org/TR/xpath-functions-31/#dt-date", "https://www.w3.org/TR/xpath-functions-31/#ERRFODT0001"]
+
+[[dispositions]]
+id = "xsd-1-1-year-zero-date-variants"
+title = "date variants require the XSD 1.1 year-zero lexical form"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = [
+  "date/date-094n",
+  "date/date-094o",
+  "date/date-095n",
+  "date/date-095o",
+]
+reason = "The n/o variants construct year 0000. The processor's default datatype library enforces the XSD 1.0 lexical rule that year zero is illegal, so xs:date('0000-...') raises FORG0001; XSD 1.1 permits year zero. Changing the default library version is a broader compatibility decision than this burn-down made."
+links = ["https://www.w3.org/TR/xmlschema11-2/#date", "https://www.w3.org/TR/xpath-functions-31/#casting-to-dates"]
+
+[[dispositions]]
+id = "implementation-defined-numbering-languages"
+title = "numbering falls back to English for languages the implementation does not claim"
+category = "declared-non-goal"
+profiles = ["xslt30", "xslt20"]
+cases = [
+  "number/number-0802",
+  "number/number-0812",
+  "number/number-0813",
+  "number/number-0828",
+  "number/number-0829",
+  "number/number-2506",
+]
+reason = "XSLT 3.0 section 12.4 makes the supported language set implementation-defined. pyxsd implements English word/ordinal numbering and falls back to it for German and Italian; the corpus grades these cases against that capability. Supporting the languages, or honoring the catalog's languages_for_numbering dependency in selection, is separate localization work."
+links = ["https://www.w3.org/TR/xslt-30/#number", "https://www.w3.org/TR/xpath-functions-31/#formatting-integers"]
+
+[[dispositions]]
+id = "numbering-token-range-capability-mismatch"
+title = "numbering token tables extend a few Unicode ranges past the catalog capability"
+category = "queried-corpus"
+profiles = ["xslt30", "xslt20"]
+cases = [
+  "number/number-5037",
+  "number/number-5053",
+  "number/number-5059",
+  "number/number-5061",
+  "number/number-5095",
+]
+reason = "The catalog declares these numbering combinations with range '1 to 9'; pyxsd's table provides the same token for 10, so the processor renders 10 with the special form where the corpus expects a decimal fallback from 10 upward. The numbering table and the catalog's combinations_for_numbering capability disagree about the range; the formatter's output is internally consistent."
+links = ["https://www.w3.org/TR/xslt-30/#number", "https://www.w3.org/TR/xpath-functions-31/#formatting-integers"]
+
+[[dispositions]]
+id = "xsl-default-mode-not-implemented"
+title = "xsl:default-mode and @default-mode do not select an implicit mode"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = [
+  "mode/mode-1601",
+  "mode/mode-1603",
+  "mode/mode-1604",
+  "mode/mode-1606",
+  "mode/mode-1607",
+  "mode/mode-1609",
+  "mode/mode-1610",
+  "mode/mode-1612",
+  "mode/mode-1614",
+  "mode/mode-1616",
+  "mode/mode-1618",
+  "mode/mode-1619",
+  "mode/mode-1707",
+  "mode/mode-1709",
+  "mode/mode-1710",
+  "mode/mode-1711",
+  "mode/mode-1712",
+]
+reason = "The mode specificity/conflict work is complete, but the default-mode feature is not wired: xsl:default-mode, @default-mode on literal result elements and instructions, and default-mode on xsl:template/xsl:apply-templates (including inside packages) do not redirect the built-in or explicit mode selection. The cases therefore match in the unnamed mode and emit the wrong nodes or text."
+links = ["https://www.w3.org/TR/xslt-30/#default-mode", "https://www.w3.org/TR/xslt-30/#element-mode"]
+
+[[dispositions]]
+id = "base-uri-copy-inheritance-residuals"
+title = "base URIs are not inherited through nested xml:base and copied nodes"
+category = "implementation-gap"
+profiles = ["xslt30", "xslt20"]
+cases = [
+  "base-uri/base-uri-006",
+  "base-uri/base-uri-014",
+  "base-uri/base-uri-031",
+  "base-uri/base-uri-037",
+  "base-uri/base-uri-039",
+  "base-uri/base-uri-040",
+  "base-uri/base-uri-041",
+  "base-uri/base-uri-042",
+  "base-uri/base-uri-046",
+  "base-uri/base-uri-047",
+  "base-uri/base-uri-048",
+]
+reason = "The node-property and document() seams are fixed, but these cases still fail on base-URI inheritance and resolution: deep/shallow copies under a nested xml:base, constructed parents with xml:base, the base of copied attributes and comments, DTD/entity origin identifiers, and relative resolve-uri() against constructed nodes. The visible effect is a wrong base-uri()/resolve-uri() string or a failed ends-with assertion, not an exception."
+links = ["https://www.w3.org/TR/xslt-30/#base-uri", "https://www.w3.org/TR/xpath-functions-31/#func-base-uri"]
+
+[[dispositions]]
+id = "base-uri-include-and-builtin-copy-residuals"
+title = "XInclude and built-in-template copies lose their base URI"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = ["base-uri/base-uri-052", "base-uri/base-uri-053"]
+reason = "052 asserts the base URI of elements read through XInclude; 053 asserts the base of nodes constructed by the built-in shallow-copy and deep-copy template rules. The engine's XInclude base tracking and built-in-copy base propagation are incomplete, so the ends-with assertions fail. This is base-URI construction, not a harness result-base gap."
+links = ["https://www.w3.org/TR/xslt-30/#base-uri", "https://www.w3.org/TR/xinclude/"]
+
+[[dispositions]]
+id = "document-fragment-identifiers-unresolved-xslt30"
+title = "document()/doc() fragment identifiers are not resolved"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = ["docbook/docbook-004", "document/document-1503", "id/id-001"]
+reason = "A URI with a fragment identifier is rejected with XTDE1160. XSLT 3.0 leaves fragment identifier resolution implementation-defined but requires a processor that accepts one to return the identified element; the corpus supplies documents with xml:id fragments. The engine currently refuses all fragments rather than resolving the simple xml:id case."
+links = ["https://www.w3.org/TR/xslt-30/#document-fn", "https://www.w3.org/TR/xpath-functions-31/#func-doc"]
+
+[[dispositions]]
+id = "document-fragment-identifiers-unresolved-xslt20"
+title = "document()/doc() fragment identifiers are not resolved"
+category = "implementation-gap"
+profiles = ["xslt20"]
+cases = ["document/document-1503", "id/id-001"]
+reason = "A URI with a fragment identifier is rejected with XTDE1160. XSLT 3.0 leaves fragment identifier resolution implementation-defined but requires a processor that accepts one to return the identified element; the corpus supplies documents with xml:id fragments. The engine currently refuses all fragments rather than resolving the simple xml:id case."
+links = ["https://www.w3.org/TR/xslt-30/#document-fn", "https://www.w3.org/TR/xpath-functions-31/#func-doc"]
+
+[[dispositions]]
+id = "key-lookup-long-tail"
+title = "key() results differ on source/temporary trees and composite keys"
+category = "implementation-gap"
+profiles = ["xslt30", "xslt20"]
+cases = [
+  "key/key-070",
+  "key/key-076",
+  "key/key-077",
+  "key/key-081",
+  "key/key-084",
+  "key/key-088",
+]
+reason = "The constructor/no-@use/third-argument work is complete, but these cases still fail on key lookup semantics: keys built over source versus temporary trees, composite/typed key atomization, key() in xsl:number patterns, and XTSE1222 duplicate declarations. The visible effect is a missing or extra matched node, or a missing static error."
+links = ["https://www.w3.org/TR/xslt-30/#key", "https://www.w3.org/TR/xslt-30/#func-key"]
+
+[[dispositions]]
+id = "key-lookup-long-tail-xslt30"
+title = "key() type and declaration residuals in the 3.0 profile"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = [
+  "key/key-002",
+  "key/key-087",
+  "key/key-089",
+  "key/key-090",
+  "key/key-094",
+  "key/key-095",
+  "key/key-096",
+]
+reason = "These 3.0-only rows cover a sequence-valued key lookup over a temporary tree (key-002), deep-equal over keyed string sequences (key-087/090), a nested document count (key-089), duplicate key declarations that must raise XTSE1222 (key-094/095), and a phrase key lookup (key-096). The common seam is key typing/annotation over source and temporary trees."
+links = ["https://www.w3.org/TR/xslt-30/#key", "https://www.w3.org/TR/xslt-30/#func-key"]
+
+[[dispositions]]
+id = "idref-function-not-implemented"
+title = "idref() finds no IDREF annotations"
+category = "implementation-gap"
+profiles = ["xslt30", "xslt20"]
+cases = ["id/id-039", "id/id-040", "id/id-042"]
+reason = "id()/element-with-id() work over DTD and xml:id annotations, but the matching IDREF index is not exposed: idref('a') returns an empty sequence (or the wrong nodes), so the cases' attribute assertions fail. Cost is roughly a per-document IDREF index mirroring the existing ID index."
+links = ["https://www.w3.org/TR/xpath-functions-31/#func-idref", "https://www.w3.org/TR/xml/#ID"]
+
+[[dispositions]]
+id = "idref-two-document-form"
+title = "idref() with a node argument in a second document"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = ["id/id-043"]
+reason = "id-043 calls the two-argument idref(ids, node) form against a second document. The context source now loads and parse-xml is available, but the IDREF annotations of the second document are not indexed, so the idref output has the wrong attributes."
+links = ["https://www.w3.org/TR/xpath-functions-31/#func-idref", "https://www.w3.org/TR/xml/#ID"]
+
+[[dispositions]]
+id = "unparsed-entity-functions-unavailable"
+title = "unparsed entity and public identifier functions are not exposed"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = [
+  "unparsed-entity-uri/unparsed-entity-01",
+  "unparsed-entity-uri/unparsed-entity-02",
+  "unparsed-entity-uri/unparsed-entity-03",
+  "unparsed-entity-uri/unparsed-entity-04",
+  "unparsed-entity-uri/unparsed-entity-05",
+  "unparsed-entity-uri/unparsed-entity-06",
+  "unparsed-entity-uri/unparsed-entity-07",
+  "unparsed-entity-uri/unparsed-entity-08",
+  "unparsed-entity-uri/unparsed-entity-09",
+  "unparsed-entity-uri/unparsed-entity-10",
+  "unparsed-entity-uri/unparsed-entity-50",
+]
+reason = "unparsed-entity-public-id() is unregistered, unparsed-entity-uri() always returns '' because the document model does not carry the DTD's unparsed entity declarations (name to system/public id), and the dynamic function-item form in unparsed-entity-09 loses its closure focus. The observed outcomes are XPST0017 for public-id, an empty/wrong URI, or XPDY0002; no case surfaces an internal exception. A fix needs the document-model field, the DTD collector handler, and closure focus retention."
+links = ["https://www.w3.org/TR/xslt-30/#func-unparsed-entity-uri", "https://www.w3.org/TR/xml/#sec-entity-decl"]
+
+[[dispositions]]
+id = "unparsed-entity-uri-dtd-data-xslt20"
+title = "unparsed-entity-uri() lacks DTD unparsed entity data"
+category = "implementation-gap"
+profiles = ["xslt20"]
+cases = ["unparsed-entity-uri/unparsed-entity-02", "unparsed-entity-uri/unparsed-entity-50"]
+reason = "The 2.0 profile exposes unparsed-entity-uri(), but the DTD's unparsed entity declarations are not carried on the document, so the function returns an empty or wrong URI; unparsed-entity-uri-050 additionally fails its argument conversion. This is the same document-model gap as the 3.0 family."
+links = ["https://www.w3.org/TR/xslt20/#function-unparsed-entity-uri", "https://www.w3.org/TR/xml/#sec-entity-decl"]
+
+[[dispositions]]
+id = "stream-available-not-implemented"
+title = "stream-available() is unregistered"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = [
+  "stream-available/stream-available-001",
+  "stream-available/stream-available-002",
+  "stream-available/stream-available-003",
+  "stream-available/stream-available-004",
+  "stream-available/stream-available-005",
+  "stream-available/stream-available-006",
+]
+reason = "fn:stream-available() is part of XSLT 3.0 and is not registered, so every case reports XPST0017. Implementing it needs well-formedness-through-first-STag scanning and external-DTD probing; the cases are not streaming verdicts, only function availability."
+links = ["https://www.w3.org/TR/xslt-30/#func-stream-available", "https://www.w3.org/TR/xml/#sec-guessing"]
+
+[[dispositions]]
+id = "external-entities-not-retrieved-xslt30"
+title = "external DTD entities are not fetched by the default parser"
+category = "platform-limit"
+profiles = ["xslt30"]
+cases = [
+  "base-uri/base-uri-051",
+  "base-uri/base-uri-051a",
+  "base-uri/base-uri-051b",
+  "copy/copy-1301",
+  "copy/copy-1401",
+  "resolve-uri/resolve-uri-016",
+  "resolve-uri/resolve-uri-021",
+]
+reason = "The corpus ships the referenced files, but the documented parser profiles never retrieve an external DTD or entity; the default stdlib parser therefore reports an undefined entity (or a document-not-well-formed error when the entity is in the document prolog). Resolving these cases needs an opt-in external-entity resolver with its own resource policy, which is an operational decision outside the semantic burn-down."
+links = ["https://www.w3.org/TR/xml/#sec-external-ent", "https://www.w3.org/TR/xslt-30/#document-fn"]
+
+[[dispositions]]
+id = "external-entities-not-retrieved-xslt20"
+title = "external DTD entities are not fetched by the default parser"
+category = "platform-limit"
+profiles = ["xslt20"]
+cases = [
+  "copy/copy-1301",
+  "copy/copy-1401",
+  "resolve-uri/resolve-uri-016",
+  "resolve-uri/resolve-uri-021",
+]
+reason = "The corpus ships the referenced files, but the documented parser profiles never retrieve an external DTD or entity; the default stdlib parser therefore reports an undefined entity (or a document-not-well-formed error when the entity is in the document prolog). Resolving these cases needs an opt-in external-entity resolver with its own resource policy, which is an operational decision outside the semantic burn-down."
+links = ["https://www.w3.org/TR/xml/#sec-external-ent", "https://www.w3.org/TR/xslt-30/#document-fn"]
+
+[[dispositions]]
+id = "external-entities-not-retrieved-xslt10"
+title = "external DTD entities are not fetched by the default parser"
+category = "platform-limit"
+profiles = ["xslt10"]
+cases = ["copy/copy-1301", "copy/copy-1401"]
+reason = "The corpus ships the referenced files, but the documented parser profiles never retrieve an external DTD or entity; the default stdlib parser therefore reports an undefined entity (or a document-not-well-formed error when the entity is in the document prolog). Resolving these cases needs an opt-in external-entity resolver with its own resource policy, which is an operational decision outside the semantic burn-down."
+links = ["https://www.w3.org/TR/xml/#sec-external-ent", "https://www.w3.org/TR/xslt-30/#document-fn"]
+
+[[dispositions]]
+id = "snapshot-0102a-namespace-node-and-kind-test"
+title = "snapshot-0102a combines a treat-as kind test and namespace-node matching"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = ["snapshot/snapshot-0102a"]
+reason = "Two independent gaps: treat as document-node() evaluates the kind test against the focus (XPDY0050 on an element) instead of the snapshot item, and namespace-node() template matching over apply-templates does not fire. The case was a false pass before the namespace work and now fails honestly; each gap is a small elementpath/substrate override."
+links = ["https://www.w3.org/TR/xslt-30/#func-snapshot", "https://www.w3.org/TR/xpath-datamodel-31/#NamespaceNode"]
+
+[[dispositions]]
+id = "square-array-201-cross-tree-document-order"
+title = "a child path step keeps first-seen order across trees"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = ["arrays/square-array-201"]
+reason = "After ?* / the child path keeps elementpath's first-seen order, while the corpus expects the source document's nodes before a constructed tree's. The case now executes and fails honestly on document order. A child-path override using the engine's _node_order_key is the contained fix."
+links = ["https://www.w3.org/TR/xpath-31/#id-path-operator", "https://www.w3.org/TR/xpath-datamodel-31/#document-order"]
+
+[[dispositions]]
+id = "evaluate-residuals"
+title = "xsl:evaluate/lazy analysis residual behaviours"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = [
+  "evaluate/evaluate-015",
+  "evaluate/evaluate-022",
+  "evaluate/evaluate-023",
+  "evaluate/evaluate-025",
+  "evaluate/evaluate-025a",
+  "evaluate/evaluate-045",
+  "evaluate/evaluate-048",
+  "evaluate/evaluate-049",
+]
+reason = "The evaluation shapes and dynamic-with-params mapping are implemented. Remaining rows cover lazy static analysis surfacing XPST0051 instead of XTDE3160 for unknown schema types (evaluate-045/048), string-to-integer function conversion leniency (evaluate-022), absent focus returning empty instead of XPDY0002 (evaluate-025/025a), reserved function names that own grammar tokens (evaluate-015), and an any-of value assertion (evaluate-023). Each is a separate contained evaluator seam."
+links = ["https://www.w3.org/TR/xslt-30/#element-evaluate", "https://www.w3.org/TR/xpath-31/#id-reserved-fn-names"]
+
+[[dispositions]]
+id = "merge-residuals"
+title = "xsl:merge key and error-taxonomy residuals"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = [
+  "merge/merge-043",
+  "merge/merge-046",
+  "merge/merge-046a",
+  "merge/merge-051",
+  "merge/merge-054",
+  "merge/merge-086",
+  "merge/merge-096",
+  "merge/merge-097",
+  "merge/merge-100",
+  "merge/merge-101",
+]
+reason = "Merge iteration works, but these rows remain: boolean merge keys default to native comparison rather than text (merge-096), schema-aware/collection/streamable sources (merge-043/051/097), XTSE0020 versus XTSE0010 placement, and XTDE3480/XTDE3510 taxonomy that fails on an unregistered function first. The dominant visible effect is a wrong error code, not a wrong merge result."
+links = ["https://www.w3.org/TR/xslt-30/#element-merge", "https://www.w3.org/TR/xslt-30/#merge-key"]
+
+[[dispositions]]
+id = "for-each-group-085-assertion-whitespace"
+title = "the assert-xml comparison counts source whitespace text nodes"
+category = "adapter-limit"
+profiles = ["xslt30", "xslt20"]
+cases = ["for-each-group/for-each-group-085"]
+reason = "The engine's emitted structure matches the expected structure, but the harness's XML assertion compares whitespace-only source text nodes inside the outer result element and reports a node-kind difference. This is the known pretty-printing assertion gap, not a grouping defect."
+links = ["https://www.w3.org/TR/xslt-30/#element-for-each-group", "https://github.com/w3c/xslt30-test"]
+
+[[dispositions]]
+id = "for-each-group-089-version-gated-accumulator"
+title = "a version-2.0 module does not see accumulator-after"
+category = "declared-non-goal"
+profiles = ["xslt30"]
+cases = ["for-each-group/for-each-group-089"]
+reason = "The stylesheet's version-2.0 module is evaluated with the version-gated 2.0 function surface, so the 3.0 accumulator-after() function is unavailable. That gate is the native-profile contract (Task 2.6); changing it for a 3.0 processor compiling a 2.0 module would reintroduce silent 3.0 semantics."
+links = ["https://www.w3.org/TR/xslt-30/#func-accumulator-after", "https://www.w3.org/TR/xslt-30/#backwards-compatibility"]
+
+[[dispositions]]
+id = "output-parameter-document-loading"
+title = "parameter-document loading needs a resource-aware resolver"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = [
+  "output/output-0706",
+  "output/output-0706a",
+  "output/output-0720",
+  "output/output-0721",
+  "output/output-0722",
+  "result-document/result-document-1406",
+  "result-document/result-document-1411",
+]
+reason = "xsl:output/@parameter-document and the result-document equivalent read serialization parameters from a URI. The engine deliberately performs no implicit I/O and has no resource-policy-aware resolver at compile/runtime, so the maps are unavailable and serialization either fails with SENR0001 or mismatches. Implementing it means adding declared I/O plumbing, not a serializer tweak."
+links = ["https://www.w3.org/TR/xslt-30/#serialization-parameters", "https://www.w3.org/TR/xslt-xquery-serialization-31/"]
+
+[[dispositions]]
+id = "json-node-html-serialization"
+title = "JSON nodes under the HTML output method"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = ["output/output-0702", "result-document/result-document-1402", "result-document/result-document-1402b"]
+reason = "The cases serialize JSON maps/arrays with method='html'. The catalog expects HTML4-style meta elements and the preserved XHTML namespace from the JSON node model; the serializer's HTML method does not invent that JSON-node mapping. Native JSON serialization semantics belong to the JSON/functions work (PR 3); this is the HTML-method intersection only."
+links = ["https://www.w3.org/TR/xslt-xquery-serialization-31/#html-output", "https://www.w3.org/TR/xslt-30/#json"]
+
+[[dispositions]]
+id = "default-html-version-applicability"
+title = "the catalog case depends on default_html_version=5"
+category = "adapter-limit"
+profiles = ["xslt30"]
+cases = ["output/output-0195a"]
+reason = "The case expects SERE0014 only when the processor's default HTML version is below 5; this engine's default is HTML 1.0, so output-0195 correctly raises SERE0014 and its 5.0 variant is not applicable. The harness's selection vocabulary does not model default_html_version, so the variant is graded as a failure rather than excluded."
+links = ["https://www.w3.org/TR/xslt-xquery-serialization-31/#html-version", "https://www.w3.org/TR/xslt-30/#serialization"]
+
+[[dispositions]]
+id = "current-output-uri-residuals"
+title = "current-output-uri() depends on pattern variables and harness base URIs"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = ["current-output-uri/current-output-uri-007", "current-output-uri/current-output-uri-008", "current-output-uri/current-output-uri-014"]
+reason = "The function is registered and the output-URI scoping is correct. 007/008 depend on xsl:template match='$base' pattern-variable dispatch/typing, and 014 depends on the harness turning an empty declared output file into an absolute base URI. Both are outside the output-policy seam fixed in Task 2.10."
+links = ["https://www.w3.org/TR/xslt-30/#func-current-output-uri", "https://www.w3.org/TR/xslt-30/#result-document"]
+
+[[dispositions]]
+id = "result-document-base-uri-and-namespace-view-xslt30"
+title = "secondary result trees do not inherit their output base URI, and the assertion cannot see namespace nodes"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = ["result-document/result-document-0102", "result-document/result-document-1136"]
+reason = "0102 expects the secondary result tree's document node base URI to be the output URI; the engine constructs the tree without that inheritance. 1136 asserts a namespace node on the constructed result tree, which the ElementTree-based assertion substrate cannot see. The second is the same assertion-driver namespace boundary recorded for the namespace family."
+links = ["https://www.w3.org/TR/xslt-30/#result-document", "https://www.w3.org/TR/xpath-datamodel-31/#NamespaceNode"]
+
+[[dispositions]]
+id = "result-document-base-uri-and-namespace-view-xslt20"
+title = "secondary result trees do not inherit their output base URI, and the assertion cannot see namespace nodes"
+category = "implementation-gap"
+profiles = ["xslt20"]
+cases = ["result-document/result-document-0102"]
+reason = "0102 expects the secondary result tree's document node base URI to be the output URI; the engine constructs the tree without that inheritance. 1136 asserts a namespace node on the constructed result tree, which the ElementTree-based assertion substrate cannot see. The second is the same assertion-driver namespace boundary recorded for the namespace family."
+links = ["https://www.w3.org/TR/xslt-30/#result-document", "https://www.w3.org/TR/xpath-datamodel-31/#NamespaceNode"]
+
+[[dispositions]]
+id = "static-transform-and-nested-base-output-uri"
+title = "static fn:transform and implementation-defined nested base output URIs"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = ["transform/transform-004", "transform/transform-009"]
+reason = "transform-004 evaluates fn:transform from a static expression, where the substrate's native symbol is disabled, so it reports FOXT0004. transform-009 relies on the F&O implementation-defined base output URI for a nested transform without base-output-uri; this engine refuses to invent one because that would change the principal/secondary key contract. Both are explicit policy choices."
+links = ["https://www.w3.org/TR/xpath-functions-31/#func-transform", "https://www.w3.org/TR/xslt-30/#func-transform"]
+
+[[dispositions]]
+id = "schema-aware-typed-processing-xslt30"
+title = "schema-aware type annotations, validation outcomes, and NOTATION data are incomplete"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = [
+  "import-schema/import-schema-044",
+  "import-schema/import-schema-055",
+  "import-schema/import-schema-065",
+  "import-schema/import-schema-081",
+  "import-schema/import-schema-087",
+  "import-schema/import-schema-088",
+  "import-schema/import-schema-118",
+  "import-schema/import-schema-120",
+  "import-schema/import-schema-137",
+  "import-schema/import-schema-152",
+  "import-schema/import-schema-155",
+  "import-schema/import-schema-186",
+  "import-schema/import-schema-187",
+  "import-schema/import-schema-192",
+  "import-schema/import-schema-193",
+  "import-schema/import-schema-201",
+  "import-schema/import-schema-203",
+  "match/match-148",
+  "match/match-149",
+  "match/match-150",
+  "match/match-164",
+  "match/match-165",
+  "match/match-166",
+  "match/match-168",
+  "match/match-169",
+  "match/match-186",
+  "match/match-187",
+  "match/match-188",
+  "match/match-189",
+  "match/match-190",
+  "match/match-191",
+  "match/match-192",
+  "match/match-203",
+  "match/match-205",
+  "match/match-206",
+  "match/match-207",
+  "match/match-208",
+  "match/match-209",
+  "match/match-210",
+  "match/match-211",
+  "notation/notation-0001",
+  "notation/notation-0002",
+  "notation/notation-0003",
+  "notation/notation-0004",
+  "notation/notation-0103",
+  "notation/notation-0201",
+  "notation/notation-0202",
+  "notation/notation-0301",
+  "notation/notation-0302",
+  "notation/notation-0303",
+  "notation/notation-0304",
+  "notation/notation-0305",
+  "notation/notation-0401",
+  "notation/notation-0402",
+  "notation/notation-0403",
+  "notation/notation-0404",
+  "notation/notation-0501",
+  "notation/notation-0502",
+  "notation/notation-0701",
+  "notation/notation-0702",
+  "strip-type-annotations/strip-type-annotations-003",
+  "strip-type-annotations/strip-type-annotations-004",
+  "strip-type-annotations/strip-type-annotations-005",
+  "strip-type-annotations/strip-type-annotations-006",
+  "strip-type-annotations/strip-type-annotations-007",
+  "strip-type-annotations/strip-type-annotations-008",
+  "strip-type-annotations/strip-type-annotations-009",
+  "strip-type-annotations/strip-type-annotations-010",
+  "strip-type-annotations/strip-type-annotations-021",
+  "strip-type-annotations/strip-type-annotations-026",
+  "strip-type-annotations/strip-type-annotations-027",
+  "validation/validation-0006",
+  "validation/validation-0201",
+  "validation/validation-0202",
+  "validation/validation-0213",
+  "validation/validation-0214",
+  "validation/validation-0401",
+  "validation/validation-0501",
+  "validation/validation-0601",
+  "validation/validation-0701",
+  "validation/validation-0801",
+  "validation/validation-1002",
+  "validation/validation-1201",
+  "validation/validation-1501",
+  "validation/validation-1702",
+  "validation/validation-2001",
+  "validation/validation-2002",
+]
+reason = "Schema awareness is declared for the 3.0 and native 2.0 processors, and imported-schema compilation works, but the typed layer is incomplete: user-derived type identity and annotated values, validation outcomes (XTTE1510/XTTE1555/XTTE1550), NOTATION enumerations and constructors, module input-type-annotation agreement (XTSE0265), and schema-attribute()/element(*,T)/attribute(*,T) template matching differ from the expectations. The visible effects are typed-value mismatches, missing expected nodes, and unexpected XTTE/FORG/XTSE errors, not crashes. Completing it means extending the schema-to-XDM annotation pipeline across validation and pattern matching."
+links = ["https://www.w3.org/TR/xslt-30/#schema-aware", "https://www.w3.org/TR/xslt-30/#patterns"]
+
+[[dispositions]]
+id = "schema-aware-typed-processing-xslt20"
+title = "schema-aware type annotations, validation outcomes, and NOTATION data are incomplete"
+category = "implementation-gap"
+profiles = ["xslt20"]
+cases = [
+  "import-schema/import-schema-044",
+  "import-schema/import-schema-055",
+  "import-schema/import-schema-065",
+  "import-schema/import-schema-081",
+  "import-schema/import-schema-087",
+  "import-schema/import-schema-088",
+  "import-schema/import-schema-118",
+  "import-schema/import-schema-120",
+  "import-schema/import-schema-137",
+  "import-schema/import-schema-152",
+  "import-schema/import-schema-155",
+  "import-schema/import-schema-186",
+  "import-schema/import-schema-187",
+  "match/match-148",
+  "match/match-149",
+  "match/match-150",
+  "match/match-164",
+  "match/match-165",
+  "match/match-166",
+  "match/match-168",
+  "match/match-169",
+  "match/match-186",
+  "match/match-187",
+  "match/match-188",
+  "match/match-189",
+  "match/match-190",
+  "match/match-191",
+  "match/match-192",
+  "match/match-203",
+  "match/match-205",
+  "match/match-206",
+  "match/match-207",
+  "match/match-208",
+  "match/match-209",
+  "match/match-210",
+  "match/match-211",
+  "notation/notation-0103",
+  "notation/notation-0201",
+  "notation/notation-0202",
+  "notation/notation-0301",
+  "notation/notation-0302",
+  "notation/notation-0303",
+  "notation/notation-0304",
+  "notation/notation-0305",
+  "notation/notation-0401",
+  "notation/notation-0402",
+  "notation/notation-0403",
+  "notation/notation-0404",
+  "notation/notation-0501",
+  "notation/notation-0502",
+  "notation/notation-0701",
+  "notation/notation-0702",
+  "strip-type-annotations/strip-type-annotations-003",
+  "strip-type-annotations/strip-type-annotations-004",
+  "strip-type-annotations/strip-type-annotations-005",
+  "strip-type-annotations/strip-type-annotations-006",
+  "strip-type-annotations/strip-type-annotations-007",
+  "strip-type-annotations/strip-type-annotations-008",
+  "strip-type-annotations/strip-type-annotations-009",
+  "strip-type-annotations/strip-type-annotations-010",
+  "strip-type-annotations/strip-type-annotations-021",
+  "strip-type-annotations/strip-type-annotations-026",
+  "validation/validation-0201",
+  "validation/validation-0202",
+  "validation/validation-0213",
+  "validation/validation-0214",
+  "validation/validation-0401",
+  "validation/validation-0501",
+  "validation/validation-0601",
+  "validation/validation-0701",
+  "validation/validation-0801",
+  "validation/validation-1002",
+  "validation/validation-1201",
+  "validation/validation-1501",
+  "validation/validation-2001",
+  "validation/validation-2002",
+]
+reason = "Schema awareness is declared for the 3.0 and native 2.0 processors, and imported-schema compilation works, but the typed layer is incomplete: user-derived type identity and annotated values, validation outcomes (XTTE1510/XTTE1555/XTTE1550), NOTATION enumerations and constructors, module input-type-annotation agreement (XTSE0265), and schema-attribute()/element(*,T)/attribute(*,T) template matching differ from the expectations. The visible effects are typed-value mismatches, missing expected nodes, and unexpected XTTE/FORG/XTSE errors, not crashes. Completing it means extending the schema-to-XDM annotation pipeline across validation and pattern matching."
+links = ["https://www.w3.org/TR/xslt-30/#schema-aware", "https://www.w3.org/TR/xslt-30/#patterns"]
+
+[[dispositions]]
+id = "xsd-type-conversion-and-typing-residuals-xslt30"
+title = "XSD constructors, typed values, and type functions do not bridge uniformly"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = [
+  "castable/castable-005",
+  "castable/castable-006",
+  "type-available/type-available-0146",
+  "type-available/type-available-0147",
+  "type-expr/type-expr-0101",
+  "type-functions/type-functions-0101",
+  "type-functions/type-functions-0201",
+  "type-functions/type-functions-0202",
+  "type-functions/type-functions-0301",
+  "type-functions/type-functions-0304",
+  "type-functions/type-functions-0401",
+  "type-functions/type-functions-0501",
+  "type-functions/type-functions-0503",
+  "type/type-0166",
+  "type/type-0174",
+  "type/type-0175",
+]
+reason = "The remaining rows cover user-derived constructor functions not registered (s:myUnionType1, castable-005/006), typed-value absence on adapter attributes, date/QName adapters passed to elementpath functions, untypedAtomic text in type-available output, a facet violation in a user type, and missing XTTE0520/0570/0770 checks. The visible behaviour is a wrong typed value or an unexpected FORG/XPTY/FacetViolation, not a process defect."
+links = ["https://www.w3.org/TR/xslt-30/#using-xsd-types", "https://www.w3.org/TR/xpath-functions-31/#casting"]
+
+[[dispositions]]
+id = "xsd-type-conversion-and-typing-residuals-xslt20"
+title = "XSD constructors, typed values, and type functions do not bridge uniformly"
+category = "implementation-gap"
+profiles = ["xslt20"]
+cases = [
+  "type-available/type-available-0146",
+  "type-available/type-available-0147",
+  "type-expr/type-expr-0101",
+  "type-functions/type-functions-0101",
+  "type-functions/type-functions-0201",
+  "type-functions/type-functions-0301",
+  "type-functions/type-functions-0304",
+  "type-functions/type-functions-0401",
+  "type-functions/type-functions-0501",
+  "type-functions/type-functions-0503",
+  "type/type-0159",
+  "type/type-0166",
+  "type/type-0168a",
+  "type/type-0174",
+  "type/type-0175",
+]
+reason = "The remaining rows cover user-derived constructor functions not registered (s:myUnionType1, castable-005/006), typed-value absence on adapter attributes, date/QName adapters passed to elementpath functions, untypedAtomic text in type-available output, a facet violation in a user type, and missing XTTE0520/0570/0770 checks. The visible behaviour is a wrong typed value or an unexpected FORG/XPTY/FacetViolation, not a process defect."
+links = ["https://www.w3.org/TR/xslt-30/#using-xsd-types", "https://www.w3.org/TR/xpath-functions-31/#casting"]
+
+[[dispositions]]
+id = "regex-syntax-validation-residuals-xslt30"
+title = "regex syntax validation and character-class parsing residuals"
+category = "implementation-gap"
+profiles = ["xslt30"]
+cases = [
+  "regex-syntax/regex-syntax-0056a",
+  "regex-syntax/regex-syntax-0086a",
+  "regex-syntax/regex-syntax-0102a",
+  "regex-syntax/regex-syntax-0506",
+]
+reason = "Two directions remain: the 3.0 rows reject valid XSD 1.1 character-class forms such as subtraction/block ranges with FORX0002 ('unescaped character -'), while the 2.0 rows accept patterns the XSD/XPath regex grammar forbids (missing FORX0002 for invalid escapes and class syntax) or fail their boolean assertions. The validator is elementpath's regex front end; the corpus exercises the XSD regex dialect distinctions."
+links = ["https://www.w3.org/TR/xpath-functions-31/#regex-syntax", "https://www.w3.org/TR/xmlschema11-2/#regexs"]
+
+[[dispositions]]
+id = "regex-syntax-validation-residuals-xslt20"
+title = "regex syntax validation and character-class parsing residuals"
+category = "implementation-gap"
+profiles = ["xslt20"]
+cases = [
+  "regex-syntax-xslt20/regex-syntax-xslt20-0056",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0086",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0102",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0506",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0766",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0845",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0846",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0847",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0848",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0849",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0850",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0851",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0852",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0853",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0855",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0856",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0857",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0858",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0859",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0860",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0861",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0864",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0865",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0866",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0877",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0878",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0880",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0883",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0942",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0943",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0944",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0945",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0946",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0947",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0948",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0949",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0950",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0951",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0952",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0953",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0954",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0955",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0984",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0985",
+]
+reason = "Two directions remain: the 3.0 rows reject valid XSD 1.1 character-class forms such as subtraction/block ranges with FORX0002 ('unescaped character -'), while the 2.0 rows accept patterns the XSD/XPath regex grammar forbids (missing FORX0002 for invalid escapes and class syntax) or fail their boolean assertions. The validator is elementpath's regex front end; the corpus exercises the XSD regex dialect distinctions."
+links = ["https://www.w3.org/TR/xpath-functions-31/#regex-syntax", "https://www.w3.org/TR/xmlschema11-2/#regexs"]
+
+[[dispositions]]
+id = "budget-boundary-timeouts-xslt30"
+title = "xslt30 cases that exceed the 5 s per-case harness budget"
+category = "performance-budget"
+profiles = ["xslt30"]
+cases = [
+  "catalog/catalog-001",
+  "catalog/catalog-002",
+  "catalog/catalog-003",
+  "catalog/catalog-006b",
+  "catalog/catalog-007",
+  "catalog/catalog-008",
+  "date/date-020",
+  "evaluate/evaluate-010",
+  "evaluate/evaluate-039",
+  "evaluate/evaluate-040",
+  "import/import-1201",
+  "match/match-242",
+  "normalize-unicode/normalize-unicode-008",
+  "result-document/result-document-1501",
+  "variable/variable-0108",
+]
+reason = "These rows are recorded as timeout because the case exceeded the harness's 5 s per-case budget, not because a semantic verdict was observed. The set is stable across runs except for known load sensitivity (function-1301 is not in this set; it passes serially). Performance work belongs to the roadmap's operational-hardening task; the committed baseline keeps the recorded timeout verdicts."
+links = ["https://github.com/w3c/xslt30-test", "https://www.w3.org/TR/xslt-30/"]
+
+[[dispositions]]
+id = "budget-boundary-timeouts-xslt20"
+title = "xslt20 cases that exceed the 5 s per-case harness budget"
+category = "performance-budget"
+profiles = ["xslt20"]
+cases = [
+  "catalog/catalog-002",
+  "catalog/catalog-003",
+  "date/date-020",
+  "import/import-1201",
+  "match/match-242",
+  "regex-syntax-xslt20/regex-syntax-xslt20-0987",
+  "variable/variable-0108",
+]
+reason = "These rows are recorded as timeout because the case exceeded the harness's 5 s per-case budget, not because a semantic verdict was observed. The set is stable across runs except for known load sensitivity (function-1301 is not in this set; it passes serially). Performance work belongs to the roadmap's operational-hardening task; the committed baseline keeps the recorded timeout verdicts."
+links = ["https://github.com/w3c/xslt30-test", "https://www.w3.org/TR/xslt-30/"]
+
+[[dispositions]]
+id = "budget-boundary-timeouts-xslt10"
+title = "xslt10 cases that exceed the 5 s per-case harness budget"
+category = "performance-budget"
+profiles = ["xslt10"]
+cases = ["match/match-242"]
+reason = "These rows are recorded as timeout because the case exceeded the harness's 5 s per-case budget, not because a semantic verdict was observed. The set is stable across runs except for known load sensitivity (function-1301 is not in this set; it passes serially). Performance work belongs to the roadmap's operational-hardening task; the committed baseline keeps the recorded timeout verdicts."
+links = ["https://github.com/w3c/xslt30-test", "https://www.w3.org/TR/xslt-30/"]
+
+[[dispositions]]
+id = "xslt20-format-number-error-taxonomy"
+title = "format-number reports FODF instead of the XSLT XTDE code"
+category = "implementation-gap"
+profiles = ["xslt20"]
+cases = [
+  "error/error-1280a-20",
+  "error/error-1280b-20",
+  "error/error-1280c-20",
+  "error/error-1310a-20",
+  "error/error-1310b-20",
+  "error/error-1310c-20",
+  "error/error-1310d-20",
+  "error/error-1310e-20",
+  "error/error-1310f-20",
+  "error/error-1310g-20",
+  "error/error-1310h-20",
+  "error/error-1310i-20",
+  "format-number/format-number-057",
+  "format-number/format-number-060",
+]
+reason = "The native 2.0 format-number path surfaces the F&O decimal-format error (FODF1280/FODF1310) where the XSLT 2.0 cases expect the dynamic XTDE1280/XTDE1310 code. The failure is detected at the right phase with the right cause; only the public error code differs."
+links = ["https://www.w3.org/TR/xslt20/#format-number", "https://www.w3.org/TR/xpath-functions-31/#formatting-numbers"]

@@ -240,6 +240,26 @@ def test_validate_accepts_a_current_failure() -> None:
     assert validate_dispositions((entry,), baselines_for(entry)) is None
 
 
+def test_validate_accepts_a_passing_historical_entry() -> None:
+    # An entry whose cases now pass stays valid metadata: it never rewrites the
+    # outcome, and only the active view drops it.
+    entry = make_entry()
+    baselines = {"xslt10": make_baseline({"bug/bug-0001": "pass"})}
+
+    assert validate_dispositions((entry,), baselines) is None
+    assert active_entries("xslt10", baselines["xslt10"].cases, (entry,)) == ()
+
+
+def test_validate_rejects_a_wildcard_case_claim() -> None:
+    # No pattern, glob, or prefix may claim a family: a claim is an exact ID
+    # that must be recorded, so an asterisk is an unknown case, not a match.
+    entry = make_entry(cases=("bug/*",))
+    baselines = {"xslt10": make_baseline({"bug/bug-0001": "fail"})}
+
+    with pytest.raises(DispositionError, match=r"unknown case 'bug/\*' in the xslt10 baseline"):
+        validate_dispositions((entry,), baselines)
+
+
 def test_validate_does_not_rewrite_baseline_results() -> None:
     entry = make_entry()
     baselines = baselines_for(entry)
@@ -487,7 +507,10 @@ def test_checked_in_dispositions_declare_the_remote_text_non_goal() -> None:
 
     (entry,) = [item for item in entries if item.id == "remote-text-resources-without-fixtures"]
     assert entry.category == "declared-non-goal"
-    assert entry.profiles == ("xslt30", "xslt20")
+    # The native 2.0 profile fails earlier, before the resource read: its
+    # XPath 2.0 evaluation does not install unparsed-text(), which the
+    # xslt20-native-profile-function-surface entry records.
+    assert entry.profiles == ("xslt30",)
     assert entry.cases == (
         "unparsed-text/unparsed-text-2002",
         "unparsed-text/unparsed-text-2003",
@@ -516,6 +539,18 @@ def test_every_namespace_family_residual_is_adjudicated() -> None:
             if case_id.startswith(families)
         ]
         assert remaining == [], profile
+
+
+def test_checked_in_dispositions_are_exact_ids_with_public_links() -> None:
+    """The checked-in file stays pattern-free and cites only public URLs."""
+    entries = load_dispositions(DISPOSITIONS)
+
+    for entry in entries:
+        for case_id in entry.cases:
+            assert "*" not in case_id and "?" not in case_id, (entry.id, case_id)
+        for link in entry.links:
+            assert link.startswith(("https://", "http://")), (entry.id, link)
+            assert not link.startswith("/"), (entry.id, link)
 
 
 def test_loading_the_checked_in_file_is_deterministic() -> None:
