@@ -59,6 +59,7 @@ from pyxsd.xpath.engine import (
     XPathEngine,
     XPathParserCache,
     _XdmAdapterRegistry,
+    standalone_node_adapter,
 )
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, FocusKind, FunctionArity
 from pyxsd.xslt.compiler.attribute_values import (
@@ -831,7 +832,7 @@ class CompiledStylesheet:
     schema_pool: SchemaPool | None
     profile: ProfileOptions
     static_parameters: Mapping[str, Any]
-    _components: Mapping[tuple[str | None, str, str | None, int | None], _ComponentPlan]
+    _components: Mapping[tuple[str | None, str | None, str, str | None, int | None], _ComponentPlan]
     _modes: Mapping[ModeKey, tuple[_ModeLayerPlan, ...]]
     _globals: tuple[Component, ...]
     _package_variables: Mapping[str | None, tuple[Component, ...]]
@@ -1149,12 +1150,19 @@ def _compile_stylesheet(
         package_name: _merge_schema_pools(schema, current_package.schema_pool)
         for package_name, current_package in packages.items()
     }
-    components: dict[tuple[str | None, str, str | None, int | None], _ComponentPlan] = {}
+    components: dict[tuple[Any, ...], _ComponentPlan] = {}
     keys: dict[str | None, list[_KeyDefinition]] = {}
     accumulators: dict[AccumulatorKey, AccumulatorDefinition] = {}
     for package_name, current_package in packages.items():
-        for component in current_package.components.values():
-            if component.owner != package_name:
+        originals = tuple(current_package.originals.values())
+        original_ids = {id(component) for component in originals}
+        candidates = (*current_package.components.values(), *originals)
+        for component in candidates:
+            # Local declarations and the hidden ``xsl:original`` copies belong
+            # to this package's plan table.  An accepted copy keeps the used
+            # package's references and is compiled there; compiling it again
+            # under the using package would rebind them.
+            if component.owner != package_name and id(component) not in original_ids:
                 continue
             module = _component_module(component, modules, principal)
             owner_package = packages.get(component.owner, package)
@@ -1219,22 +1227,36 @@ def _compile_stylesheet(
                 component,
                 owner_package,
             )
-            components[(component.owner, component.kind, component.name, component.arity)] = (
-                _ComponentPlan(
-                    component=component,
-                    context=context,
-                    select=select,
-                    body=body,
-                    has_as=as_source is not None,
-                    sequence_type=(
-                        compile_sequence_type(as_source, context, location=component.location)
-                        if as_source is not None and component.kind == "variable"
-                        else None
-                    ),
-                    attribute_set_parts=attribute_set_parts,
-                    original_functions=original_functions,
-                    original_variable=original_variable,
+            plan_entry = _ComponentPlan(
+                component=component,
+                context=context,
+                select=select,
+                body=body,
+                has_as=as_source is not None,
+                sequence_type=(
+                    compile_sequence_type(as_source, context, location=component.location)
+                    if as_source is not None and component.kind == "variable"
+                    else None
+                ),
+                attribute_set_parts=attribute_set_parts,
+                original_functions=original_functions,
+                original_variable=original_variable,
+            )
+            components[
+                (
+                    component.owner,
+                    component.containing,
+                    component.kind,
+                    component.name,
+                    component.arity,
                 )
+            ] = plan_entry
+            # An accepted copy keeps the used package's plan and references;
+            # the legacy owner key is the fallback a copy in another package
+            # uses when no plan was compiled for its containing package.
+            components.setdefault(
+                (component.owner, component.kind, component.name, component.arity),
+                plan_entry,
             )
 
     _validate_accumulator_graph(accumulators, packages)
@@ -4702,10 +4724,11 @@ def _compile_choose(
                     uri=context.uri,
                     location=child.location,
                 )
+            branch_context = _instruction_context(context, child)
             branches.append(
                 (
-                    compile_xpath(test, context, location=child.location),
-                    _compile_sequence(child.children, context, module),
+                    compile_xpath(test, branch_context, location=child.location),
+                    _compile_sequence(child.children, branch_context, module),
                 )
             )
             continue
@@ -4717,7 +4740,9 @@ def _compile_choose(
                     uri=context.uri,
                     location=child.location,
                 )
-            otherwise = _compile_sequence(child.children, context, module)
+            otherwise = _compile_sequence(
+                child.children, _instruction_context(context, child), module
+            )
             continue
         raise XsltStaticError(
             "xsl:choose permits only xsl:when and xsl:otherwise children",
@@ -6210,6 +6235,10 @@ class _Invocation(Transformation):
         self._numbering_counters: dict[object, tuple[_NumberPlan, NumberingCounter | None]] = {}
         self._xpath_cache = XPathParserCache()
         self._adapter_registry = _XdmAdapterRegistry()
+        #: ``cache="yes"`` stylesheet-function results, scoped to one
+        #: transformation invocation.  Arguments are the full XDM sequences,
+        #: so a node or atomic value keeps identity.
+        self._function_cache: dict[tuple[object, ...], XdmSequence] = {}
         self.dynamic_expressions = DynamicExpressionCache()
         self._active_iteration_frame: Frame | None = None
         self.current_merge_group: Mapping[str, XdmSequence] | None = None
@@ -6418,9 +6447,47 @@ class _Invocation(Transformation):
     # -- components and parameters ----------------------------------------
 
     def _component_plan(self, component: Component) -> _ComponentPlan:
+        exact = (
+            component.owner,
+            component.containing,
+            component.kind,
+            component.name,
+            component.arity,
+        )
+        plan = self.stylesheet._components.get(exact)
+        if plan is not None:
+            return plan
         return self.stylesheet._components[
             (component.owner, component.kind, component.name, component.arity)
         ]
+
+    def _node_to_native(self, node: XdmNode) -> object | None:
+        """Adapt one XDM node for a suspended continuation machine.
+
+        A stylesheet function may return text, element, comment, or
+        processing-instruction nodes mixed with atomics.  The machine resumes
+        with elementpath values, so the node must reuse the transformation's
+        one adapter tree; a host object or a fresh tree would lose identity
+        and document order.
+        """
+        registry = self._adapter_registry
+        adapter = registry.nodes.get(id(node))
+        if adapter is not None:
+            return adapter
+        if node.kind is NodeKind.DOCUMENT:
+            return registry.document(cast(XdmDocument, node))
+        if node.parent is None:
+            if node.kind in (NodeKind.ELEMENT, NodeKind.ATTRIBUTE):
+                return registry.rootless(node)
+            return standalone_node_adapter(node, registry)
+        registry.document(node.document)
+        adapter = registry.nodes.get(id(node))
+        if adapter is None and node.root.kind is NodeKind.ELEMENT:
+            registry.rootless(node.root)
+            adapter = registry.nodes.get(id(node))
+        if adapter is None:
+            adapter = standalone_node_adapter(node, registry)
+        return adapter
 
     def _execute_component(
         self,
@@ -6433,6 +6500,22 @@ class _Invocation(Transformation):
         grouping_key: object = _INHERIT,
         plan: _ComponentPlan | None = None,
     ) -> XdmSequence:
+        cache_key: tuple[object, ...] | None = None
+        if component.kind == "function" and component.declaration.attribute("cache") == "yes":
+            try:
+                cache_key = (
+                    component.owner,
+                    component.containing,
+                    component.name,
+                    component.arity,
+                    tuple(tuple(sequence) for sequence in arguments),
+                )
+            except TypeError:
+                cache_key = None
+            if cache_key is not None:
+                cached = self._function_cache.get(cache_key)
+                if cached is not None:
+                    return cached
         frame = self._component_frame(
             component,
             arguments=arguments,
@@ -6448,7 +6531,10 @@ class _Invocation(Transformation):
             else self._regex_scope(self.current_regex_groups)
         )
         with regex_scope, self._merge_scope(None, None, ()):
-            return cast(XdmSequence, self.execute_frame(frame))
+            result = cast(XdmSequence, self.execute_frame(frame))
+        if cache_key is not None:
+            self._function_cache[cache_key] = result
+        return result
 
     def _component_identity(self, component: Component) -> str:
         name = component.name or "<unnamed>"
@@ -6978,22 +7064,31 @@ class _Invocation(Transformation):
         locals_: Mapping[str, XdmSequence] | None = None,
     ) -> ExpressionEnvironment:
         if locals_ is not None:
-            return self._environment(
-                EvaluationContext(locals=locals_, package_name=package_name, final_output=False),
-                referenced=_pattern_variable_names(pattern),
-                static_context=pattern.context,
-                regex_captures=None,
+            return replace(
+                self._environment(
+                    EvaluationContext(
+                        locals=locals_, package_name=package_name, final_output=False
+                    ),
+                    referenced=_pattern_variable_names(pattern),
+                    static_context=pattern.context,
+                    regex_captures=None,
+                ),
+                base_uri=pattern.context.base_uri,
             )
         key = id(pattern)
-        environment = self._pattern_environments.get(key)
+        environment = None if "doc(" in pattern.source else self._pattern_environments.get(key)
         if environment is None:
-            environment = self._environment(
-                EvaluationContext(package_name=package_name, final_output=False),
-                referenced=_pattern_variable_names(pattern),
-                static_context=pattern.context,
-                regex_captures=None,
+            environment = replace(
+                self._environment(
+                    EvaluationContext(package_name=package_name, final_output=False),
+                    referenced=_pattern_variable_names(pattern),
+                    static_context=pattern.context,
+                    regex_captures=None,
+                ),
+                base_uri=pattern.context.base_uri,
             )
-            self._pattern_environments[key] = environment
+            if "doc(" not in pattern.source:
+                self._pattern_environments[key] = environment
         return environment
 
     def numbering_counter(
@@ -7831,6 +7926,7 @@ class _Invocation(Transformation):
             variables=variables,
             functions=functions,
             function_overrides=overrides,
+            documents=self.documents,
             decimal_formats={
                 name: decimal_format_attributes(decimal_format)
                 for name, decimal_format in decimal_formats.items()

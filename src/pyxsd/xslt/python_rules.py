@@ -40,7 +40,7 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance for type checking
     from pyxsd.xslt.compiler.packages import CompiledPackage
     from pyxsd.xslt.compiler.plans import _ComponentPlan, _PythonInvokePlan
 
-_PlanKey = tuple[str | None, str, str | None, int | None]
+_PlanKey = tuple[str | None, str | None, str, str | None, int | None]
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 
@@ -364,7 +364,11 @@ def _bind_component(
     component: Component,
     components: Mapping[_PlanKey, _ComponentPlan],
 ) -> _BoundPythonRule:
-    plan = components.get((component.owner, component.kind, component.name, component.arity))
+    plan = components.get(
+        (component.owner, component.containing, component.kind, component.name, component.arity)
+    )
+    if plan is None:
+        plan = components.get((component.owner, component.kind, component.name, component.arity))
     return _BoundPythonRule(
         rule=rule,
         component=component,

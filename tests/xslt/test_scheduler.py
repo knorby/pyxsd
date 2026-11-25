@@ -1150,7 +1150,10 @@ def test_missing_runtime_template_and_unsupported_suspension_are_explicit() -> N
         _Invocation._suspend_xpath(object(), Frame(), Suspension(HostRequest(object())))
 
 
-def test_stylesheet_function_returning_a_node_is_outside_the_scheduler_bridge() -> None:
+def test_stylesheet_function_returning_a_node_resumes_the_machine() -> None:
+    # A suspended machine resumes with elementpath nodes.  The function result
+    # must reuse the invocation's grounded adapter rather than escaping as a
+    # host object; the W3C seqtor-024..026/030 rows exercise the same seam.
     compiled = compile_stylesheet(
         _stylesheet(
             """
@@ -1161,8 +1164,10 @@ def test_stylesheet_function_returning_a_node_is_outside_the_scheduler_bridge() 
             """
         )
     )
-    with pytest.raises(XsltError, match="outside the scheduler bridge"):
-        compiled.transform(delivery="raw")
+    result = compiled.transform(delivery="raw")
+    (item,) = result.principal_entry.raw
+    assert item.kind is NodeKind.ELEMENT
+    assert item.local_name == "a"
 
 
 ### Scheduler mechanics

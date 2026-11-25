@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import copy
 import inspect
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from decimal import Decimal
 from types import MethodType
@@ -1558,3 +1558,109 @@ def format_integer_value(value: int, picture: str) -> str:
     if fmt_modifier.startswith("o"):
         return f"{result}{ordinal_suffix(value)}"
     return result
+
+
+def install_subsequence(parser: Any) -> None:
+    """Give ``fn:subsequence`` the required single numeric starting position.
+
+    The substrate indexes a Python sequence with the starting position and
+    lets an empty second argument become ``None``; F&O function conversion
+    instead requires exactly one numeric value and raises XPTY0004 for an
+    empty sequence.  Validate that operand before the substrate's own
+    evaluation so the public error is the specified one.
+    """
+    base = parser.symbol_table.get("subsequence")
+    if base is None:  # pragma: no cover - every supported parser declares it
+        return
+
+    def select(self: Any, context: Any = None) -> Iterator[Any]:
+        if len(self) > 1:
+            start = tuple(self[1].select(context))
+            if not start:
+                raise self.error("XPTY0004", "the starting position must be a single numeric value")
+            if len(start) != 1:
+                raise self.error("XPTY0004", "the starting position must be a single numeric value")
+        if len(self) > 2:
+            length = tuple(self[2].select(context))
+            if len(length) > 1:
+                raise self.error("XPTY0004", "the length must be a single numeric value")
+        yield from base.select(self, context)
+
+    parser._register(
+        "subsequence",
+        "_PyxsdSubsequenceFunction",
+        bases=(base,),
+        label=base.label,
+        nargs=getattr(base, "nargs", (2, 3)),
+        sequence_types=getattr(base, "sequence_types", ()),
+        select=select,
+    )
+
+
+def install_format_integer(parser: Any) -> None:
+    """Apply function conversion to ``fn:format-integer``'s first argument.
+
+    elementpath's token accepts an untypedAtomic value as a numeric proxy but
+    then hands the untyped value to ``int_to_alphabetic``, which indexes its
+    alphabet with a float and raises TypeError.  F&O expects the untyped value
+    to be cast to ``xs:integer``; a genuine non-integer numeric argument is
+    XPTY0004 rather than a Python failure.
+    """
+    from elementpath.datatypes import UntypedAtomic
+    from elementpath.xpath_tokens.tokens import ValueToken
+
+    base = parser.symbol_table.get("format-integer")
+    if base is None:  # pragma: no cover - a 3.0/3.1 parser declares it
+        return
+
+    def evaluate(self: Any, context: Any = None) -> str:
+        if len(self) < 1:
+            return cast(str, base.evaluate(self, context))
+        values = tuple(self[0].select(context))
+        value: int | None
+        if not values:
+            value = None
+        else:
+            item = values[0]
+            if len(values) != 1:
+                raise self.error("XPTY0004", "format-integer requires a single value")
+            node = getattr(item, "xdm", None)
+            if node is not None:
+                typed = node.typed_value
+                if len(typed) != 1:
+                    raise self.error("XPTY0004", "format-integer requires a single value")
+                item = typed[0]
+            if isinstance(item, XdmAtomic):
+                if _local_atomic_name(item.type_name) == "untypedAtomic":
+                    item = item.lexical
+                else:
+                    item = item.value
+            if isinstance(item, UntypedAtomic):
+                item = str(item)
+            if isinstance(item, bool):
+                raise self.error("XPTY0004", "format-integer requires an integer")
+            if isinstance(item, int):
+                value = item
+            elif isinstance(item, str):
+                try:
+                    value = int(_xsd.Integer(item))
+                except (TypeError, ValueError) as exc:
+                    raise self.error("FORG0001", str(exc)) from None
+            else:
+                raise self.error("XPTY0004", "format-integer requires an integer")
+        saved = list(self._items)
+        try:
+            self[0] = ValueToken(self.parser, value=[] if value is None else value)
+            return cast(str, base.evaluate(self, context))
+        finally:
+            self[0:] = tuple(saved)
+
+    parser._register(
+        "format-integer",
+        "_PyxsdFormatIntegerFunction",
+        bases=(base,),
+        label=base.label,
+        nargs=getattr(base, "nargs", (1, 3)),
+        sequence_types=getattr(base, "sequence_types", ()),
+        evaluate=evaluate,
+    )

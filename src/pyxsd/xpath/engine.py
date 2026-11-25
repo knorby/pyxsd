@@ -57,6 +57,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from types import MethodType, SimpleNamespace
 from typing import Any, cast
+from xml.etree import ElementTree as ET
 
 from elementpath import XPathContext
 from elementpath.datatypes import (
@@ -92,7 +93,7 @@ from elementpath.xpath_tokens.functions import ExternalFunction, XPathFunction
 from elementpath.xpath_tokens.tokens import ContextItemToken, VariableToken
 
 from pyxsd import xsd_data_types as _xsd
-from pyxsd.namespaces import XML_NS
+from pyxsd.namespaces import XML_NS, clark
 from pyxsd.xdm import (
     XdmArray,
     XdmAtomic,
@@ -132,9 +133,11 @@ from pyxsd.xpath.functions import (
     function_arity,
     install_date_time,
     install_deep_equal,
+    install_format_integer,
     install_regex_replace,
     install_string_conversion_functions,
     install_string_function,
+    install_subsequence,
     sequence_to_elementpath,
 )
 from pyxsd.xpath.numeric import install_numeric_functions
@@ -338,6 +341,179 @@ class _XdmArrayValue(XPathArray):
 
     def __call__(self, *args: Any, context: Any = None) -> Any:
         return super().__call__(self._call_position(args), context=context)
+
+
+def _host_tree_xml(root: Any, nsmap: Mapping[str, str] | None) -> bytes:
+    """Serialize one host element subtree with its own namespace prefixes.
+
+    ElementTree's ``default_namespace`` option refuses unqualified attributes,
+    and its global prefix registry cannot be scoped to one call.  A host result
+    tree is small and already carries its prefix map, so a direct serializer
+    keeps the result's default/prefixed bindings without touching process
+    state.
+    """
+
+    from xml.sax.saxutils import escape, quoteattr
+
+    bindings = {
+        ("" if prefix is None else prefix): uri
+        for prefix, uri in (nsmap or {}).items()
+        if uri is not None and prefix != "xml" and uri != "http://www.w3.org/XML/1998/namespace"
+    }
+    element_uris = {
+        tag[1:].split("}", 1)[0]
+        for tag in (child.tag for child in root.iter())
+        if isinstance(tag, str) and tag.startswith("{")
+    }
+    used = set(element_uris)
+    if len(element_uris) == 1:
+        # A result tree built from one vocabulary is conventionally serialized
+        # with that vocabulary as the default namespace; the source prefix
+        # (``fn``, ``j``, ...) is an implementation detail of the host tree.
+        vocabulary = next(iter(element_uris))
+        bindings = {prefix: uri for prefix, uri in bindings.items() if uri != vocabulary}
+        bindings[""] = vocabulary
+    used.update(
+        name[1:].split("}", 1)[0]
+        for element in root.iter()
+        for name in element.attrib
+        if name.startswith("{")
+    )
+    used.discard("http://www.w3.org/XML/1998/namespace")
+    for index, uri in enumerate(sorted(used - set(bindings.values()))):
+        bindings[f"ns{index + 1}"] = uri
+    by_uri = {uri: prefix for prefix, uri in bindings.items()}
+    by_uri["http://www.w3.org/XML/1998/namespace"] = "xml"
+
+    def qname(name: str) -> str:
+        if not name.startswith("{"):
+            return name
+        uri, local = name[1:].split("}", 1)
+        prefix = by_uri.get(uri, "")
+        return f"{prefix}:{local}" if prefix else local
+
+    def write(element: Any, out: list[str], declare: bool) -> None:
+        tag = element.tag
+        if tag is ET.Comment:
+            out.append(f"<!--{element.text or ''}-->")
+            return
+        if tag is ET.ProcessingInstruction:
+            out.append(f"<?{element.text or ''}?>")
+            return
+        out.append("<" + qname(tag))
+        if declare:
+            for prefix, uri in sorted(bindings.items()):
+                out.append(f' xmlns:{prefix}="{uri}"' if prefix else f' xmlns="{uri}"')
+        for name, value in element.attrib.items():
+            out.append(f" {qname(name)}={quoteattr(value)}")
+        if element.text or len(element):
+            out.append(">")
+            if element.text:
+                out.append(escape(element.text))
+            for child in element:
+                write(child, out, False)
+                if child.tail:
+                    out.append(escape(child.tail))
+            out.append(f"</{qname(tag)}>")
+        else:
+            out.append("/>")
+
+    parts: list[str] = []
+    write(root, parts, True)
+    return "".join(parts).encode("utf-8")
+
+
+def host_node_to_xdm(node: Any) -> XdmNode:
+    """Convert one elementpath or ElementTree node into a grounded XDM node.
+
+    elementpath functions such as ``fn:analyze-string`` and the F&O JSON
+    functions return their own ``EtreeElementNode``/``EtreeDocumentNode``
+    objects (and raw ElementTree values for some in-memory results).  The XSLT
+    runtime must not leak those host objects into XDM sequences: a later
+    ``copy-of``, path step, or node test needs the engine's grounded node with
+    its document, namespace, and identity properties.  Serializing the host
+    subtree and parsing it through the normal XDM parser reuses the one
+    authoritative node implementation instead of growing a second adapter
+    model.  An element's tail belongs to its parent and is excluded.
+    """
+
+    def parse(element: Any, nsmap: Mapping[str, str] | None = None) -> XdmDocument:
+        root = element.getroot() if isinstance(element, ET.ElementTree) else element
+        detached = copy.copy(root)
+        detached.tail = None
+        if nsmap is not None:
+            data = _host_tree_xml(detached, nsmap)
+        else:
+            data = ET.tostring(detached, encoding="utf-8")
+        return XdmDocument.parse(data)
+
+    if isinstance(node, (ET.ElementTree, ET.Element)):
+        document = parse(node)
+        return document if isinstance(node, ET.ElementTree) else document.root_element
+    kind = getattr(node, "node_kind", None)
+    if kind == "document":
+        root = node.document.getroot()
+        return parse(root, getattr(root, "nsmap", None))
+    if kind == "element":
+        return parse(node.elem, getattr(node, "nsmap", None)).root_element
+    parent = getattr(node, "parent", None)
+    if parent is None:
+        raise TypeError(f"a parentless {kind} node cannot be converted to XDM")
+    parent_xdm = host_node_to_xdm(parent)
+    if kind == "attribute":
+        name = getattr(node, "name", "") or ""
+        if not name.startswith("{"):
+            prefix, separator, local = name.partition(":")
+            if separator:
+                name = clark(parent_xdm.in_scope_namespaces.get(prefix), local)
+        attribute = parent_xdm.attribute(name)
+        if attribute is None:
+            raise TypeError(f"the attribute {name!r} is not in its converted parent")
+        return attribute
+    if kind == "namespace":
+        prefix = getattr(node, "prefix", "") or ""
+        uri = getattr(node, "uri", "") or ""
+        if parent_xdm.in_scope_namespaces.get(prefix) != uri:
+            # The host tree may spell a namespace with a prefix the converted
+            # parent binds differently (json-to-xml commonly uses a generated
+            # prefix where the result vocabulary expects the default).  An XDM
+            # namespace node is identified by the in-scope prefix, so use the
+            # converted parent's binding for the same URI.
+            alternatives = [
+                bound
+                for bound, bound_uri in parent_xdm.in_scope_namespaces.items()
+                if bound_uri == uri
+            ]
+            if alternatives:
+                prefix = (
+                    "" if "" in alternatives or parent_xdm.namespace_uri == uri else alternatives[0]
+                )
+        namespace = parent_xdm.namespace_node(prefix)
+        if namespace is not None:
+            return namespace
+        # Serialization cannot carry an unused namespace declaration.  The
+        # host node still has the prefix and URI, so expose that declaration
+        # as a standalone namespace node beside its converted parent.
+        document = parent_xdm.document
+        attachment = parent_xdm.root_element if isinstance(parent_xdm, XdmDocument) else parent_xdm
+        return XdmNode(
+            NodeKind.NAMESPACE,
+            document=document,
+            node_id=-1,
+            source_name=document.source_name,
+            source_index=document.source_index,
+            parent=attachment,
+            name=prefix,
+            value=uri,
+            prefix=prefix,
+            namespace_uri=uri,
+            in_scope_namespaces=attachment.in_scope_namespaces,
+        )
+    value = node.string_value
+    for child in parent_xdm.children:
+        if child.kind.value == kind and child.string_value == value:
+            return child
+    raise TypeError(f"the {kind} node is not in its converted parent")
 
 
 class _NodeAdapterMixin:
@@ -602,6 +778,19 @@ def _adapter_node(node: XdmNode, parent: Any, factory: Any) -> Any:
     raise TypeError(  # pragma: no cover - the six non-document kinds are handled above
         f"unsupported XDM node kind: {node.kind!r}"
     )
+
+
+def standalone_node_adapter(node: XdmNode, factory: Any) -> Any:
+    """Adapt one detached XDM node for a host-side native value.
+
+    A stylesheet function may return a newly constructed text/comment/PI node
+    that no finalized document carries.  The scheduler still needs an
+    elementpath node to resume its continuation machine, so build the one
+    adapter directly instead of admitting a document that may still grow.
+    """
+    if node.kind is NodeKind.DOCUMENT:
+        return factory.document(node)
+    return _adapter_node(node, None, factory)
 
 
 def _document_node_count(document: XdmDocument) -> int:
@@ -1133,6 +1322,12 @@ class _ValueBridge:
     def adapt_item(self, item: XdmItem) -> Any:
         if isinstance(item, XdmAtomic):
             converted = atomic_to_elementpath(item)
+            if isinstance(converted, UntypedAtomic) and converted.parser is None:
+                # A comparison with a QName casts untypedAtomic using the
+                # static namespace context of that comparison, not the parser
+                # that created the value.  Keep the target evaluation's parser
+                # on every untyped value crossing this bridge.
+                converted = UntypedAtomic(converted.value, self.parser)
             record = self._annotations.get(id(item))
             annotation = record[1] if record is not None else item.type_name
             annotated = _annotate_atomic_value(converted, annotation)
@@ -1172,6 +1367,12 @@ class _ValueBridge:
             if adapter is None:
                 self.adapt_document(item.document)
                 adapter = self._lookup(item)
+            if adapter is None and item.kind not in (NodeKind.DOCUMENT, NodeKind.ELEMENT):
+                # A host namespace/attribute/text node can be a standalone
+                # value with a document parent but no place in the converted
+                # tree.  Adapt the node itself rather than its document root.
+                adapter = self._adapt_rootless_node(item)
+                self._ephemeral[id(item)] = adapter
             if adapter is None:
                 # The node's document does not contain it: an element-rooted
                 # temporary tree from a sequence constructor.  Adapt its root
@@ -1289,6 +1490,8 @@ class _ValueBridge:
                     name=value.name or None,
                 ),
             )
+        if isinstance(value, (XPathNode, ET.Element, ET.ElementTree)):
+            return (host_node_to_xdm(value),)
         annotation = getattr(value, "_pyxsd_type", None)
         record = self._annotations.get(id(value)) if annotation is None else None
         if annotation is not None or record is not None:
@@ -1915,6 +2118,8 @@ def _build_parser(
         install_string_conversion_functions(parser)
         install_deep_equal(parser)
         install_date_time(parser)
+        install_format_integer(parser)
+        install_subsequence(parser)
         install_numeric_functions(parser)
         _install_instance_expression(parser)
         _install_temporal_components(parser)
@@ -1989,7 +2194,13 @@ def _install_descendant_path_order(parser: Any) -> None:
         return
 
     def select(self: Any, context: Any = None) -> Iterator[Any]:
-        yield from sorted(base.select(self, context), key=lambda item: item.position)
+        items = list(base.select(self, context))
+        # A path step may return atomic values (a function call is a StepExpr).
+        # Only nodes have a document position; leave a mixed/atomic result in
+        # the machine's order instead of sorting host strings.
+        if items and all(isinstance(item, XPathNode) for item in items):
+            items.sort(key=lambda item: item.position)
+        yield from items
 
     parser._register(
         "//",
@@ -3894,7 +4105,10 @@ def _continuation_variables(
         converted: list[Any] = []
         for item in sequence:
             if isinstance(item, XdmAtomic):
-                converted.append(atomic_to_elementpath(item))
+                atomic = atomic_to_elementpath(item)
+                if isinstance(atomic, UntypedAtomic) and atomic.parser is None:
+                    atomic = UntypedAtomic(atomic.value, bridge.parser)
+                converted.append(atomic)
             elif isinstance(item, XdmFunction):
                 if isinstance(item.closure, XPathClosure):
                     return None

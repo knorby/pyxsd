@@ -1482,6 +1482,13 @@ class SchemaPool:
         adapter = PyxsdType(self, type_class, er=er, proxy=proxy, name=name)
         existing = self._types.get(name)
         if existing is not None:
+            if existing.is_builtin:
+                # A schema module that includes the XSD for XSD (catalog005's
+                # XMLSchema.xsd) redeclares built-in types such as xs:anyType.
+                # The pool already owns the authoritative built-in adapter;
+                # a redeclaration never replaces or conflicts with it.
+                self._type_cache[id(type_class)] = existing
+                return
             existing_proxy = existing.schema
             existing_schema = None if existing_proxy is None else existing_proxy._schema
             if existing.schema is not proxy and _component_origin(

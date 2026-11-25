@@ -502,6 +502,8 @@ class Transformation:
         return converted
 
     def _item_to_native(self, item: object) -> object | None:
+        if isinstance(item, XdmNode):
+            return self._node_to_native(item)
         if isinstance(item, XdmAtomic):
             return atomic_to_elementpath(item)
         if isinstance(item, XdmFunction):
@@ -511,6 +513,10 @@ class Transformation:
             return None
         if isinstance(item, (str, bool, int, float, Decimal)):
             return item
+        return None
+
+    def _node_to_native(self, item: XdmNode) -> object | None:
+        """Adapt one XDM node for the continuation machine, if supported."""
         return None
 
     def native_to_xdm(self, value: object) -> XdmSequence:
@@ -528,6 +534,21 @@ class Transformation:
             raise XsltDynamicError("a suspended XPath result cannot become an XDM value")
         if isinstance(value, (continuation.TailCall, continuation.Invoke)):
             raise XsltDynamicError("a tail-control value cannot become an XDM result")
+        from xml.etree import ElementTree as ET
+
+        from elementpath.xpath_nodes import XPathNode
+
+        if isinstance(value, XPathNode):
+            grounded = getattr(value, "xdm", None)
+            if isinstance(grounded, XdmNode):
+                return (grounded,)
+            from pyxsd.xpath.engine import host_node_to_xdm
+
+            return (host_node_to_xdm(value),)
+        if isinstance(value, (ET.Element, ET.ElementTree)):
+            from pyxsd.xpath.engine import host_node_to_xdm
+
+            return (host_node_to_xdm(value),)
         try:
             return as_xdm(value)
         except TypeError as exc:

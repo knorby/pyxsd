@@ -552,7 +552,7 @@ def rule_frame(
     frame = Frame(
         kind="rule",
         component=active_rule,
-        identity=f"rule {rule.name or rule.pattern}",
+        identity=f"rule {rule.name or rule.pattern.source}",
         program=body.body[index:],
         context=replace(
             rule_context,
