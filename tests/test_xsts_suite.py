@@ -12,12 +12,15 @@ anything fixed stays fixed (a fail becoming pass drifts until its entry
 is moved in the same commit as the intentional fix).  Never regenerate
 the baseline wholesale to make the gate green; move only the entries an
 intentional behavior change actually flips, in that change's commit.
+Three XML-version verdicts are adjusted for the host lexer's name support
+before comparison; the checked-in baseline records the stricter lexer.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import pytest
 
@@ -28,12 +31,67 @@ from xsts.selection import XSD11
 
 BASELINE = Path(__file__).resolve().parent / "xsts" / "baseline-xsd11.toml"
 
-pytestmark = pytest.mark.skipif(
+requires_corpus = pytest.mark.skipif(
     not corpus_available(),
     reason="xsdtests corpus not checked out (git submodule update --init tests/xsts/corpus)",
 )
 
 
+def _baseline_for_runtime(recorded: baseline.Baseline) -> baseline.Baseline:
+    # Some ElementTree builds accept U+0133 in XML names. Probe the lexer
+    # directly, not the validators' verdicts or the Python version.
+    try:
+        ET.fromstring('<?xml version="1.1"?><D\u0133kstra vr\u0133tag="0"/>')
+    except ET.ParseError:
+        return recorded
+    return baseline.Baseline(
+        meta=recorded.meta,
+        results=recorded.results
+        | {
+            "pyxsd:XmlVersions/xv001/xv001.v01.xml:instance": "pass",
+            "pyxsd:XmlVersions/xv004/xv004.v01.xml:instance": "pass",
+            "xmlschema:XmlVersions/xv001/xv001.v01.xml:instance": "pass",
+        },
+    )
+
+
+@pytest.mark.parametrize("lexer_accepts", [False, True])
+def test_xml_version_baseline_follows_lexer_capability(
+    lexer_accepts: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def parse(text: str) -> None:
+        assert "\u0133" in text
+        if not lexer_accepts:
+            raise ET.ParseError("invalid token")
+
+    monkeypatch.setattr(ET, "fromstring", parse)
+    keys = (
+        "pyxsd:XmlVersions/xv001/xv001.v01.xml:instance",
+        "pyxsd:XmlVersions/xv004/xv004.v01.xml:instance",
+        "xmlschema:XmlVersions/xv001/xv001.v01.xml:instance",
+    )
+    unrelated_pass = "pyxsd:XmlVersions/xv002/xv002.xsd:schema"
+    oracle_gap = "xmlschema:XmlVersions/xv004/xv004.v01.xml:instance"
+    recorded = baseline.Baseline(
+        results=dict.fromkeys(keys, "fail") | {unrelated_pass: "pass", oracle_gap: "adapter-gap"}
+    )
+    expected = _baseline_for_runtime(recorded)
+    outcome = "pass" if lexer_accepts else "fail"
+    observed = dict.fromkeys(keys, outcome) | {unrelated_pass: "pass", oracle_gap: "adapter-gap"}
+    assert not baseline.diff(expected, observed)
+    assert all(recorded.results[key] == "fail" for key in keys)
+
+    observed[keys[0]] = "timeout"
+    del observed[keys[1]]
+    observed[unrelated_pass] = "fail"
+    assert {change.key: change.kind for change in baseline.diff(expected, observed).changes} == {
+        keys[0]: "regression" if lexer_accepts else "changed",
+        keys[1]: "removed",
+        unrelated_pass: "regression",
+    }
+
+
+@requires_corpus
 def test_catalog_parses_and_covers_the_expected_case_count() -> None:
     cases = build_cases(load_default_catalog(), XSD11)
 
@@ -44,6 +102,7 @@ def test_catalog_parses_and_covers_the_expected_case_count() -> None:
     assert not [case for case in cases if case.metadata_error]
 
 
+@requires_corpus
 @pytest.mark.skipif(
     os.environ.get("PYXSD_RUN_XSTS") != "1",
     reason="set PYXSD_RUN_XSTS=1 to run the full suite",
@@ -77,7 +136,7 @@ def test_full_run_matches_the_baseline(tmp_path: Path) -> None:
         # affected keys drift away from their recorded verdicts.
         synthesize_missing_schema=True,
     )
-    diff = baseline.diff(baseline.load(BASELINE), results_to_keys(results))
+    diff = baseline.diff(_baseline_for_runtime(baseline.load(BASELINE)), results_to_keys(results))
 
     summary = "\n".join(
         f"[{change.kind}] {change.key}: {change.previous} -> {change.current}"

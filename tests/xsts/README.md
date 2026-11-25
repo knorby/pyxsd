@@ -100,7 +100,10 @@ intentionally regenerated.
 
 An ordinary local report without `--baseline` does not fail just because it
 contains failures. The required PR test asserts an exact baseline match for
-both engines; the dispatch workflow uses the looser `--enforce` rule below.
+both engines after probing whether the host XML parser accepts U+0133 in
+names. That probe adjusts expectations for three `XmlVersions` outcomes
+only; the checked-in baseline records the stricter parser's outcomes.
+The dispatch workflow uses the looser `--enforce` rule below.
 
 Regenerate only after reviewing the diff. A new pass is usually good news but
 it changes what future runs treat as the status quo.
