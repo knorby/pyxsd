@@ -442,12 +442,39 @@ def _merge_params(base: tuple[Param, ...], overlay: tuple[Param, ...]) -> tuple[
     return tuple(param for param in base if param.name not in replaced) + overlay
 
 
+def _source_binding(source: Source) -> tuple[str, str]:
+    """The one binding a source declaration makes.
+
+    A ``role`` names the context item, and a ``uri`` names the document
+    ``doc()`` returns; the catalog gives a source no other binding, so a
+    repeated binding is one binding with two declarations, never two sources.
+    """
+    if source.role == ".":
+        return ("role", ".")
+    if source.uri is not None:
+        return ("uri", source.uri)
+    return ("file", str(source.path) if source.path is not None else (source.content or ""))
+
+
+def _merge_sources(base: tuple[Source, ...], overlay: tuple[Source, ...]) -> tuple[Source, ...]:
+    """Inherited sources, with the referenced environment's binding last.
+
+    The corpus runner applies a case's own environment first and the referenced
+    named environment second, so a binding both declare is decided by the
+    referenced declaration (``key-085a``/``key-085b`` name their own context
+    source while the referenced environment names the town document the result
+    expects).  A binding only one side declares is kept as declared.
+    """
+    inherited = {_source_binding(source) for source in base}
+    return base + tuple(source for source in overlay if _source_binding(source) not in inherited)
+
+
 def _merge_environments(base: Environment, overlay: Environment) -> Environment:
     """Shared declarations followed by the test case's local additions."""
     return Environment(
         name=overlay.name or base.name,
         ref=overlay.ref,
-        sources=base.sources + overlay.sources,
+        sources=_merge_sources(base.sources, overlay.sources),
         schemas=base.schemas + overlay.schemas,
         resources=base.resources + overlay.resources,
         collections=base.collections + overlay.collections,
