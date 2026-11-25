@@ -33,6 +33,7 @@ docs/superpowers/
 
 # Docs build output
 docs/_build/
+docs/autoapi/
 
 # Downloaded schemas for the docx and gpx examples
 # (fetch on demand; too large to commit)

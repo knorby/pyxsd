@@ -89,7 +89,7 @@ class ParseModes:
     #: for callers that need the pre-namespaced behavior.
     STRICT = BindingPolicy(namespaces="legacy")
 
-    #: Keep the report strict, but bind best-effort values: invalid
+    #: Keep the report strict while binding best-effort values. Invalid
     #: lexical values become raw strings, and unresolved or undeclared
     #: subtrees are bound generically instead of dropped. Kept explicitly
     #: for callers that need the pre-namespaced behavior.

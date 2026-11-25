@@ -17,7 +17,7 @@ otherwise, never a guess. Nothing here calls ``schema.require_valid()``:
 an error-bearing schema still compiles classes, and a stub may still be
 requested for it.
 
-On top of the inventory, :func:`_members` resolves one class's
+On top of the inventory, ``_members`` resolves one class's
 renderable members: its own element and attribute descriptors in
 declaration order, members attributed from a base class the inventory
 does not list (an overlay's generated base), and public functions and

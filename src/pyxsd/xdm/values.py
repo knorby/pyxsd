@@ -48,7 +48,7 @@ class XdmItem:
     """Base class for one XDM item.
 
     Concrete items are immutable.  Nodes extend this class in
-    :mod:`pyxsd.xdm.nodes`; they are not value items and are never compared by
+    ``pyxsd.xdm.nodes``; they are not value items and are never compared by
     value here.
     """
 

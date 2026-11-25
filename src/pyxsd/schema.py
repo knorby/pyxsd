@@ -419,8 +419,7 @@ class Schema:
           ``xs:import`` without a ``schemaLocation``.
 
         - ``overlay`` - an optional overlay class file, loaded after
-          class generation (experimental; see
-          :func:`load_overlay_classes`).
+          class generation (experimental).
 
         - ``namespace_context`` - an existing prefix-to-URI binding
           context for the schema documents' bindings to accumulate

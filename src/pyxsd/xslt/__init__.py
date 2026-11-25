@@ -1,7 +1,7 @@
 """XSLT 3.0 compilation, invocation, and optional advisory inspection.
 
 The normative processor, compiled stylesheet, and result views are the public
-entry points.  :mod:`pyxsd.xslt.inspection` remains a separate, non-normative
+entry points. :func:`inspect_stylesheet` provides a separate, non-normative
 binding of the packaged XSLT schemas; it never decides acceptance or compiles
 the stylesheet.
 """

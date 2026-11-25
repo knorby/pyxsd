@@ -936,7 +936,7 @@ class CompiledStylesheet:
         complete transformation result; the callback only observes.
 
         This method constructs the adapter only: conversion, validation,
-        and result handling live in :mod:`pyxsd.xslt.adapter`.
+        and result handling live in ``pyxsd.xslt.adapter``.
         """
         from pyxsd.xslt.adapter import XsltDocumentTransform
 

@@ -8,6 +8,14 @@
 Use {doc}`quickstart` for a complete first example. This page documents public
 entry points; {doc}`data-model` describes node storage and export behavior.
 
+For generated signatures and docstrings by module, browse the
+{doc}`Python API <autoapi/pyxsd/index>`.
+
+```{contents} On this page
+:local:
+:depth: 1
+```
+
 ## Schema and documents
 
 `Schema.compile(source, ...)` generates binding classes once;

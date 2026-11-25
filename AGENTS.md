@@ -1,5 +1,15 @@
 # Agent guidance for pyxsd
 
+## Python API documentation
+
+- Write public docstrings in Sphinx-compatible reStructuredText. Record
+  behavior, limits, and errors that signatures do not convey.
+- Add new exports to `__all__` where the module uses it. AutoAPI picks up
+  public members of covered modules; add new supported import paths to
+  `PUBLIC_API_MODULES` in `docs/conf.py`.
+- Check reference changes with
+  `uv run sphinx-build -E -n -W -b html docs docs/_build/html`.
+
 ## Example outputs carry no library markers
 
 - Rendered artifacts (SVG, HTML, PDF, PNG, WAV, console output) must not
