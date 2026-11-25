@@ -1706,7 +1706,7 @@ def _attach_grafted_node(
         return node
     if node.kind is NodeKind.NAMESPACE:
         return factory.attach_namespace(parent, node) or node
-    factory._append(parent, node)
+    factory.attach_node(parent, node)
     return node
 
 

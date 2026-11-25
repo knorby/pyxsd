@@ -990,6 +990,15 @@ class _NodeFactory:
         ):
             self.document._root_element = child
 
+    def attach_node(self, parent: XdmNode, node: XdmNode) -> None:
+        """Attach an already-copied node to *parent* without copying it again.
+
+        The copy instructions build their nodes with :meth:`clone`; a caller
+        that holds the finished copy (``snapshot()`` grafting one ancestor
+        chain) attaches it here so identity is the copy it keeps a reference to.
+        """
+        self._append(parent, node)
+
     def attach_attribute(self, parent: XdmNode, attribute: XdmNode) -> None:
         if parent.kind is NodeKind.DOCUMENT:
             raise _dynamic(
