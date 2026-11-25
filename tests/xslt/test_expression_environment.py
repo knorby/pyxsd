@@ -30,7 +30,7 @@ from pyxsd.xdm.nodes import NodeKind
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath import continuation
 from pyxsd.xpath.continuation import ContinuationMachine, XPathClosure
-from pyxsd.xpath.engine import XPathEngine
+from pyxsd.xpath.engine import XPathEngine, _build_parser
 from pyxsd.xpath.environment import (
     ExpressionEnvironment,
     Focus,
@@ -1939,3 +1939,18 @@ def test_a_union_of_temporary_trees_uses_creation_order_in_both_operand_orders()
         "setting1",
         "setting2",
     )
+
+
+def test_a_node_set_operator_requires_nodes_and_a_dynamic_context() -> None:
+    """The ordered set operators keep the substrate's two guards."""
+    engine = XPathEngine("3.1")
+    compiled = engine.compile("(1 | 2)", XPathStaticContext())
+    with pytest.raises(Exception) as caught:
+        engine.evaluate(compiled, ExpressionEnvironment(), focus=_document())
+    assert _error_code(caught.value) == "XPTY0004"
+
+    parser = _build_parser("3.1", XPathStaticContext(), key=False)
+    token = parser.parse("(1 | 2)")
+    with pytest.raises(Exception) as absent:
+        list(token.select(None))
+    assert _error_code(absent.value) == "XPDY0002"
