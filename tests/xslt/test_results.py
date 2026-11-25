@@ -412,3 +412,29 @@ def test_invalid_secondary_parameters_cannot_change_the_principal_serialization(
     with pytest.raises(XsltSerializationError):
         bad_result.serialize(SECONDARY_URI)
     assert bad_result.serialize() == "<principal/>"
+
+
+def test_result_entry_legacy_flag_is_typed() -> None:
+    with pytest.raises(TypeError, match="legacy"):
+        ResultEntry((), legacy="yes")  # type: ignore[arg-type]
+
+
+def test_default_output_method_is_xml_for_a_non_html_root() -> None:
+    entry = ResultEntry(
+        (_document(b"<root/>"),),
+        output_uri=OUT_URI,
+        serialization={},
+    )
+    result = TransformationResult(entry)
+    assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><root/>')
+
+
+def test_default_output_method_skips_atomic_and_non_element_items() -> None:
+    entry = ResultEntry(
+        (XdmAtomic.string("text"), XdmAtomic.integer(2)),
+        output_uri=OUT_URI,
+        serialization={},
+    )
+    assert TransformationResult(entry).serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>text 2'
+    )

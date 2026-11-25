@@ -242,20 +242,19 @@ def _content_type_meta(
     method: str,
     codec: str,
     html5: bool = False,
-    characters: CharacterMap | None = None,
+    characters: CharacterMap,
 ) -> str:
     """The content-type ``meta`` element inserted into *head*."""
     media_type = (
         parameters.media_type if parameters.media_type is not None else _DEFAULT_MEDIA_TYPES[method]
     )
     content = f"{media_type}; charset={parameters.encoding}"
-    if characters is not None:
-        form = parameters.normalization_form
-        content = apply_mapped(
-            content,
-            characters,
-            lambda run: normalize_text(run, form),
-        )
+    form = parameters.normalization_form
+    content = apply_mapped(
+        content,
+        characters,
+        lambda run: normalize_text(run, form),
+    )
     if method == "html":
         escaped = _escape_html_attribute(content, codec=codec)
         return f'<meta http-equiv="Content-Type" content="{escaped}">'
@@ -843,7 +842,9 @@ def _render_element(
             for child in children
             if not (child.kind is NodeKind.TEXT and not child.string_value.strip())
         ]
-    name = _element_name(element, scope, html=html or html5)
+    html_namespace = element.namespace_uri in (None, XHTML_NS, SVG_NS, MATHML_NS)
+    name_html = (html_element or (html5 and html_namespace) or not html5) if html else html5
+    name = _element_name(element, scope, html=name_html)
     if not children and content_type is None:
         if html_element:
             local = (element.local_name or "").lower()
@@ -1108,12 +1109,4 @@ def serialize_markup(
                 root_declaration=item is root,
             )
         )
-    result = "".join(output)
-    if parameters.normalization_form == "fully-normalized":
-        checked = result.split("?>", 1)[1] if result.startswith("<?xml") else result
-        if checked and unicodedata.combining(checked[0]):
-            raise _serialization_error(
-                "a fully-normalized result cannot begin with a combining character",
-                "SERE0012",
-            )
-    return result
+    return "".join(output)

@@ -396,3 +396,42 @@ def test_native_function_reference_names_are_propagated() -> None:
     for expression, expected in cases.items():
         item = _function_item(expression)
         assert _serialize((item,), method="adaptive") == expected, expression
+
+
+def test_json_html_node_output_keeps_the_xhtml_namespace() -> None:
+    document = XdmDocument.parse(b'<html xmlns="http://www.w3.org/1999/xhtml"><body/></html>')
+    assert (
+        Serializer.serialize(
+            (XdmMap.from_mapping({"doc": document}),),
+            {
+                "method": "json",
+                "indent": "no",
+                "json-node-output-method": "html",
+            },
+        )
+        == '{"doc":"<html xmlns=\\"http:\\/\\/www.w3.org\\/1999\\/xhtml\\">'
+        '<body><\\/body><\\/html>"}'
+    )
+
+
+def test_adaptive_comment_falls_back_to_character_references() -> None:
+    document = XdmDocument.parse("<r><!--caf\u00e9--></r>".encode())
+    comment = document.root_element.children[0]
+    assert (
+        Serializer.serialize(
+            (comment,),
+            {"method": "adaptive", "encoding": "ascii"},
+        )
+        == "<!--caf&#xE9;-->"
+    )
+
+
+def test_json_html_node_output_of_a_plain_html_element() -> None:
+    document = XdmDocument.parse(b"<html><body/></html>")
+    assert (
+        Serializer.serialize(
+            (XdmMap.from_mapping({"doc": document}),),
+            {"method": "json", "indent": "no", "json-node-output-method": "html"},
+        )
+        == '{"doc":"<html><body><\\/body><\\/html>"}'
+    )

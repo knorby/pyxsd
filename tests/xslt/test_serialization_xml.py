@@ -1918,3 +1918,139 @@ def test_invalid_disable_output_escaping_value_is_xtse0020() -> None:
     with pytest.raises(XsltStaticError) as error:
         XsltProcessor().compile(io.BytesIO(source.encode()))
     assert error.value.code == "XTSE0020"
+
+
+def test_html5_foreign_prefixes_and_default_namespaces() -> None:
+    document = _document(
+        b"<html><body>"
+        b'<n:zzz xmlns:n="NamespaceN">foreign</n:zzz>'
+        b'<p xmlns:m="NamespaceM" class="x" m:zzz="value">attribute</p>'
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="1"/>'
+        b"<input/>"
+        b"</body></html>"
+    )
+    serialized = _serialize(
+        (document,),
+        method="html",
+        html_version="5.0",
+        omit_xml_declaration=True,
+        include_content_type=False,
+    )
+    assert serialized.startswith(
+        '<!DOCTYPE html><html xmlns:n="NamespaceN" xmlns:m="NamespaceM"><body>'
+    )
+    assert "<n:zzz>foreign</n:zzz>" in serialized
+    assert '<p class="x" m:zzz="value">attribute</p>' in serialized
+    assert '<svg xmlns="http://www.w3.org/2000/svg" width="1">' in serialized
+    assert "<input>" in serialized
+
+
+def test_xhtml5_attribute_prefixes_are_declared_where_used() -> None:
+    document = _document(
+        (
+            f'<html xmlns="{XHTML_NS}"><head/><body>'
+            '<a xmlns:xlink="urn:link" xlink:href="target">text</a>'
+            "</body></html>"
+        ).encode()
+    )
+    assert _serialize(
+        (document,),
+        method="xhtml",
+        html_version="5.0",
+        omit_xml_declaration=True,
+        include_content_type=False,
+    ) == (
+        f'<!DOCTYPE html><html xmlns="{XHTML_NS}"><head></head><body>'
+        '<a xmlns:xlink="urn:link" xlink:href="target">text</a>'
+        "</body></html>"
+    )
+
+
+def test_xhtml5_doctype_requires_the_html_local_name() -> None:
+    document = _document(f'<div xmlns="{XHTML_NS}"/>'.encode())
+    assert (
+        _serialize(
+            (document,),
+            method="xhtml",
+            html_version="5.0",
+            omit_xml_declaration=True,
+        )
+        == f'<div xmlns="{XHTML_NS}"></div>'
+    )
+
+
+def test_fully_normalized_result_rejects_a_leading_combining_character() -> None:
+    document = _document("<r>\u0301leading</r>".encode())
+    assert (
+        _error_code(
+            lambda: _serialize(
+                (document,),
+                omit_xml_declaration=True,
+                normalization_form="fully-normalized",
+            )
+        )
+        == "SERE0012"
+    )
+
+
+def test_component_result_type_drops_disable_output_escaping() -> None:
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:output method="xml" omit-xml-declaration="yes"/>'
+        '<xsl:template name="xsl:initial-template">'
+        '<out><xsl:call-template name="raw"/></out>'
+        "</xsl:template>"
+        '<xsl:template name="raw" as="text()">'
+        '<xsl:value-of select="\'&lt;\'" disable-output-escaping="yes"/>'
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    result = transform(source.encode(), delivery="stylesheet")
+    assert result.principal_entry.serialized == "<out>&lt;</out>"
+
+
+def test_public_identifier_and_html_version_validation_branches() -> None:
+    with pytest.raises(XsltSerializationError) as public_error:
+        SerializationParameters(doctype_public="\u00a3")
+    assert public_error.value.code == "SEPM0016"
+
+    for value in (True, object(), "-1", "nan"):
+        with pytest.raises(XsltSerializationError) as html_error:
+            SerializationParameters(method="xhtml", html_version=value)  # type: ignore[arg-type]
+        assert html_error.value.code == "SEPM0016"
+
+    assert SerializationParameters(html_version="   ").html_version is None
+
+    with pytest.raises(TypeError, match="legacy"):
+        SerializationParameters(legacy="yes")  # type: ignore[arg-type]
+
+
+def test_cdata_section_starting_with_an_unrepresentable_character() -> None:
+    document = _document("<r><x>\u00aa tail</x></r>".encode())
+    assert (
+        _serialize(
+            (document,),
+            omit_xml_declaration=True,
+            encoding="US-ASCII",
+            cdata_section_elements=("x",),
+        )
+        == "<r><x>&#xAA;<![CDATA[ tail]]></x></r>"
+    )
+
+
+def test_html5_doctype_with_a_declared_system_identifier() -> None:
+    document = _document(b'<html xmlns="http://www.w3.org/1999/xhtml"/>')
+    assert _serialize(
+        (document,),
+        method="xhtml",
+        html_version="5.0",
+        omit_xml_declaration=True,
+        doctype_system="x.dtd",
+    ) == (f'<!DOCTYPE html SYSTEM "x.dtd"><html xmlns="{XHTML_NS}"></html>')
+
+
+def test_a_top_level_text_node_marked_unescaped_is_not_reencoded() -> None:
+    from pyxsd.xslt.runtime.builder import _NodeFactory
+
+    text = _NodeFactory().text("<raw>", disable_output_escaping=True)
+    assert _serialize((text,), omit_xml_declaration=True) == "<raw>"

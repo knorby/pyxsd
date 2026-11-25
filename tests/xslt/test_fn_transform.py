@@ -1165,3 +1165,9 @@ def test_missing_stylesheet_location_is_foxt0002(tmp_path: Path) -> None:
     with pytest.raises(XsltDynamicError) as error:
         run_transform({"stylesheet-location": str(tmp_path / "missing.xsl")})
     assert error.value.code == "FOXT0002"
+
+
+def test_map_valued_stylesheet_location_is_foxt0002() -> None:
+    with pytest.raises(XsltDynamicError) as error:
+        run_transform({"stylesheet-location": XdmMap.from_mapping({"path": "x.xsl"})})
+    assert error.value.code == "FOXT0002"
