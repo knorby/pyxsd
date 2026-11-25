@@ -1,8 +1,8 @@
-"""The schema-bound instance document: the interaction hub.
+"""The instance document: the interaction hub.
 
-A :class:`Document` pairs a compiled :class:`~pyxsd.schema.Schema` with
-one bound instance tree and the merged
-:class:`~pyxsd.validation.ValidationReport` for the run (schema-phase
+A :class:`Document` pairs a compiled :class:`~pyxsd.schema.Schema` (or
+``None`` for a schemaless document) with one bound instance tree and the
+merged :class:`~pyxsd.validation.ValidationReport` for the run (schema-phase
 issues followed by this document's instance-phase issues). It is what
 :meth:`pyxsd.schema.Schema.parse` returns, and the object callers
 inspect (``report``/``is_valid``/``require_valid``) and write out
@@ -55,10 +55,17 @@ def write_tree(root: Any, output: str | Path | os.PathLike[str] | IO[str]) -> No
 
 
 class Document:
-    """A schema-bound instance document: the interaction hub."""
+    """A schema-bound instance document: the interaction hub.
 
-    #: The schema the document was parsed against.
-    schema: Schema
+    ``schema`` is ``None`` for a schemaless document. Schema-dependent
+    operations such as :meth:`revalidate` reject that case explicitly;
+    traversal, XPath, writing, and the native exports still operate on the
+    document's root.
+    """
+
+    #: The schema the document was parsed against, or ``None`` when the
+    #: document is schemaless.
+    schema: Schema | None
     #: The bound root instance, or ``None`` when binding failed (for
     #: example an unknown document root element).
     root: Any
@@ -67,7 +74,7 @@ class Document:
 
     def __init__(
         self,
-        schema: Schema,
+        schema: Schema | None,
         root: Any,
         source: str | Path | os.PathLike[str] | IO[str] | ET.Element | None,
         report: ValidationReport,
@@ -316,7 +323,14 @@ class Document:
         still rejects an undeclared replacement value. A document with no
         evidence (a caller-built tree, a custom policy parse) stays
         lexical-only instead of inventing an empty declaration set.
+
+        A plain ``Document(schema=None)`` raises
+        :class:`~pyxsd.exceptions.PyXSDError` because there is no schema to
+        bind against. Use ``SchemalessDocument.revalidate()`` to refresh a
+        schemaless document from its current lexical tree.
         """
+        if self.schema is None:
+            raise PyXSDError("this document has no schema to revalidate against")
         again = self.schema._parse_instance(
             StringIO(self.to_string()), declarations=self._declarations
         )

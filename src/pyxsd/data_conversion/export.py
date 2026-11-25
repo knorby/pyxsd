@@ -16,6 +16,7 @@ from one shared :class:`PrefixAllocator`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, NoReturn
 
 from pyxsd.data_conversion.contracts import (
@@ -61,6 +62,8 @@ def bound_to_data(
     fidelity: Fidelity = "best-effort",
     typed: bool = True,
     always_list: bool = False,
+    scalar_reader: Callable[[Any], Any] | None = None,
+    attribute_reader: Callable[[Any, str], Any] | None = None,
 ) -> JsonValue:
     """Export the bound tree rooted at *root* under a format contract.
 
@@ -70,6 +73,9 @@ def bound_to_data(
     ``jsonml`` implement the conventional grouped and positional shapes.
     ``typed`` and ``always_list`` are native-only options; another format
     rejects a non-default value with ``ValueError`` before conversion.
+    ``scalar_reader``/``attribute_reader`` are the internal native typed-view
+    seam forwarded to :func:`pyxsd.dict_export.bound_to_dict`; they are
+    ignored by the schema-directed non-native formats.
 
     A missing root raises :class:`~pyxsd.exceptions.PyXSDError`. Conversion
     failures carry a stable reason code and a JSON Pointer path.
@@ -92,6 +98,8 @@ def bound_to_data(
             fidelity=requested_fidelity,
             typed=typed,
             always_list=always_list,
+            scalar_reader=scalar_reader,
+            attribute_reader=attribute_reader,
         )
     if requested_format == "pyxsd-json":
         return _export_hybrid(root)
@@ -107,11 +115,25 @@ def bound_to_data(
 # ---------------------------------------------------------------------------
 
 
-def _export_native(root: Any, *, fidelity: Fidelity, typed: bool, always_list: bool) -> JsonValue:
+def _export_native(
+    root: Any,
+    *,
+    fidelity: Fidelity,
+    typed: bool,
+    always_list: bool,
+    scalar_reader: Callable[[Any], Any] | None = None,
+    attribute_reader: Callable[[Any, str], Any] | None = None,
+) -> JsonValue:
     """Apply the native structure and its JSON-safe scalar normalization."""
     if fidelity == "strict":
         _check_native_strict(root, ())
-    exported = bound_to_dict(root, typed=typed, always_list=always_list)
+    exported = bound_to_dict(
+        root,
+        typed=typed,
+        always_list=always_list,
+        scalar_reader=scalar_reader,
+        attribute_reader=attribute_reader,
+    )
     return _normalize_native(exported, typed=typed)
 
 

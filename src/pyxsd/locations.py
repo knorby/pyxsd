@@ -53,6 +53,22 @@ class IssueLocation:
 
 
 @dataclass(frozen=True)
+class DataLocation(IssueLocation):
+    """A JSON data occurrence, addressed by RFC 6901 pointer instead of XML path.
+
+    ``pointer`` is an RFC 6901 JSON Pointer, where the empty string denotes the
+    document root. ``schema_pointer`` optionally names the JSON Schema location
+    that produced the diagnostic. Data locations have no XML path steps or
+    attribute name, so ``path`` is always empty and ``attribute`` is ``None``.
+    """
+
+    path: tuple[PathStep, ...] = field(default=(), init=False)
+    attribute: str | None = field(default=None, init=False)
+    pointer: str = ""
+    schema_pointer: str | None = field(default=None, kw_only=True)
+
+
+@dataclass(frozen=True)
 class ConstraintInfo:
     """A failed rule and its expected/actual values, without parsing prose."""
 

@@ -3645,11 +3645,15 @@ def test_export_module_exposes_the_documented_signature():
         "fidelity",
         "typed",
         "always_list",
+        "scalar_reader",
+        "attribute_reader",
     ]
     assert signature.parameters["format"].default == "pyxsd"
     assert signature.parameters["fidelity"].default == "best-effort"
     assert signature.parameters["typed"].default is True
     assert signature.parameters["always_list"].default is False
+    assert signature.parameters["scalar_reader"].default is None
+    assert signature.parameters["attribute_reader"].default is None
 
 
 def test_document_to_json_forwards_indentation():

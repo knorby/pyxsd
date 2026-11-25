@@ -162,3 +162,20 @@ def test_revalidate_produces_document_with_fresh_report():
     again = doc.revalidate()
     assert isinstance(again, pyxsd.Document)
     assert again.is_valid
+
+
+def test_schema_optional_document_guards_schema_dependent_revalidation():
+    import xml.etree.ElementTree as ET
+
+    from pyxsd.validation import ValidationReport
+
+    doc = pyxsd.Document(
+        schema=None,
+        root=ET.fromstring("<r/>"),
+        source=None,
+        report=ValidationReport(diagnostics_complete=True),
+    )
+
+    assert doc.schema is None and doc.is_valid
+    with pytest.raises(pyxsd.PyXSDError, match="no schema"):
+        doc.revalidate()

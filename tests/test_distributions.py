@@ -12,6 +12,8 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
 from scripts.check_mcp_registry import check_local, check_pypi
 
 from pyxsd import __version__
@@ -87,6 +89,22 @@ def test_built_distributions_have_complete_sources_and_bundled_skills(tmp_path):
         metadata = wheel.read(f"pyxsd-{__version__}.dist-info/METADATA").decode("utf-8")
         assert "<!-- mcp-name: io.github.knorby/pyxsd -->" in metadata
         message = email.message_from_string(metadata)
+        extras = set(message.get_all("Provides-Extra") or ())
+        assert {"jsonschema", "mcp-all"} <= extras
+        requirements = [Requirement(raw) for raw in (message.get_all("Requires-Dist") or ())]
+        jsonschema_requirements = {
+            extra: [
+                requirement
+                for requirement in requirements
+                if requirement.name == "jsonschema"
+                and requirement.marker is not None
+                and requirement.marker.evaluate({"extra": extra})
+            ]
+            for extra in ("jsonschema", "mcp-all")
+        }
+        for extra, matches in jsonschema_requirements.items():
+            assert len(matches) == 1, extra
+            assert matches[0].specifier == SpecifierSet(">=4.25,<5")
         check_pypi(
             check_local(Path(__file__).resolve().parents[1]),
             {

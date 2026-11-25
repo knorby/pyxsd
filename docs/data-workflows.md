@@ -11,6 +11,7 @@ limitations.
 | Task | Example | Result |
 | --- | --- | --- |
 | Validate Python input or read typed order snapshots | [Purchase-order models](https://github.com/knorby/pyxsd/tree/develop/examples/pydantic#readme) | Pydantic models, JSON Schema, explicit presence |
+| Load XML without a schema or keep native JSON | {doc}`schemaless-data` | Lexical XML tree, native XDM, explicit XML projection |
 | Apply approval rules after XML validation | [Order assessment](https://github.com/knorby/pyxsd/tree/develop/examples/pydantic) | Exact subtotals and reason codes |
 | Extract nested XML records or scalar columns | [Arrow and Parquet](https://github.com/knorby/pyxsd/tree/develop/examples/arrow#readme) | Typed tables, record batches, Parquet |
 | Aggregate observations and join station metadata | [DuckDB and Polars](https://github.com/knorby/pyxsd/tree/develop/examples/analytics#readme) | Grouped totals, child expansion, Parquet readback |
