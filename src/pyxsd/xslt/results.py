@@ -14,13 +14,13 @@ seams consumed by the processor.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, cast
 from urllib.parse import urlsplit
 
 from pyxsd.exceptions import PyXSDError
-from pyxsd.xdm.nodes import XdmDocument, XdmNode
+from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.values import XdmItem, XdmSequence
 from pyxsd.xslt.errors import XsltDynamicError, is_budget_alarm
 from pyxsd.xslt.policy import OutputPolicy
@@ -127,6 +127,7 @@ class ResultEntry:
     serialized: str | None = None
     serialization: Mapping[str, str] = field(default_factory=dict)
     character_maps: tuple[tuple[str, str], ...] = ()
+    legacy: bool = False
     messages: tuple[Message, ...] = ()
 
     def __post_init__(self) -> None:
@@ -142,6 +143,8 @@ class ResultEntry:
             raise TypeError("a serialized result must be a string or None")
         object.__setattr__(self, "serialization", _freeze_parameters(self.serialization))
         object.__setattr__(self, "character_maps", character_map_pairs(self.character_maps))
+        if not isinstance(self.legacy, bool):
+            raise TypeError("a result entry legacy flag must be a boolean")
         messages = tuple(self.messages)
         if not all(isinstance(message, Message) for message in messages):
             raise TypeError("result messages must be Message values")
@@ -234,7 +237,40 @@ def serialization_parameters(
     attributes.update(entry.serialization)
     if parameters is not None:
         attributes.update(parameters)
-    return SerializationParameters.from_attributes(attributes)
+    return SerializationParameters.from_attributes(attributes, legacy=entry.legacy)
+
+
+_XHTML_NS = "http://www.w3.org/1999/xhtml"
+
+
+def _inferred_method(entry: ResultEntry) -> str:
+    """The output method XSLT selects when the stylesheet declares none.
+
+    XSLT 3.0 section 25.1 chooses the XHTML method when the outermost element
+    is ``html`` in the XHTML namespace and the HTML method when it is ``html``
+    in no namespace; every other sequence uses XML.
+    """
+    source: Any = entry.tree.children if entry.tree is not None else entry.raw
+    for item in source:
+        if not isinstance(item, XdmNode):
+            continue
+        if item.kind is not NodeKind.ELEMENT:
+            continue
+        if (item.local_name or "").lower() != "html":
+            return "xml"
+        return "xhtml" if item.namespace_uri == _XHTML_NS else "html"
+    return "xml"
+
+
+def _with_default_method(
+    parameters: SerializationParameters,
+    entry: ResultEntry,
+    overrides: Mapping[str, Any] | None,
+) -> SerializationParameters:
+    """Apply the stylesheet's implicit output method to one entry."""
+    if "method" in entry.serialization or (overrides is not None and "method" in overrides):
+        return parameters
+    return replace(parameters, method=_inferred_method(entry))
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,7 +356,12 @@ class TransformationResult:
         """
         entry = self._entry(uri)
         resolved = serialization_parameters(entry, parameters)
-        return Serializer.serialize(entry.raw, resolved)
+        resolved = _with_default_method(resolved, entry, parameters)
+        return Serializer.serialize(
+            entry.raw,
+            resolved,
+            result_tree=entry.tree is not None,
+        )
 
     def write(
         self,

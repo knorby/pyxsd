@@ -121,6 +121,7 @@ class XdmNode(XdmItem):
         "_attributes",
         "_base_uri",
         "_children",
+        "_disable_output_escaping",
         "_document",
         "_document_order",
         "_document_uri",
@@ -160,10 +161,14 @@ class XdmNode(XdmItem):
         path: tuple[PathStep, ...] = (),
         prefix: str = "",
         namespace_uri: str | None = None,
+        disable_output_escaping: bool = False,
     ) -> None:
         self._kind = kind
         self._document = document
         self._adopts_parent_base = False
+        if not isinstance(disable_output_escaping, bool):
+            raise TypeError("disable_output_escaping must be a boolean")
+        self._disable_output_escaping = disable_output_escaping
         self._node_id = node_id
         self._source_name = source_name
         self._source_index = source_index
@@ -337,6 +342,17 @@ class XdmNode(XdmItem):
     def target(self) -> str | None:
         """The processing-instruction target, or ``None``."""
         return self._target
+
+    @property
+    def disable_output_escaping(self) -> bool:
+        """Whether xsl:text/xsl:value-of marked this text node for raw output.
+
+        Disable-output-escaping is not an XDM property; XSLT 3.0 section 26.2
+        attaches it to text nodes as construction metadata.  It is not part of
+        node identity or equality and a copy that does not preserve it starts
+        with escaping enabled again.
+        """
+        return self._disable_output_escaping
 
     @property
     def annotations(self) -> XdmAnnotation:

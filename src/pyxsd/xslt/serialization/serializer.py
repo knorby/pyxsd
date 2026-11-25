@@ -62,8 +62,15 @@ class Serializer:
         cls,
         sequence: Iterable[XdmItem],
         parameters: SerializationParameters | Mapping[str, Any] | None = None,
+        *,
+        result_tree: bool = False,
     ) -> str:
-        """Serialize *sequence* and return the unencoded string."""
+        """Serialize *sequence* and return the unencoded string.
+
+        ``result_tree`` marks a sequence normalized from a delivered document
+        node; the XML family then allows the several element children a final
+        result tree may contain.
+        """
         resolved = cls._parameters(parameters)
         items = tuple(sequence)
         if resolved.method == "json":
@@ -72,7 +79,12 @@ class Serializer:
             return serialize_adaptive(items, resolved)
         if resolved.method == "text":
             return serialize_text(items, resolved)
-        return serialize_markup(normalize_sequence(items), resolved, method=resolved.method)
+        return serialize_markup(
+            normalize_sequence(items, resolved.item_separator),
+            resolved,
+            method=resolved.method,
+            result_tree=result_tree,
+        )
 
     @classmethod
     def write(

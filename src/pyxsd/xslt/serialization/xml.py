@@ -9,6 +9,7 @@ library marker or consults the filesystem.
 from __future__ import annotations
 
 import codecs
+import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 
 from pyxsd.xdm import XdmAtomic, XdmItem
@@ -24,6 +25,8 @@ from pyxsd.xslt.serialization.parameters import SerializationParameters
 
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 XHTML_NS = "http://www.w3.org/1999/xhtml"
+SVG_NS = "http://www.w3.org/2000/svg"
+MATHML_NS = "http://www.w3.org/1998/Math/MathML"
 _DEFAULT_MEDIA_TYPES = {"html": "text/html", "xhtml": "text/html"}
 
 _HTML_VOID_ELEMENTS = frozenset(
@@ -44,6 +47,7 @@ _HTML_VOID_ELEMENTS = frozenset(
         "wbr",
     }
 )
+_XHTML_LEGACY_VOID_ELEMENTS = frozenset({"basefont", "frame", "isindex"})
 _HTML_BOOLEAN_ATTRIBUTES = frozenset(
     {
         "allowfullscreen",
@@ -118,7 +122,6 @@ _URI_ATTRIBUTES: Mapping[str, frozenset[str]] = {
         }
     ),
     "usemap": frozenset({"img", "input", "object"}),
-    "value": frozenset({"input"}),
 }
 
 _URI_SAFE = frozenset(chr(code) for code in range(0x20, 0x7F))
@@ -181,25 +184,46 @@ def _matches_any(tokens: tuple[str, ...], element: XdmNode) -> bool:
     return any(_matches_element(token, element) for token in tokens)
 
 
-def _is_html_element(element: XdmNode, *, method: str) -> bool:
+def _is_html5(parameters: SerializationParameters, method: str) -> bool:
+    if method not in ("html", "xhtml"):
+        return False
+    version = parameters.html_version
+    if version is None and method == "html":
+        version = parameters.version
+    if version is None:
+        return False
+    try:
+        return float(version) >= 5.0
+    except ValueError:  # pragma: no cover - validated parameters
+        return False
+
+
+def _is_html_element(element: XdmNode, *, method: str, html5: bool = False) -> bool:
     """Whether *element* is serialized as an HTML element by *method*.
 
-    The XHTML method treats a null-namespace element as an HTML element only
-    when the requested HTML version is 5.0 (Serialization 3.1 section 6).
-    ``html-version`` is not modeled yet, so this task recognizes only the
-    XHTML namespace there rather than misclassifying XML islands.
+    The HTML method treats null-namespace elements and elements in the XHTML
+    namespace as HTML elements.  The XHTML method recognizes the XHTML
+    namespace, and an ``html-version`` of 5.0 or later additionally recognizes
+    null-namespace elements (Serialization 3.1 section 6).
     """
     if method == "html":
-        return element.namespace_uri is None
-    return element.namespace_uri == XHTML_NS
+        return element.namespace_uri in (None, XHTML_NS)
+    if method != "xhtml":
+        return False
+    if element.namespace_uri == XHTML_NS:
+        return True
+    return html5 and element.namespace_uri is None
 
 
-def _is_head(element: XdmNode, *, method: str) -> bool:
-    return _is_html_element(element, method=method) and (element.local_name or "").lower() == "head"
+def _is_head(element: XdmNode, *, method: str, html5: bool = False) -> bool:
+    return (
+        _is_html_element(element, method=method, html5=html5)
+        and (element.local_name or "").lower() == "head"
+    )
 
 
-def _is_content_type_meta(node: XdmNode, *, method: str) -> bool:
-    if node.kind is not NodeKind.ELEMENT or not _is_html_element(node, method=method):
+def _is_content_type_meta(node: XdmNode, *, method: str, html5: bool = False) -> bool:
+    if node.kind is not NodeKind.ELEMENT or not _is_html_element(node, method=method, html5=html5):
         return False
     if (node.local_name or "").lower() != "meta":
         return False
@@ -217,19 +241,28 @@ def _content_type_meta(
     *,
     method: str,
     codec: str,
+    html5: bool = False,
+    characters: CharacterMap | None = None,
 ) -> str:
     """The content-type ``meta`` element inserted into *head*."""
     media_type = (
         parameters.media_type if parameters.media_type is not None else _DEFAULT_MEDIA_TYPES[method]
     )
     content = f"{media_type}; charset={parameters.encoding}"
+    if characters is not None:
+        form = parameters.normalization_form
+        content = apply_mapped(
+            content,
+            characters,
+            lambda run: normalize_text(run, form),
+        )
     if method == "html":
         escaped = _escape_html_attribute(content, codec=codec)
         return f'<meta http-equiv="Content-Type" content="{escaped}">'
-    escaped = _escape_attribute(content, codec=codec)
+    escaped = _escape_xhtml_attribute(content, codec=codec)
     declarations = (
         f' xmlns="{XHTML_NS}"'
-        if head.namespace_uri == XHTML_NS and scope.get("") != XHTML_NS
+        if not html5 and head.namespace_uri == XHTML_NS and scope.get("") != XHTML_NS
         else ""
     )
     return f'<meta{declarations} http-equiv="Content-Type" content="{escaped}" />'
@@ -250,8 +283,33 @@ def _escape_text(value: str, *, html: bool, codec: str) -> str:
     if html:
         escaped = escaped.replace("]]>", "]]&gt;")
     else:
-        escaped = escaped.replace("\r", "&#xD;").replace("]]>", "]]&gt;")
+        escaped = escaped.replace(">", "&gt;").replace("\r", "&#xD;")
     return _character_references(escaped, codec)
+
+
+def _escape_xhtml_text(value: str, *, codec: str) -> str:
+    escaped = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    escaped = escaped.replace("\r", "&#xD;")
+    return _character_references(_c1_references(escaped), codec)
+
+
+def _c1_references(value: str) -> str:
+    if not any(0x7F <= ord(character) <= 0x9F for character in value):
+        return value
+    return "".join(
+        f"&#x{ord(character):X};" if 0x7F <= ord(character) <= 0x9F else character
+        for character in value
+    )
+
+
+def _reject_html_control(value: str, *, label: str) -> None:
+    for character in value:
+        if 0x7F <= ord(character) <= 0x9F:
+            raise _serialization_error(
+                f"{label} contains the control character U+{ord(character):04X} "
+                "the HTML output method cannot represent",
+                "SERE0014",
+            )
 
 
 def _escape_attribute(value: str, *, codec: str) -> str:
@@ -267,8 +325,22 @@ def _escape_attribute(value: str, *, codec: str) -> str:
 
 
 def _escape_html_attribute(value: str, *, codec: str) -> str:
+    _reject_html_control(value, label="an attribute value")
     escaped = value.replace("&", "&amp;").replace('"', "&quot;")
     return _character_references(escaped, codec)
+
+
+def _escape_xhtml_attribute(value: str, *, codec: str) -> str:
+    escaped = (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&#34;")
+        .replace("\t", "&#x9;")
+        .replace("\n", "&#xA;")
+        .replace("\r", "&#xD;")
+    )
+    return _character_references(_c1_references(escaped), codec)
 
 
 def escape_html_uri(value: str) -> str:
@@ -283,8 +355,10 @@ def escape_html_uri(value: str) -> str:
     )
 
 
-def _is_uri_attribute(element: XdmNode, attribute: XdmNode, *, method: str) -> bool:
-    if not _is_html_element(element, method=method):
+def _is_uri_attribute(
+    element: XdmNode, attribute: XdmNode, *, method: str, html5: bool = False
+) -> bool:
+    if not _is_html_element(element, method=method, html5=html5):
         return False
     attribute_name = (attribute.local_name or "").lower()
     element_name = (element.local_name or "").lower()
@@ -295,24 +369,43 @@ def text_value(
     value: str,
     parameters: SerializationParameters,
     *,
-    html: bool,
+    method: str,
     codec: str,
     characters: CharacterMap,
 ) -> str:
     """Character-map, normalize, then escape one text node value."""
     form = parameters.normalization_form
-    return apply_mapped(
-        value,
-        characters,
-        lambda run: _escape_text(normalize_text(run, form), html=html, codec=codec),
-    )
+    if form == "fully-normalized" and value and unicodedata.combining(value[0]):
+        raise _serialization_error(
+            "a fully-normalized result cannot begin with a combining character",
+            "SERE0012",
+        )
+    if method == "html":
+        numeric_c1 = _is_html5(parameters, "html")
+        if not numeric_c1:
+            _reject_html_control(value, label="text")
+
+        def escape(run: str) -> str:
+            escaped = _escape_text(normalize_text(run, form), html=True, codec=codec)
+            return _c1_references(escaped) if numeric_c1 else escaped
+    elif method == "xhtml":
+
+        def escape(run: str) -> str:
+            return _escape_xhtml_text(normalize_text(run, form), codec=codec)
+
+    else:
+
+        def escape(run: str) -> str:
+            return _escape_text(normalize_text(run, form), html=False, codec=codec)
+
+    return apply_mapped(value, characters, escape)
 
 
 def attribute_value(
     value: str,
     parameters: SerializationParameters,
     *,
-    html: bool = False,
+    method: str = "xml",
     codec: str,
     characters: CharacterMap,
     uri_attribute: bool = False,
@@ -323,7 +416,17 @@ def attribute_value(
     percent-escaped by ``fn:escape-html-uri`` before normal output escaping;
     character maps are not applied to it.
     """
-    escape = _escape_html_attribute if html else _escape_attribute
+    if method == "html":
+        numeric_c1 = _is_html5(parameters, "html")
+
+        def escape(raw: str, *, codec: str) -> str:
+            escaped = _escape_html_attribute(raw, codec=codec)
+            return _c1_references(escaped) if numeric_c1 else escaped
+
+    elif method == "xhtml":
+        escape = _escape_xhtml_attribute
+    else:
+        escape = _escape_attribute
     if uri_attribute and parameters.escape_uri_attributes:
         return escape(escape_html_uri(normalize_text(value, "NFC")), codec=codec)
     form = parameters.normalization_form
@@ -335,8 +438,30 @@ def attribute_value(
 
 
 def _cdata_section(value: str, *, codec: str) -> str:
-    _require_encodable(value, codec, "a CDATA section")
-    return "<![CDATA[" + value.replace("]]>", "]]]]><![CDATA[>") + "]]>"
+    """One CDATA-section serialization, split around unrepresentable characters.
+
+    Serialization 3.1 section 8.5 lets the serializer end the CDATA section
+    around a character the encoding cannot represent and output a character
+    reference instead.  The same split keeps ``]]>`` from terminating the
+    section early.
+    """
+    pieces: list[str] = []
+    pending: list[str] = []
+    for character in value.replace("]]>", "]]]]><![CDATA[>"):
+        if not _encodable(character, codec):
+            if pending:
+                pieces.append(_cdata_piece("".join(pending)))
+                pending.clear()
+            pieces.append(f"&#x{ord(character):X};")
+            continue
+        pending.append(character)
+    if pending:
+        pieces.append(_cdata_piece("".join(pending)))
+    return "".join(pieces)
+
+
+def _cdata_piece(value: str) -> str:
+    return "<![CDATA[" + value + "]]>"
 
 
 def _namespace_sort_key(prefix: str) -> tuple[bool, str]:
@@ -426,37 +551,143 @@ def _start_tag(
     codec: str,
     characters: CharacterMap,
     undeclare: bool,
+    html5: bool,
+    extra_declarations: Mapping[str, str] = {},
+    root_declaration: bool = False,
 ) -> str:
     html = method == "html"
-    name = _element_name(element, scope, html=html)
+    html_element = _is_html_element(element, method=method, html5=html5)
+    html_namespace = element.namespace_uri in (None, XHTML_NS, SVG_NS, MATHML_NS)
+    name_html = (html_element or (html5 and html_namespace) or not html5) if html else html5
+    name = _element_name(element, scope, html=name_html)
     _require_encodable(name, codec, "an element name")
     attributes: list[str] = []
+    attribute_declarations: list[tuple[str, str]] = []
     for attribute in element.attributes:
-        attribute_name = _attribute_name(attribute, scope, html=html)
+        attribute_name = _attribute_name(attribute, scope, html=html and not html5)
         _require_encodable(attribute_name, codec, "an attribute name")
+        if html5 and attribute.namespace_uri is not None and attribute.prefix:
+            attribute_declarations.append((attribute.prefix, attribute.namespace_uri))
         value = attribute_value(
             attribute.string_value,
             parameters,
-            html=html,
+            method=method,
             codec=codec,
             characters=characters,
-            uri_attribute=_is_uri_attribute(element, attribute, method=method),
+            uri_attribute=_is_uri_attribute(element, attribute, method=method, html5=html5),
         )
-        if html and attribute_name.lower() in _HTML_BOOLEAN_ATTRIBUTES:
+        if method == "html" and html_element and attribute_name.lower() in _HTML_BOOLEAN_ATTRIBUTES:
             lowered = value.lower()
             if not value or lowered == attribute_name.lower():
                 attributes.append(f" {attribute_name}")
                 continue
         attributes.append(f' {attribute_name}="{value}"')
-    declarations = (
-        ""
-        if html
-        else "".join(
+    attribute_decls = "".join(
+        f' xmlns:{prefix}="{_escape_attribute(uri, codec=codec)}"'
+        for prefix, uri in _unique_declarations(attribute_declarations)
+        if prefix not in extra_declarations
+    )
+    extra_decls = (
+        "".join(
+            f' xmlns:{prefix}="{_escape_attribute(uri, codec=codec)}"'
+            for prefix, uri in _unique_declarations(list(extra_declarations.items()))
+        )
+        if root_declaration
+        else ""
+    )
+    if html5:
+        if not html:
+            declarations = _html5_declarations(element, scope, parent_scope, codec=codec)
+            declarations += attribute_decls
+        elif html_element:
+            declarations = extra_decls + attribute_decls
+        elif html_namespace:
+            uri = element.namespace_uri
+            declarations = (
+                f' xmlns="{_escape_attribute(uri, codec=codec)}"' if uri else ""
+            ) + attribute_decls
+        else:
+            element_declaration = (
+                f' xmlns:{element.prefix}="{_escape_attribute(element.namespace_uri or "", codec=codec)}"'
+                if (
+                    element.prefix
+                    and element.namespace_uri
+                    and element.prefix not in extra_declarations
+                )
+                else ""
+            )
+            declarations = element_declaration + attribute_decls
+    elif html:
+        declarations = ""
+    else:
+        declarations = "".join(
             f' xmlns{":" + prefix if prefix else ""}="{_escape_attribute(uri, codec=codec)}"'
             for prefix, uri in _declaration_changes(scope, parent_scope, undeclare=undeclare)
         )
-    )
     return f"<{name}{declarations}{''.join(attributes)}"
+
+
+def _html5_root_prefix_declarations(root: XdmNode) -> dict[str, str]:
+    """Prefix declarations HTML 5.0 hoists to its root ``html`` element.
+
+    Foreign-namespace elements keep their lexical prefix in HTML serialization,
+    but the declaration belongs to the root HTML element so the foreign element
+    itself is serialized as a plain start tag.  SVG, MathML, XHTML, and
+    no-namespace elements are serialized by default namespace instead.
+    """
+    special = {None, XHTML_NS, SVG_NS, MATHML_NS}
+
+    def visit(node: XdmNode, *, main_flow: bool) -> None:
+        if node.kind is not NodeKind.ELEMENT:
+            return
+        html_element = node.namespace_uri in (None, XHTML_NS)
+        if node.namespace_uri not in special and node.prefix and node.namespace_uri:
+            declarations.setdefault(node.prefix, node.namespace_uri)
+        if main_flow and html_element:
+            for attribute in node.attributes:
+                if attribute.namespace_uri and attribute.prefix:
+                    declarations.setdefault(attribute.prefix, attribute.namespace_uri)
+        child_main_flow = main_flow and html_element
+        for child in node.children:
+            visit(child, main_flow=child_main_flow)
+
+    declarations: dict[str, str] = {}
+    visit(root, main_flow=True)
+    return declarations
+
+
+def _unique_declarations(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    seen: dict[str, str] = {}
+    for prefix, uri in pairs:
+        seen.setdefault(prefix, uri)
+    return list(seen.items())
+
+
+def _html5_declarations(
+    element: XdmNode,
+    scope: dict[str, str],
+    parent_scope: dict[str, str],
+    *,
+    codec: str,
+) -> str:
+    """The single default-namespace declaration HTML 5.0 serialization emits.
+
+    HTML 5.0 serialization drops prefixes: every element keeps its local name,
+    and a namespace change is expressed by a default ``xmlns`` declaration on
+    that element.  Prefixed declarations are never carried over.
+    """
+    uri = element.namespace_uri or ""
+    parent = parent_scope.get("", "")
+    if uri == parent:
+        return ""
+    return f' xmlns="{_escape_attribute(uri, codec=codec)}"' if uri else ' xmlns=""'
+
+
+def _scope_for(element: XdmNode, parent_scope: dict[str, str], *, html5: bool) -> dict[str, str]:
+    scope = dict(element.in_scope_namespaces)
+    if html5:
+        scope[""] = element.namespace_uri or ""
+    return scope
 
 
 def _text_node(
@@ -464,24 +695,31 @@ def _text_node(
     element: XdmNode | None,
     parameters: SerializationParameters,
     *,
-    html: bool,
+    method: str,
     codec: str,
     characters: CharacterMap,
+    html5: bool,
 ) -> str:
+    html = method == "html"
     if (
         not html
         and element is not None
         and _matches_any(parameters.cdata_section_elements, element)
     ):
         return _cdata_section(normalize_text(value, parameters.normalization_form), codec=codec)
-    if html and element is not None and (element.local_name or "").lower() in ("script", "style"):
+    if (
+        html
+        and element is not None
+        and _is_html_element(element, method=method, html5=html5)
+        and (element.local_name or "").lower() in ("script", "style")
+    ):
         form = parameters.normalization_form
         return apply_mapped(
             value,
             characters,
             lambda run: normalize_text(run, form),
         )
-    return text_value(value, parameters, html=html, codec=codec, characters=characters)
+    return text_value(value, parameters, method=method, codec=codec, characters=characters)
 
 
 def _render_node(
@@ -495,6 +733,9 @@ def _render_node(
     characters: CharacterMap,
     undeclare: bool,
     suppressed: bool,
+    html5: bool,
+    extra_declarations: Mapping[str, str] = {},
+    root_declaration: bool = False,
 ) -> str:
     html = method == "html"
     if node.kind is NodeKind.COMMENT:
@@ -505,15 +746,24 @@ def _render_node(
         data = node.string_value
         _require_encodable(target, codec, "a processing-instruction target")
         _require_encodable(data, codec, "processing-instruction data")
+        if html and ">" in data:
+            raise _serialization_error(
+                "an HTML processing instruction cannot contain '>'",
+                "SERE0015",
+            )
         return f"<?{target} {data}?>" if data else f"<?{target}?>"
     if node.kind is NodeKind.TEXT:
+        if node.disable_output_escaping:
+            _require_encodable(node.string_value, codec, "unescaped text")
+            return node.string_value
         return _text_node(
             node.string_value,
             node.parent,
             parameters,
-            html=html,
+            method=method,
             codec=codec,
             characters=characters,
+            html5=html5,
         )
     if node.kind is not NodeKind.ELEMENT:
         raise _not_well_formed(f"cannot serialize a {node.kind.value} node in content")
@@ -527,6 +777,9 @@ def _render_node(
         characters=characters,
         undeclare=undeclare,
         suppressed=suppressed,
+        html5=html5,
+        extra_declarations=extra_declarations,
+        root_declaration=root_declaration,
     )
 
 
@@ -541,10 +794,14 @@ def _render_element(
     characters: CharacterMap,
     undeclare: bool,
     suppressed: bool,
+    html5: bool,
+    extra_declarations: Mapping[str, str] = {},
+    root_declaration: bool = False,
 ) -> str:
     html = method == "html"
+    html_element = _is_html_element(element, method=method, html5=html5)
     suppress = suppressed or _matches_any(parameters.suppress_indentation, element)
-    scope = dict(element.in_scope_namespaces)
+    scope = _scope_for(element, parent_scope, html5=html5)
     start = _start_tag(
         element,
         scope,
@@ -554,33 +811,51 @@ def _render_element(
         codec=codec,
         characters=characters,
         undeclare=undeclare,
+        html5=html5,
+        extra_declarations=extra_declarations,
+        root_declaration=root_declaration,
     )
     children = list(element.children)
     content_type = (
-        _content_type_meta(element, scope, parameters, method=method, codec=codec)
+        _content_type_meta(
+            element,
+            scope,
+            parameters,
+            method=method,
+            codec=codec,
+            html5=html5,
+            characters=characters,
+        )
         if parameters.include_content_type
         and method in ("html", "xhtml")
-        and _is_head(element, method=method)
+        and _is_head(element, method=method, html5=html5)
         else None
     )
     if content_type is not None:
-        children = [child for child in children if not _is_content_type_meta(child, method=method)]
+        children = [
+            child
+            for child in children
+            if not _is_content_type_meta(child, method=method, html5=html5)
+        ]
     if parameters.indent and not suppress:
         children = [
             child
             for child in children
             if not (child.kind is NodeKind.TEXT and not child.string_value.strip())
         ]
+    name = _element_name(element, scope, html=html or html5)
     if not children and content_type is None:
-        if html:
-            name = _element_name(element, scope, html=True)
-            if (element.local_name or "").lower() in _HTML_VOID_ELEMENTS:
-                return f"{start}>"
+        if html_element:
+            local = (element.local_name or "").lower()
+            void = local in _HTML_VOID_ELEMENTS or (
+                method == "xhtml" and not html5 and local in _XHTML_LEGACY_VOID_ELEMENTS
+            )
+            if void:
+                return f"{start} />" if method == "xhtml" else f"{start}>"
             return f"{start}></{name}>"
-        name = _element_name(element, scope, html=False)
+        if html:
+            return f"{start}>"
         return f"{start} />" if method == "xhtml" else f"{start}/>"
-
-    name = _element_name(element, scope, html=html)
 
     def render_child(child: XdmNode) -> str:
         return _render_node(
@@ -593,6 +868,8 @@ def _render_element(
             characters=characters,
             undeclare=undeclare,
             suppressed=suppress,
+            html5=html5,
+            extra_declarations=extra_declarations,
         )
 
     rendered = [render_child(child) for child in children]
@@ -633,18 +910,58 @@ def _doctype(root: XdmNode, parameters: SerializationParameters, *, html: bool, 
     return f"<!DOCTYPE {name} SYSTEM {system}>"
 
 
-def _validate_xml_shape(items: Sequence[NormalizedItem]) -> None:
+def _html5_doctype(
+    root: XdmNode, parameters: SerializationParameters, *, method: str, codec: str
+) -> str | None:
+    """The HTML 5.0 doctype, when the root is the ``html`` element."""
+    html5 = _is_html5(parameters, method)
+    if not html5 or not _is_html_element(root, method=method, html5=True):
+        return None
+    if (root.local_name or "").lower() != "html":
+        return None
+    scope = _scope_for(root, {"xml": XML_NS}, html5=True)
+    name = _element_name(root, scope, html=True)
+    _require_encodable(name, codec, "a doctype name")
+    if parameters.doctype_system is not None:
+        return _doctype(root, parameters, html=False, codec=codec)
+    # Bug 20264: doctype-public alone still requests a doctype.
+    return f"<!DOCTYPE {name}>"
+
+
+def _validate_xml_shape(
+    items: Sequence[NormalizedItem],
+    parameters: SerializationParameters,
+    *,
+    result_tree: bool,
+) -> None:
     elements = [
         item for item in items if isinstance(item, XdmNode) and item.kind is NodeKind.ELEMENT
     ]
-    if len(elements) > 1:
-        raise _serialization_error(
-            "the XML serialization has more than one top-level element", "SERE0003"
-        )
+    if len(elements) <= 1:
+        return
+    if result_tree:
+        # A final result tree is a document node and may contain several
+        # element children (XSLT 3.0 section 25.1).  A standalone or doctype
+        # declaration still requires a single document element.
+        if parameters.standalone is not None or parameters.doctype_system is not None:
+            raise _serialization_error(
+                "a standalone or document type declaration requires one document element",
+                "SEPM0004",
+            )
+        return
+    raise _serialization_error(
+        "the XML serialization has more than one top-level element", "SERE0003"
+    )
 
 
-def normalize_sequence(sequence: Iterable[XdmItem]) -> tuple[NormalizedItem, ...]:
-    """Apply XSLT 3.0 section 5.7.1 sequence normalization."""
+def normalize_sequence(
+    sequence: Iterable[XdmItem], item_separator: str | None = None
+) -> tuple[NormalizedItem, ...]:
+    """Apply XSLT 3.0 section 5.7.1 sequence normalization.
+
+    *item_separator* replaces the single space normalization inserts between
+    adjacent atomic values.
+    """
     output: list[NormalizedItem] = []
     pending: list[str] = []
     previous_atomic = False
@@ -665,7 +982,10 @@ def normalize_sequence(sequence: Iterable[XdmItem]) -> tuple[NormalizedItem, ...
                 for child in item.children:
                     visit(child)
             elif item.kind is NodeKind.TEXT:
-                if item.string_value:
+                if item.disable_output_escaping:
+                    flush()
+                    output.append(item)
+                elif item.string_value:
                     pending.append(item.string_value)
                     previous_atomic = False
             elif item.kind is NodeKind.NAMESPACE:
@@ -677,7 +997,7 @@ def normalize_sequence(sequence: Iterable[XdmItem]) -> tuple[NormalizedItem, ...
                 output.append(item)
         elif isinstance(item, XdmAtomic):
             if previous_atomic:
-                pending.append(" ")
+                pending.append(" " if item_separator is None else item_separator)
             pending.append(item.lexical)
             previous_atomic = True
         else:
@@ -699,16 +1019,27 @@ def _xml_declaration(parameters: SerializationParameters) -> str:
 
 
 def serialize_markup(
-    items: Sequence[NormalizedItem], parameters: SerializationParameters, *, method: str
+    items: Sequence[NormalizedItem],
+    parameters: SerializationParameters,
+    *,
+    method: str,
+    result_tree: bool = False,
 ) -> str:
-    """Serialize normalized *items* with the XML, XHTML, or HTML method."""
+    """Serialize normalized *items* with the XML, XHTML, or HTML method.
+
+    ``result_tree`` marks items normalized from a delivered document node.  A
+    final result tree may contain several element children; a bare sequence
+    from ``fn:serialize`` may not (SERE0003).
+    """
     html = method == "html"
     undeclare = _undeclares_prefixes(parameters, html=html)
     if not items:
+        if result_tree and not html and not parameters.omit_xml_declaration:
+            return _xml_declaration(parameters)
         return ""
     codec = codecs.lookup(parameters.encoding).name
     if not html:
-        _validate_xml_shape(items)
+        _validate_xml_shape(items, parameters, result_tree=result_tree)
     if parameters.indent:
         items = [item for item in items if not (isinstance(item, str) and not item.strip())]
 
@@ -722,11 +1053,21 @@ def serialize_markup(
         (item for item in items if isinstance(item, XdmNode) and item.kind is NodeKind.ELEMENT),
         None,
     )
-    doctype = (
-        _doctype(root, parameters, html=html, codec=codec)
-        if root is not None and parameters.doctype_system is not None
-        else None
+    html5_document = (
+        _is_html5(parameters, method)
+        and root is not None
+        and _is_html_element(root, method=method, html5=True)
     )
+    root_declarations = (
+        _html5_root_prefix_declarations(root)
+        if html5_document and html and root is not None
+        else {}
+    )
+    doctype = None
+    if root is not None:
+        doctype = _html5_doctype(root, parameters, method=method, codec=codec)
+        if doctype is None and parameters.doctype_system is not None:
+            doctype = _doctype(root, parameters, html=html, codec=codec)
     root_scope: dict[str, str] = {"xml": XML_NS}
     separator = parameters.item_separator
     characters = character_map_index(parameters.character_maps)
@@ -739,9 +1080,10 @@ def serialize_markup(
                     item,
                     None,
                     parameters,
-                    html=html,
+                    method=method,
                     codec=codec,
                     characters=characters,
+                    html5=html5_document,
                 )
             )
             continue
@@ -761,6 +1103,17 @@ def serialize_markup(
                 characters=characters,
                 undeclare=undeclare,
                 suppressed=False,
+                html5=html5_document,
+                extra_declarations=root_declarations,
+                root_declaration=item is root,
             )
         )
-    return "".join(output)
+    result = "".join(output)
+    if parameters.normalization_form == "fully-normalized":
+        checked = result.split("?>", 1)[1] if result.startswith("<?xml") else result
+        if checked and unicodedata.combining(checked[0]):
+            raise _serialization_error(
+                "a fully-normalized result cannot begin with a combining character",
+                "SERE0012",
+            )
+    return result

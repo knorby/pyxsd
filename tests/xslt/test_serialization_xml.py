@@ -455,7 +455,7 @@ def test_xhtml_doctype_when_a_system_identifier_is_supplied() -> None:
         method="xhtml",
         omit_xml_declaration=True,
         doctype_system="xhtml1-strict.dtd",
-    ) == (f'<!DOCTYPE html SYSTEM "xhtml1-strict.dtd"><html xmlns="{XHTML_NS}" />')
+    ) == (f'<!DOCTYPE html SYSTEM "xhtml1-strict.dtd"><html xmlns="{XHTML_NS}"></html>')
 
 
 # ---------------------------------------------------------------------------
@@ -688,7 +688,7 @@ def test_xhtml_content_type_meta_uses_the_head_namespace_and_declared_media() ->
     ) == (
         f'<html xmlns="{XHTML_NS}"><head>'
         '<meta http-equiv="Content-Type" content="application/xhtml+xml; charset=utf-8" />'
-        "<title>t</title></head><body /></html>"
+        "<title>t</title></head><body></body></html>"
     )
 
     plain = _document(b"<html><head/></html>")
@@ -711,14 +711,15 @@ def test_xhtml_null_namespace_head_is_an_xml_island_without_html5() -> None:
     )
 
     assert _serialize((document,), method="xhtml", omit_xml_declaration=True) == expected
-    assert (
-        _serialize(
-            (document,),
-            method="xhtml",
-            omit_xml_declaration=True,
-            **{"html-version": "5.0"},
-        )
-        == expected
+    # HTML 5.0 additionally treats null-namespace elements as HTML elements.
+    assert _serialize(
+        (document,),
+        method="xhtml",
+        omit_xml_declaration=True,
+        **{"html-version": "5.0"},
+    ) == "<!DOCTYPE html>" + expected.replace(
+        '<meta http-equiv="Content-Type" content="old" />',
+        '<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />',
     )
 
 
@@ -799,7 +800,11 @@ def test_include_content_type_ignores_foreign_elements_and_html_namespaces() -> 
     )
 
     html_namespaced = _document(f'<html xmlns="{XHTML_NS}"><head/></html>'.encode())
-    assert _serialize((html_namespaced,), method="html") == "<html><head></head></html>"
+    assert _serialize((html_namespaced,), method="html") == (
+        "<html><head>"
+        '<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">'
+        "</head></html>"
+    )
 
 
 def test_include_content_type_indents_the_inserted_meta_with_the_head() -> None:
@@ -818,7 +823,7 @@ def test_include_content_type_indents_the_inserted_meta_with_the_head() -> None:
         '    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />\n'
         "    <title>t</title>\n"
         "  </head>\n"
-        "  <body />\n"
+        "  <body></body>\n"
         "</html>"
     )
 
@@ -1033,7 +1038,7 @@ def test_parameter_list_values_accept_strings_and_sequences() -> None:
     assert normalized.item_separator == ""
     assert SerializationParameters(normalization_form="none").normalization_form == "none"
     assert SerializationParameters(normalization_form="").normalization_form is None
-    assert SerializationParameters(standalone="YES").standalone is True
+    assert SerializationParameters(standalone="yes").standalone is True
 
     base = SerializationParameters(method="text", encoding="ascii")
     layered = SerializationParameters.from_attributes(
@@ -1050,7 +1055,6 @@ def test_invalid_parameters_raise_sepm0016() -> None:
         lambda: SerializationParameters(method="XML"),
         lambda: SerializationParameters(method=1),  # type: ignore[arg-type]
         lambda: SerializationParameters(method="Q{broken"),
-        lambda: SerializationParameters(encoding="not-a-real-encoding"),
         lambda: SerializationParameters(encoding=""),
         lambda: SerializationParameters(encoding=1),  # type: ignore[arg-type]
         lambda: SerializationParameters(version="-1"),
@@ -1058,9 +1062,7 @@ def test_invalid_parameters_raise_sepm0016() -> None:
         lambda: SerializationParameters(version=""),
         lambda: SerializationParameters(version="nan"),
         lambda: SerializationParameters(version="inf"),
-        lambda: SerializationParameters(normalization_form="NFX"),
         lambda: SerializationParameters(normalization_form=1),  # type: ignore[arg-type]
-        lambda: SerializationParameters(doctype_public="pub"),
         lambda: SerializationParameters(indent="maybe"),
         lambda: SerializationParameters(indent=1),  # type: ignore[arg-type]
         lambda: SerializationParameters(standalone="sometimes"),
@@ -1083,6 +1085,13 @@ def test_invalid_parameters_raise_sepm0016() -> None:
     codes = [_error_code(case) for case in cases]
 
     assert codes == ["SEPM0016"] * len(cases)
+
+    with pytest.raises(XsltSerializationError) as encoding_error:
+        SerializationParameters(encoding="not-a-real-encoding")
+    assert encoding_error.value.code == "SESU0007"
+    with pytest.raises(XsltSerializationError) as normalization_error:
+        SerializationParameters(normalization_form="NFX")
+    assert normalization_error.value.code == "SESU0011"
 
 
 def test_non_ascii_result_uses_character_references_in_text_and_attributes() -> None:
@@ -1115,18 +1124,22 @@ def test_unrepresentable_non_text_contexts_raise_sere0008() -> None:
     cases = (
         lambda: _serialize((comment,), omit_xml_declaration=True, encoding="ascii"),
         lambda: _serialize((element_document,), omit_xml_declaration=True, encoding="ascii"),
-        lambda: _serialize(
-            (cdata_document,),
-            omit_xml_declaration=True,
-            encoding="ascii",
-            cdata_section_elements=("x",),
-        ),
         lambda: _serialize((instruction,), omit_xml_declaration=True, encoding="ascii"),
     )
 
     codes = [_error_code(case) for case in cases]
 
     assert codes == ["SERE0008"] * len(cases)
+    # A CDATA section splits around an unrepresentable character instead.
+    assert (
+        _serialize(
+            (cdata_document,),
+            omit_xml_declaration=True,
+            encoding="ascii",
+            cdata_section_elements=("x",),
+        )
+        == "<r><x><![CDATA[caf]]>&#xE9;</x></r>"
+    )
 
 
 def test_invalid_sequences_raise_senr0001() -> None:
@@ -1288,7 +1301,7 @@ def test_secondary_serialization_errors_are_marked_secondary() -> None:
     source = stylesheet(
         '<xsl:template name="xsl:initial-template">'
         "<principal/>"
-        '<xsl:result-document href="secondary.xml" doctype-public="pub">'
+        '<xsl:result-document href="secondary.xml" standalone="TRUE">'
         "<secondary/>"
         "</xsl:result-document>"
         "</xsl:template>"
@@ -1472,3 +1485,436 @@ def test_serialization_method_support_is_owned_by_the_serializer() -> None:
     assert Serializer.supports_method("json")
     assert Serializer.supports_method("adaptive")
     assert not Serializer.supports_method("yaml")
+
+
+# ---------------------------------------------------------------------------
+# Serialization 3.1 output-method and error taxonomy
+
+
+def test_unsupported_encoding_is_a_serialization_error_not_a_parameter_error() -> None:
+    with pytest.raises(XsltSerializationError) as error:
+        SerializationParameters(encoding="not-an-encoding")
+    assert error.value.code == "SESU0007"
+
+
+def test_unsupported_normalization_form_is_sesu0011() -> None:
+    with pytest.raises(XsltSerializationError) as error:
+        SerializationParameters(normalization_form="ABC")
+    assert error.value.code == "SESU0011"
+
+
+def test_omit_xml_declaration_conflicts_are_sepm0009() -> None:
+    for values in (
+        {"omit_xml_declaration": True, "standalone": True},
+        {"omit_xml_declaration": True, "version": "1.1", "doctype_system": "out.dtd"},
+    ):
+        with pytest.raises(XsltSerializationError) as error:
+            SerializationParameters(**values)
+        assert error.value.code == "SEPM0009"
+
+    # A 1.0 doctype is permitted without an XML declaration.
+    assert (
+        SerializationParameters(
+            omit_xml_declaration=True, version="1.0", doctype_system="out.dtd"
+        ).doctype_system
+        == "out.dtd"
+    )
+
+
+def test_standalone_accepts_only_the_serialization_lexical_space() -> None:
+    assert SerializationParameters(standalone="yes").standalone is True
+    assert SerializationParameters(standalone="0").standalone is False
+    assert SerializationParameters(standalone="omit").standalone is None
+    with pytest.raises(XsltSerializationError) as error:
+        SerializationParameters(standalone="TRUE")
+    assert error.value.code == "SEPM0016"
+
+
+def test_output_version_is_a_version_alias() -> None:
+    parameters = SerializationParameters.from_attributes({"output-version": "1.1"})
+    assert parameters.version == "1.1"
+
+
+def test_doctype_public_without_system_is_ignored() -> None:
+    document = _document(b'<html xmlns="http://www.w3.org/1999/xhtml"/>')
+    assert (
+        _serialize(
+            (document,),
+            method="xhtml",
+            omit_xml_declaration=True,
+            doctype_public="-//BOAG//DTD Websites V1.3//EN",
+        )
+        == f'<html xmlns="{XHTML_NS}"></html>'
+    )
+
+
+def test_xhtml_non_void_empty_elements_use_explicit_end_tags() -> None:
+    document = _document(
+        f'<html xmlns="{XHTML_NS}"><head><title/></head><body><br/><p/></body></html>'.encode()
+    )
+    assert _serialize(
+        (document,),
+        method="xhtml",
+        omit_xml_declaration=True,
+        include_content_type=False,
+    ) == (f'<html xmlns="{XHTML_NS}"><head><title></title></head><body><br /><p></p></body></html>')
+
+
+def test_xhtml_text_escapes_greater_than_and_script_text() -> None:
+    document = _document(
+        f'<html xmlns="{XHTML_NS}"><body><script>a &lt; b &gt; c</script>'
+        "<p>&gt;&gt;&gt;</p></body></html>".encode()
+    )
+    assert _serialize((document,), method="xhtml", omit_xml_declaration=True) == (
+        f'<html xmlns="{XHTML_NS}"><body><script>a &lt; b &gt; c</script>'
+        "<p>&gt;&gt;&gt;</p></body></html>"
+    )
+
+
+def test_xhtml_attribute_uses_numeric_quote_and_angle_bracket_references() -> None:
+    document = _document(
+        f'<a xmlns="{XHTML_NS}" href="x &quot; &lt; &gt; &amp;" accesskey="&#x96;"/>'.encode()
+    )
+    assert _serialize((document,), method="xhtml", omit_xml_declaration=True) == (
+        f'<a xmlns="{XHTML_NS}" href="x &#34; &lt; &gt; &amp;" accesskey="&#x96;"></a>'
+    )
+
+
+def test_xhtml_c1_controls_in_text_become_numeric_references() -> None:
+    document = _document(f'<p xmlns="{XHTML_NS}">&#x96;</p>'.encode())
+    assert _serialize((document,), method="xhtml", omit_xml_declaration=True) == (
+        f'<p xmlns="{XHTML_NS}">&#x96;</p>'
+    )
+
+
+def test_html_c1_control_is_sere0014() -> None:
+    assert (
+        _error_code(lambda: _serialize((_document(b"<doc>&#x9f;</doc>"),), method="html"))
+        == "SERE0014"
+    )
+
+
+def test_html_processing_instruction_with_greater_than_is_sere0015() -> None:
+    assert (
+        _error_code(
+            lambda: _serialize(
+                (_document(b"<doc><?pi a > b?></doc>"),),
+                method="html",
+            )
+        )
+        == "SERE0015"
+    )
+
+
+def test_cdata_sections_split_around_unencodable_characters() -> None:
+    document = _document(b"<r><x>foo \xc2\xaa bar</x></r>")
+    assert (
+        _serialize(
+            (document,),
+            omit_xml_declaration=True,
+            encoding="US-ASCII",
+            cdata_section_elements=("x",),
+        )
+        == "<r><x><![CDATA[foo ]]>&#xAA;<![CDATA[ bar]]></x></r>"
+    )
+
+
+def test_multiple_top_level_elements_need_a_delivered_result_tree() -> None:
+    first = _document(b"<one/>").root_element
+    second = _document(b"<two/>").root_element
+
+    assert _error_code(lambda: Serializer.serialize((first, second))) == "SERE0003"
+    assert (
+        Serializer.serialize(
+            (first, second),
+            SerializationParameters.merge(explicit={"omit_xml_declaration": True}),
+            result_tree=True,
+        )
+        == "<one/><two/>"
+    )
+    assert (
+        _error_code(
+            lambda: Serializer.serialize(
+                (first, second),
+                SerializationParameters.merge(explicit={"standalone": True}),
+                result_tree=True,
+            )
+        )
+        == "SEPM0004"
+    )
+
+
+def test_xhtml5_doctype_void_elements_and_empty_end_tags() -> None:
+    document = _document(
+        f'<html xmlns="{XHTML_NS}"><head><title/></head><body><br/><p/></body></html>'.encode()
+    )
+    serialized = _serialize(
+        (document,),
+        method="xhtml",
+        html_version="5.0",
+        omit_xml_declaration=True,
+        include_content_type=False,
+    )
+    assert serialized == (
+        "<!DOCTYPE html>"
+        f'<html xmlns="{XHTML_NS}"><head><title></title></head>'
+        "<body><br /><p></p></body></html>"
+    )
+
+
+def test_xhtml5_strips_xhtml_prefixes_and_defaults_foreign_namespaces() -> None:
+    document = _document(
+        (
+            f'<h:html xmlns:h="{XHTML_NS}" xmlns:s="http://www.w3.org/2000/svg">'
+            "<h:head><h:title>t</h:title></h:head>"
+            "<h:body><s:svg><s:circle/></s:svg></h:body></h:html>"
+        ).encode()
+    )
+    serialized = _serialize(
+        (document,),
+        method="xhtml",
+        html_version="5.0",
+        omit_xml_declaration=True,
+        include_content_type=False,
+    )
+    assert serialized == (
+        f'<!DOCTYPE html><html xmlns="{XHTML_NS}"><head><title>t</title></head>'
+        '<body><svg xmlns="http://www.w3.org/2000/svg"><circle /></svg></body></html>'
+    )
+
+
+def test_xhtml5_treats_no_namespace_elements_as_html() -> None:
+    document = _document(b"<html><head><title/></head><body><br/><p/></body></html>")
+    serialized = _serialize(
+        (document,),
+        method="xhtml",
+        html_version="5.0",
+        omit_xml_declaration=True,
+        include_content_type=False,
+    )
+    assert serialized == (
+        "<!DOCTYPE html><html><head><title></title></head><body><br /><p></p></body></html>"
+    )
+
+
+def test_xhtml5_doctype_needs_an_html_root() -> None:
+    document = _document(b'<html xmlns="urn:not-xhtml"/>')
+    assert (
+        _serialize(
+            (document,),
+            method="xhtml",
+            html_version="5.0",
+            omit_xml_declaration=True,
+        )
+        == '<html xmlns="urn:not-xhtml" />'
+    )
+
+
+def test_method_value_is_whitespace_trimmed() -> None:
+    document = _document(f'<html xmlns="{XHTML_NS}"/>'.encode())
+    assert (
+        _serialize(
+            (document,),
+            method=" xhtml ",
+            omit_xml_declaration=True,
+            include_content_type=False,
+        )
+        == f'<html xmlns="{XHTML_NS}"></html>'
+    )
+
+
+def test_html_version_must_be_decimal_and_supported() -> None:
+    with pytest.raises(XsltSerializationError) as invalid:
+        SerializationParameters(method="xhtml", html_version="five")
+    assert invalid.value.code == "SEPM0016"
+
+    with pytest.raises(XsltSerializationError) as unsupported:
+        SerializationParameters(method="html", version="0.0")
+    assert unsupported.value.code == "SESU0013"
+
+
+# ---------------------------------------------------------------------------
+# Output declarations, secondary results, and the current output URI
+
+
+def test_default_initial_template_uses_the_standard_name_not_a_prefix() -> None:
+    source = (
+        f'<t:transform xmlns:t="{XSLT_NS}" version="3.0">'
+        '<t:template name="t:initial-template"><out/></t:template>'
+        "</t:transform>"
+    )
+    result = transform(source.encode(), delivery="stylesheet")
+    assert result.principal_entry.serialized == ('<?xml version="1.0" encoding="UTF-8"?><out/>')
+
+
+def test_current_output_uri_tracks_principal_and_secondary_destinations() -> None:
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:template name="xsl:initial-template">'
+        '<principal><xsl:value-of select="current-output-uri()"/></principal>'
+        f'<xsl:result-document href="{SECONDARY_URI}" method="xml">'
+        '<secondary><xsl:value-of select="current-output-uri()"/></secondary>'
+        "</xsl:result-document>"
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    principal_uri = "http://example.com/principal.xml"
+    result = transform(source.encode(), delivery="stylesheet", output_uri=principal_uri)
+    assert principal_uri in (result.principal_entry.serialized or "")
+    secondary = result.secondary[SECONDARY_URI]
+    assert SECONDARY_URI in (secondary.serialized or "")
+
+
+def test_current_output_uri_is_empty_without_a_base_output_uri() -> None:
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:template name="xsl:initial-template">'
+        '<out><xsl:value-of select="empty(current-output-uri())"/></out>'
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    result = transform(source.encode(), delivery="stylesheet")
+    assert "<out>true</out>" in (result.principal_entry.serialized or "")
+
+
+def test_result_document_output_version_is_a_version_alias() -> None:
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:template name="xsl:initial-template">'
+        f'<xsl:result-document href="{SECONDARY_URI}" output-version="1.1">'
+        "<secondary/>"
+        "</xsl:result-document>"
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    result = transform(source.encode(), delivery="stylesheet")
+    assert 'version="1.1"' in (result.secondary[SECONDARY_URI].serialized or "")
+
+
+def test_result_document_absent_attribute_removes_the_named_format_value() -> None:
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:output name="f" method="xml" item-separator="|" omit-xml-declaration="yes"/>'
+        '<xsl:template name="xsl:initial-template">'
+        f'<xsl:result-document href="{SECONDARY_URI}" format="f" item-separator="#absent">'
+        "<one/><two/>"
+        "</xsl:result-document>"
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    result = transform(source.encode(), delivery="stylesheet")
+    entry = result.secondary[SECONDARY_URI]
+    assert "item-separator" not in entry.serialization
+    assert entry.serialized == "<one/><two/>"
+
+
+def test_result_document_without_method_infers_xhtml_and_html() -> None:
+    xhtml_uri = "http://example.com/xhtml.xml"
+    html_uri = "http://example.com/html.xml"
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:template name="xsl:initial-template">'
+        f'<xsl:result-document href="{xhtml_uri}">'
+        f'<html xmlns="{XHTML_NS}"><head/><body/></html>'
+        "</xsl:result-document>"
+        f'<xsl:result-document href="{html_uri}">'
+        "<html><head/><body/></html>"
+        "</xsl:result-document>"
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    result = transform(source.encode(), delivery="stylesheet")
+    xhtml_entry = result.secondary[xhtml_uri]
+    html_entry = result.secondary[html_uri]
+    assert "method" not in xhtml_entry.serialization
+    assert (xhtml_entry.serialized or "").startswith('<?xml version="1.0"')
+    assert '<meta http-equiv="Content-Type"' in (xhtml_entry.serialized or "")
+    assert not (html_entry.serialized or "").startswith("<?xml")
+    assert (html_entry.serialized or "").startswith("<html><head>")
+
+
+def test_invalid_constant_html_version_is_a_static_error() -> None:
+    output_source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:output method="xhtml" html-version="five"/>'
+        "</xsl:stylesheet>"
+    )
+    with pytest.raises(XsltStaticError) as output_error:
+        XsltProcessor().compile(io.BytesIO(output_source.encode()))
+    assert output_error.value.code == "XTSE0020"
+
+    document_source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:template name="xsl:initial-template">'
+        f'<xsl:result-document href="{SECONDARY_URI}" html-version="five"/>'
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    with pytest.raises(XsltStaticError) as document_error:
+        XsltProcessor().compile(io.BytesIO(document_source.encode()))
+    assert document_error.value.code == "XTSE0020"
+
+
+def test_principal_and_secondary_use_their_own_output_methods() -> None:
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:output method="xml"/>'
+        '<xsl:template name="xsl:initial-template">'
+        "<principal>text</principal>"
+        f'<xsl:result-document href="{SECONDARY_URI}" method="text">'
+        "<secondary>text</secondary>"
+        "</xsl:result-document>"
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    result = transform(source.encode(), delivery="stylesheet")
+    assert (result.principal_entry.serialized or "").startswith('<?xml version="1.0"')
+    assert result.secondary[SECONDARY_URI].serialized == "text"
+
+
+def test_disable_output_escaping_serializes_marked_text_unescaped() -> None:
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:output method="xml" omit-xml-declaration="yes"/>'
+        '<xsl:template name="xsl:initial-template">'
+        '<out><xsl:text disable-output-escaping="yes">&lt;raw&gt;</xsl:text>'
+        "<xsl:text>&lt;escaped&gt;</xsl:text></out>"
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    result = transform(source.encode(), delivery="stylesheet")
+    assert result.principal_entry.serialized == "<out><raw>&lt;escaped&gt;</out>"
+
+
+def test_disable_output_escaping_is_lost_through_a_variable_binding() -> None:
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:output method="xml" omit-xml-declaration="yes"/>'
+        '<xsl:template name="xsl:initial-template">'
+        '<out><xsl:variable name="x" as="text()">'
+        '<xsl:apply-templates select="\'&lt;\'" mode="doe"/>'
+        "</xsl:variable>"
+        '<xsl:copy-of select="$x"/>'
+        '<xsl:value-of select="\'&lt;\'" disable-output-escaping="yes"/>'
+        "</out>"
+        "</xsl:template>"
+        '<xsl:template match="." mode="doe" as="text()">'
+        '<xsl:value-of select="." disable-output-escaping="yes"/>'
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    result = transform(source.encode(), delivery="stylesheet")
+    assert result.principal_entry.serialized == "<out>&lt;<</out>"
+
+
+def test_invalid_disable_output_escaping_value_is_xtse0020() -> None:
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:template name="xsl:initial-template">'
+        '<xsl:value-of select="1" disable-output-escaping="YES"/>'
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    with pytest.raises(XsltStaticError) as error:
+        XsltProcessor().compile(io.BytesIO(source.encode()))
+    assert error.value.code == "XTSE0020"

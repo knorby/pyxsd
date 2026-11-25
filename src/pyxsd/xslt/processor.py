@@ -203,6 +203,7 @@ from pyxsd.xslt.results import (
     _build_result_tree,
     _NodeFactory,
     _result_node_count,
+    _with_default_method,
     serialization_parameters,
 )
 from pyxsd.xslt.runtime.accumulators import (
@@ -805,7 +806,12 @@ def _serialize_result_entry(
     """
     try:
         parameters = serialization_parameters(entry, None)
-        serialized = Serializer.serialize(entry.raw, parameters)
+        parameters = _with_default_method(parameters, entry, None)
+        serialized = Serializer.serialize(
+            entry.raw,
+            parameters,
+            result_tree=entry.tree is not None,
+        )
         if budget.limits.max_output_bytes is not None:
             encoded = Serializer.encode(serialized, parameters)
             if not budget.take_output_bytes(len(encoded)):
@@ -4309,6 +4315,7 @@ def _compile_value_of(
     separator_default = " " if select is not None else ""
     return _ValueOfPlan(
         instruction=instruction,
+        disable_output_escaping=_attribute_yes_no(instruction, "disable-output-escaping", context),
         expression=(
             compile_xpath(select, context, location=instruction.location)
             if select is not None
@@ -4336,11 +4343,13 @@ def _compile_text(
         if expand is None
         else _yes_no(expand, instruction, "expand-text", context)
     )
+    disable_output_escaping = _attribute_yes_no(instruction, "disable-output-escaping", context)
     if enabled:
         return _TvtPlan(
-            compile_tvt(text, context.with_expand_text(True), location=instruction.location)
+            compile_tvt(text, context.with_expand_text(True), location=instruction.location),
+            disable_output_escaping,
         )
-    return _TextPlan(text)
+    return _TextPlan(text, disable_output_escaping)
 
 
 def _compile_for_each(
@@ -4568,6 +4577,28 @@ def _compile_overriding(
     )
 
 
+def _check_constant_html_version(instruction: Instruction, context: StaticContext) -> None:
+    """Reject a constant ``html-version`` that is not an ``xs:decimal``.
+
+    XSLT 3.0 section 25.1 types the attribute as a decimal AVT.  A constant
+    value outside the lexical space is an invalid attribute value (XTSE0020);
+    a computed value is checked when the serialization parameters are built.
+    """
+    value = instruction.attribute("html-version")
+    if value is None or "{" in value:
+        return
+    try:
+        Decimal(value.strip())
+    except (InvalidOperation, ValueError) as error:
+        raise XsltStaticError(
+            f"the html-version attribute value {value!r} is not a decimal",
+            code="XTSE0020",
+            uri=context.uri,
+            location=instruction.location,
+            cause=error,
+        ) from error
+
+
 def _compile_result_document(
     instruction: Instruction,
     context: StaticContext,
@@ -4599,6 +4630,7 @@ def _compile_result_document(
         context,
         label="xsl:result-document",
     )
+    _check_constant_html_version(instruction, context)
     return _ResultDocumentPlan(
         instruction=instruction,
         href=(
@@ -7085,13 +7117,24 @@ class _Invocation(Transformation):
             return value
         code = "XTTE0780" if component.kind == "function" else "XTTE0505"
         label = "function result" if component.kind == "function" else "template result"
-        return _coerce_sequence(
+        coerced = _coerce_sequence(
             value,
             signature.return_type,
             code=code,
             label=label,
             schema_pool=self._package_schema_pool(component.owner),
         )
+        # A declared result type constructs a new value: a top-level text node
+        # no longer carries the source constructor's disable-output-escaping
+        # annotation (XSLT 3.0 section 26.2).
+        for item in coerced:
+            if (
+                isinstance(item, XdmNode)
+                and item.kind is NodeKind.TEXT
+                and item.disable_output_escaping
+            ):
+                item._disable_output_escaping = False
+        return coerced
 
     def _parameter_default(
         self,
@@ -7309,7 +7352,12 @@ class _Invocation(Transformation):
         context: EvaluationContext,
     ) -> XdmSequence:
         if isinstance(plan, _TextPlan):
-            return (self._text_node(plan.value),)
+            return (
+                self._text_node(
+                    plan.value,
+                    disable_output_escaping=plan.disable_output_escaping,
+                ),
+            )
         if isinstance(plan, (_NextIterationPlan, _BreakPlan)):
             active = getattr(self, "_active_iteration_frame", None)
             if active is not None and isinstance(active.iteration, IterationState):
@@ -7331,7 +7379,12 @@ class _Invocation(Transformation):
         if isinstance(plan, _PerformSortPlan):
             return perform_sort(plan, self, context)
         if isinstance(plan, _TvtPlan):
-            return (self._text_node(self._value_template(plan.template, context)),)
+            return (
+                self._text_node(
+                    self._value_template(plan.template, context),
+                    disable_output_escaping=plan.disable_output_escaping,
+                ),
+            )
         if isinstance(plan, _AttributePlan):
             return attribute_value(plan, self, context)
         if isinstance(plan, _SequencePlan):
@@ -7592,8 +7645,8 @@ class _Invocation(Transformation):
             )
         return _method_local(method) not in ("json", "adaptive")
 
-    def _text_node(self, value: str) -> XdmNode:
-        return _NodeFactory().text(value)
+    def _text_node(self, value: str, *, disable_output_escaping: bool = False) -> XdmNode:
+        return _NodeFactory().text(value, disable_output_escaping=disable_output_escaping)
 
     # -- modes and built-in templates -------------------------------------
 

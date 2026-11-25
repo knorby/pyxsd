@@ -1779,6 +1779,14 @@ def variable_value(
             label=f"variable {plan.name!r}",
             package_name=context.package_name,
         )
+    # A variable binds a value; disable-output-escaping annotations belong to
+    # text nodes constructed directly in the result and are not retained
+    # through a variable binding (XSLT 3.0 section 26.2).
+    for item in value:
+        if isinstance(item, XdmNode):
+            for node in (item, *item.descendants):
+                if node.kind is NodeKind.TEXT:
+                    node._disable_output_escaping = False
     invocation.profile_for().check_xdm_2_0_value(value, f"the value of the variable {plan.name!r}")
     return value
 
@@ -2404,10 +2412,15 @@ def execute_value_of(
     if plan.expression is not None and not plan.explicit_separator:
         profile = invocation.profile_for(plan.expression.static_context.xslt_version)
         if profile.compatibility_mode:
-            return (invocation._text_node(profile.string_sequence(values)),)
+            return (
+                invocation._text_node(
+                    profile.string_sequence(values),
+                    disable_output_escaping=plan.disable_output_escaping,
+                ),
+            )
     separator = invocation._value_source(plan.separator, context)
     text = _simple_content_string(values, separator)
-    return (invocation._text_node(text),)
+    return (invocation._text_node(text, disable_output_escaping=plan.disable_output_escaping),)
 
 
 def execute_choose(

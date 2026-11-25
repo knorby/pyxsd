@@ -575,6 +575,7 @@ class _NodeFactory:
         prefix: str = "",
         namespace_uri: str | None = None,
         annotations: XdmAnnotation | None = None,
+        disable_output_escaping: bool = False,
     ) -> XdmNode:
         if annotations is None:
             annotations = _CONSTRUCTED_ANNOTATIONS.get(kind, _DEFAULT_ANNOTATION)
@@ -595,6 +596,7 @@ class _NodeFactory:
             namespace_declarations=namespace_declarations,
             prefix=prefix,
             namespace_uri=namespace_uri,
+            disable_output_escaping=disable_output_escaping,
         )
         self._next_id += 1
         return node
@@ -771,6 +773,7 @@ class _NodeFactory:
         parent: XdmNode | None = None,
         base_uri: str | None = None,
         annotations: XdmAnnotation | None = None,
+        disable_output_escaping: bool = False,
     ) -> XdmNode:
         return self._new(
             NodeKind.TEXT,
@@ -778,6 +781,7 @@ class _NodeFactory:
             value=value,
             base_uri=base_uri,
             annotations=annotations,
+            disable_output_escaping=disable_output_escaping,
         )
 
     def comment(
@@ -893,6 +897,7 @@ class _NodeFactory:
             prefix=source.prefix,
             namespace_uri=source.namespace_uri,
             annotations=source.annotation,
+            disable_output_escaping=source.disable_output_escaping,
         )
 
     def _clone_document(
@@ -1113,7 +1118,7 @@ def _append_text(factory: _NodeFactory, parent: XdmNode, value: str) -> XdmNode 
     if not value:
         return None
     children = parent.children
-    if children and children[-1].kind is NodeKind.TEXT:
+    if children and children[-1].kind is NodeKind.TEXT and not children[-1].disable_output_escaping:
         children[-1]._append_text(value)
         return children[-1]
     text = factory.text(value, parent=parent, base_uri=parent.base_uri)
@@ -1252,7 +1257,18 @@ def _append_complex_content(
             last_atomic = False
             continue
         if item.kind is NodeKind.TEXT:
-            _append_text(factory, parent, item.string_value)
+            if item.disable_output_escaping:
+                factory._append(
+                    parent,
+                    factory.text(
+                        item.string_value,
+                        parent=parent,
+                        base_uri=parent.base_uri,
+                        disable_output_escaping=True,
+                    ),
+                )
+            else:
+                _append_text(factory, parent, item.string_value)
             last_atomic = False
             continue
         clone = _clone_for_content(factory, item, parent)

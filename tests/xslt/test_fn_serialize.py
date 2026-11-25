@@ -299,9 +299,9 @@ def test_serialize_rejects_wrong_value_types_with_xpty0004() -> None:
         ), parameters
 
 
-def test_serialize_valid_values_with_invalid_content_raise_sepm0016() -> None:
-    assert _error_code(lambda: _serialize_node("map{'normalization-form': 'NFX'}")) == "SEPM0016"
-    assert _error_code(lambda: _serialize_node("map{'encoding': 'not-real'}")) == "SEPM0016"
+def test_serialize_valid_values_with_invalid_content_use_serialization_codes() -> None:
+    assert _error_code(lambda: _serialize_node("map{'normalization-form': 'NFX'}")) == "SESU0011"
+    assert _error_code(lambda: _serialize_node("map{'encoding': 'not-real'}")) == "SESU0007"
     assert (
         _error_code(lambda: _serialize_node("map{'use-character-maps': map{'ab': 'x'}}"))
         == "SEPM0016"
