@@ -322,7 +322,12 @@ def _message_xml(message: Message) -> str:
     return "".join(_serialized_markup(child) for child in message.content.children)
 
 
-def _snapshot(result: TransformationResult, output_uri: str | None = None) -> ResultSnapshot:
+def _snapshot(
+    result: TransformationResult,
+    output_uri: str | None = None,
+    *,
+    assertion_context_absent: bool = False,
+) -> ResultSnapshot:
     """The assertion view of one result, matching the ``fn:transform`` map.
 
     The principal result and a result document may share the base output URI:
@@ -357,6 +362,7 @@ def _snapshot(result: TransformationResult, output_uri: str | None = None) -> Re
         raw=view.raw,
         xml=view.xml,
         result_items=view.result_items,
+        assertion_context_absent=assertion_context_absent,
         serialized=view.serialized,
         messages=messages,
         secondary={uri: _snapshot_entry(value) for uri, value in result.secondary.items()},
@@ -1101,8 +1107,6 @@ def _case_schema_pool(profile: SuiteProfile, case: TestCase) -> SchemaPool | Non
 def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
     """Compile and run one case, returning its result for independent assertion."""
     output = case.invocation.output or case.environment.output
-    if output is not None and output.result_var is not None:
-        raise UnsupportedCase("result-variable output")
     units = _compilation_units(case)
     resolver = _collection_resolver(case, units)
     resources = _resource_policies(case, units)
@@ -1174,7 +1178,11 @@ def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
             resolver=resolver,
             resources=resources,
         )
-        return _snapshot(compiled.transform(**options), output_uri)
+        return _snapshot(
+            compiled.transform(**options),
+            output_uri,
+            assertion_context_absent=output is not None and output.result_var is not None,
+        )
     except XsltError as exc:
         raise CaseExecutionError(exc.code or UNCODED_ERROR, str(exc)) from exc
     except XsltInvocationError as exc:

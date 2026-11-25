@@ -31,7 +31,6 @@ from tests.xslt.model import (
     Collection,
     Environment,
     Invocation,
-    Output,
     Resource,
     Schema,
     Stylesheet,
@@ -658,16 +657,6 @@ def test_executor_reports_unsupported_environment_shapes_as_adapter_gaps(
             environment=replace(
                 case.environment,
                 collections=(Collection(uri="urn:collection"),),
-            ),
-        ),
-        "result-variable output": replace(
-            case,
-            invocation=replace(
-                case.invocation,
-                output=replace(
-                    case.invocation.output or Output(),
-                    result_var="result",
-                ),
             ),
         ),
         "0 principal stylesheets": replace(

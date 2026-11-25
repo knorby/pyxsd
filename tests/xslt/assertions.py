@@ -194,6 +194,11 @@ class ResultSnapshot:
     #: whose ``raw`` stays its string value; an assertion that needs a node
     #: context evaluates those items through the engine instead.
     engine_node_context: bool = False
+    #: Whether the assertion has no context item by design.  A catalog result
+    #: that binds the raw result to a variable (``<output tree="no"
+    #: result-var="result"/>``) evaluates its assertion against ``$result``
+    #: only, so a multi-item sequence is legal and a path step stays a gap.
+    assertion_context_absent: bool = False
     serialized: str | None = None
     messages: tuple[ResultSnapshot, ...] | None = None
     secondary: Mapping[str, ResultSnapshot] | None = None
@@ -729,7 +734,9 @@ def _evaluate(
             # context is affected: every other assertion keeps the exact path
             # it had, so a decided verdict cannot move.
             return _evaluate_engine_items(expression, declarations, result.result_items)
-        context_item = _context_item(items, parser)
+        # A catalog result variable means the assertion reads ``$result`` and
+        # has no context item; a path step below is then a gap, not a verdict.
+        context_item = "" if result.assertion_context_absent else _context_item(items, parser)
         root = _context_root(context_item)
         if root is None and _context_node_path(ast):
             document = _node_context(result)

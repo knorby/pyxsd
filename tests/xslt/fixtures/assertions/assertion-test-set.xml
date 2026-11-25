@@ -37,4 +37,15 @@
          </all-of>
       </result>
    </test-case>
+   <test-case name="result-var-001">
+      <description>A raw multi-item result bound to a variable has no context item.</description>
+      <test>
+         <stylesheet file="result-var-001.xsl"/>
+         <initial-template name="main"/>
+         <output tree="no" result-var="result"/>
+      </test>
+      <result>
+         <assert>deep-equal($result, (1, 'a'))</assert>
+      </result>
+   </test-case>
 </test-set>

@@ -739,6 +739,23 @@ def test_a_message_assertion_inspects_the_message_document() -> None:
     assert result.coverage == frozenset({"xpath", "string", "xml", "message"})
 
 
+def test_a_result_variable_assertion_needs_no_context_item() -> None:
+    """``<output tree="no" result-var="result"/>`` binds the raw sequence.
+
+    The catalog makes the assertion read that variable, so a multi-item result
+    is legal and no context item exists.  Before the driver supported it the
+    case was an adapter gap; the declared variable name is ``result``, the name
+    the runner always binds (``runner/assert.xsl``).
+    """
+    catalog = load_catalog(FIXTURES / "assertions" / "assertion-test-set.xml")
+    case = catalog.cases["assertion/result-var-001"]
+
+    result = run_case(case, SUITE_PROFILES["xslt30"])
+
+    assert result.outcome is Outcome.PASS
+    assert result.coverage == frozenset({"xpath"})
+
+
 def test_parse_result_recovers_namespaces_from_serialized_xml() -> None:
     assertion = parse_result(
         f'<result xmlns="http://www.w3.org/2012/10/xslt-test-catalog" xmlns:xs="{XSD}">'
