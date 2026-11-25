@@ -1321,6 +1321,17 @@ def _attribute_annotation(
     )
 
 
+def annotate_any_type(node: XdmNode) -> None:
+    """Give one copied node the ``xs:anyType`` annotation.
+
+    ``snapshot()``'s ancestor copies must carry ``xs:anyType`` with ``nilled``,
+    ``is-id``, and ``is-idref`` cleared whatever the source annotation was
+    (XSLT 3.0 section 18.4); this is that annotation, without the source
+    evidence a validation-driven strip would keep.
+    """
+    _annotate_any_type(node)
+
+
 def _annotate_any_type(
     node: XdmNode,
     *,

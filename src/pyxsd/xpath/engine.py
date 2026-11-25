@@ -1163,9 +1163,12 @@ class _ValueBridge:
                 and item.root.kind is NodeKind.ELEMENT
             ):
                 # A descendant of a finalized element-rooted temporary tree:
-                # admit the tree through its parentless root before falling
-                # back to a per-evaluation adaptation.
-                adapter = self._registry.rootless(item.root)
+                # admit the tree through its parentless root, then read the
+                # requested node's own adapter.  The admission returns the
+                # *root's* adapter, which is this node's only when it is the
+                # root, so it is never the answer for a descendant.
+                self._registry.rootless(item.root)
+                adapter = self._lookup(item)
             if adapter is None:
                 self.adapt_document(item.document)
                 adapter = self._lookup(item)

@@ -268,6 +268,7 @@ XSLT_FUNCTION_ARITIES: Mapping[str, FunctionArity] = MappingProxyType(
         "function-available": (1, 2),
         "key": (2, 3),
         "regex-group": 1,
+        "snapshot": (0, 1),
         "system-property": 1,
         "type-available": 1,
         "unparsed-entity-uri": (1, 2),
@@ -294,6 +295,7 @@ _FUNCTION_MINIMUM_VERSION: Mapping[str, str] = MappingProxyType(
         "format-time": "2.0",
         "function-available": "1.0",
         "regex-group": "2.0",
+        "snapshot": "3.0",
         "system-property": "1.0",
         "type-available": "2.0",
         "unparsed-entity-uri": "1.0",
@@ -664,6 +666,10 @@ class XsltContextBridge:
         table: dict[str, ContextFunction] = {
             f"{{{FN_NS}}}current": ContextFunction(self._direct_current, self._dynamic_current),
             f"{{{FN_NS}}}copy-of": ContextFunction(self._copy_of_function, self._copy_of_function),
+            f"{{{FN_NS}}}snapshot": ContextFunction(
+                self._snapshot_function, self._snapshot_function
+            ),
+            f"{{{FN_NS}}}root": ContextFunction(self._root_function, self._root_function),
             f"{{{FN_NS}}}document": ContextFunction(self._document_function),
             f"{{{FN_NS}}}doc": ContextFunction(self._doc_function),
             f"{{{FN_NS}}}in-scope-prefixes": ContextFunction(self._in_scope_prefixes_function),
@@ -871,6 +877,69 @@ class XsltContextBridge:
         else:
             items = (context_item,)
         return tuple(deep_copy_item(item, self.transformation) for item in items)
+
+    def _snapshot_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """Copy each item with the ancestor chain a snapshot retains.
+
+        XSLT 3.0 section 18.4 defines the zero-argument form as a snapshot of
+        the context item and the one-argument form as one snapshot per input
+        item, so an absent context item is ``XPDY0002``.  The copy rules are
+        shared with the deep-copy instruction and imported the same way as
+        ``copy-of``'s.
+        """
+        from pyxsd.xslt.runtime.instructions import snapshot_item
+
+        if arguments:
+            items = arguments[0]
+        elif context_item is None:
+            raise XsltDynamicError(
+                "snapshot() requires a context item",
+                code="XPDY0002",
+            )
+        else:
+            items = (context_item,)
+        return tuple(snapshot_item(item, self.transformation) for item in items)
+
+    def _root_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """The root of the tree containing the argument (F&O 3.1 section 13.5).
+
+        F&O defines ``root($arg)`` as ``($arg/ancestor-or-self::node())[1]``,
+        so the answer is the node's own tree root.  elementpath resolves the
+        root by searching the *evaluation's* focus tree, which returns empty
+        for a node another template, copy, or function produced; following the
+        parent chain is both the definition and the working answer.
+        """
+        if arguments:
+            argument = arguments[0]
+            if not argument:
+                return ()
+            if len(argument) > 1:
+                raise XsltDynamicError(
+                    "root() argument must be a single node",
+                    code="XPTY0004",
+                )
+            item = argument[0]
+        elif context_item is None:
+            raise XsltDynamicError(
+                "root() requires a context item",
+                code="XPDY0002",
+            )
+        else:
+            item = context_item
+        if not isinstance(item, XdmNode):
+            raise XsltDynamicError(
+                "root() requires a node",
+                code="XPTY0004",
+            )
+        return (item.root,)
 
     def current(self) -> XdmItem:
         """The instruction-level current item, never a predicate focus item."""

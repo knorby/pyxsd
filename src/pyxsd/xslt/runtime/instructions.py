@@ -36,7 +36,7 @@ from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.legacy import ResultTreeFragment
 from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmDocument, XdmNode
-from pyxsd.xdm.validation import namespace_sensitive
+from pyxsd.xdm.validation import annotate_any_type, namespace_sensitive
 from pyxsd.xpath.continuation import XPathEvaluationError
 from pyxsd.xpath.environment import Focus
 from pyxsd.xslt.compiler.instructions import Instruction
@@ -1637,6 +1637,77 @@ def copy_of_value(
         )
         for item in items
     )
+
+
+def snapshot_item(item: XdmItem, invocation: _Invocation) -> XdmItem:
+    """One item of an ``fn:snapshot`` sequence (XSLT 3.0 section 18.4).
+
+    A parentless node behaves exactly like ``copy-of``: it is deep-copied on
+    its own.  Any other node is copied with a chain of shallow ancestor copies,
+    so the copy keeps its ancestors' names, attributes, and namespaces but
+    none of their other children or siblings, and every copied ancestor
+    carries the mandated ``xs:anyType`` annotation.  Atomic values and function
+    items are returned unchanged.
+    """
+    if not isinstance(item, XdmNode):
+        return item
+    if item.parent is None:
+        return deep_copy_item(item, invocation)
+    factory = _NodeFactory(base_uri=item.root.base_uri)
+    clone = factory.clone(item, parent=None, deep=True, copy_namespaces=True)
+    result = clone
+    current = clone
+    ancestor = item.parent
+    while ancestor is not None:
+        if ancestor.kind is NodeKind.DOCUMENT:
+            parent_copy = factory.document
+        else:
+            parent_copy = factory.clone(
+                ancestor,
+                parent=None,
+                deep=False,
+                copy_namespaces=True,
+            )
+            annotate_any_type(parent_copy)
+        attached = _attach_grafted_node(factory, parent_copy, current)
+        if current is result:
+            result = attached
+        current = parent_copy
+        ancestor = ancestor.parent
+    if current.kind is NodeKind.DOCUMENT:
+        current._finalize_document_order()
+    else:
+        factory.finalize_root(current)
+    # The copied subtree must already sit in its destination tree: accumulator
+    # values are cached per tree root, and the root is the grafted top here.
+    invocation.accumulators.copy_values(
+        item,
+        clone,
+        enabled=True,
+        names=accumulator_copy_names(invocation),
+    )
+    return result
+
+
+def _attach_grafted_node(
+    factory: _NodeFactory,
+    parent: XdmNode,
+    node: XdmNode,
+) -> XdmNode:
+    """Attach an already-copied node under *parent* and return its tree node.
+
+    A ``snapshot()`` ancestor copy is shallow and is filled with exactly one
+    copied node, so no content merging applies; attributes and namespace nodes
+    take their own parent slots, and ``attach_namespace`` may hand back an
+    equivalent declaration the shallow parent already carries.
+    """
+    if node.kind is NodeKind.ATTRIBUTE:
+        factory.attach_attribute(parent, node)
+        return node
+    if node.kind is NodeKind.NAMESPACE:
+        return factory.attach_namespace(parent, node) or node
+    factory._append(parent, node)
+    return node
 
 
 def check_copy_type(

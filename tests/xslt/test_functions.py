@@ -2151,3 +2151,224 @@ def test_copy_of_a_parentless_namespace_sensitive_attribute_is_xtte0950() -> Non
     with pytest.raises(XsltError) as caught:
         _typed_argument_result("copy-of(/*/@qn)")
     assert caught.value.code == "XTTE0950"
+
+
+SNAPSHOT_SOURCE = b'<doc id="d"><a id="1"><b>deep</b><c>side</c></a><x>sib</x></doc>'
+
+
+def test_snapshot_of_a_document_node_is_a_deep_copy() -> None:
+    """XSLT 3.0 section 18.4: a parentless node behaves like copy-of."""
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence select="(snapshot(/) is /, deep-equal(snapshot(/), /))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=SNAPSHOT_SOURCE)
+
+    assert result.principal == (XdmAtomic.boolean(False), XdmAtomic.boolean(True))
+
+
+def test_snapshot_of_a_child_element_keeps_only_its_ancestor_chain() -> None:
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:variable name="s" select="snapshot(/doc/a/b)"/>
+          <xsl:sequence select="(
+            name($s),
+            count($s/ancestor::node()) = 3,
+            count($s/ancestor::doc) = 1,
+            count($s/ancestor::doc/a) = 1,
+            count($s/ancestor::doc/a/x) = 0,
+            snapshot()/*/name() = 'doc',
+            count($s/preceding-sibling::node()) = 0,
+            count($s/following-sibling::node()) = 0,
+            count($s/parent::a/@id) = 1,
+            count($s/parent::a/child::node()) = 1,
+            $s/parent::a/parent::doc/@id
+          )"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=SNAPSHOT_SOURCE)
+
+    assert [item.string_value for item in result.principal] == [
+        "b",
+        "true",
+        "true",
+        "true",
+        "true",
+        "true",
+        "true",
+        "true",
+        "true",
+        "true",
+        "d",
+    ]
+
+
+def test_snapshot_of_an_attribute_grafts_a_shallow_parent() -> None:
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:variable name="s" select="snapshot(/doc/a/@id)"/>
+          <xsl:sequence select="(
+            $s instance of attribute(id),
+            $s/string(),
+            count($s/parent::a) = 1,
+            count($s/parent::a/child::node()) = 0,
+            count($s/parent::a/@*) = 1,
+            count($s/parent::a/parent::doc) = 1
+          )"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=SNAPSHOT_SOURCE)
+
+    assert [item.string_value for item in result.principal] == [
+        "true",
+        "1",
+        "true",
+        "true",
+        "true",
+        "true",
+    ]
+
+
+def test_snapshot_of_a_namespace_node_keeps_its_element_parent() -> None:
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:variable name="s" select="snapshot(/doc/a/namespace::my)"/>
+          <xsl:sequence select="(
+            $s instance of namespace-node(),
+            local-name($s),
+            string($s),
+            count($s/parent::a) = 1,
+            count($s/parent::a/child::node()) = 0
+          )"/>
+        </xsl:template>
+        """,
+        namespaces={"my": MY_NS},
+    )
+    namespaced = b'<doc xmlns:my="urn:my"><a id="1"><b>deep</b></a></doc>'
+    result = transform(body, input_source=namespaced)
+
+    assert [item.string_value for item in result.principal] == [
+        "true",
+        "my",
+        MY_NS,
+        "true",
+        "true",
+    ]
+
+
+def test_snapshot_leaves_atomic_and_function_items_unchanged() -> None:
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="(snapshot(1), snapshot('a'), local-name-from-QName(
+            function-name(let $f := snapshot(abs#1) return $f)))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, initial_template="main", delivery="raw")
+
+    assert [item.string_value for item in result.principal] == ["1", "a", "abs"]
+
+
+def test_snapshot_without_a_context_item_is_xpdy0002() -> None:
+    body = stylesheet(
+        """
+        <xsl:function name="my:copy">
+          <xsl:param name="n"/>
+          <xsl:sequence select="snapshot()"/>
+        </xsl:function>
+        <xsl:template match="/">
+          <xsl:sequence select="my:copy(.)"/>
+        </xsl:template>
+        """,
+        namespaces={"my": MY_NS},
+    )
+    assert error_code(lambda: transform(body, input_source=b"<doc/>")) == "XPDY0002"
+
+
+def test_root_returns_the_tree_root_of_a_node_outside_the_focus() -> None:
+    """F&O 3.1 section 13.5 defines root($arg) as its ancestor-or-self root."""
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:variable name="copy" select="copy-of(/doc/a)"/>
+          <xsl:sequence select="(
+            $copy/b/root() is $copy,
+            root($copy/b) is $copy,
+            root(/) is /,
+            $copy/b/root()/name() = 'a',
+            empty(root(()))
+          )"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=SNAPSHOT_SOURCE)
+
+    assert result.principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+    )
+
+
+def test_root_argument_and_context_errors() -> None:
+    def code(body: str) -> str | None:
+        return error_code(lambda: transform(stylesheet(body), input_source=b"<doc/>"))
+
+    assert code('<xsl:template match="/"><xsl:value-of select="root(1)"/></xsl:template>') == (
+        "XPTY0004"
+    )
+    assert (
+        code('<xsl:template match="/"><xsl:value-of select="root((/, /doc))"/></xsl:template>')
+        == "XPTY0004"
+    )
+    absent_context = stylesheet(
+        """
+        <xsl:function name="my:r"><xsl:param name="n"/>
+          <xsl:sequence select="root()"/>
+        </xsl:function>
+        <xsl:template match="/"><xsl:sequence select="my:r(.)"/></xsl:template>
+        """,
+        namespaces={"my": MY_NS},
+    )
+    assert error_code(lambda: transform(absent_context, input_source=b"<doc/>")) == "XPDY0002"
+
+
+def test_snapshot_of_a_node_in_a_parentless_tree_stops_at_its_root() -> None:
+    """A copy's top ancestor is an element when the source tree has no document."""
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:variable name="tree" select="copy-of(/doc/a)"/>
+          <xsl:variable name="s" select="snapshot($tree/b)"/>
+          <xsl:sequence select="(
+            $s/name(),
+            $s/root() is $s/parent::a,
+            count($s/ancestor::node()) = 1,
+            count($s/ancestor::doc) = 0,
+            count($s/parent::a/ancestor::doc) = 0,
+            $s/parent::a/@id
+          )"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=SNAPSHOT_SOURCE)
+
+    assert [item.string_value for item in result.principal] == [
+        "b",
+        "true",
+        "true",
+        "true",
+        "true",
+        "1",
+    ]
