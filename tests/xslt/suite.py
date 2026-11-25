@@ -55,6 +55,7 @@ from pyxsd.xslt import (
 )
 from pyxsd.xslt.compiler.packages import PackageResolver
 from pyxsd.xslt.errors import XsltDynamicError, XsltError
+from pyxsd.xslt.runtime.functions import XsltContextBridge
 from pyxsd.xslt.serialization.serializer import Serializer
 
 #: Capabilities a native XSLT 2.0 processor implements in addition to its
@@ -381,11 +382,30 @@ def _evaluate(
     xpath_version: str,
     *,
     focus: XdmDocument | XdmNode | None = None,
+    xslt_version: str | None = None,
 ) -> tuple[Any, ...]:
+    """Evaluate one catalog expression, optionally with the XSLT function library.
+
+    A catalog ``select`` the reference runner evaluates with ``xsl:evaluate``
+    sees the stylesheet function library, so *xslt_version* installs this
+    engine's XSLT-defined function overrides (``parse-xml`` builds an XDM
+    document rather than a substrate tree).  The bridge carries no
+    transformation, so only the functions that do not need one are usable; a
+    catalog expression calling ``document()`` or ``key()`` must keep the plain
+    elementpath implementation, which is why the library is opt-in.
+    """
     engine = XPathEngine(xpath_version)
-    compiled = engine.compile(select, XPathStaticContext())
+    compiled = engine.compile(select, XPathStaticContext(xslt_version=xslt_version))
+    environment = ExpressionEnvironment()
+    if xslt_version is not None:
+        bridge = XsltContextBridge(
+            None,
+            xslt_version=xslt_version,
+            xpath_version=xpath_version,
+        )
+        environment = ExpressionEnvironment(function_overrides=bridge.function_overrides())
     resolved = None if focus is None else Focus(item=focus)
-    return tuple(engine.evaluate(compiled, ExpressionEnvironment(), focus=resolved))
+    return tuple(engine.evaluate(compiled, environment, focus=resolved))
 
 
 def _parameter_values(
@@ -515,6 +535,18 @@ def _source_input(case: TestCase, profile: SuiteProfile) -> _SourceInput | None:
     validation = _declared_validation(source)
     if select is None:
         return _SourceInput(_raw_source(case, source), validation)
+    if source.path is None and source.content is None:
+        # A ``select``-only declaration supplies the item itself: the catalog's
+        # select is a path within a declared document, but with no document the
+        # expression is the context item (``fn/id/id-043``).  It is evaluated
+        # with the stylesheet function library, as ``xsl:evaluate`` would.
+        return _SourceInput(
+            _evaluate(
+                select,
+                xpath_version,
+                xslt_version=profile.processor.language,
+            )
+        )
     document = _selection_document(case, profile, source, validation)
     return _SourceInput(_evaluate(select, xpath_version, focus=document))
 
