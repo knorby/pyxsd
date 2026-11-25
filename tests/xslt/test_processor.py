@@ -282,8 +282,9 @@ def test_entry_point_conflicts_are_rejected() -> None:
 
     with pytest.raises(XsltInvocationError, match="initial_template and initial_function"):
         compiled.transform(initial_template="t", initial_function="my:f")
-    with pytest.raises(XsltInvocationError, match="initial_template and initial_mode"):
+    with pytest.raises(XsltInvocationError, match="initial_template and initial_mode") as conflict:
         compiled.transform(initial_template="t", initial_mode="m")
+    assert conflict.value.code == "XTDE0047"
     with pytest.raises(XsltInvocationError, match="initial_function and initial_mode"):
         compiled.transform(initial_function="my:f", initial_mode="m")
     with pytest.raises(XsltInvocationError, match="template_parameters"):

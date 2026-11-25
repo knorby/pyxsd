@@ -5433,7 +5433,13 @@ def _prepare_invocation(
     if initial_function is not None and selection_supplied:
         raise XsltInvocationError("initial_match_selection is not valid with initial_function")
     if initial_template is not None and initial_mode is not None:
-        raise XsltInvocationError("initial_template and initial_mode are mutually exclusive")
+        # XSLT 2.0 section 2.3 assigns this exact conflict XTDE0047; the code
+        # travels with the host error so a caller or a conformance case can
+        # compare it instead of an uncoded invocation failure.
+        raise XsltInvocationError(
+            "initial_template and initial_mode are mutually exclusive",
+            code="XTDE0047",
+        )
     if initial_function is not None and initial_mode is not None:
         raise XsltInvocationError("initial_function and initial_mode are mutually exclusive")
 
