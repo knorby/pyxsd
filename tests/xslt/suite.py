@@ -46,7 +46,12 @@ from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath.engine import XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
-from pyxsd.xslt import CompiledStylesheet, TransformationResult, XsltProcessor
+from pyxsd.xslt import (
+    CompiledStylesheet,
+    TransformationResult,
+    XsltInvocationError,
+    XsltProcessor,
+)
 from pyxsd.xslt.compiler.packages import PackageResolver
 from pyxsd.xslt.errors import XsltDynamicError, XsltError
 from pyxsd.xslt.serialization.serializer import Serializer
@@ -1150,6 +1155,11 @@ def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
         )
         return _snapshot(compiled.transform(**options), output_uri)
     except XsltError as exc:
+        raise CaseExecutionError(exc.code or UNCODED_ERROR, str(exc)) from exc
+    except XsltInvocationError as exc:
+        # A host invocation error that carries an XSLT code is the transform's
+        # own error (XTDE0044 for an initial mode without a match selection),
+        # not a harness defect: the corpus compares the code it declares.
         raise CaseExecutionError(exc.code or UNCODED_ERROR, str(exc)) from exc
 
 
