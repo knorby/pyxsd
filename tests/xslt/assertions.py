@@ -1213,6 +1213,12 @@ def _normalize_actual_code(code: str) -> tuple[str | None, str]:
     if value.startswith("Q{"):
         uri, local = value[2:].split("}", 1)
         return (uri or None, local)
+    if value.startswith("{"):
+        # The engine reports a non-``err:`` dynamic error code in Clark
+        # notation (``{uri}local``); the catalog writes the same code as an
+        # EQName (``Q{uri}local``).  Both name one code.
+        uri, _, local = value[1:].partition("}")
+        return (uri or None, local)
     if ":" in value:
         prefix, local = value.split(":", 1)
         if prefix == "err":

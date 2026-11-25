@@ -1640,3 +1640,19 @@ def test_xml_assertion_does_not_hide_actual_indentation() -> None:
 
     verdict = assertion.evaluate_verdict(AssertionContext(result))
     assert not verdict.passed
+
+
+def test_actual_error_codes_accept_clark_and_eqname_forms() -> None:
+    """The engine's ``{uri}local`` and the catalog's ``Q{uri}local`` name one code."""
+    from tests.xslt.assertions import (
+        _display_code,
+        _normalize_actual_code,
+        _normalize_expected_code,
+    )
+
+    assert _normalize_actual_code("{urn:errors}notice") == _normalize_expected_code(
+        "Q{urn:errors}notice", ()
+    )
+    assert _normalize_actual_code("Q{}UIOP9876") == _normalize_expected_code("Q{}UIOP9876", ())
+    assert _normalize_actual_code("XTMM9000") == ("http://www.w3.org/2005/xqt-errors", "XTMM9000")
+    assert _display_code(_normalize_actual_code("{urn:errors}notice")) == "Q{urn:errors}notice"

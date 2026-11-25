@@ -872,6 +872,9 @@ def _diagnostic_error_code(
 
     An invalid EQName uses the caller's default. Standard error-namespace names
     use their familiar local form; a custom namespace keeps its expanded form.
+    An unprefixed EQName is in no namespace (XSLT 3.0 section 5.4.2), so it
+    keeps the ``Q{}local`` form ``fn:error`` uses instead of collapsing to a
+    bare local name that would read as a standard-namespace code.
     """
     text = value.strip()
     if not text:
@@ -884,7 +887,7 @@ def _diagnostic_error_code(
         local = text[close + 1 :]
         if not is_ncname(local):
             return default
-        expanded = f"{{{namespace}}}{local}" if namespace else local
+        expanded = f"{{{namespace}}}{local}" if namespace else f"Q{{}}{local}"
     else:
         if text.startswith("{"):
             return default
@@ -899,7 +902,7 @@ def _diagnostic_error_code(
         else:
             if not is_ncname(text):
                 return default
-            expanded = text
+            expanded = f"Q{{}}{text}"
     standard = f"{{{ERROR_NAMESPACE}}}"
     if expanded.startswith(standard):
         return expanded[len(standard) :]
