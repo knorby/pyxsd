@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import codecs
 import unicodedata
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 
 from pyxsd.xdm import XdmAtomic, XdmItem
 from pyxsd.xdm.nodes import NodeKind, XdmNode
@@ -415,6 +415,7 @@ def attribute_value(
     percent-escaped by ``fn:escape-html-uri`` before normal output escaping;
     character maps are not applied to it.
     """
+    escape: Callable[..., str]
     if method == "html":
         numeric_c1 = _is_html5(parameters, "html")
 

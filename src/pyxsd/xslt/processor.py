@@ -6182,7 +6182,7 @@ class _Invocation(Transformation):
         #: Key indexes currently under construction, keyed like the completed
         #: cache and holding the document beside its address (XSLT 3.0
         #: section 9.11 circularity guard).
-        self._key_builds: dict[tuple[int, str | None, str], XdmDocument] = {}
+        self._key_builds: dict[tuple[int, str | None, str], XdmNode] = {}
         self._numbering: NumberingCache | None = None
         self._numbering_counters: dict[object, tuple[_NumberPlan, NumberingCounter | None]] = {}
         self._xpath_cache = XPathParserCache()

@@ -140,7 +140,7 @@ def _json_node(
 ) -> str:
     method = parameters.json_node_output_method
     if method == "html":
-        root = node if node.kind is NodeKind.ELEMENT else node.root_element
+        root = node if node.kind is NodeKind.ELEMENT else getattr(node, "root_element", None)
         if root is not None and root.namespace_uri == "http://www.w3.org/1999/xhtml":
             # An XHTML-namespace node keeps its namespace declaration; the HTML
             # method alone would drop it (Serialization 3.1 section 6).

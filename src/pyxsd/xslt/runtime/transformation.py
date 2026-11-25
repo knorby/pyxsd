@@ -164,7 +164,7 @@ class Transformation:
         self.generated_ids: dict[int, tuple[XdmItem, str]] = {}
         self.generated_id_count = 0
         self.key_indexes: dict[tuple[int, str | None, str], Mapping[Any, tuple[XdmNode, ...]]] = {}
-        self.key_index_documents: dict[int, XdmDocument] = {}
+        self.key_index_documents: dict[int, XdmNode] = {}
         self.id_indexes: dict[int, tuple[XdmNode, Mapping[str, XdmNode]]] = {}
         self.documents: dict[str, XdmDocument] = {}
         self.evaluating_attribute_sets: list[tuple[str | None, str | None]] = []
