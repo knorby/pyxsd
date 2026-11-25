@@ -1,5 +1,6 @@
 """Rendered documentation contracts; install the docs group to run these tests."""
 
+import logging
 import os
 import re
 import runpy
@@ -165,6 +166,39 @@ def test_conf_has_no_regex_suppression():
     conf = runpy.run_path(str(ROOT / "docs/conf.py"))
     assert conf.get("nitpicky") is True
     assert not conf.get("nitpick_ignore_regex")
+
+
+@pytest.mark.parametrize(
+    ("subtype", "message", "visible"),
+    [
+        (
+            "python_import_resolution",
+            "Cannot resolve cyclic import: pyxsd.identity, pyxsd.schema_base, "
+            "pyxsd.element_representatives.attribute, "
+            "pyxsd.element_representatives.element_representative, "
+            "pyxsd.element_representatives.attribute",
+            False,
+        ),
+        (
+            "python_import_resolution",
+            "Cannot resolve cyclic import: pyxsd.batch, "
+            "pyxsd.element_representatives.element_representative, pyxsd.batch",
+            True,
+        ),
+        (
+            "python_import_resolution",
+            "Cannot resolve cyclic import: "
+            "pyxsd.element_representatives.element_representative, x, y, x",
+            True,
+        ),
+        ("python_import_resolution", "Cannot resolve import of unknown module x", True),
+        ("other", "Other AutoAPI warning", True),
+    ],
+)
+def test_autoapi_filters_only_internal_registry_cycles(subtype, message, visible):
+    conf = runpy.run_path(str(ROOT / "docs/conf.py"))
+    record = logging.makeLogRecord({"msg": message, "subtype": subtype})
+    assert conf["StaticImportFilter"]().filter(record) is visible
 
 
 def test_api_summary_links_resolve_to_unique_anchors(docs_build):

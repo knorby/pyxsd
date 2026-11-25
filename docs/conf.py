@@ -168,15 +168,22 @@ class ReferencePythonDomain(PythonDomain):
 
 
 class StaticImportFilter(logging.Filter):
-    """AutoAPI follows type-only imports through the internal XSD registry."""
+    """Ignore internal registry cycles regardless of which module is scanned first."""
 
     def filter(self, record):
-        return not (
-            getattr(record, "subtype", None) == "python_import_resolution"
-            and record.getMessage().startswith(
-                "Cannot resolve cyclic import: pyxsd.schema_checks, "
-                "pyxsd.element_representatives.element_representative, "
-            )
+        if getattr(record, "subtype", None) != "python_import_resolution":
+            return True
+        prefix = "Cannot resolve cyclic import: "
+        message = record.getMessage()
+        if not message.startswith(prefix):
+            return True
+        modules = message.removeprefix(prefix).split(", ")
+        # The final module repeats at the start of the cycle. Ignore only
+        # cycles involving the XSD registry, not unrelated import warnings.
+        cycle = modules[modules.index(modules[-1]) :]
+        return (
+            "pyxsd.element_representatives.element_representative" not in cycle
+            or not PUBLIC_API_MODULES.isdisjoint(cycle)
         )
 
 
