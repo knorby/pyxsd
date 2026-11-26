@@ -554,14 +554,39 @@ class _AssertionParser(XPath31Parser):
 
     def parse(self, source: str) -> Any:
         counter = 0
-        for uri, local in _EQNAME.findall(source):
-            prefix = next((p for p, bound in self.namespaces.items() if bound == uri and p), None)
-            if prefix is None:
-                counter += 1
-                prefix = f"eq{counter}"
-                self.namespaces[prefix] = uri
-            source = source.replace(f"Q{{{uri}}}{local}", f"{prefix}:{local}")
-        return super().parse(source)
+        rewritten: list[str] = []
+        index = 0
+        quote: str | None = None
+        while index < len(source):
+            character = source[index]
+            if quote is not None:
+                rewritten.append(character)
+                if character == quote:
+                    quote = None
+                index += 1
+                continue
+            if character in ("'", '"'):
+                quote = character
+                rewritten.append(character)
+                index += 1
+                continue
+            match = _EQNAME.match(source, index)
+            if match is not None:
+                uri, local = match.groups()
+                prefix = next(
+                    (p for p, bound in self.namespaces.items() if bound == uri and p),
+                    None,
+                )
+                if prefix is None:
+                    counter += 1
+                    prefix = f"eq{counter}"
+                    self.namespaces[prefix] = uri
+                rewritten.append(f"{prefix}:{local}")
+                index = match.end()
+                continue
+            rewritten.append(character)
+            index += 1
+        return super().parse("".join(rewritten))
 
 
 def _parser(declarations: Sequence[tuple[str, str]]) -> XPath31Parser:

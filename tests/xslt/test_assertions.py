@@ -49,6 +49,7 @@ from tests.xslt.assertions import (
     _deep_equal,
     _is_gap,
     _namespace_map,
+    _parser,
     _unexpected_error,
     _xml_mismatch,
     _xml_namespace_scopes,
@@ -1656,3 +1657,13 @@ def test_actual_error_codes_accept_clark_and_eqname_forms() -> None:
     assert _normalize_actual_code("Q{}UIOP9876") == _normalize_expected_code("Q{}UIOP9876", ())
     assert _normalize_actual_code("XTMM9000") == ("http://www.w3.org/2005/xqt-errors", "XTMM9000")
     assert _display_code(_normalize_actual_code("{urn:errors}notice")) == "Q{urn:errors}notice"
+
+
+def test_assertion_parser_accepts_an_eqname_kind_test() -> None:
+    # The JSON escape cases assert element(Q{fn}string); the assertion grammar
+    # must measure the result rather than report a harness gap.
+    function_namespace = "http://www.w3.org/2005/xpath-functions"
+    ast = _parser([("fn", function_namespace)]).parse(
+        f"* instance of element(Q{{{function_namespace}}}string)"
+    )
+    assert ast is not None

@@ -11,7 +11,6 @@ import io
 from pathlib import Path
 
 import pytest
-from tests.xslt.assertions import _parser
 from tests.xslt.support import stylesheet, transform
 
 from pyxsd.schema import Schema
@@ -233,13 +232,6 @@ def test_function_step_result_is_not_sorted_as_a_node() -> None:
       <xsl:template match="/"><out><xsl:value-of select="//name()"/></out></xsl:template>
     """
     assert "> doc a</out>" in _serialized(stylesheet(body), b"<doc><a/></doc>")
-
-
-def test_assertion_parser_accepts_an_eqname_kind_test() -> None:
-    # json-to-xml escape cases assert element(Q{fn}string); the assertion
-    # grammar must measure the result rather than report a harness gap.
-    ast = _parser([("fn", FN_NS)]).parse(f"* instance of element(Q{{{FN_NS}}}string)")
-    assert ast is not None
 
 
 def test_doc_pattern_uses_the_package_stripped_variant(tmp_path: Path) -> None:
