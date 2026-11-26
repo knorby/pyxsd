@@ -32,7 +32,7 @@ from types import MappingProxyType
 from typing import Any, cast
 from urllib.parse import urljoin, urlsplit
 
-from elementpath.datatypes import QName
+from elementpath.datatypes import Date, DateTime, QName, Time
 from elementpath.helpers import is_ncname
 from elementpath.xpath1 import XPath1Parser
 from elementpath.xpath2 import XPath2Parser
@@ -71,6 +71,11 @@ XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 FN_NS = "http://www.w3.org/2005/xpath-functions"
+
+#: The required dynamic type of each ``format-date`` family argument.
+_DATETIME_ARGUMENT_TYPES: Mapping[str, type[Any]] = MappingProxyType(
+    {"date": Date, "time": Time, "dateTime": DateTime}
+)
 
 
 #: Marker for an absent dynamic component.  An absent component is never the
@@ -523,6 +528,7 @@ class XsltContextBridge:
     xslt_version: str | None = None
     key_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence] | None = None
     id_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...], bool], XdmSequence] | None = None
+    idref_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence] | None = None
     extension_functions: frozenset[tuple[str, int]] = frozenset()
 
     def __post_init__(self) -> None:
@@ -594,6 +600,8 @@ class XsltContextBridge:
             raise TypeError("key_lookup must be callable or None")
         if self.id_lookup is not None and not callable(self.id_lookup):
             raise TypeError("id_lookup must be callable or None")
+        if self.idref_lookup is not None and not callable(self.idref_lookup):
+            raise TypeError("idref_lookup must be callable or None")
         declared = frozenset(self.extension_functions)
         for name, arity in declared:
             if not isinstance(name, str) or not name:
@@ -760,6 +768,8 @@ class XsltContextBridge:
                 table[f"{{{FN_NS}}}element-with-id"] = ContextFunction(
                     self._direct_element_with_id, self._dynamic_element_with_id
                 )
+        if self.idref_lookup is not None:
+            table[f"{{{FN_NS}}}idref"] = ContextFunction(self._direct_idref, self._dynamic_idref)
         return MappingProxyType(table)
 
     def _serialize_function(
@@ -1850,7 +1860,8 @@ class XsltContextBridge:
         del context_item, arguments
         if self.current_output_uri is None:
             return ()
-        return (XdmAtomic.string(self.current_output_uri),)
+        # XSLT 3.0 §25.1 types current-output-uri() as xs:anyURI?.
+        return (XdmAtomic.any_uri(self.current_output_uri),)
 
     def _system_property_function(
         self,
@@ -1998,6 +2009,23 @@ class XsltContextBridge:
         assert self.id_lookup is not None
         del context_item
         return self.id_lookup(None, arguments, True)
+
+    def _direct_idref(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        assert self.idref_lookup is not None
+        return self.idref_lookup(context_item, arguments)
+
+    def _dynamic_idref(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        assert self.idref_lookup is not None
+        del context_item
+        return self.idref_lookup(None, arguments)
 
 
 def _document_uri(item: XdmAtomic) -> str:
@@ -2460,7 +2488,26 @@ def _date_time_argument(
             f"format-{kind} requires an atomic value",
             code="XPTY0004",
         )
-    return atomic_to_elementpath(item)
+    target = _DATETIME_ARGUMENT_TYPES[kind]
+    local = item.type_name.rpartition("}")[2].rpartition(":")[2]
+    if local == "untypedAtomic":
+        try:
+            return target.fromstring(item.lexical)
+        except (TypeError, ValueError) as exc:
+            raise XsltDynamicError(
+                f"format-{kind} cannot cast {item.lexical!r} to xs:{kind}",
+                code="FORG0001",
+                cause=exc,
+            ) from None
+    value = atomic_to_elementpath(item)
+    if isinstance(value, target):
+        return value
+    # An actual xs:string (or any other non-date atomic) is not subject to a
+    # cast by the function conversion rules: only untypedAtomic is.
+    raise XsltDynamicError(
+        f"format-{kind} requires an xs:{kind} value, not {local}",
+        code="XPTY0004",
+    )
 
 
 def _single_string(arguments: tuple[XdmSequence, ...], index: int) -> str:

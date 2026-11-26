@@ -254,11 +254,23 @@ def _inferred_method(entry: ResultEntry) -> str:
     for item in source:
         if not isinstance(item, XdmNode):
             continue
-        if item.kind is not NodeKind.ELEMENT:
+        element: XdmNode | None
+        if item.kind is NodeKind.DOCUMENT:
+            # A raw result may carry the whole document node; its document
+            # element is the outermost result element for method selection.
+            element = next(
+                (child for child in item.children if child.kind is NodeKind.ELEMENT),
+                None,
+            )
+        else:
+            element = item
+        if element is None or element.kind is not NodeKind.ELEMENT:
             continue
-        if (item.local_name or "").lower() != "html":
+        # XML names are case-sensitive: only a document element named
+        # ``html`` selects the HTML/XHTML method.
+        if element.local_name != "html":
             return "xml"
-        return "xhtml" if item.namespace_uri == _XHTML_NS else "html"
+        return "xhtml" if element.namespace_uri == _XHTML_NS else "html"
     return "xml"
 
 

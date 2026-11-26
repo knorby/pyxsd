@@ -296,6 +296,18 @@ class ExpressionEnvironment:
     key_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence] | None = field(
         default=None, repr=False, compare=False
     )
+    #: A lazy ``id()``/``element-with-id()`` resource:
+    #: ``lookup(context_item, arguments, element_with_id)`` mirrors the XSLT
+    #: function and derives its index from the invocation.  ``None`` means
+    #: pattern evaluation scans the tree itself (the standalone behaviour).
+    id_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...], bool], XdmSequence] | None = (
+        field(default=None, repr=False, compare=False)
+    )
+    #: A lazy ``idref()`` resource with the same shape as ``id_lookup`` but
+    #: returning the IDREF-bearing nodes.  ``None`` keeps the standalone path.
+    idref_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         variables = dict(_freeze_mapping(self.variables, "variables"))

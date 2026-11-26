@@ -284,6 +284,113 @@ def test_key_index_accepts_untyped_and_numeric_lookups() -> None:
     )
 
 
+def test_key_lookup_does_not_match_a_typed_key_lexically() -> None:
+    """A string lookup never matches an integer key value (XSLT §9.11)."""
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="xs:integer(@n)"/>
+        <xsl:template name="main">
+          <xsl:sequence
+            select="count(key('k', 4)),
+                    count(key('k', '4')),
+                    count(key('k', xs:untypedAtomic('4')))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, b'<doc><item n="4"/></doc>', initial_template="main").principal == (
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(1),
+    )
+
+
+def test_key_lookup_date_and_untyped_typing() -> None:
+    """Only untypedAtomic is cast to the key's date type; xs:string is not."""
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="xs:date(@d)"/>
+        <xsl:template name="main">
+          <xsl:sequence
+            select="count(key('k', '2000-01-01')),
+                    count(key('k', xs:untypedAtomic('2000-01-01'))),
+                    count(key('k', xs:date('2000-01-01')))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(
+        source, b'<doc><item d="2000-01-01"/></doc>', initial_template="main"
+    ).principal == (
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(1),
+    )
+
+
+def test_key_lookup_boolean_and_integer_do_not_collapse() -> None:
+    """Python's ``True == 1`` must not become an XSLT key match."""
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="xs:boolean(@b)"/>
+        <xsl:template name="main">
+          <xsl:sequence
+            select="count(key('k', 1)), count(key('k', true())), count(key('k', 'true'))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, b'<doc><item b="true"/></doc>', initial_template="main").principal == (
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(0),
+    )
+
+
+def test_composite_key_lookup_uses_typed_equality() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="xs:integer(@a), xs:integer(@b)" composite="yes"/>
+        <xsl:template name="main">
+          <xsl:sequence
+            select="count(key('k', (1, 2))),
+                    count(key('k', ('1', '2'))),
+                    count(key('k', (1, xs:untypedAtomic('2')))),
+                    count(key('k', (1, 2, 3)))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(
+        source, b'<doc><item a="1" b="2"/></doc>', initial_template="main"
+    ).principal == (
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(0),
+    )
+
+
+def test_key_atomic_equality_casts_both_untyped_directions() -> None:
+    from pyxsd.xslt.processor import _key_atomic_equal
+
+    untyped = XdmAtomic.untyped_atomic("4")
+    integer = XdmAtomic.integer(4)
+    assert _key_atomic_equal(untyped, XdmAtomic.untyped_atomic("4"))
+    assert _key_atomic_equal(untyped, integer)
+    assert _key_atomic_equal(integer, untyped)
+    assert not _key_atomic_equal(XdmAtomic.untyped_atomic("x"), integer)
+
+
+def test_key_declarations_disagreeing_on_composite_are_a_static_error() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="@a" composite="yes"/>
+        <xsl:key name="k" match="item" use="@b" composite="no"/>
+        <xsl:template name="main"><out/></xsl:template>
+        """
+    )
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(io.BytesIO(source))
+    assert caught.value.code == "XTSE1222"
+
+
 def test_key_names_are_expanded_and_matches_can_be_attributes() -> None:
     source = stylesheet(
         """
@@ -729,7 +836,8 @@ def test_a_failed_key_build_leaves_no_guard() -> None:
     with pytest.raises(XsltError):
         invocation._key_index(failing._keys[None], document, None)
     index = invocation._key_index(invocation.stylesheet._keys[None], document, None)
-    assert {node.local_name for node in index["a"]} == {"item"}
+    lookup = XdmAtomic.untyped_atomic("a")
+    assert {node.local_name for node in index.nodes_for((lookup,), composite=False)} == {"item"}
     assert invocation._key_builds == {}
 
 
@@ -1084,6 +1192,141 @@ def test_id_reads_dtd_and_xml_id_declarations() -> None:
         XdmAtomic.integer(0),
         XdmAtomic.integer(0),
         XdmAtomic.string("c"),
+    )
+
+
+def test_element_with_id_returns_the_parent_of_an_id_valued_element(tmp_path: Path) -> None:
+    """A schema ID on a child element identifies the parent for element-with-id."""
+    schema = tmp_path / "id-child.xsd"
+    schema.write_text(
+        """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+             targetNamespace="urn:idchild" xmlns:t="urn:idchild"
+             elementFormDefault="qualified">
+             <xs:element name="table">
+               <xs:complexType><xs:sequence>
+                 <xs:element name="row" maxOccurs="unbounded">
+                   <xs:complexType><xs:sequence>
+                     <xs:element name="id" type="xs:ID"/>
+                     <xs:element name="value" type="xs:string"/>
+                   </xs:sequence></xs:complexType>
+                 </xs:element>
+               </xs:sequence></xs:complexType>
+             </xs:element>
+           </xs:schema>""",
+        encoding="utf-8",
+    )
+    pool = SchemaPool.from_imports([schema], xsd_version="1.1")
+    document = parse_typed_document(
+        b"<t:table xmlns:t='urn:idchild'><t:row><t:id>A</t:id><t:value>ALPHA</t:value>"
+        b"</t:row><t:row><t:id>C</t:id><t:value>GAMMA</t:value></t:row></t:table>",
+        schema_pool=pool,
+        validation="strict",
+    )
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="id('C')/local-name()"/>
+          <xsl:sequence select="element-with-id('C')/local-name()"/>
+          <xsl:sequence select="string(id('C')/parent::*/*[2])"/>
+          <xsl:sequence select="string(element-with-id('C')/*[2])"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=document, initial_template="main", validation="preserve")
+    assert result.principal == (
+        XdmAtomic.string("id"),
+        XdmAtomic.string("row"),
+        XdmAtomic.string("GAMMA"),
+        XdmAtomic.string("GAMMA"),
+    )
+
+
+def test_idref_returns_the_bearing_node_and_does_not_tokenize() -> None:
+    """fn:idref returns the IDREF attribute and compares one string per value."""
+    source = (
+        b"<!DOCTYPE t04 [<!ELEMENT t04 (a*)><!ELEMENT a EMPTY>"
+        b"<!ATTLIST a id ID #REQUIRED><!ATTLIST a ref IDREF #IMPLIED>]>"
+        b'<t04><a id="a"/><a id="b" ref="c"/><a id="c" ref="d"/>'
+        b'<a id="d" ref="a"/></t04>'
+    )
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence
+            select="string-join(for $n in idref('a') return name($n) || ':' || $n/../@id, ',')"/>
+          <xsl:sequence select="count(idref('a '))"/>
+          <xsl:sequence select="count(idref('a b'))"/>
+          <xsl:sequence select="string-join(for $n in idref(('c', 'd')) return $n/../@id, ',')"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=source, initial_template="main")
+    assert result.principal == (
+        XdmAtomic.string("ref:d"),
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(0),
+        XdmAtomic.string("b,c"),
+    )
+
+
+def test_idref_returns_an_idref_valued_element(tmp_path: Path) -> None:
+    """An element whose own typed value is an IDREF is returned itself."""
+    schema = tmp_path / "idref-element.xsd"
+    schema.write_text(
+        """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+             <xs:element name="r"><xs:complexType><xs:sequence>
+               <xs:element name="id" type="xs:ID"/>
+               <xs:element name="ref" type="xs:IDREF"/>
+             </xs:sequence></xs:complexType></xs:element>
+           </xs:schema>""",
+        encoding="utf-8",
+    )
+    pool = SchemaPool.from_imports([schema], xsd_version="1.0")
+    document = parse_typed_document(
+        b"<r><id>a</id><ref>a</ref></r>", schema_pool=pool, validation="strict"
+    )
+    body = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="idref(\'a\')/local-name()"/>'
+        "</xsl:template>"
+    )
+    result = transform(body, input_source=document, initial_template="main", validation="preserve")
+    assert result.principal == (XdmAtomic.string("ref"),)
+
+
+def test_idref_error_arms() -> None:
+    source = (
+        b"<!DOCTYPE t04 [<!ELEMENT t04 (a*)><!ELEMENT a EMPTY>"
+        b"<!ATTLIST a id ID #REQUIRED><!ATTLIST a ref IDREF #IMPLIED>]>"
+        b'<t04><a id="a"/><a id="b" ref="a"/></t04>'
+    )
+    bad_item = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="idref(map{})"/></xsl:template>'
+    )
+    assert error_code(lambda: transform(bad_item, source, initial_template="main")) == "XPTY0004"
+
+    bad_node = stylesheet(
+        "<xsl:template name=\"main\"><xsl:sequence select=\"idref('a', 'x')\"/></xsl:template>"
+    )
+    assert error_code(lambda: transform(bad_node, source, initial_template="main")) == "XPTY0004"
+
+    no_context = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="idref(\'a\')"/></xsl:template>'
+    )
+    assert error_code(lambda: transform(no_context, initial_template="main")) == "XPDY0002"
+
+    empty = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="count(idref(()))"/>
+          <xsl:sequence select="count(idref(/t04/a/@ref))"/>
+          <xsl:sequence select="count(idref('a', /))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(empty, source, initial_template="main").principal == (
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(1),
     )
 
 
@@ -2420,6 +2663,35 @@ def test_parse_xml_returns_an_engine_document_node() -> None:
     )
 
 
+def test_format_date_family_rejects_string_values_without_a_cast() -> None:
+    """Only xs:untypedAtomic receives the cast; xs:string is XPTY0004."""
+    for expression in (
+        "format-date('2000-01-01', '[Y]')",
+        "format-time('01:02:03', '[H01]')",
+        "format-dateTime('2000-01-01T01:02:03', '[Y]')",
+    ):
+        body = f'<xsl:template name="main"><xsl:value-of select="{expression}"/></xsl:template>'
+        assert error_code(
+            lambda body=body: transform(stylesheet(body), initial_template="main")
+        ) == ("XPTY0004")
+
+    accepted = stylesheet(
+        """
+        <xsl:template name="main"><xsl:value-of
+          select="format-date(xs:untypedAtomic('2000-01-01'), '[Y]')"/></xsl:template>
+        """
+    )
+    assert transform(accepted, initial_template="main").principal[0].string_value == "2000"
+
+    bad_cast = stylesheet(
+        """
+        <xsl:template name="main"><xsl:value-of
+          select="format-date(xs:untypedAtomic('not-a-date'), '[Y]')"/></xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(bad_cast, initial_template="main")) == "FORG0001"
+
+
 def test_parse_xml_error_codes() -> None:
     def code(expression: str) -> str | None:
         body = f'<xsl:template name="main"><xsl:sequence select="{expression}"/></xsl:template>'
@@ -2453,6 +2725,36 @@ def test_format_integer_empty_atomization_formats_as_empty_string(tmp_path: Path
     )
 
     assert result[0].string_value == ""
+
+
+def test_format_integer_rejects_one_node_atomizing_to_several_values(tmp_path: Path) -> None:
+    """A list-typed element atomizes to two values; the first is not formatted."""
+    schema = tmp_path / "list.xsd"
+    schema.write_text(
+        """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+             <xs:element name="a">
+               <xs:simpleType><xs:list itemType="xs:integer"/></xs:simpleType>
+             </xs:element>
+           </xs:schema>""",
+        encoding="utf-8",
+    )
+    pool = SchemaPool.from_imports([schema], xsd_version="1.0")
+    document = parse_typed_document(b"<a>1 2</a>", schema_pool=pool, validation="strict")
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:value-of select="format-integer((/a)[1], '1')"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        error_code(
+            lambda: transform(
+                body, input_source=document, initial_template="main", validation="preserve"
+            )
+        )
+        == "XPTY0004"
+    )
 
 
 def test_format_integer_keeps_its_compiled_argument() -> None:

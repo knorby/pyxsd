@@ -1258,7 +1258,20 @@ def _collect(descriptor: PackageDescriptor) -> _Local:
                         module=module,
                     )
                 mode_tokens = tuple(mode_value.split()) if mode_value is not None else ()
-                default_mode = _resolve_default_mode(descriptor.default_mode, element, module)
+                # XSLT 3.0 §3.8.2 scopes [xsl:]default-mode to the stylesheet
+                # module, so an included module's root declaration governs its
+                # own template rules even when the including module declares a
+                # different default (or none).
+                own_default = element.attribute("default-mode")
+                default_source: str | None
+                if own_default is not None:
+                    default_source = own_default
+                else:
+                    module_default = module.root.attribute("default-mode")
+                    default_source = (
+                        module_default if module_default is not None else descriptor.default_mode
+                    )
+                default_mode = _resolve_default_mode(default_source, element, module)
                 priority = _parse_priority(element, module)
                 rules.append(
                     _RuleDeclaration(
@@ -1922,6 +1935,20 @@ def _group_constructs(
     return tuple(groups)
 
 
+_DECIMAL_LEXICAL = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)\Z")
+
+
+def _decimal_lexical(value: str) -> Decimal:
+    """Parse one value in the XSD ``xs:decimal`` lexical space.
+
+    ``Decimal`` alone accepts ``NaN``, ``Infinity``, and exponent notation,
+    which are not in that space.  Attribute whitespace collapses first.
+    """
+    if _DECIMAL_LEXICAL.fullmatch(value) is None:
+        raise ValueError(f"{value!r} is not an xs:decimal lexical value")
+    return Decimal(value)
+
+
 def _validate_constant_output_attributes(
     group: _GroupedDeclaration, attributes: Mapping[str, str]
 ) -> None:
@@ -1935,7 +1962,7 @@ def _validate_constant_output_attributes(
     if value is None or "{" in value:
         return
     try:
-        Decimal(value.strip())
+        _decimal_lexical(value.strip())
     except (InvalidOperation, ValueError) as error:
         declaration = group.declarations[0]
         raise _error(

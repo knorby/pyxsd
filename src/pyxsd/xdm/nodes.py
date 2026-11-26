@@ -19,6 +19,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import count
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, cast
@@ -44,6 +45,18 @@ _XSD_PREFIX = f"{{{XSD_NS}}}"
 _UNTYPED = f"{_XSD_PREFIX}untyped"
 _UNTYPED_ATOMIC = f"{_XSD_PREFIX}untypedAtomic"
 _EMPTY_NAMESPACES: Mapping[str, str] = MappingProxyType({})
+
+#: Creation-order identities for documents.  Document order is only unique
+#: inside one tree; two parsed documents both number their nodes from one.
+#: A node-set that spans trees therefore orders by
+#: ``(tree identity, document order)``, and the identity must be stable for the
+#: life of the document rather than derived from an allocation address.
+_TREE_SEQUENCE = count(1)
+
+
+def _next_tree_identity() -> int:
+    """One stable, monotonically assigned document identity."""
+    return next(_TREE_SEQUENCE)
 
 
 class NodeKind(StrEnum):
@@ -474,7 +487,7 @@ class XdmNode(XdmItem):
 class XdmDocument(XdmNode):
     """An XDM document node holding one parsed XML document."""
 
-    __slots__ = ("_order_base", "_root_element", "_schema_pool")
+    __slots__ = ("_order_base", "_root_element", "_schema_pool", "_tree_identity")
 
     def __init__(
         self,
@@ -506,6 +519,11 @@ class XdmDocument(XdmNode):
         #: is the order in which their documents were created, never a shared
         #: position range or an allocation address.
         self._order_base = 1
+        #: A stable identity for this tree, assigned at creation.  Two parsed
+        #: documents share a document-order range starting at one, so a
+        #: cross-tree node-set orders by ``(tree identity, document order)``.
+        #: Creation order is deterministic for one transformation invocation.
+        self._tree_identity = _next_tree_identity()
 
     @classmethod
     def parse(

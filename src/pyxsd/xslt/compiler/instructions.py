@@ -22,7 +22,7 @@ from typing import TypeAlias
 from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import local_name as _local_name
 from pyxsd.namespaces import namespace_of as _namespace_of
-from pyxsd.xdm.nodes import NodeKind
+from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xslt.compiler.static import EffectiveElement, EffectiveNode, EffectiveText
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -133,6 +133,10 @@ class Instruction:
     prefix: str = ""
     reference: ComponentReference | None = None
     references: tuple[ComponentReference, ...] = ()
+    #: The source element this node was normalized from.  Compilation reads
+    #: lexical-scope attributes (``[xsl:]default-mode``) through its ancestor
+    #: chain; nothing mutable is retained and no decision is cached on it.
+    raw: XdmNode | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "namespaces", _freeze(self.namespaces))
@@ -266,6 +270,7 @@ def normalize_element(
         literal=namespace != XSLT_NS,
         expand_text=False,
         prefix=element.prefix,
+        raw=element.raw,
     )
 
 

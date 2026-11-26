@@ -814,6 +814,20 @@ def test_bridge_rejects_invalid_state_versions() -> None:
         XsltContextBridge(Transformation(), regex_captures="bad")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="namespaces"):
         XsltContextBridge(Transformation(), namespaces=[])  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="idref_lookup"):
+        XsltContextBridge(Transformation(), idref_lookup=1)  # type: ignore[arg-type]
+
+
+def test_bridge_dynamic_idref_clears_the_context_item() -> None:
+    seen: list[object] = []
+
+    def lookup(context_item: Any, arguments: Any) -> tuple[Any, ...]:
+        seen.append((context_item, arguments))
+        return ()
+
+    bridge = XsltContextBridge(Transformation(), idref_lookup=lookup)
+    assert bridge._dynamic_idref(XdmAtomic.string("ignored"), ()) == ()
+    assert seen == [(None, ())]
 
 
 # ---------------------------------------------------------------------------

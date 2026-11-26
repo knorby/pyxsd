@@ -508,6 +508,46 @@ def _context_node_path(ast: Any) -> bool:
     return walk(ast, local_focus=False)
 
 
+_CONTEXT_DEFAULT_FUNCTIONS = frozenset(
+    {
+        "base-uri",
+        "document-uri",
+        "has-children",
+        "last",
+        "local-name",
+        "name",
+        "namespace-uri",
+        "node-name",
+        "normalize-space",
+        "number",
+        "path",
+        "position",
+        "root",
+        "string",
+        "string-length",
+    }
+)
+
+
+def _references_context_item(ast: Any) -> bool:
+    """Whether an assertion expression can observe its context item.
+
+    A result-variable assertion genuinely has no focus.  The evaluator still
+    needs one context object, so the harness supplies a placeholder only after
+    proving the expression cannot read it.  This check is conservative: a
+    context-item expression, a context-dependent axis/name step, or a
+    zero-argument function whose default argument is the context item all
+    count as a reference and make the assertion a gap instead.
+    """
+    for token in ast.iter():
+        symbol = getattr(token, "symbol", None)
+        if symbol in (".", ".."):
+            return True
+        if symbol in _CONTEXT_DEFAULT_FUNCTIONS and len(token) == 0:
+            return True
+    return _context_node_path(ast)
+
+
 def _context_root(item: Any) -> Any | None:
     """The root node required for absolute paths in an XPath assertion."""
     if isinstance(item, DocumentNode):
@@ -790,8 +830,16 @@ def _evaluate(
             # it had, so a decided verdict cannot move.
             return _evaluate_engine_items(expression, declarations, result.result_items)
         # A catalog result variable means the assertion reads ``$result`` and
-        # has no context item; a path step below is then a gap, not a verdict.
-        context_item = "" if result.assertion_context_absent else _context_item(items, parser)
+        # has no context item.  The evaluator requires some context object, so
+        # a focus-independent expression gets an unobservable placeholder after
+        # the structural check; anything that can read the focus is a gap, not
+        # a verdict decided against a dummy item.
+        if result.assertion_context_absent:
+            if _references_context_item(ast):
+                raise AssertionGap("a result-variable assertion has no context item to reference")
+            context_item = ""
+        else:
+            context_item = _context_item(items, parser)
         root = _context_root(context_item)
         if root is None and _context_node_path(ast):
             document = _node_context(result)
@@ -1027,19 +1075,24 @@ def _unwrap(node: _CanonicalNode) -> tuple[_CanonicalNode, ...]:
 
 
 def _strip_pretty_whitespace(node: _CanonicalNode) -> _CanonicalNode:
-    """Remove indentation text from a pretty-printed expected tree.
+    """Remove indentation text from proven element-only structures.
 
-    Only the expectation side of the comparison is normalized: a compact
-    expectation keeps every text node, and a whitespace-only text node in the
-    actual result remains significant.
+    Indentation is only removable where the parent holds child markup and no
+    non-whitespace text: there, a whitespace-only text node is layout, not
+    content.  In mixed content every text node is significant, including one
+    that happens to be whitespace-only between inline elements, so it is kept.
+    The recursion applies the same rule at every level, and only a
+    pretty-printed expectation enables the normalization at all.
     """
     if not node.children:
         return node
-    children = tuple(
-        _strip_pretty_whitespace(child)
-        for child in node.children
-        if not (child.kind == "text" and not child.value.strip())
-    )
+    children = tuple(_strip_pretty_whitespace(child) for child in node.children)
+    has_markup = any(child.kind in ("element", "comment", "pi") for child in children)
+    has_text = any(child.kind == "text" and child.value.strip() for child in children)
+    if has_markup and not has_text:
+        children = tuple(
+            child for child in children if not (child.kind == "text" and not child.value.strip())
+        )
     return _CanonicalNode(
         node.kind,
         namespace=node.namespace,

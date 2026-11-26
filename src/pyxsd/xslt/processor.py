@@ -106,6 +106,7 @@ from pyxsd.xslt.compiler.packages import (
     ModeKey,
     ModeRule,
     PackageResolver,
+    _decimal_lexical,
     compile_package_set,
 )
 from pyxsd.xslt.compiler.patterns import (
@@ -505,6 +506,66 @@ class _KeyDefinition:
     owner: str | None
     composite: bool = False
     body: tuple[_Plan, ...] = ()
+    #: Whether the key declaration's effective version is 1.0, which selects
+    #: the backwards-compatible string comparison for key values.
+    compatibility: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _KeyIndex:
+    """One key's invocation-local index with XSLT value comparison.
+
+    XSLT 1.0 backwards-compatible keys compare the string values of the key
+    and lookup.  Later versions compare atomics with ``eq``: numeric promotion
+    applies, non-comparable types never match, and an ``xs:untypedAtomic``
+    value is cast to the other operand's type.  A key value is therefore
+    indexed by its typed value, grouped by its datatype so an untyped lookup
+    can cast once per datatype instead of once per key value; untyped key
+    values keep their lexical bucket for the untyped/untyped arm.
+    """
+
+    compatibility: bool
+    compatibility_index: Mapping[str, tuple[XdmNode, ...]]
+    grouped: Mapping[type[Any], Mapping[XdmAtomic, tuple[XdmNode, ...]]]
+    untyped: Mapping[str, tuple[XdmNode, ...]]
+    composites: tuple[tuple[tuple[XdmAtomic, ...], tuple[XdmNode, ...]], ...]
+
+    def nodes_for(self, atoms: tuple[XdmAtomic, ...], *, composite: bool) -> list[XdmNode]:
+        """Every indexed node whose key value matches the lookup atomics."""
+        if composite:
+            return self._composite_nodes(atoms)
+        found: list[XdmNode] = []
+        for item in atoms:
+            if self.compatibility:
+                found.extend(self.compatibility_index.get(_compat_key_text(item), ()))
+            elif _is_untyped_atomic(item):
+                found.extend(self.untyped.get(item.lexical, ()))
+                for bucket_datatype, bucket_values in self.grouped.items():
+                    cast_value = _cast_key_value(item.lexical, bucket_datatype)
+                    if cast_value is not None:
+                        found.extend(bucket_values.get(cast_value, ()))
+            else:
+                # Equality applies numeric promotion and string-family
+                # equality across declared types, so probe every datatype
+                # bucket rather than only the lookup's own datatype.
+                for values in self.grouped.values():
+                    found.extend(values.get(item, ()))
+                datatype = item.datatype
+                if datatype is not None:
+                    for lexical, nodes in self.untyped.items():
+                        cast_value = _cast_key_value(lexical, datatype)
+                        if cast_value is not None and _key_atomic_equal(cast_value, item):
+                            found.extend(nodes)
+        return found
+
+    def _composite_nodes(self, atoms: tuple[XdmAtomic, ...]) -> list[XdmNode]:
+        found: list[XdmNode] = []
+        for key, nodes in self.composites:
+            if len(key) != len(atoms):
+                continue
+            if all(_key_atomic_equal(a, b) for a, b in zip(key, atoms, strict=True)):
+                found.extend(nodes)
+        return found
 
 
 @dataclass(frozen=True, slots=True)
@@ -1199,10 +1260,20 @@ def _compile_stylesheet(
                     location=component.location,
                 )
             if component.kind == "key":
-                for declaration in component.declarations:
-                    keys.setdefault(component.owner, []).append(
-                        _compile_key(declaration, component.owner, context, module)
+                definitions = tuple(
+                    _compile_key(declaration, component.owner, context, module)
+                    for declaration in component.declarations
+                )
+                # XSLT 3.0 §9.11: every declaration of one key in a package
+                # must agree on the effective value of @composite (XTSE1222).
+                if len({definition.composite for definition in definitions}) > 1:
+                    raise XsltStaticError(
+                        f"the key declarations for {component.name!r} disagree on @composite",
+                        code="XTSE1222",
+                        uri=module.identity,
+                        location=component.location,
                     )
+                keys.setdefault(component.owner, []).extend(definitions)
                 continue
             select = (
                 compile_xpath(select_source, context, location=component.location)
@@ -1944,6 +2015,7 @@ def _compile_key(
         owner=owner,
         composite=(declaration.attribute("composite") or "").strip() in ("yes", "true", "1"),
         body=body,
+        compatibility=context.version == "1.0",
     )
 
 
@@ -2404,6 +2476,43 @@ def _compile_parameter(
             else None
         ),
     )
+
+
+def _lexical_default_mode(instruction: Instruction) -> tuple[bool, str | None]:
+    """The innermost ``[xsl:]default-mode`` in one instruction's lexical scope.
+
+    Returns ``(found, mode)``.  A ``#unnamed`` value is a found ``None``; no
+    declaration at all is ``(False, None)``.  The source element and its
+    ancestors are the effective module view, so include/import boundaries are
+    already resolved.
+    """
+    node = instruction.raw
+    while node is not None:
+        if node.kind is NodeKind.ELEMENT:
+            if node.namespace_uri == XSLT_NS:
+                names = ("default-mode", f"{{{XSLT_NS}}}default-mode")
+            else:
+                names = (f"{{{XSLT_NS}}}default-mode", "default-mode")
+            for name in names:
+                attribute = next(
+                    (candidate for candidate in node.attributes if candidate.name == name),
+                    None,
+                )
+                if attribute is None:
+                    continue
+                value = attribute.string_value.strip()
+                if value == "#unnamed":
+                    return True, None
+                if value == "#default":
+                    raise XsltStaticError(
+                        "#default is not a valid default-mode value",
+                        code="XTSE0020",
+                        uri=instruction.module,
+                        location=instruction.location,
+                    )
+                return True, _expanded_name(value, node.in_scope_namespaces)
+        node = node.parent
+    return False, None
 
 
 def _instruction_mode(instruction: Instruction) -> str | None:
@@ -4607,7 +4716,7 @@ def _check_constant_html_version(instruction: Instruction, context: StaticContex
     if value is None or "{" in value:
         return
     try:
-        Decimal(value.strip())
+        _decimal_lexical(value.strip())
     except (InvalidOperation, ValueError) as error:
         raise XsltStaticError(
             f"the html-version attribute value {value!r} is not a decimal",
@@ -5003,10 +5112,18 @@ def _compile_apply_templates(
         else compile_xpath("child::node()", context, location=instruction.location)
     )
     _, remaining = _split_sort_children(instruction)
+    mode = _instruction_mode(instruction)
+    if instruction.attribute("mode") is None:
+        found, lexical = _lexical_default_mode(instruction)
+        if found:
+            # The innermost [xsl:]default-mode replaces the package default for
+            # this dispatch; ``#unnamed`` is the unnamed mode, not the package
+            # default.
+            mode = lexical
     return _ApplyTemplatesPlan(
         instruction=instruction,
         expression=expression,
-        mode=_instruction_mode(instruction),
+        mode=mode,
         parameters=_compile_with_params(
             instruction,
             context,
@@ -7933,6 +8050,8 @@ class _Invocation(Transformation):
             parser_cache=self._xpath_cache,
             adapter_registry=self._adapter_registry,
             key_lookup=self._key_override_for(package_name),
+            id_lookup=self._id_override,
+            idref_lookup=self._idref_override,
         )
 
     def _decimal_format_objects(
@@ -8013,6 +8132,7 @@ class _Invocation(Transformation):
             ),
             key_lookup=self._key_override_for(package_name),
             id_lookup=self._id_override,
+            idref_lookup=self._idref_override,
             extension_functions=self.stylesheet.extensions.availability(),
         )
 
@@ -8059,15 +8179,8 @@ class _Invocation(Transformation):
         root = self._key_root(context_item, arguments)
         composite = any(definition.composite for definition in definitions)
         index = self._key_index(definitions, root, package_name)
-        nodes: list[XdmNode] = []
         atoms = _key_atomics(arguments[1])
-        if composite:
-            composite_key = tuple(_key_value(value) for value in atoms)
-            nodes.extend(index.get(composite_key, ()))
-        else:
-            for item in atoms:
-                nodes.extend(index.get(_key_value(item), ()))
-                nodes.extend(index.get(item.lexical, ()))
+        nodes = index.nodes_for(atoms, composite=composite)
         unique: dict[int, XdmNode] = {id(node): node for node in nodes}
         ordered = sorted(unique.values(), key=lambda node: node.document_order)
         return tuple(ordered)
@@ -8112,7 +8225,7 @@ class _Invocation(Transformation):
         definitions: tuple[_KeyDefinition, ...],
         root: XdmNode,
         package_name: str | None,
-    ) -> Mapping[Any, tuple[XdmNode, ...]]:
+    ) -> _KeyIndex:
         name = definitions[0].name
         key = (id(root), package_name, name)
         cached = self.key_indexes.get(key)
@@ -8130,7 +8243,11 @@ class _Invocation(Transformation):
             )
         self._key_builds[key] = root
         try:
-            index: dict[Any, list[XdmNode]] = {}
+            compatibility = definitions[0].compatibility
+            compatibility_index: dict[str, list[XdmNode]] = {}
+            grouped: dict[type[Any], dict[XdmAtomic, list[XdmNode]]] = {}
+            untyped: dict[str, list[XdmNode]] = {}
+            composites: list[tuple[tuple[XdmAtomic, ...], list[XdmNode]]] = []
             for definition in definitions:
                 matcher = PatternMatcher(definition.match)
                 environment = self._pattern_environment_for(definition.match, definition.owner)
@@ -8150,16 +8267,34 @@ class _Invocation(Transformation):
                         )
                     atomics = _key_atomics(values)
                     if definition.composite:
-                        composite_key = tuple(_key_value(value) for value in atomics)
-                        index.setdefault(composite_key, []).append(node)
+                        composites.append((atomics, [node]))
                         continue
                     for value in atomics:
-                        index.setdefault(_key_value(value), []).append(node)
-                        index.setdefault(value.lexical, []).append(node)
-            frozen = MappingProxyType({value: tuple(nodes) for value, nodes in index.items()})
-            self.key_indexes[key] = frozen
+                        if compatibility:
+                            compatibility_index.setdefault(_compat_key_text(value), []).append(node)
+                        elif _is_untyped_atomic(value):
+                            untyped.setdefault(value.lexical, []).append(node)
+                        else:
+                            datatype = value.datatype
+                            if datatype is None:  # pragma: no cover - atomic invariant
+                                untyped.setdefault(value.lexical, []).append(node)
+                            else:
+                                grouped.setdefault(datatype, {}).setdefault(value, []).append(node)
+            index = _KeyIndex(
+                compatibility=compatibility,
+                compatibility_index={
+                    value: tuple(nodes) for value, nodes in compatibility_index.items()
+                },
+                grouped={
+                    datatype: {value: tuple(nodes) for value, nodes in values.items()}
+                    for datatype, values in grouped.items()
+                },
+                untyped={value: tuple(nodes) for value, nodes in untyped.items()},
+                composites=tuple((key, tuple(nodes)) for key, nodes in composites),
+            )
+            self.key_indexes[key] = index
             self.key_index_documents[id(root)] = root
-            return frozen
+            return index
         finally:
             del self._key_builds[key]
 
@@ -8173,9 +8308,10 @@ class _Invocation(Transformation):
 
         The XDM parser marks DTD-declared ``ID`` attributes and ``xml:id``;
         the lookup derives one invocation-local index per tree so repeated
-        calls in a template do not rescan the tree.  ``element-with-id`` names
-        the element carrying the ID, which is the same element for an
-        attribute-borne ID and for an element whose own typed value is an ID.
+        calls in a template do not rescan the tree.  An attribute-borne ID
+        identifies its owner element for both functions.  An element whose
+        own typed value is an ID is identified by ``fn:id`` and contained by
+        its parent element for ``fn:element-with-id``.
         """
         tokens: set[str] = set()
         for item in arguments[0]:
@@ -8221,26 +8357,115 @@ class _Invocation(Transformation):
             )
         root = node.root
         index = self._id_index(root)
-        found: dict[int, XdmNode] = {
-            id(element): element for token in tokens if (element := index.get(token)) is not None
-        }
+        found: dict[int, XdmNode] = {}
+        for token in tokens:
+            entry = index.get(token)
+            if entry is None:
+                continue
+            identified, element_borne = entry
+            if element_with_id and element_borne:
+                # F&O 3.1 §15.5: an element whose own typed value is an ID is
+                # returned by fn:id; fn:element-with-id returns the element
+                # that contains that ID, which is its parent element.  A
+                # document-element ID has no containing element, so the
+                # element itself remains the identified element.
+                parent = identified.parent
+                if parent is not None and parent.kind is NodeKind.ELEMENT:
+                    identified = parent
+            found[id(identified)] = identified
         return tuple(sorted(found.values(), key=lambda element: element.document_order))
 
-    def _id_index(self, root: XdmNode) -> Mapping[str, XdmNode]:
+    def _id_index(self, root: XdmNode) -> Mapping[str, tuple[XdmNode, bool]]:
+        """One ID token's identified element and whether the ID is element-borne."""
         cached = self.id_indexes.get(id(root))
         if cached is not None and cached[0] is root:
             return cached[1]
-        index: dict[str, XdmNode] = {}
+        index: dict[str, tuple[XdmNode, bool]] = {}
         for node in (root, *root.descendants):
             if node.kind is not NodeKind.ELEMENT:
                 continue
             if getattr(node.annotation, "id_kind", None) in {"ID", "id"}:
-                index.setdefault(node.string_value, node)
+                index.setdefault(node.string_value, (node, True))
             for attribute in node.attributes:
                 if getattr(attribute.annotation, "id_kind", None) in {"ID", "id"}:
-                    index.setdefault(attribute.string_value, node)
+                    index.setdefault(attribute.string_value, (node, False))
         frozen = MappingProxyType(index)
         self.id_indexes[id(root)] = (root, frozen)
+        return frozen
+
+    def _idref_override(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """``fn:idref`` over the invocation's IDREF annotations.
+
+        F&O 3.1 §15.5 returns the node that carries a matching ``IDREF`` or
+        ``IDREFS`` value: the attribute node for an attribute-borne IDREF and
+        the element for element content.  The index is per tree and
+        invocation-local, mirroring the ``fn:id`` index.
+        """
+        tokens: set[str] = set()
+        for item in arguments[0]:
+            if isinstance(item, XdmNode):
+                values: Iterable[XdmItem] = item.typed_value
+            elif isinstance(item, XdmAtomic):
+                values = (item,)
+            else:
+                raise XsltDynamicError(
+                    "idref() requires atomic values or nodes",
+                    code="XPTY0004",
+                )
+            for value in values:
+                if not isinstance(value, XdmAtomic):  # pragma: no cover - XDM invariant
+                    raise XsltDynamicError(
+                        "idref() node atomization must yield atomic values",
+                        code="XPTY0004",
+                    )
+                # Unlike fn:id(), fn:idref() does not tokenize its argument:
+                # each supplied string is one IDREF value, so a string with
+                # whitespace is not a valid IDREF and matches nothing.
+                tokens.add(value.lexical)
+        if not tokens:
+            return ()
+        if len(arguments) > 1:
+            argument = arguments[1]
+            if len(argument) != 1 or not isinstance(argument[0], XdmNode):
+                raise XsltDynamicError(
+                    "idref() requires a single node as its second argument",
+                    code="XPTY0004",
+                )
+            node = argument[0]
+        elif isinstance(context_item, XdmNode):
+            node = context_item
+        else:
+            raise XsltDynamicError(
+                "idref() requires a context node",
+                code="XPDY0002",
+            )
+        index = self._idref_index(node.root)
+        found: dict[int, XdmNode] = {}
+        for token in tokens:
+            for identified in index.get(token, ()):
+                found[id(identified)] = identified
+        return tuple(sorted(found.values(), key=lambda element: element.document_order))
+
+    def _idref_index(self, root: XdmNode) -> Mapping[str, tuple[XdmNode, ...]]:
+        cached = self.idref_indexes.get(id(root))
+        if cached is not None and cached[0] is root:
+            return cached[1]
+        index: dict[str, list[XdmNode]] = {}
+        for node in (root, *root.descendants):
+            if node.kind is NodeKind.ELEMENT:
+                if getattr(node.annotation, "id_kind", None) in {"IDREF", "IDREFS"}:
+                    for token in node.string_value.split():
+                        index.setdefault(token, []).append(node)
+                for attribute in node.attributes:
+                    if getattr(attribute.annotation, "id_kind", None) in {"IDREF", "IDREFS"}:
+                        for token in attribute.string_value.split():
+                            index.setdefault(token, []).append(attribute)
+        frozen = MappingProxyType({token: tuple(nodes) for token, nodes in index.items()})
+        self.idref_indexes[id(root)] = (root, frozen)
         return frozen
 
     def _invoke_component_callable(
@@ -8358,13 +8583,56 @@ def _key_atomics(sequence: XdmSequence) -> tuple[XdmAtomic, ...]:
     return tuple(atomics)
 
 
-def _key_value(item: XdmAtomic) -> object:
-    value = item.value
+def _is_untyped_atomic(item: XdmAtomic) -> bool:
+    """Whether one atomic value has the ``xs:untypedAtomic`` dynamic type."""
+    return item.type_name.endswith("}untypedAtomic") or item.type_name == "untypedAtomic"
+
+
+def _compat_key_text(item: XdmAtomic) -> str:
+    """The XSLT 1.0 backwards-compatible key comparison string."""
+    return item.string_value
+
+
+def _cast_key_value(lexical: str, datatype: type[Any] | None) -> XdmAtomic | None:
+    """Cast one lexical value to *datatype* for a key comparison.
+
+    ``None`` means the lexical value is not in that type's value space, which
+    a key comparison treats as a non-match rather than an error.  A datatype
+    the XDM layer cannot construct as an atomic value also declines.
+    """
+    if datatype is None:  # pragma: no cover - typed atomics carry a datatype
+        return None
     try:
-        hash(value)
-    except TypeError:  # pragma: no cover - atomic values are hashable
-        return item.lexical
-    return value
+        # elementpath datatypes parse their lexical space with ``fromstring``;
+        # pyxsd datatypes validate it in the constructor.
+        parse = getattr(datatype, "fromstring", None)
+        value = parse(lexical) if callable(parse) else datatype(lexical)
+        return XdmAtomic.typed(value, datatype)
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+
+
+def _key_atomic_equal(left: XdmAtomic, right: XdmAtomic) -> bool:
+    """XSLT key-value equality after untypedAtomic conversion.
+
+    Storage-layer Python equality is deliberately not used: ``True == 1`` and
+    a date's lexical string would otherwise match across incomparable dynamic
+    types.  ``XdmAtomic.__eq__`` is the engine's ``eq`` semantics, which
+    promotes numerics and keeps non-comparable families apart.
+    """
+    if left is right:
+        return True
+    left_untyped = _is_untyped_atomic(left)
+    right_untyped = _is_untyped_atomic(right)
+    if left_untyped and right_untyped:
+        return left.lexical == right.lexical
+    if left_untyped:
+        cast = _cast_key_value(left.lexical, right.datatype)
+        return cast is not None and cast == right
+    if right_untyped:
+        cast = _cast_key_value(right.lexical, left.datatype)
+        return cast is not None and cast == left
+    return left == right
 
 
 def _method_local(method: str) -> str:

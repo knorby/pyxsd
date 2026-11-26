@@ -173,3 +173,6 @@ def test_round_casts_untyped_atomic_with_the_function_conversion_rules() -> None
     assert text("round-half-to-even(xs:untypedAtomic('2.5'))") == "2"
     assert text("round(xs:untypedAtomic(' 2.5 '))") == "3"
     assert text("round(xs:untypedAtomic('2.6'), 1)") == "2.6"
+    # A failed cast to xs:double is FORG0001, never a NaN result.
+    assert error_code("round(xs:untypedAtomic('not-a-number'))") == "FORG0001"
+    assert error_code("round-half-to-even(xs:untypedAtomic('not-a-number'))") == "FORG0001"

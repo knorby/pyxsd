@@ -1321,7 +1321,7 @@ def _attribute_annotation(
     )
 
 
-def annotate_any_type(node: XdmNode) -> None:
+def _annotate_any_type_copy(node: XdmNode) -> None:
     """Give one copied node the ``xs:anyType`` annotation.
 
     ``snapshot()``'s ancestor copies must carry ``xs:anyType`` with ``nilled``,

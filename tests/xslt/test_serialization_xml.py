@@ -24,6 +24,7 @@ from pyxsd.xslt.serialization import SerializationParameters, Serializer
 
 XHTML_NS = "http://www.w3.org/1999/xhtml"
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
+XSD_NS = "http://www.w3.org/2001/XMLSchema"
 SECONDARY_URI = "http://example.com/secondary.xml"
 
 
@@ -1765,6 +1766,20 @@ def test_current_output_uri_tracks_principal_and_secondary_destinations() -> Non
     assert SECONDARY_URI in (secondary.serialized or "")
 
 
+def test_current_output_uri_has_the_any_uri_dynamic_type() -> None:
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" xmlns:xs="{XSD_NS}" version="3.0">'
+        '<xsl:template name="xsl:initial-template">'
+        '<out><xsl:value-of select="current-output-uri() instance of xs:anyURI"/></out>'
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    result = transform(
+        source.encode(), delivery="stylesheet", output_uri="http://example.com/principal.xml"
+    )
+    assert ">true</out>" in (result.principal_entry.serialized or "")
+
+
 def test_current_output_uri_is_empty_without_a_base_output_uri() -> None:
     source = (
         f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
@@ -1853,6 +1868,37 @@ def test_invalid_constant_html_version_is_a_static_error() -> None:
     with pytest.raises(XsltStaticError) as document_error:
         XsltProcessor().compile(io.BytesIO(document_source.encode()))
     assert document_error.value.code == "XTSE0020"
+
+    # Decimal() accepts these spellings; the xs:decimal lexical space does not.
+    for invalid in ("NaN", "INF", "-INF", "1e3", "5.0e0"):
+        output_source = (
+            f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+            f'<xsl:output method="xhtml" html-version="{invalid}"/>'
+            "</xsl:stylesheet>"
+        )
+        with pytest.raises(XsltStaticError) as invalid_output:
+            XsltProcessor().compile(io.BytesIO(output_source.encode()))
+        assert invalid_output.value.code == "XTSE0020"
+
+        document_source = (
+            f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+            '<xsl:template name="xsl:initial-template">'
+            f'<xsl:result-document href="{SECONDARY_URI}" html-version="{invalid}"/>'
+            "</xsl:template>"
+            "</xsl:stylesheet>"
+        )
+        with pytest.raises(XsltStaticError) as invalid_document:
+            XsltProcessor().compile(io.BytesIO(document_source.encode()))
+        assert invalid_document.value.code == "XTSE0020"
+
+    # A plain decimal, including a leading dot or trailing dot, stays valid.
+    for valid in ("5", "5.0", ".5", "5."):
+        source = (
+            f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+            f'<xsl:output method="xhtml" html-version="{valid}"/>'
+            "</xsl:stylesheet>"
+        )
+        assert XsltProcessor().compile(io.BytesIO(source.encode())) is not None
 
 
 def test_principal_and_secondary_use_their_own_output_methods() -> None:

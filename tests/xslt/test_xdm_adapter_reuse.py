@@ -29,6 +29,7 @@ from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xpath.engine import (
     XPathEngine,
     XPathParserCache,
+    _node_order_key,
     _ValueBridge,
     _XdmAdapterRegistry,
     _XdmDocumentAdapter,
@@ -148,6 +149,46 @@ def test_one_adapter_tree_serves_every_evaluation_of_a_transformation(
     assert registry.documents_built == 1
     assert registry.documents_reused > reused_after_first
     assert registry.nodes_built == _adapter_count(document) - 1
+
+
+def test_cross_tree_node_order_is_total_across_parsed_documents() -> None:
+    """Corresponding nodes of two parsed documents must not compare equal."""
+    first = _document(b"<r><x>1</x></r>")
+    second = _document(b"<r><x>2</x></r>")
+    registry = _XdmAdapterRegistry()
+    first_root = registry.document(first)
+    second_root = registry.document(second)
+    assert first_root is not None and second_root is not None
+    assert _node_order_key(first_root) < _node_order_key(second_root)
+    assert _node_order_key(first_root.children[0]) < _node_order_key(second_root.children[0])
+
+
+def test_multi_document_set_operators_are_deterministic_and_total() -> None:
+    """union, intersect, and except order nodes from different trees."""
+    first = _document(b"<r><x>1</x></r>")
+    second = _document(b"<r><x>2</x></r>")
+    engine = XPathEngine("3.1")
+    static = XPathStaticContext()
+    environment = ExpressionEnvironment(documents={"a": first, "b": second})
+
+    def values(expression: str) -> list[str]:
+        compiled = engine.compile(expression, static)
+        result = engine.evaluate(compiled, environment)
+        return [item.string_value for item in result if isinstance(item, XdmNode)]
+
+    union = "doc('a')/r/x | doc('b')/r/x"
+    assert values(union) == ["1", "2"]
+    assert values(f"({union}) intersect doc('b')/r/x") == ["2"]
+    assert values(f"({union}) except doc('b')/r/x") == ["1"]
+
+
+def test_descendant_path_step_orders_nodes_from_two_documents() -> None:
+    first = _document(b"<r><x>1</x></r>")
+    second = _document(b"<r><x>2</x></r>")
+    engine = XPathEngine("3.1")
+    compiled = engine.compile("(doc('a'), doc('b'))//x", XPathStaticContext())
+    result = engine.evaluate(compiled, ExpressionEnvironment(documents={"a": first, "b": second}))
+    assert [item.string_value for item in result if isinstance(item, XdmNode)] == ["1", "2"]
 
 
 def test_union_deduplicates_nodes_reached_by_two_paths() -> None:

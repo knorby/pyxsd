@@ -24,6 +24,7 @@ from pyxsd.xslt.results import (
     TransformationResult,
     _append_complex_content,
     _build_result_tree,
+    _inferred_method,
     _NodeFactory,
 )
 
@@ -38,6 +39,24 @@ def _error_code(exc: BaseException) -> str | None:
 
 def _factory() -> _NodeFactory:
     return _NodeFactory()
+
+
+def test_inferred_method_inspects_a_raw_document_element_and_is_case_sensitive() -> None:
+    """A raw document node's document element selects HTML, by exact name."""
+    html = ResultEntry(raw=(XdmDocument.parse(b"<html><body/></html>"),))
+    assert _inferred_method(html) == "html"
+
+    xhtml = ResultEntry(
+        raw=(XdmDocument.parse(b'<html xmlns="http://www.w3.org/1999/xhtml"><body/></html>'),)
+    )
+    assert _inferred_method(xhtml) == "xhtml"
+
+    # XML names are case-sensitive, so ``HTML`` is not the ``html`` method.
+    upper = ResultEntry(raw=(XdmDocument.parse(b"<HTML><body/></HTML>"),))
+    assert _inferred_method(upper) == "xml"
+
+    other = ResultEntry(raw=(XdmDocument.parse(b"<root/>"),))
+    assert _inferred_method(other) == "xml"
 
 
 def _document(xml: bytes) -> XdmDocument:

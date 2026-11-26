@@ -36,7 +36,7 @@ from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.legacy import ResultTreeFragment
 from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmDocument, XdmNode
-from pyxsd.xdm.validation import annotate_any_type, namespace_sensitive
+from pyxsd.xdm.validation import _annotate_any_type_copy, namespace_sensitive
 from pyxsd.xpath.continuation import XPathEvaluationError
 from pyxsd.xpath.environment import Focus
 from pyxsd.xslt.compiler.instructions import Instruction
@@ -1489,6 +1489,9 @@ def copy_value(
         deep=False,
         copy_namespaces=plan.copy_namespaces,
         copy_attributes=False,
+        # A parentless xsl:copy keeps the copied node's base; if it is later
+        # attached to a constructed tree, _adopts_parent_base rebases it.
+        preserve_base=True,
     )
     clone._adopts_parent_base = clone.kind is NodeKind.ELEMENT
     if item.kind is NodeKind.ATTRIBUTE:
@@ -1660,7 +1663,8 @@ def snapshot_item(item: XdmItem, invocation: _Invocation) -> XdmItem:
     clone = factory.clone(item, parent=None, deep=True, copy_namespaces=True)
     result = clone
     current = clone
-    ancestor = item.parent
+    ancestor: XdmNode | None = item.parent
+    parent_copy: XdmNode
     while ancestor is not None:
         if ancestor.kind is NodeKind.DOCUMENT:
             parent_copy = factory.document
@@ -1671,13 +1675,13 @@ def snapshot_item(item: XdmItem, invocation: _Invocation) -> XdmItem:
                 deep=False,
                 copy_namespaces=True,
             )
-            annotate_any_type(parent_copy)
+            _annotate_any_type_copy(parent_copy)
         attached = _attach_grafted_node(factory, parent_copy, current)
         if current is result:
             result = attached
         current = parent_copy
         ancestor = ancestor.parent
-    if current.kind is NodeKind.DOCUMENT:
+    if isinstance(current, XdmDocument):
         current._finalize_document_order()
     else:
         factory.finalize_root(current)

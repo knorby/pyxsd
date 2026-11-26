@@ -22,6 +22,14 @@ __all__ = ["install_numeric_functions"]
 
 
 #: A decimal context wide enough for the exact value and rounding position.
+def _decimal_exponent(value: Decimal) -> int:
+    """The finite decimal's exponent; ``Decimal`` types it as ``str`` too."""
+    exponent = value.as_tuple().exponent
+    if not isinstance(exponent, int):  # pragma: no cover - finite decimals only
+        raise ArithmeticError("a finite decimal has an integer exponent")
+    return exponent
+
+
 def _numeric_context(value: Decimal, precision: int) -> Any:
     digits = len(value.as_tuple().digits)
     return max(50, digits + abs(precision) + 20)
@@ -35,7 +43,7 @@ def _round_decimal_value(value: Decimal, precision: int, *, even: bool) -> Decim
     """Round a Decimal to *precision* fractional digits, exactly."""
     with localcontext() as context:
         context.prec = _numeric_context(value, precision)
-        context.Emax = max(999999, abs(value.as_tuple().exponent) + abs(precision) + 20)
+        context.Emax = max(999999, abs(_decimal_exponent(value)) + abs(precision) + 20)
         context.Emin = -context.Emax
         if even:
             return value.quantize(_quantum(precision), rounding=ROUND_HALF_EVEN)
@@ -110,7 +118,7 @@ def _numeric_mod(left: Any, right: Any, *, legacy: bool = False) -> Any:
         precision = len(dividend.as_tuple().digits) + len(divisor.as_tuple().digits) + 20
         with localcontext() as context:
             context.prec = max(50, precision)
-            context.Emax = max(999999, abs(dividend.as_tuple().exponent) + 20)
+            context.Emax = max(999999, abs(_decimal_exponent(dividend)) + 20)
             context.Emin = -context.Emax
             quotient = (dividend / divisor).to_integral_value(rounding=ROUND_DOWN)
             return dividend - divisor * quotient
@@ -216,12 +224,12 @@ def _optional_numeric_argument(token: Any, context: Any) -> Any:
     if item is None:
         return _ABSENT_NUMERIC
     if isinstance(item, XPathNode):
-        item = token.number_value(item)
-    elif isinstance(item, UntypedAtomic):
-        # The XPath 3.1 §3.1.5.2 function conversion rules cast an
-        # xs:untypedAtomic argument to the parameter's numeric type.  The
-        # union type resolves to xs:double, which is number_value's contract.
-        item = token.number_value(item)
+        item = token.data_value(item)
+    if isinstance(item, UntypedAtomic):
+        # XPath 3.1 §3.1.5.2 casts an xs:untypedAtomic argument to the
+        # parameter's xs:double type.  ``number_value`` would turn a
+        # non-numeric lexical value into NaN; a cast failure is FORG0001.
+        item = token.cast_to_double(item)
     if isinstance(item, bool) or not isinstance(item, (int, float, Decimal)):
         raise token.error("XPTY0004", f"invalid argument type {type(item)!r}")
     return item

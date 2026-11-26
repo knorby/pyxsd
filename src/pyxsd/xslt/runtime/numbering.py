@@ -364,10 +364,14 @@ def _place_marker(
         (candidate for candidate in reversed(candidates) if from_match(candidate)),
         None,
     )
+    # ``_from_matcher`` treats every tree's root node as a from-match, and the
+    # candidate walk starts at that root, so a from node always exists.
+    assert from_node is not None
+    from_order = from_node.document_order
     selected = [
         candidate
         for candidate in counted_nodes
-        if candidate is from_node or candidate.document_order > from_node.document_order
+        if candidate is from_node or candidate.document_order > from_order
     ]
     return (len(selected),) if selected else ()
 

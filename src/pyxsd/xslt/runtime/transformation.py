@@ -163,9 +163,10 @@ class Transformation:
         # an earlier object's address after garbage collection.
         self.generated_ids: dict[int, tuple[XdmItem, str]] = {}
         self.generated_id_count = 0
-        self.key_indexes: dict[tuple[int, str | None, str], Mapping[Any, tuple[XdmNode, ...]]] = {}
+        self.key_indexes: dict[tuple[int, str | None, str], Any] = {}
         self.key_index_documents: dict[int, XdmNode] = {}
-        self.id_indexes: dict[int, tuple[XdmNode, Mapping[str, XdmNode]]] = {}
+        self.id_indexes: dict[int, tuple[XdmNode, Mapping[str, tuple[XdmNode, bool]]]] = {}
+        self.idref_indexes: dict[int, tuple[XdmNode, Mapping[str, tuple[XdmNode, ...]]]] = {}
         self.documents: dict[str, XdmDocument] = {}
         self.evaluating_attribute_sets: list[tuple[str | None, str | None]] = []
         # A subclass may install an invocation-local accumulator manager.  The

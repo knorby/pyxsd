@@ -559,18 +559,18 @@ def install_date_time(parser: Any) -> None:
             if len(items) > 1 and not self.parser.compatibility_mode:
                 raise self.error("XPTY0004", "a dateTime argument must be a single value")
             values.append(None if not items else _date_time_argument(self, items[0], cls))
-        saved = list(self._items)
-        try:
-            # ValueToken keeps ``None`` as the class sentinel, so an empty
-            # operand must be represented by an empty list; otherwise select()
-            # yields the literal string ``'(value)'`` and the base token reports
-            # a spurious type error instead of returning the empty sequence.
-            self[0:] = tuple(
-                ValueToken(self.parser, value=[] if value is None else value) for value in values
-            )
-            return base.evaluate(self, context)
-        finally:
-            self[0:] = tuple(saved)
+        # A compiled expression's token is immutable and shared across
+        # transformations, so evaluate a per-call shallow copy instead of
+        # swapping the operands on the shared token.  ValueToken keeps ``None``
+        # as the class sentinel, so an empty operand must be represented by an
+        # empty list; otherwise select() yields the literal string ``'(value)'``
+        # and the base token reports a spurious type error instead of returning
+        # the empty sequence.
+        token = copy.copy(self)
+        token._items = [
+            ValueToken(self.parser, value=[] if value is None else value) for value in values
+        ]
+        return base.evaluate(token, context)
 
     parser._register(
         "dateTime",
@@ -1611,40 +1611,43 @@ def install_format_integer(parser: Any) -> None:
         return
 
     def evaluate(self: Any, context: Any = None) -> str:
-        values = tuple(self[0].select(context))
+        # Atomization precedes the cardinality check: one node may atomize to
+        # several atomic values (a list-typed element), and taking the first
+        # would silently format a partial value instead of raising XPTY0004.
+        atoms: list[Any] = []
+        for selected in self[0].select(context):
+            node = getattr(selected, "xdm", None)
+            if node is None:
+                atoms.append(selected)
+                continue
+            typed_value = node.typed_value
+            typed = typed_value if isinstance(typed_value, tuple) else (typed_value,)
+            atoms.extend(typed)
+        if len(atoms) > 1:
+            raise self.error("XPTY0004", "format-integer requires a single value")
         value: int | None
-        if not values:
+        if not atoms:
             value = None
         else:
-            item = values[0]
-            if len(values) != 1:
-                raise self.error("XPTY0004", "format-integer requires a single value")
-            node = getattr(item, "xdm", None)
-            if node is not None:
-                typed_value = node.typed_value
-                typed = typed_value if isinstance(typed_value, tuple) else (typed_value,)
-                item = typed[0] if typed else None
-            if item is None:
-                value = None
-            else:
-                if isinstance(item, XdmAtomic):
-                    if _local_atomic_name(item.type_name) == "untypedAtomic":
-                        item = item.lexical
-                    else:
-                        item = item.value
-                if isinstance(item, UntypedAtomic):
-                    item = str(item)
-                if isinstance(item, bool):
-                    raise self.error("XPTY0004", "format-integer requires an integer")
-                if isinstance(item, int):
-                    value = item
-                elif isinstance(item, str):
-                    try:
-                        value = int(_xsd.Integer(item))
-                    except (TypeError, ValueError) as exc:
-                        raise self.error("FORG0001", str(exc)) from None
+            item = atoms[0]
+            if isinstance(item, XdmAtomic):
+                if _local_atomic_name(item.type_name) == "untypedAtomic":
+                    item = item.lexical
                 else:
-                    raise self.error("XPTY0004", "format-integer requires an integer")
+                    item = item.value
+            if isinstance(item, UntypedAtomic):
+                item = str(item)
+            if isinstance(item, bool):
+                raise self.error("XPTY0004", "format-integer requires an integer")
+            if isinstance(item, int):
+                value = item
+            elif isinstance(item, str):
+                try:
+                    value = int(_xsd.Integer(item))
+                except (TypeError, ValueError) as exc:
+                    raise self.error("FORG0001", str(exc)) from None
+            else:
+                raise self.error("XPTY0004", "format-integer requires an integer")
         # A compiled expression's token is immutable and shared across
         # transformations.  Give this call its own shallow token copy instead
         # of swapping the first operand in place.

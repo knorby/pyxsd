@@ -1050,8 +1050,11 @@ class _AnnotatedFloat(float):
 
 
 #: Annotation entries retained for values that cannot carry an attribute
-#: (booleans and substrate values whose copy is not distinct).
-_ANNOTATION_LIMIT = 4096
+#: (booleans, integers, and substrate values whose copy is not distinct).  The
+#: table never evicts: a bound this wide is a resource guard, and exceeding it
+#: raises the stable implementation resource error instead of discarding a
+#: still-reachable annotation.
+_ANNOTATION_LIMIT = 262_144
 
 
 def _annotate_atomic_value(value: Any, annotation: str) -> Any:
@@ -1082,12 +1085,57 @@ def _annotate_atomic_value(value: Any, annotation: str) -> Any:
     return annotated
 
 
+def _annotation_resource_error(message: str) -> Exception:
+    """One uncatchable implementation failure for the annotation side table."""
+    from pyxsd.xslt.errors import IMPLEMENTATION_BUDGET_CODE, XsltDynamicError
+
+    return XsltDynamicError(
+        message,
+        code=IMPLEMENTATION_BUDGET_CODE,
+        allow_catch=False,
+    )
+
+
+def _annotation_identity_error(message: str) -> Exception:
+    """One uncatchable failure when a dynamic type cannot be preserved."""
+    from pyxsd.xslt.errors import UNSUPPORTED_FEATURE_CODE, XsltDynamicError
+
+    return XsltDynamicError(
+        message,
+        code=UNSUPPORTED_FEATURE_CODE,
+        allow_catch=False,
+    )
+
+
 def _record_annotation(
     annotations: dict[int, tuple[Any, str]], value: Any, annotation: str
 ) -> None:
-    """Record one annotation for a value that cannot carry an attribute."""
+    """Record one annotation for a value that cannot carry an attribute.
+
+    The value is retained beside its address so the id cannot be recycled
+    while the annotation is live.  An existing entry is never replaced: a
+    different annotation for the same object identity means two dynamic types
+    share one singleton payload (a boolean), which this representation cannot
+    distinguish.  Guessing by value space would silently answer ``instance of``
+    with the wrong type, so it fails explicitly.  The table is bounded but
+    never evicts: an evicted entry would change a later ``instance of`` for a
+    value that is still reachable in the invocation.
+    """
+    existing = annotations.get(id(value))
+    if existing is not None:
+        # The entry retains the value, so its id cannot be recycled while the
+        # record is live; a different value under that id is impossible.
+        if existing[1] == annotation:
+            return
+        raise _annotation_identity_error(
+            "two dynamic types share one atomic value identity; "
+            f"{existing[1]!r} and {annotation!r} cannot both be preserved"
+        )
     if len(annotations) >= _ANNOTATION_LIMIT:
-        del annotations[next(iter(annotations))]
+        raise _annotation_resource_error(
+            "the transformation exceeded its atomic type-annotation capacity; "
+            "an annotation is still reachable and cannot be discarded"
+        )
     annotations[id(value)] = (value, annotation)
 
 
@@ -2187,7 +2235,7 @@ def _install_descendant_path_order(parser: Any) -> None:
     matching children, so a naive traversal of ``//text()`` grouped the
     element's own text children ahead of descendant text.  XPath requires the
     node sequence of a path expression in document order; sorting by the
-    adapter's document position restores it.
+    engine's cross-tree document order restores it.
     """
     base = parser.symbol_table.get("//")
     if base is None:  # pragma: no cover - every supported parser declares it
@@ -2199,7 +2247,7 @@ def _install_descendant_path_order(parser: Any) -> None:
         # Only nodes have a document position; leave a mixed/atomic result in
         # the machine's order instead of sorting host strings.
         if items and all(isinstance(item, XPathNode) for item in items):
-            items.sort(key=lambda item: item.position)
+            items.sort(key=_node_order_key)
         yield from items
 
     parser._register(
@@ -2231,28 +2279,41 @@ def _install_node_set_order(parser: Any) -> None:
     """Order the set operators by the engine's cross-tree document order.
 
     elementpath sorts the union/intersect/except results by ``node.position``.
-    A pyxsd adapter carries the node's XDM document order there, but a document
-    node is position 0 in *every* tree, so a union of two temporary trees has
-    equal keys and the hash-ordered ``set`` decides the result order.  That
-    order then varies between processes and moves otherwise deterministic
-    verdicts (``evaluate/evaluate-002``).  A tree's first order position (*its
-    document node's*) makes the result a document order again: each temporary
-    tree owns a unique range, so the key is total and stable.
+    A pyxsd adapter carries the node's XDM document order there, but every
+    parsed document numbers its nodes from one, so corresponding nodes of two
+    parsed documents compare equal and the hash-ordered ``set`` decides the
+    order.  That order varies between processes and moves otherwise
+    deterministic verdicts (``evaluate/evaluate-002``).  Ordering by the
+    document's stable creation identity followed by its document order is
+    total and stable for the transformation invocation.
     """
-    for symbol in ("union", "|"):
+    for symbol in ("union", "|", "intersect", "except"):
         base = parser.symbol_table.get(symbol)
         if base is None:  # pragma: no cover - every supported parser declares one
             continue
 
-        def select(self: Any, context: Any = None, _base: Any = base) -> Iterator[Any]:
+        def select(
+            self: Any,
+            context: Any = None,
+            _base: Any = base,
+            _symbol: str = symbol,
+        ) -> Iterator[Any]:
             if context is None:
                 raise self.missing_context()
-            results: set[Any] = set()
+            operands: list[set[Any]] = []
             for index in range(2):
+                values: set[Any] = set()
                 for item in self[index].select(copy.copy(context)):
                     if not isinstance(item, XPathNode):
                         raise self.error("XPTY0004", "only XPath nodes are allowed")
-                    results.add(item)
+                    values.add(item)
+                operands.append(values)
+            if _symbol == "except":
+                results = operands[0] - operands[1]
+            elif _symbol == "intersect":
+                results = operands[0] & operands[1]
+            else:
+                results = operands[0] | operands[1]
             if getattr(self, "concatenated", False):
                 yield from results
             else:
@@ -2271,18 +2332,19 @@ def _install_node_set_order(parser: Any) -> None:
 def _node_order_key(node: Any) -> tuple[int, int]:
     """A total order over nodes of one evaluation, in document order.
 
-    A node's own XDM document order is unique within its tree; a document node
-    reports 0 by design (the adapter registry uses that as its finalized
-    marker), so it sorts at its tree's first range position instead.
+    A node's own XDM document order is unique within its tree only.  Every
+    document carries a creation-order identity, and a document node reports
+    document order 0 by design (the adapter registry uses that as its
+    finalized marker), so the pair is total across every admitted tree.
     """
     xdm = getattr(node, "xdm", None)
     if xdm is None:  # pragma: no cover - every adapter carries its XDM item
         return (-1, getattr(node, "position", 0))
-    order = xdm.document_order
-    if order > 0:
-        return (0, order)
     document = xdm.document
-    return (0, getattr(document, "_order_base", 0))
+    return (
+        getattr(document, "_tree_identity", 0),
+        xdm.document_order,
+    )
 
 
 def _install_node_kind_test(parser: Any) -> None:
@@ -3994,7 +4056,7 @@ class _XsltXPathContext(XPathContext):
         status = self.axis
         self.axis = "following"
         try:
-            for node in root.iter_descendants(with_self=False):
+            for node in cast(Any, root).iter_descendants(with_self=False):
                 if node.position > item.position:
                     self.item = node
                     yield node

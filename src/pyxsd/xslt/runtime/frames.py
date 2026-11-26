@@ -14,13 +14,14 @@ kept as a heap continuation.
 
 Budget exhaustion raises :class:`~pyxsd.xslt.errors.XsltDynamicError` with the
 stable implementation code ``PYXSD-XSLT-001``.  A Python ``RecursionError`` is
-never presented as the transformation's resource diagnostic.
+never presented as a raw failure: the scheduler converts it into that same
+resource diagnostic.  The scheduler never changes the process-wide recursion
+limit, because that limit is shared with every other thread and transformation
+in the interpreter.
 """
 
 from __future__ import annotations
 
-import sys
-import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, TypeAlias
@@ -124,36 +125,6 @@ class _TemplateContext:
 
 
 ContinuationKind: TypeAlias = Literal["resume", "append", "convert"]
-
-
-#: Python stack headroom while a transformation runs.  The scheduler itself
-#: is heap-resident, but leaf expressions, value templates, and recursive
-#: stylesheet functions still use Python calls; the default 1000-frame limit
-#: is an implementation ceiling, not an XSLT semantic one.  The scheduler's
-#: step and frame budgets, not this limit, bound runaway recursion.
-_RECURSION_HEADROOM = 10_000
-_recursion_lock = threading.Lock()
-_recursion_users = 0
-_saved_recursion_limit: int | None = None
-
-
-def _enter_recursion_headroom() -> None:
-    global _recursion_users, _saved_recursion_limit
-    with _recursion_lock:
-        if _recursion_users == 0:
-            _saved_recursion_limit = sys.getrecursionlimit()
-            if _saved_recursion_limit < _RECURSION_HEADROOM:
-                sys.setrecursionlimit(_RECURSION_HEADROOM)
-        _recursion_users += 1
-
-
-def _leave_recursion_headroom() -> None:
-    global _recursion_users, _saved_recursion_limit
-    with _recursion_lock:
-        _recursion_users -= 1
-        if _recursion_users == 0 and _saved_recursion_limit is not None:
-            sys.setrecursionlimit(_saved_recursion_limit)
-            _saved_recursion_limit = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -532,7 +503,6 @@ class Scheduler:
         self._has_result = False
         self.diagnostics = ()
         self._active = True
-        _enter_recursion_headroom()
         try:
             self._push(entry)
             while self._frames:
@@ -548,12 +518,16 @@ class Scheduler:
                 except BaseException as exc:
                     self._unwind(exc)
                     continue
-                self._handle_outcome(frame, outcome)
+                try:
+                    self._handle_outcome(frame, outcome)
+                except RecursionError as exc:
+                    raise self._resource_error(
+                        "the transformation exceeded the Python recursion limit"
+                    ) from exc
             return self._result
         finally:
             self._active = False
             self._release_all_frames()
-            _leave_recursion_headroom()
 
     def _push(self, frame: Frame) -> None:
         if not isinstance(frame, Frame):  # pragma: no cover - callers validate

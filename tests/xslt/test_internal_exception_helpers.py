@@ -33,13 +33,9 @@ from pyxsd.xpath.engine import (
     standalone_node_adapter,
 )
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
-from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.errors import XsltDynamicError, XsltStaticError
 from pyxsd.xslt.processor import _Invocation
-from pyxsd.xslt.runtime.frames import (
-    _RECURSION_HEADROOM,
-    _enter_recursion_headroom,
-    _leave_recursion_headroom,
-)
+from pyxsd.xslt.runtime.frames import PYXSD_FRAME_EXHAUSTED, Frame, Scheduler
 from pyxsd.xslt.runtime.transformation import Transformation
 
 APP = "urn:example:app"
@@ -267,27 +263,50 @@ def test_number_count_pattern_with_a_variable_uses_local_environment() -> None:
     assert ">12</out>" in serialized
 
 
-def test_recursion_headroom_nests_and_restores_the_process_limit() -> None:
-    original = sys.getrecursionlimit()
-    try:
-        # A limit already above the headroom keeps the saved value, and a
-        # nested scheduler only counts users.
-        sys.setrecursionlimit(_RECURSION_HEADROOM + 1_000)
-        _enter_recursion_headroom()
-        _enter_recursion_headroom()
-        assert sys.getrecursionlimit() == _RECURSION_HEADROOM + 1_000
-        _leave_recursion_headroom()
-        assert sys.getrecursionlimit() == _RECURSION_HEADROOM + 1_000
-        _leave_recursion_headroom()
-        assert sys.getrecursionlimit() == _RECURSION_HEADROOM + 1_000
+def test_a_transformation_never_changes_the_process_recursion_limit() -> None:
+    """The scheduler must not touch interpreter state shared with other threads."""
+    limit = sys.getrecursionlimit()
 
-        sys.setrecursionlimit(500)
-        _enter_recursion_headroom()
-        assert sys.getrecursionlimit() == _RECURSION_HEADROOM
-        _leave_recursion_headroom()
-        assert sys.getrecursionlimit() == 500
-    finally:
-        sys.setrecursionlimit(original)
+    def recursive(n: int) -> int:
+        return 0 if n == 0 else recursive(n - 1) + 1
+
+    body = """
+      <xsl:template match="/">
+        <out/>
+      </xsl:template>
+    """
+    transform(stylesheet(body), b"<doc/>", delivery="stylesheet")
+
+    assert sys.getrecursionlimit() == limit
+    # A nested Python call in the same thread still sees the same ceiling.
+    assert recursive(50) == 50
+    assert sys.getrecursionlimit() == limit
+
+
+def test_a_recursion_failure_while_handling_an_outcome_is_a_resource_failure() -> None:
+    """The scheduler's own transition code is inside the same recursion boundary."""
+    from pyxsd.xslt.runtime.frames import Continue
+
+    class Exploding(Scheduler):
+        def _handle_outcome(self, frame: Frame, outcome: object) -> None:
+            del frame, outcome
+            raise RecursionError("maximum recursion depth exceeded")
+
+    with pytest.raises(XsltDynamicError) as caught:
+        Exploding().run(Frame(), lambda frame: Continue(frame))
+    assert caught.value.code == PYXSD_FRAME_EXHAUSTED
+
+
+def test_a_deep_python_recursion_is_reported_as_a_resource_failure() -> None:
+    """A RecursionError becomes the stable PYXSD-XSLT-001 diagnostic."""
+
+    def exhausted(frame: Frame) -> object:
+        del frame
+        raise RecursionError("maximum recursion depth exceeded")
+
+    with pytest.raises(XsltDynamicError) as caught:
+        Scheduler().run(Frame(), exhausted)  # type: ignore[arg-type]
+    assert caught.value.code == PYXSD_FRAME_EXHAUSTED
 
 
 def _xpath(expression: str) -> object:

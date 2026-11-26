@@ -1592,6 +1592,17 @@ def test_assert_case_gaps_unreported_serialization_metadata() -> None:
     assert "encoding is unavailable" in encoding_result.message
 
 
+def test_an_absent_assertion_context_is_not_an_empty_string_item() -> None:
+    """A result-variable assertion must not acquire a dummy focus item."""
+    from tests.xslt.assertions import _evaluate
+
+    snapshot = ResultSnapshot(xml="<a/><b/>", assertion_context_absent=True)
+    with pytest.raises(AssertionGap):
+        _evaluate("string-length(.)", declarations=(), result=snapshot)
+    with pytest.raises(AssertionGap):
+        _evaluate("name()", declarations=(), result=snapshot)
+
+
 def test_context_root_for_document_element_text_and_attribute_nodes() -> None:
     document = build_node_tree(ET.ElementTree(ET.fromstring("<out a='1'>text</out>")))
     element = document.children[0]
@@ -1632,6 +1643,30 @@ def test_xml_assertion_keeps_whitespace_significant_for_compact_expectations() -
 
     verdict = assertion.evaluate_verdict(AssertionContext(result))
     assert not verdict.passed
+
+
+def test_xml_assertion_keeps_significant_whitespace_in_pretty_mixed_content() -> None:
+    """A missing whitespace-only text node between inline content still differs."""
+    assertion = AssertionXML(expected="<out>\n  <p>a <b/> c</p>\n</out>")
+
+    missing = ResultSnapshot(xml="<out><p>a<b/> c</p></out>")
+    assert not assertion.evaluate_verdict(AssertionContext(missing)).passed
+
+    added = ResultSnapshot(xml="<out><p>a  <b/> c</p></out>")
+    assert not assertion.evaluate_verdict(AssertionContext(added)).passed
+
+    exact = ResultSnapshot(xml="<out><p>a <b/> c</p></out>")
+    assert assertion.evaluate_verdict(AssertionContext(exact)).passed
+
+
+def test_xml_assertion_still_ignores_indentation_inside_element_only_content() -> None:
+    """Element-only indentation remains layout even under mixed-content siblings."""
+    assertion = AssertionXML(
+        expected="<out>\n  <p>a <b/> c</p>\n  <list>\n    <item/>\n  </list>\n</out>"
+    )
+    result = ResultSnapshot(xml="<out><p>a <b/> c</p><list><item/></list></out>")
+
+    assert assertion.evaluate_verdict(AssertionContext(result)).passed
 
 
 def test_xml_assertion_does_not_hide_actual_indentation() -> None:

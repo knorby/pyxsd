@@ -561,51 +561,15 @@ reason = "The catalog declares these numbering combinations with range '1 to 9';
 links = ["https://www.w3.org/TR/xslt-30/#number", "https://www.w3.org/TR/xpath-functions-31/#formatting-integers"]
 
 [[dispositions]]
-id = "xsl-default-mode-not-implemented"
-title = "xsl:default-mode and @default-mode do not select an implicit mode"
-category = "implementation-gap"
-profiles = ["xslt30"]
-cases = [
-  "mode/mode-1601",
-  "mode/mode-1603",
-  "mode/mode-1604",
-  "mode/mode-1606",
-  "mode/mode-1607",
-  "mode/mode-1609",
-  "mode/mode-1610",
-  "mode/mode-1612",
-  "mode/mode-1614",
-  "mode/mode-1616",
-  "mode/mode-1618",
-  "mode/mode-1619",
-  "mode/mode-1707",
-  "mode/mode-1709",
-  "mode/mode-1710",
-  "mode/mode-1711",
-  "mode/mode-1712",
-]
-reason = "The mode specificity/conflict work is complete, but the default-mode feature is not wired: xsl:default-mode, @default-mode on literal result elements and instructions, and default-mode on xsl:template/xsl:apply-templates (including inside packages) do not redirect the built-in or explicit mode selection. The cases therefore match in the unnamed mode and emit the wrong nodes or text."
-links = ["https://www.w3.org/TR/xslt-30/#default-mode", "https://www.w3.org/TR/xslt-30/#element-mode"]
-
-[[dispositions]]
 id = "base-uri-copy-inheritance-residuals"
 title = "base URIs are not inherited through nested xml:base and copied nodes"
 category = "implementation-gap"
 profiles = ["xslt30", "xslt20"]
 cases = [
   "base-uri/base-uri-006",
-  "base-uri/base-uri-014",
-  "base-uri/base-uri-031",
-  "base-uri/base-uri-037",
-  "base-uri/base-uri-039",
-  "base-uri/base-uri-040",
-  "base-uri/base-uri-041",
-  "base-uri/base-uri-042",
   "base-uri/base-uri-046",
-  "base-uri/base-uri-047",
-  "base-uri/base-uri-048",
 ]
-reason = "The node-property and document() seams are fixed, but these cases still fail on base-URI inheritance and resolution: deep/shallow copies under a nested xml:base, constructed parents with xml:base, the base of copied attributes and comments, DTD/entity origin identifiers, and relative resolve-uri() against constructed nodes. The visible effect is a wrong base-uri()/resolve-uri() string or a failed ends-with assertion, not an exception."
+reason = "Copy, xml:base, and XInclude base propagation are now implemented; two paths remain: resolve-uri() inside a template whose xml:base sets the expression base (base-uri-006), and a copy-of root with a relative xml:base whose source document has no usable base, where the corpus resolves it against the construction site (base-uri-046). Both are reported as wrong strings, not controlled failures."
 links = ["https://www.w3.org/TR/xslt-30/#base-uri", "https://www.w3.org/TR/xpath-functions-31/#func-base-uri"]
 
 [[dispositions]]
@@ -641,14 +605,12 @@ title = "key() results differ on source/temporary trees and composite keys"
 category = "implementation-gap"
 profiles = ["xslt30", "xslt20"]
 cases = [
-  "key/key-070",
   "key/key-076",
   "key/key-077",
-  "key/key-081",
   "key/key-084",
   "key/key-088",
 ]
-reason = "The constructor/no-@use/third-argument work is complete, but these cases still fail on key lookup semantics: keys built over source versus temporary trees, composite/typed key atomization, key() in xsl:number patterns, and XTSE1222 duplicate declarations. The visible effect is a missing or extra matched node, or a missing static error."
+reason = "Typed key equality, untypedAtomic conversion, composite keys, and duplicate-declaration XTSE1222 are implemented; four rows remain on source-versus-temporary-tree key lookup and namespace-node keys, where the visible effect is a missing or extra node."
 links = ["https://www.w3.org/TR/xslt-30/#key", "https://www.w3.org/TR/xslt-30/#func-key"]
 
 [[dispositions]]
@@ -661,30 +623,10 @@ cases = [
   "key/key-087",
   "key/key-089",
   "key/key-090",
-  "key/key-094",
-  "key/key-095",
   "key/key-096",
 ]
-reason = "These 3.0-only rows cover a sequence-valued key lookup over a temporary tree (key-002), deep-equal over keyed string sequences (key-087/090), a nested document count (key-089), duplicate key declarations that must raise XTSE1222 (key-094/095), and a phrase key lookup (key-096). The common seam is key typing/annotation over source and temporary trees."
+reason = "These 3.0-only rows cover a sequence-valued key lookup over a temporary tree (key-002), deep-equal over keyed string sequences (key-087/090), a nested document count (key-089), and a phrase key lookup (key-096). The common seam is key typing/annotation over source and temporary trees."
 links = ["https://www.w3.org/TR/xslt-30/#key", "https://www.w3.org/TR/xslt-30/#func-key"]
-
-[[dispositions]]
-id = "idref-function-not-implemented"
-title = "idref() finds no IDREF annotations"
-category = "implementation-gap"
-profiles = ["xslt30", "xslt20"]
-cases = ["id/id-039", "id/id-040", "id/id-042"]
-reason = "id()/element-with-id() work over DTD and xml:id annotations, but the matching IDREF index is not exposed: idref('a') returns an empty sequence (or the wrong nodes), so the cases' attribute assertions fail. Cost is roughly a per-document IDREF index mirroring the existing ID index."
-links = ["https://www.w3.org/TR/xpath-functions-31/#func-idref", "https://www.w3.org/TR/xml/#ID"]
-
-[[dispositions]]
-id = "idref-two-document-form"
-title = "idref() with a node argument in a second document"
-category = "implementation-gap"
-profiles = ["xslt30"]
-cases = ["id/id-043"]
-reason = "id-043 calls the two-argument idref(ids, node) form against a second document. The context source now loads and parse-xml is available, but the IDREF annotations of the second document are not indexed, so the idref output has the wrong attributes."
-links = ["https://www.w3.org/TR/xpath-functions-31/#func-idref", "https://www.w3.org/TR/xml/#ID"]
 
 [[dispositions]]
 id = "unparsed-entity-functions-unavailable"
@@ -932,7 +874,6 @@ cases = [
   "import-schema/import-schema-118",
   "import-schema/import-schema-120",
   "import-schema/import-schema-137",
-  "import-schema/import-schema-152",
   "import-schema/import-schema-155",
   "import-schema/import-schema-186",
   "import-schema/import-schema-187",
@@ -991,8 +932,6 @@ cases = [
   "strip-type-annotations/strip-type-annotations-008",
   "strip-type-annotations/strip-type-annotations-009",
   "strip-type-annotations/strip-type-annotations-010",
-  "strip-type-annotations/strip-type-annotations-021",
-  "strip-type-annotations/strip-type-annotations-026",
   "strip-type-annotations/strip-type-annotations-027",
   "validation/validation-0006",
   "validation/validation-0201",
@@ -1006,7 +945,6 @@ cases = [
   "validation/validation-0801",
   "validation/validation-1002",
   "validation/validation-1201",
-  "validation/validation-1501",
   "validation/validation-1702",
   "validation/validation-2001",
   "validation/validation-2002",
@@ -1029,7 +967,6 @@ cases = [
   "import-schema/import-schema-118",
   "import-schema/import-schema-120",
   "import-schema/import-schema-137",
-  "import-schema/import-schema-152",
   "import-schema/import-schema-155",
   "import-schema/import-schema-186",
   "import-schema/import-schema-187",
@@ -1080,8 +1017,6 @@ cases = [
   "strip-type-annotations/strip-type-annotations-008",
   "strip-type-annotations/strip-type-annotations-009",
   "strip-type-annotations/strip-type-annotations-010",
-  "strip-type-annotations/strip-type-annotations-021",
-  "strip-type-annotations/strip-type-annotations-026",
   "validation/validation-0201",
   "validation/validation-0202",
   "validation/validation-0213",
@@ -1093,7 +1028,6 @@ cases = [
   "validation/validation-0801",
   "validation/validation-1002",
   "validation/validation-1201",
-  "validation/validation-1501",
   "validation/validation-2001",
   "validation/validation-2002",
 ]
@@ -1293,3 +1227,29 @@ cases = [
 ]
 reason = "The native 2.0 format-number path surfaces the F&O decimal-format error (FODF1280/FODF1310) where the XSLT 2.0 cases expect the dynamic XTDE1280/XTDE1310 code. The failure is detected at the right phase with the right cause; only the public error code differs."
 links = ["https://www.w3.org/TR/xslt20/#format-number", "https://www.w3.org/TR/xpath-functions-31/#formatting-numbers"]
+
+[[dispositions]]
+id = "deep-recursion-resource-limit"
+title = "deeply recursive stylesheets reach the Python stack budget instead of a semantic verdict"
+category = "platform-limit"
+profiles = ["xslt30"]
+cases = [
+  "function/function-0701",
+  "function/function-1031",
+  "higher-order-functions/higher-order-functions-068",
+  "seqtor/seqtor-027",
+  "seqtor/seqtor-028",
+  "seqtor/seqtor-032",
+  "seqtor/seqtor-033",
+]
+reason = "These cases recurse through XPath expression evaluation and closure calls deeply enough to exceed CPython's per-interpreter recursion limit. They used to pass only because semantic execution raised the process-wide limit for the duration of a transformation; that global mutation raced with every other thread and is removed. The runtime now reports the stable implementation resource code PYXSD-XSLT-001 instead of a raw RecursionError. Moving this recursion onto the heap scheduler is operational work tracked outside this branch, so these rows are controlled resource failures, not wrong results."
+links = ["https://www.w3.org/TR/xslt-30/#dynamic-errors", "https://docs.python.org/3/library/sys.html#sys.setrecursionlimit"]
+
+[[dispositions]]
+id = "deep-recursion-resource-limit-xslt20"
+title = "the knight's-tour recursion reaches the Python stack budget in the 2.0 profile"
+category = "platform-limit"
+profiles = ["xslt20"]
+cases = ["function/function-0701"]
+reason = "The 2.0-profile knight's-tour stylesheet recurses through XPath expression evaluation deeply enough to exceed CPython's per-interpreter recursion limit. It used to pass only because semantic execution raised the process-wide limit during a transformation, which raced with every other thread; that mutation is removed. The runtime reports PYXSD-XSLT-001 (a controlled resource failure), not a wrong result. Heap-scheduler recursion belongs to the operational task."
+links = ["https://www.w3.org/TR/xslt-30/#dynamic-errors", "https://docs.python.org/3/library/sys.html#sys.setrecursionlimit"]

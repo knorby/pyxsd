@@ -54,6 +54,14 @@ _SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:s="{SUP}"
   <xs:simpleType name="mydouble"><xs:restriction base="xs:double"/></xs:simpleType>
   <xs:simpleType name="mydec"><xs:restriction base="xs:decimal"/></xs:simpleType>
   <xs:simpleType name="myuri"><xs:restriction base="xs:anyURI"/></xs:simpleType>
+  <xs:simpleType name="boolA"><xs:restriction base="xs:boolean"/></xs:simpleType>
+  <xs:simpleType name="boolB"><xs:restriction base="xs:boolean"/></xs:simpleType>
+  <xs:element name="flags">
+    <xs:complexType><xs:sequence>
+      <xs:element name="flagA" type="s:boolA"/>
+      <xs:element name="flagB" type="s:boolB"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
   <xs:simpleType name="Base"><xs:restriction base="xs:string"/></xs:simpleType>
   <xs:simpleType name="Derived"><xs:restriction base="s:Base"/></xs:simpleType>
   <xs:element name="doc" type="s:myint"/>
@@ -152,7 +160,13 @@ def test_annotated_atomic_values_are_distinct_and_bounded() -> None:
     assert _annotate_atomic_value(Decimal("1.5"), f"{{{SUP}}}A")._pyxsd_type == f"{{{SUP}}}A"
     assert _annotate_atomic_value(1.5, f"{{{SUP}}}A")._pyxsd_type == f"{{{SUP}}}A"
     assert _annotate_atomic_value(True, f"{{{SUP}}}A") is True
-    assert _annotate_atomic_value(3, f"{{{SUP}}}A") == 3
+    # The substrate's ``xs:int`` sequence type checks the Python type, so an
+    # integer cannot be wrapped: its annotation stays in the side table.
+    integer = _annotate_atomic_value(3, f"{{{SUP}}}A")
+    assert integer == 3 and type(integer) is int
+    annotations: dict[int, tuple[object, str]] = {}
+    _record_annotation(annotations, integer, f"{{{SUP}}}A")
+    assert annotations[id(integer)][1] == f"{{{SUP}}}A"
     derived = builtin_atomic_types["xs:normalizedString"]("x")
     annotated = _annotate_atomic_value(derived, f"{{{SUP}}}A")
     assert type(annotated) is type(derived)
@@ -162,11 +176,52 @@ def test_annotated_atomic_values_are_distinct_and_bounded() -> None:
     monkey = engine._ANNOTATION_LIMIT
     engine._ANNOTATION_LIMIT = 1
     try:
-        _record_annotation(annotations, True, f"{{{SUP}}}A")
-        _record_annotation(annotations, False, f"{{{SUP}}}B")
+        _record_annotation(annotations, object(), f"{{{SUP}}}A")
+        with pytest.raises(XsltError) as overflow:
+            _record_annotation(annotations, object(), f"{{{SUP}}}B")
     finally:
         engine._ANNOTATION_LIMIT = monkey
-    assert list(annotations.values()) == [(False, f"{{{SUP}}}B")]
+    assert overflow.value.code == "PYXSD-XSLT-001"
+    assert len(annotations) == 1
+
+
+def test_two_boolean_types_with_one_payload_fail_explicitly() -> None:
+    """Two dynamic types over one boolean singleton cannot both be preserved."""
+    from pyxsd.xpath import engine
+
+    annotations: dict[int, tuple[object, str]] = {}
+    _record_annotation(annotations, True, f"{{{SUP}}}boolA")
+    with pytest.raises(XsltError) as collision:
+        _record_annotation(annotations, True, f"{{{SUP}}}boolB")
+    assert collision.value.code == "PYXSD-XSLT-002"
+    assert not collision.value.catchable
+    # Recording the same annotation again is idempotent, not a collision.
+    _record_annotation(annotations, True, f"{{{SUP}}}boolA")
+    assert engine._ANNOTATION_LIMIT > 1
+
+
+def test_same_payload_boolean_types_fail_at_the_public_boundary(
+    pool: SchemaPool,
+) -> None:
+    from pyxsd.xpath.engine import XPathEngine
+
+    document = parse_typed_document(
+        b"<s:flags xmlns:s='urn:example:sequence-types'>"
+        b"<s:flagA>true</s:flagA><s:flagB>true</s:flagB></s:flags>",
+        schema_pool=pool,
+        validation="strict",
+    )
+    values = {child.local_name: child.typed_value[0] for child in document.root_element.children}
+    assert values["flagA"].type_name == f"{{{SUP}}}boolA"
+    assert values["flagB"].type_name == f"{{{SUP}}}boolB"
+    static = XPathStaticContext(namespaces={"s": SUP}, schema=pool, xsd_version="1.1")
+    compiled = XPathEngine("3.1").compile("data(($a, $b))", static)
+    environment = ExpressionEnvironment(
+        variables={"a": (values["flagA"],), "b": (values["flagB"],)}
+    )
+    with pytest.raises(XsltError) as caught:
+        XPathEngine("3.1").evaluate(compiled, environment)
+    assert caught.value.code == "PYXSD-XSLT-002"
 
 
 def test_annotated_atomic_type_declines_unrecorded_values(parser: object) -> None:

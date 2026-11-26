@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from itertools import count
 from types import MappingProxyType
 from typing import Any, Literal, cast
+from urllib.parse import urljoin
 
 from pyxsd.source_spans import SourceIndex
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmSequence
@@ -823,17 +824,21 @@ class _NodeFactory:
         deep: bool = True,
         copy_namespaces: bool = True,
         copy_attributes: bool = True,
+        preserve_base: bool = False,
     ) -> XdmNode:
         """Copy one node (and its subtree) into this factory's document.
 
         ``copy_attributes=False`` gives a shallow ``xsl:copy`` of an element:
         the element keeps its name and namespaces but no attributes.
+        ``preserve_base`` selects copy-of base rules; the default is the
+        ``xsl:copy`` rule that adopts the new containing node's base.
         """
         if source.kind is NodeKind.DOCUMENT:
             return self._clone_document(
                 source,
                 deep=deep,
                 copy_namespaces=copy_namespaces,
+                preserve_base=preserve_base,
             )
         if source.kind is NodeKind.ELEMENT:
             scope, declarations = self._copy_scope(
@@ -844,7 +849,12 @@ class _NodeFactory:
                 NodeKind.ELEMENT,
                 parent=parent,
                 name=source.name,
-                base_uri=source.base_uri,
+                base_uri=_copy_base(
+                    source,
+                    parent,
+                    self.document.base_uri,
+                    preserve=preserve_base,
+                ),
                 in_scope_namespaces=scope,
                 namespace_declarations=declarations,
                 prefix=source.prefix,
@@ -853,7 +863,9 @@ class _NodeFactory:
             )
             if copy_attributes:
                 for attribute in source.attributes:
-                    cloned_attribute = self.clone(attribute, parent=node)
+                    cloned_attribute = self.clone(
+                        attribute, parent=node, preserve_base=preserve_base
+                    )
                     if not copy_namespaces and cloned_attribute.namespace_uri is not None:
                         cloned_attribute._prefix = (
                             _prefix_for(
@@ -882,6 +894,7 @@ class _NodeFactory:
                             parent=node,
                             deep=True,
                             copy_namespaces=copy_namespaces,
+                            preserve_base=preserve_base,
                         )
                     )
             return node
@@ -892,7 +905,12 @@ class _NodeFactory:
             name=source.name,
             value=value,
             target=source.target,
-            base_uri=source.base_uri,
+            base_uri=_copy_base(
+                source,
+                parent,
+                self.document.base_uri,
+                preserve=preserve_base,
+            ),
             in_scope_namespaces=source.in_scope_namespaces,
             prefix=source.prefix,
             namespace_uri=source.namespace_uri,
@@ -906,6 +924,7 @@ class _NodeFactory:
         *,
         deep: bool,
         copy_namespaces: bool,
+        preserve_base: bool = False,
     ) -> XdmDocument:
         document = XdmDocument(
             source_name=_RESULT_SOURCE,
@@ -923,6 +942,7 @@ class _NodeFactory:
                     parent=document,
                     deep=True,
                     copy_namespaces=copy_namespaces,
+                    preserve_base=preserve_base,
                 )
                 document._append_child(clone)
                 if document._root_element is None and clone.kind is NodeKind.ELEMENT:
@@ -1189,6 +1209,40 @@ def _attach_element(
     factory._append(parent, element)
 
 
+def _copy_base(
+    source: XdmNode,
+    parent: XdmNode | None,
+    document_base: str | None,
+    *,
+    preserve: bool,
+) -> str | None:
+    """The base URI of one node copied into a new result tree.
+
+    XSLT 3.0 §11.8: an ``xsl:copy`` of an element takes the base URI of its
+    containing node in the result tree, while a deep copy preserves the
+    original node's base.  A preserved base is rebased onto the new containing
+    node when the source element declares an ``xml:base``; an absolute value
+    therefore stays absolute and a relative one resolves against the result
+    tree.
+    """
+    parent_base = (
+        document_base if parent is None or parent.kind is NodeKind.DOCUMENT else parent.base_uri
+    )
+    if not preserve or source.kind is not NodeKind.ELEMENT:
+        return parent_base if parent_base is not None else source.base_uri
+    own = next(
+        (
+            attribute.string_value
+            for attribute in source.attributes
+            if attribute.name == f"{{{XML_NS}}}base"
+        ),
+        None,
+    )
+    if own is not None:
+        return urljoin(parent_base, own) if parent_base is not None else own
+    return parent_base if parent_base is not None else source.base_uri
+
+
 def _clone_for_content(
     factory: _NodeFactory,
     item: XdmNode,
@@ -1201,6 +1255,7 @@ def _clone_for_content(
         parent=parent,
         deep=True,
         copy_namespaces=copy_namespaces,
+        preserve_base=True,
     )
 
 
@@ -1250,10 +1305,10 @@ def _append_complex_content(
                     "XTDE0410",
                 )
             if item.kind is NodeKind.ATTRIBUTE:
-                clone = factory.clone(item, parent=parent)
+                clone = factory.clone(item, parent=parent, preserve_base=True)
                 factory.attach_attribute(parent, clone)
             else:
-                clone = factory.clone(item, parent=parent)
+                clone = factory.clone(item, parent=parent, preserve_base=True)
                 factory.attach_namespace(parent, clone)
             last_atomic = False
             continue
@@ -1646,6 +1701,7 @@ class ResultBuilder:
             parent=None,
             deep=deep,
             copy_namespaces=copy_namespaces,
+            preserve_base=True,
         )
 
     def copy(

@@ -841,7 +841,12 @@ def _evaluate_union(
             alternative, context_node, environment, candidate, statistics, schema, top=top
         ):
             nodes[node] = None
-    return tuple(sorted(nodes, key=lambda node: (id(node.root), node.document_order)))
+    return tuple(
+        sorted(
+            nodes,
+            key=lambda node: (getattr(node.root, "_tree_identity", 0), node.document_order),
+        )
+    )
 
 
 def _evaluate_path(
@@ -1040,6 +1045,11 @@ def _rooted_base(
         document = _document_for_uri(uri, environment, focus)
         return () if document is None else (document,)
     if local in {"id", "element-with-id"}:
+        element_with_id = local == "element-with-id"
+        id_lookup = environment.id_lookup
+        if id_lookup is not None:
+            found = id_lookup(focus, tuple(arguments), element_with_id)
+            return tuple(item for item in found if isinstance(item, XdmNode))
         tokens = _id_tokens(arguments[0])
         root = focus.root
         if len(arguments) > 1:
@@ -1047,14 +1057,16 @@ def _rooted_base(
             if node is None:
                 return ()
             root = node.root
-        return _id_nodes(root, tokens)
-    lookup = environment.key_lookup
-    if lookup is not None:
+        return _id_nodes(root, tokens, element_with_id=element_with_id)
+    key_lookup = environment.key_lookup
+    if key_lookup is not None:
         # The invocation's lazy lookup owns index construction, the
         # two/three-argument rules, and the top-document filter; its result is
         # returned unchanged so a pattern key() orders and filters nodes
         # exactly like the same call in an expression.
-        return cast(tuple[XdmNode, ...], lookup(focus, tuple(arguments)))
+        return tuple(
+            item for item in key_lookup(focus, tuple(arguments)) if isinstance(item, XdmNode)
+        )
     nodes = _key_nodes(arguments, environment)
     if len(arguments) == 2:
         root = focus.root
@@ -1119,7 +1131,10 @@ def _document_for_uri(
     return None
 
 
-def _id_nodes(root: XdmNode, tokens: frozenset[str]) -> tuple[XdmNode, ...]:
+def _id_nodes(
+    root: XdmNode, tokens: frozenset[str], *, element_with_id: bool = False
+) -> tuple[XdmNode, ...]:
+    """The standalone ID lookup used when no invocation resource is supplied."""
     if not tokens:
         return ()
     found: dict[XdmNode, None] = {}
@@ -1130,7 +1145,12 @@ def _id_nodes(root: XdmNode, tokens: frozenset[str]) -> tuple[XdmNode, ...]:
             getattr(node.annotation, "id_kind", None) in {"ID", "id"}
             and node.string_value in tokens
         ):
-            found[node] = None
+            identified = node
+            if element_with_id:
+                parent = node.parent
+                if parent is not None and parent.kind is NodeKind.ELEMENT:
+                    identified = parent
+            found[identified] = None
         for attribute in node.attributes:
             if (
                 getattr(attribute.annotation, "id_kind", None) in {"ID", "id"}

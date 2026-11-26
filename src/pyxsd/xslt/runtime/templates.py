@@ -639,6 +639,11 @@ def apply_frame(
     )
 
 
+def _item_description(item: XdmItem) -> str:
+    """One item's node kind for a diagnostic, or its XDM class for atomics."""
+    return item.kind.value if isinstance(item, XdmNode) else type(item).__name__
+
+
 def step_apply(invocation: _Invocation, frame: Frame) -> FrameResult:
     frame = invocation._consume_input(frame)
     state = cast(_ApplyState, frame.program)
@@ -669,10 +674,11 @@ def step_apply(invocation: _Invocation, frame: Frame) -> FrameResult:
         }
         if len(tied) > 1:
             invocation.warnings.append(
-                f"more than one template rule matches {item.kind.value} at priority {rule.priority}"
+                "more than one template rule matches "
+                f"{_item_description(item)} at priority {rule.priority}"
             )
     elif rule is None and _warning_enabled(properties.get("warning-on-no-match")):
-        invocation.warnings.append(f"no template rule matches {item.kind.value}")
+        invocation.warnings.append(f"no template rule matches {_item_description(item)}")
     next_state = replace(state, index=state.index + 1)
     resume = replace(frame, program=next_state)
     last = state.index + 1 == len(state.items)

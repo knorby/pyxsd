@@ -39,6 +39,11 @@ ERROR_NAMESPACE = "http://www.w3.org/2005/xqt-errors"
 #: scheduler.
 IMPLEMENTATION_BUDGET_CODE = "PYXSD-XSLT-001"
 
+#: Stable implementation code for a reachable feature this processor does not
+#: implement.  It is a controlled failure, never a silent wrong result, and it
+#: is outside ``xsl:try`` because no standard error code describes the gap.
+UNSUPPORTED_FEATURE_CODE = "PYXSD-XSLT-002"
+
 _ERROR_CODE = re.compile(r"\b([A-Z]{4}\d{4})\b")
 
 
@@ -568,6 +573,7 @@ def is_budget_alarm(error: BaseException) -> bool:
 __all__ = [
     "ERROR_NAMESPACE",
     "IMPLEMENTATION_BUDGET_CODE",
+    "UNSUPPORTED_FEATURE_CODE",
     "XsltCircularityError",
     "XsltDynamicError",
     "XsltError",
