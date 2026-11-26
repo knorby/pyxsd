@@ -550,7 +550,7 @@ class _KeyIndex:
                 # bucket rather than only the lookup's own datatype.
                 for values in self.grouped.values():
                     found.extend(values.get(item, ()))
-                datatype = item.datatype
+                datatype = _key_datatype(item)
                 if datatype is not None:
                     for lexical, nodes in self.untyped.items():
                         cast_value = _cast_key_value(lexical, datatype)
@@ -8593,6 +8593,20 @@ def _compat_key_text(item: XdmAtomic) -> str:
     return item.string_value
 
 
+def _key_datatype(item: XdmAtomic) -> type[Any] | None:
+    """The XSD datatype that drives one key comparison.
+
+    An :class:`XdmAtomic` may be constructed with only its type name, leaving
+    ``datatype`` unset.  The type name is authoritative in that case, so a
+    built-in XSD type is resolved through the shared datatype registry instead
+    of losing the type for key equality.  A non-built-in name keeps no
+    datatype and cannot drive a cast.
+    """
+    if item.datatype is not None:
+        return item.datatype
+    return type_tests.builtin_class(item.type_name)
+
+
 def _cast_key_value(lexical: str, datatype: type[Any] | None) -> XdmAtomic | None:
     """Cast one lexical value to *datatype* for a key comparison.
 
@@ -8625,10 +8639,10 @@ def _key_atomic_equal(left: XdmAtomic, right: XdmAtomic) -> bool:
     if left_untyped and right_untyped:
         return left.lexical == right.lexical
     if left_untyped:
-        cast = _cast_key_value(left.lexical, right.datatype)
+        cast = _cast_key_value(left.lexical, _key_datatype(right))
         return cast is not None and cast == right
     if right_untyped:
-        cast = _cast_key_value(right.lexical, left.datatype)
+        cast = _cast_key_value(right.lexical, _key_datatype(left))
         return cast is not None and cast == left
     return left == right
 

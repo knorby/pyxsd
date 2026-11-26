@@ -323,8 +323,8 @@ def test_untyped_key_lookup_skips_a_bucket_it_cannot_cast_to() -> None:
     )
 
 
-def test_pattern_key_lookup_without_a_datatype_cannot_cast_untyped_values() -> None:
-    """A typed atomic with no datatype has no target type for the untyped probe."""
+def test_pattern_key_lookup_derives_a_missing_datatype_from_the_type_name() -> None:
+    """An atomic carrying only its type name still compares as that XSD type."""
     source = stylesheet(
         """
         <xsl:param name="p"/>
@@ -337,13 +337,18 @@ def test_pattern_key_lookup_without_a_datatype_cannot_cast_untyped_values() -> N
     )
     bare = XdmAtomic("4", f"{{{XSD_NS}}}string")
     typed = XdmAtomic.string("4")
+    unknown = XdmAtomic("4", "{urn:example:unknown}string")
     assert bare.datatype is None
+    assert unknown.datatype is None
 
-    untyped_result = transform(source, b'<doc><item n="4"/></doc>', parameters={"p": bare})
-    assert [child.local_name for child in untyped_result.principal[0].children] == []
+    bare_result = transform(source, b'<doc><item n="4"/></doc>', parameters={"p": bare})
+    assert [child.local_name for child in bare_result.principal[0].children] == ["found"]
 
     typed_result = transform(source, b'<doc><item n="4"/></doc>', parameters={"p": typed})
     assert [child.local_name for child in typed_result.principal[0].children] == ["found"]
+
+    unknown_result = transform(source, b'<doc><item n="4"/></doc>', parameters={"p": unknown})
+    assert [child.local_name for child in unknown_result.principal[0].children] == []
 
 
 def test_key_lookup_date_and_untyped_typing() -> None:
@@ -449,10 +454,19 @@ def test_key_atomic_equality_casts_both_untyped_directions() -> None:
 
     untyped = XdmAtomic.untyped_atomic("4")
     integer = XdmAtomic.integer(4)
+    bare = XdmAtomic(4, f"{{{XSD_NS}}}integer")
+    unknown = XdmAtomic(4, "{urn:example:unknown}integer")
+    assert bare.datatype is None
+    assert unknown.datatype is None
     assert _key_atomic_equal(untyped, XdmAtomic.untyped_atomic("4"))
     assert _key_atomic_equal(untyped, integer)
     assert _key_atomic_equal(integer, untyped)
+    assert _key_atomic_equal(untyped, bare)
+    assert _key_atomic_equal(bare, untyped)
+    assert not _key_atomic_equal(untyped, unknown)
+    assert not _key_atomic_equal(unknown, untyped)
     assert not _key_atomic_equal(XdmAtomic.untyped_atomic("x"), integer)
+    assert not _key_atomic_equal(XdmAtomic.untyped_atomic("x"), bare)
 
 
 def test_key_declarations_disagreeing_on_composite_are_a_static_error() -> None:
