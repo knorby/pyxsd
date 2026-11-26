@@ -720,8 +720,12 @@ def _static_parse_xml(element: XdmNode) -> ContextFunction:
             return ()
         item = arguments[0][0]
         lexical = item.lexical if isinstance(item, XdmAtomic) else str(item)
+        base_uri = element.base_uri
+        if len(arguments) > 1 and arguments[1]:
+            supplied = arguments[1][0]
+            base_uri = supplied.lexical if isinstance(supplied, XdmAtomic) else str(supplied)
         try:
-            return (XdmDocument.parse(lexical.encode("utf-8"), base_uri=element.base_uri),)
+            return (XdmDocument.parse(lexical.encode("utf-8"), base_uri=base_uri),)
         except PyXSDError as exc:
             raise XsltStaticError(
                 f"parse-xml() content is not a well-formed XML document: {exc}",
