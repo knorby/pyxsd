@@ -8620,8 +8620,6 @@ def _key_atomic_equal(left: XdmAtomic, right: XdmAtomic) -> bool:
     types.  ``XdmAtomic.__eq__`` is the engine's ``eq`` semantics, which
     promotes numerics and keeps non-comparable families apart.
     """
-    if left is right:
-        return True
     left_untyped = _is_untyped_atomic(left)
     right_untyped = _is_untyped_atomic(right)
     if left_untyped and right_untyped:
