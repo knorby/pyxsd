@@ -7054,12 +7054,20 @@ class _Invocation(Transformation):
         *,
         locals_: Mapping[str, XdmSequence] | None = None,
     ) -> ExpressionEnvironment:
-        documents = {
-            **self.documents,
-            **self.document_resources.document_variants(package_name),
-        }
+        # Only a doc() pattern needs the package-filtered variants, and only
+        # those patterns must bypass the environment cache: the variants grow
+        # as documents load.  Everything else keeps the cached environment.
+        uses_documents = "doc(" in pattern.source
+        documents = (
+            {
+                **self.documents,
+                **self.document_resources.document_variants(package_name),
+            }
+            if uses_documents
+            else None
+        )
         if locals_ is not None:
-            return replace(
+            environment = replace(
                 self._environment(
                     EvaluationContext(
                         locals=locals_, package_name=package_name, final_output=False
@@ -7069,10 +7077,10 @@ class _Invocation(Transformation):
                     regex_captures=None,
                 ),
                 base_uri=pattern.context.base_uri,
-                documents=documents,
             )
+            return environment if documents is None else replace(environment, documents=documents)
         key = id(pattern)
-        environment = None if "doc(" in pattern.source else self._pattern_environments.get(key)
+        environment = None if uses_documents else self._pattern_environments.get(key)
         if environment is None:
             environment = replace(
                 self._environment(
@@ -7082,9 +7090,10 @@ class _Invocation(Transformation):
                     regex_captures=None,
                 ),
                 base_uri=pattern.context.base_uri,
-                documents=documents,
             )
-            if "doc(" not in pattern.source:
+            if documents is not None:
+                environment = replace(environment, documents=documents)
+            else:
                 self._pattern_environments[key] = environment
         return environment
 
