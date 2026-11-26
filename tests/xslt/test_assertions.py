@@ -1667,3 +1667,14 @@ def test_assertion_parser_accepts_an_eqname_kind_test() -> None:
         f"* instance of element(Q{{{function_namespace}}}string)"
     )
     assert ast is not None
+
+
+def test_assertion_parser_leaves_eqnames_inside_string_literals_alone() -> None:
+    # An EQName inside a literal is data, and a doubled quote does not end the
+    # literal.  Rewriting it would change the value the assertion compares.
+    parser = _parser([])
+    ast = parser.parse(
+        "'Q{urn:example}name''Q{urn:example}other' = 'Q{urn:example}name''Q{urn:example}other'"
+    )
+    assert ast is not None
+    assert "urn:example" not in parser.namespaces.values()

@@ -562,6 +562,11 @@ class _AssertionParser(XPath31Parser):
             if quote is not None:
                 rewritten.append(character)
                 if character == quote:
+                    if index + 1 < len(source) and source[index + 1] == quote:
+                        # XPath doubles a quote to escape it inside a literal.
+                        rewritten.append(quote)
+                        index += 2
+                        continue
                     quote = None
                 index += 1
                 continue
