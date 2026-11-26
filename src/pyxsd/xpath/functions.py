@@ -1574,14 +1574,13 @@ def install_subsequence(parser: Any) -> None:
         return
 
     def select(self: Any, context: Any = None) -> Iterator[Any]:
-        if len(self) > 1:
-            start = tuple(self[1].select(context))
-            # Function conversion requires one starting position.  Numeric
-            # conversion and XPath 1.0 compatibility casting remain the base
-            # token's decision; the substrate only fails when the sequence is
-            # empty and it indexes with ``None``.
-            if not start:
-                raise self.error("XPTY0004", "the starting position must be a single value")
+        start = tuple(self[1].select(context))
+        # Function conversion requires one starting position.  Numeric
+        # conversion and XPath 1.0 compatibility casting remain the base
+        # token's decision; the substrate only fails when the sequence is
+        # empty and it indexes with ``None``.
+        if not start:
+            raise self.error("XPTY0004", "the starting position must be a single value")
         yield from base.select(self, context)
 
     parser._register(
@@ -1612,8 +1611,6 @@ def install_format_integer(parser: Any) -> None:
         return
 
     def evaluate(self: Any, context: Any = None) -> str:
-        if len(self) < 1:
-            return cast(str, base.evaluate(self, context))
         values = tuple(self[0].select(context))
         value: int | None
         if not values:
@@ -1624,10 +1621,7 @@ def install_format_integer(parser: Any) -> None:
                 raise self.error("XPTY0004", "format-integer requires a single value")
             node = getattr(item, "xdm", None)
             if node is not None:
-                typed = node.typed_value
-                if len(typed) != 1:
-                    raise self.error("XPTY0004", "format-integer requires a single value")
-                item = typed[0]
+                item = node.typed_value[0]
             if isinstance(item, XdmAtomic):
                 if _local_atomic_name(item.type_name) == "untypedAtomic":
                     item = item.lexical

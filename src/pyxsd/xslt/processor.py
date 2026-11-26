@@ -1165,14 +1165,10 @@ def _compile_stylesheet(
             # accepted copy keeps the used package's references and is
             # compiled there.  A hidden ``xsl:original`` copy needs its own
             # plan only when the used package itself was not in the composed
-            # map (two versions of one library name); otherwise the original
-            # package's plan is the authoritative one and keeps its private
-            # references in that package.
-            if component.owner != package_name:
-                if id(component) not in original_ids:
-                    continue
-                if (component.owner, component.kind, component.name, component.arity) in components:
-                    continue
+            # map; otherwise the original package's plan is the authoritative
+            # one and keeps its private references in that package.
+            if component.owner != package_name and id(component) not in original_ids:
+                continue
             module = _component_module(component, modules, principal)
             owner_package = packages.get(component.owner, package)
             context = _context_for(
@@ -6465,8 +6461,6 @@ class _Invocation(Transformation):
         adapter = registry.nodes.get(id(node))
         if adapter is not None:
             return adapter
-        if node.kind is NodeKind.DOCUMENT:
-            return registry.document(cast(XdmDocument, node))
         if node.parent is None:
             if node.kind in (NodeKind.ELEMENT, NodeKind.ATTRIBUTE):
                 return registry.rootless(node)
@@ -6493,20 +6487,16 @@ class _Invocation(Transformation):
     ) -> XdmSequence:
         cache_key: tuple[object, ...] | None = None
         if component.kind == "function" and component.declaration.attribute("cache") == "yes":
-            try:
-                cache_key = (
-                    component.owner,
-                    component.containing,
-                    component.name,
-                    component.arity,
-                    tuple(tuple(sequence) for sequence in arguments),
-                )
-            except TypeError:
-                cache_key = None
-            if cache_key is not None:
-                cached = self._function_cache.get(cache_key)
-                if cached is not None:
-                    return cached
+            cache_key = (
+                component.owner,
+                component.containing,
+                component.name,
+                component.arity,
+                tuple(tuple(sequence) for sequence in arguments),
+            )
+            cached = self._function_cache.get(cache_key)
+            if cached is not None:
+                return cached
         frame = self._component_frame(
             component,
             arguments=arguments,
@@ -7080,9 +7070,9 @@ class _Invocation(Transformation):
             )
             return environment if documents is None else replace(environment, documents=documents)
         key = id(pattern)
-        environment = None if uses_documents else self._pattern_environments.get(key)
-        if environment is None:
-            environment = replace(
+        cached = None if uses_documents else self._pattern_environments.get(key)
+        if cached is None:
+            cached = replace(
                 self._environment(
                     EvaluationContext(package_name=package_name, final_output=False),
                     referenced=_pattern_variable_names(pattern),
@@ -7092,10 +7082,10 @@ class _Invocation(Transformation):
                 base_uri=pattern.context.base_uri,
             )
             if documents is not None:
-                environment = replace(environment, documents=documents)
+                cached = replace(cached, documents=documents)
             else:
-                self._pattern_environments[key] = environment
-        return environment
+                self._pattern_environments[key] = cached
+        return cached
 
     def numbering_counter(
         self,
