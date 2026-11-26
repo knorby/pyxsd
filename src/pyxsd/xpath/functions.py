@@ -1621,31 +1621,37 @@ def install_format_integer(parser: Any) -> None:
                 raise self.error("XPTY0004", "format-integer requires a single value")
             node = getattr(item, "xdm", None)
             if node is not None:
-                item = node.typed_value[0]
-            if isinstance(item, XdmAtomic):
-                if _local_atomic_name(item.type_name) == "untypedAtomic":
-                    item = item.lexical
-                else:
-                    item = item.value
-            if isinstance(item, UntypedAtomic):
-                item = str(item)
-            if isinstance(item, bool):
-                raise self.error("XPTY0004", "format-integer requires an integer")
-            if isinstance(item, int):
-                value = item
-            elif isinstance(item, str):
-                try:
-                    value = int(_xsd.Integer(item))
-                except (TypeError, ValueError) as exc:
-                    raise self.error("FORG0001", str(exc)) from None
+                typed_value = node.typed_value
+                typed = typed_value if isinstance(typed_value, tuple) else (typed_value,)
+                item = typed[0] if typed else None
+            if item is None:
+                value = None
             else:
-                raise self.error("XPTY0004", "format-integer requires an integer")
-        saved = list(self._items)
-        try:
-            self[0] = ValueToken(self.parser, value=[] if value is None else value)
-            return cast(str, base.evaluate(self, context))
-        finally:
-            self[0:] = tuple(saved)
+                if isinstance(item, XdmAtomic):
+                    if _local_atomic_name(item.type_name) == "untypedAtomic":
+                        item = item.lexical
+                    else:
+                        item = item.value
+                if isinstance(item, UntypedAtomic):
+                    item = str(item)
+                if isinstance(item, bool):
+                    raise self.error("XPTY0004", "format-integer requires an integer")
+                if isinstance(item, int):
+                    value = item
+                elif isinstance(item, str):
+                    try:
+                        value = int(_xsd.Integer(item))
+                    except (TypeError, ValueError) as exc:
+                        raise self.error("FORG0001", str(exc)) from None
+                else:
+                    raise self.error("XPTY0004", "format-integer requires an integer")
+        # A compiled expression's token is immutable and shared across
+        # transformations.  Give this call its own shallow token copy instead
+        # of swapping the first operand in place.
+        replacement = ValueToken(self.parser, value=[] if value is None else value)
+        token = copy.copy(self)
+        token._items = [replacement, *self._items[1:]]
+        return cast(str, base.evaluate(token, context))
 
     parser._register(
         "format-integer",

@@ -8,6 +8,7 @@ from functools import partial
 from pathlib import Path
 
 import pytest
+from elementpath import XPathContext
 from tests.xslt.support import (
     element_children,
 )
@@ -20,7 +21,11 @@ from tests.xslt.support import (
 
 from pyxsd.source_spans import SourceIndex
 from pyxsd.xdm import XdmAtomic
+from pyxsd.xdm.document import parse_typed_document
 from pyxsd.xdm.nodes import NodeKind, XdmDocument
+from pyxsd.xdm.schema import SchemaPool
+from pyxsd.xpath.engine import XPathEngine, _build_parser
+from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.packages import PackageResolver
 from pyxsd.xslt.errors import ERROR_NAMESPACE, XsltError, XsltStaticError
@@ -2423,3 +2428,39 @@ def test_parse_xml_error_codes() -> None:
     assert code("parse-xml('&lt;broken')") == "FODC0006"
     assert code("parse-xml(1)") == "XPTY0004"
     assert code("parse-xml(('&lt;a/&gt;', '&lt;b/&gt;'))") == "XPTY0004"
+
+
+def test_format_integer_empty_atomization_formats_as_empty_string(tmp_path: Path) -> None:
+    """An element-only typed value has no atomic value, not an IndexError."""
+    schema = tmp_path / "element-only.xsd"
+    schema.write_text(
+        """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+             <xs:element name="a">
+               <xs:complexType>
+                 <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+               </xs:complexType>
+             </xs:element>
+           </xs:schema>""",
+        encoding="utf-8",
+    )
+    pool = SchemaPool.from_imports([schema], xsd_version="1.1")
+    document = parse_typed_document(b"<a><b>x</b></a>", schema_pool=pool, validation="strict")
+    engine = XPathEngine("3.1")
+    compiled = engine.compile("format-integer(., 'A')", XPathStaticContext())
+
+    result = engine.evaluate(
+        compiled, ExpressionEnvironment(), focus=Focus(item=document.root_element)
+    )
+
+    assert result[0].string_value == ""
+
+
+def test_format_integer_keeps_its_compiled_argument() -> None:
+    """Evaluating one compiled token must not replace its operand."""
+    parser = _build_parser("3.1", XPathStaticContext(), key=True)
+    token = parser.parse("format-integer($n, 'A')")
+    operand = token._items[0]
+
+    assert token.evaluate(XPathContext(item="", variables={"n": 1})) == "A"
+    assert token.evaluate(XPathContext(item="", variables={"n": 2})) == "B"
+    assert token._items[0] is operand
