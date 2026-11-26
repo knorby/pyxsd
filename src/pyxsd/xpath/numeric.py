@@ -107,9 +107,7 @@ def _numeric_mod(left: Any, right: Any, *, legacy: bool = False) -> Any:
         result = _float_mod(left, right)
         if _is_double_precision(left) or _is_double_precision(right):
             return result
-        if _is_single_precision(left) or _is_single_precision(right):
-            return Float(result)
-        return result
+        return Float(result)
     if right == 0:
         raise ZeroDivisionError("mod by zero")
     if isinstance(left, Decimal) or isinstance(right, Decimal):

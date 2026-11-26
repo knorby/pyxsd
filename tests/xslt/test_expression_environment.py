@@ -475,6 +475,15 @@ def test_schema_constructors_and_typed_values(tmp_path: Path) -> None:
     assert result[0].lexical == "12.5"
 
 
+def test_generic_constructor_cast_type_errors_become_forg0001() -> None:
+    """A constructor whose cast raises a host type error reports FORG0001."""
+    engine = XPathEngine("3.1")
+    compiled = engine.compile("xs:integer(QName('', 'local'))", NODE_CONTEXT)
+    with pytest.raises(Exception) as caught:
+        engine.evaluate(compiled, ExpressionEnvironment())
+    assert _error_code(caught.value) == "FORG0001"
+
+
 def test_schema_aware_document_typed_values(tmp_path: Path) -> None:
     schema_path = tmp_path / "money.xsd"
     schema_path.write_text(

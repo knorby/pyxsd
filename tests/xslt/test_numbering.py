@@ -1025,6 +1025,11 @@ def test_context_bridge_validates_decimal_format_values() -> None:
         XsltContextBridge(Transformation(), decimal_formats={1: DecimalFormat()})  # type: ignore[dict-item]
     with pytest.raises(TypeError):
         XsltContextBridge(Transformation(), decimal_formats={None: "bad"})  # type: ignore[dict-item]
+    with pytest.raises(TypeError, match="current_output_uri must be a string or None"):
+        XsltContextBridge(
+            Transformation(),
+            current_output_uri=1,  # type: ignore[arg-type]
+        )
 
 
 # ---------------------------------------------------------------------------

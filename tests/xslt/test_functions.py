@@ -19,6 +19,7 @@ from tests.xslt.support import (
     transform as _transform,
 )
 
+from pyxsd.schema import Schema
 from pyxsd.source_spans import SourceIndex
 from pyxsd.xdm import XdmAtomic
 from pyxsd.xdm.document import parse_typed_document
@@ -28,7 +29,7 @@ from pyxsd.xpath.engine import XPathEngine, _build_parser
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.packages import PackageResolver
-from pyxsd.xslt.errors import ERROR_NAMESPACE, XsltError, XsltStaticError
+from pyxsd.xslt.errors import ERROR_NAMESPACE, XsltDynamicError, XsltError, XsltStaticError
 from pyxsd.xslt.processor import _ABSENT, _document_nodes, _Invocation, _prepare_invocation
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -304,6 +305,47 @@ def test_key_lookup_does_not_match_a_typed_key_lexically() -> None:
     )
 
 
+def test_untyped_key_lookup_skips_a_bucket_it_cannot_cast_to() -> None:
+    """An untyped lookup casts per bucket; a failed cast matches nothing."""
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="xs:integer(@n)"/>
+        <xsl:template name="main">
+          <xsl:sequence
+            select="count(key('k', xs:untypedAtomic('4'))),
+                    count(key('k', xs:untypedAtomic('not-an-integer')))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, b'<doc><item n="4"/></doc>', initial_template="main").principal == (
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(0),
+    )
+
+
+def test_pattern_key_lookup_without_a_datatype_cannot_cast_untyped_values() -> None:
+    """A typed atomic with no datatype has no target type for the untyped probe."""
+    source = stylesheet(
+        """
+        <xsl:param name="p"/>
+        <xsl:key name="k" match="item" use="@n"/>
+        <xsl:template match="doc">
+          <out><xsl:apply-templates select="item"/></out>
+        </xsl:template>
+        <xsl:template match="key('k', $p)"><found/></xsl:template>
+        """
+    )
+    bare = XdmAtomic("4", f"{{{XSD_NS}}}string")
+    typed = XdmAtomic.string("4")
+    assert bare.datatype is None
+
+    untyped_result = transform(source, b'<doc><item n="4"/></doc>', parameters={"p": bare})
+    assert [child.local_name for child in untyped_result.principal[0].children] == []
+
+    typed_result = transform(source, b'<doc><item n="4"/></doc>', parameters={"p": typed})
+    assert [child.local_name for child in typed_result.principal[0].children] == ["found"]
+
+
 def test_key_lookup_date_and_untyped_typing() -> None:
     """Only untypedAtomic is cast to the key's date type; xs:string is not."""
     source = stylesheet(
@@ -364,6 +406,41 @@ def test_composite_key_lookup_uses_typed_equality() -> None:
         XdmAtomic.integer(0),
         XdmAtomic.integer(1),
         XdmAtomic.integer(0),
+    )
+
+
+def test_key_name_must_be_an_atomic_value() -> None:
+    """A function item cannot name a key even though it is a single item."""
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="key(function () { 1 }, 'x')"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        transform(source, b'<doc><item id="x"/></doc>', initial_template="main")
+    assert caught.value.code == "XPTY0004"
+    assert "key name must be a string" in str(caught.value)
+
+
+def test_key_subtree_argument_accepts_a_text_node() -> None:
+    """The third key() argument roots the subtree at any node, not just elements."""
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="text()" use="."/>
+        <xsl:template name="main">
+          <xsl:sequence
+            select="count(key('k', 'a')), count(key('k', 'a', /doc/text()[1])),
+                    string(key('k', 'a', /doc/text()[1]))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, b"<doc>a<b>b</b>a</doc>", initial_template="main").principal == (
+        XdmAtomic.integer(2),
+        XdmAtomic.integer(1),
+        XdmAtomic.string("a"),
     )
 
 
@@ -1238,6 +1315,58 @@ def test_element_with_id_returns_the_parent_of_an_id_valued_element(tmp_path: Pa
         XdmAtomic.string("row"),
         XdmAtomic.string("GAMMA"),
         XdmAtomic.string("GAMMA"),
+    )
+
+
+def test_element_with_id_keeps_a_document_element_id() -> None:
+    """A document element has no containing element, so it stays identified."""
+    schema = Schema.compile(
+        io.StringIO(
+            """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                 <xs:element name="a" type="xs:ID"/>
+               </xs:schema>"""
+        )
+    )
+    pool = SchemaPool.from_schema(schema)
+    document = parse_typed_document(b"<a>x</a>", schema_pool=pool, validation="strict")
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="count(element-with-id('x'))"/>
+          <xsl:sequence select="local-name(element-with-id('x'))"/>
+          <xsl:sequence select="local-name(id('x'))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=document, initial_template="main", validation="preserve")
+    assert result.principal == (
+        XdmAtomic.integer(1),
+        XdmAtomic.string("a"),
+        XdmAtomic.string("a"),
+    )
+
+
+def test_id_ignores_attributes_without_an_id_type() -> None:
+    """Only ID-typed attributes enter the id() index, not every attribute."""
+    source = (
+        b"<!DOCTYPE tee [<!ELEMENT tee (s*)><!ELEMENT s EMPTY>"
+        b"<!ATTLIST tee version CDATA #IMPLIED>"
+        b"<!ATTLIST s id ID #REQUIRED>]>"
+        b'<tee version="v"><s id="a"/><s id="b"/></tee>'
+    )
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence
+            select="count(id('a')), count(id('v')), count(id('b'))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, source, initial_template="main")
+    assert result.principal == (
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(1),
     )
 
 

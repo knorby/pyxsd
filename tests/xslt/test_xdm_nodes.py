@@ -332,6 +332,15 @@ def test_copied_elements_own_distinct_namespace_nodes() -> None:
     }
 
 
+def test_disable_output_escaping_must_be_a_boolean() -> None:
+    from pyxsd.xslt.runtime.builder import _NodeFactory
+
+    factory = _NodeFactory()
+    assert factory.text("raw", disable_output_escaping=True).disable_output_escaping is True
+    with pytest.raises(TypeError, match="disable_output_escaping must be a boolean"):
+        factory.text("raw", disable_output_escaping=1)  # type: ignore[arg-type]
+
+
 # ---------------------------------------------------------------------------
 # Annotations, typed values, string values
 

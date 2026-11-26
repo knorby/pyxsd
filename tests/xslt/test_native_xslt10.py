@@ -24,7 +24,9 @@ import pytest
 from elementpath.datatypes import UntypedAtomic
 from tests.xslt.support import stylesheet as _stylesheet
 
+from pyxsd.schema import Schema
 from pyxsd.xdm import XdmAtomic
+from pyxsd.xdm.document import parse_typed_document
 from pyxsd.xdm.legacy import (
     LegacyNodeSetError,
     ResultTreeFragment,
@@ -41,6 +43,7 @@ from pyxsd.xdm.legacy import (
     number_to_string,
 )
 from pyxsd.xdm.nodes import NodeKind, XdmDocument
+from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath.engine import (
     _legacy_boolean_value,
     _legacy_number_value,
@@ -1833,6 +1836,35 @@ def test_paired_native_profiles_keep_their_own_number_value_rules() -> None:
     assert profile_text(body, language="1.0") == "NaN"
     error = profile_error(body, language="2.0")
     assert error.code == "XTDE0980"
+
+
+def test_legacy_number_value_of_an_element_without_simple_content_is_nan() -> None:
+    """An element-only typed value is empty, so XSLT 1.0 formats it as NaN."""
+    schema = Schema.compile(
+        io.StringIO(
+            """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                 <xs:element name="doc"><xs:complexType><xs:sequence>
+                   <xs:element name="empty"><xs:complexType><xs:sequence>
+                     <xs:element name="child" type="xs:string"/>
+                   </xs:sequence></xs:complexType></xs:element>
+                 </xs:sequence></xs:complexType></xs:element>
+               </xs:schema>"""
+        )
+    )
+    pool = SchemaPool.from_schema(schema)
+    document = parse_typed_document(
+        b"<doc><empty><child>value</child></empty></doc>",
+        schema_pool=pool,
+        validation="strict",
+    )
+    assert document.root_element.children[0].typed_value == ()
+    compiled = native_compile(
+        '<xsl:template name="main"><xsl:number value="/doc/empty"/></xsl:template>'
+    )
+    result = compiled.transform(
+        source=document, delivery="raw", initial_template="main", validation="preserve"
+    )
+    assert principal_text(result) == "NaN"
 
 
 def test_paired_native_profiles_process_a_future_version_declaration() -> None:

@@ -1385,6 +1385,27 @@ def test_result_document_cdata_uses_instruction_namespaces() -> None:
     assert entry.serialization["suppress-indentation"] == "Q{urn:p}block"
 
 
+def test_result_document_deduplicates_merged_cdata_and_suppress_tokens() -> None:
+    """A token the instruction repeats from its output declaration is added once."""
+    source = (
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:output method="xml" omit-xml-declaration="yes" xmlns:p="urn:p" '
+        'cdata-section-elements="p:script" suppress-indentation="p:script"/>'
+        '<xsl:template name="xsl:initial-template">'
+        f'<xsl:result-document href="{SECONDARY_URI}" xmlns:p="urn:p" '
+        'cdata-section-elements="p:script p:extra" '
+        'suppress-indentation="p:script p:extra">'
+        "<p:script>text</p:script><p:extra>more</p:extra>"
+        "</xsl:result-document>"
+        "</xsl:template>"
+        "</xsl:stylesheet>"
+    )
+    result = XsltProcessor().compile(io.BytesIO(source.encode())).transform()
+    entry = result.secondary[SECONDARY_URI]
+    assert entry.serialization["cdata-section-elements"] == "Q{urn:p}script Q{urn:p}extra"
+    assert entry.serialization["suppress-indentation"] == "Q{urn:p}script Q{urn:p}extra"
+
+
 def compile_imported_format_prefix_output(tmp_path: Path) -> Any:
     """Compile a principal importing a module whose format prefix is module-local."""
     imported = _write_module(
