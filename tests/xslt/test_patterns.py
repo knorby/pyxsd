@@ -260,7 +260,7 @@ def test_rooted_function_patterns_are_version_gated() -> None:
     # XSLT 3.0, and two-argument id() also arrived there.  A 2.0 stylesheet
     # must reject each as XTSE0340 rather than compile a 3.0 plan.
     context20 = StaticContext(version="2.0")
-    for pattern in ("doc('x')", "root()", "element-with-id('x')", "id('x', doc('y'))"):
+    for pattern in ("doc('x')", "root()", "element-with-id('x')", "id('x', 'y')"):
         with pytest.raises(XsltStaticError) as caught:
             compile_pattern(pattern, context20)
         _assert_code(caught.value, "XTSE0340")
