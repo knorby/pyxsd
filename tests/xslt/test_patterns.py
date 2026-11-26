@@ -255,6 +255,20 @@ def test_pattern_grammar_boundaries() -> None:
         assert code in {"XTSE0340", "XPST0003", "XPST0017", "XPST0081"}, (pattern, code)
 
 
+def test_rooted_function_patterns_are_version_gated() -> None:
+    # doc(), root(), and element-with-id() became rooted pattern bases in
+    # XSLT 3.0, and two-argument id() also arrived there.  A 2.0 stylesheet
+    # must reject each as XTSE0340 rather than compile a 3.0 plan.
+    context20 = StaticContext(version="2.0")
+    for pattern in ("doc('x')", "root()", "element-with-id('x')", "id('x', doc('y'))"):
+        with pytest.raises(XsltStaticError) as caught:
+            compile_pattern(pattern, context20)
+        _assert_code(caught.value, "XTSE0340")
+    context30 = StaticContext(version="3.0")
+    for pattern in ("doc('x')", "root()", "element-with-id('x')"):
+        assert compile_pattern(pattern, context30).alternatives
+
+
 def test_pattern_value_pattern_union_and_types() -> None:
     context = _context(variables=("v",))
     assert _matches(".", XdmAtomic.integer(1))

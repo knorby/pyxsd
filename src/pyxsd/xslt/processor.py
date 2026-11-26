@@ -832,7 +832,7 @@ class CompiledStylesheet:
     schema_pool: SchemaPool | None
     profile: ProfileOptions
     static_parameters: Mapping[str, Any]
-    _components: Mapping[tuple[str | None, str | None, str, str | None, int | None], _ComponentPlan]
+    _components: Mapping[tuple[str | None, str, str | None, int | None], _ComponentPlan]
     _modes: Mapping[ModeKey, tuple[_ModeLayerPlan, ...]]
     _globals: tuple[Component, ...]
     _package_variables: Mapping[str | None, tuple[Component, ...]]
@@ -1150,8 +1150,10 @@ def _compile_stylesheet(
         package_name: _merge_schema_pools(schema, current_package.schema_pool)
         for package_name, current_package in packages.items()
     }
-    components: dict[tuple[Any, ...], _ComponentPlan] = {}
-    deferred_original_plans: list[tuple[tuple[Any, ...], _ComponentPlan]] = []
+    components: dict[tuple[str | None, str, str | None, int | None], _ComponentPlan] = {}
+    deferred_original_plans: list[
+        tuple[tuple[str | None, str, str | None, int | None], _ComponentPlan]
+    ] = []
     keys: dict[str | None, list[_KeyDefinition]] = {}
     accumulators: dict[AccumulatorKey, AccumulatorDefinition] = {}
     for package_name, current_package in packages.items():
