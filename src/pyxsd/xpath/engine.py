@@ -58,6 +58,7 @@ from decimal import Decimal
 from threading import local
 from types import MethodType, SimpleNamespace
 from typing import Any, cast
+from weakref import proxy
 from xml.etree import ElementTree as ET
 
 from elementpath import XPathContext
@@ -4141,15 +4142,38 @@ class _XsltXPathContext(XPathContext):
             self.axis = status
 
 
+class _DocumentBindings(Mapping[str, _XdmDocumentAdapter]):
+    """Adapt available documents on first lookup in this dynamic context."""
+
+    def __init__(self, documents: Mapping[str, XdmDocument], bridge: _ValueBridge) -> None:
+        self._documents = documents
+        # The bridge already owns the context, including in deferred calls.
+        self._bridge = proxy(bridge)
+        self._resolved: dict[str, _XdmDocumentAdapter] = {}
+
+    def __getitem__(self, uri: str) -> _XdmDocumentAdapter:
+        adapter = self._resolved.get(uri)
+        if adapter is None:
+            adapter = self._bridge.adapt_document(self._documents[uri])
+            self._resolved[uri] = adapter
+        return adapter
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._documents)
+
+    def __contains__(self, uri: object) -> bool:
+        return uri in self._documents
+
+    def __len__(self) -> int:
+        return len(self._documents)
+
+
 def _build_context(
     static_context: XPathStaticContext,
     environment: ExpressionEnvironment,
     focus: Focus,
     bridge: _ValueBridge,
 ) -> XPathContext:
-    documents = {
-        uri: bridge.adapt_document(document) for uri, document in environment.documents.items()
-    }
     collections = {
         uri: [bridge.adapt_item(node) for node in nodes]
         for uri, nodes in environment.collections.items()
@@ -4161,7 +4185,6 @@ def _build_context(
         "variables": variables,
         "current_dt": environment.current_datetime,
         "timezone": environment.timezone,
-        "documents": documents or None,
         "collections": collections or None,
         "text_resources": dict(environment.text_resources),
     }
@@ -4190,6 +4213,11 @@ def _build_context(
         context = _XsltXPathContext(item=bridge.adapt_item(focus.item), **kwargs)
     else:  # pragma: no cover - Focus validates this
         raise ValueError("focus item is missing")
+    if environment.documents:
+        # The elementpath constructor eagerly copies its documents argument.
+        # Its lookups use the mapping interface and shallow context copies
+        # share these bindings for the remainder of the evaluation.
+        cast(Any, context).documents = _DocumentBindings(environment.documents, bridge)
     if focus.kind is not FocusKind.ABSENT:
         context.position = focus.position
         context.size = focus.size
