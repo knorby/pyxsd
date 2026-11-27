@@ -218,6 +218,17 @@ def test_json_non_encodable_characters_escape_instead_of_raising() -> None:
     assert encoded == b'"\\u00E9"'
 
 
+def test_json_escaping_keeps_character_map_replacement_outside_encoding_policy() -> None:
+    value = (XdmAtomic.string("é/😀\u009f"),)
+    xml_to_json_spelling = r"\u00e9/"
+    assert (
+        _serialize(
+            value, method="json", encoding="ascii", character_maps={"é": xml_to_json_spelling}
+        )
+        == r'"\u00e9/\/\uD83D\uDE00\u009F"'
+    )
+
+
 # ---------------------------------------------------------------------------
 # Adaptive output method
 

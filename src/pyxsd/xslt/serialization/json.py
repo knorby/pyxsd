@@ -26,6 +26,7 @@ from pyxsd.xslt.serialization.characters import (
     character_map_index,
     normalize_text,
 )
+from pyxsd.xslt.serialization.json_lexical import _JSON_ESCAPES, _SOLIDUS_ESCAPE
 from pyxsd.xslt.serialization.parameters import SerializationParameters
 from pyxsd.xslt.serialization.text import serialize_text
 from pyxsd.xslt.serialization.xml import (
@@ -57,16 +58,7 @@ _ADAPTIVE_FORMATS: dict[str | None, DecimalFormat] = {None: DecimalFormat()}
 
 _STRING_LOCALS = frozenset({"string", "untypedAtomic", "anyURI"})
 _QNAME_LOCALS = frozenset({"QName", "NOTATION"})
-_JSON_ESCAPES = {
-    '"': '\\"',
-    "\\": "\\\\",
-    "/": "\\/",
-    "\b": "\\b",
-    "\f": "\\f",
-    "\n": "\\n",
-    "\r": "\\r",
-    "\t": "\\t",
-}
+_OUTPUT_ESCAPES = {**_JSON_ESCAPES, "/": _SOLIDUS_ESCAPE}
 
 
 def _error(
@@ -86,18 +78,14 @@ def _family(item: XdmAtomic) -> str:
 def _json_escape(value: str, codec: str) -> str:
     pieces: list[str] = []
     for character in value:
-        escaped = _JSON_ESCAPES.get(character)
+        escaped = _OUTPUT_ESCAPES.get(character)
         if escaped is not None:
             pieces.append(escaped)
-            continue
-        code = ord(character)
-        if code < 0x20 or 0x7F <= code <= 0x9F:
-            pieces.append(f"\\u{code:04X}")
             continue
         try:
             character.encode(codec)
         except UnicodeEncodeError:
-            pieces.append(_json_code_point(code))
+            pieces.append(_json_code_point(ord(character)))
             continue
         pieces.append(character)
     return "".join(pieces)

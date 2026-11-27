@@ -779,6 +779,7 @@ class XsltContextBridge:
         context_item: XdmItem | None,
         arguments: tuple[XdmSequence, ...],
     ) -> XdmSequence:
+        """Dispatch both arities; the conversion honors only the ``indent`` option."""
         options = None
         if len(arguments) == 2:
             if len(arguments[1]) != 1 or not isinstance(arguments[1][0], XdmMap):
