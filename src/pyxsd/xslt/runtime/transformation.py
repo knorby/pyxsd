@@ -110,6 +110,7 @@ class Transformation:
         limits: ExecutionLimits | None = None,
         recovery_policy: RecoveryPolicy | None = None,
         shared: NestedTransformationPolicy | None = None,
+        _budget: ExecutionBudget | None = None,
     ) -> None:
         if recovery_policy is None:
             processor = getattr(stylesheet, "processor", None)
@@ -145,8 +146,8 @@ class Transformation:
             base = ExpressionEnvironment()
             self.current_datetime = base.current_datetime
             self.implicit_timezone = base.implicit_timezone
-            self.limits = limits if limits is not None else ExecutionLimits()
-            self.budget = ExecutionBudget(self.limits)
+            self.budget = ExecutionBudget(limits) if _budget is None else _budget
+            self.limits = self.budget.limits
         self.scheduler = Scheduler(self.limits, budget=self.budget)
         self.output_attributes = self._read_output_attributes()
         self.character_maps = self._read_character_maps()

@@ -19,7 +19,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 from xml.etree import ElementTree as ET
@@ -86,7 +86,13 @@ class CaptureSource:
     document_uri: str | None
 
     @classmethod
-    def from_input(cls, source: Any, *, max_bytes: int | None = None) -> CaptureSource:
+    def from_input(
+        cls,
+        source: Any,
+        *,
+        max_bytes: int | None = None,
+        _charge_input: Callable[[int], None] | None = None,
+    ) -> CaptureSource:
         """Materialize one path, readable stream, byte string, or Element.
 
         Paths and streams are read to EOF exactly once, so short chunks are
@@ -113,7 +119,7 @@ class CaptureSource:
                 source_name="<memory>",
                 document_uri=None,
             )
-        content, natural_name = _read_source(source, max_bytes=max_bytes)
+        content, natural_name = _read_source(source, max_bytes=max_bytes, charge=_charge_input)
         data = _normalize_text_source(content) if isinstance(content, str) else bytes(content)
         return cls(
             data=data,
@@ -339,6 +345,7 @@ def parse_typed_document(
     document_uri: str | None = None,
     base_uri: str | None = None,
     source_name: str | None = None,
+    _charge_input: Callable[[int], None] | None = None,
 ) -> XdmDocument:
     """Parse one source document under an explicit validation mode.
 
@@ -372,6 +379,7 @@ def parse_typed_document(
             document_uri=document_uri,
             base_uri=base_uri,
             source_name=source_name,
+            charge_input=_charge_input,
         )
 
     if isinstance(source, XdmDocument):
@@ -416,6 +424,7 @@ def parse_typed_document(
             document_uri=document_uri,
             base_uri=base_uri,
             source_name=source_name,
+            charge_input=_charge_input,
         )
 
     document = XdmDocument.parse(
@@ -424,6 +433,7 @@ def parse_typed_document(
         document_uri=document_uri,
         base_uri=base_uri,
         source_name=source_name,
+        _charge_input=_charge_input,
     )
     if strip:
         strip_type_annotations(document)
@@ -439,9 +449,10 @@ def _validated_document(
     document_uri: str | None,
     base_uri: str | None,
     source_name: str | None,
+    charge_input: Callable[[int], None] | None = None,
 ) -> XdmDocument:
     """Validate *source* through one pool schema and return its grounded tree."""
-    captured = _capture_source(source)
+    captured = _capture_source(source, charge_input=charge_input)
     target = _grounded_copy(
         captured,
         schema_pool=schema_pool,
@@ -478,13 +489,15 @@ def _validated_document(
     return target
 
 
-def _capture_source(source: Any) -> CaptureSource:
+def _capture_source(
+    source: Any, *, charge_input: Callable[[int], None] | None = None
+) -> CaptureSource:
     if isinstance(source, XdmDocument):
         return CaptureSource.from_content(
             source.source_index.content,
             source_name=source.source_name,
         )
-    return CaptureSource.from_input(source)
+    return CaptureSource.from_input(source, _charge_input=charge_input)
 
 
 def _grounded_copy(
@@ -535,6 +548,7 @@ def _type_validated_document(
     document_uri: str | None,
     base_uri: str | None,
     source_name: str | None,
+    charge_input: Callable[[int], None] | None = None,
 ) -> XdmDocument:
     """Validate the actual root occurrence against the requested type."""
     if type_name == _XSD_UNTYPED:
@@ -544,6 +558,7 @@ def _type_validated_document(
                 document_uri=document_uri,
                 base_uri=base_uri,
                 source_name=source_name,
+                charge_input=charge_input,
             )
         )
     document = _untyped_document(
@@ -551,6 +566,7 @@ def _type_validated_document(
         document_uri=document_uri,
         base_uri=base_uri,
         source_name=source_name,
+        charge_input=charge_input,
     )
     root = document.root_element
     if type_name == _XSD_ANY_TYPE:
@@ -584,6 +600,7 @@ def _untyped_document(
     document_uri: str | None,
     base_uri: str | None,
     source_name: str | None,
+    charge_input: Callable[[int], None] | None = None,
 ) -> XdmDocument:
     if isinstance(source, XdmDocument):
         return _untyped_copy(source)
@@ -596,6 +613,7 @@ def _untyped_document(
         document_uri=document_uri,
         base_uri=base_uri,
         source_name=source_name,
+        _charge_input=charge_input,
     )
 
 

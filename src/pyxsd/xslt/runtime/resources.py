@@ -24,7 +24,7 @@ from urllib.request import url2pathname
 from pyxsd.exceptions import PyXSDError
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.xdm.document import DocumentValidationError, parse_typed_document
-from pyxsd.xdm.nodes import XdmDocument, XdmNode
+from pyxsd.xdm.nodes import XdmDocument, XdmNode, _read_source
 from pyxsd.xslt.errors import XsltDynamicError, is_budget_alarm
 from pyxsd.xslt.runtime.frames import ExecutionBudget, resource_error
 from pyxsd.xslt.runtime.whitespace import (
@@ -78,12 +78,20 @@ class _LocalFilePolicy:
 
     def read(self, source: str, *, base: str | None, purpose: str) -> ResourceData:
         """Read the local file named by a canonical absolute ``file`` URI."""
+        return self.read_resource(source, purpose=purpose)
+
+    def read_resource(
+        self, source: str, *, purpose: str, charge: Callable[[int], None] | None = None
+    ) -> ResourceData:
         path = _canonical_file_path(source)
         if path is None:
             raise ResourcePolicyError(
                 f"the local {purpose} resource {source!r} is not a canonical file URI"
             )
-        return ResourceData(source, path.read_bytes())
+        if charge is None:
+            return ResourceData(source, path.read_bytes())
+        content, _ = _read_source(path, charge=charge)
+        return ResourceData(source, cast(bytes, content))
 
 
 _LOCAL_FILE_POLICY = _LocalFilePolicy()
@@ -275,7 +283,7 @@ class DocumentResources:
                 document = existing
             else:
                 try:
-                    data = policy.read(target, base=None, purpose=DOCUMENT_PURPOSE)
+                    data = self._read_data(policy, target, purpose=DOCUMENT_PURPOSE)
                 except OSError as exc:
                     if is_budget_alarm(exc):
                         raise
@@ -284,8 +292,6 @@ class DocumentResources:
                         code="FODC0002",
                         cause=exc,
                     ) from exc
-                if not isinstance(data, ResourceData):
-                    raise TypeError("a resource policy read must return ResourceData")
                 try:
                     document = parse_typed_document(
                         data.content,
@@ -312,7 +318,11 @@ class DocumentResources:
                         cause=exc,
                     ) from exc
                 if self.budget is not None and not self.budget.take_document():
-                    raise resource_error("the transformation exceeded its document budget")
+                    raise resource_error(
+                        self.budget.exhaustion(
+                            "document", "max_documents", self.budget.documents + 1
+                        )
+                    )
                 if existing is None:
                     self.documents[target] = document
             self._sources[source_key] = document
@@ -422,7 +432,7 @@ class DocumentResources:
                 code="FOUT1170",
             )
         try:
-            data = policy.read(target, base=None, purpose=TEXT_PURPOSE)
+            data = self._read_data(policy, target, purpose=TEXT_PURPOSE)
         except OSError as exc:
             if is_budget_alarm(exc):
                 raise
@@ -431,11 +441,25 @@ class DocumentResources:
                 code="FOUT1170",
                 cause=exc,
             ) from exc
-        if not isinstance(data, ResourceData):
-            raise TypeError("a resource policy read must return ResourceData")
         content = bytes(data.content)
         self._bytes[target] = content
         return content
+
+    def _read_data(self, policy: _DocumentPolicy, target: str, *, purpose: str) -> ResourceData:
+        budget = self.budget
+        charge = (
+            budget.charge_resource_bytes
+            if budget is not None and budget.limits.max_resource_bytes is not None
+            else None
+        )
+        if charge is not None and isinstance(policy, _LocalFilePolicy):
+            return policy.read_resource(target, purpose=purpose, charge=charge)
+        data = policy.read(target, base=None, purpose=purpose)
+        if not isinstance(data, ResourceData):
+            raise TypeError("a resource policy read must return ResourceData")
+        if charge is not None:
+            charge(len(data.content))
+        return data
 
     def read_text_lines(
         self,

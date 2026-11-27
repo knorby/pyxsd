@@ -611,27 +611,34 @@ def _compiled_stylesheet(
     processor = policy.processor
     extensions = caller.extensions
     schema_pool = caller.schema_pool
+
+    def compile_request() -> CompiledStylesheet:
+        if policy.limits.max_resource_bytes is None:
+            return processor.compile(
+                request.source,
+                static_parameters=request.static_params or None,
+                schema=schema_pool,
+                extensions=extensions,
+            )
+        return processor._compile(
+            request.source,
+            static_parameters=request.static_params or None,
+            schema=schema_pool,
+            extensions=extensions,
+            charge_input=policy.budget.charge_resource_bytes,
+        )
+
     if request.cacheable and request.identity_cacheable and not request.static_params:
         key = (id(processor), id(extensions), id(schema_pool), request.identity)
         cached = _COMPILED_CACHE.get(key)
         if cached is not None:
             return cached.compiled
-        compiled = processor.compile(
-            request.source,
-            static_parameters=None,
-            schema=schema_pool,
-            extensions=extensions,
-        )
+        compiled = compile_request()
         # The key is built from object identities, so the entry retains the
         # keyed objects and no later allocation can collide with the id.
         _COMPILED_CACHE[key] = _CacheEntry(processor, extensions, schema_pool, compiled)
         return compiled
-    return processor.compile(
-        request.source,
-        static_parameters=request.static_params or None,
-        schema=schema_pool,
-        extensions=extensions,
-    )
+    return compile_request()
 
 
 @dataclass(frozen=True, slots=True)
@@ -681,7 +688,7 @@ def _run(
             delivery=request.delivery,
         )
         invocation = _Invocation(compiled, invocation_options, shared=policy)
-        result = invocation.run()
+        result = invocation.run(principal_serialization=request.serialization_parameters)
     except XsltInvocationError as error:
         # The Task 16 validator's host-level conflicts are fn:transform
         # parameter errors (F&O's FOXT0002); its message stays as the detail.
@@ -708,7 +715,7 @@ def _result_map(
     entries = delivered_entries(
         result,
         delivery=request.delivery_format,
-        principal_parameters=request.serialization_parameters,
+        _serialized_principal_ready=True,
     )
     if request.post_process is not None:
         entries = [

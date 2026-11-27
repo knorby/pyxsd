@@ -2237,7 +2237,9 @@ def try_step(invocation: _Invocation, plan: _TryPlan, frame: Frame, cursor: int)
         component=frame.component,
         identity="xsl:try",
         program=try_body_program(plan),
-        context=frame.context,
+        context=replace(frame.context, count_output=False)
+        if frame.context.count_output
+        else frame.context,
         continuation=frame.continuation if replace_caller else None,
         extent=invocation.result_extent() if plan.rollback_output else None,
         error_handler=try_handler(invocation, plan, frame, base_values),
@@ -2299,7 +2301,7 @@ def try_handler(
             component=frame.component,
             identity="xsl:catch",
             program=catch_program(catch),
-            context=replace(frame.context, locals=variables),
+            context=replace(frame.context, locals=variables, count_output=False),
             location=catch.instruction.location,
             values=base_values,
             group=frame.group,

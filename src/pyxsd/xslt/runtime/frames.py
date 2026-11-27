@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from threading import Lock
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from pyxsd.locations import IssueLocation
@@ -129,49 +130,64 @@ ContinuationKind: TypeAlias = Literal["resume", "append", "convert"]
 
 @dataclass(frozen=True, slots=True)
 class ExecutionLimits:
-    """Explicit heap budgets for one transformation.
+    """Explicit budgets for one transformation and its nested invocations.
 
-    ``max_frames`` bounds the live explicit frame stack.  ``max_steps`` bounds
-    scheduler dispatch steps when set; ``None`` leaves the step count
-    unbounded while still recording it.  ``max_documents`` bounds distinct
-    documents loaded through a resource policy in one invocation, and
-    ``max_output_nodes`` bounds the nodes in the delivered principal and
-    secondary result trees, and ``max_output_bytes`` bounds their encoded
-    serialized bytes when stylesheet delivery produces them.
+    ``max_frames`` defaults to 100,000 live explicit frames. The other
+    limits default to ``None``: ``max_steps`` bounds scheduler dispatches,
+    ``max_documents`` bounds loaded XML documents, and ``max_resource_bytes``
+    bounds resource octets acquired by the transformation.
+
+    ``max_output_nodes`` counts raw principal and secondary output nodes,
+    their descendants and owned attributes, once by identity per result
+    entry. Namespace nodes and implicit normalization document nodes are
+    excluded; text nodes that normalization merges are counted separately.
+    ``max_output_bytes`` bounds bytes encoded for stylesheet delivery and
+    later :meth:`~pyxsd.xslt.results.TransformationResult.write` calls.
+    Writing a result again spends the same budget; raise the limit or use
+    ``None`` to allow more writes.
+
+    ``None`` disables any limit. Nested transforms inherit the settings
+    unchanged and share the cumulative ledger; frames count while live.
+    Exhaustion raises an uncatchable
+    :class:`~pyxsd.xslt.errors.XsltDynamicError` with code ``PYXSD-XSLT-001``.
     """
 
-    max_frames: int = 100_000
+    max_frames: int | None = 100_000
     max_steps: int | None = None
     max_documents: int | None = None
     max_output_nodes: int | None = None
     max_output_bytes: int | None = None
+    max_resource_bytes: int | None = None
 
     def __post_init__(self) -> None:
-        if isinstance(self.max_frames, bool) or not isinstance(self.max_frames, int):
-            raise TypeError("max_frames must be an integer")
-        if self.max_frames < 1:
-            raise ValueError("max_frames must be at least 1")
+        _validate_optional_limit("max_frames", self.max_frames)
         _validate_optional_limit("max_steps", self.max_steps)
         _validate_optional_limit("max_documents", self.max_documents)
         _validate_optional_limit("max_output_nodes", self.max_output_nodes)
         _validate_optional_limit("max_output_bytes", self.max_output_bytes)
+        _validate_optional_limit("max_resource_bytes", self.max_resource_bytes)
 
 
 class ExecutionBudget:
-    """Live frame, step, document, and output counters shared by nested schedulers.
+    """One invocation's shared ledger for :class:`ExecutionLimits`.
 
-    One budget belongs to a transformation.  Top-level and nested schedulers
-    acquire and release frames from the same counters, so a nested execution
-    cannot reset a caller's configured limits.
+    Frames default to a limit of 100,000; steps, documents, resource bytes,
+    output nodes and encoded output bytes default to ``None`` (unlimited).
+    Nested transforms use the same settings and counters. Frames are counted
+    while live; the other limits are cumulative, including later result
+    writes. A failed charge is reported as an uncatchable
+    :class:`~pyxsd.xslt.errors.XsltDynamicError` (``PYXSD-XSLT-001``).
     """
 
     __slots__ = (
+        "_output_lock",
         "documents",
         "frames",
         "limits",
         "max_frame_depth",
         "output_bytes",
         "output_nodes",
+        "resource_bytes",
         "steps",
     )
 
@@ -186,6 +202,8 @@ class ExecutionBudget:
         self.documents = 0
         self.output_nodes = 0
         self.output_bytes = 0
+        self._output_lock = Lock() if limits.max_output_bytes is not None else None
+        self.resource_bytes = 0
         self.max_frame_depth = 0
 
     def take_step(self) -> bool:
@@ -197,7 +215,7 @@ class ExecutionBudget:
 
     def acquire_frame(self) -> bool:
         """Acquire one live frame slot, returning whether it was within budget."""
-        if self.frames >= self.limits.max_frames:
+        if self.limits.max_frames is not None and self.frames >= self.limits.max_frames:
             return False
         self.frames += 1
         self.max_frame_depth = max(self.max_frame_depth, self.frames)
@@ -230,6 +248,36 @@ class ExecutionBudget:
             return False
         self.output_bytes = total
         return True
+
+    def charge_resource_bytes(self, count: int) -> None:
+        """Charge acquired resource octets against the enabled limit."""
+        limit = self.limits.max_resource_bytes
+        if limit is None:
+            return
+        self.resource_bytes += count
+        if self.resource_bytes > limit:
+            raise resource_error(
+                self.exhaustion("resource byte", "max_resource_bytes", self.resource_bytes)
+            )
+
+    def _take_output_chunk(self, count: int) -> tuple[int, int]:
+        """Reserve a chunk's allowed prefix and return (allowed, attempted total)."""
+        limit = self.limits.max_output_bytes
+        assert limit is not None and self._output_lock is not None
+        # Only result writes can spend the balance on more than one thread.
+        # Never hold the ledger lock while invoking the caller's destination.
+        with self._output_lock:
+            attempted = self.output_bytes + count
+            allowed = min(count, limit - self.output_bytes)
+            self.output_bytes += allowed
+            return allowed, attempted
+
+    def exhaustion(self, label: str, field: str, amount: int) -> str:
+        """Describe an attempted charge beyond the configured limit."""
+        return (
+            f"the transformation exceeded its {label} budget: "
+            f"{field}={getattr(self.limits, field)}, cumulative amount={amount}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -508,7 +556,9 @@ class Scheduler:
             while self._frames:
                 frame = self._frames[-1]
                 if not self.budget.take_step():
-                    raise self._resource_error("the transformation exceeded its step budget")
+                    raise self._resource_error(
+                        self.budget.exhaustion("step", "max_steps", self.budget.steps + 1)
+                    )
                 try:
                     outcome = step(frame)
                 except RecursionError as exc:
@@ -533,7 +583,9 @@ class Scheduler:
         if not isinstance(frame, Frame):  # pragma: no cover - callers validate
             raise TypeError("a scheduler frame must be a Frame")
         if not self.budget.acquire_frame():
-            raise self._resource_error("the transformation exceeded its frame budget")
+            raise self._resource_error(
+                self.budget.exhaustion("frame", "max_frames", self.budget.frames + 1)
+            )
         self._frames.append(frame)
 
     def _release_all_frames(self) -> None:

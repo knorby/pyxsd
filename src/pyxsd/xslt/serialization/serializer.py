@@ -1,8 +1,8 @@
 """Serialization on XDM sequences, plus encoding and destination writing.
 
-Producing the string never touches the filesystem or network.  Encoding and
-the byte-order mark are applied only by :meth:`Serializer.write`, which writes
-to a binary stream or an explicitly supplied path.
+Producing the string never touches the filesystem or network. Encoding and
+the byte-order mark are applied during byte-budgeted delivery or writing to
+a binary stream or an explicitly supplied path.
 
 The output method is chosen here and nowhere else: ``_METHODS`` is the one
 method-support source, so parameter validation and delivery agree on exactly
@@ -12,9 +12,9 @@ which methods exist.
 from __future__ import annotations
 
 import codecs
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from os import PathLike
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pyxsd.xdm import XdmItem
 from pyxsd.xslt.errors import XsltSerializationError
@@ -22,6 +22,9 @@ from pyxsd.xslt.serialization.json import serialize_adaptive, serialize_json
 from pyxsd.xslt.serialization.parameters import SerializationParameters, method_local_name
 from pyxsd.xslt.serialization.text import serialize_text
 from pyxsd.xslt.serialization.xml import normalize_sequence, serialize_markup
+
+if TYPE_CHECKING:
+    from pyxsd.xslt.runtime.frames import ExecutionBudget
 
 __all__ = ["Serializer"]
 
@@ -92,19 +95,57 @@ class Serializer:
         sequence: Iterable[XdmItem],
         parameters: SerializationParameters | Mapping[str, Any] | None,
         destination: Any,
+        *,
+        _budget: ExecutionBudget | None = None,
     ) -> None:
         """Encode and write one serialized sequence to a binary destination."""
         resolved = cls._parameters(parameters)
-        data = cls.encode(cls.serialize(sequence, resolved), resolved)
+        value = cls.serialize(sequence, resolved)
+        chunks: Iterable[bytes]
+        if _budget is None or _budget.limits.max_output_bytes is None:
+            chunks = (cls.encode(value, resolved),)
+        else:
+            chunks = cls._budgeted_encoding(value, resolved, _budget)
         write = getattr(destination, "write", None)
         if callable(write):
-            write(data)
+            for chunk in chunks:
+                write(chunk)
             return
         if isinstance(destination, (str, bytes, PathLike)):
             with open(destination, "wb") as stream:
-                stream.write(data)
+                for chunk in chunks:
+                    stream.write(chunk)
             return
         raise TypeError("destination must provide write() or be a filesystem path")
+
+    @classmethod
+    def _budgeted_encoding(
+        cls, value: str, parameters: SerializationParameters, budget: ExecutionBudget
+    ) -> Iterator[bytes]:
+        from pyxsd.xslt.runtime.frames import resource_error
+
+        for chunk in cls._encode_chunks(value, parameters):
+            allowed, attempted = budget._take_output_chunk(len(chunk))
+            if allowed:
+                yield chunk[:allowed]
+            if allowed != len(chunk):
+                raise resource_error(
+                    budget.exhaustion("output byte", "max_output_bytes", attempted)
+                )
+
+    @classmethod
+    def _encode_chunks(cls, value: str, parameters: SerializationParameters) -> Iterator[bytes]:
+        codec, byte_order_mark = cls._encoding(parameters)
+        if byte_order_mark:
+            yield byte_order_mark
+        encoder = codecs.getincrementalencoder(codec)()
+        size = 4096
+        try:
+            for start in range(0, len(value), size):
+                yield encoder.encode(value[start : start + size])
+            yield encoder.encode("", final=True)
+        except UnicodeEncodeError as error:
+            raise cls._unrepresentable(codec, error) from error
 
     @classmethod
     def encode(
@@ -116,7 +157,7 @@ class Serializer:
         return cls._encode(value, cls._parameters(parameters))
 
     @staticmethod
-    def _encode(value: str, parameters: SerializationParameters) -> bytes:
+    def _encoding(parameters: SerializationParameters) -> tuple[str, bytes]:
         canonical = codecs.lookup(parameters.encoding).name
         codec = canonical
         byte_order_mark = b""
@@ -124,14 +165,20 @@ class Serializer:
             codec, byte_order_mark = _ENDIAN_CODECS[canonical]
         elif canonical == "utf-8":
             byte_order_mark = b"\xef\xbb\xbf"
+        return codec, byte_order_mark if parameters.byte_order_mark else b""
+
+    @staticmethod
+    def _unrepresentable(codec: str, error: UnicodeEncodeError) -> XsltSerializationError:
+        return XsltSerializationError(
+            f"the result contains a character not representable in {codec}",
+            code="SERE0008",
+            cause=error,
+        )
+
+    @classmethod
+    def _encode(cls, value: str, parameters: SerializationParameters) -> bytes:
+        codec, byte_order_mark = cls._encoding(parameters)
         try:
-            data = value.encode(codec)
+            return byte_order_mark + value.encode(codec)
         except UnicodeEncodeError as error:
-            raise XsltSerializationError(
-                f"the result contains a character not representable in {codec}",
-                code="SERE0008",
-                cause=error,
-            ) from error
-        if parameters.byte_order_mark and byte_order_mark:
-            return byte_order_mark + data
-        return data
+            raise cls._unrepresentable(codec, error) from error

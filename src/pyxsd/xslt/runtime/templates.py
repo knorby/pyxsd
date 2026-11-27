@@ -558,6 +558,7 @@ def rule_frame(
             rule_context,
             locals=locals_,
             rule_context=active_rule,
+            count_output=context.count_output and conversion is None,
         ),
         location=rule.pattern.context.location,
         conversion=conversion,
@@ -611,6 +612,7 @@ def apply_frame(
     group: object = _INHERIT,
     grouping_key: object = _INHERIT,
     final_output: bool = True,
+    count_output: bool = False,
 ) -> Frame:
     effective_group, effective_grouping_key = invocation._inherited_group(group, grouping_key)
     state = _ApplyState(
@@ -632,6 +634,7 @@ def apply_frame(
             mode=mode,
             tunnel_parameters=tunnel_parameters,
             final_output=final_output,
+            count_output=count_output,
         ),
         tail=tail,
         group=effective_group,
@@ -686,6 +689,8 @@ def step_apply(invocation: _Invocation, frame: Frame) -> FrameResult:
     if rule is None:
         builtin = builtin_step(invocation, item, state, resume, tail)
         if builtin is not None:
+            if frame.context.count_output and isinstance(builtin, Continue):
+                invocation._admit_output(builtin.frame.values[len(resume.values) :], frame.context)
             return builtin
         return Continue(replace(frame, program=next_state))
     child = rule_frame(
@@ -696,6 +701,7 @@ def step_apply(invocation: _Invocation, frame: Frame) -> FrameResult:
             package_name=state.package_name,
             tunnel_parameters=state.tunnel_parameters,
             final_output=frame.context.final_output,
+            count_output=frame.context.count_output,
         ),
         state.template_parameters,
         mode_package=state.mode_package,
@@ -750,6 +756,7 @@ def builtin_step(
                 group=state.group,
                 grouping_key=state.grouping_key,
                 final_output=resume.context.final_output,
+                count_output=resume.context.count_output,
             )
             return Call(child, resume=resume, tail=tail)
         return None
@@ -773,6 +780,7 @@ def builtin_step(
                 group=state.group,
                 grouping_key=state.grouping_key,
                 final_output=resume.context.final_output,
+                count_output=resume.context.count_output,
             )
             return Call(child, resume=resume, tail=tail)
         if isinstance(item, XdmNode) and item.kind in (NodeKind.TEXT, NodeKind.ATTRIBUTE):
@@ -805,6 +813,7 @@ def builtin_step(
                 group=state.group,
                 grouping_key=state.grouping_key,
                 final_output=resume.context.final_output,
+                count_output=resume.context.count_output,
             )
             return Call(child, resume=resume, tail=tail)
         return None
@@ -844,6 +853,7 @@ def builtin_step(
                 group=state.group,
                 grouping_key=state.grouping_key,
                 final_output=resume.context.final_output,
+                count_output=resume.context.count_output,
             )
             return Call(child, resume=resume, tail=tail)
         return None
@@ -1104,6 +1114,7 @@ def apply_templates_step(
         mode_package=mode_package,
         group=frame.group,
         grouping_key=frame.grouping_key,
+        count_output=context.count_output,
     )
     return Call(
         child,
@@ -1268,6 +1279,7 @@ def apply_templates(
     package_name: str | None = None,
     mode_package: str | None = None,
     final_output: bool = True,
+    count_output: bool = False,
 ) -> XdmSequence:
     invocation._check_typed_mode(items, mode, mode_package)
     frame = apply_frame(
@@ -1279,6 +1291,7 @@ def apply_templates(
         package_name=package_name,
         mode_package=mode_package,
         final_output=final_output,
+        count_output=count_output,
     )
     with invocation._merge_scope(None, None, ()):
         return cast(XdmSequence, invocation.execute_frame(frame))
@@ -1404,4 +1417,5 @@ def execute_apply_templates(
         package_name=context.package_name,
         mode_package=mode_package,
         final_output=context.final_output,
+        count_output=context.count_output,
     )
