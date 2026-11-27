@@ -403,9 +403,10 @@ class TransformationResult:
 
         Encoded bytes share the invocation's ``max_output_bytes`` budget with
         stylesheet delivery, nested transforms, and previous writes. Each
-        write encodes again. Raise the limit or set it to ``None`` to allow
-        more writes. On failure a binary destination can retain the prefix
-        written so far; a path opened by this call is closed without removal.
+        write encodes again. To deliver again after exhausting the budget,
+        run the transformation with a larger limit or with ``None``.
+        On failure a binary destination can retain the prefix written so far;
+        a path opened by this call is closed without removal.
         """
         entry = self._entry(uri)
         if entry.output_uri is None:

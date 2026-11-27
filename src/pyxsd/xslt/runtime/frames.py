@@ -259,7 +259,7 @@ class ExecutionBudget:
         return True
 
     def take_output_bytes(self, count: int) -> bool:
-        """Record encoded serialized output bytes, returning whether they fit."""
+        """Record bytes for a thread-confined counter; use reservations for writes."""
         total = self.output_bytes + count
         if self.limits.max_output_bytes is not None and total > self.limits.max_output_bytes:
             return False

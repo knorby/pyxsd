@@ -13,6 +13,7 @@ from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltDynamicError, XsltSerializationError
 from pyxsd.xslt.results import delivered_entries
 from pyxsd.xslt.runtime.frames import ExecutionBudget, ExecutionLimits
+from pyxsd.xslt.serialization import Serializer
 
 
 def _compile(body, *, output=""):
@@ -56,21 +57,27 @@ def test_resource_bytes_count_xml_and_shared_text_json_octets(tmp_path):
     _assert_exhausted(caught.value, "resource byte", "max_resource_bytes", 5, 6)
 
 
-def test_node_budget_stops_before_the_rest_of_a_raw_result_is_constructed(tmp_path):
+def test_node_budget_stops_before_the_rest_of_a_raw_result_is_constructed(monkeypatch):
     compiled = _compile(
         '<xsl:for-each select="1 to 10000">'
         '<xsl:if test=". eq 8"><xsl:sequence select="error()"/></xsl:if><item/>'
         "</xsl:for-each>"
     )
-    output = tmp_path / "must-not-write.xml"
-    with pytest.raises(XsltDynamicError) as caught:
-        compiled.transform(
-            delivery="raw",
-            output_uri=output.as_uri(),
-            limits=ExecutionLimits(max_output_nodes=3),
-        )
-    _assert_exhausted(caught.value, "output", "max_output_nodes", 3, 4)
-    assert not output.exists()
+    serialized = []
+    serialize = Serializer.serialize
+
+    def record_serialization(*args, **kwargs):
+        serialized.append(True)
+        return serialize(*args, **kwargs)
+
+    monkeypatch.setattr(Serializer, "serialize", record_serialization)
+    for delivery in ("raw", "stylesheet"):
+        with pytest.raises(XsltDynamicError) as caught:
+            compiled.transform(delivery=delivery, limits=ExecutionLimits(max_output_nodes=3))
+        _assert_exhausted(caught.value, "output", "max_output_nodes", 3, 4)
+        assert not serialized
+    assert _compile("<item/>").transform().principal_entry.serialized
+    assert serialized == [True]
 
 
 @pytest.mark.parametrize("delivery", ["raw", "document", "stylesheet"])
@@ -499,8 +506,19 @@ def test_built_in_templates_admit_text_nodes_during_application():
     limits = ExecutionLimits(max_output_nodes=2)
     result = compiled.transform(source, delivery="raw", limits=limits)
     assert [node.string_value for node in result.principal] == ["first", "second"]
+    with_sentinel = XsltProcessor().compile(
+        io.BytesIO(
+            stylesheet(
+                '<xsl:template match="sentinel"><xsl:sequence select="error()"/></xsl:template>'
+            )
+        )
+    )
+    source = b"<a>first<b/>second<sentinel/></a>"
+    with pytest.raises(XsltDynamicError) as sentinel:
+        with_sentinel.transform(source, delivery="raw", limits=limits)
+    assert sentinel.value.code == "FOER0000"
     with pytest.raises(XsltDynamicError) as caught:
-        compiled.transform(source, delivery="raw", limits=ExecutionLimits(max_output_nodes=1))
+        with_sentinel.transform(source, delivery="raw", limits=ExecutionLimits(max_output_nodes=1))
     _assert_exhausted(caught.value, "output", "max_output_nodes", 1, 2)
 
 
@@ -590,3 +608,27 @@ def test_nested_transform_inherits_annotation_capacity(tmp_path, count):
     assert compiled.transform(
         delivery="raw", limits=ExecutionLimits(max_annotations=None)
     ).principal[0].string_value == str(count)
+
+
+def test_stateful_encoding_preserves_one_shot_bytes_and_prefixes():
+    text = "\u65e5" * 9000
+    compiled = _compile(
+        f"<xsl:text>{text}</xsl:text>",
+        output='<xsl:output method="text" encoding="ISO-2022-JP"/>',
+    )
+    expected = text.encode("iso2022_jp")
+    limit = 9000
+    small = compiled.transform(
+        delivery="raw", output_uri=URI, limits=ExecutionLimits(max_output_bytes=limit)
+    )
+    prefix = io.BytesIO()
+    with pytest.raises(XsltDynamicError) as caught:
+        small.write(prefix)
+    assert caught.value.code == "PYXSD-XSLT-001"
+    assert prefix.getvalue() == expected[:limit]
+    for cap in (len(expected), None):
+        complete = io.BytesIO()
+        compiled.transform(
+            delivery="raw", output_uri=URI, limits=ExecutionLimits(max_output_bytes=cap)
+        ).write(complete)
+        assert complete.getvalue() == expected

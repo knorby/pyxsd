@@ -154,7 +154,17 @@ def test_budget_counters_are_invocation_local() -> None:
     assert unlimited.output_bytes == 5
 
 
-@pytest.mark.parametrize("field", ["max_documents", "max_output_nodes", "max_output_bytes"])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_annotations",
+        "max_documents",
+        "max_frames",
+        "max_output_bytes",
+        "max_output_nodes",
+        "max_resource_bytes",
+    ],
+)
 def test_optional_budget_fields_are_validated(field: str) -> None:
     with pytest.raises(TypeError, match=field):
         ExecutionLimits(**{field: True})
@@ -163,6 +173,7 @@ def test_optional_budget_fields_are_validated(field: str) -> None:
     with pytest.raises(ValueError, match=field):
         ExecutionLimits(**{field: 0})
     assert getattr(ExecutionLimits(**{field: 1}), field) == 1
+    assert getattr(ExecutionLimits(**{field: None}), field) is None
 
 
 def test_document_resources_validate_a_budget() -> None:
