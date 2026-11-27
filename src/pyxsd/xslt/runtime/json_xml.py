@@ -96,7 +96,9 @@ def _write_value(
     allowed = {"escaped"} if kind == "string" else set()
     if map_member is not False:
         # Root key metadata is permitted and ignored; a map consumes its member's key.
-        allowed.update(("key", "escaped-key"))
+        allowed.add("key")
+        if map_member is None or kind != "map":
+            allowed.add("escaped-key")
     for attribute in node.attributes:
         if attribute.namespace_uri in (None, _FN_NS) and attribute.name not in allowed:
             raise _invalid_xml(f"unexpected attribute {attribute.name!r} on {node.name!r}")
@@ -150,7 +152,9 @@ def _map_key(child: XdmNode, seen: set[str], raw_keys: set[str] | None) -> str:
     if attribute is None:
         raise _invalid_xml("every map member must have a key attribute")
     key = attribute.string_value
-    preescaped = _attribute_flag(child, "escaped-key")
+    # A map member named fn:map has only a key; its attributes are validated
+    # by _write_value. Do not interpret a disallowed escape flag here.
+    preescaped = child.name != f"{{{_FN_NS}}}map" and _attribute_flag(child, "escaped-key")
     escaped = _escape(key, preescaped=preescaped)
     normalized = decode_json_escapes(escaped) if preescaped else key
     if normalized in seen:

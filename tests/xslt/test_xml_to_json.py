@@ -222,6 +222,37 @@ def test_root_key_metadata_and_foreign_attributes_are_ignored(flags: str) -> Non
 
 
 @pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        pytest.param(r'<map key="\q" escaped-key="true"/>', "{}", id="root-map"),
+        pytest.param('<array><map escaped-key="true"/></array>', None, id="array-member"),
+        pytest.param(
+            r'<map><array key="\u0061" escaped-key="true"/></map>',
+            r'{"\u0061":[]}',
+            id="ordinary-map-member",
+        ),
+        pytest.param('<map><map key="outer"/></map>', '{"outer":{}}', id="map-with-key"),
+        pytest.param(
+            '<map><map key="outer" escaped-key="true"/></map>', None, id="map-with-escaped-key"
+        ),
+        pytest.param(
+            r'<map><map key="\q" escaped-key="true"/></map>',
+            None,
+            id="map-with-malformed-escaped-key",
+        ),
+    ],
+)
+def test_key_attributes_depend_on_member_kind(body: str, expected: str | None) -> None:
+    source = f'<root xmlns="{FN_NS}">{body}</root>'
+    if expected is None:
+        with pytest.raises(XsltError) as caught:
+            _evaluate("xml-to-json(/*/*)", source)
+        assert caught.value.code == "FOJS0006"
+    else:
+        assert _evaluate("xml-to-json(/*/*)", source) == (XdmAtomic.string(expected),)
+
+
+@pytest.mark.parametrize(
     "members",
     [
         "<null key='same'/><string key='same'>other kind</string>",
