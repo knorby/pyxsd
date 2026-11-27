@@ -55,6 +55,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
+from threading import local
 from types import MethodType, SimpleNamespace
 from typing import Any, cast
 from xml.etree import ElementTree as ET
@@ -4080,19 +4081,15 @@ def _install_function_overrides(
         )
 
 
-class _BridgeHolder:
-    """Per-evaluation state of the bucket's parser.
+class _BridgeHolder(local):
+    """Per-thread dynamic slots for evaluations and deferred calls.
 
-    One holder belongs to one bucket.  ``evaluate`` assigns the four fields
-    before the evaluation and restores them afterwards, so a nested evaluation
-    on the same bucket (an ``xsl:evaluate`` inside a predicate, a host callback,
-    pattern matching inside pattern matching) sees its own values and the
-    enclosing evaluation gets its own back.  A bucket's callbacks close over
-    their holder, so concurrent transformations never share a bridge or a
-    mutable callback slot.
+    A bucket's callbacks close over its holder. Its parser cache belongs to one
+    invocation, but function items returned from evaluations on that bucket
+    can run later in separate threads. Each thread installs and restores its
+    own slots, so a nested call still sees its captured values and the enclosing
+    evaluation gets its own back.
     """
-
-    __slots__ = ("bridge", "functions", "overrides", "xpath_context")
 
     def __init__(self) -> None:
         self.bridge: _ValueBridge | None = None
