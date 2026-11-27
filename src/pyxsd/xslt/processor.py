@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from decimal import Decimal, InvalidOperation
-from functools import cmp_to_key, lru_cache, partial
+from functools import cmp_to_key, lru_cache
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import urljoin, urlsplit
@@ -6380,12 +6380,7 @@ class _Invocation(Transformation):
         self._numbering_counters: dict[object, tuple[_NumberPlan, NumberingCounter | None]] = {}
         self._xpath_cache = XPathParserCache()
         self._adapter_registry = _XdmAdapterRegistry(
-            annotations=_AnnotationTable(
-                self.limits.max_annotations,
-                exhaustion=partial(
-                    self.budget.exhaustion, "atomic type-annotation", "max_annotations"
-                ),
-            ),
+            annotations=_AnnotationTable(charge=self.budget.charge_annotation),
         )
         #: ``cache="yes"`` stylesheet-function results, scoped to one
         #: transformation invocation.  Arguments are the full XDM sequences,

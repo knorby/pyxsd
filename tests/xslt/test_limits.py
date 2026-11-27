@@ -581,8 +581,8 @@ def test_disabling_annotation_capacity_admits_more_than_the_default():
     )
 
 
-@pytest.mark.parametrize("count", [3, 262_145])
-def test_nested_transform_inherits_annotation_capacity(tmp_path, count):
+@pytest.mark.parametrize(("parent_count", "count"), [(1, 3), (2, 262_145)])
+def test_nested_transform_inherits_annotation_capacity(tmp_path, parent_count, count):
     child = stylesheet(
         '<xsl:template name="xsl:initial-template">'
         f'<xsl:variable name="values" select="1000 to {999 + count}"/>'
@@ -593,21 +593,23 @@ def test_nested_transform_inherits_annotation_capacity(tmp_path, count):
     path = tmp_path / "nested-annotation-limit.xsl"
     path.write_bytes(child)
     compiled = _compile(
+        f'<xsl:variable name="parent" select="1000 to {999 + parent_count}"/>'
+        '<xsl:sequence select="reverse($parent)"/>'
         '<xsl:sequence select="transform(map{'
         f"'stylesheet-location': '{path.as_uri()}', 'delivery-format': 'raw'"
         '})?output"/>'
     )
-    cap = count - 1
+    cap = parent_count + count - 1
     with pytest.raises(XsltDynamicError) as caught:
         compiled.transform(delivery="raw", limits=ExecutionLimits(max_annotations=cap))
-    _assert_exhausted(caught.value, "atomic type-annotation", "max_annotations", cap, count)
+    _assert_exhausted(caught.value, "atomic type-annotation", "max_annotations", cap, cap + 1)
     assert "nested-annotation-limit.xsl" in str(caught.value)
     assert compiled.transform(
-        delivery="raw", limits=ExecutionLimits(max_annotations=count)
-    ).principal[0].string_value == str(count)
+        delivery="raw", limits=ExecutionLimits(max_annotations=cap + 1)
+    ).principal[-1].string_value == str(count)
     assert compiled.transform(
         delivery="raw", limits=ExecutionLimits(max_annotations=None)
-    ).principal[0].string_value == str(count)
+    ).principal[-1].string_value == str(count)
 
 
 def test_stateful_encoding_preserves_one_shot_bytes_and_prefixes():

@@ -194,7 +194,9 @@ def test_two_boolean_types_with_one_payload_fail_explicitly() -> None:
 def test_standalone_xpath_keeps_its_default_annotation_limit() -> None:
     from pyxsd.xpath.engine import XPathEngine
     from pyxsd.xslt.errors import XsltDynamicError
+    from pyxsd.xslt.runtime.frames import ExecutionLimits
 
+    assert ExecutionLimits().max_annotations == _AnnotationTable()._capacity == 262_144
     engine = XPathEngine("3.1")
     compiled = engine.compile("reverse($values)", XPathStaticContext())
     values = tuple(XdmAtomic.integer(i) for i in range(262_145))

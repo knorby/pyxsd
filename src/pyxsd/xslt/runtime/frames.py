@@ -28,7 +28,7 @@ from threading import Lock
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from pyxsd.locations import IssueLocation
-from pyxsd.xpath.environment import Focus
+from pyxsd.xpath.environment import _DEFAULT_MAX_ANNOTATIONS, Focus
 from pyxsd.xslt.errors import IMPLEMENTATION_BUDGET_CODE, XsltDynamicError
 from pyxsd.xslt.runtime.context import EvaluationContext
 
@@ -143,8 +143,11 @@ class ExecutionLimits:
     ``ResourcePolicy.read()`` can allocate a whole resource before handing
     it over; the budget charges its returned bytes at that handoff.
 
-    ``max_annotations`` defaults to 262,144 retained atomic type annotations
-    per invocation. The table retains the values for the invocation's
+    ``max_annotations`` defaults to 262,144 atomic type annotation entries
+    recorded cumulatively across the transformation and its nested calls.
+    It governs runtime tables; static XPath evaluation during stylesheet
+    compilation precedes invocation and uses the XPath engine's own default.
+    Each runtime table retains the values for its invocation's
     lifetime, so disabling the cap allows memory to grow with the number
     of distinct typed values bridged to or from XPath.
 
@@ -172,7 +175,7 @@ class ExecutionLimits:
     max_output_nodes: int | None = None
     max_output_bytes: int | None = None
     max_resource_bytes: int | None = None
-    max_annotations: int | None = 262_144
+    max_annotations: int | None = _DEFAULT_MAX_ANNOTATIONS
 
     def __post_init__(self) -> None:
         _validate_optional_limit("max_frames", self.max_frames)
@@ -189,7 +192,8 @@ class ExecutionBudget:
 
     Frames default to a limit of 100,000; steps, documents, resource bytes,
     output nodes and encoded output bytes default to ``None`` (unlimited).
-    The default annotation cap is 262,144 entries per invocation's table.
+    The default annotation cap is 262,144 entries across runtime tables,
+    including those in nested invocations.
     Nested transforms inherit all settings. Frames are counted
     while live; the other limits are cumulative, including later result
     writes. A failed charge is reported as an uncatchable
@@ -198,6 +202,7 @@ class ExecutionBudget:
 
     __slots__ = (
         "_output_lock",
+        "annotations",
         "documents",
         "frames",
         "limits",
@@ -214,6 +219,7 @@ class ExecutionBudget:
         if not isinstance(limits, ExecutionLimits):
             raise TypeError("limits must be an ExecutionLimits value")
         self.limits = limits
+        self.annotations = 0
         self.steps = 0
         self.frames = 0
         self.documents = 0
@@ -276,6 +282,18 @@ class ExecutionBudget:
             raise resource_error(
                 self.exhaustion("resource byte", "max_resource_bytes", self.resource_bytes)
             )
+
+    def charge_annotation(self) -> None:
+        """Admit one new annotation across the invocation's runtime tables."""
+        limit = self.limits.max_annotations
+        if limit is None:
+            return
+        attempted = self.annotations + 1
+        if attempted > limit:
+            raise resource_error(
+                self.exhaustion("atomic type-annotation", "max_annotations", attempted)
+            )
+        self.annotations = attempted
 
     def _take_output_chunk(self, count: int) -> tuple[int, int]:
         """Reserve a chunk's allowed prefix and return (allowed, attempted total)."""

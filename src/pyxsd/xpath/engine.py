@@ -120,6 +120,7 @@ from pyxsd.xdm.values import signature_from_sequence_types
 from pyxsd.xpath import continuation
 from pyxsd.xpath.continuation import ContinuationMachine, XPathClosure
 from pyxsd.xpath.environment import (
+    _DEFAULT_MAX_ANNOTATIONS,
     ExpressionEnvironment,
     Focus,
     FocusKind,
@@ -1114,17 +1115,17 @@ class _AnnotationTable(dict[int, tuple[Any, str]]):
     Never evict: losing an annotation can change a later ``instance of``.
     """
 
-    __slots__ = ("_capacity", "_exhaustion")
+    __slots__ = ("_capacity", "_charge")
 
     def __init__(
         self,
-        capacity: int | None = 262_144,
+        capacity: int = _DEFAULT_MAX_ANNOTATIONS,
         *,
-        exhaustion: Callable[[int], str] | None = None,
+        charge: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self._capacity = capacity
-        self._exhaustion = exhaustion
+        self._charge = charge
 
     def record(self, value: Any, annotation: str) -> None:
         """Keep the value beside its identity, rejecting conflicting type claims."""
@@ -1137,14 +1138,13 @@ class _AnnotationTable(dict[int, tuple[Any, str]]):
                 "two dynamic types share one atomic value identity; "
                 f"{existing[1]!r} and {annotation!r} cannot both be preserved"
             )
-        if self._capacity is not None and len(self) >= self._capacity:
-            message = (
+        if self._charge is not None:
+            self._charge()
+        elif len(self) >= self._capacity:
+            raise _annotation_resource_error(
                 "the transformation exceeded its atomic type-annotation capacity; "
                 "an annotation is still reachable and cannot be discarded"
-                if self._exhaustion is None
-                else self._exhaustion(len(self) + 1)
             )
-            raise _annotation_resource_error(message)
         self[identity] = (value, annotation)
 
 
