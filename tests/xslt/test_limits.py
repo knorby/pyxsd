@@ -8,7 +8,7 @@ import pytest
 from tests.xslt.support import stylesheet
 
 from pyxsd.resource_policy import ResourceData
-from pyxsd.xdm import XdmMap
+from pyxsd.xdm import XdmAtomic, XdmMap
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltDynamicError, XsltSerializationError
 from pyxsd.xslt.results import delivered_entries
@@ -526,3 +526,67 @@ def test_output_walk_deduplicates_owned_attributes_and_excludes_namespaces():
     with pytest.raises(XsltDynamicError) as caught:
         compiled.transform(source, delivery="raw", limits=ExecutionLimits(max_output_nodes=1))
     _assert_exhausted(caught.value, "output", "max_output_nodes", 1, 2)
+
+
+ANNOTATION_BODY = '<xsl:param name="values"/><xsl:sequence select="reverse($values)"/>'
+
+
+def _annotation_values(count):
+    return tuple(XdmAtomic.integer(n) for n in range(1000, 1000 + count))
+
+
+def test_annotation_capacity_is_inclusive():
+    compiled = _compile(ANNOTATION_BODY)
+    values = _annotation_values(3)
+    limits = ExecutionLimits(max_annotations=2)
+    assert (
+        compiled.transform(
+            delivery="raw", template_parameters={"values": values[:2]}, limits=limits
+        ).principal
+        == values[:2][::-1]
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(delivery="raw", template_parameters={"values": values}, limits=limits)
+    _assert_exhausted(caught.value, "atomic type-annotation", "max_annotations", 2, 3)
+
+
+def test_disabling_annotation_capacity_admits_more_than_the_default():
+    compiled = _compile(ANNOTATION_BODY)
+    values = _annotation_values(262_145)
+    kwargs = {"delivery": "raw", "template_parameters": {"values": values}}
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(**kwargs)
+    _assert_exhausted(caught.value, "atomic type-annotation", "max_annotations", 262_144, 262_145)
+    assert (
+        compiled.transform(**kwargs, limits=ExecutionLimits(max_annotations=None)).principal
+        == values[::-1]
+    )
+
+
+@pytest.mark.parametrize("count", [3, 262_145])
+def test_nested_transform_inherits_annotation_capacity(tmp_path, count):
+    child = stylesheet(
+        '<xsl:template name="xsl:initial-template">'
+        f'<xsl:variable name="values" select="1000 to {999 + count}"/>'
+        '<xsl:variable name="reversed" select="reverse($values)"/>'
+        '<xsl:value-of select="count($reversed)"/>'
+        "</xsl:template>"
+    )
+    path = tmp_path / "nested-annotation-limit.xsl"
+    path.write_bytes(child)
+    compiled = _compile(
+        '<xsl:sequence select="transform(map{'
+        f"'stylesheet-location': '{path.as_uri()}', 'delivery-format': 'raw'"
+        '})?output"/>'
+    )
+    cap = count - 1
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(delivery="raw", limits=ExecutionLimits(max_annotations=cap))
+    _assert_exhausted(caught.value, "atomic type-annotation", "max_annotations", cap, count)
+    assert "nested-annotation-limit.xsl" in str(caught.value)
+    assert compiled.transform(
+        delivery="raw", limits=ExecutionLimits(max_annotations=count)
+    ).principal[0].string_value == str(count)
+    assert compiled.transform(
+        delivery="raw", limits=ExecutionLimits(max_annotations=None)
+    ).principal[0].string_value == str(count)

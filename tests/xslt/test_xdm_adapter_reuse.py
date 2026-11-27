@@ -67,10 +67,8 @@ def _registry_recorder(monkeypatch: pytest.MonkeyPatch) -> list[_XdmAdapterRegis
     recorded: list[_XdmAdapterRegistry] = []
     original = _XdmAdapterRegistry.__init__
 
-    def record(
-        self: _XdmAdapterRegistry, *, max_documents: int = 512, max_nodes: int = 250_000
-    ) -> None:
-        original(self, max_documents=max_documents, max_nodes=max_nodes)
+    def record(self: _XdmAdapterRegistry, **options: Any) -> None:
+        original(self, **options)
         recorded.append(self)
 
     monkeypatch.setattr(_XdmAdapterRegistry, "__init__", record)

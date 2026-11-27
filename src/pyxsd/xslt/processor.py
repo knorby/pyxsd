@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from decimal import Decimal, InvalidOperation
-from functools import cmp_to_key, lru_cache
+from functools import cmp_to_key, lru_cache, partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import urljoin, urlsplit
@@ -58,6 +58,7 @@ from pyxsd.xpath.engine import (
     CompiledExpression,
     XPathEngine,
     XPathParserCache,
+    _AnnotationTable,
     _XdmAdapterRegistry,
     standalone_node_adapter,
 )
@@ -6378,7 +6379,14 @@ class _Invocation(Transformation):
         self._numbering: NumberingCache | None = None
         self._numbering_counters: dict[object, tuple[_NumberPlan, NumberingCounter | None]] = {}
         self._xpath_cache = XPathParserCache()
-        self._adapter_registry = _XdmAdapterRegistry()
+        self._adapter_registry = _XdmAdapterRegistry(
+            annotations=_AnnotationTable(
+                self.limits.max_annotations,
+                exhaustion=partial(
+                    self.budget.exhaustion, "atomic type-annotation", "max_annotations"
+                ),
+            ),
+        )
         #: ``cache="yes"`` stylesheet-function results, scoped to one
         #: transformation invocation.  Arguments are the full XDM sequences,
         #: so a node or atomic value keeps identity.

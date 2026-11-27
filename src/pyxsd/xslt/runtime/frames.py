@@ -133,18 +133,32 @@ class ExecutionLimits:
     """Explicit budgets for one transformation and its nested invocations.
 
     ``max_frames`` defaults to 100,000 live explicit frames. The other
-    limits default to ``None``: ``max_steps`` bounds scheduler dispatches,
-    ``max_documents`` bounds loaded XML documents, and ``max_resource_bytes``
-    bounds resource octets acquired by the transformation.
+    limits described here default to ``None`` unless stated otherwise.
+    ``max_steps`` bounds scheduler dispatches and ``max_documents`` bounds
+    loaded XML documents.
+
+    ``max_resource_bytes`` bounds octets the transformation runtime acquires.
+    Top-level stylesheet compilation reads and schema loads made by
+    ``xsl:import-schema`` are outside this budget. A host
+    ``ResourcePolicy.read()`` can allocate a whole resource before handing
+    it over; the budget charges its returned bytes at that handoff.
+
+    ``max_annotations`` defaults to 262,144 retained atomic type annotations
+    per invocation. The table retains the values for the invocation's
+    lifetime, so disabling the cap allows memory to grow with the number
+    of distinct typed values bridged to or from XPath.
 
     ``max_output_nodes`` counts raw principal and secondary output nodes,
     their descendants and owned attributes, once by identity per result
     entry. Namespace nodes and implicit normalization document nodes are
     excluded; text nodes that normalization merges are counted separately.
+    This bounds delivered nodes, not memory: provisional constructor and
+    copy trees are built before their final nodes can be admitted.
     ``max_output_bytes`` bounds bytes encoded for stylesheet delivery and
     later :meth:`~pyxsd.xslt.results.TransformationResult.write` calls.
-    Writing a result again spends the same budget; raise the limit or use
-    ``None`` to allow more writes.
+    Writing a result again spends the same budget. To deliver again after
+    exhausting that budget, run the transformation with a larger limit or
+    with ``None``.
 
     ``None`` disables any limit. Nested transforms inherit the settings
     unchanged and share the cumulative ledger; frames count while live.
@@ -158,6 +172,7 @@ class ExecutionLimits:
     max_output_nodes: int | None = None
     max_output_bytes: int | None = None
     max_resource_bytes: int | None = None
+    max_annotations: int | None = 262_144
 
     def __post_init__(self) -> None:
         _validate_optional_limit("max_frames", self.max_frames)
@@ -166,6 +181,7 @@ class ExecutionLimits:
         _validate_optional_limit("max_output_nodes", self.max_output_nodes)
         _validate_optional_limit("max_output_bytes", self.max_output_bytes)
         _validate_optional_limit("max_resource_bytes", self.max_resource_bytes)
+        _validate_optional_limit("max_annotations", self.max_annotations)
 
 
 class ExecutionBudget:
@@ -173,7 +189,8 @@ class ExecutionBudget:
 
     Frames default to a limit of 100,000; steps, documents, resource bytes,
     output nodes and encoded output bytes default to ``None`` (unlimited).
-    Nested transforms use the same settings and counters. Frames are counted
+    The default annotation cap is 262,144 entries per invocation's table.
+    Nested transforms inherit all settings. Frames are counted
     while live; the other limits are cumulative, including later result
     writes. A failed charge is reported as an uncatchable
     :class:`~pyxsd.xslt.errors.XsltDynamicError` (``PYXSD-XSLT-001``).
