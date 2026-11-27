@@ -55,6 +55,7 @@ from pyxsd.xpath.functions import (
     format_integer_value,
 )
 from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltSerializationError
+from pyxsd.xslt.runtime.json_xml import xml_to_json
 from pyxsd.xslt.runtime.numbering import DecimalFormat, format_number
 from pyxsd.xslt.serialization import SerializationParameters, Serializer
 
@@ -700,6 +701,7 @@ class XsltContextBridge:
             f"{{{FN_NS}}}collection": ContextFunction(self._collection_function),
             f"{{{FN_NS}}}uri-collection": ContextFunction(self._uri_collection_function),
             f"{{{FN_NS}}}json-doc": ContextFunction(self._json_doc_function),
+            f"{{{FN_NS}}}xml-to-json": ContextFunction(self._xml_to_json_function),
             f"{{{FN_NS}}}system-property": ContextFunction(self._system_property_function),
             f"{{{FN_NS}}}function-available": ContextFunction(self._function_available_function),
             f"{{{FN_NS}}}element-available": ContextFunction(self._element_available_function),
@@ -771,6 +773,21 @@ class XsltContextBridge:
         if self.idref_lookup is not None:
             table[f"{{{FN_NS}}}idref"] = ContextFunction(self._direct_idref, self._dynamic_idref)
         return MappingProxyType(table)
+
+    def _xml_to_json_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        options = None
+        if len(arguments) == 2:
+            if len(arguments[1]) != 1 or not isinstance(arguments[1][0], XdmMap):
+                raise XsltDynamicError("xml-to-json() options must be a map", code="XPTY0004")
+            options = arguments[1][0]
+        source = arguments[0]
+        node = _single_node(source, "xml-to-json() input") if source else None
+        result = xml_to_json(node, options)
+        return () if result is None else (XdmAtomic.string(result),)
 
     def _serialize_function(
         self,
