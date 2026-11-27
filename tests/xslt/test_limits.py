@@ -2,14 +2,17 @@
 
 import io
 import json
+import selectors
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
+from types import SimpleNamespace
 
 import pytest
-from tests.xslt.support import stylesheet
+from tests.xslt import support
+from tests.xslt.support import run_probe, stylesheet
 
 from pyxsd.resource_policy import ResourceData
 from pyxsd.xdm import XdmAtomic, XdmMap
@@ -49,10 +52,86 @@ def _assert_exhausted(error, label, field, limit, amount):
 _CORPUS = Path(__file__).with_name("corpus") / "catalog.xml"
 
 
+def test_outer_deadline_kills_busy_descendants(tmp_path, monkeypatch):
+    fcntl = pytest.importorskip("fcntl")
+    lease = tmp_path / "worker.lock"
+    self_exit = tmp_path / "worker-self-exit"
+    original = subprocess.Popen.communicate
+
+    def after_worker_starts(process, *args, timeout=None, **kwargs):
+        if timeout is None:
+            return original(process, *args, **kwargs)
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            assert selector.select(timeout=20), "worker did not start"
+        assert process.stdout.readline().startswith("ready")
+        return original(process, *args, timeout=0, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", after_worker_starts)
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_probe(
+            [
+                sys.executable,
+                "-c",
+                """\
+import subprocess
+import sys
+
+worker = subprocess.Popen([sys.executable, "-c", '''
+import fcntl
+import signal
+import sys
+from pathlib import Path
+
+def expire(*args):
+    Path(sys.argv[2]).touch()
+    raise SystemExit("the outer watchdog left this worker running")
+
+with open(sys.argv[1], "w") as lease:
+    fcntl.flock(lease, fcntl.LOCK_EX)
+    signal.signal(signal.SIGALRM, expire)
+    signal.alarm(25)
+    print("ready", flush=True)
+    while True:
+        pass
+''', *sys.argv[1:]])
+worker.wait()
+""",
+                str(lease),
+                str(self_exit),
+            ],
+            timeout=40,
+        )
+    # Neither process can hold the inherited output pipes or the lease
+    # after run_probe has drained the pipes and reaped the direct child.
+    with lease.open() as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    assert not self_exit.exists(), "the worker exited on its own watchdog"
+
+
+def test_catalog_boundary_accepts_a_completed_corpus_assertion(monkeypatch):
+    from tests.xslt import test_limits
+
+    name = "catalog/catalog-003"
+    result = subprocess.CompletedProcess([], 0, json.dumps([name, "pass", ""]), "")
+    monkeypatch.setattr(test_limits, "run_probe", lambda *args, **kwargs: result)
+    test_pathological_corpus_case_has_a_controlled_verdict(name)
+
+
+def test_probe_uses_windows_process_tree_termination(monkeypatch):
+    commands = []
+    monkeypatch.setattr(support, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(
+        support.subprocess, "run", lambda command, **kwargs: commands.append(command)
+    )
+    support._kill_probe_tree(12345)
+    assert commands == [["taskkill", "/F", "/T", "/PID", "12345"]]
+
+
 @pytest.mark.skipif(not _CORPUS.is_file(), reason="XSLT corpus not checked out")
 @pytest.mark.parametrize("name", ["catalog/catalog-003", "variable/variable-0108"])
 def test_pathological_corpus_case_has_a_controlled_verdict(name):
-    run = subprocess.run(
+    run = run_probe(
         [
             sys.executable,
             "-c",
@@ -70,10 +149,7 @@ print(json.dumps([result.name, result.outcome.value, result.message]))
             name,
         ],
         cwd=Path(__file__).resolve().parents[2],
-        capture_output=True,
-        text=True,
         timeout=40,
-        check=True,
     )
     assert "Traceback (most recent call last)" not in run.stderr
     actual_name, verdict, detail = json.loads(run.stdout)
@@ -137,24 +213,48 @@ def _deep_stylesheet(shape):
     ],
 )
 def test_deep_non_tail_execution_reports_the_bound_that_fired(shape, cap):
-    compiled, source = _deep_stylesheet(shape)
-    with pytest.raises(XsltDynamicError) as caught:
-        compiled.transform(source, delivery="raw")
-    error = caught.value
-    assert type(error) is XsltDynamicError
-    assert error.code == "PYXSD-XSLT-001"
-    assert error.catchable is False
+    # A fresh interpreter gives each XPath/XSLT shape the same host call stack,
+    # independently of the pytest runner and its plugins.
+    run = run_probe(
+        [
+            sys.executable,
+            "-c",
+            """
+import json
+import sys
+from tests.xslt.test_limits import _deep_stylesheet
+from pyxsd.xslt.errors import XsltDynamicError
+from pyxsd.xslt.runtime.frames import ExecutionLimits
+
+compiled, source = _deep_stylesheet(sys.argv[1])
+results = []
+for limits in (ExecutionLimits(), ExecutionLimits(max_frames=int(sys.argv[2]))):
+    try:
+        compiled.transform(source, delivery="raw", limits=limits)
+    except XsltDynamicError as error:
+        results.append([type(error).__name__, error.code, error.catchable, error.args[0]])
+print(json.dumps([sys.getrecursionlimit(), results]))
+""",
+            shape,
+            str(cap),
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        timeout=40,
+    )
+    recursion_limit, (stack_error, frame_error) = json.loads(run.stdout)
+    signature = ["XsltDynamicError", "PYXSD-XSLT-001", False]
+    assert stack_error[:3] == frame_error[:3] == signature
     prefix = (
         f"the transformation exceeded the Python recursion limit: "
-        f"Python recursion limit={sys.getrecursionlimit()}, max_frames=100000, frame depth="
+        f"Python recursion limit={recursion_limit}, max_frames=100000, frame depth="
     )
-    message = error.args[0]
+    message = stack_error[3]
     assert message.startswith(prefix)
     assert 0 < int(message.removeprefix(prefix)) < 100_000
-
-    with pytest.raises(XsltDynamicError) as caught:
-        compiled.transform(source, delivery="raw", limits=ExecutionLimits(max_frames=cap))
-    _assert_exhausted(caught.value, "frame", "max_frames", cap, cap + 1)
+    assert frame_error[3] == (
+        f"the transformation exceeded its frame budget: max_frames={cap}, "
+        f"cumulative amount={cap + 1}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -207,6 +307,41 @@ def test_python_stack_diagnostic_when_a_return_continuation_overflows():
         f"the transformation exceeded the Python recursion limit: "
         f"Python recursion limit={sys.getrecursionlimit()}, max_frames=100000, frame depth=0"
     )
+
+
+def _tail_stylesheet(stop):
+    termination = '<xsl:when test="$n = 0"><xsl:sequence select="0"/></xsl:when>' if stop else ""
+    return XsltProcessor().compile(
+        io.BytesIO(
+            stylesheet(
+                f"""<xsl:template name="count">
+                  <xsl:param name="n" as="xs:integer"/>
+                  <xsl:choose>{termination}<xsl:when test="true()">
+                    <xsl:call-template name="count">
+                      <xsl:with-param name="n" select="$n - 1"/>
+                    </xsl:call-template>
+                  </xsl:when></xsl:choose>
+                </xsl:template>
+                <xsl:template name="xsl:initial-template">
+                  <xsl:call-template name="count"><xsl:with-param name="n" select="25600"/>
+                  </xsl:call-template>
+                </xsl:template>"""
+            )
+        )
+    )
+
+
+def test_safe_tail_calls_do_not_consume_additional_live_frames():
+    result = _tail_stylesheet(True).transform(delivery="raw", limits=ExecutionLimits(max_frames=8))
+    assert result.principal == (XdmAtomic.integer(0),)
+
+
+def test_step_budget_stops_unbounded_tail_calls_within_the_frame_budget():
+    with pytest.raises(XsltDynamicError) as caught:
+        _tail_stylesheet(False).transform(
+            delivery="raw", limits=ExecutionLimits(max_frames=8, max_steps=64)
+        )
+    _assert_exhausted(caught.value, "step", "max_steps", 64, 65)
 
 
 def test_resource_bytes_count_xml_and_shared_text_json_octets(tmp_path):

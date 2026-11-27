@@ -58,7 +58,6 @@ from decimal import Decimal
 from threading import local
 from types import MethodType, SimpleNamespace
 from typing import Any, cast
-from weakref import proxy
 from xml.etree import ElementTree as ET
 
 from elementpath import XPathContext
@@ -4143,12 +4142,11 @@ class _XsltXPathContext(XPathContext):
 
 
 class _DocumentBindings(Mapping[str, _XdmDocumentAdapter]):
-    """Adapt available documents on first lookup in this dynamic context."""
+    """Adapt documents on first lookup and keep the bridge alive with the context."""
 
     def __init__(self, documents: Mapping[str, XdmDocument], bridge: _ValueBridge) -> None:
         self._documents = documents
-        # The bridge already owns the context, including in deferred calls.
-        self._bridge = proxy(bridge)
+        self._bridge = bridge
         self._resolved: dict[str, _XdmDocumentAdapter] = {}
 
     def __getitem__(self, uri: str) -> _XdmDocumentAdapter:
@@ -4214,9 +4212,8 @@ def _build_context(
     else:  # pragma: no cover - Focus validates this
         raise ValueError("focus item is missing")
     if environment.documents:
-        # The elementpath constructor eagerly copies its documents argument.
-        # Its lookups use the mapping interface and shallow context copies
-        # share these bindings for the remainder of the evaluation.
+        # Install these bindings directly so context creation doesn't adapt
+        # every available tree. Shallow context copies share the mapping.
         cast(Any, context).documents = _DocumentBindings(environment.documents, bridge)
     if focus.kind is not FocusKind.ABSENT:
         context.position = focus.position

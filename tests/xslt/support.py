@@ -9,7 +9,12 @@ of the surrounding stylesheet wrapper.
 from __future__ import annotations
 
 import io
+import os
+import signal
+import subprocess
 from collections.abc import Mapping
+from contextlib import suppress
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
@@ -20,6 +25,42 @@ XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 
 _NO_NAMESPACES: Mapping[str, str] = MappingProxyType({})
+
+
+def _kill_probe_tree(pid: int) -> None:
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+    else:
+        with suppress(ProcessLookupError):
+            os.killpg(pid, signal.SIGKILL)
+
+
+def run_probe(
+    command: list[str],
+    *,
+    timeout: float,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a deadline-bounded probe and terminate its worker tree on timeout."""
+    with subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=os.name != "nt",
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_probe_tree(process.pid)
+            process.communicate()
+            raise
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        result.check_returncode()
+        return result
 
 
 def stylesheet(

@@ -15,16 +15,18 @@ and adapter identity, never with a wall clock.
 
 from __future__ import annotations
 
+import gc
 import io
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from copy import copy
 from typing import Any
 
 import pytest
 from tests.xslt.support import stylesheet as _stylesheet
 
 import pyxsd.xpath.engine as engine_module
-from pyxsd.xdm import XdmAtomic
+from pyxsd.xdm import XdmAtomic, XdmFunction
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xpath.engine import (
     XPathEngine,
@@ -208,6 +210,31 @@ def test_document_bindings_memoize_registry_and_ephemeral_adapters(
     assert documents["r"].xdm is refused
     assert registry.lookup(refused) is None
     assert reads == [admitted, refused]
+
+
+def test_deferred_function_reads_a_document_after_its_creating_evaluation() -> None:
+    document = _document()
+    registry = _XdmAdapterRegistry()
+    environment = ExpressionEnvironment(documents={"urn:doc": document}, adapter_registry=registry)
+    engine = XPathEngine("3.1")
+    (deferred,) = engine.evaluate(engine.compile("function() { doc('urn:doc') }"), environment)
+    assert isinstance(deferred, XdmFunction)
+    assert registry.lookup(document) is None
+    gc.collect()
+    assert deferred.invoke(()) == (document,)
+
+
+def test_copied_context_keeps_unread_document_bindings_alive() -> None:
+    document = _document()
+    static = XPathStaticContext()
+    environment = ExpressionEnvironment(documents={"urn:doc": document})
+    bridge = _ValueBridge(None, static, environment)
+    original = engine_module._build_context(static, environment, Focus.absent(), bridge)
+    context = copy(original)
+    del original, bridge
+    gc.collect()
+    assert context.documents is not None
+    assert context.documents["urn:doc"].xdm is document
 
 
 def test_multi_document_set_operators_are_deterministic_and_total() -> None:

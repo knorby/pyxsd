@@ -1,8 +1,8 @@
 """Heap-resident XSLT frames and the scheduler that executes them.
 
-A transformation never maps one lexical XSLT nesting level to one Python call.
-Every component invocation, template-rule dispatch, and suspended XPath
-evaluation is a :class:`Frame` held by the scheduler's explicit stack.  A frame
+A transformation uses explicit :class:`Frame` objects for component
+invocations, template-rule dispatches, and suspended XPath evaluations.
+Nested schedulers and work within a dispatch can still use the Python stack. A frame
 carries its instruction cursor, lexical variables, focus, return continuation,
 result-builder extent, error handler, component identity, package, and mode.
 
@@ -133,15 +133,21 @@ ContinuationKind: TypeAlias = Literal["resume", "append", "convert"]
 class ExecutionLimits:
     """Explicit budgets for one transformation and its nested invocations.
 
-    ``max_frames`` defaults to 100,000 live explicit frames and bounds
-    heap-scheduled execution, including tail calls and non-tail arithmetic
-    recursion. Mixed XSLT/XPath calls, sequence construction and template
-    push can reach the Python recursion limit first. That raises an
-    uncatchable :class:`~pyxsd.xslt.errors.XsltDynamicError` with code
-    ``PYXSD-XSLT-001``. The other limits described here default to ``None``
-    unless stated otherwise.
-    ``max_steps`` bounds scheduler dispatches and ``max_documents`` bounds
-    loaded XML documents.
+    ``max_frames`` defaults to 100,000 live explicit frames. Non-tail
+    arithmetic recursion keeps frames for its pending work. Mixed XSLT/XPath
+    calls, recursive sequence or node construction, and template push can
+    also accumulate explicit frames, but can reach the Python recursion
+    limit first. A deep XPath path can reach that limit within a single
+    dispatch. Reaching either recursion bound raises an uncatchable
+    :class:`~pyxsd.xslt.errors.XsltDynamicError` with code
+    ``PYXSD-XSLT-001``.
+
+    A safe tail call replaces its frame in place. Use ``max_steps`` to
+    bound the number of scheduler dispatches in a tail-call chain;
+    ``max_frames`` does not bound the length of that chain. ``max_steps``
+    does not interrupt work within one dispatch. ``max_documents`` bounds
+    loaded XML documents. These and other limits described here default
+    to ``None`` unless stated otherwise.
 
     ``max_resource_bytes`` bounds octets the transformation runtime acquires.
     Top-level stylesheet compilation reads and schema loads made by

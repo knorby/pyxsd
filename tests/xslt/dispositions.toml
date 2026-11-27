@@ -1192,7 +1192,7 @@ cases = [
   "regex-syntax-xslt20/regex-syntax-xslt20-0987",
   "variable/variable-0108",
 ]
-reason = "Bounded probes returned controlled timeouts at the harness's 5 s case budget. Samples showed catalog parsing and adapter construction, XDM sequence conversion, and XPath setup in pattern predicates and the regex syntax test. In variable-0108, per-evaluation environment construction (_environment, function_overrides and _override_symbol) under the stylesheet's pairwise span predicates is a measured cost, not a hang. Performance work remains a follow-up; these timeouts do not establish semantic verdicts."
+reason = "Bounded probes returned controlled timeouts at the harness's 5 s case budget. Samples showed catalog parsing and adapter construction, XDM sequence conversion, and XPath setup in pattern predicates and the regex syntax test. For variable-0108 the xslt20 sample shows value copying; the xslt30 profile of the same stylesheet shows the shared cost of per-evaluation environment construction (_environment, function_overrides and _override_symbol) under pairwise span predicates. Performance work remains a follow-up; these timeouts do not establish semantic verdicts."
 links = ["https://github.com/w3c/xslt30-test", "https://www.w3.org/TR/xslt-30/"]
 
 [[dispositions]]

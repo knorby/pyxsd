@@ -14,8 +14,6 @@ import io
 import json
 import os
 import re
-import signal
-import subprocess
 import sys
 import time
 import tomllib
@@ -23,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from threading import Barrier
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -59,7 +58,7 @@ from tests.xslt.suite import (
     run_parallel,
     with_unicode_version,
 )
-from tests.xslt.support import stylesheet
+from tests.xslt.support import run_probe, stylesheet
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORPUS = REPO_ROOT / "tests" / "xslt" / "corpus" / "catalog.xml"
@@ -816,6 +815,21 @@ def _deadline_worker(payload):
         return _run_payload(payload)
 
 
+def test_parallel_accepts_an_empty_budgeted_selection():
+    assert run_parallel((), SUITE_PROFILES["xslt30"], timeout=5, jobs=4) == ()
+
+
+def test_deadline_worker_aborts_barrier_when_setup_fails(monkeypatch, tmp_path):
+    from threading import BrokenBarrierError
+
+    barrier = Barrier(2)
+    monkeypatch.setattr(sys.modules[__name__], "Barrier", lambda parties: barrier)
+    monkeypatch.setenv("PYXSD_TEST_XSLT_WORKER_PID", str(tmp_path / "missing" / "worker.pid"))
+    with pytest.raises(BrokenBarrierError):
+        _deadline_case(SimpleNamespace(local_name="case-001"), SUITE_PROFILES["xslt30"])
+    assert barrier.broken
+
+
 @pytest.mark.parametrize(("jobs", "count"), [(1, 2), (2, 1), (2, 2)])
 def test_parallel_deadline_reaps_an_uninterruptible_worker(tmp_path, jobs, count):
     names = ("case-001", "case-002")[:count]
@@ -825,7 +839,7 @@ def test_parallel_deadline_reaps_an_uninterruptible_worker(tmp_path, jobs, count
             RIGHT_SHEET, encoding="utf-8"
         )
     pid_path = tmp_path / "worker.pid"
-    with subprocess.Popen(
+    run = run_probe(
         [
             sys.executable,
             "-c",
@@ -853,22 +867,9 @@ print(json.dumps([
         ],
         env={**os.environ, "PYXSD_TEST_XSLT_WORKER_PID": str(pid_path)},
         cwd=REPO_ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=os.name == "posix",
-    ) as run:
-        try:
-            stdout, stderr = run.communicate(timeout=22)
-        except subprocess.TimeoutExpired:
-            if os.name == "posix":
-                os.killpg(run.pid, signal.SIGKILL)
-            else:
-                run.kill()
-            run.communicate()
-            raise
-    assert run.returncode == 0, stderr
-    parent, children, results = json.loads(stdout)
+        timeout=60,
+    )
+    parent, children, results = json.loads(run.stdout)
     assert int(pid_path.read_text(encoding="ascii")) != parent
     assert children == []
     expected = [["gate/case-001", "timeout", "the case exceeded its 1 s budget"]]
