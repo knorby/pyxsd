@@ -18,7 +18,7 @@ from tests.xslt.support import element_children, transform
 from tests.xslt.support import stylesheet as _stylesheet
 
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmFunction
-from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
+from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmDocument, XdmNode
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.context import StaticContext
@@ -32,6 +32,7 @@ from pyxsd.xslt.compiler.packages import Component, PackageResolver
 from pyxsd.xslt.compiler.patterns import compile_pattern
 from pyxsd.xslt.errors import XsltError
 from pyxsd.xslt.processor import _ABSENT, _Invocation, _prepare_invocation
+from pyxsd.xslt.runtime.builder import _NodeFactory
 from pyxsd.xslt.runtime.context import EvaluationContext
 from pyxsd.xslt.runtime.templates import (
     PatternIndex,
@@ -39,7 +40,6 @@ from pyxsd.xslt.runtime.templates import (
     RuleMatch,
     TemplateRule,
     builtin_value,
-    builtin_variant,
 )
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -216,6 +216,79 @@ def test_conflict_resolution_last_declaration_and_failure_mode() -> None:
         """
     )
     assert error_code(lambda: transform(failure, b"<doc><item/></doc>")) == "XTDE0540"
+
+
+def test_mode_warning_properties_record_warnings() -> None:
+    multiple = stylesheet(
+        """
+        <xsl:mode name="c" warning-on-multiple-match=" yes "/>
+        <xsl:template match="item" mode="c"><one/></xsl:template>
+        <xsl:template match="item" mode="c"><two/></xsl:template>
+        <xsl:template match="/"><out><xsl:apply-templates select="//item" mode="c"/></out></xsl:template>
+        """
+    )
+    assert transform(multiple, b"<doc><item>text</item></doc>").warnings
+
+    no_match = stylesheet(
+        """
+        <xsl:mode name="c" on-no-match="text-only-copy" warning-on-no-match="1"/>
+        <xsl:template match="/" mode="c"><out><xsl:apply-templates select="//item" mode="c"/></out></xsl:template>
+        """
+    )
+    assert transform(no_match, b"<doc><item>text</item></doc>", initial_mode="c").warnings
+
+    quiet = stylesheet(
+        """
+        <xsl:mode name="c" warning-on-multiple-match="no" warning-on-no-match="false"/>
+        <xsl:template match="item" mode="c"><one/></xsl:template>
+        <xsl:template match="item" mode="c"><two/></xsl:template>
+        <xsl:template match="/"><out><xsl:apply-templates select="//item" mode="c"/></out></xsl:template>
+        """
+    )
+    assert transform(quiet, b"<doc><item>text</item></doc>").warnings == ()
+
+    single = stylesheet(
+        """
+        <xsl:mode name="c" warning-on-multiple-match="yes"/>
+        <xsl:template match="item" mode="c"><one/></xsl:template>
+        <xsl:template match="/"><out><xsl:apply-templates select="//item" mode="c"/></out></xsl:template>
+        """
+    )
+    assert transform(single, b"<doc><item>text</item></doc>").warnings == ()
+
+    invalid = stylesheet('<xsl:mode name="c" warning-on-multiple-match="Yes"/>')
+    assert error_code(lambda: XsltProcessor().compile(io.BytesIO(invalid))) == "XTSE0020"
+
+
+def test_multiple_match_failure_ignores_alternatives_of_one_union_rule() -> None:
+    source = stylesheet(
+        """
+        <xsl:mode name="c" on-multiple-match="fail"/>
+        <xsl:template match="para[foo] | para[text()]" mode="c"><hit/></xsl:template>
+        <xsl:template match="/"><out><xsl:apply-templates select="//para" mode="c"/></out></xsl:template>
+        """
+    )
+    result = transform(source, b"<doc><para><foo/>text</para></doc>")
+    out = element_children(result.principal_tree)[0]
+    assert [child.local_name for child in element_children(out)] == ["hit"]
+
+
+def test_attribute_set_apply_templates_keeps_the_current_mode() -> None:
+    source = stylesheet(
+        """
+        <xsl:template match="book"><out><xsl:apply-templates select="chapter" mode="m"/></out></xsl:template>
+        <xsl:template match="chapter" mode="m"><chapter xsl:use-attribute-sets="a"/></xsl:template>
+        <xsl:attribute-set name="a">
+          <xsl:attribute name="a"><xsl:apply-templates select="chtitle" mode="#current"/></xsl:attribute>
+        </xsl:attribute-set>
+        <xsl:template match="chtitle" mode="m"><xsl:text>m:</xsl:text><xsl:value-of select="."/></xsl:template>
+        <xsl:template match="chtitle" mode="#default"><xsl:text>default:</xsl:text><xsl:value-of select="."/></xsl:template>
+        """
+    )
+    result = transform(source, b"<book><chapter><chtitle>One</chtitle></chapter></book>")
+    chapter = element_children(element_children(result.principal_tree)[0])[0]
+    assert chapter.attribute("a") is not None
+    assert chapter.attribute("a").string_value == "m:One"
 
 
 def test_next_match_and_apply_imports_require_a_current_rule() -> None:
@@ -589,7 +662,6 @@ def test_builtin_value_covers_every_on_no_match_variant() -> None:
             <xsl:mode name="deep-skip" on-no-match="deep-skip"/>
             <xsl:mode name="shallow-skip" on-no-match="shallow-skip"/>
             <xsl:mode name="fail" on-no-match="fail"/>
-            <xsl:mode name="invalid" on-no-match="sometimes"/>
             <xsl:template name="main"><out/></xsl:template>
             """
         )
@@ -642,7 +714,7 @@ def test_builtin_value_covers_every_on_no_match_variant() -> None:
         builtin_value(invocation, doc, "fail", {}, {})
     assert caught.value.code == "XTDE0555"
     with pytest.raises(XsltError) as caught:
-        builtin_variant(invocation, "invalid")
+        _invocation(stylesheet('<xsl:mode name="invalid" on-no-match="sometimes"/>'))
     assert caught.value.code == "XTSE0020"
 
 
@@ -896,17 +968,6 @@ def test_union_next_match_with_explicit_priority_does_not_reenter_the_rule() -> 
     alpha = element_children(result.principal_tree)[0]
     assert alpha.local_name == "alpha"
     assert [child.local_name for child in element_children(alpha)] == ["low"]
-
-
-def test_union_rule_without_priority_fails_on_multiple_match() -> None:
-    source = stylesheet(
-        """
-        <xsl:mode on-multiple-match="fail"/>
-        <xsl:template match="item|item"><alpha/></xsl:template>
-        <xsl:template match="/"><xsl:apply-templates select="/*/item"/></xsl:template>
-        """
-    )
-    assert error_code(lambda: transform(source, b"<doc><item/></doc>")) == "XTDE0540"
 
 
 def test_shallow_skip_applies_attribute_rules_before_children() -> None:
@@ -1179,6 +1240,20 @@ def test_package_pattern_predicate_uses_library_global_and_namespaces(tmp_path: 
     ]
 
 
+def test_id_index_reads_a_validated_element_id_and_rejects_function_items() -> None:
+    invocation = _invocation(stylesheet('<xsl:template name="main"><out/></xsl:template>'))
+    document = XdmDocument.parse(b"<root><keyed>x</keyed></root>")
+    keyed = element_children(document.root_element)[0]
+    keyed._apply_occurrence_annotation(XdmAnnotation(f"{{{XSD_NS}}}untyped", False, id_kind="ID"))
+
+    assert invocation._id_override(None, ((XdmAtomic.string("x"),), (document,)), False) == (keyed,)
+
+    function = XdmFunction(lambda arguments, environment, captured: (), arity=0)
+    with pytest.raises(XsltError) as caught:
+        invocation._id_override(None, ((function,), (document,)), False)
+    assert caught.value.code == "XPTY0004"
+
+
 def test_key_context_root_must_be_a_document() -> None:
     invocation = _invocation(
         stylesheet(
@@ -1188,10 +1263,12 @@ def test_key_context_root_must_be_a_document() -> None:
             """
         )
     )
-    node = object.__new__(XdmNode)
-    object.__setattr__(node, "_document", None)
+    detached = _NodeFactory().clone(
+        XdmDocument.parse(b"<root/>").root_element,
+        parent=None,
+    )
     with pytest.raises(XsltError) as caught:
-        invocation._key_document(node)
+        invocation._key_root(detached)
     assert caught.value.code == "XTDE1270"
 
 

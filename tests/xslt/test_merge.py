@@ -78,6 +78,64 @@ class MappingPolicy:
 # Group ordering and state
 
 
+def test_merge_key_date_time_converts_node_arguments() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="doc">
+            <root>
+              <rec date="2020-01-02" time="10:00:00">b</rec>
+              <rec date="2020-01-01" time="10:00:00">a</rec>
+            </root>
+          </xsl:variable>
+          <xsl:merge>
+            <xsl:merge-source select="$doc/root/rec" sort-before-merge="yes">
+              <xsl:merge-key select="dateTime(@date, @time)"/>
+            </xsl:merge-source>
+            <xsl:merge-action>
+              <xsl:sequence select="string(current-merge-key()),
+                string(current-merge-group())"/>
+            </xsl:merge-action>
+          </xsl:merge>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.string("2020-01-01T10:00:00"),
+        XdmAtomic.string("a"),
+        XdmAtomic.string("2020-01-02T10:00:00"),
+        XdmAtomic.string("b"),
+    )
+
+
+def test_merge_groups_structurally_equal_nodes_by_deep_equal() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="a">
+            <doc><item><id>1</id><street>Main</street></item></doc>
+          </xsl:variable>
+          <xsl:variable name="b">
+            <doc><item><id>1</id><street>Main</street></item></doc>
+          </xsl:variable>
+          <xsl:merge>
+            <xsl:merge-source for-each-item="$a, $b" select="doc/item">
+              <xsl:merge-key select="id"/>
+            </xsl:merge-source>
+            <xsl:merge-action>
+              <xsl:sequence select="count(current-merge-group()),
+                deep-equal(current-merge-group()[1], current-merge-group()[2])"/>
+            </xsl:merge-action>
+          </xsl:merge>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.integer(2),
+        XdmAtomic.boolean(True),
+    )
+
+
 def test_merge_two_sorted_sources_orders_groups_and_exposes_state() -> None:
     body = """
         <xsl:template name="main">
@@ -652,8 +710,8 @@ def test_sort_before_merge_uses_merge_wide_promoted_numeric_order() -> None:
         ] == [
             ("0.1", "decimal"),
             ("0.1000000001", "decimal"),
-            ("1.0", "float"),
-            ("2.0", "double"),
+            ("1", "float"),
+            ("2", "double"),
         ]
 
 
@@ -1216,7 +1274,7 @@ def test_merge_key_stable_attribute_is_xtse0010() -> None:
           </xsl:merge>
         </xsl:template>
     """
-    assert error_code(lambda: compiled(stylesheet(body))) == "XTSE0010"
+    assert error_code(lambda: compiled(stylesheet(body))) == "XTSE0090"
 
 
 def test_merge_empty_key_sequences_group_together() -> None:

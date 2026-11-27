@@ -121,6 +121,11 @@ class XPathStaticContext:
     default_collation: str | None = None
     xsd_version: str | None = None
     xslt_version: str | None = None
+    #: Whether expressions compiled against this context evaluate with XPath
+    #: 1.0 compatibility mode.  XSLT owns the rule (XSLT 3.0 §3.9.1); the
+    #: engine passes it to the parser, which applies the specified operand
+    #: conversions to operators and function arguments.
+    compatibility_mode: bool = False
 
     def __post_init__(self) -> None:
         namespaces = _freeze_mapping(self.namespaces, "namespaces")
@@ -149,6 +154,8 @@ class XPathStaticContext:
             raise ValueError("xsd_version must be '1.0', '1.1', or None")
         if self.xslt_version not in (None, "1.0", "2.0", "3.0", "3.1"):
             raise ValueError("xslt_version must be '1.0', '2.0', '3.0', '3.1', or None")
+        if not isinstance(self.compatibility_mode, bool):
+            raise TypeError("compatibility_mode must be a boolean")
 
         object.__setattr__(self, "namespaces", namespaces)
         object.__setattr__(self, "variable_types", variable_types)
@@ -287,6 +294,18 @@ class ExpressionEnvironment:
     #: spelled here, rather than imported from the engine, for the same reason
     #: as ``parser_cache``.
     key_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence] | None = field(
+        default=None, repr=False, compare=False
+    )
+    #: A lazy ``id()``/``element-with-id()`` resource:
+    #: ``lookup(context_item, arguments, element_with_id)`` mirrors the XSLT
+    #: function and derives its index from the invocation.  ``None`` means
+    #: pattern evaluation scans the tree itself (the standalone behaviour).
+    id_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...], bool], XdmSequence] | None = (
+        field(default=None, repr=False, compare=False)
+    )
+    #: A lazy ``idref()`` resource with the same shape as ``id_lookup`` but
+    #: returning the IDREF-bearing nodes.  ``None`` keeps the standalone path.
+    idref_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence] | None = field(
         default=None, repr=False, compare=False
     )
 

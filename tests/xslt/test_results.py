@@ -16,7 +16,7 @@ from tests.xslt.support import element_children as _element_children
 from pyxsd.exceptions import PyXSDError
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmMap
 from pyxsd.xdm.nodes import NodeKind, XdmDocument
-from pyxsd.xslt.errors import XsltError
+from pyxsd.xslt.errors import XsltError, XsltSerializationError
 from pyxsd.xslt.results import (
     Message,
     ResultEntry,
@@ -24,6 +24,7 @@ from pyxsd.xslt.results import (
     TransformationResult,
     _append_complex_content,
     _build_result_tree,
+    _inferred_method,
     _NodeFactory,
 )
 
@@ -38,6 +39,24 @@ def _error_code(exc: BaseException) -> str | None:
 
 def _factory() -> _NodeFactory:
     return _NodeFactory()
+
+
+def test_inferred_method_inspects_a_raw_document_element_and_is_case_sensitive() -> None:
+    """A raw document node's document element selects HTML, by exact name."""
+    html = ResultEntry(raw=(XdmDocument.parse(b"<html><body/></html>"),))
+    assert _inferred_method(html) == "html"
+
+    xhtml = ResultEntry(
+        raw=(XdmDocument.parse(b'<html xmlns="http://www.w3.org/1999/xhtml"><body/></html>'),)
+    )
+    assert _inferred_method(xhtml) == "xhtml"
+
+    # XML names are case-sensitive, so ``HTML`` is not the ``html`` method.
+    upper = ResultEntry(raw=(XdmDocument.parse(b"<HTML><body/></HTML>"),))
+    assert _inferred_method(upper) == "xml"
+
+    other = ResultEntry(raw=(XdmDocument.parse(b"<root/>"),))
+    assert _inferred_method(other) == "xml"
 
 
 def _document(xml: bytes) -> XdmDocument:
@@ -107,6 +126,13 @@ def test_transformation_result_exposes_principal_and_secondary() -> None:
         _ = TransformationResult(ResultEntry(())).principal_tree
     with pytest.raises(ResultShapeError, match="not a document tree"):
         _ = TransformationResult(ResultEntry((document, document))).principal_tree
+
+
+def test_transformation_result_keeps_ordered_warnings() -> None:
+    result = TransformationResult(ResultEntry(()), warnings=("first", "second"))
+    assert result.warnings == ("first", "second")
+    with pytest.raises(TypeError, match="warnings"):
+        TransformationResult(ResultEntry(()), warnings=(1,))  # type: ignore[arg-type]
 
 
 def test_transformation_result_rejects_bad_secondary_entries() -> None:
@@ -209,6 +235,15 @@ def test_result_shape_error_is_a_pyxsd_error() -> None:
     assert "no tree" in str(error)
 
 
+def test_message_carries_its_content_document() -> None:
+    """A message's value is the document node its constructor builds."""
+    content = _build_result_tree((XdmAtomic.string("text"),))
+    message = Message("text", code="XTMM9000", content=content)
+
+    assert message.content is content
+    assert message.content.string_value == "text"
+
+
 def test_message_is_immutable() -> None:
     message = Message("text", code="XTMM9000")
 
@@ -226,6 +261,8 @@ def test_message_validation_branches() -> None:
         Message("x", uri=1)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="terminate"):
         Message("x", terminate="no")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="message content"):
+        Message("x", content="<doc/>")  # type: ignore[arg-type]
 
 
 def test_result_entry_rejects_empty_uri_and_bad_parameter_mapping() -> None:
@@ -352,3 +389,71 @@ def test_namespace_prefix_generation_and_collision() -> None:
     )
     assert occupied_default.prefix == "ns1"
     assert occupied_default.in_scope_namespaces["ns1"] == "urn:new"
+
+
+def test_principal_and_secondary_serialize_with_independent_parameters() -> None:
+    principal = ResultEntry(
+        (_document(b"<principal>text</principal>"),),
+        output_uri=OUT_URI,
+        serialization={"method": "xml"},
+    )
+    secondary = ResultEntry(
+        (_document(b"<secondary>text</secondary>"),),
+        output_uri=SECONDARY_URI,
+        serialization={"method": "text"},
+    )
+    result = TransformationResult(principal, secondary={SECONDARY_URI: secondary})
+
+    assert (result.serialize() or "").startswith('<?xml version="1.0"')
+    assert result.serialize(SECONDARY_URI) == "text"
+
+
+def test_invalid_secondary_parameters_cannot_change_the_principal_serialization() -> None:
+    principal = ResultEntry(
+        (_document(b"<principal/>"),),
+        output_uri=OUT_URI,
+        serialization={"method": "xml", "omit-xml-declaration": "yes"},
+    )
+    secondary = ResultEntry(
+        (_document(b"<secondary/>"),),
+        output_uri=SECONDARY_URI,
+        serialization={"method": "xml"},
+    )
+    result = TransformationResult(principal, secondary={SECONDARY_URI: secondary})
+    assert result.serialize() == "<principal/>"
+
+    bad_secondary = ResultEntry(
+        (_document("<secondary><!--caf\u00e9--></secondary>".encode()),),
+        output_uri=SECONDARY_URI,
+        serialization={"method": "xml", "encoding": "ascii"},
+    )
+    bad_result = TransformationResult(principal, secondary={SECONDARY_URI: bad_secondary})
+    with pytest.raises(XsltSerializationError):
+        bad_result.serialize(SECONDARY_URI)
+    assert bad_result.serialize() == "<principal/>"
+
+
+def test_result_entry_legacy_flag_is_typed() -> None:
+    with pytest.raises(TypeError, match="legacy"):
+        ResultEntry((), legacy="yes")  # type: ignore[arg-type]
+
+
+def test_default_output_method_is_xml_for_a_non_html_root() -> None:
+    entry = ResultEntry(
+        (_document(b"<root/>"),),
+        output_uri=OUT_URI,
+        serialization={},
+    )
+    result = TransformationResult(entry)
+    assert result.serialize() == ('<?xml version="1.0" encoding="UTF-8"?><root/>')
+
+
+def test_default_output_method_skips_atomic_and_non_element_items() -> None:
+    entry = ResultEntry(
+        (XdmAtomic.string("text"), XdmAtomic.integer(2)),
+        output_uri=OUT_URI,
+        serialization={},
+    )
+    assert TransformationResult(entry).serialize() == (
+        '<?xml version="1.0" encoding="UTF-8"?>text 2'
+    )

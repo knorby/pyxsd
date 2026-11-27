@@ -139,7 +139,13 @@ def _json_node(
     node: XdmNode, parameters: SerializationParameters, characters: CharacterMap, codec: str
 ) -> str:
     method = parameters.json_node_output_method
-    delegated = SerializationParameters(method=method, omit_xml_declaration=True)
+    if method == "html":
+        root = node if node.kind is NodeKind.ELEMENT else getattr(node, "root_element", None)
+        if root is not None and root.namespace_uri == "http://www.w3.org/1999/xhtml":
+            # An XHTML-namespace node keeps its namespace declaration; the HTML
+            # method alone would drop it (Serialization 3.1 section 6).
+            method = "xhtml"
+    delegated = replace(parameters, method=method, omit_xml_declaration=True)
     if method == "text":
         text = serialize_text((node,), delegated)
     else:
@@ -363,10 +369,27 @@ def _adaptive_standalone(node: XdmNode, parameters: SerializationParameters, cod
 def _adaptive_node(node: XdmNode, parameters: SerializationParameters, codec: str) -> str:
     if node.kind in (NodeKind.ATTRIBUTE, NodeKind.NAMESPACE):
         return _adaptive_standalone(node, parameters, codec)
+    if node.kind is NodeKind.COMMENT:
+        try:
+            node.string_value.encode(codec)
+        except UnicodeEncodeError:
+            escaped = "".join(
+                character if _encodable_character(character, codec) else f"&#x{ord(character):X};"
+                for character in node.string_value
+            )
+            return f"<!--{escaped}-->"
     # Every serialization parameter except byte-order-mark reaches the XML
     # method, including omit-xml-declaration and indent.
     delegated = replace(parameters, method="xml", byte_order_mark=False)
     return serialize_markup(normalize_sequence((node,)), delegated, method="xml")
+
+
+def _encodable_character(character: str, codec: str) -> bool:
+    try:
+        character.encode(codec)
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _adaptive_item(

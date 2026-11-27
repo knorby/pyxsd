@@ -298,3 +298,15 @@ def test_facets_pattern_translation_result_is_unchanged() -> None:
     for compiled in (before, after):
         assert compiled.search("abc") is not None
         assert compiled.search("ABC") is None
+
+
+def test_replace_without_an_xslt_caller_uses_the_parser_version_rule() -> None:
+    """A bare XPath evaluation has no XSLT language version to consult."""
+    from elementpath.exceptions import ElementPathError
+
+    engine = XPathEngine("3.0")
+    compiled = engine.compile("replace('a', 'a', '\\')", XPathStaticContext())
+
+    with pytest.raises(ElementPathError) as caught:
+        engine.evaluate(compiled, ExpressionEnvironment())
+    assert caught.value.code == "err:FORX0004"

@@ -14,7 +14,10 @@ kept as a heap continuation.
 
 Budget exhaustion raises :class:`~pyxsd.xslt.errors.XsltDynamicError` with the
 stable implementation code ``PYXSD-XSLT-001``.  A Python ``RecursionError`` is
-never presented as the transformation's resource diagnostic.
+never presented as a raw failure: the scheduler converts it into that same
+resource diagnostic.  The scheduler never changes the process-wide recursion
+limit, because that limit is shared with every other thread and transformation
+in the interpreter.
 """
 
 from __future__ import annotations
@@ -515,7 +518,12 @@ class Scheduler:
                 except BaseException as exc:
                     self._unwind(exc)
                     continue
-                self._handle_outcome(frame, outcome)
+                try:
+                    self._handle_outcome(frame, outcome)
+                except RecursionError as exc:
+                    raise self._resource_error(
+                        "the transformation exceeded the Python recursion limit"
+                    ) from exc
             return self._result
         finally:
             self._active = False

@@ -41,17 +41,20 @@
   what its README already says, it is slop: extend the existing page or the
   README instead of writing it.
 
-## Every change needs tests that cover its added lines
+## Every change needs 100% patch coverage
 
-- Overall branch coverage has an enforced floor (`fail_under = 99` in
-  `pyproject.toml`). Passing the floor does **not** prove a change is
-  covered: Codecov evaluates *patch* coverage on the PR diff, and every
-  uncovered added line is a defect.
+- Every change or patch must have **100% statement and branch coverage on its
+  added and changed lines**, verified before committing and again on the PR.
+  The overall branch-coverage floor (`fail_under = 99` in `pyproject.toml`)
+  is only a repository-wide minimum: Codecov evaluates *patch* coverage on
+  the PR diff, and every uncovered added line or untaken new branch arm is a
+  defect, even when the overall floor passes.
 - Before committing, measure the diff, not just the suite:
   `uv run pytest --cov --cov-branch`, then compare
   `uv run coverage report --show-missing` (or `htmlcov/`) against the lines
   you added. A new condition needs a test for each arm — a happy-path test
-  usually executes only one.
+  usually executes only one. After opening the PR, check the Codecov patch
+  result and resolve every reported miss before marking it ready.
 - Cover defensive branches too: collision loops, fallback keys, error
   paths, and version-gated code each need a case that actually reaches
   them. Verify by mutation when in doubt: revert the change and confirm the

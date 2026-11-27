@@ -369,3 +369,35 @@ def test_a_serialization_method_annotation_does_not_gate_the_text(tmp_path: Path
     assert passed.coverage == frozenset({"serialization"})
     assert failed.outcome is Outcome.FAIL
     assert "serialization differs" in failed.message
+
+
+def test_the_assertion_view_includes_the_requested_byte_order_mark(tmp_path: Path) -> None:
+    _sheet(
+        tmp_path,
+        "main.xsl",
+        '<xsl:output method="html" byte-order-mark="yes"/>'
+        '<xsl:template name="main"><html><body>Hello</body></html></xsl:template>',
+    )
+    case = _case(tmp_path, "main.xsl", output=Output(serialize=True))
+
+    snapshot = suite.execute_case(case, PROFILE)
+
+    assert snapshot.serialized is not None
+    assert snapshot.serialized.startswith("\ufeff")
+    assert snapshot.serialization_bom is True
+    assert snapshot.serialized[1:] == "<html><body>Hello</body></html>"
+
+
+def test_the_assertion_view_omits_a_bom_the_engine_did_not_request(tmp_path: Path) -> None:
+    _sheet(
+        tmp_path,
+        "main.xsl",
+        '<xsl:output method="html"/>'
+        '<xsl:template name="main"><html><body>Hello</body></html></xsl:template>',
+    )
+    case = _case(tmp_path, "main.xsl", output=Output(serialize=True))
+
+    snapshot = suite.execute_case(case, PROFILE)
+
+    assert snapshot.serialized == "<html><body>Hello</body></html>"
+    assert snapshot.serialization_bom is False

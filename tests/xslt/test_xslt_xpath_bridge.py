@@ -814,6 +814,20 @@ def test_bridge_rejects_invalid_state_versions() -> None:
         XsltContextBridge(Transformation(), regex_captures="bad")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="namespaces"):
         XsltContextBridge(Transformation(), namespaces=[])  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="idref_lookup"):
+        XsltContextBridge(Transformation(), idref_lookup=1)  # type: ignore[arg-type]
+
+
+def test_bridge_dynamic_idref_clears_the_context_item() -> None:
+    seen: list[object] = []
+
+    def lookup(context_item: Any, arguments: Any) -> tuple[Any, ...]:
+        seen.append((context_item, arguments))
+        return ()
+
+    bridge = XsltContextBridge(Transformation(), idref_lookup=lookup)
+    assert bridge._dynamic_idref(XdmAtomic.string("ignored"), ()) == ()
+    assert seen == [(None, ())]
 
 
 # ---------------------------------------------------------------------------
@@ -1811,3 +1825,123 @@ def test_inline_scope_marker_does_not_collide_with_user_variables() -> None:
         error_code(lambda: transform(inline, b'<doc id="outer"/>', initial_template="main"))
         == "XTDE1360"
     )
+
+
+# ---------------------------------------------------------------------------
+# Shared XPath/XDM bridge primitives (Task 2.2)
+
+
+def test_declared_function_name_collision_keeps_context_overrides() -> None:
+    """A declared ``my:doc`` must not replace the ``fn:doc`` override token.
+
+    elementpath moves a colliding built-in to its expanded symbol and leaves a
+    proxy where the override used to resolve.  Reading ``nargs`` from the proxy
+    aborted every evaluation of the stylesheet.  W3C
+    ``error/error-XPDY0002a`` declares ``f:doc`` and still needs ``fn:doc``'s
+    override installed.
+    """
+    collision = stylesheet(
+        """
+        <xsl:function name="my:doc"><xsl:sequence select="'mine'"/></xsl:function>
+        <xsl:template match="/">
+          <out><xsl:value-of select="my:doc()"/></out>
+        </xsl:template>
+        """
+    )
+    assert transform(collision, b"<doc/>").principal[0].string_value == "mine"
+
+    denied = stylesheet(
+        """
+        <xsl:function name="my:doc"><xsl:sequence select="'mine'"/></xsl:function>
+        <xsl:template match="/">
+          <out><xsl:value-of select="document('http://example.invalid/x.xml')"/></out>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(denied, b"<doc/>")) == "FODC0002"
+
+    wrong_arity = stylesheet(
+        """
+        <xsl:function name="my:doc"><xsl:sequence select="'mine'"/></xsl:function>
+        <xsl:template match="/">
+          <out><xsl:value-of select="my:doc(1)"/></out>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(wrong_arity, b"<doc/>")) == "XPST0017"
+
+
+def test_transform_output_casts_its_native_node_value(tmp_path: Path) -> None:
+    """``xs:integer(transform(...)?output)`` casts the result node.
+
+    The lookup expression is the constructor's argument, not a partial
+    application placeholder, so the result is an ``xs:integer``.  W3C
+    ``fn/transform/transform-002`` has the same shape.
+    """
+    nested = tmp_path / "nested.xsl"
+    nested.write_text(
+        stylesheet(
+            """
+            <xsl:template name="main"><xsl:value-of select="42"/></xsl:template>
+            """
+        ).decode(),
+        encoding="utf-8",
+    )
+    source = """
+        <xsl:template name="main">
+          <xsl:sequence select="xs:integer(
+              transform(map{'stylesheet-location': 'nested.xsl',
+                            'initial-template': 'main'})?output)"/>
+        </xsl:template>
+        """
+    compiled = _compiled_stylesheet(tmp_path, source)
+    assert compiled.transform(initial_template="main").principal == (XdmAtomic.integer(42),)
+
+
+def test_function_items_receive_nodes_and_mixed_atomic_sequences() -> None:
+    """A function item's arguments are atomized through the XDM bridge.
+
+    ``HostFunctionToken`` converted every elementpath argument with
+    ``as_xdm``, which rejects a grounded node adapter.  W3C
+    ``higher-order-functions/higher-order-functions-037`` calls declared,
+    built-in, inline, and partial function items with an attribute node.
+    """
+    atomized = stylesheet(
+        """
+        <xsl:function name="local:lower-case" as="xs:string">
+          <xsl:param name="x" as="xs:string"/>
+          <xsl:sequence select="concat('''', lower-case($x), '''')"/>
+        </xsl:function>
+        <xsl:function name="local:ops" as="(function(xs:string) as xs:string)*">
+          <xsl:sequence select="(
+              upper-case#1,
+              local:lower-case#1,
+              function($x){translate($x, 'e', 'i')},
+              substring-before(?, ' '))"/>
+        </xsl:function>
+        <xsl:template name="main">
+          <out>
+            <xsl:variable name="a" as="element()"><a name="Michael Kay"/></xsl:variable>
+            <xsl:value-of select="for $f in local:ops() return $f($a/@name)"
+                          separator="~"/>
+          </out>
+        </xsl:template>
+        """,
+        namespaces={"local": "urn:local"},
+    )
+    result = transform(atomized, initial_template="main")
+    assert result.principal[0].string_value == "MICHAEL KAY~'michael kay'~Michail Kay~Michael"
+
+    mixed = stylesheet(
+        """
+        <xsl:function name="my:join" as="xs:string">
+          <xsl:param name="items" as="item()*"/>
+          <xsl:sequence select="string-join(for $i in $items return string($i), '|')"/>
+        </xsl:function>
+        <xsl:template name="main">
+          <xsl:sequence select="my:join#1((/doc/@a, 'x', /doc/b))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(mixed, b'<doc a="1"><b>2</b></doc>', initial_template="main")
+    assert result.principal == (XdmAtomic.string("1|x|2"),)

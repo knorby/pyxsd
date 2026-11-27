@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import math
+import re
 import struct
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -41,6 +42,10 @@ __all__ = [
     "XdmSequence",
     "XdmSequenceType",
     "as_xdm",
+    "canonical_decimal_string",
+    "canonical_duration_string",
+    "canonical_float_string",
+    "is_xsd_subtype",
 ]
 
 
@@ -218,6 +223,26 @@ def _builtin_datatypes() -> dict[str, type[_xsd.XsdDataType]]:
 
 
 _BUILTIN_DATATYPES = _builtin_datatypes()
+_BUILTIN_NAMES_BY_CLASS = {datatype: name for name, datatype in _BUILTIN_DATATYPES.items()}
+
+
+def _primitive_local(datatype: type[Any] | None, value: Any, declared: str) -> str:
+    """The nearest built-in XSD datatype's local name for one atomic value.
+
+    A user-defined type is classified by its built-in ancestor, so a type
+    named ``integer`` whose payload is a string is a string value, and the
+    reverse is numeric.  An elementpath datatype has no pyxsd class in its
+    MRO, so it falls back to the declared local name.
+    """
+    candidates = [datatype] if datatype is not None else []
+    candidates.extend(type(value).__mro__)
+    for candidate in candidates:
+        name = _BUILTIN_NAMES_BY_CLASS.get(candidate)
+        if name is not None:
+            return name
+    return declared
+
+
 _CAST_DATATYPES = {
     name: datatype
     for name, datatype in _BUILTIN_DATATYPES.items()
@@ -243,6 +268,12 @@ def _xsd_type_name(datatype: type[Any]) -> str:
     local = _datatype_local_name(datatype)
     if datatype in _BUILTIN_DATATYPES.values():
         return f"{{{XSD_NS}}}{local}"
+    if issubclass(datatype, _xsd.XsdDataType):
+        # A generated schema type carries its target namespace; keeping only
+        # the local name would lose the identity the type annotation needs.
+        from pyxsd.xdm.annotations import schema_type_name
+
+        return schema_type_name(datatype) or local
     return local
 
 
@@ -258,7 +289,7 @@ def _is_elementpath_atomic(value: Any) -> bool:
     )
 
 
-def _is_xsd_subtype(item_local: str, expected_local: str) -> bool:
+def is_xsd_subtype(item_local: str, expected_local: str) -> bool:
     """Whether *item_local* names the same XSD type as or a subtype of *expected_local*."""
     current = item_local
     while True:
@@ -268,6 +299,10 @@ def _is_xsd_subtype(item_local: str, expected_local: str) -> bool:
         if parent is None:
             return False
         current = parent
+
+
+#: Backward-compatible alias for the extension layer's earlier private import.
+_is_xsd_subtype = is_xsd_subtype
 
 
 def _is_nan(value: Any) -> bool:
@@ -389,6 +424,148 @@ def _qname_key(value: Any) -> tuple[str, str, str]:
 
 
 # ---------------------------------------------------------------------------
+# F&O string values for atomic items
+#
+# XDM atomic values keep their XSD lexical form (``XdmAtomic.lexical``), but
+# XPath's ``fn:string`` and the XSLT construction instructions convert them
+# with the F&O 3.1 §19.1.1 canonical rules instead.  The two differ for every
+# numeric family: an integer-valued double has no ``.0`` suffix, a decimal
+# drops insignificant trailing zeros and has no negative zero, and a
+# float/double outside [1e-6, 1e6) uses scientific notation.  The XSLT layer
+# therefore asks for ``string_value`` whenever it constructs text, while XSD
+# validation and serialization keep ``lexical``.
+# ---------------------------------------------------------------------------
+
+#: Absolute magnitude at which a float/double switches to scientific notation.
+_SCIENCE_UPPER = Decimal(10) ** 6
+_SCIENCE_LOWER = Decimal("0.000001")
+
+
+def _shortest_binary32_text(value: float) -> str:
+    """The shortest decimal spelling that round-trips to the same binary32 value."""
+    packed = struct.pack(">f", value)
+    for precision in range(1, 10):
+        candidate = format(value, f".{precision}g")
+        try:
+            round_trip = struct.pack(">f", float(candidate))
+        except (OverflowError, ValueError):  # pragma: no cover - value is finite binary32
+            continue
+        if round_trip == packed:
+            return candidate
+    return repr(value)  # pragma: no cover - nine significant digits always round-trip
+
+
+def canonical_float_string(value: float, *, single: bool) -> str:
+    """F&O 3.1 §19.1.1 string form of one float/double."""
+    if math.isnan(value):
+        return "NaN"
+    if math.isinf(value):
+        return "INF" if value > 0 else "-INF"
+    if value == 0:
+        return "-0" if math.copysign(1.0, value) < 0 else "0"
+    text = _shortest_binary32_text(value) if single else repr(float(value))
+    number = Decimal(text)
+    magnitude = abs(number)
+    adjusted = magnitude.adjusted()
+    sign = "-" if number.is_signed() else ""
+    if _SCIENCE_LOWER <= magnitude < _SCIENCE_UPPER:
+        fixed = format(magnitude, "f")
+        if "." in fixed:
+            fixed = fixed.rstrip("0").rstrip(".")
+        return sign + fixed
+    digits = "".join(str(digit) for digit in magnitude.as_tuple().digits)
+    remainder = digits[1:].rstrip("0") or "0"
+    return f"{sign}{digits[0]}.{remainder}E{adjusted}"
+
+
+def canonical_decimal_string(value: Decimal) -> str:
+    """F&O 3.1 §19.1.1 string form of one finite decimal (no negative zero)."""
+    if not value:
+        return "0"
+    fixed = format(value, "f")
+    if "." in fixed:
+        fixed = fixed.rstrip("0").rstrip(".")
+    return fixed
+
+
+_DURATION_PARTS = re.compile(
+    r"^(?P<sign>-)?P"
+    r"(?:(?P<years>\d+)Y)?"
+    r"(?:(?P<months>\d+)M)?"
+    r"(?:(?P<days>\d+)D)?"
+    r"(?:T"
+    r"(?:(?P<hours>\d+)H)?"
+    r"(?:(?P<minutes>\d+)M)?"
+    r"(?:(?P<seconds>\d+(?:\.\d+)?)S)?"
+    r")?$"
+)
+
+
+def canonical_duration_string(text: str, local: str) -> str:
+    """The canonical XSD form of one duration lexical value.
+
+    Canonicalization moves whole months into years, drops zero components and
+    a zero fractional part, and writes the canonical zero (``PT0S`` for
+    ``duration``/``dayTimeDuration``, ``P0M`` for ``yearMonthDuration``).
+    ``local`` selects the year/month-only or day/time-only restriction.  An
+    unparseable value is returned unchanged rather than silently altered.
+    """
+    match = _DURATION_PARTS.fullmatch(text.strip())
+    if match is None:
+        return text
+    sign = "-" if match.group("sign") else ""
+    months_total = int(match.group("years") or 0) * 12 + int(match.group("months") or 0)
+    years, months = divmod(months_total, 12)
+    days = int(match.group("days") or 0)
+    hours = int(match.group("hours") or 0)
+    minutes = int(match.group("minutes") or 0)
+    whole, _, fraction = (match.group("seconds") or "0").partition(".")
+    seconds = Decimal(f"{whole}.{fraction or '0'}")
+    extra_minutes, seconds = divmod(seconds, 60)
+    minutes += int(extra_minutes)
+    extra_hours, minutes = divmod(minutes, 60)
+    hours += extra_hours
+    extra_days, hours = divmod(hours, 24)
+    days += extra_days
+    seconds_text = canonical_decimal_string(seconds)
+    parts = [sign, "P"]
+    if local != "dayTimeDuration":
+        if years:
+            parts.append(f"{years}Y")
+        if months:
+            parts.append(f"{months}M")
+    if local != "yearMonthDuration":
+        if days:
+            parts.append(f"{days}D")
+        time_parts: list[str] = []
+        if hours:
+            time_parts.append(f"{hours}H")
+        if minutes:
+            time_parts.append(f"{minutes}M")
+        if seconds:
+            time_parts.append(f"{seconds_text}S")
+        if time_parts:
+            parts.append("T")
+            parts.extend(time_parts)
+    if len(parts) == 2:
+        return f"{sign}P0M" if local == "yearMonthDuration" else f"{sign}PT0S"
+    return "".join(parts)
+
+
+def _canonical_numeric_text(value: Any, local: str) -> str:
+    if local in {"double", "float"}:
+        number = float(value)
+        if math.isnan(number):
+            return "NaN"
+        if math.isinf(number):
+            return "INF" if number > 0 else "-INF"
+        return canonical_float_string(number, single=local == "float")
+    if local == "decimal" or isinstance(value, Decimal):
+        return canonical_decimal_string(Decimal(value))
+    return str(int(value))
+
+
+# ---------------------------------------------------------------------------
 # Atomic values
 
 
@@ -488,6 +665,27 @@ class XdmAtomic(XdmItem):
             if math.isinf(value):
                 return "INF" if value > 0 else "-INF"
         return str(value)
+
+    @property
+    def string_value(self) -> str:
+        """The string value, as computed by ``fn:string`` (F&O 3.1 §19.1.1).
+
+        Numeric and boolean values convert by value rather than by their XSD
+        lexical form: ``xs:double`` 2.0 is ``"2"``, ``xs:decimal`` 2.50 is
+        ``"2.5"``, and values outside ``[1e-6, 1e6)`` use scientific
+        notation.  Every other family's XSD lexical form is already its
+        string value.
+        """
+        declared = _local_type_name(self.type_name)
+        local = _primitive_local(self.datatype, self.value, declared)
+        family = _FAMILIES.get(local)
+        if family == "boolean":
+            return "true" if bool(self.value) else "false"
+        if family == "numeric":
+            return _canonical_numeric_text(self.value, local)
+        if family == "duration":
+            return canonical_duration_string(self.lexical, local)
+        return self.lexical
 
     def __str__(self) -> str:
         return self.lexical
@@ -802,7 +1000,7 @@ def _coerce_atomic(item: XdmItem, local: str) -> XdmAtomic:
     target_rank = _NUMERIC_PROMOTIONS.get(local)
     if item_rank is not None and target_rank is not None and item_rank < target_rank:
         return item.cast(local)
-    if _is_xsd_subtype(item_local, local):
+    if is_xsd_subtype(item_local, local):
         return item
     if item_local == "untypedAtomic":
         return item.cast(local)

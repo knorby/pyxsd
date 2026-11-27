@@ -615,6 +615,42 @@ def test_append_attribute_after_content_is_rejected() -> None:
     assert _code(error.value) == "XTDE0410"
 
 
+def test_construction_normalizes_content_before_detecting_invalid_items() -> None:
+    """XSLT 3.0 §5.7.1 runs steps 2-7 before the step-8 invalid-item checks.
+
+    Array members are flattened, atomics are cast and merged into text nodes,
+    and zero-length text nodes are removed before an attribute's position is
+    judged.  A builder that detected the attribute during a first pass would
+    wrongly reject the legal cases below.
+    """
+    source = _xml(b"<s a='1'/>")
+    attribute = source.root_element.attributes[0]
+
+    flattened = ResultBuilder.temporary()
+    flattened_root = _element(flattened)
+    flattened.append((XdmArray([attribute]), XdmAtomic.string("text")))
+    assert [item.name for item in flattened_root.attributes] == ["a"]
+    assert flattened_root.children[0].string_value == "text"
+
+    empty = ResultBuilder.temporary()
+    empty_root = _element(empty)
+    empty.append((XdmAtomic.string(""), attribute))
+    assert [item.name for item in empty_root.attributes] == ["a"]
+    assert empty_root.children == ()
+
+    late = ResultBuilder.temporary()
+    _element(late)
+    with pytest.raises(XsltDynamicError) as error:
+        late.append((XdmAtomic.string("x"), attribute))
+    assert _code(error.value) == "XTDE0410"
+
+    flattened_late = ResultBuilder.temporary()
+    _element(flattened_late)
+    with pytest.raises(XsltDynamicError) as error:
+        flattened_late.append((XdmAtomic.string("x"), XdmArray([attribute])))
+    assert _code(error.value) == "XTDE0410"
+
+
 # ---------------------------------------------------------------------------
 # Text, comments, and processing instructions
 
@@ -654,6 +690,19 @@ def test_zero_length_atomic_strings_keep_their_separators() -> None:
         )
     )
     assert empties_root.children[0].string_value == "  "
+
+
+def test_atomic_complex_content_uses_the_fo_string_value() -> None:
+    builder = ResultBuilder.document()
+    root = _element(builder)
+    builder.append(
+        (
+            XdmAtomic.double(2.0),
+            XdmAtomic.decimal("2.50"),
+            XdmAtomic.float(-1.75e-3),
+        )
+    )
+    assert root.children[0].string_value == "2 2.5 -0.00175"
 
 
 def test_append_text_nodes_merges_with_existing_text() -> None:

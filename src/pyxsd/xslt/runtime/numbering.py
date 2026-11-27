@@ -19,6 +19,7 @@ from typing import Any, NoReturn
 from elementpath.helpers import is_ncname
 
 from pyxsd.xdm import XdmAtomic
+from pyxsd.xdm.legacy import ResultTreeFragment, legacy_number_from_string
 from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xslt.errors import XsltDynamicError, XsltStaticError
 
@@ -78,6 +79,16 @@ _SCALE_WORDS = (
     "trillion",
     "quadrillion",
     "quintillion",
+)
+#: Atomic locals that the XSLT 1.0 ``format-number`` converts with ``number()``.
+_STRING_ATOMIC_LOCALS = frozenset(
+    {
+        "anyURI",
+        "normalizedString",
+        "string",
+        "token",
+        "untypedAtomic",
+    }
 )
 _ROMAN_VALUES = (
     (1000, "M"),
@@ -305,7 +316,7 @@ def _place_marker(
         matches_count = counter._count
         matches_from = counter._from
     root = node.root
-    from_match = matches_from or (lambda candidate: candidate is root)
+    from_match = _from_matcher(root, matches_from)
     ancestors_or_self = (node, *node.ancestors)
     if level == "single":
         counted = next(
@@ -316,7 +327,7 @@ def _place_marker(
             (candidate for candidate in ancestors_or_self if from_match(candidate)),
             None,
         )
-        if counted is None or from_node is None:
+        if counted is None:
             return ()
         if from_node not in (counted, *counted.ancestors):
             return ()
@@ -327,8 +338,6 @@ def _place_marker(
             (candidate for candidate in ancestors_or_self if from_match(candidate)),
             None,
         )
-        if from_node is None:
-            return ()
         selected = [
             candidate
             for candidate in counted_nodes
@@ -355,14 +364,31 @@ def _place_marker(
         (candidate for candidate in reversed(candidates) if from_match(candidate)),
         None,
     )
-    if from_node is None:
-        return ()
+    # ``_from_matcher`` treats every tree's root node as a from-match, and the
+    # candidate walk starts at that root, so a from node always exists.
+    assert from_node is not None
+    from_order = from_node.document_order
     selected = [
         candidate
         for candidate in counted_nodes
-        if candidate is from_node or candidate.document_order > from_node.document_order
+        if candidate is from_node or candidate.document_order > from_order
     ]
     return (len(selected),) if selected else ()
+
+
+def _from_matcher(
+    root: XdmNode,
+    matches_from: Callable[[XdmNode], bool] | None,
+) -> Callable[[XdmNode], bool]:
+    """XSLT 3.0 §12.3 ``matches-from``: the pattern, or any tree's root node.
+
+    The root node matches regardless of what the ``from`` pattern says, which
+    is how a count before the first pattern match starts at the start of the
+    tree instead of producing an empty place marker.
+    """
+    if matches_from is None:
+        return lambda candidate: candidate is root
+    return lambda candidate: candidate is root or matches_from(candidate)
 
 
 def _preceding_count(
@@ -543,7 +569,7 @@ class _AnyCounts:
         # ``node_id -> (seen_from, running)`` for every tree node passed.
         self.state: dict[int, tuple[bool, int]] = {}
         self._count = matches_count
-        self._from = matches_from or (lambda candidate: candidate is root)
+        self._from = _from_matcher(root, matches_from)
 
     def count_at(self, node: XdmNode) -> tuple[int, ...]:
         """The marker for *node*, advancing the walk only forwards."""
@@ -623,7 +649,7 @@ class _FormatToken:
 
 
 def format_place_marker(
-    numbers: Sequence[int],
+    numbers: Sequence[int | None],
     format_: str,
     *,
     lang: str = "",
@@ -632,8 +658,14 @@ def format_place_marker(
     grouping_separator: str | None = None,
     grouping_size: str | None = None,
 ) -> str:
-    """Format one place marker using XSLT 3.0 section 12.4."""
-    if not all(isinstance(number, int) for number in numbers):
+    """Format one place marker using XSLT 3.0 section 12.4.
+
+    A ``None`` entry is the XSLT 1.0 behavior's ``NaN`` marker; it occupies
+    its position in the formatted string but takes no part in number
+    formatting.  An empty marker still emits the format's prefix and suffix,
+    which section 12.4 requires to appear exactly once.
+    """
+    if not all(number is None or isinstance(number, int) for number in numbers):
         raise ValueError("place markers contain integers")
     normalized_letter_value = letter_value.strip()
     if normalized_letter_value not in ("", "alphabetic", "traditional"):
@@ -642,7 +674,8 @@ def format_place_marker(
             code="XTDE0030",
         )
     if not numbers:
-        return ""
+        prefix, suffix = _marker_affixes(format_)
+        return prefix + suffix
     tokens = _format_tokens(format_)
     format_tokens = [token for token in tokens if token.is_format]
     if not format_tokens:
@@ -675,6 +708,9 @@ def format_place_marker(
         token = format_tokens[min(index, len(format_tokens) - 1)]
         if index:
             parts.append(separators[min(index, len(separators) - 1)])
+        if number is None:
+            parts.append("NaN")
+            continue
         parts.append(
             _format_token(
                 number,
@@ -687,6 +723,18 @@ def format_place_marker(
             )
         )
     return prefix + "".join(parts) + suffix
+
+
+def _marker_affixes(format_: str) -> tuple[str, str]:
+    """The prefix and suffix XSLT 3.0 §12.4 derives from one format string."""
+    tokens = _format_tokens(format_)
+    format_indexes = [index for index, token in enumerate(tokens) if token.is_format]
+    if not format_indexes:
+        return format_, format_
+    first, last = format_indexes[0], format_indexes[-1]
+    prefix = tokens[first - 1].text if first > 0 else ""
+    suffix = tokens[last + 1].text if last + 1 < len(tokens) else ""
+    return prefix, suffix
 
 
 def _format_tokens(source: str) -> list[_FormatToken]:
@@ -971,12 +1019,19 @@ _TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eigh
 
 
 def _ordinal_phrase(phrase: str) -> str:
-    if "-" in phrase:
-        head, _, tail = phrase.rpartition("-")
-        return f"{head}-{_ORDINAL_WORDS.get(tail, tail)}"
-    head, _, tail = phrase.rpartition(" ")
-    ordinal = _ORDINAL_WORDS.get(tail, tail)
-    return f"{head} {ordinal}" if head else ordinal
+    """Ordinalize the phrase's final word, which may follow a hyphen."""
+    head, separator, tail = phrase.rpartition(" ")
+    if not separator:
+        head, separator, tail = phrase.rpartition("-")
+        if not separator:
+            return _ORDINAL_WORDS.get(phrase, phrase)
+        return f"{head}{separator}{_ORDINAL_WORDS.get(tail, tail)}"
+    inner_head, inner_separator, inner_tail = tail.rpartition("-")
+    if inner_separator:
+        tail = f"{inner_head}{inner_separator}{_ORDINAL_WORDS.get(inner_tail, inner_tail)}"
+    else:
+        tail = _ORDINAL_WORDS.get(tail, tail)
+    return f"{head}{separator}{tail}"
 
 
 def _ordinal_suffix(number: int) -> str:
@@ -1013,12 +1068,19 @@ def format_number(
     format_name: str | None,
     formats: Mapping[str | None, DecimalFormat],
     namespaces: Mapping[str, str],
+    *,
+    compatibility: bool = False,
 ) -> str:
-    """Format *value* with the XSLT/FO number-picture grammar."""
+    """Format *value* with the XSLT/FO number-picture grammar.
+
+    *compatibility* selects XSLT 1.0 behavior, where a string argument is
+    converted with the XPath 1.0 ``number`` rules instead of being rejected as
+    a non-numeric value.
+    """
     if not isinstance(picture, str):
         raise XsltDynamicError("the number picture must be a string", code="XPTY0004")
     decimal_format = _resolve_decimal_format(format_name, formats, namespaces)
-    number = _numeric_value(value)
+    number = _numeric_value(value, compatibility)
     if isinstance(number, float) and math.isnan(number):
         return decimal_format.nan
     negative = _is_negative(number)
@@ -1158,11 +1220,15 @@ def _resolve_decimal_format(
     return decimal_format
 
 
-def _numeric_value(value: object) -> int | float | Decimal:
+def _numeric_value(value: object, compatibility: bool = False) -> int | float | Decimal:
     if value is None:
         return float("nan")
+    if isinstance(value, ResultTreeFragment):
+        # A native 1.0 result tree fragment converts through the string value
+        # of its root (XSLT 1.0 §11.1).
+        value = XdmAtomic.string(value.string_value)
     if isinstance(value, XdmNode):
-        value = value.typed_value[0]
+        value = value.typed_value[0] if value.typed_value else XdmAtomic.string("")
     if isinstance(value, XdmAtomic):
         local = (
             value.type_name.partition("}")[2]
@@ -1170,6 +1236,8 @@ def _numeric_value(value: object) -> int | float | Decimal:
             else value.type_name
         )
         if local == "untypedAtomic":
+            if compatibility:
+                return legacy_number_from_string(value.lexical)
             try:
                 return float(value.lexical)
             except ValueError as exc:
@@ -1177,6 +1245,8 @@ def _numeric_value(value: object) -> int | float | Decimal:
                     "an untyped atomic value is not numeric",
                     code="XPTY0004",
                 ) from exc
+        if compatibility and local in _STRING_ATOMIC_LOCALS:
+            return legacy_number_from_string(value.lexical)
         if local not in {
             "decimal",
             "double",
@@ -1247,8 +1317,10 @@ def _analyze_subpicture(picture: str, decimal_format: DecimalFormat) -> _SubPict
         or grouping_separator + decimal_separator in picture
     ):
         _invalid_picture("a grouping separator is adjacent to the decimal separator")
-    if picture.startswith(grouping_separator) or picture.endswith(grouping_separator):
-        _invalid_picture("a grouping separator must have digits on both sides")
+    if grouping_separator + grouping_separator in picture:
+        _invalid_picture("two adjacent grouping separators")
+    if decimal_separator not in picture and picture.endswith(grouping_separator):
+        _invalid_picture("a grouping separator ends the integer part")
     first_active = next(
         (index for index, character in enumerate(picture) if character in effective_active), None
     )
@@ -1291,10 +1363,6 @@ def _analyze_subpicture(picture: str, decimal_format: DecimalFormat) -> _SubPict
         integer_part = mantissa[:decimal_index]
         fractional_part = mantissa[decimal_index + 1 :]
         has_decimal = True
-    _validate_digit_families(
-        integer_part + fractional_part + exponent_part,
-        decimal_format,
-    )
     _validate_digit_order(integer_part, fractional_part, decimal_format)
     integer_grouping = _integer_grouping_positions(integer_part, decimal_format)
     integer_step = _regular_step(integer_grouping)
@@ -1340,16 +1408,6 @@ def _analyze_subpicture(picture: str, decimal_format: DecimalFormat) -> _SubPict
 
 def _invalid_picture(message: str) -> NoReturn:
     raise XsltDynamicError(f"invalid number picture: {message}", code="FODF1310")
-
-
-def _validate_digit_families(picture: str, decimal_format: DecimalFormat) -> None:
-    for character in picture:
-        try:
-            unicodedata.digit(character)
-        except (TypeError, ValueError):
-            continue
-        if character not in decimal_format.digits:
-            _invalid_picture("digits from more than one digit family")
 
 
 def _validate_digit_order(

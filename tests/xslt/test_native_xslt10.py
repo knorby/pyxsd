@@ -24,7 +24,9 @@ import pytest
 from elementpath.datatypes import UntypedAtomic
 from tests.xslt.support import stylesheet as _stylesheet
 
+from pyxsd.schema import Schema
 from pyxsd.xdm import XdmAtomic
+from pyxsd.xdm.document import parse_typed_document
 from pyxsd.xdm.legacy import (
     LegacyNodeSetError,
     ResultTreeFragment,
@@ -41,6 +43,7 @@ from pyxsd.xdm.legacy import (
     number_to_string,
 )
 from pyxsd.xdm.nodes import NodeKind, XdmDocument
+from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath.engine import (
     _legacy_boolean_value,
     _legacy_number_value,
@@ -49,7 +52,7 @@ from pyxsd.xpath.engine import (
 from pyxsd.xslt import XsltExtensions, XsltProcessor
 from pyxsd.xslt.compiler.context import ProfileOptions, StaticContext
 from pyxsd.xslt.compiler.expressions import compile_sequence_type
-from pyxsd.xslt.errors import XsltDynamicError, XsltStaticError
+from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltStaticError
 from pyxsd.xslt.profile10 import forwards_compatible_instruction
 from pyxsd.xslt.profiles import (
     DOCUMENT_RETRIEVAL,
@@ -886,6 +889,24 @@ def test_native_ieee_rounding_and_special_values() -> None:
     assert text_of(body) == "3|-2|0|NaN|Infinity"
 
 
+def test_native_forwards_compatible_value_of_uses_number_to_string() -> None:
+    """A 1.0 processor stringifies a 2.0 stylesheet's numbers without ``.0``.
+
+    ``xsl:value-of`` is an XSLT 1.0 instruction, so the number-to-string
+    conversion applies even when the containing stylesheet declares a later
+    version that the 1.0 processor processes in forwards-compatible mode.
+    """
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:value-of select="2.0"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="1 div 2"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="0 div 0"/>'
+        "</xsl:template>"
+    )
+    compiled = native_compile(body, version="2.0")
+    assert principal_text(compiled.transform(initial_template="main")) == "2|0.5|NaN"
+
+
 def test_native_general_comparison_conversions() -> None:
     body = (
         '<xsl:template name="main">'
@@ -1707,3 +1728,246 @@ def test_legacy_decimal_and_evaluator_conversions() -> None:
 
 def test_legacy_node_set_error_code() -> None:
     assert LegacyNodeSetError.code == "XPTY0004"
+
+
+# ---------------------------------------------------------------------------
+# Paired native profiles: the same stylesheet under 1.0 and a later language
+#
+# A native 1.0 processor processes an XSLT 1.0 stylesheet with its own value
+# model and conversions no matter what version declaration the stylesheet
+# carries.  A native 2.0 processor is a different language: the same
+# declaration selects its own expression semantics.  Each pair below asserts
+# both outcomes, so a later profile's behavior cannot silently replace the
+# native 1.0 one.
+
+
+def profile_text(
+    body: str,
+    *,
+    language: str,
+    version: str = "2.0",
+    source: bytes = b"<doc><a>one</a><a>two</a></doc>",
+) -> str:
+    processor = XsltProcessor(
+        language=language,
+        xpath=language,
+        schema_aware=language != "1.0",
+    )
+    compiled = processor.compile(
+        io.BytesIO(stylesheet(body, version=version)),
+    )
+    result = compiled.transform(
+        source=source,
+        initial_template="main",
+        delivery="raw",
+    )
+    return principal_text(result)
+
+
+def profile_error(body: str, *, language: str, version: str = "2.0") -> XsltError:
+    processor = XsltProcessor(
+        language=language,
+        xpath=language,
+        schema_aware=language != "1.0",
+    )
+    with pytest.raises(XsltError) as caught:
+        compiled = processor.compile(
+            io.BytesIO(stylesheet(body, version=version)),
+        )
+        compiled.transform(
+            source=b"<doc><a>one</a><a>two</a></doc>",
+            initial_template="main",
+            delivery="raw",
+        )
+    return caught.value
+
+
+def test_paired_native_profiles_stringify_a_forward_compatible_fragment() -> None:
+    body = (
+        '<xsl:template name="callee">'
+        '<xsl:param name="p">default</xsl:param>'
+        '<xsl:value-of select="$p"/>'
+        "</xsl:template>"
+        '<xsl:template name="main">'
+        '<xsl:call-template name="callee">'
+        '<xsl:with-param name="p"><w>text</w></xsl:with-param>'
+        "</xsl:call-template>"
+        "</xsl:template>"
+    )
+    assert profile_text(body, language="1.0") == "text"
+    assert profile_text(body, language="2.0") == "text"
+
+    counted = body.replace('<xsl:value-of select="$p"/>', '<xsl:value-of select="count($p)"/>')
+    error = profile_error(counted, language="1.0")
+    assert error.code == "XPTY0004"
+    assert "result tree fragment" in str(error)
+    assert profile_text(counted, language="2.0") == "1"
+
+
+def test_paired_native_profiles_ignore_undeclared_template_parameters() -> None:
+    body = (
+        '<xsl:template name="callee"><xsl:value-of select="\'ok\'"/></xsl:template>'
+        '<xsl:template name="main">'
+        '<xsl:call-template name="callee">'
+        '<xsl:with-param name="extra" select="1"/>'
+        "</xsl:call-template>"
+        "</xsl:template>"
+    )
+    # XSLT 1.0 §11.6: a supplied parameter the called template does not
+    # declare is ignored.  XSLT 2.0 made the same mistake a static error.
+    assert profile_text(body, language="1.0") == "ok"
+    error = profile_error(body, language="2.0")
+    assert error.code == "XTSE0680"
+
+
+def test_paired_native_profiles_apply_their_own_general_comparison() -> None:
+    body = '<xsl:template name="main"><xsl:value-of select="1 = &quot;1.0&quot;"/></xsl:template>'
+    # XPath 1.0 compares the node-set/string through number(); XPath 2.0
+    # rejects the untyped comparison between xs:integer and xs:string.
+    assert profile_text(body, language="1.0") == "true"
+    error = profile_error(body, language="2.0")
+    assert error.code == "XPTY0004"
+
+
+def test_paired_native_profiles_keep_their_own_number_value_rules() -> None:
+    body = '<xsl:template name="main"><xsl:number value="&quot;not a number&quot;"/></xsl:template>'
+    # XSLT 1.0 behavior formats an unconvertible number as the literal NaN;
+    # the 2.0 language rejects it with XTDE0980.
+    assert profile_text(body, language="1.0") == "NaN"
+    error = profile_error(body, language="2.0")
+    assert error.code == "XTDE0980"
+
+
+def test_legacy_number_value_of_an_element_without_simple_content_is_nan() -> None:
+    """An element-only typed value is empty, so XSLT 1.0 formats it as NaN."""
+    schema = Schema.compile(
+        io.StringIO(
+            """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                 <xs:element name="doc"><xs:complexType><xs:sequence>
+                   <xs:element name="empty"><xs:complexType><xs:sequence>
+                     <xs:element name="child" type="xs:string"/>
+                   </xs:sequence></xs:complexType></xs:element>
+                 </xs:sequence></xs:complexType></xs:element>
+               </xs:schema>"""
+        )
+    )
+    pool = SchemaPool.from_schema(schema)
+    document = parse_typed_document(
+        b"<doc><empty><child>value</child></empty></doc>",
+        schema_pool=pool,
+        validation="strict",
+    )
+    assert document.root_element.children[0].typed_value == ()
+    compiled = native_compile(
+        '<xsl:template name="main"><xsl:number value="/doc/empty"/></xsl:template>'
+    )
+    result = compiled.transform(
+        source=document, delivery="raw", initial_template="main", validation="preserve"
+    )
+    assert principal_text(result) == "NaN"
+
+
+def test_paired_native_profiles_process_a_future_version_declaration() -> None:
+    body = (
+        '<xsl:template match="/">'
+        "<out>"
+        '<xsl:exciting-new-8-5-feature processing="magic">'
+        "<ignored/>"
+        "<xsl:fallback>fallback</xsl:fallback>"
+        "</xsl:exciting-new-8-5-feature>"
+        "</out>"
+        "</xsl:template>"
+    )
+    top_level = (
+        "<xsl:exciting-new-8-5-declaration>"
+        "<xsl:template match='*'><never/></xsl:template>"
+        "</xsl:exciting-new-8-5-declaration>"
+        '<xsl:template match="/"><out>ignored</out></xsl:template>'
+    )
+    for language in ("1.0", "2.0"):
+        processor = XsltProcessor(
+            language=language,
+            xpath=language,
+            schema_aware=language != "1.0",
+        )
+        compiled = processor.compile(io.BytesIO(stylesheet(body, version="8.5")))
+        result = compiled.transform(
+            source=b"<doc/>",
+            initial_template=None,
+            delivery="document",
+        )
+        assert result.principal_tree.string_value == "fallback"
+
+        compiled_top = processor.compile(io.BytesIO(stylesheet(top_level, version="8.5")))
+        top_result = compiled_top.transform(
+            source=b"<doc/>",
+            initial_template=None,
+            delivery="document",
+        )
+        assert top_result.principal_tree.string_value == "ignored"
+
+        # XSLT 2.0 §3.6 ignores an attribute the language does not define on a
+        # forwards-compatible element; the same attribute is XTSE0090 when the
+        # element keeps its 2.0 effective version.
+        later_attribute = (
+            '<xsl:template match="/">'
+            '<out xsl:version="32.0">'
+            '<xsl:variable name="pigs" select="21" with-jam-on-top="yes"/>'
+            '<xsl:value-of select="$pigs"/>'
+            "</out></xsl:template>"
+        )
+        compiled_attribute = processor.compile(
+            io.BytesIO(stylesheet(later_attribute, version="8.5"))
+        )
+        attribute_result = compiled_attribute.transform(
+            source=b"<doc/>",
+            initial_template=None,
+            delivery="document",
+        )
+        assert attribute_result.principal_tree.string_value == "21"
+        if language == "2.0":
+            strict_attribute = later_attribute.replace(' xsl:version="32.0"', "")
+            with pytest.raises(XsltStaticError) as caught:
+                processor.compile(io.BytesIO(stylesheet(strict_attribute, version="2.0")))
+            assert caught.value.code == "XTSE0090"
+
+        # An unparseable declaration changes nothing about the mode, and the
+        # version validator still owns the static error.
+        malformed = '<xsl:template match="/"><out xsl:version="banana"/></xsl:template>'
+        with pytest.raises(XsltStaticError) as caught:
+            processor.compile(io.BytesIO(stylesheet(malformed, version="2.0")))
+        assert caught.value.code == "XTSE0110"
+
+
+def test_paired_native_profiles_require_fallback_for_a_future_version_instruction() -> None:
+    body = '<xsl:template match="/"><out><xsl:exciting-new-8-5-feature/></out></xsl:template>'
+    for language in ("1.0", "2.0"):
+        processor = XsltProcessor(
+            language=language,
+            xpath=language,
+            schema_aware=language != "1.0",
+        )
+        with pytest.raises(XsltError) as caught:
+            compiled = processor.compile(io.BytesIO(stylesheet(body, version="8.5")))
+            compiled.transform(source=b"<doc/>", initial_template=None, delivery="raw")
+        # XSLT 1.0 §2.5 defers its error until the element is instantiated and
+        # assigns it no code.  XSLT 2.0 §18.2.3 makes the same unrecognized
+        # element a static error unless it carries an xsl:fallback child.
+        assert "exciting-new-8-5-feature" in str(caught.value)
+        if language == "1.0":
+            assert caught.value.code is None
+        else:
+            assert caught.value.code == "XTSE0010"
+
+
+def test_paired_native_profiles_do_not_share_recovery_tables() -> None:
+    # A native 2.0 processor owns the XSLT 2.0 recovery table, so a future
+    # declaration does not change which rules the language permits.  A native
+    # 1.0 processor has no table to inherit.
+    native_two = LanguageProfile.for_processor("2.0", "8.5")
+    assert native_two.recovery_rule_for("XTRE0540") is not None
+    assert native_two.recovery_rule_for("multiple-template-rules") is not None
+
+    native_one = LanguageProfile.for_processor("1.0", "8.5")
+    assert native_one.recovery_rule_for("XTRE0540") is None
+    assert native_one.recovery_rule_for("multiple-template-rules") is None

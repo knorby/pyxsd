@@ -874,6 +874,62 @@ def _namespace_prefixes(node: XdmNode) -> list[str]:
     return [namespace.prefix for namespace in node.namespace_nodes]
 
 
+def test_base_uri_reads_grounded_and_constructed_node_properties() -> None:
+    source = XdmDocument.parse(
+        b'<doc xml:base="http://a.example/">'
+        b'<e xml:base="http://b.example/" p="v">t<!--c--><?pi d?></e>'
+        b"</doc>",
+        document_uri="http://doc.example/",
+    )
+    result = _transform_source(
+        '<xsl:variable name="doc" xml:base="http://d.example/"><c/></xsl:variable>'
+        '<xsl:template name="main">'
+        '<xsl:param name="p" xml:base="http://p.example/"><c/></xsl:param>'
+        "<out>"
+        '<e><xsl:value-of select="base-uri(//e)"/></e>'
+        '<a><xsl:value-of select="base-uri(//@p)"/></a>'
+        '<t><xsl:value-of select="base-uri(//e/text())"/></t>'
+        '<c><xsl:value-of select="base-uri(//comment())"/></c>'
+        '<p><xsl:value-of select="base-uri(//processing-instruction())"/></p>'
+        '<n><xsl:value-of select="base-uri((//e/namespace::*)[1])"/></n>'
+        '<nc><xsl:value-of select="count(//e/namespace::*)"/></nc>'
+        '<r><xsl:value-of select="base-uri(/)"/></r>'
+        '<vd><xsl:value-of select="base-uri($doc/c)"/></vd>'
+        '<vp><xsl:value-of select="base-uri($p/c)"/></vp>'
+        "</out></xsl:template>",
+        source,
+    )
+    out = result.principal_tree.root_element
+    assert [child.string_value for child in out.children] == [
+        "http://b.example/",
+        "http://b.example/",
+        "http://b.example/",
+        "http://b.example/",
+        "http://b.example/",
+        "",
+        "1",
+        "http://doc.example/",
+        "http://d.example/",
+        "http://p.example/",
+    ]
+
+
+def test_base_uri_reads_an_element_rooted_temporary_tree_base() -> None:
+    result = _transform(
+        '<xsl:variable name="tree" as="element()" xml:base="http://c.example/">'
+        "<c><d/></c></xsl:variable>"
+        '<xsl:template name="main"><out>'
+        '<c><xsl:value-of select="base-uri($tree)"/></c>'
+        '<d><xsl:value-of select="base-uri($tree/d)"/></d>'
+        "</out></xsl:template>"
+    )
+    root = result.principal_tree.root_element
+    assert [child.string_value for child in root.children] == [
+        "http://c.example/",
+        "http://c.example/",
+    ]
+
+
 def test_copy_of_deep_retains_namespaces_prefixes_and_new_identity() -> None:
     source = XdmDocument.parse(
         b'<a:root xmlns:a="urn:a" xmlns:u="urn:unused">'
@@ -909,7 +965,7 @@ def test_copy_of_deep_retains_namespaces_prefixes_and_new_identity() -> None:
     assert item.children[0].name == "child"
 
 
-def test_shallow_copy_retains_name_attributes_and_namespaces_only() -> None:
+def test_shallow_copy_retains_name_and_namespaces_only() -> None:
     source = XdmDocument.parse(
         b'<a:root xmlns:a="urn:a"><b:item xmlns:b="urn:b" b:attr="1"><child/></b:item></a:root>'
     )
@@ -925,10 +981,23 @@ def test_shallow_copy_retains_name_attributes_and_namespaces_only() -> None:
     assert copied.name == "{urn:b}item"
     assert copied.prefix == "b"
     assert copied.children == ()
-    assert copied.attributes[0].name == "{urn:b}attr"
-    assert copied.attributes[0].prefix == "b"
+    assert copied.attributes == ()
     assert set(_namespace_prefixes(copied)) >= {"b", "xml"}
     assert all(namespace.parent is copied for namespace in copied.namespace_nodes)
+
+
+def test_copy_select_uses_the_selected_node_base_and_not_its_attributes() -> None:
+    source = XdmDocument.parse(b'<doc><item x="1" xml:base="http://source.example/"/></doc>')
+    result = _transform_source(
+        '<xsl:template name="main"><out xml:base="http://instr.example/">'
+        '<xsl:copy select="//item"/></out></xsl:template>',
+        source,
+    )
+
+    copied = result.principal_tree.root_element.children[0]
+    assert copied.name == "item"
+    assert copied.attributes == ()
+    assert copied.base_uri == "http://instr.example/"
 
 
 def test_copy_without_namespaces_drops_unused_bindings_but_keeps_name_ones() -> None:

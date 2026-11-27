@@ -1696,3 +1696,48 @@ def test_transformation_boundary_preserves_python_cause_identity() -> None:
     assert wrapped.__cause__ is original
     assert wrapped.description == "python callback exploded"
     assert wrapped.value == ()
+
+
+# ---------------------------------------------------------------------------
+# Public taxonomy at the catch boundary
+
+
+def test_context_item_type_error_is_caught_by_its_public_code() -> None:
+    result = transform(
+        """
+        <xsl:template name="main">
+          <xsl:for-each select="1">
+            <xsl:try>
+              <xsl:call-template name="t"/>
+              <xsl:catch errors="err:XTTE0590" select="'caught'"/>
+            </xsl:try>
+          </xsl:for-each>
+        </xsl:template>
+        <xsl:template name="t">
+          <xsl:context-item as="xs:string"/>
+          <xsl:sequence select="."/>
+        </xsl:template>
+        """,
+        delivery="raw",
+    )
+
+    assert result.principal == (XdmAtomic.string("caught"),)
+
+
+@pytest.mark.parametrize(
+    ("code", "phase"),
+    [
+        ("XTSE0010", "static"),
+        ("XTSE0020", "static"),
+        ("XTSE0080", "static"),
+        ("XTSE0090", "static"),
+        ("XTSE0170", "static"),
+    ],
+)
+def test_static_taxonomy_errors_are_never_catchable(code: str, phase: str) -> None:
+    error = XsltStaticError("taxonomy", code=code, phase=phase)
+
+    assert error.catchable is False
+    assert error.matches_catch() is False
+    assert error.matches_catch(["*"]) is False
+    assert error.matches_catch([f"err:{code}"]) is False

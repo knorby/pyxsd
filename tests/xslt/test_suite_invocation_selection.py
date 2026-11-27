@@ -14,7 +14,15 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from tests.xslt import suite
-from tests.xslt.model import Environment, InitialTemplate, Invocation, Package, Param, Stylesheet
+from tests.xslt.model import (
+    Environment,
+    InitialMode,
+    InitialTemplate,
+    Invocation,
+    Package,
+    Param,
+    Stylesheet,
+)
 from tests.xslt.model import TestCase as CatalogCase
 from tests.xslt.support import stylesheet
 
@@ -255,3 +263,27 @@ def test_a_selection_without_a_corpus_root_is_unsupported(tmp_path: Path) -> Non
 
     with pytest.raises(suite.UnsupportedCase, match="case without a corpus root"):
         suite.execute_case(case, PROFILE)
+
+
+def test_a_coded_invocation_error_is_reported_as_that_error_code(tmp_path: Path) -> None:
+    """A host invocation error that carries an XSLT code is a case outcome.
+
+    An initial mode without a match selection is XTDE0044 (XSLT 3.0 section
+    2.3.2).  The processor rejects it before compiling a transformation, so the
+    failure reaches a host caller as ``XsltInvocationError`` with the code; the
+    executor maps it exactly like an engine ``XsltError`` instead of recording
+    an uncoded harness failure.  The synthetic case is the corpus shape of
+    ``package/package-914b``.
+    """
+    _write(tmp_path, "mode.xsl", '<xsl:template match="/"><out/></xsl:template>')
+    base = _case(tmp_path, environment_stylesheets=(_declaration("mode.xsl"),))
+    case = replace(
+        base,
+        invocation=Invocation(initial_mode=InitialMode(name="#default")),
+        result_xml='<result><error code="XTDE0044"/></result>',
+    )
+
+    result = suite.run_case(case, PROFILE)
+
+    assert result.outcome.value == "pass"
+    assert result.expected_error_code == "XTDE0044"

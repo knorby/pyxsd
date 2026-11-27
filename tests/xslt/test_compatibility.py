@@ -198,6 +198,13 @@ def test_static_context_uses_profile_compatibility_rules() -> None:
     )
 
 
+def test_xpath_static_context_rejects_a_non_boolean_compatibility_mode() -> None:
+    from pyxsd.xpath.environment import XPathStaticContext
+
+    with pytest.raises(TypeError, match="compatibility_mode"):
+        XPathStaticContext(compatibility_mode=1)  # type: ignore[arg-type]
+
+
 # ---------------------------------------------------------------------------
 # 1.0 compatibility conversions
 
@@ -313,7 +320,7 @@ def test_nested_version_scopes_value_of_and_avt_conversions() -> None:
     result = transform(
         """
         <xsl:template name="main">
-          <first><xsl:value-of xsl:version="1.0" select="(1, 2, 3)"/></first>
+          <first><xsl:value-of version="1.0" select="(1, 2, 3)"/></first>
           <second><xsl:value-of select="(1, 2, 3)"/></second>
         </xsl:template>
         """,
@@ -553,6 +560,46 @@ def test_unlisted_document_errors_are_not_recovered() -> None:
     with pytest.raises(XsltDynamicError) as caught:
         bridge.document("")
     assert caught.value.code == "XTDE1162"
+
+
+def test_xpath_1_0_compatibility_mode_applies_expression_conversions() -> None:
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:value-of select="substring(//a, 1)"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="1 = &quot;1.0&quot;"/>'
+        '<xsl:text>|</xsl:text><xsl:value-of select="//a + 1"/>'
+        "</xsl:template>"
+    )
+    source = b"<doc><a>one</a><a>two</a></doc>"
+    # XSLT 3.0 §3.9.1: an element with effective version 1.0 evaluates its
+    # XPath expressions with XPath 1.0 compatibility mode.  The node-set
+    # argument atomizes through its first node and the comparison compares
+    # through number().
+    assert (
+        "".join(
+            item.string_value for item in transform(body, version="1.0", source=source).principal
+        )
+        == "one|true|NaN"
+    )
+
+    # The same expression under effective version 2.0 keeps XPath 3.1
+    # conversion rules and rejects the multi-item arguments.
+    with pytest.raises(XsltDynamicError) as caught:
+        transform(body, version="2.0", source=source)
+    assert caught.value.code == "XPTY0004"
+
+
+def test_text_value_templates_do_not_use_xpath_1_0_compatibility_mode() -> None:
+    body = (
+        '<xsl:template name="main" expand-text="yes">'
+        "<out>{1 = &quot;1.0&quot;}</out>"
+        "</xsl:template>"
+    )
+    # XSLT 3.0 §3.9.1 excludes text value templates from compatibility mode
+    # even when the containing element has effective version 1.0.
+    with pytest.raises(XsltDynamicError) as caught:
+        transform(body, version="1.0")
+    assert caught.value.code == "XPTY0004"
 
 
 def test_transformation_profile_and_recovery_policy_are_independent_of_frames() -> None:

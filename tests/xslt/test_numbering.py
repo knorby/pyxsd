@@ -166,6 +166,92 @@ def test_value_with_count_is_a_static_error() -> None:
     assert error_code(lambda: compiled(source)) == "XTSE0975"
 
 
+def test_value_nan_in_compatibility_mode_is_the_literal_nan() -> None:
+    """XSLT 1.0 behavior inserts the string ``NaN`` for a non-integer value."""
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:number value="'fizz'"/>
+          <xsl:text>|</xsl:text>
+          <xsl:number value="()"/>
+          <xsl:text>|</xsl:text>
+          <xsl:number value="(1, 2)"/>
+          <xsl:text>|</xsl:text>
+          <xsl:number value="doc/n"/>
+        </xsl:template>
+        """,
+        version="1.0",
+    )
+    assert (
+        text(lambda: transform(source, b"<doc><n>2</n></doc>", initial_template="main"))
+        == "NaN|NaN|1|2"
+    )
+
+
+def test_value_negative_in_compatibility_mode_is_still_a_dynamic_error() -> None:
+    source = stylesheet(
+        '<xsl:template name="main"><xsl:number value="-1"/></xsl:template>', version="1.0"
+    )
+    assert error_code(lambda: transform(source, None, initial_template="main")) == "XTDE0980"
+
+
+def test_empty_place_marker_keeps_the_format_prefix_and_suffix() -> None:
+    """XSLT 3.0 §12.4: the prefix and suffix appear exactly once even with no numbers."""
+    from pyxsd.xslt.runtime.numbering import format_place_marker
+
+    assert format_place_marker([], "[1]") == "[]"
+    assert format_place_marker([], "1.1. ") == ". "
+    # A non-alphanumeric format with no format token is both prefix and suffix.
+    assert format_place_marker([], "()") == "()()"
+    # An alphanumeric token is a format token, so there is no prefix or suffix.
+    assert format_place_marker([], "abc") == ""
+    assert format_place_marker([], "1") == ""
+    assert format_place_marker([], "") == ""
+
+
+def test_level_any_from_counts_from_the_tree_root_when_the_pattern_matches_nothing() -> None:
+    """XSLT 3.0 §12.3: ``matches-from`` is also true for a tree's root node."""
+    source = stylesheet(
+        """
+        <xsl:template match="note">
+          <xsl:number level="any" from="chapter" format="(1)"/>
+        </xsl:template>
+        """
+    )
+    input_source = b"<doc><note>a</note><chapter><note>b</note></chapter><note>c</note></doc>"
+    assert text(lambda: transform(source, input_source)) == "(1)(1)(2)"
+
+
+def test_level_single_from_the_root_uses_the_innermost_counted_ancestor() -> None:
+    source = stylesheet(
+        """
+        <xsl:template match="b"><xsl:number level="single" from="section" count="b"/></xsl:template>
+        """
+    )
+    input_source = b"<doc><b/><b/><section><b/><b/></section></doc>"
+    assert text(lambda: transform(source, input_source)) == "1212"
+
+
+def test_ordinal_words_apply_to_the_last_word_after_a_hyphenated_tens_word() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:number value="2138416" format="w" ordinal="yes"/>
+        </xsl:template>
+        """
+    )
+    assert text(lambda: transform(source, None, initial_template="main")) == (
+        "two million one hundred thirty-eight thousand four hundred sixteenth"
+    )
+    hyphenated = stylesheet(
+        '<xsl:template name="main"><xsl:number value="121" format="w" ordinal="yes"/>'
+        "</xsl:template>"
+    )
+    assert text(lambda: transform(hyphenated, None, initial_template="main")) == (
+        "one hundred twenty-first"
+    )
+
+
 def test_single_level_counts_matching_siblings() -> None:
     source = stylesheet(
         """
@@ -196,8 +282,9 @@ def test_single_level_with_from_returns_empty_outside_the_subtree() -> None:
         </xsl:template>
         """
     )
-    # The document node is outside every chapter subtree, so no place marker.
-    assert text(lambda: transform(source)) == ""
+    # The document node is not inside a chapter, but the tree root always
+    # matches ``from``, so the document node itself is the counted ancestor.
+    assert text(lambda: transform(source)) == "1"
 
 
 def test_multiple_level_counts_each_matching_ancestor() -> None:
@@ -592,6 +679,7 @@ def test_format_number_invalid_pictures_are_fodf1310() -> None:
         "0.#0",
         "abc",
         "0,",
+        "0,,0",
     ):
         source = format_number(expression=f"format-number(1, '{picture}')")
         assert error_code(
@@ -602,6 +690,53 @@ def test_format_number_invalid_pictures_are_fodf1310() -> None:
 def test_format_number_rejects_non_numeric_values() -> None:
     source = format_number(expression="format-number('1', '0')")
     assert error_code(lambda: transform(source, None, initial_template="main")) == "XPTY0004"
+
+
+def test_format_number_converts_a_string_to_a_number_in_compatibility_mode() -> None:
+    source = stylesheet(
+        """
+        <xsl:decimal-format NaN="non-numeric"/>
+        <xsl:template name="main">
+          <xsl:value-of select="format-number('foo', '###')"/>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="format-number('12.5', '0.0')"/>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="format-number(doc/n, '0')"/>
+        </xsl:template>
+        """,
+        version="1.0",
+    )
+    assert (
+        text(lambda: transform(source, b"<doc><n>7</n></doc>", initial_template="main"))
+        == "non-numeric|12.5|7"
+    )
+
+
+def test_format_number_leading_grouping_separator_extrapolates_its_position() -> None:
+    """F&O 3.1 §4.7.3 forbids a trailing grouping separator, not a leading one."""
+    style = stylesheet(
+        """
+        <xsl:decimal-format name="grouped" grouping-separator="G" decimal-separator="."/>
+        <xsl:template name="main">
+          <xsl:value-of select="format-number(1234567890.123456, 'G000.000', 'grouped')"/>
+        </xsl:template>
+        """
+    )
+    assert text(lambda: transform(style, None, initial_template="main")) == "1G234G567G890.123"
+
+
+def test_format_number_foreign_digit_family_is_passive_text() -> None:
+    style = stylesheet(
+        """
+        <xsl:decimal-format digit="!" zero-digit="&#x0660;"/>
+        <xsl:template name="main">
+          <xsl:value-of select="format-number(4030201.0506, '#!!!,!!!,&#x0660;&#x0660;&#x0660;.&#x0660;&#x0660;&#x0660;&#x0660;&#x0660;&#x0660;0')"/>
+        </xsl:template>
+        """
+    )
+    assert text(lambda: transform(style, None, initial_template="main")) == (
+        "#\u0664,\u0660\u0663\u0660,\u0662\u0660\u0661.\u0660\u0665\u0660\u0666\u0660\u06600"
+    )
 
 
 def test_decimal_format_single_character_attributes_are_static_errors() -> None:
@@ -705,24 +840,20 @@ def test_place_marker_from_and_root_boundaries() -> None:
         )
         == ()
     )
-    assert (
-        place_marker(
-            paragraph,
-            "multiple",
-            lambda node: node is chapter,
-            lambda node: False,
-        )
-        == ()
-    )
-    assert (
-        place_marker(
-            paragraph,
-            "any",
-            lambda node: node.kind is NodeKind.ELEMENT,
-            lambda node: False,
-        )
-        == ()
-    )
+    # A ``from`` pattern that matches nothing still matches the tree root.
+    assert place_marker(
+        paragraph,
+        "multiple",
+        lambda node: node is chapter,
+        lambda node: False,
+    ) == (1,)
+    assert place_marker(
+        paragraph,
+        "any",
+        lambda node: node.kind is NodeKind.ELEMENT,
+        lambda node: False,
+    ) == (3,)
+    assert place_marker(paragraph, "single", lambda node: False, None) == ()
     assert place_marker(document, "single", lambda node: True, None) == (1,)
     attributed = XdmDocument.parse(b'<doc n="1"/>')
     attribute = attributed.root_element.attributes[0]
@@ -829,9 +960,9 @@ def test_format_number_picture_boundaries() -> None:
         assert caught.value.code == "FODF1310"
 
     arabic = {"{urn:my}arabic": DecimalFormat.from_attributes({"zero-digit": "\u0660"})}
-    with pytest.raises(XsltDynamicError) as caught:
-        format_number(1, "\u06600", "my:arabic", arabic, {"my": "urn:my"})
-    assert caught.value.code == "FODF1310"
+    # A digit from another family is a passive character in the picture, not a
+    # second digit family: it is literal text after the active digit family.
+    assert format_number(1, "\u06600", "my:arabic", arabic, {"my": "urn:my"}) == "\u06610"
 
 
 def test_number_value_atomizes_nodes_and_rejects_function_items() -> None:
@@ -868,7 +999,7 @@ def test_number_start_at_rejects_non_integer_tokens() -> None:
     source = stylesheet(
         '<xsl:template name="main"><xsl:number value="1" start-at="bad"/></xsl:template>'
     )
-    assert error_code(lambda: transform(source, None, initial_template="main")) == "XTDE0030"
+    assert error_code(lambda: compiled(source)) == "XTSE0020"
 
 
 def test_format_number_dynamic_call_and_multiple_values() -> None:
@@ -894,6 +1025,11 @@ def test_context_bridge_validates_decimal_format_values() -> None:
         XsltContextBridge(Transformation(), decimal_formats={1: DecimalFormat()})  # type: ignore[dict-item]
     with pytest.raises(TypeError):
         XsltContextBridge(Transformation(), decimal_formats={None: "bad"})  # type: ignore[dict-item]
+    with pytest.raises(TypeError, match="current_output_uri must be a string or None"):
+        XsltContextBridge(
+            Transformation(),
+            current_output_uri=1,  # type: ignore[arg-type]
+        )
 
 
 # ---------------------------------------------------------------------------

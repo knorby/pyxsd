@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import local_name as _local_name
 from pyxsd.namespaces import namespace_of as _namespace_of
+from pyxsd.xslt.compiler.attribute_values import require_item_type
 from pyxsd.xslt.compiler.context import StaticContext
 from pyxsd.xslt.compiler.expressions import CompiledSequenceType, compile_sequence_type
 from pyxsd.xslt.compiler.instructions import (
@@ -30,7 +31,7 @@ from pyxsd.xslt.compiler.instructions import (
     TextNode,
     normalize_element,
 )
-from pyxsd.xslt.compiler.static import EffectiveElement, EffectiveModule
+from pyxsd.xslt.compiler.static import EffectiveElement, EffectiveModule, EffectiveText
 from pyxsd.xslt.errors import XsltStaticError
 from pyxsd.xslt.precedence import compare_precedence
 
@@ -104,6 +105,51 @@ def _error(
     if uri is None and module is not None:
         uri = module.identity
     return XsltStaticError(message, code=code, uri=uri, location=location)
+
+
+#: Namespaces XSLT 3.0 section 3.2 reserves from stylesheet-defined names.
+_RESERVED_NAMESPACES = frozenset(
+    {
+        XSLT_NS,
+        "http://www.w3.org/2005/xpath-functions",
+        "http://www.w3.org/2005/xpath-functions/math",
+        "http://www.w3.org/2005/xpath-functions/map",
+        "http://www.w3.org/2005/xpath-functions/array",
+        "http://www.w3.org/2001/XMLSchema",
+        "http://www.w3.org/2001/XMLSchema-instance",
+        "http://www.w3.org/XML/1998/namespace",
+        "http://www.w3.org/2000/xmlns/",
+        "http://www.w3.org/2005/xqt-errors",
+    }
+)
+
+#: The one reserved name the specification permits as a template name.
+_INITIAL_TEMPLATE = f"{_XSLT}initial-template"
+
+
+def _check_reserved_name(
+    expanded: str,
+    element: EffectiveElement,
+    module: EffectiveModule,
+    *,
+    allow_initial_template: bool = False,
+) -> None:
+    """Reject a stylesheet-defined name in a reserved namespace (XTSE0080).
+
+    The namespaces in :data:`_RESERVED_NAMESPACES` are reserved for the
+    specification; ``xsl:initial-template`` is the one documented exception.
+    """
+    namespace = _namespace_of(expanded) or ""
+    if namespace not in _RESERVED_NAMESPACES:
+        return
+    if allow_initial_template and expanded == _INITIAL_TEMPLATE:
+        return
+    raise _error(
+        "a reserved namespace must not be used in the name of a stylesheet-defined object",
+        "XTSE0080",
+        element=element,
+        module=module,
+    )
 
 
 def _expand_name(
@@ -405,6 +451,7 @@ def _parse_declaration(
         expanded = _expand_name(
             name_value, element.in_scope_namespaces, element=element, module=module
         )
+        _check_reserved_name(expanded, element, module, allow_initial_template=True)
         return [
             _Declaration(
                 kind="template",
@@ -436,6 +483,7 @@ def _parse_declaration(
                 element=element,
                 module=module,
             )
+        _check_reserved_name(expanded, element, module)
         _visibility(element, module)
         arity = sum(1 for child in element.elements if child.name == _PARAM)
         return [
@@ -472,6 +520,7 @@ def _parse_declaration(
                 )
         else:
             _visibility(element, module)
+        _check_reserved_name(expanded, element, module)
         return [
             _Declaration(
                 kind="variable",
@@ -497,6 +546,7 @@ def _parse_declaration(
             name_value, element.in_scope_namespaces, element=element, module=module
         )
         _visibility(element, module)
+        _check_reserved_name(expanded, element, module)
         return [
             _Declaration(
                 kind="attribute-set",
@@ -528,6 +578,8 @@ def _parse_declaration(
                 module=module,
             )
         )
+        if mode_name is not None:
+            _check_reserved_name(mode_name, element, module)
         declared_visibility = _visibility(element, module, mode=True)
         if mode_name is None and declared_visibility not in (None, "private"):
             raise _error(
@@ -567,6 +619,7 @@ def _parse_declaration(
                 element=element,
                 module=module,
             )
+        _check_reserved_name(expanded, element, module)
         return [
             _Declaration(
                 kind="accumulator",
@@ -595,16 +648,40 @@ def _parse_declaration(
                 element=element,
                 module=module,
             )
-        if element.attribute("match") is None or element.attribute("use") is None:
+        if element.attribute("match") is None:
             raise _error(
-                "xsl:key requires match and use attributes",
+                "xsl:key requires a match attribute",
                 "XTSE0010",
+                element=element,
+                module=module,
+            )
+        if element.attribute("use") is not None and (
+            element.elements
+            or any(
+                isinstance(child, EffectiveText) and child.value.strip()
+                for child in element.children
+            )
+        ):
+            # An xsl:template inside xsl:key is an element in the wrong place
+            # (XTSE0010); ordinary non-empty content beside @use is XTSE1205.
+            code = "XTSE0010" if element.elements else "XTSE1205"
+            raise _error(
+                "xsl:key does not accept both a use attribute and a sequence constructor",
+                code,
+                element=element,
+                module=module,
+            )
+        if element.attribute("use") is None and not element.elements:
+            raise _error(
+                "xsl:key requires a use attribute or a sequence constructor",
+                "XTSE1205",
                 element=element,
                 module=module,
             )
         expanded = _expand_name(
             name_value, element.in_scope_namespaces, element=element, module=module
         )
+        _check_reserved_name(expanded, element, module)
         return [
             _Declaration(
                 kind="key",
@@ -631,6 +708,7 @@ def _parse_declaration(
             construct_name = _expand_name(
                 name_value, element.in_scope_namespaces, element=element, module=module
             )
+            _check_reserved_name(construct_name, element, module)
         kind = {
             _OUTPUT: "output",
             _DECIMAL_FORMAT: "decimal-format",
@@ -935,10 +1013,14 @@ def _context_item_signature(
             element=child,
             module=module,
         )
-    return ContextItemSignature(
-        use,
-        _type(child, "as", context, default="item()"),
+    sequence_type = _type(child, "as", context, default="item()")
+    require_item_type(
+        sequence_type,
+        label="xsl:context-item/@as",
+        uri=module.identity,
+        location=child.source_location(),
     )
+    return ContextItemSignature(use, sequence_type)
 
 
 def _signature(declaration: _Declaration, *, schema: SchemaPool | None = None) -> Signature:
@@ -1546,6 +1628,13 @@ def _bind_instruction(
     return bound
 
 
+def _non_tunnel_parameter_names(component: Component) -> tuple[str, ...]:
+    """The names of one target template's non-tunnel parameters, in order."""
+    signature = component.signature
+    assert signature is not None
+    return tuple(parameter.name for parameter in signature.parameters if not parameter.tunnel)
+
+
 def _rebind_instruction(node: Instruction, lookup: _Lookup) -> Instruction:
     rebound = _rebind_node(node, lookup)
     assert isinstance(rebound, Instruction)
@@ -1586,6 +1675,7 @@ def _bind_node(
                     containing=original.containing,
                     visibility=original.visibility,
                     original=True,
+                    parameter_names=_non_tunnel_parameter_names(original),
                 )
             else:
                 target = lookup.component("template", expanded)
@@ -1601,6 +1691,7 @@ def _bind_node(
                     owner=target.owner,
                     containing=target.containing,
                     visibility=target.visibility,
+                    parameter_names=_non_tunnel_parameter_names(target),
                 )
     for attribute in node.attributes:
         is_xslt_attribute = (node.is_xslt and attribute.namespace_uri is None) or (
@@ -1870,6 +1961,9 @@ def _rebind_node(node: InstructionNode, lookup: _Lookup) -> InstructionNode:
             containing=target.containing,
             visibility=target.visibility,
             original=False,
+            parameter_names=(
+                _non_tunnel_parameter_names(target) if target.kind == "template" else ()
+            ),
         )
 
     reference = None if node.reference is None else rebind(node.reference)

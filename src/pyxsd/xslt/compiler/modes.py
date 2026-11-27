@@ -8,12 +8,12 @@ descriptor and component table; this module never builds a second graph.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from functools import cmp_to_key
 from types import MappingProxyType
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pyxsd.locations import IssueLocation
 from pyxsd.xslt.compiler.components import (
@@ -27,6 +27,7 @@ from pyxsd.xslt.compiler.components import (
     _default_accepted_visibility,
     _error,
     _expand_name,
+    _exposed_visibility,
     _GroupedDeclaration,
     _Lookup,
     _matching_tokens,
@@ -50,6 +51,8 @@ if TYPE_CHECKING:
 
 ModeKey = str | None
 HiddenModeKey = tuple[ModeKey, str | None]
+
+_BOOLEAN_MODE_VALUES: frozenset[str] = frozenset({"yes", "no", "true", "false", "1", "0"})
 
 _TYPED_MODE_VALUES: Mapping[str, str] = MappingProxyType(
     {
@@ -106,6 +109,8 @@ class Mode:
     containing: str | None
     declared: bool = False
     declared_visibility: str | None = None
+    #: True when an explicit xsl:expose rule set an implicit mode's visibility.
+    exposed: bool = False
     rule_layers: tuple[ModeRuleLayer, ...] = ()
     properties: Mapping[str, str] = field(default_factory=dict)
     property_namespaces: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
@@ -285,16 +290,18 @@ def _merged_mode_property(
     *,
     code: str,
     message: str,
+    normalize: Callable[[str, _Declaration], str] | None = None,
 ) -> tuple[str, _Declaration]:
     highest = max((entry[0] for entry in entries), key=cmp_to_key(compare_precedence))
-    chosen: tuple[str, _Declaration] | None = None
+    chosen: tuple[str, str, _Declaration] | None = None
     for precedence, value, declaration in entries:
         if precedence != highest:
             continue
+        key = value if normalize is None else normalize(value, declaration)
         if chosen is None:
-            chosen = (value, declaration)
+            chosen = (value, key, declaration)
             continue
-        if chosen[0] != value:
+        if chosen[1] != key:
             raise _error(
                 message,
                 code,
@@ -302,7 +309,7 @@ def _merged_mode_property(
                 module=declaration.module,
             )
     assert chosen is not None
-    return chosen
+    return chosen[0], chosen[2]
 
 
 def _merge_mode_properties(
@@ -330,12 +337,84 @@ def _merge_mode_properties(
             values,
             code="XTSE0545",
             message=f"mode declarations disagree about {local!r}",
+            normalize=(_accumulator_property_normalizer if local == "use-accumulators" else None),
         )
         if local == "typed":
             value = _typed_mode_value(value, declaration)
+        elif local in (
+            "on-no-match",
+            "on-multiple-match",
+            "warning-on-no-match",
+            "warning-on-multiple-match",
+        ):
+            value = _normalized_mode_property(value, local, declaration)
         properties[local] = value
         property_namespaces[local] = declaration.element.in_scope_namespaces
     return MappingProxyType(properties), MappingProxyType(property_namespaces)
+
+
+def _accumulator_property_normalizer(value: str, declaration: _Declaration) -> str:
+    """The comparison key for one declaration's ``use-accumulators`` value."""
+    return _accumulator_property_key(value, declaration.element.in_scope_namespaces)
+
+
+def _accumulator_property_key(value: str, namespaces: Mapping[str, str]) -> str:
+    """Normalize a mode's ``use-accumulators`` list for property agreement.
+
+    Two declarations agree when they name the same expanded accumulator names,
+    regardless of prefix spelling or order (mode-1514); a different set is a
+    conflict even when the lexical tokens match (mode-1515).  An invalid list
+    stays verbatim so its own declaration reports XTSE3300 later.
+    """
+    from pyxsd.xslt.runtime.accumulators import expand_accumulator_name, parse_accumulator_names
+
+    try:
+        tokens = parse_accumulator_names(value)
+        if tokens == ("#all",):
+            return "#all"
+        return " ".join(sorted({expand_accumulator_name(token, namespaces) for token in tokens}))
+    except ValueError:
+        return value
+
+
+def _normalized_mode_property(value: str, local: str, declaration: _Declaration) -> str:
+    """Trim and validate one token/boolean mode property.
+
+    XSLT attribute values for these properties are tokens and booleans; the
+    corpus and the specification both expect leading/trailing whitespace to be
+    insignificant.  Invalid values are static errors (XTSE0020) rather than
+    deferred runtime failures.
+    """
+    normalized = value.strip()
+    if local == "on-no-match" or local == "on-multiple-match":
+        allowed = (
+            {"use-last", "fail"}
+            if local == "on-multiple-match"
+            else {
+                "shallow-copy",
+                "shallow-skip",
+                "deep-copy",
+                "deep-skip",
+                "text-only-copy",
+                "fail",
+            }
+        )
+        if normalized not in allowed:
+            raise _error(
+                f"invalid {local} value {value!r}",
+                "XTSE0020",
+                element=declaration.element,
+                module=declaration.module,
+            )
+        return normalized
+    if normalized not in _BOOLEAN_MODE_VALUES:
+        raise _error(
+            f"invalid {local} value {value!r}",
+            "XTSE0020",
+            element=declaration.element,
+            module=declaration.module,
+        )
+    return normalized
 
 
 def _typed_mode_value(value: str, declaration: _Declaration) -> str:
@@ -493,6 +572,7 @@ def _build_local_modes(
     accepted_modes: dict[ModeKey, Mode],
     hidden_accepted_modes: Mapping[HiddenModeKey, Mode],
     local_visibility: Mapping[ComponentKey, str],
+    exposes: tuple[Any, ...] = (),
 ) -> tuple[dict[ModeKey, Mode], dict[ModeKey, tuple[ModeRule, ...]]]:
     mode_groups = [group for group in groups if group.kind == "mode"]
     local_modes: dict[ModeKey, Mode] = {}
@@ -589,12 +669,23 @@ def _build_local_modes(
             )
         else:
             default_visibility = "private" if mode_name is None or descriptor.explicit else "public"
+            expose_matches = (
+                [] if mode_name is None else _matching_tokens(exposes, "mode", mode_name, None)
+            )
+            visibility = (
+                default_visibility
+                if not expose_matches
+                else _exposed_visibility(
+                    "mode", mode_name, None, default_visibility, expose_matches
+                )
+            )
             local_modes[mode_name] = Mode(
                 name=mode_name,
-                visibility=default_visibility,
+                visibility=visibility,
                 owner=descriptor.name,
                 containing=descriptor.name,
                 declared=False,
+                exposed=bool(expose_matches),
                 namespaces=rules[0].declaration.namespaces if rules else {},
                 rule_layers=(
                     ModeRuleLayer(

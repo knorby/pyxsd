@@ -36,7 +36,7 @@ from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.legacy import ResultTreeFragment
 from pyxsd.xdm.nodes import NodeKind, XdmAnnotation, XdmDocument, XdmNode
-from pyxsd.xdm.validation import namespace_sensitive
+from pyxsd.xdm.validation import _annotate_any_type_copy, namespace_sensitive
 from pyxsd.xpath.continuation import XPathEvaluationError
 from pyxsd.xpath.environment import Focus
 from pyxsd.xslt.compiler.instructions import Instruction
@@ -872,6 +872,9 @@ def _diagnostic_error_code(
 
     An invalid EQName uses the caller's default. Standard error-namespace names
     use their familiar local form; a custom namespace keeps its expanded form.
+    An unprefixed EQName is in no namespace (XSLT 3.0 section 5.4.2), so it
+    keeps the ``Q{}local`` form ``fn:error`` uses instead of collapsing to a
+    bare local name that would read as a standard-namespace code.
     """
     text = value.strip()
     if not text:
@@ -884,7 +887,7 @@ def _diagnostic_error_code(
         local = text[close + 1 :]
         if not is_ncname(local):
             return default
-        expanded = f"{{{namespace}}}{local}" if namespace else local
+        expanded = f"{{{namespace}}}{local}" if namespace else f"Q{{}}{local}"
     else:
         if text.startswith("{"):
             return default
@@ -899,7 +902,7 @@ def _diagnostic_error_code(
         else:
             if not is_ncname(text):
                 return default
-            expanded = text
+            expanded = f"Q{{}}{text}"
     standard = f"{{{ERROR_NAMESPACE}}}"
     if expanded.startswith(standard):
         return expanded[len(standard) :]
@@ -907,9 +910,27 @@ def _diagnostic_error_code(
 
 
 def _item_string(item: XdmItem) -> str:
+    """The string value of one simple-content item.
+
+    XSLT 2.0 §5.7.2 atomizes the sequence before casting to string, so a
+    schema-typed element or attribute contributes its *typed value*: a
+    canonical xs:duration rather than the source lexical form.  A node whose
+    atomization is not one atomic value (an element with complex content)
+    falls back to its string value, which is also what an untyped node yields.
+    With the XPath 3.1 feature an array is atomized by atomizing its members
+    recursively (XSLT 3.0 §27.7.1), so it contributes their strings rather than
+    a FOTY0013; a map or other function item still raises FOTY0013.
+    """
     if isinstance(item, XdmAtomic):
-        return item.lexical
+        return item.string_value
     if isinstance(item, XdmNode):
+        typed = item.typed_value
+        if len(typed) == 1 and isinstance(typed[0], XdmAtomic):
+            return typed[0].string_value
+        return item.string_value
+    if isinstance(item, XdmArray):
+        return " ".join(_array_member_strings(item))
+    if isinstance(item, ResultTreeFragment):
         return item.string_value
     raise XsltError(
         "atomization of a function item is not permitted here",
@@ -917,18 +938,73 @@ def _item_string(item: XdmItem) -> str:
     )
 
 
+def _array_member_strings(item: XdmArray) -> list[str]:
+    """Atomize one array's members into the strings simple content uses."""
+    return [
+        text
+        for member in item.members
+        for member_item in member
+        for text in _atomized_strings(member_item)
+    ]
+
+
+def _atomized_strings(item: XdmItem) -> list[str]:
+    """Atomize one item, flattening arrays but never a map or other function."""
+    if isinstance(item, XdmArray):
+        return _array_member_strings(item)
+    return [_item_string(item)]
+
+
+def _text_nodes_are_adjacent(left: XdmNode, right: XdmNode) -> bool:
+    """Whether two text nodes are adjacent in their own tree.
+
+    XSLT 2.0 §5.7.2 merges *adjacent* text nodes before atomization; source
+    text nodes from different parents are separate items and the separator
+    applies between them.  Text nodes constructed by a sequence constructor are
+    parentless until attached, so two parentless text nodes are adjacent.
+    """
+    left_parent = left.parent
+    right_parent = right.parent
+    if left_parent is None and right_parent is None:
+        return True
+    if left_parent is None or left_parent is not right_parent:
+        return False
+    children = left_parent.children
+    try:
+        index = children.index(left)
+    except ValueError:  # pragma: no cover - the node is in its parent's children
+        return False
+    return index + 1 < len(children) and children[index + 1] is right
+
+
 def _simple_content_string(sequence: XdmSequence, separator: str) -> str:
     values: list[str] = []
     pending_text = ""
+    pending_node: XdmNode | None = None
     for item in sequence:
         if isinstance(item, XdmNode) and item.kind is NodeKind.TEXT:
-            pending_text += item.string_value
+            if not item.string_value:
+                # XSLT 2.0 section 5.7.2 discards zero-length text nodes.
+                continue
+            if pending_node is not None and _text_nodes_are_adjacent(pending_node, item):
+                pending_text += item.string_value
+            else:
+                if pending_node is not None:
+                    values.append(pending_text)
+                pending_text = item.string_value
+                pending_node = item
             continue
-        if pending_text:
+        if pending_node is not None:
             values.append(pending_text)
             pending_text = ""
+            pending_node = None
+        if isinstance(item, XdmArray):
+            # Atomization flattens arrays in place, so a custom separator
+            # applies between each flattened member, not just between arrays.
+            values.extend(_array_member_strings(item))
+            continue
         values.append(_item_string(item))
-    if pending_text:
+    if pending_node is not None:
         values.append(pending_text)
     return separator.join(values)
 
@@ -1027,6 +1103,38 @@ def _number_values(sequence: XdmSequence) -> tuple[int, ...]:
                 )
             numbers.append(rounded)
     return tuple(numbers)
+
+
+def _legacy_number_values(sequence: XdmSequence) -> tuple[int | None, ...]:
+    """XSLT 1.0 behavior for ``xsl:number/@value`` (XSLT 3.0 §12.2).
+
+    Every item after the first is discarded.  An empty sequence becomes
+    ``NaN``, and a value that cannot be converted to an integer is formatted
+    as the literal ``NaN`` instead of raising ``XTDE0980``.
+    """
+    if not sequence:
+        return (None,)
+    first = sequence[0]
+    if isinstance(first, XdmNode):
+        atomics = [value for value in first.typed_value if isinstance(value, XdmAtomic)]
+    elif isinstance(first, XdmAtomic):
+        atomics = [first]
+    else:  # pragma: no cover - the XPath 1.0 grammar has no function items
+        raise XsltDynamicError(
+            "xsl:number value cannot atomize a function item",
+            code="FOTY0013",
+        )
+    if not atomics:
+        return (None,)
+    rounded = _rounded_integer(atomics[0])
+    if rounded is None:
+        return (None,)
+    if rounded < 0:
+        raise XsltDynamicError(
+            "xsl:number value must convert to a non-negative integer",
+            code="XTDE0980",
+        )
+    return (rounded,)
 
 
 def _rounded_integer(item: XdmAtomic) -> int | None:
@@ -1349,7 +1457,7 @@ def copy_value(
         return (item,)
     content_context = replace(context, focus=content_focus)
     pool = invocation._package_schema_pool(context.package_name)
-    factory = _NodeFactory(base_uri=item.base_uri)
+    factory = _NodeFactory(base_uri=plan.instruction.base_uri)
     if item.kind is NodeKind.DOCUMENT:
         document = factory.document
         content = invocation._execute_plans(plan.children, context=content_context)
@@ -1361,7 +1469,12 @@ def copy_value(
             inherit_namespaces=plan.inherit_namespaces,
         )
         document._finalize_document_order()
-        check_namespace_sensitive_copy(document, plan)
+        check_namespace_sensitive_copy(
+            document,
+            validation=plan.validation,
+            type_name=plan.type_name,
+            copy_namespaces=plan.copy_namespaces,
+        )
         return (
             validate_delivered(
                 document,
@@ -1375,7 +1488,12 @@ def copy_value(
         parent=None,
         deep=False,
         copy_namespaces=plan.copy_namespaces,
+        copy_attributes=False,
+        # A parentless xsl:copy keeps the copied node's base; if it is later
+        # attached to a constructed tree, _adopts_parent_base rebases it.
+        preserve_base=True,
     )
+    clone._adopts_parent_base = clone.kind is NodeKind.ELEMENT
     if item.kind is NodeKind.ATTRIBUTE:
         check_copy_type(item, plan.type_name, pool)
     if item.kind is NodeKind.ELEMENT:
@@ -1394,7 +1512,12 @@ def copy_value(
                 allow_attributes=True,
                 inherit_namespaces=plan.inherit_namespaces,
             )
-    check_namespace_sensitive_copy(clone, plan)
+    check_namespace_sensitive_copy(
+        clone,
+        validation=plan.validation,
+        type_name=plan.type_name,
+        copy_namespaces=plan.copy_namespaces,
+    )
     validate_constructed(
         clone,
         validation=plan.validation,
@@ -1409,7 +1532,10 @@ def copy_value(
 
 def check_namespace_sensitive_copy(
     node: XdmNode,
-    plan: _CopyPlan | _CopyOfPlan,
+    *,
+    validation: str,
+    type_name: str | None,
+    copy_namespaces: bool,
 ) -> None:
     """Reject a copy that cannot preserve namespace-sensitive content.
 
@@ -1418,20 +1544,84 @@ def check_namespace_sensitive_copy(
     attribute with a QName or NOTATION typed value: an attribute node has no
     namespace nodes of its own, so the value's prefix would no longer resolve.
     """
-    if plan.validation != "preserve" or plan.type_name is not None:
+    if validation != "preserve" or type_name is not None:
         return
     if node.kind is NodeKind.ATTRIBUTE and namespace_sensitive(node):
         raise XsltDynamicError(
             "namespace-sensitive content cannot be copied without a parent element",
             code="XTTE0950",
         )
-    if plan.copy_namespaces:
+    if copy_namespaces:
         return
     if namespace_sensitive(node):
         raise XsltDynamicError(
             "namespace-sensitive content cannot be copied without namespace nodes",
             code="XTTE0950",
         )
+
+
+def deep_copy_item(
+    item: XdmItem,
+    invocation: _Invocation,
+    *,
+    copy_namespaces: bool = True,
+    copy_accumulators: bool = True,
+    validation: str = "preserve",
+    type_name: str | None = None,
+    schema_pool: Any = None,
+) -> XdmItem:
+    """Copy one item according to XSLT 3.0 section 11.9.2.
+
+    Defaults are ``fn:copy-of``'s fixed options (section 18.3):
+    ``copy-namespaces="yes"``, ``copy-accumulators="yes"``, and
+    ``validation="preserve"``.  ``xsl:copy-of`` passes its own attributes.
+    An atomic value or function item is returned unchanged, and a copy is a
+    new node in a new temporary tree, never the original.
+    """
+    if isinstance(item, ResultTreeFragment):
+        # XSLT 1.0 §11.1: copying a result tree fragment copies its
+        # children, never the fragment's root node.
+        item = item.document
+    if not isinstance(item, XdmNode):
+        return item
+    check_copy_type(item, type_name, schema_pool)
+    factory = _NodeFactory()
+    clone = factory.clone(
+        item,
+        parent=None,
+        deep=True,
+        copy_namespaces=copy_namespaces,
+    )
+    names = accumulator_copy_names(invocation) if copy_accumulators else ()
+    invocation.accumulators.copy_values(
+        item,
+        clone,
+        enabled=copy_accumulators,
+        names=names,
+    )
+    check_namespace_sensitive_copy(
+        clone,
+        validation=validation,
+        type_name=type_name,
+        copy_namespaces=copy_namespaces,
+    )
+    if clone.kind is NodeKind.DOCUMENT:
+        return validate_delivered(
+            cast(XdmDocument, clone),
+            validation=validation,
+            type_name=type_name,
+            schema_pool=schema_pool,
+        )
+    validate_constructed(
+        clone,
+        validation=validation,
+        type_name=type_name,
+        schema_pool=schema_pool,
+        operation="copy-of",
+    )
+    if clone.kind is NodeKind.ELEMENT:
+        factory.finalize_root(clone)
+    return clone
 
 
 def copy_of_value(
@@ -1441,52 +1631,90 @@ def copy_of_value(
 ) -> XdmSequence:
     items = invocation._evaluate(plan.select, context)
     pool = invocation._package_schema_pool(context.package_name)
-    result: list[XdmItem] = []
-    for item in items:
-        if isinstance(item, ResultTreeFragment):
-            # XSLT 1.0 §11.1: copying a result tree fragment copies its
-            # children, never the fragment's root node.
-            item = item.document
-        if not isinstance(item, XdmNode):
-            result.append(item)
-            continue
-        check_copy_type(item, plan.type_name, pool)
-        factory = _NodeFactory()
-        clone = factory.clone(
+    return tuple(
+        deep_copy_item(
             item,
-            parent=None,
-            deep=True,
+            invocation,
             copy_namespaces=plan.copy_namespaces,
-        )
-        names = accumulator_copy_names(invocation) if plan.copy_accumulators else ()
-        invocation.accumulators.copy_values(
-            item,
-            clone,
-            enabled=plan.copy_accumulators,
-            names=names,
-        )
-        check_namespace_sensitive_copy(clone, plan)
-        if clone.kind is NodeKind.DOCUMENT:
-            result.append(
-                validate_delivered(
-                    cast(XdmDocument, clone),
-                    validation=plan.validation,
-                    type_name=plan.type_name,
-                    schema_pool=pool,
-                )
-            )
-            continue
-        validate_constructed(
-            clone,
+            copy_accumulators=plan.copy_accumulators,
             validation=plan.validation,
             type_name=plan.type_name,
             schema_pool=pool,
-            operation="copy-of",
         )
-        if clone.kind is NodeKind.ELEMENT:
-            factory.finalize_root(clone)
-        result.append(clone)
-    return tuple(result)
+        for item in items
+    )
+
+
+def snapshot_item(item: XdmItem, invocation: _Invocation) -> XdmItem:
+    """One item of an ``fn:snapshot`` sequence (XSLT 3.0 section 18.4).
+
+    A parentless node behaves exactly like ``copy-of``: it is deep-copied on
+    its own.  Any other node is copied with a chain of shallow ancestor copies,
+    so the copy keeps its ancestors' names, attributes, and namespaces but
+    none of their other children or siblings, and every copied ancestor
+    carries the mandated ``xs:anyType`` annotation.  Atomic values and function
+    items are returned unchanged.
+    """
+    if not isinstance(item, XdmNode):
+        return item
+    if item.parent is None:
+        return deep_copy_item(item, invocation)
+    factory = _NodeFactory(base_uri=item.root.base_uri)
+    clone = factory.clone(item, parent=None, deep=True, copy_namespaces=True)
+    result = clone
+    current = clone
+    ancestor: XdmNode | None = item.parent
+    parent_copy: XdmNode
+    while ancestor is not None:
+        if ancestor.kind is NodeKind.DOCUMENT:
+            parent_copy = factory.document
+        else:
+            parent_copy = factory.clone(
+                ancestor,
+                parent=None,
+                deep=False,
+                copy_namespaces=True,
+            )
+            _annotate_any_type_copy(parent_copy)
+        attached = _attach_grafted_node(factory, parent_copy, current)
+        if current is result:
+            result = attached
+        current = parent_copy
+        ancestor = ancestor.parent
+    if isinstance(current, XdmDocument):
+        current._finalize_document_order()
+    else:
+        factory.finalize_root(current)
+    # The copied subtree must already sit in its destination tree: accumulator
+    # values are cached per tree root, and the root is the grafted top here.
+    invocation.accumulators.copy_values(
+        item,
+        clone,
+        enabled=True,
+        names=accumulator_copy_names(invocation),
+    )
+    return result
+
+
+def _attach_grafted_node(
+    factory: _NodeFactory,
+    parent: XdmNode,
+    node: XdmNode,
+) -> XdmNode:
+    """Attach an already-copied node under *parent* and return its tree node.
+
+    A ``snapshot()`` ancestor copy is shallow and is filled with exactly one
+    copied node, so no content merging applies; attributes and namespace nodes
+    take their own parent slots, and ``attach_namespace`` may hand back an
+    equivalent declaration the shallow parent already carries.
+    """
+    if node.kind is NodeKind.ATTRIBUTE:
+        factory.attach_attribute(parent, node)
+        return node
+    if node.kind is NodeKind.NAMESPACE:
+        return factory.attach_namespace(parent, node) or node
+    factory.attach_node(parent, node)
+    return node
 
 
 def check_copy_type(
@@ -1519,7 +1747,7 @@ def parameter_value(
     """
     if not content:
         return (XdmAtomic.string(""),) if profile.legacy else ()
-    if profile.legacy:
+    if profile.result_tree_fragments:
         return (ResultTreeFragment(_build_result_tree(sequence)),)
     return sequence
 
@@ -1536,7 +1764,11 @@ def variable_value(
             plan.children,
             context=replace(context, final_output=False),
         )
-        value = sequence if plan.has_as else (_build_result_tree(sequence),)
+        value = (
+            sequence
+            if plan.has_as
+            else (_build_result_tree(sequence, base_uri=plan.instruction.base_uri),)
+        )
     elif plan.has_as:
         value = ()
     else:
@@ -1550,6 +1782,7 @@ def variable_value(
             code="XTTE0570",
             label=f"variable {plan.name!r}",
             package_name=context.package_name,
+            clear_output_escaping=True,
         )
     invocation.profile_for().check_xdm_2_0_value(value, f"the value of the variable {plan.name!r}")
     return value
@@ -1645,15 +1878,25 @@ def execute_analyze_string(
     text = _analyze_string_value(values)
     regex_source = invocation._value_source(plan.regex, context)
     flags = invocation._value_source(plan.flags, context) if plan.flags is not None else ""
+    profile = invocation.profile_for(plan.expression.static_context.xslt_version)
     try:
         regex = compile_xpath_regex(
             regex_source,
             flags,
-            allowed_flags=invocation.profile_for().regex_flags,
+            allowed_flags=profile.regex_flags,
         )
     except XPathRegexError as exc:
         code = "XTDE1145" if exc.code == "FORX0001" else "XTDE1140"
         raise XsltDynamicError(str(exc), code=code) from exc
+    if profile.native and regex.match("", 0) is not None:
+        # A native XSLT 2.0 processor follows XSLT 2.0 §15.1, where a
+        # zero-length match is a dynamic error; the 3.0 algorithm (used by the
+        # 3.0 processor) skips the empty position instead.
+        raise XsltDynamicError(
+            "xsl:analyze-string requires a regular expression that does not match "
+            "a zero-length string",
+            code="XTDE1150",
+        )
     substrings = analyze_string(regex, text)
     result: list[XdmItem] = []
     for position, substring in enumerate(substrings, start=1):
@@ -1681,7 +1924,11 @@ def execute_number(
 ) -> XdmSequence:
     if plan.value is not None:
         values = invocation._evaluate(plan.value, context)
-        numbers = _number_values(values)
+        profile = invocation.profile_for(plan.value.static_context.xslt_version)
+        if profile.legacy or profile.compatibility_mode:
+            numbers = _legacy_number_values(values)
+        else:
+            numbers = _number_values(values)
     else:
         if plan.select is not None:
             selected = invocation._evaluate(plan.select, context)
@@ -1710,7 +1957,8 @@ def execute_number(
     start_at = (
         invocation._value_source(plan.start_at, context) if plan.start_at is not None else None
     )
-    numbers = _rebase_place_marker(numbers, start_at)
+    if all(number is not None for number in numbers):
+        numbers = _rebase_place_marker(cast(Sequence[int], numbers), start_at)
     format_ = (
         plan.format
         if isinstance(plan.format, str)
@@ -1850,12 +2098,17 @@ def execute_message(
     invocation: _Invocation,
     context: EvaluationContext,
 ) -> None:
+    content: XdmDocument | None = None
     try:
         values = () if plan.select is None else invocation._evaluate(plan.select, context)
         values += invocation._execute_plans(
             plan.children, context=replace(context, final_output=False)
         )
-        text = _build_result_tree(values).string_value
+        # XSLT 3.0 section 18.1: the sequence constructor builds a document
+        # node whose string value is the displayed text; a listener or a
+        # conformance assertion inspects that node, not only the text.
+        content = _build_result_tree(values)
+        text = content.string_value
     except (XsltError, ElementPathError, XPathEvaluationError) as error:
         if catchable_error(invocation, error, invocation.diagnostics) is None:
             raise
@@ -1873,7 +2126,7 @@ def execute_message(
             default="XTMM9000",
         )
     )
-    invocation.messages.append(Message(text, code=code, terminate=terminating))
+    invocation.messages.append(Message(text, code=code, terminate=terminating, content=content))
     if terminating:
         raise XsltDynamicError(text, code=code, location=plan.instruction.location)
 
@@ -2156,10 +2409,15 @@ def execute_value_of(
     if plan.expression is not None and not plan.explicit_separator:
         profile = invocation.profile_for(plan.expression.static_context.xslt_version)
         if profile.compatibility_mode:
-            return (invocation._text_node(profile.string_sequence(values)),)
+            return (
+                invocation._text_node(
+                    profile.string_sequence(values),
+                    disable_output_escaping=plan.disable_output_escaping,
+                ),
+            )
     separator = invocation._value_source(plan.separator, context)
     text = _simple_content_string(values, separator)
-    return (invocation._text_node(text),)
+    return (invocation._text_node(text, disable_output_escaping=plan.disable_output_escaping),)
 
 
 def execute_choose(

@@ -771,6 +771,27 @@ def test_a_context_source_without_a_file_or_content_is_an_adapter_gap(
     assert result.message == "context source without a file or inline content"
 
 
+def test_a_select_only_context_source_supplies_the_context_item(tmp_path: Path) -> None:
+    """A ``role="."`` source with no document evaluates its ``select`` itself.
+
+    ``fn/id/id-043`` declares ``<source role="." select="parse-xml('<root/>')"/>``:
+    the catalog's select is normally a path within a declared document, but
+    with no document the expression is the context item.
+    """
+    case = _source_case(
+        tmp_path,
+        sources=(Source(role=".", select="parse-xml('<doc><a/></doc>')"),),
+        schemas=(),
+        body='<xsl:template match="/"><out><xsl:value-of select="name(/*)"/>'
+        '<xsl:value-of select="count(//a)"/></out></xsl:template>',
+        result=_assertion("<out>doc1</out>"),
+    )
+
+    result = suite.run_case(case, XSLT30)
+
+    assert result.outcome is Outcome.PASS
+
+
 def test_a_strict_source_is_validated_with_the_environment_pool(tmp_path: Path) -> None:
     _write(tmp_path, "hat.xsd", HAT_SCHEMA)
     case = _source_case(

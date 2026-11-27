@@ -49,6 +49,7 @@ from pyxsd.xslt.compiler.patterns import (
     PatternStatistics,
     _axis_nodes,
     _effective_boolean_value,
+    _id_nodes,
     _is_descendant_or_self,
     _numeric_equals_position,
     compile_pattern,
@@ -64,6 +65,46 @@ DOC_NS = "urn:example:doc"
 OTHER_NS = "urn:example:other"
 FN_NS = "http://www.w3.org/2005/xpath-functions"
 STRICT = ParseModes.LAX.replace(namespaces="strict")
+
+
+def test_standalone_id_nodes_applies_the_element_with_id_parent_rule() -> None:
+    """Without an invocation lookup, element-with-id still returns the parent."""
+    from pyxsd.schema import Schema
+    from pyxsd.xdm.document import parse_typed_document
+
+    schema = Schema.compile(
+        io.StringIO(
+            """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                 <xs:element name="r"><xs:complexType><xs:sequence>
+                   <xs:element name="a"><xs:complexType><xs:sequence>
+                     <xs:element name="id" type="xs:ID"/>
+                   </xs:sequence></xs:complexType></xs:element>
+                 </xs:sequence></xs:complexType></xs:element>
+               </xs:schema>"""
+        )
+    )
+    pool = SchemaPool.from_schema(schema)
+    document = parse_typed_document(
+        b"<r><a><id>x</id></a></r>", schema_pool=pool, validation="strict"
+    )
+    identified = _id_nodes(document, frozenset({"x"}))
+    assert [node.local_name for node in identified] == ["id"]
+    parent = _id_nodes(document, frozenset({"x"}), element_with_id=True)
+    assert [node.local_name for node in parent] == ["a"]
+
+    # A document-element ID has no containing element, so it stays the result.
+    root_schema = Schema.compile(
+        io.StringIO(
+            """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                 <xs:element name="a" type="xs:ID"/>
+               </xs:schema>"""
+        )
+    )
+    root_pool = SchemaPool.from_schema(root_schema)
+    root = parse_typed_document(b"<a>x</a>", schema_pool=root_pool, validation="strict")
+    assert [
+        node.local_name for node in _id_nodes(root, frozenset({"x"}), element_with_id=True)
+    ] == ["a"]
 
 
 def _context(
@@ -255,6 +296,20 @@ def test_pattern_grammar_boundaries() -> None:
         assert code in {"XTSE0340", "XPST0003", "XPST0017", "XPST0081"}, (pattern, code)
 
 
+def test_rooted_function_patterns_are_version_gated() -> None:
+    # doc(), root(), and element-with-id() became rooted pattern bases in
+    # XSLT 3.0, and two-argument id() also arrived there.  A 2.0 stylesheet
+    # must reject each as XTSE0340 rather than compile a 3.0 plan.
+    context20 = StaticContext(version="2.0")
+    for pattern in ("doc('x')", "root()", "element-with-id('x')", "id('x', 'y')"):
+        with pytest.raises(XsltStaticError) as caught:
+            compile_pattern(pattern, context20)
+        _assert_code(caught.value, "XTSE0340")
+    context30 = StaticContext(version="3.0")
+    for pattern in ("doc('x')", "root()", "element-with-id('x')"):
+        assert compile_pattern(pattern, context30).alternatives
+
+
 def test_pattern_value_pattern_union_and_types() -> None:
     context = _context(variables=("v",))
     assert _matches(".", XdmAtomic.integer(1))
@@ -387,6 +442,19 @@ def test_parentless_adjustment_and_absolute_paths() -> None:
         _element_children(_element_children(namespaced.root_element)[0])[0],
         context=_context(default_namespace=DOC_NS),
     )
+
+
+def test_union_on_the_right_of_a_path_matches_an_element_rooted_tree() -> None:
+    document = _document("<x><a>23</a><b>25</b></x>")
+    factory = _NodeFactory()
+    root = factory.clone(document.root_element, parent=None, deep=True)
+    first, second = _element_children(root)
+
+    assert _matches("x/(a|b)", first)
+    assert _matches("x/(a|b)", second)
+    assert _matches("x/(child::a|descendant::b)", first)
+    assert _matches("x/(child::a|descendant::b)", second)
+    assert not _matches("x/(child::b|descendant::b)", first)
 
 
 def test_namespace_nodes_and_namespace_axis() -> None:

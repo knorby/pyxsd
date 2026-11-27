@@ -42,7 +42,7 @@ from pyxsd.xslt.compiler.plans import (
     _Plan,
     _RuleContext,
 )
-from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltStaticError
+from pyxsd.xslt.errors import XsltDynamicError, XsltError
 from pyxsd.xslt.precedence import compare_precedence
 from pyxsd.xslt.results import _append_complex_content, _NodeFactory
 from pyxsd.xslt.runtime.context import EvaluationContext
@@ -254,10 +254,7 @@ class RuleDispatcher:
             selected = matches[0]
             if self.on_multiple_match == "fail":
                 tied = {
-                    (
-                        id(match.rule),
-                        match.alternative_index if match.rule.priority is None else None,
-                    )
+                    id(match.rule)
                     for match in matches
                     if match.rule.precedence == selected.rule.precedence
                     and match.priority == selected.priority
@@ -541,6 +538,7 @@ def rule_frame(
             code="XTTE0505",
             label="template rule result",
             package_name=body.owner,
+            clear_output_escaping=not context.final_output,
         )
     active_rule = _RuleContext(
         match=match,
@@ -554,7 +552,7 @@ def rule_frame(
     frame = Frame(
         kind="rule",
         component=active_rule,
-        identity=f"rule {rule.name or rule.pattern}",
+        identity=f"rule {rule.name or rule.pattern.source}",
         program=body.body[index:],
         context=replace(
             rule_context,
@@ -612,6 +610,7 @@ def apply_frame(
     mode_package: str | None = None,
     group: object = _INHERIT,
     grouping_key: object = _INHERIT,
+    final_output: bool = True,
 ) -> Frame:
     effective_group, effective_grouping_key = invocation._inherited_group(group, grouping_key)
     state = _ApplyState(
@@ -632,11 +631,17 @@ def apply_frame(
             package_name=package_name,
             mode=mode,
             tunnel_parameters=tunnel_parameters,
+            final_output=final_output,
         ),
         tail=tail,
         group=effective_group,
         grouping_key=effective_grouping_key,
     )
+
+
+def _item_description(item: XdmItem) -> str:
+    """One item's node kind for a diagnostic, or its XDM class for atomics."""
+    return item.kind.value if isinstance(item, XdmNode) else type(item).__name__
 
 
 def step_apply(invocation: _Invocation, frame: Frame) -> FrameResult:
@@ -646,12 +651,34 @@ def step_apply(invocation: _Invocation, frame: Frame) -> FrameResult:
         return invocation._return_frame(frame)
     item = state.items[state.index]
     focus = Focus.singleton(item, position=state.index + 1, size=len(state.items))
-    rule = invocation._dispatcher(state.mode, state.mode_package).select(
+    dispatcher = invocation._dispatcher(state.mode, state.mode_package)
+    properties = invocation._mode_properties(state.mode, state.mode_package)
+    rule = dispatcher.select(
         item,
         state.mode,
         invocation._environment(EvaluationContext(package_name=state.package_name)),
         invocation._pattern_environment,
     )
+    if rule is not None and _warning_enabled(properties.get("warning-on-multiple-match")):
+        candidates = dispatcher.matches(
+            item,
+            state.mode,
+            invocation._environment(EvaluationContext(package_name=state.package_name)),
+            invocation._pattern_environment,
+        )
+        tied = {
+            id(candidate.rule)
+            for candidate in candidates
+            if candidate.rule.precedence == rule.rule.precedence
+            and candidate.priority == rule.priority
+        }
+        if len(tied) > 1:
+            invocation.warnings.append(
+                "more than one template rule matches "
+                f"{_item_description(item)} at priority {rule.priority}"
+            )
+    elif rule is None and _warning_enabled(properties.get("warning-on-no-match")):
+        invocation.warnings.append(f"no template rule matches {_item_description(item)}")
     next_state = replace(state, index=state.index + 1)
     resume = replace(frame, program=next_state)
     last = state.index + 1 == len(state.items)
@@ -668,6 +695,7 @@ def step_apply(invocation: _Invocation, frame: Frame) -> FrameResult:
             focus=focus,
             package_name=state.package_name,
             tunnel_parameters=state.tunnel_parameters,
+            final_output=frame.context.final_output,
         ),
         state.template_parameters,
         mode_package=state.mode_package,
@@ -675,6 +703,10 @@ def step_apply(invocation: _Invocation, frame: Frame) -> FrameResult:
         grouping_key=state.grouping_key,
     )
     return Call(child, resume=resume, tail=tail)
+
+
+def _warning_enabled(value: str | None) -> bool:
+    return (value or "").strip() in {"yes", "true", "1"}
 
 
 def builtin_step(
@@ -717,6 +749,7 @@ def builtin_step(
                 mode_package=state.mode_package,
                 group=state.group,
                 grouping_key=state.grouping_key,
+                final_output=resume.context.final_output,
             )
             return Call(child, resume=resume, tail=tail)
         return None
@@ -739,6 +772,7 @@ def builtin_step(
                 mode_package=state.mode_package,
                 group=state.group,
                 grouping_key=state.grouping_key,
+                final_output=resume.context.final_output,
             )
             return Call(child, resume=resume, tail=tail)
         if isinstance(item, XdmNode) and item.kind in (NodeKind.TEXT, NodeKind.ATTRIBUTE):
@@ -752,7 +786,7 @@ def builtin_step(
             return Continue(
                 replace(
                     resume,
-                    values=(*resume.values, invocation._text_node(item.lexical)),
+                    values=(*resume.values, invocation._text_node(item.string_value)),
                 )
             )
         return None
@@ -770,6 +804,7 @@ def builtin_step(
                 mode_package=state.mode_package,
                 group=state.group,
                 grouping_key=state.grouping_key,
+                final_output=resume.context.final_output,
             )
             return Call(child, resume=resume, tail=tail)
         return None
@@ -808,6 +843,7 @@ def builtin_step(
                 mode_package=state.mode_package,
                 group=state.group,
                 grouping_key=state.grouping_key,
+                final_output=resume.context.final_output,
             )
             return Call(child, resume=resume, tail=tail)
         return None
@@ -833,20 +869,9 @@ def builtin_step(
 def builtin_variant(
     invocation: _Invocation, mode: str | None, mode_package: str | None = None
 ) -> str:
-    variant = invocation._mode_properties(mode, mode_package).get("on-no-match", "text-only-copy")
-    if variant not in {
-        "text-only-copy",
-        "deep-copy",
-        "shallow-copy",
-        "deep-skip",
-        "shallow-skip",
-        "fail",
-    }:
-        raise XsltStaticError(
-            f"invalid on-no-match value {variant!r}",
-            code="XTSE0020",
-        )
-    return variant
+    # Compilation validates the value against the XSLT 3.0 enumeration
+    # (XTSE0020), so the runtime selection only reads the stored property.
+    return invocation._mode_properties(mode, mode_package).get("on-no-match", "text-only-copy")
 
 
 def builtin_value(
@@ -895,7 +920,7 @@ def builtin_value(
                 return (invocation._text_node(item.string_value),)
             return ()
         if isinstance(item, XdmAtomic):
-            return (invocation._text_node(item.lexical),)
+            return (invocation._text_node(item.string_value),)
         return ()
     if variant == "deep-skip":
         if isinstance(item, XdmNode) and item.kind is NodeKind.DOCUMENT:
@@ -1210,7 +1235,9 @@ def continuation_match(
 ) -> RuleMatch | None:
     """Select the continuation rule for one role-specific operation."""
     dispatcher = invocation._dispatcher(rule_context.mode, rule_context.mode_package)
-    environment = invocation._environment(EvaluationContext(package_name=rule_context.package_name))
+    environment = invocation._environment(
+        EvaluationContext(package_name=rule_context.package_name, final_output=False)
+    )
     item = rule_context.focus.item
     assert item is not None
     if kind == "next-match":
@@ -1240,6 +1267,7 @@ def apply_templates(
     *,
     package_name: str | None = None,
     mode_package: str | None = None,
+    final_output: bool = True,
 ) -> XdmSequence:
     invocation._check_typed_mode(items, mode, mode_package)
     frame = apply_frame(
@@ -1250,6 +1278,7 @@ def apply_templates(
         tunnel_parameters,
         package_name=package_name,
         mode_package=mode_package,
+        final_output=final_output,
     )
     with invocation._merge_scope(None, None, ()):
         return cast(XdmSequence, invocation.execute_frame(frame))
@@ -1267,8 +1296,8 @@ def resolve_template(
         if target is not None:
             if target.abstract:
                 raise XsltDynamicError(
-                    "the abstract component has no executable original implementation",
-                    code="XTDE0040",
+                    "an invocation of an abstract component is not permitted",
+                    code="XTDE3052",
                 )
             return target
     stylesheet = getattr(invocation, "stylesheet", None)
@@ -1374,4 +1403,5 @@ def execute_apply_templates(
         {**context.tunnel_parameters, **tunnel},
         package_name=context.package_name,
         mode_package=mode_package,
+        final_output=context.final_output,
     )

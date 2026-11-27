@@ -8,6 +8,7 @@ from functools import partial
 from pathlib import Path
 
 import pytest
+from elementpath import XPathContext
 from tests.xslt.support import (
     element_children,
 )
@@ -18,12 +19,17 @@ from tests.xslt.support import (
     transform as _transform,
 )
 
+from pyxsd.schema import Schema
 from pyxsd.source_spans import SourceIndex
 from pyxsd.xdm import XdmAtomic
-from pyxsd.xdm.nodes import XdmDocument
+from pyxsd.xdm.document import parse_typed_document
+from pyxsd.xdm.nodes import NodeKind, XdmDocument
+from pyxsd.xdm.schema import SchemaPool
+from pyxsd.xpath.engine import XPathEngine, _build_parser
+from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.packages import PackageResolver
-from pyxsd.xslt.errors import ERROR_NAMESPACE, XsltError, XsltStaticError
+from pyxsd.xslt.errors import ERROR_NAMESPACE, XsltDynamicError, XsltError, XsltStaticError
 from pyxsd.xslt.processor import _ABSENT, _document_nodes, _Invocation, _prepare_invocation
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -68,6 +74,52 @@ def test_function_argument_and_result_conversion() -> None:
     )
     assert transform(result_conversion, initial_template="main").principal == (
         XdmAtomic.boolean(True),
+    )
+
+
+def test_function_conversion_keeps_a_subtype_value_unchanged() -> None:
+    """``as="xs:decimal"`` accepts an xs:integer without changing its type."""
+    source = stylesheet(
+        """
+        <xsl:variable name="v" select="xs:integer(-300)" as="xs:decimal"/>
+        <xsl:template name="main">
+          <xsl:sequence select="$v instance of xs:integer"/>
+          <xsl:sequence select="$v instance of xs:decimal"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main").principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+    )
+
+
+def test_boolean_values_keep_their_xsd_type_identity_across_the_bridge() -> None:
+    """A bound xs:boolean reaches expressions as xs:boolean, not xs:integer.
+
+    ``pyxsd.xsd_data_types.Boolean`` is an ``int`` subclass for the XSD value
+    space, but Python ``bool`` is the bridge's xs:boolean.  Handing the payload
+    through unchanged made a typed variable report
+    ``$b instance of xs:boolean`` as false and ``instance of xs:integer`` as
+    true.
+    """
+    source = stylesheet(
+        """
+        <xsl:variable name="typed" select="xs:boolean('true')" as="xs:boolean"/>
+        <xsl:variable name="computed" select="1 = 1" as="xs:boolean"/>
+        <xsl:template name="main">
+          <xsl:sequence select="$typed instance of xs:boolean"/>
+          <xsl:sequence select="$typed instance of xs:integer"/>
+          <xsl:sequence select="$computed instance of xs:boolean"/>
+          <xsl:sequence select="$computed instance of xs:integer"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main").principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(False),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(False),
     )
 
 
@@ -233,6 +285,203 @@ def test_key_index_accepts_untyped_and_numeric_lookups() -> None:
     )
 
 
+def test_key_lookup_does_not_match_a_typed_key_lexically() -> None:
+    """A string lookup never matches an integer key value (XSLT §9.11)."""
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="xs:integer(@n)"/>
+        <xsl:template name="main">
+          <xsl:sequence
+            select="count(key('k', 4)),
+                    count(key('k', '4')),
+                    count(key('k', xs:untypedAtomic('4')))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, b'<doc><item n="4"/></doc>', initial_template="main").principal == (
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(1),
+    )
+
+
+def test_untyped_key_lookup_skips_a_bucket_it_cannot_cast_to() -> None:
+    """An untyped lookup casts per bucket; a failed cast matches nothing."""
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="xs:integer(@n)"/>
+        <xsl:template name="main">
+          <xsl:sequence
+            select="count(key('k', xs:untypedAtomic('4'))),
+                    count(key('k', xs:untypedAtomic('not-an-integer')))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, b'<doc><item n="4"/></doc>', initial_template="main").principal == (
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(0),
+    )
+
+
+def test_pattern_key_lookup_derives_a_missing_datatype_from_the_type_name() -> None:
+    """An atomic carrying only its type name still compares as that XSD type."""
+    source = stylesheet(
+        """
+        <xsl:param name="p"/>
+        <xsl:key name="k" match="item" use="@n"/>
+        <xsl:template match="doc">
+          <out><xsl:apply-templates select="item"/></out>
+        </xsl:template>
+        <xsl:template match="key('k', $p)"><found/></xsl:template>
+        """
+    )
+    bare = XdmAtomic("4", f"{{{XSD_NS}}}string")
+    typed = XdmAtomic.string("4")
+    unknown = XdmAtomic("4", "{urn:example:unknown}string")
+    assert bare.datatype is None
+    assert unknown.datatype is None
+
+    bare_result = transform(source, b'<doc><item n="4"/></doc>', parameters={"p": bare})
+    assert [child.local_name for child in bare_result.principal[0].children] == ["found"]
+
+    typed_result = transform(source, b'<doc><item n="4"/></doc>', parameters={"p": typed})
+    assert [child.local_name for child in typed_result.principal[0].children] == ["found"]
+
+    unknown_result = transform(source, b'<doc><item n="4"/></doc>', parameters={"p": unknown})
+    assert [child.local_name for child in unknown_result.principal[0].children] == []
+
+
+def test_key_lookup_date_and_untyped_typing() -> None:
+    """Only untypedAtomic is cast to the key's date type; xs:string is not."""
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="xs:date(@d)"/>
+        <xsl:template name="main">
+          <xsl:sequence
+            select="count(key('k', '2000-01-01')),
+                    count(key('k', xs:untypedAtomic('2000-01-01'))),
+                    count(key('k', xs:date('2000-01-01')))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(
+        source, b'<doc><item d="2000-01-01"/></doc>', initial_template="main"
+    ).principal == (
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(1),
+    )
+
+
+def test_key_lookup_boolean_and_integer_do_not_collapse() -> None:
+    """Python's ``True == 1`` must not become an XSLT key match."""
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="xs:boolean(@b)"/>
+        <xsl:template name="main">
+          <xsl:sequence
+            select="count(key('k', 1)), count(key('k', true())), count(key('k', 'true'))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, b'<doc><item b="true"/></doc>', initial_template="main").principal == (
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(0),
+    )
+
+
+def test_composite_key_lookup_uses_typed_equality() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="xs:integer(@a), xs:integer(@b)" composite="yes"/>
+        <xsl:template name="main">
+          <xsl:sequence
+            select="count(key('k', (1, 2))),
+                    count(key('k', ('1', '2'))),
+                    count(key('k', (1, xs:untypedAtomic('2')))),
+                    count(key('k', (1, 2, 3)))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(
+        source, b'<doc><item a="1" b="2"/></doc>', initial_template="main"
+    ).principal == (
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(0),
+    )
+
+
+def test_key_name_must_be_an_atomic_value() -> None:
+    """A function item cannot name a key even though it is a single item."""
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="@id"/>
+        <xsl:template name="main">
+          <xsl:sequence select="key(function () { 1 }, 'x')"/>
+        </xsl:template>
+        """
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        transform(source, b'<doc><item id="x"/></doc>', initial_template="main")
+    assert caught.value.code == "XPTY0004"
+    assert "key name must be a string" in str(caught.value)
+
+
+def test_key_subtree_argument_accepts_a_text_node() -> None:
+    """The third key() argument roots the subtree at any node, not just elements."""
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="text()" use="."/>
+        <xsl:template name="main">
+          <xsl:sequence
+            select="count(key('k', 'a')), count(key('k', 'a', /doc/text()[1])),
+                    string(key('k', 'a', /doc/text()[1]))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(source, b"<doc>a<b>b</b>a</doc>", initial_template="main").principal == (
+        XdmAtomic.integer(2),
+        XdmAtomic.integer(1),
+        XdmAtomic.string("a"),
+    )
+
+
+def test_key_atomic_equality_casts_both_untyped_directions() -> None:
+    from pyxsd.xslt.processor import _key_atomic_equal
+
+    untyped = XdmAtomic.untyped_atomic("4")
+    integer = XdmAtomic.integer(4)
+    bare = XdmAtomic(4, f"{{{XSD_NS}}}integer")
+    unknown = XdmAtomic(4, "{urn:example:unknown}integer")
+    assert bare.datatype is None
+    assert unknown.datatype is None
+    assert _key_atomic_equal(untyped, XdmAtomic.untyped_atomic("4"))
+    assert _key_atomic_equal(untyped, integer)
+    assert _key_atomic_equal(integer, untyped)
+    assert _key_atomic_equal(untyped, bare)
+    assert _key_atomic_equal(bare, untyped)
+    assert not _key_atomic_equal(untyped, unknown)
+    assert not _key_atomic_equal(unknown, untyped)
+    assert not _key_atomic_equal(XdmAtomic.untyped_atomic("x"), integer)
+    assert not _key_atomic_equal(XdmAtomic.untyped_atomic("x"), bare)
+
+
+def test_key_declarations_disagreeing_on_composite_are_a_static_error() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="@a" composite="yes"/>
+        <xsl:key name="k" match="item" use="@b" composite="no"/>
+        <xsl:template name="main"><out/></xsl:template>
+        """
+    )
+    with pytest.raises(XsltStaticError) as caught:
+        XsltProcessor().compile(io.BytesIO(source))
+    assert caught.value.code == "XTSE1222"
+
+
 def test_key_names_are_expanded_and_matches_can_be_attributes() -> None:
     source = stylesheet(
         """
@@ -251,6 +500,17 @@ def test_key_declaration_requires_names_and_expressions_at_compile_time() -> Non
     missing_use = stylesheet('<xsl:key name="k" match="item"/>')
     with pytest.raises(XsltStaticError):
         XsltProcessor().compile(io.BytesIO(missing_use))
+
+    missing_match = stylesheet('<xsl:key name="k" use="."/>')
+    assert error_code(lambda: XsltProcessor().compile(io.BytesIO(missing_match))) == "XTSE0010"
+
+    use_with_text = stylesheet('<xsl:key name="k" match="item" use="@id">text</xsl:key>')
+    assert error_code(lambda: XsltProcessor().compile(io.BytesIO(use_with_text))) == "XTSE1205"
+
+    use_with_element = stylesheet(
+        '<xsl:key name="k" match="item" use="@id"><xsl:template match="/"/></xsl:key>'
+    )
+    assert error_code(lambda: XsltProcessor().compile(io.BytesIO(use_with_element))) == "XTSE0010"
 
 
 def test_generate_id_argument_and_context_error_arms() -> None:
@@ -297,13 +557,26 @@ def test_key_error_arms_composite_keys_and_function_values() -> None:
     )
     assert error_code(lambda: transform(unknown, initial_template="main")) == "XTDE1260"
 
-    bad_name = stylesheet(
+    node_name = stylesheet(
         """
         <xsl:key name="k" match="item" use="@id"/>
         <xsl:template name="main"><xsl:sequence select="count(key(/*, 'x'))"/></xsl:template>
         """
     )
-    assert error_code(lambda: transform(bad_name, b"<doc/>", initial_template="main")) == "XPTY0004"
+    assert (
+        error_code(lambda: transform(node_name, b"<doc/>", initial_template="main")) == "XTDE1260"
+    )
+
+    multiple_names = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="@id"/>
+        <xsl:template name="main"><xsl:sequence select="count(key((1, 2), 'x'))"/></xsl:template>
+        """
+    )
+    assert (
+        error_code(lambda: transform(multiple_names, b"<doc/>", initial_template="main"))
+        == "XPTY0004"
+    )
 
     no_document = stylesheet(
         """
@@ -654,7 +927,8 @@ def test_a_failed_key_build_leaves_no_guard() -> None:
     with pytest.raises(XsltError):
         invocation._key_index(failing._keys[None], document, None)
     index = invocation._key_index(invocation.stylesheet._keys[None], document, None)
-    assert {node.local_name for node in index["a"]} == {"item"}
+    lookup = XdmAtomic.untyped_atomic("a")
+    assert {node.local_name for node in index.nodes_for((lookup,), composite=False)} == {"item"}
     assert invocation._key_builds == {}
 
 
@@ -981,6 +1255,359 @@ def test_namespace_uri_for_prefix_uses_function_conversion_for_its_argument() ->
     assert result.principal[1].type_name == f"{{{XSD_NS}}}anyURI"
 
 
+def test_id_reads_dtd_and_xml_id_declarations() -> None:
+    source = (
+        b"<!DOCTYPE tee [<!ELEMENT tee (s*)><!ELEMENT s EMPTY>"
+        b"<!ATTLIST s id ID #REQUIRED>]>"
+        b'<tee><s id="a"/><s id="b"/><s id="c"/><s xml:id="d"/></tee>'
+    )
+    source_sheet = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="id('b')/@id/string()"/>
+          <xsl:sequence select="id('d')/name()"/>
+          <xsl:sequence select="id(//s[1]/@id)/@id/string()"/>
+          <xsl:sequence select="count(id(('c', 'a')))"/>
+          <xsl:sequence select="count(id('missing'))"/>
+          <xsl:sequence select="count(id(()))"/>
+          <xsl:sequence select="element-with-id('c')/@id/string()"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source_sheet, initial_template="main", input_source=source)
+    assert result.principal == (
+        XdmAtomic.string("b"),
+        XdmAtomic.string("s"),
+        XdmAtomic.string("a"),
+        XdmAtomic.integer(2),
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(0),
+        XdmAtomic.string("c"),
+    )
+
+
+def test_element_with_id_returns_the_parent_of_an_id_valued_element(tmp_path: Path) -> None:
+    """A schema ID on a child element identifies the parent for element-with-id."""
+    schema = tmp_path / "id-child.xsd"
+    schema.write_text(
+        """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+             targetNamespace="urn:idchild" xmlns:t="urn:idchild"
+             elementFormDefault="qualified">
+             <xs:element name="table">
+               <xs:complexType><xs:sequence>
+                 <xs:element name="row" maxOccurs="unbounded">
+                   <xs:complexType><xs:sequence>
+                     <xs:element name="id" type="xs:ID"/>
+                     <xs:element name="value" type="xs:string"/>
+                   </xs:sequence></xs:complexType>
+                 </xs:element>
+               </xs:sequence></xs:complexType>
+             </xs:element>
+           </xs:schema>""",
+        encoding="utf-8",
+    )
+    pool = SchemaPool.from_imports([schema], xsd_version="1.1")
+    document = parse_typed_document(
+        b"<t:table xmlns:t='urn:idchild'><t:row><t:id>A</t:id><t:value>ALPHA</t:value>"
+        b"</t:row><t:row><t:id>C</t:id><t:value>GAMMA</t:value></t:row></t:table>",
+        schema_pool=pool,
+        validation="strict",
+    )
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="id('C')/local-name()"/>
+          <xsl:sequence select="element-with-id('C')/local-name()"/>
+          <xsl:sequence select="string(id('C')/parent::*/*[2])"/>
+          <xsl:sequence select="string(element-with-id('C')/*[2])"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=document, initial_template="main", validation="preserve")
+    assert result.principal == (
+        XdmAtomic.string("id"),
+        XdmAtomic.string("row"),
+        XdmAtomic.string("GAMMA"),
+        XdmAtomic.string("GAMMA"),
+    )
+
+
+def test_element_with_id_keeps_a_document_element_id() -> None:
+    """A document element has no containing element, so it stays identified."""
+    schema = Schema.compile(
+        io.StringIO(
+            """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                 <xs:element name="a" type="xs:ID"/>
+               </xs:schema>"""
+        )
+    )
+    pool = SchemaPool.from_schema(schema)
+    document = parse_typed_document(b"<a>x</a>", schema_pool=pool, validation="strict")
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="count(element-with-id('x'))"/>
+          <xsl:sequence select="local-name(element-with-id('x'))"/>
+          <xsl:sequence select="local-name(id('x'))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=document, initial_template="main", validation="preserve")
+    assert result.principal == (
+        XdmAtomic.integer(1),
+        XdmAtomic.string("a"),
+        XdmAtomic.string("a"),
+    )
+
+
+def test_id_ignores_attributes_without_an_id_type() -> None:
+    """Only ID-typed attributes enter the id() index, not every attribute."""
+    source = (
+        b"<!DOCTYPE tee [<!ELEMENT tee (s*)><!ELEMENT s EMPTY>"
+        b"<!ATTLIST tee version CDATA #IMPLIED>"
+        b"<!ATTLIST s id ID #REQUIRED>]>"
+        b'<tee version="v"><s id="a"/><s id="b"/></tee>'
+    )
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence
+            select="count(id('a')), count(id('v')), count(id('b'))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, source, initial_template="main")
+    assert result.principal == (
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(1),
+    )
+
+
+def test_idref_returns_the_bearing_node_and_does_not_tokenize() -> None:
+    """fn:idref returns the IDREF attribute and compares one string per value."""
+    source = (
+        b"<!DOCTYPE t04 [<!ELEMENT t04 (a*)><!ELEMENT a EMPTY>"
+        b"<!ATTLIST a id ID #REQUIRED><!ATTLIST a ref IDREF #IMPLIED>]>"
+        b'<t04><a id="a"/><a id="b" ref="c"/><a id="c" ref="d"/>'
+        b'<a id="d" ref="a"/></t04>'
+    )
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence
+            select="string-join(for $n in idref('a') return name($n) || ':' || $n/../@id, ',')"/>
+          <xsl:sequence select="count(idref('a '))"/>
+          <xsl:sequence select="count(idref('a b'))"/>
+          <xsl:sequence select="string-join(for $n in idref(('c', 'd')) return $n/../@id, ',')"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=source, initial_template="main")
+    assert result.principal == (
+        XdmAtomic.string("ref:d"),
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(0),
+        XdmAtomic.string("b,c"),
+    )
+
+
+def test_idref_returns_an_idref_valued_element(tmp_path: Path) -> None:
+    """An element whose own typed value is an IDREF is returned itself."""
+    schema = tmp_path / "idref-element.xsd"
+    schema.write_text(
+        """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+             <xs:element name="r"><xs:complexType><xs:sequence>
+               <xs:element name="id" type="xs:ID"/>
+               <xs:element name="ref" type="xs:IDREF"/>
+             </xs:sequence></xs:complexType></xs:element>
+           </xs:schema>""",
+        encoding="utf-8",
+    )
+    pool = SchemaPool.from_imports([schema], xsd_version="1.0")
+    document = parse_typed_document(
+        b"<r><id>a</id><ref>a</ref></r>", schema_pool=pool, validation="strict"
+    )
+    body = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="idref(\'a\')/local-name()"/>'
+        "</xsl:template>"
+    )
+    result = transform(body, input_source=document, initial_template="main", validation="preserve")
+    assert result.principal == (XdmAtomic.string("ref"),)
+
+
+def test_idref_error_arms() -> None:
+    source = (
+        b"<!DOCTYPE t04 [<!ELEMENT t04 (a*)><!ELEMENT a EMPTY>"
+        b"<!ATTLIST a id ID #REQUIRED><!ATTLIST a ref IDREF #IMPLIED>]>"
+        b'<t04><a id="a"/><a id="b" ref="a"/></t04>'
+    )
+    bad_item = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="idref(map{})"/></xsl:template>'
+    )
+    assert error_code(lambda: transform(bad_item, source, initial_template="main")) == "XPTY0004"
+
+    bad_node = stylesheet(
+        "<xsl:template name=\"main\"><xsl:sequence select=\"idref('a', 'x')\"/></xsl:template>"
+    )
+    assert error_code(lambda: transform(bad_node, source, initial_template="main")) == "XPTY0004"
+
+    no_context = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="idref(\'a\')"/></xsl:template>'
+    )
+    assert error_code(lambda: transform(no_context, initial_template="main")) == "XPDY0002"
+
+    empty = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="count(idref(()))"/>
+          <xsl:sequence select="count(idref(/t04/a/@ref))"/>
+          <xsl:sequence select="count(idref('a', /))"/>
+        </xsl:template>
+        """
+    )
+    assert transform(empty, source, initial_template="main").principal == (
+        XdmAtomic.integer(0),
+        XdmAtomic.integer(1),
+        XdmAtomic.integer(1),
+    )
+
+
+def test_id_error_arms_and_dynamic_lookup() -> None:
+    source = (
+        b"<!DOCTYPE tee [<!ELEMENT tee (s*)><!ELEMENT s EMPTY>"
+        b'<!ATTLIST s id ID #REQUIRED>]><tee><s id="a"/></tee>'
+    )
+    no_context = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="id(\'a\')"/></xsl:template>'
+    )
+    assert error_code(lambda: transform(no_context, initial_template="main")) == "XPDY0002"
+
+    bad_node = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="id('a', 'not-a-node')"/>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(bad_node, source, initial_template="main")) == "XPTY0004"
+
+    bad_item = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="id(map{})"/></xsl:template>'
+    )
+    assert (
+        error_code(lambda: transform(bad_item, source, initial_template="main", delivery="raw"))
+        == "XPTY0004"
+    )
+
+    dynamic = stylesheet(
+        """
+        <xsl:function name="my:lookup" as="element()*">
+          <xsl:param name="n" as="node()"/>
+          <xsl:sequence select="id('a', $n)"/>
+        </xsl:function>
+        <xsl:template name="main">
+          <xsl:variable name="f" select="fn:id#2"/>
+          <xsl:variable name="g" select="fn:element-with-id#2"/>
+          <xsl:sequence select="my:lookup(/)/@id/string()"/>
+          <xsl:sequence select="$f('a', /)/@id/string()"/>
+          <xsl:sequence select="$g('a', /)/@id/string()"/>
+        </xsl:template>
+        """
+    )
+    assert transform(dynamic, source, initial_template="main").principal == (
+        XdmAtomic.string("a"),
+        XdmAtomic.string("a"),
+        XdmAtomic.string("a"),
+    )
+
+
+def test_id_lookup_must_be_callable() -> None:
+    from pyxsd.xslt.runtime.functions import XsltContextBridge
+
+    with pytest.raises(TypeError, match="id_lookup"):
+        XsltContextBridge(object(), id_lookup=1)  # type: ignore[arg-type]
+
+
+def test_key_rejects_element_rooted_trees_for_both_argument_forms() -> None:
+    two_argument = stylesheet(
+        """
+        <xsl:key name="k" match="*" use="'pqr'"/>
+        <xsl:template name="main">
+          <xsl:variable name="e" as="element()"><e/></xsl:variable>
+          <xsl:for-each select="$e">
+            <xsl:sequence select="key('k', 'abc')"/>
+          </xsl:for-each>
+        </xsl:template>
+        """
+    )
+    three_argument = stylesheet(
+        """
+        <xsl:key name="k" match="*" use="'pqr'"/>
+        <xsl:template name="main">
+          <xsl:variable name="e" as="element()"><e/></xsl:variable>
+          <xsl:variable name="d"><e/></xsl:variable>
+          <xsl:for-each select="$d">
+            <xsl:sequence select="key('k', 'abc', $e)"/>
+          </xsl:for-each>
+        </xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(two_argument, initial_template="main")) == "XTDE1270"
+    assert error_code(lambda: transform(three_argument, initial_template="main")) == "XTDE1270"
+
+
+def test_key_third_argument_limits_the_indexed_subtree() -> None:
+    source = b"<doc><a><item n='1'/></a><b><item n='1'/></b></doc>"
+    source_sheet = stylesheet(
+        """
+        <xsl:key name="k" match="item" use="@n"/>
+        <xsl:template name="main">
+          <xsl:variable name="sub" select="//a"/>
+          <xsl:sequence select="count(key('k', '1', $sub))"/>
+          <xsl:sequence select="count(key('k', '1'))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source_sheet, initial_template="main", input_source=source)
+    assert result.principal == (XdmAtomic.integer(1), XdmAtomic.integer(2))
+
+
+def test_id_in_a_pattern_matches_a_dtd_declared_id() -> None:
+    source = (
+        b"<!DOCTYPE tee [<!ELEMENT tee (s*)><!ELEMENT s EMPTY>"
+        b'<!ATTLIST s id ID #REQUIRED>]><tee><s id="a"/><s id="c"/><s id="d"/></tee>'
+    )
+    source_sheet = stylesheet(
+        """
+        <xsl:template match="/"><out><xsl:apply-templates select="tee/s"/></out></xsl:template>
+        <xsl:template match="id('c')"><hit/></xsl:template>
+        <xsl:template match="s"><miss/></xsl:template>
+        """
+    )
+    result = transform(source_sheet, input_source=source, delivery="document")
+    out = result.principal_tree.root_element
+    assert [child.local_name for child in element_children(out)] == ["miss", "hit", "miss"]
+
+
+def test_key_accepts_a_sequence_constructor_and_a_node_key_name() -> None:
+    source = b"<doc><item>2</item><item>3</item><item>4</item></doc>"
+    source_sheet = stylesheet(
+        """
+        <xsl:variable name="keyspace" as="xs:string">k</xsl:variable>
+        <xsl:key name="k" match="item">
+          <xsl:sequence select="."/>
+        </xsl:key>
+        <xsl:template name="main">
+          <xsl:sequence select="count(key($keyspace, 3))"/>
+          <xsl:sequence select="key($keyspace, 3)/string()"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source_sheet, initial_template="main", input_source=source)
+    assert result.principal == (XdmAtomic.integer(1), XdmAtomic.string("3"))
+
+
 def test_namespace_uri_for_prefix_rejects_a_non_string_prefix() -> None:
     source = XdmDocument.parse(b'<r xmlns:p="urn:p"/>')
 
@@ -1285,3 +1912,1000 @@ def test_namespace_functions_reject_a_non_element_argument() -> None:
         """
     )
     assert error_code(lambda: transform(atomic_body, initial_template="main")) == "XPTY0004"
+
+
+def test_atomic_to_elementpath_keeps_xsd_type_identity() -> None:
+    from elementpath.datatypes import (
+        AnyURI,
+        Date,
+        Duration,
+        Float,
+        Int,
+        QName,
+        XsdToken,
+    )
+
+    from pyxsd import xsd_data_types as xsd
+    from pyxsd.xpath.functions import atomic_to_elementpath
+    from pyxsd.xsd_data_types import qname_context
+
+    assert atomic_to_elementpath(XdmAtomic.boolean(True)) is True
+    assert isinstance(atomic_to_elementpath(XdmAtomic.typed(xsd.Int(3), xsd.Int)), Int)
+    assert isinstance(atomic_to_elementpath(XdmAtomic.typed(xsd.Float(1.5), xsd.Float)), Float)
+    assert isinstance(atomic_to_elementpath(XdmAtomic.typed(xsd.Token("a"), xsd.Token)), XsdToken)
+    assert isinstance(
+        atomic_to_elementpath(XdmAtomic.typed(xsd.AnyURI("urn:x"), xsd.AnyURI)), AnyURI
+    )
+    assert isinstance(
+        atomic_to_elementpath(XdmAtomic.typed(xsd.Date("1999-05-31"), xsd.Date)), Date
+    )
+    assert isinstance(
+        atomic_to_elementpath(XdmAtomic.typed(xsd.Duration("P1Y"), xsd.Duration)), Duration
+    )
+
+    with qname_context({"p": "urn:x"}):
+        resolved = XdmAtomic.typed(xsd.QName("p:local"), xsd.QName)
+    bridged = atomic_to_elementpath(resolved)
+    assert isinstance(bridged, QName)
+    assert bridged.namespace == "urn:x"
+    assert bridged.local_name == "local"
+
+    # An unresolved QName has no namespace to build elementpath's value from.
+    unresolved = XdmAtomic.typed(xsd.QName("local"), xsd.QName)
+    assert atomic_to_elementpath(unresolved) is unresolved.value
+
+
+def test_atomic_to_elementpath_leaves_custom_types_and_host_payloads_alone() -> None:
+    from pyxsd import xsd_data_types as xsd
+    from pyxsd.xpath.functions import atomic_to_elementpath
+
+    class _CustomString(xsd.String):
+        name = "custom"
+        _targetNamespace_ = "urn:test"
+
+    custom = XdmAtomic(_CustomString("value"), "{urn:test}custom", _CustomString)
+    assert atomic_to_elementpath(custom) is custom.value
+
+    # A payload that is not an elementpath atomic converts through its lexical form.
+    plain = XdmAtomic("plain", "{urn:test}payload")
+    assert atomic_to_elementpath(plain) == "plain"
+    payload = XdmAtomic(b"plain", "{urn:test}payload")
+    assert atomic_to_elementpath(payload) == "b'plain'"
+
+
+def test_fn_string_uses_the_fo_canonical_numeric_forms() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:value-of select="string(true())"/>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="string(xs:double(7000000))"/>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="string(xs:float(-1.75e-3))"/>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="string(xs:decimal('2.50'))"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        "".join(item.string_value for item in transform(source, initial_template="main").principal)
+        == "true|7.0E6|-0.00175|2.5"
+    )
+
+
+def test_format_number_atomizes_a_node_or_result_tree_fragment_argument() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="pattern">#,###.00</xsl:variable>
+        <xsl:template name="main">
+          <xsl:value-of select="format-number(1234.78, $pattern)"/>
+          <xsl:text>|</xsl:text>
+          <xsl:value-of select="format-number(1234.78, //pattern)"/>
+        </xsl:template>
+        """
+    )
+    raw = _transform(
+        source,
+        input_source=b"<doc><pattern>#,###.00</pattern></doc>",
+        initial_template="main",
+    )
+    assert "".join(item.string_value for item in raw.principal) == "1,234.78|1,234.78"
+
+    native = XsltProcessor(language="1.0", xpath="1.0", schema_aware=False)
+    compiled = native.compile(io.BytesIO(source))
+    assert (
+        "".join(
+            item.string_value
+            for item in compiled.transform(
+                source=b"<doc><pattern>#,###.00</pattern></doc>",
+                initial_template="main",
+                delivery="raw",
+            ).principal
+        )
+        == "1,234.78|1,234.78"
+    )
+
+    # The number argument takes the same conversion: a native 1.0 content
+    # variable is a result tree fragment whose string value is the number.
+    fragment = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="number">12.5</xsl:variable>
+          <xsl:value-of select="format-number($number, '#.0')"/>
+        </xsl:template>
+        """,
+        version="1.0",
+    )
+    native_fragment = native.compile(io.BytesIO(fragment))
+    assert (
+        "".join(
+            item.string_value
+            for item in native_fragment.transform(initial_template="main", delivery="raw").principal
+        )
+        == "12.5"
+    )
+
+    # A picture that is a sequence or a function item is still a type error.
+    for picture in ("('#', '0')", "function () { '#' }"):
+        invalid = stylesheet(
+            f'<xsl:template name="main">'
+            f'<xsl:value-of select="format-number(1, {picture})"/>'
+            "</xsl:template>"
+        )
+        with pytest.raises(XsltError) as caught:
+            transform(invalid, initial_template="main")
+        assert caught.value.code == "XPTY0004"
+
+
+# ---------------------------------------------------------------------------
+# Date/time components and arithmetic
+
+
+def test_seconds_from_date_time_keeps_the_fractional_precision() -> None:
+    body = """
+        <xsl:template name="main">
+          <xsl:value-of select="
+              seconds-from-dateTime(xs:dateTime('2002-06-15T12:27:30.012+03:00')),
+              seconds-from-time(xs:time('12:27:30.45'))" separator="|"/>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert [item.string_value for item in result.principal] == ["30.012|30.45"]
+
+
+def test_date_time_difference_keeps_a_negative_fraction_exact() -> None:
+    body = """
+        <xsl:template name="main">
+          <xsl:sequence select="xs:time('00:11:15.3Z') - xs:time('00:12:00Z')"/>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "-PT44.7S"
+
+
+def test_extended_year_date_difference_is_a_day_time_duration() -> None:
+    """The extended-year branch converts its timedelta to duration seconds."""
+    body = """
+        <xsl:template name="main">
+          <xsl:sequence select="xs:date('-0001-01-01') - xs:date('-0002-01-01')"/>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "P365D"
+
+
+def test_day_time_duration_plus_date_time_is_symmetric() -> None:
+    body = """
+        <xsl:template name="main">
+          <xsl:sequence select="
+              xs:dayTimeDuration('P5DT4H0M0.5S') + xs:dateTime('2004-02-29T00:12:00Z')"/>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "2004-03-05T04:12:00.5Z"
+
+
+def test_date_arithmetic_overflow_reports_fodt0001() -> None:
+    body = """
+        <xsl:template name="main">
+          <xsl:sequence select="xs:date('2003-12-07') + xs:yearMonthDuration('P9999Y')"/>
+        </xsl:template>
+    """
+    assert error_code(lambda: transform(stylesheet(body), initial_template="main")) == "FODT0001"
+
+
+def test_date_time_variable_keeps_its_timezone_after_a_difference() -> None:
+    """A difference must not assign the implicit timezone to the operands."""
+    body = """
+        <xsl:template name="main">
+          <xsl:for-each select="1 to 1">
+            <xsl:variable name="n" select="xs:date('2004-03-01') + xs:dayTimeDuration('P1D')"/>
+            <xsl:value-of select="string($n), string($n - xs:date('1901-01-06')), string($n)"
+                          separator="|"/>
+          </xsl:for-each>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "2004-03-02|P37676D|2004-03-02"
+
+
+def test_concat_and_string_join_use_the_canonical_string_conversion() -> None:
+    """Both spelling functions agree with ``fn:string`` for numeric values."""
+    body = """
+        <xsl:template name="main">
+          <xsl:value-of select="
+              concat(xs:double(1000000), '+', xs:double('1e-13'), '+', xs:float(-0.00175)),
+              string-join((xs:double(1000000), xs:double('1e-13')), '+')" separator="|"/>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == ("1.0E6+1.0E-13+-0.00175|1.0E6+1.0E-13")
+
+
+def test_replace_uses_the_fo_replacement_string_grammar() -> None:
+    """Escaped backslashes and missing group references follow F&O."""
+    body = r"""
+        <xsl:template name="main">
+          <xsl:value-of select="
+              replace('a?b', '\?', '\\$0\\'),
+              replace('abc', '(a)(b)', '[$1][$3][$25]')" separator="|"/>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == r"a\?\b|[a][][b5]c"
+    invalid = r"""
+        <xsl:template name="main">
+          <xsl:value-of select="replace('input', '(unparsed)', '\n')"/>
+        </xsl:template>
+    """
+    assert (
+        error_code(lambda: transform(stylesheet(invalid, version="2.0"), initial_template="main"))
+        == "FORX0004"
+    )
+
+
+def test_instance_of_document_node_applies_occurrence_and_element_test() -> None:
+    """A document-node item test matches each item, not the outer focus."""
+    body = """
+        <xsl:variable name="a"><a/></xsl:variable>
+        <xsl:variable name="b"><b/></xsl:variable>
+        <xsl:template name="main">
+          <out>
+            <xsl:value-of separator="|" select="
+                ($a, $b) instance of document-node(element(*))*,
+                ($a, $b) instance of document-node(element(*))+,
+                ($a, $b) instance of document-node(element(*))?,
+                ($a, $b) instance of document-node(element(a))*"/>
+          </out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "true|true|false|false"
+
+
+def test_value_of_separator_joins_text_nodes_from_different_parents() -> None:
+    """The default separator applies between separate text-node items."""
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="/doc/a/text() | /doc/b/text()"/></out>
+        </xsl:template>
+    """
+    result = transform(
+        stylesheet(body),
+        b"<doc><a>x</a><b>y</b></doc>",
+        initial_template="main",
+        delivery="document",
+    )
+    assert result.principal_tree.root_element.string_value == "x y"
+
+
+def test_descendant_path_returns_document_order() -> None:
+    """``//text()`` interleaves an element's text with its descendants' text."""
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="
+              string-join(for $t in /doc//text() return string($t), '|')"/></out>
+        </xsl:template>
+    """
+    result = transform(
+        stylesheet(body),
+        b"<doc>a<e>b</e>c<f>d</f>e</doc>",
+        initial_template="main",
+        delivery="document",
+    )
+    assert result.principal_tree.root_element.string_value == "a|b|c|d|e"
+
+
+def test_as_coercion_preserves_and_promotes_schema_types(tmp_path: Path) -> None:
+    """A subtype is substituted; a numeric promotion produces the base type."""
+    (tmp_path / "types.xsd").write_text(
+        """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+               targetNamespace="urn:types" xmlns:t="urn:types"
+               elementFormDefault="qualified">
+             <xs:simpleType name="myint">
+               <xs:restriction base="xs:int"><xs:minInclusive value="0"/></xs:restriction>
+             </xs:simpleType>
+             <xs:element name="root" type="t:myint"/>
+           </xs:schema>""",
+        encoding="utf-8",
+    )
+    (tmp_path / "types.xsl").write_text(
+        """<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+               xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:t="urn:types"
+               version="2.0">
+             <xsl:import-schema namespace="urn:types" schema-location="types.xsd"/>
+             <xsl:variable name="sub" as="xs:decimal" select="/t:root"/>
+             <xsl:variable name="promoted" as="xs:double" select="/t:root"/>
+             <xsl:template name="main"><out>
+               <a><xsl:value-of select="$sub instance of t:myint"/>
+                  <xsl:value-of select="$sub instance of xs:decimal"/></a>
+               <b><xsl:value-of select="$promoted instance of t:myint"/>
+                  <xsl:value-of select="$promoted instance of xs:double"/></b>
+             </out></xsl:template>
+           </xsl:stylesheet>""",
+        encoding="utf-8",
+    )
+    compiled = XsltProcessor(language="2.0", xpath="2.0", schema_aware=True).compile(
+        tmp_path / "types.xsl"
+    )
+    result = compiled.transform(
+        source=io.BytesIO(b'<t:root xmlns:t="urn:types">5</t:root>'),
+        initial_template="main",
+        delivery="document",
+        validation="strict",
+    )
+    values = [
+        element.string_value for element in element_children(result.principal_tree.root_element)
+    ]
+    assert values == ["truetrue", "falsetrue"]
+
+
+def test_value_of_discards_zero_length_text_nodes() -> None:
+    """An empty text item contributes neither a value nor a separator."""
+    body = """
+        <xsl:variable name="empty" as="text()"><xsl:text/></xsl:variable>
+        <xsl:template name="main">
+          <out><xsl:value-of select="('a', $empty, 'b')" separator="|"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "a|b"
+
+
+def test_instance_of_an_inline_cast_uses_the_base_sequence_type_test() -> None:
+    """A cast inside one expression has no bridge annotation to consult."""
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="(8 cast as xs:int) instance of xs:int"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "true"
+
+
+def test_instance_of_a_typed_element_uses_the_annotation_matcher() -> None:
+    """``element(*, T)`` is a type-annotation test, not a value-space test."""
+    body = """
+        <xsl:variable name="e"><a/></xsl:variable>
+        <xsl:template name="main">
+          <out><xsl:value-of select="$e/a instance of element(*, xs:anyType)"/>
+               <xsl:value-of select="$e/a instance of element(*, xs:string)"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "truefalse"
+
+
+def test_replace_with_q_flag_keeps_backslash_and_dollar_literal() -> None:
+    """A literal pattern protects the replacement from group expansion."""
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="replace('a.b', '.', '\\$0', 'q')"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "a\\$0b"
+
+
+def test_seconds_from_an_empty_sequence_is_empty() -> None:
+    """A missing date/time argument yields an empty sequence, not an error."""
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="seconds-from-dateTime(()), seconds-from-time(())"
+                               separator="|"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == ""
+
+
+def test_descendant_text_orders_items_across_documents() -> None:
+    """``//`` keeps each document's own order when the sequence spans trees."""
+    body = """
+        <xsl:variable name="a">first</xsl:variable>
+        <xsl:variable name="b">second</xsl:variable>
+        <xsl:template name="main">
+          <out><xsl:value-of select="($a, $b)//text()" separator="|"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "first|second"
+
+
+def test_concat_and_replace_cover_empty_and_invalid_arguments() -> None:
+    """Empty concat items, regex flags, and bad replacements use F&O codes."""
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="concat((), 'x')"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "x"
+
+    for expression, code in (
+        ("replace('Abc', 'b', 'x', 'i')", None),
+        ("replace('a', 'a', 'x', 'z')", "FORX0001"),
+        ("replace('a', '.*', 'x')", "FORX0003"),
+        ("replace('a', 'a', '\\')", "FORX0004"),
+        ("replace('a', 'a', '$x')", "FORX0004"),
+        ("replace('a', '[', 'x')", "FORX0002"),
+    ):
+        body = (
+            '<xsl:template name="main">'
+            f'<out><xsl:value-of select="{expression}"/></out>'
+            "</xsl:template>"
+        )
+        if code is None:
+            result = transform(stylesheet(body), initial_template="main")
+            assert result.principal[0].string_value == "Axc"
+        else:
+            assert (
+                error_code(lambda body=body: transform(stylesheet(body), initial_template="main"))
+                == code
+            )
+
+    non_strict = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="replace('a', 'a', '\\q')"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(non_strict), initial_template="main")
+    assert result.principal[0].string_value == "\\q"
+
+    absent_group = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="replace('a', '(a)', '[$9]')"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(absent_group), initial_template="main")
+    assert result.principal[0].string_value == "[]"
+
+    leading_group = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="replace('ab', '(a)(b)', '$1x$2')"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(leading_group), initial_template="main")
+    assert result.principal[0].string_value == "axb"
+
+
+def test_seconds_without_a_fraction_return_an_integer() -> None:
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="seconds-from-dateTime(xs:dateTime('2002-06-15T12:27:30'))"/>
+               <xsl:value-of select="seconds-from-time(xs:time('12:27:30'))"/></out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    assert result.principal[0].string_value == "3030"
+
+
+def test_arithmetic_operand_and_error_paths() -> None:
+    """Date/date addition, incompatible operands, and division errors report codes."""
+    for expression, code in (
+        ("xs:date('2003-01-01') + xs:date('2003-01-02')", "XPTY0004"),
+        ("xs:date('2003-01-01') + 1", "XPTY0004"),
+        ("1 div 0", "FOAR0001"),
+        ("2 - 1", None),
+    ):
+        body = f'<xsl:template name="main"><xsl:value-of select="{expression}"/></xsl:template>'
+        if code is None:
+            result = transform(stylesheet(body), initial_template="main")
+            assert result.principal[0].string_value == "1"
+        else:
+            assert (
+                error_code(lambda body=body: transform(stylesheet(body), initial_template="main"))
+                == code
+            )
+
+    for expression in (
+        "xs:dayTimeDuration('P1D') + xs:float(1.5)",
+        "xs:float(1.5) + xs:dayTimeDuration('P1D')",
+    ):
+        body = f'<xsl:template name="main"><xsl:value-of select="{expression}"/></xsl:template>'
+        assert (
+            error_code(lambda body=body: transform(stylesheet(body), initial_template="main"))
+            == "XPTY0004"
+        )
+
+    overflow = (
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"xs:dayTimeDuration('P99999999999999D') + "
+        "xs:dayTimeDuration('P99999999999999D')\"/>"
+        "</xsl:template>"
+    )
+    assert (
+        error_code(lambda: transform(stylesheet(overflow), initial_template="main")) == "FODT0002"
+    )
+
+    for expression in (
+        "xs:float(1.5) + xs:decimal('1.5')",
+        "xs:decimal('1.5') + xs:float(1.5)",
+    ):
+        body = (
+            '<xsl:template name="main">'
+            f'<out><xsl:value-of select="{expression}"/></out>'
+            "</xsl:template>"
+        )
+        result = transform(stylesheet(body), initial_template="main")
+        assert result.principal[0].string_value == "3"
+
+    element = (
+        '<xsl:template match="/"><out><xsl:value-of select="/doc/a + 1"/></out></xsl:template>'
+    )
+    result = transform(stylesheet(element), b"<doc><a>2</a></doc>", delivery="document")
+    assert result.principal_tree.root_element.string_value == "3"
+
+    empty = '<xsl:template name="main"><out><xsl:value-of select="() + 1"/></out></xsl:template>'
+    result = transform(stylesheet(empty), initial_template="main")
+    assert result.principal[0].string_value == ""
+
+
+def test_copy_of_returns_a_deep_copy_with_fresh_node_identity() -> None:
+    """XSLT 3.0 section 18.3: copy-of copies each item of the sequence."""
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence select="(
+            copy-of(/doc) is /doc,
+            count(copy-of(/doc/*)) = 1,
+            deep-equal(copy-of(/doc), /doc),
+            copy-of(/doc/x/self::x)/@a
+          )"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=b'<doc a="1"><x a="2">t</x></doc>')
+
+    assert result.principal[0] == XdmAtomic.boolean(False)
+    assert result.principal[1] == XdmAtomic.boolean(True)
+    assert result.principal[2] == XdmAtomic.boolean(True)
+    copied = result.principal[3]
+    assert copied.string_value == "2"
+    assert copied.parent is not None and copied.parent.kind is NodeKind.ELEMENT
+    # The attribute is copied alone: its new parent is the copy, not the source.
+    assert copied.parent.parent is None
+
+
+def test_copy_of_defaults_to_the_context_item() -> None:
+    body = stylesheet(
+        """
+        <xsl:template match="/doc/x">
+          <xsl:sequence select="(name(copy-of()), copy-of() is .)"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=b"<doc><x>t</x></doc>")
+
+    assert result.principal == (XdmAtomic.string("x"), XdmAtomic.boolean(False))
+
+
+def test_copy_of_leaves_atomic_and_function_items_unchanged() -> None:
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="(
+            copy-of((1, 'a', true())),
+            let $f := copy-of(abs#1) return (local-name-from-QName(function-name($f)),
+                                              function-arity($f),
+                                              $f(-2))
+          )"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, initial_template="main", delivery="raw")
+
+    assert [item.string_value for item in result.principal[:3]] == ["1", "a", "true"]
+    assert result.principal[3] == XdmAtomic.string("abs")
+    assert result.principal[4].string_value == "1"
+    assert result.principal[5].string_value == "2"
+
+
+def test_copy_of_without_a_context_item_is_xpdy0002() -> None:
+    body = stylesheet(
+        """
+        <xsl:function name="my:copy">
+          <xsl:param name="n"/>
+          <xsl:sequence select="copy-of()"/>
+        </xsl:function>
+        <xsl:template match="/">
+          <xsl:sequence select="my:copy(.)"/>
+        </xsl:template>
+        """,
+        namespaces={"my": MY_NS},
+    )
+    assert error_code(lambda: transform(body, input_source=b"<doc/>")) == "XPDY0002"
+
+
+def test_copy_of_a_parentless_namespace_sensitive_attribute_is_xtte0950() -> None:
+    """copy-of always preserves; a parentless QName attribute cannot keep it."""
+    with pytest.raises(XsltError) as caught:
+        _typed_argument_result("copy-of(/*/@qn)")
+    assert caught.value.code == "XTTE0950"
+
+
+SNAPSHOT_SOURCE = b'<doc id="d"><a id="1"><b>deep</b><c>side</c></a><x>sib</x></doc>'
+
+
+def test_snapshot_of_a_document_node_is_a_deep_copy() -> None:
+    """XSLT 3.0 section 18.4: a parentless node behaves like copy-of."""
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:sequence select="(snapshot(/) is /, deep-equal(snapshot(/), /))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=SNAPSHOT_SOURCE)
+
+    assert result.principal == (XdmAtomic.boolean(False), XdmAtomic.boolean(True))
+
+
+def test_snapshot_of_a_child_element_keeps_only_its_ancestor_chain() -> None:
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:variable name="s" select="snapshot(/doc/a/b)"/>
+          <xsl:sequence select="(
+            name($s),
+            count($s/ancestor::node()) = 3,
+            count($s/ancestor::doc) = 1,
+            count($s/ancestor::doc/a) = 1,
+            count($s/ancestor::doc/a/x) = 0,
+            snapshot()/*/name() = 'doc',
+            count($s/preceding-sibling::node()) = 0,
+            count($s/following-sibling::node()) = 0,
+            count($s/parent::a/@id) = 1,
+            count($s/parent::a/child::node()) = 1,
+            $s/parent::a/parent::doc/@id
+          )"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=SNAPSHOT_SOURCE)
+
+    assert [item.string_value for item in result.principal] == [
+        "b",
+        "true",
+        "true",
+        "true",
+        "true",
+        "true",
+        "true",
+        "true",
+        "true",
+        "true",
+        "d",
+    ]
+
+
+def test_snapshot_of_an_attribute_grafts_a_shallow_parent() -> None:
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:variable name="s" select="snapshot(/doc/a/@id)"/>
+          <xsl:sequence select="(
+            $s instance of attribute(id),
+            $s/string(),
+            count($s/parent::a) = 1,
+            count($s/parent::a/child::node()) = 0,
+            count($s/parent::a/@*) = 1,
+            count($s/parent::a/parent::doc) = 1
+          )"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=SNAPSHOT_SOURCE)
+
+    assert [item.string_value for item in result.principal] == [
+        "true",
+        "1",
+        "true",
+        "true",
+        "true",
+        "true",
+    ]
+
+
+def test_snapshot_of_a_namespace_node_keeps_its_element_parent() -> None:
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:variable name="s" select="snapshot(/doc/a/namespace::my)"/>
+          <xsl:sequence select="(
+            $s instance of namespace-node(),
+            local-name($s),
+            string($s),
+            count($s/parent::a) = 1,
+            count($s/parent::a/child::node()) = 0
+          )"/>
+        </xsl:template>
+        """,
+        namespaces={"my": MY_NS},
+    )
+    namespaced = b'<doc xmlns:my="urn:my"><a id="1"><b>deep</b></a></doc>'
+    result = transform(body, input_source=namespaced)
+
+    assert [item.string_value for item in result.principal] == [
+        "true",
+        "my",
+        MY_NS,
+        "true",
+        "true",
+    ]
+
+
+def test_snapshot_leaves_atomic_and_function_items_unchanged() -> None:
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:sequence select="(snapshot(1), snapshot('a'), local-name-from-QName(
+            function-name(let $f := snapshot(abs#1) return $f)))"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, initial_template="main", delivery="raw")
+
+    assert [item.string_value for item in result.principal] == ["1", "a", "abs"]
+
+
+def test_snapshot_without_a_context_item_is_xpdy0002() -> None:
+    body = stylesheet(
+        """
+        <xsl:function name="my:copy">
+          <xsl:param name="n"/>
+          <xsl:sequence select="snapshot()"/>
+        </xsl:function>
+        <xsl:template match="/">
+          <xsl:sequence select="my:copy(.)"/>
+        </xsl:template>
+        """,
+        namespaces={"my": MY_NS},
+    )
+    assert error_code(lambda: transform(body, input_source=b"<doc/>")) == "XPDY0002"
+
+
+def test_root_returns_the_tree_root_of_a_node_outside_the_focus() -> None:
+    """F&O 3.1 section 13.5 defines root($arg) as its ancestor-or-self root."""
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:variable name="copy" select="copy-of(/doc/a)"/>
+          <xsl:sequence select="(
+            $copy/b/root() is $copy,
+            root($copy/b) is $copy,
+            root(/) is /,
+            $copy/b/root()/name() = 'a',
+            empty(root(()))
+          )"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=SNAPSHOT_SOURCE)
+
+    assert result.principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+    )
+
+
+def test_root_argument_and_context_errors() -> None:
+    def code(body: str) -> str | None:
+        return error_code(lambda: transform(stylesheet(body), input_source=b"<doc/>"))
+
+    assert code('<xsl:template match="/"><xsl:value-of select="root(1)"/></xsl:template>') == (
+        "XPTY0004"
+    )
+    assert (
+        code('<xsl:template match="/"><xsl:value-of select="root((/, /doc))"/></xsl:template>')
+        == "XPTY0004"
+    )
+    absent_context = stylesheet(
+        """
+        <xsl:function name="my:r"><xsl:param name="n"/>
+          <xsl:sequence select="root()"/>
+        </xsl:function>
+        <xsl:template match="/"><xsl:sequence select="my:r(.)"/></xsl:template>
+        """,
+        namespaces={"my": MY_NS},
+    )
+    assert error_code(lambda: transform(absent_context, input_source=b"<doc/>")) == "XPDY0002"
+
+
+def test_snapshot_of_a_node_in_a_parentless_tree_stops_at_its_root() -> None:
+    """A copy's top ancestor is an element when the source tree has no document."""
+    body = stylesheet(
+        """
+        <xsl:template match="/">
+          <xsl:variable name="tree" select="copy-of(/doc/a)"/>
+          <xsl:variable name="s" select="snapshot($tree/b)"/>
+          <xsl:sequence select="(
+            $s/name(),
+            $s/root() is $s/parent::a,
+            count($s/ancestor::node()) = 1,
+            count($s/ancestor::doc) = 0,
+            count($s/parent::a/ancestor::doc) = 0,
+            $s/parent::a/@id
+          )"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, input_source=SNAPSHOT_SOURCE)
+
+    assert [item.string_value for item in result.principal] == [
+        "b",
+        "true",
+        "true",
+        "true",
+        "true",
+        "1",
+    ]
+
+
+def test_parse_xml_returns_an_engine_document_node() -> None:
+    """F&O 3.1 section 14.7.1: parse-xml builds an XDM document, not empty.
+
+    The returned document must survive the bridge into an XSLT variable: the
+    substrate builds its own tree, which the XDM conversion cannot represent,
+    so an unhandled result was silently dropped.
+    """
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:variable name="doc" select="parse-xml('&lt;doc a=&quot;1&quot;&gt;&lt;x/&gt;&lt;x/&gt;&lt;/doc&gt;')"/>
+          <xsl:sequence select="(
+            $doc instance of document-node(element(doc)),
+            count($doc//x) = 2,
+            name($doc/*),
+            string($doc/*/@a),
+            empty(parse-xml(()))
+          )"/>
+        </xsl:template>
+        """
+    )
+    result = transform(body, initial_template="main", delivery="raw")
+
+    assert result.principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.string("doc"),
+        XdmAtomic.string("1"),
+        XdmAtomic.boolean(True),
+    )
+
+    direct = stylesheet(
+        '<xsl:template name="main">'
+        '<xsl:sequence select="name(parse-xml(&quot;&lt;doc&gt;&lt;x/&gt;&lt;/doc&gt;&quot;)/*)"/>'
+        "</xsl:template>"
+    )
+    assert transform(direct, initial_template="main", delivery="raw").principal == (
+        XdmAtomic.string("doc"),
+    )
+
+
+def test_format_date_family_rejects_string_values_without_a_cast() -> None:
+    """Only xs:untypedAtomic receives the cast; xs:string is XPTY0004."""
+    for expression in (
+        "format-date('2000-01-01', '[Y]')",
+        "format-time('01:02:03', '[H01]')",
+        "format-dateTime('2000-01-01T01:02:03', '[Y]')",
+    ):
+        body = f'<xsl:template name="main"><xsl:value-of select="{expression}"/></xsl:template>'
+        assert error_code(
+            lambda body=body: transform(stylesheet(body), initial_template="main")
+        ) == ("XPTY0004")
+
+    accepted = stylesheet(
+        """
+        <xsl:template name="main"><xsl:value-of
+          select="format-date(xs:untypedAtomic('2000-01-01'), '[Y]')"/></xsl:template>
+        """
+    )
+    assert transform(accepted, initial_template="main").principal[0].string_value == "2000"
+
+    bad_cast = stylesheet(
+        """
+        <xsl:template name="main"><xsl:value-of
+          select="format-date(xs:untypedAtomic('not-a-date'), '[Y]')"/></xsl:template>
+        """
+    )
+    assert error_code(lambda: transform(bad_cast, initial_template="main")) == "FORG0001"
+
+
+def test_parse_xml_error_codes() -> None:
+    def code(expression: str) -> str | None:
+        body = f'<xsl:template name="main"><xsl:sequence select="{expression}"/></xsl:template>'
+        return error_code(lambda: transform(stylesheet(body), initial_template="main"))
+
+    assert code("parse-xml('&lt;broken')") == "FODC0006"
+    assert code("parse-xml(1)") == "XPTY0004"
+    assert code("parse-xml(('&lt;a/&gt;', '&lt;b/&gt;'))") == "XPTY0004"
+
+
+def test_format_integer_empty_atomization_formats_as_empty_string(tmp_path: Path) -> None:
+    """An element-only typed value has no atomic value, not an IndexError."""
+    schema = tmp_path / "element-only.xsd"
+    schema.write_text(
+        """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+             <xs:element name="a">
+               <xs:complexType>
+                 <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+               </xs:complexType>
+             </xs:element>
+           </xs:schema>""",
+        encoding="utf-8",
+    )
+    pool = SchemaPool.from_imports([schema], xsd_version="1.1")
+    document = parse_typed_document(b"<a><b>x</b></a>", schema_pool=pool, validation="strict")
+    engine = XPathEngine("3.1")
+    compiled = engine.compile("format-integer(., 'A')", XPathStaticContext())
+
+    result = engine.evaluate(
+        compiled, ExpressionEnvironment(), focus=Focus(item=document.root_element)
+    )
+
+    assert result[0].string_value == ""
+
+
+def test_format_integer_rejects_one_node_atomizing_to_several_values(tmp_path: Path) -> None:
+    """A list-typed element atomizes to two values; the first is not formatted."""
+    schema = tmp_path / "list.xsd"
+    schema.write_text(
+        """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+             <xs:element name="a">
+               <xs:simpleType><xs:list itemType="xs:integer"/></xs:simpleType>
+             </xs:element>
+           </xs:schema>""",
+        encoding="utf-8",
+    )
+    pool = SchemaPool.from_imports([schema], xsd_version="1.0")
+    document = parse_typed_document(b"<a>1 2</a>", schema_pool=pool, validation="strict")
+    body = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:value-of select="format-integer((/a)[1], '1')"/>
+        </xsl:template>
+        """
+    )
+    assert (
+        error_code(
+            lambda: transform(
+                body, input_source=document, initial_template="main", validation="preserve"
+            )
+        )
+        == "XPTY0004"
+    )
+
+
+def test_format_integer_keeps_its_compiled_argument() -> None:
+    """Evaluating one compiled token must not replace its operand."""
+    parser = _build_parser("3.1", XPathStaticContext(), key=True)
+    token = parser.parse("format-integer($n, 'A')")
+    operand = token._items[0]
+
+    assert token.evaluate(XPathContext(item="", variables={"n": 1})) == "A"
+    assert token.evaluate(XPathContext(item="", variables={"n": 2})) == "B"
+    assert token._items[0] is operand

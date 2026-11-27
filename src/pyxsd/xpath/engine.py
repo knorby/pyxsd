@@ -55,11 +55,22 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
-from types import MethodType
+from types import MethodType, SimpleNamespace
 from typing import Any, cast
+from xml.etree import ElementTree as ET
 
 from elementpath import XPathContext
-from elementpath.datatypes import AnyAtomicType, QName, UntypedAtomic
+from elementpath.datatypes import (
+    AbstractDateTime,
+    AnyAtomicType,
+    ArithmeticProxy,
+    DayTimeDuration,
+    Duration,
+    QName,
+    UntypedAtomic,
+)
+from elementpath.datatypes.datetime import get_comparable_datetimes
+from elementpath.exceptions import ElementPathError
 from elementpath.helpers import upper_camel_case
 from elementpath.namespaces import get_expanded_name
 from elementpath.tdop import Parser
@@ -77,11 +88,12 @@ from elementpath.xpath_nodes import (
     XPathNode,
     XPathNodeTree,
 )
-from elementpath.xpath_tokens import XPathArray, XPathMap
+from elementpath.xpath_tokens import ProxyToken, XPathArray, XPathConstructor, XPathMap, XPathToken
 from elementpath.xpath_tokens.functions import ExternalFunction, XPathFunction
 from elementpath.xpath_tokens.tokens import ContextItemToken, VariableToken
 
 from pyxsd import xsd_data_types as _xsd
+from pyxsd.namespaces import XML_NS, clark
 from pyxsd.xdm import (
     XdmArray,
     XdmAtomic,
@@ -119,8 +131,16 @@ from pyxsd.xpath.functions import (
     call_host_function,
     clone_function_token,
     function_arity,
+    install_date_time,
+    install_deep_equal,
+    install_format_integer,
+    install_regex_replace,
+    install_string_conversion_functions,
+    install_string_function,
+    install_subsequence,
     sequence_to_elementpath,
 )
+from pyxsd.xpath.numeric import install_numeric_functions
 from pyxsd.xpath.regex_cache import install_regex_translation_cache
 
 # Memoise elementpath's regex translation at this import seam.  The call has to
@@ -273,6 +293,229 @@ def _token_function_name(token: Any) -> str | None:
 # Grounded XDM node adapters
 
 
+class _XdmMapValue(XPathMap):
+    """A bridged XDM map whose dynamic call applies function conversion.
+
+    XPath 3.1 treats a map as a function ``function(xs:anyAtomicType) as
+    item()*``; a dynamic call therefore atomizes its argument (so a node key
+    is looked up by typed value), converts an untyped atomic key to
+    ``xs:string``, and rejects any other cardinality with ``XPTY0004``.
+    elementpath's own map call accepts only an already-adapted atomic and
+    reports the wrong code otherwise, so the bridge owns the conversion.
+    """
+
+    def _call_key(self, args: tuple[Any, ...]) -> Any:
+        values: list[Any] = []
+        if len(args) == 1:
+            values = list(self.atomize_item(args[0]))
+        if len(values) != 1:
+            raise self.error("XPTY0004", "a map call requires exactly one atomic argument")
+        key = values[0]
+        return str(key) if isinstance(key, UntypedAtomic) else key
+
+    def __call__(self, *args: Any, context: Any = None) -> Any:
+        return super().__call__(self._call_key(args), context=context)
+
+
+class _XdmArrayValue(XPathArray):
+    """A bridged XDM array whose dynamic call applies function conversion.
+
+    An array behaves as ``function(xs:integer) as item()*``: the argument is
+    atomized, an untyped atomic value is cast to ``xs:integer``, and any other
+    cardinality or type is ``XPTY0004``.
+    """
+
+    def _call_position(self, args: tuple[Any, ...]) -> int:
+        values: list[Any] = []
+        if len(args) == 1:
+            values = list(self.atomize_item(args[0]))
+        if len(values) != 1:
+            raise self.error("XPTY0004", "an array call requires exactly one xs:integer argument")
+        position = values[0]
+        if isinstance(position, UntypedAtomic):
+            try:
+                return int(_xsd.Integer(str(position)))
+            except (TypeError, ValueError) as exc:
+                raise self.error("FORG0001", str(exc)) from None
+        return position
+
+    def __call__(self, *args: Any, context: Any = None) -> Any:
+        return super().__call__(self._call_position(args), context=context)
+
+
+def _host_tree_xml(root: Any, nsmap: Mapping[str, str] | None) -> bytes:
+    """Serialize one host element subtree with its own namespace prefixes.
+
+    ElementTree's ``default_namespace`` option refuses unqualified attributes,
+    and its global prefix registry cannot be scoped to one call.  A host result
+    tree is small and already carries its prefix map, so a direct serializer
+    keeps the result's default/prefixed bindings without touching process
+    state.
+    """
+
+    from xml.sax.saxutils import escape, quoteattr
+
+    bindings = {
+        ("" if prefix is None else prefix): uri
+        for prefix, uri in (nsmap or {}).items()
+        if uri is not None and prefix != "xml" and uri != "http://www.w3.org/XML/1998/namespace"
+    }
+    element_uris = {
+        tag[1:].split("}", 1)[0]
+        for tag in (child.tag for child in root.iter())
+        if isinstance(tag, str) and tag.startswith("{")
+    }
+    used = set(element_uris)
+    if len(element_uris) == 1:
+        # A result tree built from one vocabulary is conventionally serialized
+        # with that vocabulary as the default namespace; the source prefix
+        # (``fn``, ``j``, ...) is an implementation detail of the host tree.
+        vocabulary = next(iter(element_uris))
+        bindings = {prefix: uri for prefix, uri in bindings.items() if uri != vocabulary}
+        bindings[""] = vocabulary
+    used.update(
+        name[1:].split("}", 1)[0]
+        for element in root.iter()
+        for name in element.attrib
+        if name.startswith("{")
+    )
+    used.discard("http://www.w3.org/XML/1998/namespace")
+    for index, uri in enumerate(sorted(used - set(bindings.values()))):
+        bindings[f"ns{index + 1}"] = uri
+    by_uri = {uri: prefix for prefix, uri in bindings.items()}
+    by_uri["http://www.w3.org/XML/1998/namespace"] = "xml"
+
+    def qname(name: str) -> str:
+        if not name.startswith("{"):
+            return name
+        uri, local = name[1:].split("}", 1)
+        prefix = by_uri.get(uri, "")
+        return f"{prefix}:{local}" if prefix else local
+
+    def write(element: Any, out: list[str], declare: bool) -> None:
+        tag = element.tag
+        if tag is ET.Comment:
+            out.append(f"<!--{element.text or ''}-->")
+            return
+        if tag is ET.ProcessingInstruction:
+            out.append(f"<?{element.text or ''}?>")
+            return
+        out.append("<" + qname(tag))
+        if declare:
+            for prefix, uri in sorted(bindings.items()):
+                out.append(f' xmlns:{prefix}="{uri}"' if prefix else f' xmlns="{uri}"')
+        for name, value in element.attrib.items():
+            out.append(f" {qname(name)}={quoteattr(value)}")
+        if element.text or len(element):
+            out.append(">")
+            if element.text:
+                out.append(escape(element.text))
+            for child in element:
+                write(child, out, False)
+                if child.tail:
+                    out.append(escape(child.tail))
+            out.append(f"</{qname(tag)}>")
+        else:
+            out.append("/>")
+
+    parts: list[str] = []
+    write(root, parts, True)
+    return "".join(parts).encode("utf-8")
+
+
+def host_node_to_xdm(node: Any) -> XdmNode:
+    """Convert one elementpath or ElementTree node into a grounded XDM node.
+
+    elementpath functions such as ``fn:analyze-string`` and the F&O JSON
+    functions return their own ``EtreeElementNode``/``EtreeDocumentNode``
+    objects (and raw ElementTree values for some in-memory results).  The XSLT
+    runtime must not leak those host objects into XDM sequences: a later
+    ``copy-of``, path step, or node test needs the engine's grounded node with
+    its document, namespace, and identity properties.  Serializing the host
+    subtree and parsing it through the normal XDM parser reuses the one
+    authoritative node implementation instead of growing a second adapter
+    model.  An element's tail belongs to its parent and is excluded.
+    """
+
+    def parse(element: Any, nsmap: Mapping[str, str] | None = None) -> XdmDocument:
+        root = element.getroot() if isinstance(element, ET.ElementTree) else element
+        detached = copy.copy(root)
+        detached.tail = None
+        if nsmap is not None:
+            data = _host_tree_xml(detached, nsmap)
+        else:
+            data = ET.tostring(detached, encoding="utf-8")
+        return XdmDocument.parse(data)
+
+    if isinstance(node, (ET.ElementTree, ET.Element)):
+        document = parse(node)
+        return document if isinstance(node, ET.ElementTree) else document.root_element
+    kind = getattr(node, "node_kind", None)
+    if kind == "document":
+        root = node.document.getroot()
+        return parse(root, getattr(root, "nsmap", None))
+    if kind == "element":
+        return parse(node.elem, getattr(node, "nsmap", None)).root_element
+    parent = getattr(node, "parent", None)
+    if parent is None:
+        raise TypeError(f"a parentless {kind} node cannot be converted to XDM")
+    parent_xdm = host_node_to_xdm(parent)
+    if kind == "attribute":
+        name = getattr(node, "name", "") or ""
+        if not name.startswith("{"):
+            prefix, separator, local = name.partition(":")
+            if separator:
+                name = clark(parent_xdm.in_scope_namespaces.get(prefix), local)
+        attribute = parent_xdm.attribute(name)
+        if attribute is None:
+            raise TypeError(f"the attribute {name!r} is not in its converted parent")
+        return attribute
+    if kind == "namespace":
+        prefix = getattr(node, "prefix", "") or ""
+        uri = getattr(node, "uri", "") or ""
+        if parent_xdm.in_scope_namespaces.get(prefix) != uri:
+            # The host tree may spell a namespace with a prefix the converted
+            # parent binds differently (json-to-xml commonly uses a generated
+            # prefix where the result vocabulary expects the default).  An XDM
+            # namespace node is identified by the in-scope prefix, so use the
+            # converted parent's binding for the same URI.
+            alternatives = [
+                bound
+                for bound, bound_uri in parent_xdm.in_scope_namespaces.items()
+                if bound_uri == uri
+            ]
+            if alternatives:
+                prefix = (
+                    "" if "" in alternatives or parent_xdm.namespace_uri == uri else alternatives[0]
+                )
+        namespace = parent_xdm.namespace_node(prefix)
+        if namespace is not None:
+            return namespace
+        # Serialization cannot carry an unused namespace declaration.  The
+        # host node still has the prefix and URI, so expose that declaration
+        # as a standalone namespace node beside its converted parent.
+        document = parent_xdm.document
+        attachment = parent_xdm.root_element if isinstance(parent_xdm, XdmDocument) else parent_xdm
+        return XdmNode(
+            NodeKind.NAMESPACE,
+            document=document,
+            node_id=-1,
+            source_name=document.source_name,
+            source_index=document.source_index,
+            parent=attachment,
+            name=prefix,
+            value=uri,
+            prefix=prefix,
+            namespace_uri=uri,
+            in_scope_namespaces=attachment.in_scope_namespaces,
+        )
+    value = node.string_value
+    for child in parent_xdm.children:
+        if child.kind.value == kind and child.string_value == value:
+            return child
+    raise TypeError(f"the {kind} node is not in its converted parent")
+
+
 class _NodeAdapterMixin:
     """Base for grounded adapters; every concrete node kind adds its protocol."""
 
@@ -305,6 +548,10 @@ class _XdmDocumentAdapter(DocumentNode, _NodeAdapterMixin):
     @property
     def string_value(self) -> str:
         return self._xdm.string_value
+
+    @property
+    def base_uri(self) -> str | None:
+        return self._xdm.base_uri
 
 
 class _XdmElementAdapter(ElementNode, _NodeAdapterMixin):
@@ -367,6 +614,10 @@ class _XdmElementAdapter(ElementNode, _NodeAdapterMixin):
         return bool(self._xdm.nilled)
 
     @property
+    def base_uri(self) -> str | None:
+        return self._xdm.base_uri
+
+    @property
     def iter_typed_values(self) -> Any:
         for item in self._xdm.typed_value:
             yield atomic_to_elementpath(cast(XdmAtomic, item))
@@ -403,7 +654,7 @@ class _XdmAttributeAdapter(AttributeNode, _NodeAdapterMixin):
 
     @property
     def base_uri(self) -> str | None:
-        return self.parent.base_uri if self.parent is not None else None
+        return self._xdm.base_uri
 
 
 class _XdmTextAdapter(TextNode, _NodeAdapterMixin):
@@ -418,6 +669,10 @@ class _XdmTextAdapter(TextNode, _NodeAdapterMixin):
         self.value = xdm.string_value
         self.parent = cast(ElementNode | None, parent)
         self.position = xdm.document_order
+
+    @property
+    def base_uri(self) -> str | None:
+        return self._xdm.base_uri
 
 
 class _XdmCommentAdapter(CommentNode, _NodeAdapterMixin):
@@ -434,6 +689,10 @@ class _XdmCommentAdapter(CommentNode, _NodeAdapterMixin):
         super().__init__(xdm.string_value, None, xdm.document_order)
         self.parent = parent
 
+    @property
+    def base_uri(self) -> str | None:
+        return self._xdm.base_uri
+
 
 class _XdmProcessingInstructionAdapter(ProcessingInstructionNode, _NodeAdapterMixin):
     __slots__ = ("_xdm",)
@@ -449,6 +708,10 @@ class _XdmProcessingInstructionAdapter(ProcessingInstructionNode, _NodeAdapterMi
         super().__init__(xdm.target or "", xdm.string_value, None, xdm.document_order)
         self.parent = parent
 
+    @property
+    def base_uri(self) -> str | None:
+        return self._xdm.base_uri
+
 
 class _XdmNamespaceAdapter(NamespaceNode, _NodeAdapterMixin):
     __slots__ = ("_xdm",)
@@ -457,6 +720,10 @@ class _XdmNamespaceAdapter(NamespaceNode, _NodeAdapterMixin):
         del factory
         self._xdm = xdm
         super().__init__(xdm.prefix, xdm.bound_uri or "", parent, xdm.document_order)
+
+    @property
+    def base_uri(self) -> str | None:
+        return self._xdm.base_uri
 
 
 def _adapter_node_name(xdm: XdmNode, *, is_attribute: bool) -> QName | None:
@@ -511,6 +778,19 @@ def _adapter_node(node: XdmNode, parent: Any, factory: Any) -> Any:
     raise TypeError(  # pragma: no cover - the six non-document kinds are handled above
         f"unsupported XDM node kind: {node.kind!r}"
     )
+
+
+def standalone_node_adapter(node: XdmNode, factory: Any) -> Any:
+    """Adapt one detached XDM node for a host-side native value.
+
+    A stylesheet function may return a newly constructed text/comment/PI node
+    that no finalized document carries.  The scheduler still needs an
+    elementpath node to resume its continuation machine, so build the one
+    adapter directly instead of admitting a document that may still grow.
+    """
+    if node.kind is NodeKind.DOCUMENT:
+        return factory.document(node)
+    return _adapter_node(node, None, factory)
 
 
 def _document_node_count(document: XdmDocument) -> int:
@@ -585,6 +865,7 @@ class _XdmAdapterRegistry:
         "_nodes_built",
         "_reused",
         "_rootless",
+        "annotations",
         "nodes",
     )
 
@@ -601,6 +882,10 @@ class _XdmAdapterRegistry:
         #: The adapter holds its XDM node, so an id in this map is never
         #: recycled into another node.
         self.nodes: dict[int, Any] = {}
+        #: Type annotations of bridged atomic values, shared by every
+        #: evaluation in the transformation so a value passed to
+        #: ``xsl:evaluate`` keeps its schema-defined type.
+        self.annotations: dict[int, tuple[Any, str]] = {}
         self._documents: dict[int, _XdmDocumentAdapter] = {}
         #: Finalized element-rooted temporary trees, keyed by the identity of
         #: the document that carries them; the value is the admitted
@@ -752,14 +1037,117 @@ class _FocusContextItemToken(ContextItemToken):
 # Schema pool bridge
 
 
+class _AnnotatedString(str):
+    """A unique string payload carrying its XDM type annotation."""
+
+
+class _AnnotatedDecimal(Decimal):
+    """A unique decimal payload carrying its XDM type annotation."""
+
+
+class _AnnotatedFloat(float):
+    """A unique double payload carrying its XDM type annotation."""
+
+
+#: Annotation entries retained for values that cannot carry an attribute
+#: (booleans, integers, and substrate values whose copy is not distinct).  The
+#: table never evicts: a bound this wide is a resource guard, and exceeding it
+#: raises the stable implementation resource error instead of discarding a
+#: still-reachable annotation.
+_ANNOTATION_LIMIT = 262_144
+
+
+def _annotate_atomic_value(value: Any, annotation: str) -> Any:
+    """Return a distinct substrate value annotated with its XDM type.
+
+    ``elementpath`` returns the same object for equal string payloads, so an
+    identity-keyed side table cannot distinguish two declared types.  A
+    subclass instance is distinct for each adaptation and still satisfies the
+    substrate's value-space checks.  Values that cannot be subclassed or
+    copied keep the side table.
+    """
+    if isinstance(value, bool):
+        return value
+    if type(value) is str:
+        annotated: Any = _AnnotatedString(value)
+    elif isinstance(value, Decimal):
+        annotated = _AnnotatedDecimal(value)
+    elif type(value) is float:
+        annotated = _AnnotatedFloat(value)
+    else:
+        annotated = copy.copy(value)
+        if annotated is value:
+            return value
+    try:
+        annotated._pyxsd_type = annotation
+    except AttributeError:  # pragma: no cover - substrate scalar proxies
+        return value
+    return annotated
+
+
+def _annotation_resource_error(message: str) -> Exception:
+    """One uncatchable implementation failure for the annotation side table."""
+    from pyxsd.xslt.errors import IMPLEMENTATION_BUDGET_CODE, XsltDynamicError
+
+    return XsltDynamicError(
+        message,
+        code=IMPLEMENTATION_BUDGET_CODE,
+        allow_catch=False,
+    )
+
+
+def _annotation_identity_error(message: str) -> Exception:
+    """One uncatchable failure when a dynamic type cannot be preserved."""
+    from pyxsd.xslt.errors import UNSUPPORTED_FEATURE_CODE, XsltDynamicError
+
+    return XsltDynamicError(
+        message,
+        code=UNSUPPORTED_FEATURE_CODE,
+        allow_catch=False,
+    )
+
+
+def _record_annotation(
+    annotations: dict[int, tuple[Any, str]], value: Any, annotation: str
+) -> None:
+    """Record one annotation for a value that cannot carry an attribute.
+
+    The value is retained beside its address so the id cannot be recycled
+    while the annotation is live.  An existing entry is never replaced: a
+    different annotation for the same object identity means two dynamic types
+    share one singleton payload (a boolean), which this representation cannot
+    distinguish.  Guessing by value space would silently answer ``instance of``
+    with the wrong type, so it fails explicitly.  The table is bounded but
+    never evicts: an evicted entry would change a later ``instance of`` for a
+    value that is still reachable in the invocation.
+    """
+    existing = annotations.get(id(value))
+    if existing is not None:
+        # The entry retains the value, so its id cannot be recycled while the
+        # record is live; a different value under that id is impossible.
+        if existing[1] == annotation:
+            return
+        raise _annotation_identity_error(
+            "two dynamic types share one atomic value identity; "
+            f"{existing[1]!r} and {annotation!r} cannot both be preserved"
+        )
+    if len(annotations) >= _ANNOTATION_LIMIT:
+        raise _annotation_resource_error(
+            "the transformation exceeded its atomic type-annotation capacity; "
+            "an annotation is still reachable and cannot be discarded"
+        )
+    annotations[id(value)] = (value, annotation)
+
+
 class _PoolSchemaProxy:
     """A schema proxy facade over every namespace in one SchemaPool."""
 
-    __slots__ = ("_namespaces", "_pool")
+    __slots__ = ("_namespaces", "_parser", "_pool")
 
-    def __init__(self, pool: SchemaPool, namespaces: Mapping[str, str]) -> None:
+    def __init__(self, pool: SchemaPool, namespaces: Mapping[str, str], parser: Any = None) -> None:
         self._pool = pool
         self._namespaces = dict(namespaces)
+        self._parser = parser
 
     @property
     def xsd_version(self) -> str:
@@ -789,7 +1177,60 @@ class _PoolSchemaProxy:
         adapter = self._pool.get_type(self.expand(type_qname))
         if adapter is None:
             raise KeyError(type_qname)
+        annotation = self._annotation(obj)
+        if annotation is not None:
+            return self._annotation_is_user_type(annotation, adapter)
+        from elementpath.datatypes import UntypedAtomic
+
+        if isinstance(obj, UntypedAtomic):
+            # XDM 3.1 section 2.7.2: xs:untypedAtomic is not derived from any
+            # other atomic type, and value-space validation does not change
+            # an item's dynamic type.
+            return (adapter.name or "").rpartition("}")[2] in (
+                "untypedAtomic",
+                "anyAtomicType",
+                "anySimpleType",
+            )
         return adapter.is_valid(obj, namespaces=self._namespaces)
+
+    def _annotation_is_user_type(self, annotation: str, adapter: Any) -> bool:
+        """Whether an XDM type annotation names *adapter*'s type or a subtype."""
+        if annotation == adapter.name:
+            return True
+        local = annotation.rpartition("}")[2].rpartition(":")[2]
+        required = (adapter.name or "").rpartition("}")[2].rpartition(":")[2]
+        if annotation == _UNTYPED:
+            return required == "anyType"
+        if annotation == _UNTYPED_ATOMIC:
+            return required in ("anyAtomicType", "anySimpleType", "anyType")
+        xsd_prefix = f"{{{_XSD_NS}}}"
+        if annotation.startswith(xsd_prefix) and (adapter.name or "").startswith(xsd_prefix):
+            from pyxsd.xdm.values import is_xsd_subtype
+
+            return is_xsd_subtype(local, required)
+        annotated = self._pool.get_type(annotation)
+        if annotated is None:
+            return False
+        recorded = SimpleNamespace(
+            type_name=annotation, actual_type=getattr(annotated, "_type_class", None)
+        )
+        return type_tests.derives_from(recorded, adapter.name, self._pool)
+
+    def _annotation(self, obj: Any) -> str | None:
+        """The XDM type annotation of one bridged value, when it has one.
+
+        The substrate's value classes carry no user-defined type name, so the
+        bridge records it beside the converted object.  A value produced by an
+        XPath operation (not by a variable, parameter, or function result) has
+        no record and keeps the substrate's value-space answer.
+        """
+        attached = getattr(obj, "_pyxsd_type", None)
+        if isinstance(attached, str):
+            return attached
+        holder = getattr(self._parser, "_pyxsd_bridge_holder", None)
+        bridge = getattr(holder, "bridge", None) if holder is not None else None
+        record = getattr(bridge, "_annotations", {}).get(id(obj)) if bridge is not None else None
+        return None if record is None else record[1]
 
     def get_type(self, qname: str) -> Any:
         return self._pool.get_type(self.expand(qname))
@@ -868,6 +1309,12 @@ class _ValueBridge:
         self._ephemeral: dict[int, Any] = {}
         self._registry = registry
         self._context: XPathContext | None = None
+        #: Type annotations of the XdmAtomic values converted for this
+        #: evaluation, shared with the transformation's adapter registry.  The
+        #: map holds the converted object so its id cannot be recycled while
+        #: the annotation is live; elementpath's schema proxy consults it
+        #: before falling back to a value-space test.
+        self._annotations = registry.annotations if registry is not None else {}
 
     # XDM -> elementpath
 
@@ -921,6 +1368,20 @@ class _ValueBridge:
         )
 
     def adapt_item(self, item: XdmItem) -> Any:
+        if isinstance(item, XdmAtomic):
+            converted = atomic_to_elementpath(item)
+            if isinstance(converted, UntypedAtomic) and converted.parser is None:
+                # A comparison with a QName casts untypedAtomic using the
+                # static namespace context of that comparison, not the parser
+                # that created the value.  Keep the target evaluation's parser
+                # on every untyped value crossing this bridge.
+                converted = UntypedAtomic(converted.value, self.parser)
+            record = self._annotations.get(id(item))
+            annotation = record[1] if record is not None else item.type_name
+            annotated = _annotate_atomic_value(converted, annotation)
+            if annotated is converted:
+                _record_annotation(self._annotations, converted, annotation)
+            return annotated
         if isinstance(item, ResultTreeFragment):
             return _LegacyRtfValue(item)
         if isinstance(item, XdmNode):
@@ -945,12 +1406,21 @@ class _ValueBridge:
                 and item.root.kind is NodeKind.ELEMENT
             ):
                 # A descendant of a finalized element-rooted temporary tree:
-                # admit the tree through its parentless root before falling
-                # back to a per-evaluation adaptation.
-                adapter = self._registry.rootless(item.root)
+                # admit the tree through its parentless root, then read the
+                # requested node's own adapter.  The admission returns the
+                # *root's* adapter, which is this node's only when it is the
+                # root, so it is never the answer for a descendant.
+                self._registry.rootless(item.root)
+                adapter = self._lookup(item)
             if adapter is None:
                 self.adapt_document(item.document)
                 adapter = self._lookup(item)
+            if adapter is None and item.kind not in (NodeKind.DOCUMENT, NodeKind.ELEMENT):
+                # A host namespace/attribute/text node can be a standalone
+                # value with a document parent but no place in the converted
+                # tree.  Adapt the node itself rather than its document root.
+                adapter = self._adapt_rootless_node(item)
+                self._ephemeral[id(item)] = adapter
             if adapter is None:
                 # The node's document does not contain it: an element-rooted
                 # temporary tree from a sequence constructor.  Adapt its root
@@ -968,9 +1438,9 @@ class _ValueBridge:
                 (atomic_to_elementpath(key), self.sequence_to_elementpath(value))
                 for key, value in item.entries
             ]
-            return XPathMap(self.parser, items=entries)
+            return _XdmMapValue(self.parser, items=entries)
         if isinstance(item, XdmArray):
-            return XPathArray(
+            return _XdmArrayValue(
                 self.parser,
                 items=[self.sequence_to_elementpath(member) for member in item.members],
             )
@@ -981,6 +1451,7 @@ class _ValueBridge:
                 item_converter=self.adapt_item,
                 name=item.name,
                 arity=item.arity,
+                to_xdm=self.to_xdm_sequence,
             )
         raise TypeError(f"{type(item).__name__} is not an XDM item")
 
@@ -999,10 +1470,32 @@ class _ValueBridge:
                     item_converter=self.adapt_item,
                     name=name,
                     context_binder=_context_target_binder(value, self),
+                    to_xdm=self.to_xdm_sequence,
                 )
             else:
-                values[name] = self.sequence_to_elementpath(as_xdm(value))
+                values[name] = self._variable_value(value)
         return values
+
+    def _variable_value(self, value: Any) -> Any:
+        """Bind one variable, keeping an already-adapted typed atomic.
+
+        ``xsl:evaluate`` passes a value that was adapted by another evaluation
+        in the same transformation.  Re-wrapping it would replace its dynamic
+        type with the primitive payload class; the shared annotation record
+        keeps the schema-defined type.
+        """
+        if isinstance(value, (list, tuple)):
+            converted = [self._variable_value(item) for item in value]
+            if not converted:
+                return []
+            if len(converted) == 1:
+                return converted[0]
+            return converted
+        if not isinstance(value, XdmItem) and (
+            id(value) in self._annotations or getattr(value, "_pyxsd_type", None) is not None
+        ):
+            return value
+        return self.sequence_to_elementpath(as_xdm(value))
 
     # elementpath -> XDM
 
@@ -1045,6 +1538,19 @@ class _ValueBridge:
                     name=value.name or None,
                 ),
             )
+        if isinstance(value, (XPathNode, ET.Element, ET.ElementTree)):
+            return (host_node_to_xdm(value),)
+        annotation = getattr(value, "_pyxsd_type", None)
+        record = self._annotations.get(id(value)) if annotation is None else None
+        if annotation is not None or record is not None:
+            converted = as_xdm(value)
+            # An atomic adapted by another evaluation keeps its schema-defined
+            # annotation beside the primitive XdmAtomic.
+            if annotation is None:
+                assert record is not None
+                annotation = record[1]
+            _record_annotation(self._annotations, converted[0], annotation)
+            return converted
         if isinstance(value, XPathClosure):
             return (_xpath_closure_to_xdm(value, self),)
         if isinstance(value, continuation.HostFunction):
@@ -1073,8 +1579,7 @@ class _ValueBridge:
     def _function_item(self, token: XPathFunction) -> XdmFunction:
         context = self._context
         assert context is not None
-        nargs = getattr(token, "nargs", None)
-        arity = (0, None) if nargs is None else _arity_tuple(nargs)
+        arity = _function_item_arity(token)
         name = getattr(token, "name", None)
         if not isinstance(name, str) or not name:
             name = _token_function_name(token)
@@ -1278,7 +1783,10 @@ class XPathEngine:
         free_variable_names = _expression_free_variable_names(root_token, static_context)
 
         plan: continuation.CompiledExpression | None = None
-        if self._version == "3.1":
+        if self._version == "3.1" and not static_context.compatibility_mode:
+            # The optional seam lowers a subset of XPath 3.1 to a continuation
+            # machine.  It does not model XPath 1.0 compatibility conversions,
+            # so a compatibility-mode expression keeps the full evaluator.
             try:
                 plan = continuation.compile_expression(
                     source,
@@ -1346,7 +1854,7 @@ class XPathEngine:
             holder = parser._pyxsd_bridge_holder
             assert holder is not None
             _install_function_overrides(
-                parser, holder, _override_symbols(environment.function_overrides)
+                parser, holder, _override_symbols(environment.function_overrides, parser)
             )
         else:
             bucket = cache.bucket(
@@ -1370,7 +1878,7 @@ class XPathEngine:
         previous = (holder.bridge, holder.xpath_context, holder.overrides, holder.functions)
         holder.bridge = bridge
         holder.xpath_context = None
-        holder.overrides = _overrides_by_symbol(environment.function_overrides)
+        holder.overrides = _overrides_by_symbol(environment.function_overrides, parser)
         holder.functions = environment.functions
         try:
             if compiled.continuation_plan is not None:
@@ -1417,25 +1925,63 @@ def _decimal_formats_key(
     )
 
 
-def _override_symbols(function_overrides: Mapping[str, Any]) -> list[str]:
-    """The parser symbols an override table replaces, in table order.
+def _override_key(function_overrides: Mapping[str, Any]) -> frozenset[str]:
+    """The bucket identity of an override table.
 
-    The rule is the one the registration itself applies: a Clark name and a
-    prefixed lexical name both address the function's local symbol.
+    Two lexical spellings of one function address one parser symbol, so they
+    must share a bucket; the local name is that identity.  Installation still
+    resolves the exact symbol against the built parser.
     """
-    return [
+    return frozenset(
         name.rpartition("}")[2] if name.startswith("{") else name.rpartition(":")[2]
         for name in function_overrides
-    ]
+    )
 
 
-def _overrides_by_symbol(function_overrides: Mapping[str, Any]) -> dict[str, Any]:
+def _override_symbol(parser: Any, name: str) -> str:
+    """The parser symbol that an override of the function *name* replaces.
+
+    elementpath registers a declared function that collides with a built-in in
+    another namespace under its expanded name, moves the built-in to its own
+    expanded key, and leaves a :class:`ProxyToken` at the bare local symbol.
+    An override has to follow the same table: prefer the expanded key that
+    holds the real function token, and only fall back to the local symbol.
+    Resolving to the proxy would read ``nargs`` (and every other signature
+    attribute) off a token class that has none.
+    """
+    local = name.rpartition("}")[2] if name.startswith("{") else name.rpartition(":")[2]
+    candidates: list[str] = []
+    if name.startswith("{"):
+        candidates.append(name)
+    else:
+        prefix, separator, _ = name.partition(":")
+        uri = parser.namespaces.get(prefix) if separator else None
+        if uri is not None:
+            candidates.append(f"{{{uri}}}{local}")
+    candidates.append(local)
+    for candidate in candidates:
+        base = parser.symbol_table.get(candidate)
+        if base is not None and not issubclass(base, ProxyToken):
+            return candidate
+    return candidates[0]
+
+
+def _override_symbols(function_overrides: Mapping[str, Any], parser: Any) -> list[str]:
+    """The parser symbols an override table replaces, in table order."""
+    return [_override_symbol(parser, name) for name in function_overrides]
+
+
+def _overrides_by_symbol(function_overrides: Mapping[str, Any], parser: Any) -> dict[str, Any]:
     """The override table keyed by the parser symbol it replaces.
 
     Later duplicates win, exactly as the registration loop did.
     """
     return dict(
-        zip(_override_symbols(function_overrides), function_overrides.values(), strict=True)
+        zip(
+            _override_symbols(function_overrides, parser),
+            function_overrides.values(),
+            strict=True,
+        )
     )
 
 
@@ -1464,8 +2010,9 @@ def _parser_key(
         static_context.default_collation,
         static_context.xsd_version,
         static_context.xslt_version,
+        static_context.compatibility_mode,
         _decimal_formats_key(environment.decimal_formats),
-        frozenset(_override_symbols(environment.function_overrides)),
+        _override_key(environment.function_overrides),
     )
 
 
@@ -1517,7 +2064,7 @@ class XPathParserCache:
         holder = parser._pyxsd_bridge_holder
         assert holder is not None
         _install_function_overrides(
-            parser, holder, _override_symbols(environment.function_overrides)
+            parser, holder, _override_symbols(environment.function_overrides, parser)
         )
         bucket = _ParserBucket(parser, holder, static_context, key)
         self._buckets[key] = bucket
@@ -1591,6 +2138,7 @@ def _build_parser(
             "base_uri": base_uri if base_uri is not None else static_context.base_uri,
             "default_collation": static_context.default_collation,
             "xsd_version": static_context.xsd_version,
+            "compatibility_mode": static_context.compatibility_mode,
         }
         if decimal_formats and version != "2.0":
             options["decimal_formats"] = {
@@ -1599,14 +2147,38 @@ def _build_parser(
         parser = parser_class(**options)
     parser._pyxsd_bridge_holder = holder
     _install_syntax_only_parse(parser)
+    if version != "1.0":
+        _install_node_kind_test(parser)
+        _install_descendant_path_order(parser)
+        _install_lookup_path_step(parser)
     _install_focus_token(parser)
     _install_focus_functions(parser)
     _install_function_scope(parser)
+    _install_node_set_order(parser)
     if version == "1.0":
         _install_legacy_1_0_overrides(parser)
+        install_numeric_functions(parser, include_round=False)
     else:
+        _install_constructor_partial_application(parser)
+        _install_comparison_string_atomization(parser)
+        _install_lang_function(parser)
+        install_string_function(parser)
+        install_string_conversion_functions(parser)
+        install_deep_equal(parser)
+        install_date_time(parser)
+        install_format_integer(parser)
+        install_subsequence(parser)
+        install_numeric_functions(parser)
+        _install_instance_expression(parser)
+        _install_temporal_components(parser)
+        _install_temporal_arithmetic(parser)
+        install_regex_replace(parser)
+        if version == "2.0":
+            _install_xpath20_regex_surface(parser)
         _register_schema_constructors(parser, static_context)
         _install_schema_kind_tests(parser)
+        if static_context.compatibility_mode:
+            _install_compatibility_comparisons(parser)
         # A declared type may be a user-defined schema type the parser can only
         # resolve once its pool proxy is bound; pyxsd validated the declaration
         # already (XPST0051/XPST0008), so assign the full map here instead of
@@ -1653,6 +2225,156 @@ def _bind_kind_test_type_names(root: Any, default_namespace: str | None) -> None
                 value = type_token.value
                 type_token.name = f"{{{default_namespace}}}{value}" if default_namespace else value
         stack.extend(items)
+
+
+def _install_descendant_path_order(parser: Any) -> None:
+    """Return ``//`` results in document order.
+
+    ``A//B`` means ``A/descendant-or-self::node()/B``.  Applying ``B`` to an
+    ancestor yields that ancestor's matching children before the descendants'
+    matching children, so a naive traversal of ``//text()`` grouped the
+    element's own text children ahead of descendant text.  XPath requires the
+    node sequence of a path expression in document order; sorting by the
+    engine's cross-tree document order restores it.
+    """
+    base = parser.symbol_table.get("//")
+    if base is None:  # pragma: no cover - every supported parser declares it
+        return
+
+    def select(self: Any, context: Any = None) -> Iterator[Any]:
+        items = list(base.select(self, context))
+        # A path step may return atomic values (a function call is a StepExpr).
+        # Only nodes have a document position; leave a mixed/atomic result in
+        # the machine's order instead of sorting host strings.
+        if items and all(isinstance(item, XPathNode) for item in items):
+            items.sort(key=_node_order_key)
+        yield from items
+
+    parser._register(
+        "//",
+        "_PyxsdDescendantPath",
+        bases=(base,),
+        label=base.label,
+        bp=getattr(base, "bp", 75),
+        select=select,
+    )
+
+
+def _install_lookup_path_step(parser: Any) -> None:
+    """Let a lookup expression be a path step (XPath 3.1 section 3.3.1.2).
+
+    ``E?*`` is a ``PostfixExpr``, and the grammar makes every ``PostfixExpr``
+    a ``StepExpr``, so ``array?* / child`` is legal.  elementpath's ``/`` only
+    admits a fixed symbol set as its left step, so a lookup token is rejected
+    with ``XPST0003``; the lookup symbol joins that set on this parser
+    instance, leaving the shared parser class untouched.
+    """
+    path_steps = getattr(parser, "PATH_STEP_SYMBOLS", None)
+    if path_steps is None or "?" in path_steps:  # pragma: no cover - XPath 2.0+ only
+        return
+    parser.PATH_STEP_SYMBOLS = path_steps | {"?"}
+
+
+def _install_node_set_order(parser: Any) -> None:
+    """Order the set operators by the engine's cross-tree document order.
+
+    elementpath sorts the union/intersect/except results by ``node.position``.
+    A pyxsd adapter carries the node's XDM document order there, but every
+    parsed document numbers its nodes from one, so corresponding nodes of two
+    parsed documents compare equal and the hash-ordered ``set`` decides the
+    order.  That order varies between processes and moves otherwise
+    deterministic verdicts (``evaluate/evaluate-002``).  Ordering by the
+    document's stable creation identity followed by its document order is
+    total and stable for the transformation invocation.
+    """
+    for symbol in ("union", "|", "intersect", "except"):
+        base = parser.symbol_table.get(symbol)
+        if base is None:  # pragma: no cover - every supported parser declares one
+            continue
+
+        def select(
+            self: Any,
+            context: Any = None,
+            _base: Any = base,
+            _symbol: str = symbol,
+        ) -> Iterator[Any]:
+            if context is None:
+                raise self.missing_context()
+            operands: list[set[Any]] = []
+            for index in range(2):
+                values: set[Any] = set()
+                for item in self[index].select(copy.copy(context)):
+                    if not isinstance(item, XPathNode):
+                        raise self.error("XPTY0004", "only XPath nodes are allowed")
+                    values.add(item)
+                operands.append(values)
+            if _symbol == "except":
+                results = operands[0] - operands[1]
+            elif _symbol == "intersect":
+                results = operands[0] & operands[1]
+            else:
+                results = operands[0] | operands[1]
+            if getattr(self, "concatenated", False):
+                yield from results
+            else:
+                yield from sorted(results, key=_node_order_key)
+
+        parser._register(
+            symbol,
+            f"_PyxsdNodeSetOrder_{symbol.replace('|', 'or')}",
+            bases=(base,),
+            label=base.label,
+            bp=getattr(base, "bp", 55),
+            select=select,
+        )
+
+
+def _node_order_key(node: Any) -> tuple[int, int]:
+    """A total order over nodes of one evaluation, in document order.
+
+    A node's own XDM document order is unique within its tree only.  Every
+    document carries a creation-order identity, and a document node reports
+    document order 0 by design (the adapter registry uses that as its
+    finalized marker), so the pair is total across every admitted tree.
+    """
+    xdm = getattr(node, "xdm", None)
+    if xdm is None:  # pragma: no cover - every adapter carries its XDM item
+        return (-1, getattr(node, "position", 0))
+    document = xdm.document
+    return (
+        getattr(document, "_tree_identity", 0),
+        xdm.document_order,
+    )
+
+
+def _install_node_kind_test(parser: Any) -> None:
+    """Let ``node()`` match a document node reached through a variable.
+
+    The substrate yields a document node only when it is the context root, so
+    ``parent::node()`` and ``instance of node()`` failed for a document loaded
+    by ``document()`` or held in a variable.  XPath 2.0 and later match every
+    node, so the test yields the document node too; XPath 1.0 keeps the
+    substrate's dummy-document masking.
+    """
+    base = parser.symbol_table.get("node")
+    if base is None:  # pragma: no cover - every supported parser declares it
+        return
+
+    def select(self: Any, context: Any = None) -> Iterator[Any]:
+        if context is None:  # pragma: no cover - token evaluation supplies it
+            raise self.missing_context()
+        for item in context.iter_children_or_self():
+            if isinstance(item, XPathNode):  # pragma: no branch - iter yields nodes
+                yield item
+
+    parser._register(
+        "node",
+        "_PyxsdNodeKindTest",
+        bases=(base,),
+        label=base.label,
+        nargs=getattr(base, "nargs", 0),
+        select=select,
+    )
 
 
 def _install_focus_token(parser: Any) -> None:
@@ -1719,11 +2441,657 @@ def _install_function_scope(parser: Any) -> None:
     )
 
 
+def _install_constructor_partial_application(parser: Any) -> None:
+    """Treat only a bare ``?`` as a constructor's partial application.
+
+    elementpath's ``XPathConstructor.nud`` marks the constructor as a partial
+    function whenever the argument's root token *is* ``?``.  XPath's placeholder
+    is the bare lookup token, but a lookup expression such as ``$map?value``
+    also has the ``?`` symbol, so ``xs:integer($map?value)`` silently evaluates
+    to a function item instead of casting.  A lookup expression carries an
+    operand and is a normal argument.  The corrected token class is registered
+    on this parser instance only; elementpath's own class table is untouched.
+    """
+
+    def is_placeholder(token: Any) -> bool:
+        return token.symbol == "?" and not len(token)
+
+    def nud(self: Any) -> Any:
+        if not self.parser.parse_arguments:
+            return self
+        try:
+            self.parser.advance("(")
+            self[0:] = (self.parser.expression(5),)
+            if self.parser.next_token.symbol == ",":
+                raise self.error("XPST0017", "Too many arguments: expected at most 1 argument")
+            self.parser.advance(")")
+        except SyntaxError:
+            raise self.error("XPST0017") from None
+        else:
+            if is_placeholder(self[0]):
+                self.to_partial_function()
+            return self
+
+    def evaluate(self: Any, context: Any = None) -> Any:
+        arg = self.data_value(self.get_argument(context))
+        if arg is None:
+            return []
+        elif arg == "?" and is_placeholder(self[0]):
+            raise self.error("XPTY0004", "cannot evaluate a partial function")
+        try:
+            return self.cast(arg.value if isinstance(arg, UntypedAtomic) else arg)
+        except ElementPathError as err:
+            err.token = self
+            raise
+        except (TypeError, ValueError) as err:
+            raise self.error("FORG0001", err) from None
+
+    for symbol, base in list(parser.symbol_table.items()):
+        if not isinstance(base, type) or not issubclass(base, XPathConstructor):
+            continue
+        # Dual-use keywords (boolean, string, QName, dateTime) and the error
+        # constructor provide their own parsing and evaluation; only the plain
+        # one-argument constructors use elementpath's generic implementation.
+        if getattr(base, "nud", None) is not XPathConstructor.nud:
+            continue
+        if getattr(base, "evaluate", None) is not XPathConstructor.evaluate:
+            continue
+        parser._register(
+            symbol,
+            f"_PyxsdConstructor_{symbol.replace('-', '_').replace(':', '_')}",
+            bases=(base,),
+            label=base.label,
+            nargs=getattr(base, "nargs", None),
+            sequence_types=getattr(base, "sequence_types", ()),
+            nud=nud,
+            evaluate=evaluate,
+        )
+
+
+def _install_comparison_string_atomization(parser: Any) -> None:
+    """Compare two untyped atomic operands as strings in general comparisons.
+
+    Functions and Operators 3.1 section 3.7.2 casts both untyped atomic
+    operands of a general comparison to ``xs:string``.  elementpath hands the
+    ``UntypedAtomic`` values to Python's comparison operators, which compare
+    them numerically, so two untyped nodes can disagree with a string
+    comparison.  Value comparisons are already correct and keep their own
+    tokens.  The corrected comparison tokens live on this parser instance only.
+    """
+
+    def iter_comparison_data(self: Any, context: Any) -> Iterator[Any]:
+        for left, right in XPathToken.iter_comparison_data(self, context):
+            yield continuation.comparison_operands(left, right)
+
+    for symbol in ("=", "!=", "<", ">", "<=", ">="):
+        base = parser.symbol_table[symbol]
+        parser._register(
+            symbol,
+            f"_PyxsdComparison_{symbol.replace('=', 'eq').replace('!', 'ne')}".replace(
+                "<", "lt"
+            ).replace(">", "gt"),
+            bases=(base,),
+            label=base.label,
+            nargs=getattr(base, "nargs", (2, 2)),
+            sequence_types=getattr(base, "sequence_types", ()),
+            iter_comparison_data=iter_comparison_data,
+        )
+
+
+_XPATH20_REGEX_FLAGS = frozenset("imsx")
+
+
+def _install_xpath20_regex_surface(parser: Any) -> None:
+    """Restore the XPath 2.0 regular-expression flag vocabulary.
+
+    elementpath's XPath 2.0 parser gates the XPath 3.0 ``q`` flag on
+    ``parser.version > '2'``; the lexical comparison is true for ``"2.0"``, so
+    a native 2.0 profile accepts a flag that XPath 2.0 does not define.  The
+    arity of ``tokenize`` is left as elementpath declares it: the W3C XSLT 2.0
+    catalog uses its third argument for the 2.0 flag vocabulary.  The corrected
+    tokens live on this parser instance only.
+    """
+
+    def validate_flags(token: Any, context: Any, index: int) -> None:
+        if len(token) <= index:
+            return
+        flags = token.get_argument(context, index, required=True, cls=str)
+        for flag in flags:
+            if flag not in _XPATH20_REGEX_FLAGS:
+                raise token.error("FORX0001", f"Invalid regular expression flag {flag!r}")
+
+    def flags_checked(base: Any, index: int) -> Callable[..., Any]:
+        def evaluate(self: Any, context: Any = None) -> Any:
+            validate_flags(self, context, index)
+            return base.evaluate(self, context)
+
+        return evaluate
+
+    for symbol, index in (("matches", 2), ("replace", 3)):
+        base = parser.symbol_table[symbol]
+        parser._register(
+            symbol,
+            f"_PyxsdXPath20{symbol.title()}",
+            bases=(base,),
+            label=base.label,
+            nargs=getattr(base, "nargs", None),
+            sequence_types=getattr(base, "sequence_types", ()),
+            evaluate=flags_checked(base, index),
+        )
+    tokenize = parser.symbol_table["tokenize"]
+    parser._register(
+        "tokenize",
+        "_PyxsdXPath20Tokenize",
+        bases=(tokenize,),
+        label=tokenize.label,
+        nargs=getattr(tokenize, "nargs", None),
+        sequence_types=getattr(tokenize, "sequence_types", ()),
+        evaluate=flags_checked(tokenize, 2),
+    )
+
+
+#: Sequence-type kind tests decided by the annotation-aware matcher.
+_ANNOTATION_KIND_TESTS = (
+    "schema-attribute(",
+    "schema-element(",
+    "namespace-node(",
+)
+
+
+def _install_instance_expression(parser: Any) -> None:
+    """Match ``instance of`` item by item against the declared sequence type.
+
+    The substrate evaluates the sequence-type token once with the *outer*
+    context, so a node kind test examines whatever the context item is rather
+    than each item of the left operand.  ``document-node(element(a))?`` then
+    answered true for a two-document sequence.  The sequence type's own source
+    text is matched against the whole value, which applies the occurrence
+    indicator and each item's kind test correctly.
+    """
+    from elementpath.sequence_types import match_sequence_type
+
+    base = parser.symbol_table.get("instance")
+    if base is None:  # pragma: no cover - every supported parser declares it
+        return
+
+    def evaluate(self: Any, context: Any = None) -> Any:
+        if getattr(self[1], "label", None) == "kind test":
+            sequence_type = _kind_test_source(self[1])
+        else:
+            sequence_type = self[1].source
+        values = list(self[0].select(context))
+        annotated = _match_annotated_atomic_type(values, sequence_type, self.parser)
+        if annotated is _DECLINED:
+            return base.evaluate(self, context)
+        if annotated is not None:
+            return annotated
+        if (
+            "schema-attribute(" in sequence_type
+            or "schema-element(" in sequence_type
+            or sequence_type.startswith(_ANNOTATION_KIND_TESTS)
+            or _needs_annotation_match(sequence_type)
+        ):
+            return bool(_match_tolerant_sequence_type(values, sequence_type, self.parser))
+        try:
+            return match_sequence_type(values, sequence_type, self.parser)
+        except (ElementPathError, KeyError, ValueError):  # pragma: no cover - substrate-only
+            return base.evaluate(self, context)
+
+    parser._register(
+        "instance",
+        "_PyxsdInstanceExpression",
+        bases=(base,),
+        label=base.label,
+        bp=getattr(base, "bp", 60),
+        evaluate=evaluate,
+    )
+
+
+class _Declined:
+    """The atomic type target is known but the value has no annotation."""
+
+    __slots__ = ()
+
+
+#: Sentinel: the atomic target is known but the value's annotation is not.
+_DECLINED = _Declined()
+
+
+def _match_annotated_atomic_type(
+    values: Sequence[Any],
+    sequence_type: str,
+    parser: Any,
+) -> bool | _Declined | None:
+    """Match a plain atomic type test through the item's type annotation.
+
+    The substrate's ``is_instance`` decides a built-in atomic type from the
+    Python payload class, so a schema-defined type value (whose payload is the
+    primitive root) answers ``xs:int`` false.  The schema proxy knows the
+    recorded annotation and the derivation rules.  Returns ``None`` when the
+    sequence type is not a plain atomic type name.
+    """
+    from elementpath.namespaces import get_expanded_name
+
+    schema = getattr(parser, "schema", None)
+    if schema is None:
+        return None
+    occurrence = ""
+    if sequence_type[-1:] in ("*", "+", "?"):
+        occurrence = sequence_type[-1]
+        sequence_type = sequence_type[:-1]
+    try:
+        expanded = get_expanded_name(sequence_type, parser.namespaces)
+    except (KeyError, ValueError):
+        return None
+    adapter = schema.get_type(expanded)
+    if adapter is None or not adapter.is_atomic():
+        return None
+    if values and any(schema._annotation(value) is None for value in values):
+        # The value did not come through the bridge (for example a cast inside
+        # one expression), so its dynamic type is unknown here.  The base
+        # sequence-type token is the pre-existing, correct answer.
+        return _DECLINED
+    matched = all(bool(schema.is_instance(value, expanded)) for value in values)
+    if not matched:
+        return False
+    if occurrence == "":
+        return len(values) == 1
+    if occurrence == "?":
+        return len(values) <= 1
+    if occurrence == "+":
+        return bool(values)
+    return True
+
+
+def _needs_annotation_match(sequence_type: str) -> bool:
+    """Whether a kind test carries a type name to match by annotation.
+
+    An ``element(N, T)``/``attribute(N, T)`` test is a type-annotation test
+    (XPath 3.1 sections 2.5.5.3 and 2.5.5.5), including for built-in types such
+    as ``xs:anyType`` and list types; a value-space test on the atomized value
+    mis-answers them.  A name-only test keeps the substrate's matcher, which
+    also covers nodes from a host function's own elementpath tree.
+    """
+    if sequence_type.startswith("document-node("):
+        return _needs_annotation_match(sequence_type[len("document-node(") : -1])
+    if not sequence_type.startswith(("element(", "attribute(")):
+        return False
+    inner = sequence_type[sequence_type.find("(") + 1 : -1]
+    return "," in inner
+
+
+def _kind_test_source(token: Any) -> str:
+    """Reconstruct a kind test's sequence type from its token tree.
+
+    The substrate's ``source`` property writes ``attribute *`` for
+    ``attribute(*)`` and ``my:filetype attribute xs:NOTATION`` for a
+    two-argument attribute test, which is not valid sequence-type syntax.  The
+    children already carry the correct name and type sources.
+    """
+    symbol = getattr(token, "symbol", "")
+    arguments = ", ".join(
+        source
+        for child in token
+        for source in (getattr(child, "source", ""),)
+        if isinstance(source, str) and source
+    )
+    occurrence = getattr(token, "occurrence", "") or ""
+    return f"{symbol}({arguments}){occurrence}"
+
+
+def _match_tolerant_sequence_type(
+    values: Sequence[Any],
+    sequence_type: str,
+    parser: Any,
+) -> bool | None:
+    """Match node-kind sequence types against each item's type annotation.
+
+    ``match_sequence_type`` decides ``element(N, T)`` and ``attribute(N, T)``
+    through ``is_instance`` on the atomized value, which mis-answers annotation
+    tests (``xs:anyType``, list and notation types, user-defined types) and has
+    no ``schema-element``/``schema-attribute`` kind tests.  This matcher applies
+    the same predicates the parser's kind tests use, to every item of the
+    sequence, and then the occurrence indicator.  It returns ``None`` for a
+    sequence type outside its scope.
+    """
+    from elementpath.namespaces import get_expanded_name
+
+    from pyxsd.xdm import type_tests
+    from pyxsd.xdm.nodes import NodeKind, XdmNode
+
+    occurrence = ""
+    if sequence_type[-1:] in ("*", "+", "?"):
+        occurrence = sequence_type[-1]
+        sequence_type = sequence_type[:-1]
+
+    schema = getattr(parser, "schema", None)
+
+    def node_of(item: Any) -> XdmNode | None:
+        node = getattr(item, "xdm", None)
+        if isinstance(node, XdmNode):
+            return node
+        return item if isinstance(item, XdmNode) else None
+
+    def expanded(name: str) -> str:
+        return get_expanded_name(name, parser.namespaces)
+
+    def element_test(inner: str, item: Any) -> bool:
+        node = node_of(item)
+        if node is None or node.kind is not NodeKind.ELEMENT:
+            return False
+        name, _, type_text = inner.partition(",")
+        name = name.strip()
+        type_name = type_text.strip() or None
+        nillable = type_name is not None and type_name.endswith("?")
+        if type_name is not None:
+            type_name = type_name.rstrip("?")
+        expanded_name = None if name in ("", "*") else expanded(name)
+        expanded_type = None if type_name is None else expanded(type_name)
+        if schema is None:
+            return type_tests.matches_element_test(
+                node, expanded_name, expanded_type, nillable, None
+            )
+        return bool(schema.matches_element_test(node, expanded_name, expanded_type, nillable))
+
+    def attribute_test(inner: str, item: Any) -> bool:
+        node = node_of(item)
+        if node is None or node.kind is not NodeKind.ATTRIBUTE:
+            return False
+        name, _, type_text = inner.partition(",")
+        name = name.strip()
+        type_name = type_text.strip() or None
+        expanded_name = None if name in ("", "*") else expanded(name)
+        expanded_type = None if type_name is None else expanded(type_name)
+        if schema is None:
+            return type_tests.matches_attribute_test(node, expanded_name, expanded_type, None)
+        return bool(schema.matches_attribute_test(node, expanded_name, expanded_type))
+
+    def declaration_test(kind: str, inner: str, item: Any) -> bool:
+        node = node_of(item)
+        if node is None:
+            return False
+        name = expanded(inner.strip())
+        assert schema is not None
+        if kind == "schema-attribute":
+            return bool(schema.matches_schema_attribute(node, name))
+        return bool(schema.matches_schema_element(node, name))
+
+    def document_test(inner: str, item: Any) -> bool:
+        node = node_of(item)
+        if node is None or node.kind is not NodeKind.DOCUMENT:
+            return False
+        if not inner:
+            return True
+        if inner.startswith("schema-element("):
+            return any(
+                declaration_test("schema-element", inner[len("schema-element(") : -1], child)
+                for child in node.children
+            )
+        element_inner = inner[len("element(") : -1]
+        return any(element_test(element_inner, child) for child in node.children)
+
+    if sequence_type.startswith("document-node("):
+        kind, inner = "document-node", sequence_type[len("document-node(") : -1]
+    elif sequence_type.startswith("element("):
+        kind, inner = "element", sequence_type[len("element(") : -1]
+    elif sequence_type.startswith("attribute("):
+        kind, inner = "attribute", sequence_type[len("attribute(") : -1]
+    elif sequence_type.startswith(("schema-attribute(", "schema-element(")):
+        kind, _, inner = sequence_type.partition("(")
+        inner = inner[:-1]
+    elif sequence_type.startswith("namespace-node("):
+        kind, inner = "namespace-node", ""
+    else:
+        return None
+
+    if kind == "document-node":
+        matched = all(document_test(inner, item) for item in values)
+    elif kind == "element":
+        matched = all(element_test(inner, item) for item in values)
+    elif kind == "attribute":
+        matched = all(attribute_test(inner, item) for item in values)
+    elif kind == "namespace-node":
+        matched = all(
+            (node := node_of(item)) is not None and node.kind is NodeKind.NAMESPACE
+            for item in values
+        )
+    else:
+        matched = all(declaration_test(kind, inner, item) for item in values)
+    if not matched:
+        return False
+    if occurrence == "":
+        return len(values) == 1
+    if occurrence == "?":
+        return len(values) <= 1
+    if occurrence == "+":
+        return bool(values)
+    return True
+
+
+def _install_temporal_components(parser: Any) -> None:
+    """Return the exact fractional second of a dateTime or time.
+
+    The substrate builds ``Decimal('{}.{}'.format(second, microsecond))``, so a
+    fractional second of ``30.012`` becomes ``30.12000`` and canonicalises to
+    ``30.12``.  The F&O value is the second plus the six-digit fraction, which
+    is what the W3C component-extraction cases require.
+    """
+    from elementpath.datatypes import DateTime, Time
+
+    for symbol, expected in (
+        ("seconds-from-dateTime", DateTime),
+        ("seconds-from-time", Time),
+    ):
+        base = parser.symbol_table.get(symbol)
+        if base is None:  # pragma: no cover - every supported parser declares them
+            continue
+
+        def evaluate(self: Any, context: Any = None, _expected: Any = expected) -> Any:
+            item = self.get_argument(context, cls=_expected)
+            if item is None:
+                return []
+            if item.microsecond:
+                fraction = f"{item.microsecond:06d}".rstrip("0")
+                return Decimal(f"{item.second}.{fraction}")
+            return item.second
+
+        parser._register(
+            symbol,
+            f"_Pyxsd{symbol.title().replace('-', '')}",
+            bases=(base,),
+            label=base.label,
+            nargs=getattr(base, "nargs", 1),
+            sequence_types=getattr(base, "sequence_types", ()),
+            evaluate=evaluate,
+        )
+
+
+def _install_temporal_arithmetic(parser: Any) -> None:
+    """Add and subtract date/time values without mutating the operands.
+
+    The substrate's binary operator applies the implicit timezone by assigning
+    ``tzinfo`` on the operand objects.  A variable's bridged value is one such
+    object, so a later reading of the variable observed the added timezone.
+    Its ``fromtimedelta`` also concatenates a negative duration's microseconds
+    onto the already-rounded seconds (``-44.7s`` became ``-45.3s``), and a
+    ``dayTimeDuration + dateTime`` raises instead of adding.
+
+    This override evaluates the operands once, applies the implicit timezone to
+    copies for a date/time difference, keeps the duration/date operands'
+    timezone rules, and maps an out-of-range result to FODT0001/FODT0002.
+    """
+    import operator
+
+    for symbol, operation in (("+", operator.add), ("-", operator.sub)):
+        base = parser.symbol_table[symbol]
+
+        def evaluate(
+            self: Any,
+            context: Any = None,
+            _operation: Any = operation,
+            _base: Any = base,
+        ) -> Any:
+            del _operation
+            if len(self) != 2:
+                return _base.evaluate(self, context)
+            left = _arithmetic_operand(self, context, 0)
+            right = _arithmetic_operand(self, context, 1)
+            if left is None or right is None:
+                return []
+            if isinstance(left, AbstractDateTime) and isinstance(right, AbstractDateTime):
+                if self.symbol == "+":
+                    raise self.error("XPTY0004", "cannot add two date/time values")
+                return _temporal_difference(self, left, right, context)
+            if (
+                self.symbol == "+"
+                and isinstance(left, Duration)
+                and isinstance(right, AbstractDateTime)
+            ):
+                # Addition is symmetric; the substrate's DayTimeDuration only
+                # accepts a date/time as its right-hand operand.
+                left, right = right, left
+            # Numeric promotion from the substrate's operand normalization: a
+            # float paired with a Decimal or a Duration is converted to that
+            # operand's type before the Python operation.
+            if isinstance(left, float) and isinstance(right, Duration):
+                left = Decimal(left)
+            if isinstance(right, float) and isinstance(left, Duration):
+                right = Decimal(right)
+            if isinstance(left, float) and isinstance(right, Decimal):
+                right = type(left)(right)
+            elif isinstance(right, float) and isinstance(left, Decimal):
+                left = type(right)(left)
+            try:
+                if self.symbol == "+":
+                    return left + right
+                return left - right
+            except TypeError as err:
+                raise self.error("XPTY0004", err) from None
+            except (ValueError, OverflowError) as err:
+                if isinstance(left, AbstractDateTime) or isinstance(right, AbstractDateTime):
+                    raise self.error("FODT0001", err) from None
+                if isinstance(left, Duration) or isinstance(right, Duration):
+                    raise self.error("FODT0002", err) from None
+                raise self.error("FOAR0002", err) from None  # pragma: no cover - Decimal overflow
+
+        parser._register(
+            symbol,
+            f"_Pyxsd{'Plus' if symbol == '+' else 'Minus'}Operator",
+            bases=(base,),
+            label=base.label,
+            bp=getattr(base, "bp", 40),
+            evaluate=evaluate,
+        )
+
+
+def _arithmetic_operand(token: Any, context: Any, index: int) -> Any:
+    """One arithmetic operand, with the substrate's untypedAtomic conversion."""
+    value = token.get_argument(context, index=index, cls=ArithmeticProxy)
+    if isinstance(value, ElementNode):  # pragma: no cover - operands are atomized
+        value = token._items[index].data_value(value)
+    if isinstance(value, UntypedAtomic):
+        value = token.cast_to_double(value.value)
+    return value
+
+
+def _temporal_difference(
+    token: Any,
+    left: AbstractDateTime,
+    right: AbstractDateTime,
+    context: Any,
+) -> DayTimeDuration:
+    """The exact duration between two date/time values.
+
+    The operands are copied before the implicit timezone is applied, so a
+    variable's stored value keeps its own timezone.  The microseconds are
+    summed with the whole seconds rather than appended, which keeps a negative
+    fractional difference exact.
+    """
+    from copy import copy
+
+    first = copy(left)
+    second = copy(right)
+    timezone = getattr(context, "timezone", None) if context is not None else None
+    if timezone is not None:
+        if first.tzinfo is None:
+            first.tzinfo = timezone
+        if second.tzinfo is None:
+            second.tzinfo = timezone
+    try:
+        if 1 <= first.year <= 9999 and 1 <= second.year <= 9999:
+            start, end = get_comparable_datetimes(first._dt, second._dt)
+            delta = start - end
+            seconds = Decimal(delta.days * 86400 + delta.seconds) + (
+                Decimal(delta.microseconds) / Decimal(1_000_000)
+            )
+        else:
+            # Extended years have no ``datetime`` equivalent; subtract the
+            # Gregorian day offsets directly, as the in-range branch does.
+            delta = first.todelta() - second.todelta()
+            seconds = Decimal(delta.days * 86400 + delta.seconds) + (
+                Decimal(delta.microseconds) / Decimal(1_000_000)
+            )
+    except (ValueError, OverflowError) as err:  # pragma: no cover - constructor rejects it
+        raise token.error("FODT0001", err) from None
+    return DayTimeDuration(seconds=seconds)
+
+
+def _install_lang_function(parser: Any) -> None:
+    """Read ``xml:lang`` through grounded adapters, not just etree nodes.
+
+    elementpath implements ``fn:lang`` only for its own ``EtreeElementNode``
+    and returns false for any other element node, so every bridged attribute
+    and element ignored the language in scope.  The language is inherited from
+    the nearest ancestor element that declares it.  The corrected token lives
+    on this parser instance only.
+    """
+    base = parser.symbol_table["lang"]
+
+    def language_in_scope(item: Any) -> str | None:
+        node = item
+        while node is not None:
+            if isinstance(node, ElementNode):
+                for attribute in node.attributes:
+                    name = getattr(attribute, "node_name", None)
+                    if name is not None and name.namespace == XML_NS and name.local_name == "lang":
+                        return attribute.string_value
+            node = getattr(node, "parent", None)
+        return None
+
+    def evaluate(self: Any, context: Any = None) -> Any:
+        if len(self) > 1:
+            item = self.get_argument(context, index=1, default_to_context=True)
+        else:
+            item = None if context is None else context.item
+        if not isinstance(item, ElementNode):
+            raise self.error("XPTY0004")
+        language = language_in_scope(item)
+        if language is None:
+            return False
+        test_language = (self.get_argument(context, cls=str) or "").strip().lower()
+        language = language.strip().lower()
+        return language == test_language or (
+            language.startswith(test_language)
+            and len(language) > len(test_language)
+            and language[len(test_language)] == "-"
+        )
+
+    parser._register(
+        "lang",
+        "_PyxsdLangFunction",
+        bases=(base,),
+        label=base.label,
+        nargs=getattr(base, "nargs", (1, 2)),
+        sequence_types=getattr(base, "sequence_types", ()),
+        evaluate=evaluate,
+    )
+
+
 def _register_schema_constructors(parser: Any, static_context: XPathStaticContext) -> None:
     pool = static_context.schema
     if pool is None:
         return
-    parser.schema = _PoolSchemaProxy(pool, parser.namespaces)
+    parser.schema = _PoolSchemaProxy(pool, parser.namespaces, parser)
     from elementpath.namespaces import get_prefixed_name
 
     for adapter in pool.types.values():
@@ -1772,7 +3140,7 @@ def _install_schema_kind_tests(parser: Any) -> None:
         return get_expanded_name(source, namespaces)
 
     def select_element(self: Any, context: Any = None) -> Iterator[Any]:
-        if context is None:
+        if context is None:  # pragma: no cover - token evaluation supplies it
             raise self.missing_context()
         schema = self.parser.schema
         if not self:
@@ -1799,7 +3167,7 @@ def _install_schema_kind_tests(parser: Any) -> None:
         if self.label == "axis":
             yield from attribute_base.select(self, context)
             return
-        if context is None:
+        if context is None:  # pragma: no cover - token evaluation supplies it
             raise self.missing_context()
         schema = self.parser.schema
         name = attribute_name(self[0], self.parser.namespaces) if self else None
@@ -1845,7 +3213,7 @@ def _install_schema_kind_tests(parser: Any) -> None:
         return get_expanded_name(self[0].source, self.parser.namespaces)
 
     def select_schema_element(self: Any, context: Any = None) -> Iterator[Any]:
-        if context is None:
+        if context is None:  # pragma: no cover - token evaluation supplies it
             raise self.missing_context()
         proxy = self.parser.schema
         assert proxy is not None  # nud rejected an absent pool
@@ -1858,7 +3226,7 @@ def _install_schema_kind_tests(parser: Any) -> None:
                 yield item
 
     def select_schema_attribute(self: Any, context: Any = None) -> Iterator[Any]:
-        if context is None:
+        if context is None:  # pragma: no cover - token evaluation supplies it
             raise self.missing_context()
         proxy = self.parser.schema
         assert proxy is not None  # nud rejected an absent pool
@@ -1905,6 +3273,59 @@ def _install_schema_kind_tests(parser: Any) -> None:
     )
 
 
+def _function_item_arity(token: XPathFunction) -> int | tuple[int, int | None]:
+    """The arity one function token reports when converted to an XDM item.
+
+    A reference or variadic token has an explicit ``nargs`` (an integer or a
+    ``(minimum, maximum)`` range).  An anonymous inline function and a partial
+    application have no ``nargs``; their parsed parameter count is the arity.
+    """
+    nargs = getattr(token, "nargs", None)
+    if isinstance(nargs, tuple):
+        return _arity_tuple(nargs)
+    if isinstance(nargs, int):
+        return nargs
+    return len(token)
+
+
+def _external_function(
+    parser: Any,
+    callback: Callable[..., Any],
+    *,
+    name: str,
+    prefix: str | None,
+    sequence_types: tuple[str, ...],
+) -> Any:
+    """Register one declared function, allowing a reserved name when prefixed.
+
+    elementpath refuses every ``external_function`` whose symbol is in the
+    XPath reserved-name set, even though the restriction applies only to the
+    standard function namespace.  A namespaced function whose local name is
+    reserved but has no parser token (``my:switch``) is therefore legal; the
+    per-parser set is shadowed for the registration and restored immediately.
+    A name that also owns a grammar token (``node``, ``function``) still
+    collides with that token and stays a parser-level residual.
+    """
+    if prefix is None or name not in parser.RESERVED_FUNCTION_NAMES:
+        return parser.external_function(
+            callback,
+            name=name,
+            prefix=prefix,
+            sequence_types=sequence_types,
+        )
+    reserved = parser.RESERVED_FUNCTION_NAMES
+    parser.RESERVED_FUNCTION_NAMES = reserved - {name}
+    try:
+        return parser.external_function(
+            callback,
+            name=name,
+            prefix=prefix,
+            sequence_types=sequence_types,
+        )
+    finally:
+        parser.RESERVED_FUNCTION_NAMES = reserved
+
+
 def _register_declared_function(
     parser: Any,
     name: str,
@@ -1935,7 +3356,8 @@ def _register_declared_function(
             )
         )
 
-    token_class = parser.external_function(
+    token_class = _external_function(
+        parser,
         callback,
         name=local,
         prefix=prefix,
@@ -1943,13 +3365,25 @@ def _register_declared_function(
     )
     token_class.label = "function"
     token_class.nargs = arity
-    inherited_evaluate = token_class.evaluate
 
     def evaluate(self: Any, context: Any = None) -> Any:
+        # Evaluate every argument expression as its full XDM sequence.  The
+        # elementpath external-function default converts all but a first
+        # ``item()*`` argument to one item, which would reject an ordinary
+        # sequence argument such as ``xs:integer*``; declared-function
+        # conversion belongs to the XSLT call boundary instead.
         previous = holder.xpath_context
         holder.xpath_context = context
         try:
-            return inherited_evaluate(self, context)
+            # ``evaluate`` returns a single value for most expressions and a
+            # sequence for the rest; the bridge flattens either.  A partial
+            # application's ``?`` placeholder is represented by its ``select``
+            # value, because evaluating it returns the placeholder token.
+            arguments = [
+                list(child.select(context)) if child.symbol == "?" else child.evaluate(context)
+                for child in self
+            ]
+            return self.callback(*arguments)
         finally:
             holder.xpath_context = previous
 
@@ -2088,6 +3522,95 @@ def _register_key_function(parser: Any, holder: _BridgeHolder) -> None:
     token_class.nargs = (2, 3)
 
 
+def _active_context(token: Any, context: Any) -> Any:
+    stored = getattr(token, "context", None)
+    return context if stored is None else stored
+
+
+_COMPARISON_OPERATORS = {
+    "=": operator.eq,
+    "!=": operator.ne,
+    "<": operator.lt,
+    ">": operator.gt,
+    "<=": operator.le,
+    ">=": operator.ge,
+}
+
+
+def _legacy_general_comparison(
+    token: Any,
+    context: Any = None,
+    relational: bool | None = None,
+) -> bool:
+    """XPath 1.0 §3.4 general comparison over one evaluator token.
+
+    The shared 2.0+ comparison token atomizes both operands first, so an empty
+    node-set yields no pairs and loses the 1.0 rule that a node-set compared
+    with a boolean converts to a boolean; it also applies the boolean rule to
+    relational operators, which 1.0 defines numerically.  Both the native 1.0
+    grammar and XPath 1.0 compatibility mode use this evaluation.
+    """
+    op = _COMPARISON_OPERATORS[token.symbol]
+    if relational is None:
+        relational = token.symbol in ("<", ">", "<=", ">=")
+    active = _active_context(token, context)
+    left_items = list(token._items[0].select(active))
+    right_items = list(token._items[1].select(active))
+    left_nodes = _is_node_set(left_items)
+    right_nodes = _is_node_set(right_items)
+
+    if left_nodes and right_nodes:
+        for left in left_items:
+            left_value: Any = _legacy_string_value(left)
+            if relational:
+                left_value = legacy_number_from_string(left_value)
+            for right in right_items:
+                right_value: Any = _legacy_string_value(right)
+                if relational:
+                    right_value = legacy_number_from_string(right_value)
+                if op(left_value, right_value):
+                    return True
+        return False
+    if left_nodes or right_nodes:
+        nodes, other = (left_items, right_items) if left_nodes else (right_items, left_items)
+        nodes_first = left_nodes
+        if len(other) == 1 and isinstance(other[0], bool):
+            node_boolean = bool(nodes)
+            if relational:
+                other_number = _legacy_number_value(other[0])
+                return (
+                    op(float(node_boolean), other_number)
+                    if nodes_first
+                    else op(other_number, float(node_boolean))
+                )
+            return op(node_boolean, other[0]) if nodes_first else op(other[0], node_boolean)
+        if relational or (len(other) == 1 and is_legacy_number(other[0])):
+            target = _legacy_number_value(other[0]) if other else math.nan
+            for node in nodes:
+                value = _legacy_number_value(node)
+                if op(value, target) if nodes_first else op(target, value):
+                    return True
+            return False
+        other_text = _legacy_string_value(other[0]) if other else ""
+        for node in nodes:
+            text = _legacy_string_value(node)
+            if op(text, other_text) if nodes_first else op(other_text, text):
+                return True
+        return False
+
+    left = left_items[0] if left_items else None
+    right = right_items[0] if right_items else None
+    if relational:
+        return op(_legacy_number_value(left), _legacy_number_value(right))
+    if isinstance(left, bool) or isinstance(right, bool):
+        left, right = _legacy_boolean_value(left), _legacy_boolean_value(right)
+    elif is_legacy_number(left) or is_legacy_number(right):
+        left, right = _legacy_number_value(left), _legacy_number_value(right)
+    else:
+        left, right = _legacy_string_value(left), _legacy_string_value(right)
+    return op(left, right)
+
+
 def _install_legacy_1_0_overrides(parser: Any) -> None:
     """Install the XPath 1.0 conversions the shared token library leaves out.
 
@@ -2107,83 +3630,9 @@ def _install_legacy_1_0_overrides(parser: Any) -> None:
     def is_fragment(value: Any) -> bool:
         return isinstance(value, _LegacyRtfValue)
 
-    _COMPARISONS = {
-        "=": operator.eq,
-        "!=": operator.ne,
-        "<": operator.lt,
-        ">": operator.gt,
-        "<=": operator.le,
-        ">=": operator.ge,
-    }
-
     def legacy_comparison(self: Any, context: Any = None, relational: bool | None = None) -> bool:
-        """XPath 1.0 §3.4 general comparison.
-
-        The shared comparison token atomizes both operands first, so an empty
-        node-set yields no pairs and loses the 1.0 rule that a node-set compared
-        with a boolean converts to a boolean; it also applies the boolean rule
-        to relational operators, which 1.0 defines numerically.  The native
-        profile evaluates the value kinds directly.
-        """
-        op = _COMPARISONS[self.symbol]
-        if relational is None:
-            relational = self.symbol in ("<", ">", "<=", ">=")
-        active = active_context(self, context)
-        left_items = list(self._items[0].select(active))
-        right_items = list(self._items[1].select(active))
-        left_nodes = _is_node_set(left_items)
-        right_nodes = _is_node_set(right_items)
-
-        if left_nodes and right_nodes:
-            for left in left_items:
-                left_value: Any = _legacy_string_value(left)
-                if relational:
-                    left_value = legacy_number_from_string(left_value)
-                for right in right_items:
-                    right_value: Any = _legacy_string_value(right)
-                    if relational:
-                        right_value = legacy_number_from_string(right_value)
-                    if op(left_value, right_value):
-                        return True
-            return False
-        if left_nodes or right_nodes:
-            nodes, other = (left_items, right_items) if left_nodes else (right_items, left_items)
-            nodes_first = left_nodes
-            if len(other) == 1 and isinstance(other[0], bool):
-                node_boolean = bool(nodes)
-                if relational:
-                    other_number = _legacy_number_value(other[0])
-                    return (
-                        op(float(node_boolean), other_number)
-                        if nodes_first
-                        else op(other_number, float(node_boolean))
-                    )
-                return op(node_boolean, other[0]) if nodes_first else op(other[0], node_boolean)
-            if relational or (len(other) == 1 and is_legacy_number(other[0])):
-                target = _legacy_number_value(other[0]) if other else math.nan
-                for node in nodes:
-                    value = _legacy_number_value(node)
-                    if op(value, target) if nodes_first else op(target, value):
-                        return True
-                return False
-            other_text = _legacy_string_value(other[0]) if other else ""
-            for node in nodes:
-                text = _legacy_string_value(node)
-                if op(text, other_text) if nodes_first else op(other_text, text):
-                    return True
-            return False
-
-        left = left_items[0] if left_items else None
-        right = right_items[0] if right_items else None
-        if relational:
-            return op(_legacy_number_value(left), _legacy_number_value(right))
-        if isinstance(left, bool) or isinstance(right, bool):
-            left, right = _legacy_boolean_value(left), _legacy_boolean_value(right)
-        elif is_legacy_number(left) or is_legacy_number(right):
-            left, right = _legacy_number_value(left), _legacy_number_value(right)
-        else:
-            left, right = _legacy_string_value(left), _legacy_string_value(right)
-        return op(left, right)
+        """XPath 1.0 §3.4 general comparison (see the shared implementation)."""
+        return _legacy_general_comparison(self, context, relational)
 
     def legacy_relational(self: Any, context: Any = None) -> bool:
         return legacy_comparison(self, context, True)
@@ -2215,19 +3664,6 @@ def _install_legacy_1_0_overrides(parser: Any) -> None:
                     "atomic value to a node-set"
                 )
         return len(items)
-
-    def legacy_id(base: Any) -> Any:
-        def select(self: Any, context: Any = None) -> Any:
-            active = active_context(self, context)
-            if is_fragment(self.get_argument(active)):
-                raise LegacyNodeSetError(
-                    "fn:id() requires a node-set, but a result tree fragment "
-                    "was supplied; a native XSLT 1.0 processor does not convert "
-                    "a result tree fragment where a node-set is required"
-                )
-            return base.select(self, context)
-
-        return select
 
     def legacy_string(self: Any, context: Any = None) -> str:
         active = active_context(self, context)
@@ -2396,16 +3832,31 @@ def _install_legacy_1_0_overrides(parser: Any) -> None:
         sequence_types=sum_base.sequence_types,
         evaluate=legacy_sum,
     )
-    id_base = parser.symbol_table["id"]
-    id_options: dict[str, Any] = {
-        "bases": (id_base,),
-        "label": id_base.label,
-        "nargs": id_base.nargs,
-        "sequence_types": id_base.sequence_types,
-        "select": legacy_id(id_base),
-    }
-    parser._register("id", "_PyxsdLegacyId", **id_options)
     _install_legacy_path_operators(parser)
+
+
+def _install_compatibility_comparisons(parser: Any) -> None:
+    """Install the XPath 1.0 general comparison on a 2.0+ parser.
+
+    XSLT 3.0 §3.9.1 runs an effective-version-1.0 element's expressions with
+    XPath 1.0 compatibility mode.  elementpath's parsers apply the mode to
+    function arguments and arithmetic but leave general comparison to the
+    later operator table, so the six general comparison operators are
+    re-registered here.  Nothing else about the 2.0+ grammar changes.
+    """
+    for symbol in ("=", "!=", "<", ">", "<=", ">="):
+        base = parser.symbol_table.get(symbol)
+        if base is None:  # pragma: no cover - every supported parser has them
+            continue
+        parser._register(
+            symbol,
+            f"_PyxsdCompatibility{'_'.join(str(ord(c)) for c in symbol)}",
+            bases=(base,),
+            label=getattr(base, "label", symbol),
+            nargs=getattr(base, "nargs", 2),
+            sequence_types=getattr(base, "sequence_types", ()),
+            evaluate=_legacy_general_comparison,
+        )
 
 
 def _install_legacy_path_operators(parser: Any) -> None:
@@ -2586,6 +4037,34 @@ class _BridgeHolder:
         self.functions: Mapping[str, Any] = {}
 
 
+class _XsltXPathContext(XPathContext):
+    """The dynamic context with grounded non-element following semantics.
+
+    elementpath's ``following`` iterator only handles element context items.
+    The XSLT/XPath axes are defined for every node kind, and an attribute's
+    following axis begins with its owner element's children; the grounded
+    adapters therefore supply the generic document-order sweep that
+    ``iter_followings`` would otherwise skip.
+    """
+
+    def iter_followings(self) -> Any:
+        item = self.item
+        if isinstance(item, (ElementNode, DocumentNode)) or not isinstance(item, XPathNode):
+            yield from super().iter_followings()
+            return
+        root = self.root or item.root_node
+        status = self.axis
+        self.axis = "following"
+        try:
+            for node in cast(Any, root).iter_descendants(with_self=False):
+                if node.position > item.position:
+                    self.item = node
+                    yield node
+        finally:
+            self.item = item
+            self.axis = status
+
+
 def _build_context(
     static_context: XPathStaticContext,
     environment: ExpressionEnvironment,
@@ -2613,7 +4092,7 @@ def _build_context(
     if default_collection:
         kwargs["default_collection"] = default_collection
     if focus.kind is FocusKind.ABSENT:
-        context = XPathContext(item="", **kwargs)
+        context = _XsltXPathContext(item="", **kwargs)
         cast(Any, context).item = None
         context.root = None
         context.document = None
@@ -2622,13 +4101,17 @@ def _build_context(
     elif focus.item is not None and isinstance(focus.item, XdmNode):
         item = bridge.adapt_item(focus.item)
         if isinstance(item, DocumentNode):
-            context = XPathContext(root=item, item=item, **kwargs)
+            context = _XsltXPathContext(root=item, item=item, **kwargs)
         elif isinstance(item, ElementNode):
-            context = XPathContext(root=item.tree.root_node, item=item, **kwargs)
+            context = _XsltXPathContext(root=item.tree.root_node, item=item, **kwargs)
         else:
-            context = XPathContext(item=item, **kwargs)
+            root_node = item.root_node
+            if isinstance(root_node, (DocumentNode, ElementNode)):
+                context = _XsltXPathContext(root=root_node, item=item, **kwargs)
+            else:
+                context = _XsltXPathContext(item=item, **kwargs)
     elif focus.item is not None:
-        context = XPathContext(item=bridge.adapt_item(focus.item), **kwargs)
+        context = _XsltXPathContext(item=bridge.adapt_item(focus.item), **kwargs)
     else:  # pragma: no cover - Focus validates this
         raise ValueError("focus item is missing")
     if focus.kind is not FocusKind.ABSENT:
@@ -2664,6 +4147,15 @@ def _continuation_variables(
     environment: ExpressionEnvironment,
     bridge: _ValueBridge,
 ) -> dict[str, Any] | None:
+    """One sequence per variable in the representation the machine reads.
+
+    A one-item variable is the item itself; every other cardinality is a Python
+    list.  ``ValueToken.select`` expands a list item by item, so an empty
+    variable is an empty *sequence* and a multi-item variable is several
+    operands.  A tuple is one item to elementpath, which would make an
+    empty-sequence comparison atomize ``()`` as a value instead of comparing an
+    empty sequence.
+    """
     values: dict[str, Any] = {}
     for name, value in environment.variables.items():
         if isinstance(value, XdmFunction) and isinstance(value.closure, XPathClosure):
@@ -2675,14 +4167,17 @@ def _continuation_variables(
         converted: list[Any] = []
         for item in sequence:
             if isinstance(item, XdmAtomic):
-                converted.append(atomic_to_elementpath(item))
+                atomic = atomic_to_elementpath(item)
+                if isinstance(atomic, UntypedAtomic) and atomic.parser is None:
+                    atomic = UntypedAtomic(atomic.value, bridge.parser)
+                converted.append(atomic)
             elif isinstance(item, XdmFunction):
                 if isinstance(item.closure, XPathClosure):
                     return None
                 converted.append(_continuation_host_function(item, bridge, name))
             else:
                 return None
-        values[name] = converted[0] if len(converted) == 1 else tuple(converted)
+        values[name] = converted[0] if len(converted) == 1 else converted
     return values
 
 

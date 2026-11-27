@@ -153,7 +153,7 @@ def test_xhtml_uri_attributes_escape_in_the_xhtml_namespace() -> None:
     document = XdmDocument.parse(f'<a xmlns="{XHTML_NS}" href="\u00e9"/>'.encode())
 
     assert _serialize((document,), method="xhtml", omit_xml_declaration=True) == (
-        f'<a xmlns="{XHTML_NS}" href="%C3%A9" />'
+        f'<a xmlns="{XHTML_NS}" href="%C3%A9"></a>'
     )
 
 
@@ -182,7 +182,7 @@ def test_normalization_forms_apply_to_text_and_attributes() -> None:
 
 def test_fully_normalized_is_accepted_and_behaves_as_nfc() -> None:
     parameters = SerializationParameters.merge(explicit={"normalization-form": "fully-normalized"})
-    assert parameters.normalization_form == "NFC"
+    assert parameters.normalization_form == "fully-normalized"
 
     document = XdmDocument.parse(b"<r>e&#x301;</r>")
     assert _serialize(

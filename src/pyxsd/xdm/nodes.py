@@ -19,6 +19,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import count
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, cast
@@ -44,6 +45,18 @@ _XSD_PREFIX = f"{{{XSD_NS}}}"
 _UNTYPED = f"{_XSD_PREFIX}untyped"
 _UNTYPED_ATOMIC = f"{_XSD_PREFIX}untypedAtomic"
 _EMPTY_NAMESPACES: Mapping[str, str] = MappingProxyType({})
+
+#: Creation-order identities for documents.  Document order is only unique
+#: inside one tree; two parsed documents both number their nodes from one.
+#: A node-set that spans trees therefore orders by
+#: ``(tree identity, document order)``, and the identity must be stable for the
+#: life of the document rather than derived from an allocation address.
+_TREE_SEQUENCE = count(1)
+
+
+def _next_tree_identity() -> int:
+    """One stable, monotonically assigned document identity."""
+    return next(_TREE_SEQUENCE)
 
 
 class NodeKind(StrEnum):
@@ -116,10 +129,12 @@ class XdmNode(XdmItem):
     """
 
     __slots__ = (
+        "_adopts_parent_base",
         "_annotations",
         "_attributes",
         "_base_uri",
         "_children",
+        "_disable_output_escaping",
         "_document",
         "_document_order",
         "_document_uri",
@@ -159,9 +174,14 @@ class XdmNode(XdmItem):
         path: tuple[PathStep, ...] = (),
         prefix: str = "",
         namespace_uri: str | None = None,
+        disable_output_escaping: bool = False,
     ) -> None:
         self._kind = kind
         self._document = document
+        self._adopts_parent_base = False
+        if not isinstance(disable_output_escaping, bool):
+            raise TypeError("disable_output_escaping must be a boolean")
+        self._disable_output_escaping = disable_output_escaping
         self._node_id = node_id
         self._source_name = source_name
         self._source_index = source_index
@@ -337,6 +357,17 @@ class XdmNode(XdmItem):
         return self._target
 
     @property
+    def disable_output_escaping(self) -> bool:
+        """Whether xsl:text/xsl:value-of marked this text node for raw output.
+
+        Disable-output-escaping is not an XDM property; XSLT 3.0 section 26.2
+        attaches it to text nodes as construction metadata.  It is not part of
+        node identity or equality and a copy that does not preserve it starts
+        with escaping enabled again.
+        """
+        return self._disable_output_escaping
+
+    @property
     def annotations(self) -> XdmAnnotation:
         return self._annotations
 
@@ -456,7 +487,7 @@ class XdmNode(XdmItem):
 class XdmDocument(XdmNode):
     """An XDM document node holding one parsed XML document."""
 
-    __slots__ = ("_order_base", "_root_element", "_schema_pool")
+    __slots__ = ("_order_base", "_root_element", "_schema_pool", "_tree_identity")
 
     def __init__(
         self,
@@ -488,6 +519,11 @@ class XdmDocument(XdmNode):
         #: is the order in which their documents were created, never a shared
         #: position range or an allocation address.
         self._order_base = 1
+        #: A stable identity for this tree, assigned at creation.  Two parsed
+        #: documents share a document-order range starting at one, so a
+        #: cross-tree node-set orders by ``(tree identity, document order)``.
+        #: Creation order is deterministic for one transformation invocation.
+        self._tree_identity = _next_tree_identity()
 
     @classmethod
     def parse(
@@ -532,6 +568,7 @@ class XdmDocument(XdmNode):
         parser.namespace_prefixes = True
         parser.StartDoctypeDeclHandler = builder.start_doctype
         parser.EndDoctypeDeclHandler = builder.end_doctype
+        parser.AttlistDeclHandler = builder.attlist_declaration
         parser.StartNamespaceDeclHandler = builder.start_namespace_declaration
         parser.StartElementHandler = builder.start_element
         parser.EndElementHandler = builder.end_element
@@ -594,6 +631,25 @@ class _Builder:
         self._paths: list[PathStep] = []
         self._counts: list[dict[str, int]] = [{}]
         self._in_doctype = False
+        #: DTD ATTLIST declarations: (element local name, attribute local name)
+        #: mapped to the declared attribute type.  Only the ID/IDREF family is
+        #: consumed here; every other declared type leaves the untyped
+        #: annotation unchanged.
+        self._attlist_types: dict[tuple[str, str], str] = {}
+
+    def attlist_declaration(
+        self,
+        element_name: str,
+        attribute_name: str,
+        type_name: str,
+        default: str | None,
+        required: bool,
+    ) -> None:
+        del default, required
+        kind = type_name.strip().upper()
+        if kind not in {"ID", "IDREF", "IDREFS"}:
+            return
+        self._attlist_types[(_local_dtd_name(element_name), _local_dtd_name(attribute_name))] = kind
 
     def start_doctype(
         self,
@@ -659,12 +715,17 @@ class _Builder:
             self._document._root_element = element
 
         for name, value in decoded_attributes:
+            id_kind = None
+            if name.clark == f"{{{XML_NS}}}id":
+                id_kind = "ID"
+            else:
+                id_kind = self._attlist_types.get((expanded.local, name.local))
             attribute = self._new_node(
                 NodeKind.ATTRIBUTE,
                 parent=element,
                 name=name.clark,
                 value=value,
-                annotations=XdmAnnotation(_UNTYPED_ATOMIC, None),
+                annotations=XdmAnnotation(_UNTYPED_ATOMIC, None, id_kind=id_kind),
                 base_uri=base_uri,
                 in_scope_namespaces=in_scope_namespaces,
                 path=path,
@@ -876,6 +937,17 @@ def _decode_name(raw_name: str) -> _ExpandedName:
 
 def _namespace_sort_key(prefix: str) -> tuple[bool, str]:
     return (prefix != "", prefix)
+
+
+def _local_dtd_name(name: str) -> str:
+    """The local part of one DTD declaration name.
+
+    Expat reports ATTLIST names as authored, without namespace expansion.
+    ID/IDREF attributes in real documents are unqualified; a prefixed
+    declaration loses its prefix here so the same attribute still matches the
+    element whose expanded name the XML parser reports.
+    """
+    return name.rpartition(":")[2]
 
 
 def _apply_xml_base(parent_base: str | None, xml_base: str | None) -> str | None:

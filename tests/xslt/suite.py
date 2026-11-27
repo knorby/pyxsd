@@ -46,9 +46,16 @@ from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
 from pyxsd.xpath.engine import XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
-from pyxsd.xslt import CompiledStylesheet, TransformationResult, XsltProcessor
+from pyxsd.xslt import (
+    CompiledStylesheet,
+    Message,
+    TransformationResult,
+    XsltInvocationError,
+    XsltProcessor,
+)
 from pyxsd.xslt.compiler.packages import PackageResolver
 from pyxsd.xslt.errors import XsltDynamicError, XsltError
+from pyxsd.xslt.runtime.functions import XsltContextBridge
 from pyxsd.xslt.serialization.serializer import Serializer
 
 #: Capabilities a native XSLT 2.0 processor implements in addition to its
@@ -221,12 +228,15 @@ def _document_xml(node: XdmNode) -> str:
 
     A document (or any node) whose single child is an element yields that
     element's markup — the principal result is one node, not necessarily a
-    document; every other shape is described by the concatenated string values
-    of its children.
+    document; a document with top-level comments or processing instructions
+    beside its element yields each child's markup in order; every other shape
+    is described by the concatenated string values of its children.
     """
     elements = [child for child in node.children if child.kind is NodeKind.ELEMENT]
     if len(elements) == 1 and len(node.children) == 1:
         return _serialized_markup(elements[0])
+    if elements:
+        return "".join(_serialized_markup(child) for child in node.children)
     return escape("".join(child.string_value for child in node.children))
 
 
@@ -264,6 +274,38 @@ def _value_sequence(sequence: Any) -> Any:
     return values[0] if len(values) == 1 else values
 
 
+_BOM_ENCODINGS = frozenset(
+    {
+        "utf-8",
+        "utf-16",
+        "utf-16-le",
+        "utf-16-be",
+        "utf-32",
+        "utf-32-le",
+        "utf-32-be",
+    }
+)
+_TRUE_PARAMETER_VALUES = frozenset({"yes", "true", "1"})
+
+
+def _serialized_text_with_bom(entry: Any) -> tuple[str | None, bool]:
+    """The assertion view of a serialized result, including its BOM.
+
+    The serializer's returned string is encoding-neutral; the byte-order mark
+    belongs to the encoded result and is therefore added only for the view a
+    catalog assertion compares.
+    """
+    value = entry.serialized
+    raw = entry.serialization.get("byte-order-mark")
+    requested = raw is True or (
+        isinstance(raw, str) and raw.strip().lower() in _TRUE_PARAMETER_VALUES
+    )
+    encoding = str(entry.serialization.get("encoding", "UTF-8")).strip().lower()
+    if value is None or not requested or encoding not in _BOM_ENCODINGS:
+        return value, False
+    return "\ufeff" + value, True
+
+
 def _snapshot_entry(entry: Any) -> ResultSnapshot:
     # Ruled precedence: the delivered items are the raw sequence; the tree
     # enters only when that sequence is empty.  ``raw``/``xml`` stay the
@@ -271,13 +313,15 @@ def _snapshot_entry(entry: Any) -> ResultSnapshot:
     items = tuple(entry.raw) if entry.raw else ((entry.tree,) if entry.tree is not None else ())
     method = entry.serialization.get("method")
     encoding = entry.serialization.get("encoding")
+    serialized, bom = _serialized_text_with_bom(entry)
     if entry.tree is not None:
         return ResultSnapshot(
             xml=_document_xml(entry.tree),
             result_items=items,
-            serialized=entry.serialized,
+            serialized=serialized,
             serialization_method=method,
             serialization_encoding=encoding,
+            serialization_bom=bom,
             messages=(),
             warnings=(),
         )
@@ -291,15 +335,35 @@ def _snapshot_entry(entry: Any) -> ResultSnapshot:
         raw=tuple(_value(item) for item in entry.raw),
         xml=None if node is None else _node_xml(node),
         result_items=items,
-        serialized=entry.serialized,
+        serialized=serialized,
         serialization_method=method,
         serialization_encoding=encoding,
+        serialization_bom=bom,
         messages=(),
         warnings=(),
     )
 
 
-def _snapshot(result: TransformationResult, output_uri: str | None = None) -> ResultSnapshot:
+def _message_xml(message: Message) -> str:
+    """One message's content as the assertion layer's XML view.
+
+    XSLT 3.0 section 18.1 makes the message's value a document node built from
+    its sequence constructor, so ``assert-xml`` and a path assertion compare
+    that markup.  A message whose constructor failed has no content node and
+    keeps its text.  The text view stays the string value, so a ``.``-based or
+    ``assert-string-value`` expectation is unchanged.
+    """
+    if message.content is None:
+        return message.text
+    return "".join(_serialized_markup(child) for child in message.content.children)
+
+
+def _snapshot(
+    result: TransformationResult,
+    output_uri: str | None = None,
+    *,
+    assertion_context_absent: bool = False,
+) -> ResultSnapshot:
     """The assertion view of one result, matching the ``fn:transform`` map.
 
     The principal result and a result document may share the base output URI:
@@ -322,18 +386,26 @@ def _snapshot(result: TransformationResult, output_uri: str | None = None) -> Re
         entry = result.secondary[output_uri]
     view = _snapshot_entry(entry)
     messages = tuple(
-        ResultSnapshot(raw=(message.text,), xml=message.text) for message in result.messages
+        ResultSnapshot(
+            raw=(message.text,),
+            xml=_message_xml(message),
+            result_items=(message.content,) if message.content is not None else (),
+            engine_node_context=message.content is not None,
+        )
+        for message in result.messages
     )
     return ResultSnapshot(
         raw=view.raw,
         xml=view.xml,
         result_items=view.result_items,
+        assertion_context_absent=assertion_context_absent,
         serialized=view.serialized,
         messages=messages,
         secondary={uri: _snapshot_entry(value) for uri, value in result.secondary.items()},
-        warnings=(),
+        warnings=result.warnings,
         serialization_method=view.serialization_method,
         serialization_encoding=view.serialization_encoding,
+        serialization_bom=view.serialization_bom,
     )
 
 
@@ -346,11 +418,30 @@ def _evaluate(
     xpath_version: str,
     *,
     focus: XdmDocument | XdmNode | None = None,
+    xslt_version: str | None = None,
 ) -> tuple[Any, ...]:
+    """Evaluate one catalog expression, optionally with the XSLT function library.
+
+    A catalog ``select`` the reference runner evaluates with ``xsl:evaluate``
+    sees the stylesheet function library, so *xslt_version* installs this
+    engine's XSLT-defined function overrides (``parse-xml`` builds an XDM
+    document rather than a substrate tree).  The bridge carries no
+    transformation, so only the functions that do not need one are usable; a
+    catalog expression calling ``document()`` or ``key()`` must keep the plain
+    elementpath implementation, which is why the library is opt-in.
+    """
     engine = XPathEngine(xpath_version)
-    compiled = engine.compile(select, XPathStaticContext())
+    compiled = engine.compile(select, XPathStaticContext(xslt_version=xslt_version))
+    environment = ExpressionEnvironment()
+    if xslt_version is not None:
+        bridge = XsltContextBridge(
+            None,
+            xslt_version=xslt_version,
+            xpath_version=xpath_version,
+        )
+        environment = ExpressionEnvironment(function_overrides=bridge.function_overrides())
     resolved = None if focus is None else Focus(item=focus)
-    return tuple(engine.evaluate(compiled, ExpressionEnvironment(), focus=resolved))
+    return tuple(engine.evaluate(compiled, environment, focus=resolved))
 
 
 def _parameter_values(
@@ -480,6 +571,18 @@ def _source_input(case: TestCase, profile: SuiteProfile) -> _SourceInput | None:
     validation = _declared_validation(source)
     if select is None:
         return _SourceInput(_raw_source(case, source), validation)
+    if source.path is None and source.content is None:
+        # A ``select``-only declaration supplies the item itself: the catalog's
+        # select is a path within a declared document, but with no document the
+        # expression is the context item (``fn/id/id-043``).  It is evaluated
+        # with the stylesheet function library, as ``xsl:evaluate`` would.
+        return _SourceInput(
+            _evaluate(
+                select,
+                xpath_version,
+                xslt_version=profile.processor.language,
+            )
+        )
     document = _selection_document(case, profile, source, validation)
     return _SourceInput(_evaluate(select, xpath_version, focus=document))
 
@@ -1072,8 +1175,6 @@ def _case_schema_pool(profile: SuiteProfile, case: TestCase) -> SchemaPool | Non
 def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
     """Compile and run one case, returning its result for independent assertion."""
     output = case.invocation.output or case.environment.output
-    if output is not None and output.result_var is not None:
-        raise UnsupportedCase("result-variable output")
     units = _compilation_units(case)
     resolver = _collection_resolver(case, units)
     resources = _resource_policies(case, units)
@@ -1145,8 +1246,17 @@ def execute_case(case: TestCase, profile: SuiteProfile) -> ResultSnapshot:
             resolver=resolver,
             resources=resources,
         )
-        return _snapshot(compiled.transform(**options), output_uri)
+        return _snapshot(
+            compiled.transform(**options),
+            output_uri,
+            assertion_context_absent=output is not None and output.result_var is not None,
+        )
     except XsltError as exc:
+        raise CaseExecutionError(exc.code or UNCODED_ERROR, str(exc)) from exc
+    except XsltInvocationError as exc:
+        # A host invocation error that carries an XSLT code is the transform's
+        # own error (XTDE0044 for an initial mode without a match selection),
+        # not a harness defect: the corpus compares the code it declares.
         raise CaseExecutionError(exc.code or UNCODED_ERROR, str(exc)) from exc
 
 

@@ -291,6 +291,7 @@ def test_native_function_library_is_2_0() -> None:
         <xsl:template name="main">
           <xsl:sequence select="function-available('fn:key')"/>
           <xsl:sequence select="function-available('fn:format-number')"/>
+          <xsl:sequence select="function-available('fn:copy-of')"/>
           <xsl:sequence select="element-available('xsl:try')"/>
           <xsl:sequence select="element-available('xsl:analyze-string')"/>
           <xsl:sequence select="format-number(1.5, '0.00')"/>
@@ -302,6 +303,7 @@ def test_native_function_library_is_2_0() -> None:
         XdmAtomic.boolean(True),
         XdmAtomic.boolean(True),
         XdmAtomic.boolean(False),
+        XdmAtomic.boolean(False),
         XdmAtomic.boolean(True),
         XdmAtomic.string("1.50"),
         XdmAtomic.integer(1),
@@ -310,33 +312,198 @@ def test_native_function_library_is_2_0() -> None:
     )
 
 
-def test_2_0_formatting_functions_are_a_known_engine_gap() -> None:
+def test_2_0_formatting_functions_are_declared() -> None:
     """``format-integer`` and the date/time formatters are XSLT 2.0 §16.5.
 
-    They are not implemented behind this engine's XPath 2.0 parser, so the
-    native profile cannot call them.  That is a pre-existing engine-wide gap,
-    not an XSLT 3.0 addition: the default 3.0 processor evaluates the same
-    calls through its XPath 3.1 parser.  This test records the gap rather than
-    asserting the absence as a 2.0 rule; ``function-available`` reports the
-    implementation gap under both processors.
+    They are F&O 2.0 functions with no symbol in the XPath 2.0 parser, so the
+    native 2.0 profile declares and implements them itself instead of treating
+    their absence as a 2.0 rule.
     """
-    assert native_transform(
+    result = native_transform(
         '<xsl:template name="main">'
         "<xsl:sequence select=\"function-available('fn:format-integer')\"/>"
         "<xsl:sequence select=\"function-available('fn:format-date')\"/>"
-        "</xsl:template>"
-    ).principal == (XdmAtomic.boolean(False), XdmAtomic.boolean(False))
-
-    body = (
-        '<xsl:template name="main">'
-        "<xsl:sequence select=\"format-integer(3, '001')\"/>"
+        "<xsl:sequence select=\"function-available('fn:format-time')\"/>"
+        "<xsl:sequence select=\"function-available('fn:format-dateTime')\"/>"
         "</xsl:template>"
     )
-    with pytest.raises(XsltStaticError) as caught:
-        native_compile(body)
-    assert caught.value.code == "XPST0017"
-    modern = XsltProcessor().compile(io.BytesIO(stylesheet(body, version="2.0")))
-    assert modern.transform(initial_template="main").principal == (XdmAtomic.string("003"),)
+    assert result.principal == (
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+        XdmAtomic.boolean(True),
+    )
+
+
+def _formatted(body: str, **options: Any) -> str:
+    result = native_transform(body, source=b"<doc/>", **options)
+    return "".join(item.string_value for item in result.principal)
+
+
+def test_2_0_date_time_numeric_pictures() -> None:
+    """Numeric pictures cover year/month/day and hour/minute/second."""
+    assert (
+        _formatted(
+            '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
+            '<xsl:template name="main">'
+            "<xsl:value-of select=\"format-date($d, '[Y]-[M01]-[D]')\"/>"
+            "</xsl:template>"
+        )
+        == "2003-12-7"
+    )
+    assert (
+        _formatted(
+            '<xsl:param name="t" as="xs:time" select="xs:time(\'01:02:03\')"/>'
+            '<xsl:template name="main">'
+            "<xsl:value-of select=\"format-time($t, '[H01]:[m01]:[s01]')\"/>"
+            "</xsl:template>"
+        )
+        == "01:02:03"
+    )
+    assert (
+        _formatted(
+            '<xsl:param name="t" as="xs:dateTime" '
+            "select=\"xs:dateTime('0985-03-01T09:15:06')\"/>"
+            '<xsl:template name="main">'
+            "<xsl:value-of select=\"format-dateTime($t, '[Y]-[M01]-[D]')\"/>"
+            "</xsl:template>"
+        )
+        == "985-03-1"
+    )
+
+
+def test_2_0_date_time_width_modifiers() -> None:
+    """A width modifier pads and truncates a numeric or roman value."""
+    body = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('0985-03-01T09:15:06')\"/>"
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-dateTime($t, '[Y,4-4]|[Y,2-2]|[M,2-2]|[D,1-1]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "0985|85|03|1"
+    roman = (
+        '<xsl:param name="t" as="xs:date" select="xs:date(\'1004-01-01\')"/>'
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-date($t, '[Yi,4-4]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(roman) == "miv "
+
+
+def test_2_0_date_time_timezone_pictures() -> None:
+    """The timezone pictures omit zero minutes only under a narrow width."""
+    body = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2002-06-15T12:27:30+03:00')\"/>"
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-dateTime($t, '[Z]|[z]|[z,2-2]|[z,6-6]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "+03:00|GMT+03:00|GMT+03|GMT+03:00"
+    half = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2002-06-15T12:27:30-05:30')\"/>"
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-dateTime($t, '[z,2-2]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(half) == "GMT-05:30"
+
+
+def test_2_0_fractional_rounding_carries_into_seconds() -> None:
+    """Rounding a fractional second can advance the whole second."""
+    body = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2003-12-07T00:00:00.99996')\"/>"
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-dateTime($t, '[H01]:[m01]:[s01].[f1]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "00:00:01.0"
+
+
+def test_2_0_date_time_am_pm_pictures() -> None:
+    """English am/pm uses the F&O words, with max-width truncation only."""
+    body = (
+        '<xsl:param name="t" as="xs:time" select="xs:time(\'00:00:00\')"/>'
+        '<xsl:template name="main">'
+        "<xsl:value-of select="
+        "\"format-time($t, '[H01]:[m01] = [h][P]|[PN,2-2]|[Pn,2-2]|[PNn,2-2]|[PNn,1-1]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "00:00 = 12am|AM|am|Am|A"
+
+
+def test_2_0_date_time_picture_escaping() -> None:
+    """``[[`` and ``]]`` are literal brackets in a picture string."""
+    body = (
+        '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-date($d, '[[[Y0001]]]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "[2003]"
+
+
+def test_2_0_date_time_invalid_picture() -> None:
+    """An unknown component or a malformed picture reports XSLT's code."""
+    for picture, code in (("[bla]", "FOFD1340"), ("[Y,0]", "FOFD1340")):
+        body = (
+            '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
+            '<xsl:template name="main">'
+            f"<xsl:value-of select=\"format-date($d, '{picture}')\"/>"
+            "</xsl:template>"
+        )
+        with pytest.raises(XsltDynamicError) as caught:
+            native_transform(body)
+        assert caught.value.code == code
+    unavailable = (
+        '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-date($d, '[H]')\"/>"
+        "</xsl:template>"
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        native_transform(unavailable)
+    assert caught.value.code == "FOFD1350"
+
+
+def test_2_0_date_time_language_and_calendar_fallback() -> None:
+    """An unsupported language or calendar names its implementation fallback."""
+    body = (
+        '<xsl:param name="d" as="xs:date" select="xs:date(\'2006-03-01\')"/>'
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-date($d, '[MNn]', 'xib', (), ())\"/>"
+        "<xsl:value-of select=\"format-date($d, '[M01]', 'en', 'CB', ())\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "[Language: en]March[Calendar: AD]03"
+
+
+def test_2_0_format_integer_pictures() -> None:
+    """``format-integer`` covers decimal, alphabetic, roman, and words."""
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:value-of separator="|" select="'
+        "format-integer(3, '1'), format-integer(3, '001'), "
+        "format-integer(4, 'a'), format-integer(4, 'A'), "
+        "format-integer(4, 'i'), format-integer(4, 'I'), "
+        "format-integer(21, 'w;o'), format-integer(1, 'w;o')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "3|003|d|D|iv|IV|twenty-first|first"
+
+
+def test_2_0_format_integer_words_case() -> None:
+    """The word pictures select lower, upper, and title case."""
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:value-of separator="," select="format-integer(21, \'w\'), '
+        "format-integer(21, 'W'), format-integer(21, 'Ww')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "twenty-one,TWENTY-ONE,Twenty-One"
 
 
 @pytest.mark.parametrize(
@@ -999,11 +1166,192 @@ def test_native_schema_gate_keeps_the_2_0_vocabulary() -> None:
 
 
 def test_native_rejects_static_variables() -> None:
+    # A declaration above 2.0 would enable forwards-compatible processing, in
+    # which XSLT 2.0 §3.6 requires an undefined attribute to be ignored; the
+    # strict 2.0 declaration keeps XTSE0090.
     source = stylesheet(
         '<xsl:variable name="v" static="yes" select="1"/>'
-        '<xsl:template name="main"><xsl:value-of select="$v"/></xsl:template>'
+        '<xsl:template name="main"><xsl:value-of select="$v"/></xsl:template>',
+        version="2.0",
     )
     with pytest.raises(XsltStaticError) as caught:
         XsltProcessor(**NATIVE).compile(io.BytesIO(source))
     assert caught.value.code == "XTSE0090"
     assert "static" in str(caught.value)
+
+
+def test_2_0_date_time_place_argument_uses_a_timezone() -> None:
+    """The fifth argument shifts the value into the named IANA zone."""
+    formatter = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2003-12-07T12:00:00Z')\"/>"
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-dateTime($t, '[H01]', 'en', (), 'Europe/London')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(formatter) == "12"
+
+    invalid = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2003-12-07T12:00:00Z')\"/>"
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-dateTime($t, '[H01]', 'en', (), 'Nowhere/Nothing')\"/>"
+        "</xsl:template>"
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        native_transform(invalid)
+    assert caught.value.code == "FOFD1340"
+
+
+def test_2_0_format_integer_grouping_and_invalid_pictures() -> None:
+    """Decimal grouping pictures work and malformed pictures are FODF1310."""
+    grouped = (
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-integer(1234, '#,##0')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(grouped) == "1,234"
+
+    for picture in ("x;c", "1;x", "#", "1;!", " 0"):
+        invalid = (
+            '<xsl:template name="main">'
+            f"<xsl:value-of select=\"format-integer(1, '{picture}')\"/>"
+            "</xsl:template>"
+        )
+        with pytest.raises(XsltDynamicError) as caught:
+            native_transform(invalid)
+        assert caught.value.code == "FODF1310"
+
+
+def test_2_0_date_time_picture_error_paths() -> None:
+    """Malformed brackets, calendars, and widths report FOFD1340."""
+    for picture in ("[Y", "[Y[x]", "]"):
+        body = (
+            '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
+            '<xsl:template name="main">'
+            f"<xsl:value-of select=\"format-date($d, '{picture}')\"/>"
+            "</xsl:template>"
+        )
+        with pytest.raises(XsltDynamicError) as caught:
+            native_transform(body)
+        assert caught.value.code == "FOFD1340"
+
+    for calendar in ("Q{}", "Q{bad", "Q{urn:x}a:b"):
+        body = (
+            '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
+            '<xsl:template name="main">'
+            f"<xsl:value-of select=\"format-date($d, '[Y]', 'en', '{calendar}', ())\"/>"
+            "</xsl:template>"
+        )
+        with pytest.raises(XsltDynamicError) as caught:
+            native_transform(body)
+        assert caught.value.code == "FOFD1340"
+
+
+def test_2_0_date_time_roman_and_fraction_widths() -> None:
+    """A roman numeral and a fraction accept empty/bounded widths."""
+    body = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2003-12-07T12:34:56.123456Z')\"/>"
+        '<xsl:template name="main">'
+        '<xsl:value-of separator="|" select="format-dateTime($t, \'[Mi]\'), '
+        "format-dateTime($t, '[f,2-*]'), format-dateTime($t, '[ZN]')\"/>"
+        "</xsl:template>"
+    )
+    formatted = _formatted(body)
+    assert formatted.split("|")[0] == "xii"
+    assert formatted.split("|")[1].startswith("12")
+
+
+def test_2_0_format_integer_edge_pictures() -> None:
+    """Empty arguments, ordinals, negatives, and bad pictures are covered."""
+    body = (
+        '<xsl:template name="main">'
+        '<xsl:value-of separator="|" select="format-integer((), \'1\'), '
+        "format-integer(-12, '1'), format-integer(3, '1;o')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == "|-12|3rd"
+
+    for picture in (";c", "0#", "x0", "\u0661\u0967"):
+        body = (
+            '<xsl:template name="main">'
+            f"<xsl:value-of select=\"format-integer(1, '{picture}')\"/>"
+            "</xsl:template>"
+        )
+        with pytest.raises(XsltDynamicError) as caught:
+            native_transform(body)
+        assert caught.value.code == "FODF1310"
+
+
+def test_2_0_date_time_empty_and_multiple_values() -> None:
+    """The format functions enforce one atomic argument."""
+    body = (
+        '<xsl:template name="main">'
+        "<out><xsl:value-of select=\"format-date((), '[Y]')\"/>"
+        "<xsl:value-of select=\"format-integer((), '1')\"/></out>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == ""
+
+    multiple = (
+        '<xsl:template name="main">'
+        "<xsl:value-of select=\"format-date((xs:date('2003-01-01'), xs:date('2004-01-01')), '[Y]')\"/>"
+        "</xsl:template>"
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        native_transform(multiple)
+    assert caught.value.code == "XPTY0004"
+
+
+def test_format_helpers_validate_direct_arguments() -> None:
+    """The owning helpers reject unknown kinds and cast string/empty values."""
+    from elementpath.datatypes import UntypedAtomic
+
+    from pyxsd.xpath.functions import (
+        canonical_string_value,
+        format_datetime_value,
+        format_integer_value,
+    )
+
+    with pytest.raises(ValueError):
+        format_datetime_value("year", None, "[Y]")
+    assert format_datetime_value("date", None, "[Y]") == ""
+    assert format_datetime_value("date", "2003-12-07", "[Y]") == "2003"
+    with pytest.raises(Exception) as caught:
+        format_datetime_value("date", "not-a-date", "[Y]")
+    assert caught.value.code == "err:XPTY0004"
+
+    assert canonical_string_value(UntypedAtomic("x")) == "x"
+    for picture in ("x0", "0#", ";c", " 0", "\u0661\u0967"):
+        with pytest.raises(Exception) as caught:
+            format_integer_value(1, picture)
+        assert caught.value.code == "err:FODF1310"
+    assert format_integer_value(-3, "1") == "-3"
+
+
+def test_2_0_roman_width_and_bounded_fraction() -> None:
+    """Roman padding and a bounded fraction use the width modifier."""
+    body = (
+        '<xsl:param name="d" as="xs:date" select="xs:date(\'2003-12-07\')"/>'
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2003-12-07T00:00:00.123456Z')\"/>"
+        '<xsl:template name="main">'
+        '<xsl:value-of separator="|" select="format-date($d, \'[Mi,4-4]\'), '
+        "format-date($d, '[Mi,1-1]'), format-dateTime($t, '[f,1-2]')\"/>"
+        "</xsl:template>"
+    )
+    assert _formatted(body) == " xii|xii|12"
+
+
+def test_2_0_am_pm_and_timezone_unbounded_widths() -> None:
+    body = (
+        '<xsl:param name="t" as="xs:dateTime" '
+        "select=\"xs:dateTime('2003-12-07T12:34:56+01:00')\"/>"
+        '<xsl:template name="main">'
+        '<xsl:value-of separator="|" select="format-dateTime($t, \'[P,1-*]\'), '
+        "format-dateTime($t, '[z,1-*]')\"/>"
+        "</xsl:template>"
+    )
+    formatted = _formatted(body)
+    assert formatted.startswith("pm|")

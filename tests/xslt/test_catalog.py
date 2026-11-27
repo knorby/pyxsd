@@ -101,6 +101,22 @@ def test_shared_environment_is_merged_with_local_declarations() -> None:
     assert case.environment.output.serialize is True
 
 
+def test_a_referenced_environment_decides_a_repeated_source_binding() -> None:
+    """A source binding both environments declare resolves to the referenced one.
+
+    The corpus runner applies a case's own environment first and the referenced
+    named environment second, so the referenced declaration is the one that
+    reaches the invocation (``key/key-085a``/``key/key-085b``).  Two sources
+    never claim one context item.
+    """
+    catalog = load_catalog(FIXTURES / "mini-catalog.xml")
+    case = catalog.cases["mini/context-override"]
+
+    assert case.environment.ref == "context-env"
+    context = [source.path for source in case.environment.sources if source.role == "."]
+    assert context == [PurePosixPath("shared/source.xml")]
+
+
 def test_catalog_level_environments_are_visible_to_test_sets() -> None:
     catalog = load_catalog(FIXTURES / "mini-catalog.xml")
     case = catalog.cases["mini/global-001"]

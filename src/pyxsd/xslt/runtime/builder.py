@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from itertools import count
 from types import MappingProxyType
 from typing import Any, Literal, cast
+from urllib.parse import urljoin
 
 from pyxsd.source_spans import SourceIndex
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmSequence
@@ -575,6 +576,7 @@ class _NodeFactory:
         prefix: str = "",
         namespace_uri: str | None = None,
         annotations: XdmAnnotation | None = None,
+        disable_output_escaping: bool = False,
     ) -> XdmNode:
         if annotations is None:
             annotations = _CONSTRUCTED_ANNOTATIONS.get(kind, _DEFAULT_ANNOTATION)
@@ -595,6 +597,7 @@ class _NodeFactory:
             namespace_declarations=namespace_declarations,
             prefix=prefix,
             namespace_uri=namespace_uri,
+            disable_output_escaping=disable_output_escaping,
         )
         self._next_id += 1
         return node
@@ -771,6 +774,7 @@ class _NodeFactory:
         parent: XdmNode | None = None,
         base_uri: str | None = None,
         annotations: XdmAnnotation | None = None,
+        disable_output_escaping: bool = False,
     ) -> XdmNode:
         return self._new(
             NodeKind.TEXT,
@@ -778,6 +782,7 @@ class _NodeFactory:
             value=value,
             base_uri=base_uri,
             annotations=annotations,
+            disable_output_escaping=disable_output_escaping,
         )
 
     def comment(
@@ -818,13 +823,22 @@ class _NodeFactory:
         parent: XdmNode | None,
         deep: bool = True,
         copy_namespaces: bool = True,
+        copy_attributes: bool = True,
+        preserve_base: bool = False,
     ) -> XdmNode:
-        """Copy one node (and its subtree) into this factory's document."""
+        """Copy one node (and its subtree) into this factory's document.
+
+        ``copy_attributes=False`` gives a shallow ``xsl:copy`` of an element:
+        the element keeps its name and namespaces but no attributes.
+        ``preserve_base`` selects copy-of base rules; the default is the
+        ``xsl:copy`` rule that adopts the new containing node's base.
+        """
         if source.kind is NodeKind.DOCUMENT:
             return self._clone_document(
                 source,
                 deep=deep,
                 copy_namespaces=copy_namespaces,
+                preserve_base=preserve_base,
             )
         if source.kind is NodeKind.ELEMENT:
             scope, declarations = self._copy_scope(
@@ -835,26 +849,34 @@ class _NodeFactory:
                 NodeKind.ELEMENT,
                 parent=parent,
                 name=source.name,
-                base_uri=source.base_uri,
+                base_uri=_copy_base(
+                    source,
+                    parent,
+                    self.document.base_uri,
+                    preserve=preserve_base,
+                ),
                 in_scope_namespaces=scope,
                 namespace_declarations=declarations,
                 prefix=source.prefix,
                 namespace_uri=source.namespace_uri,
                 annotations=source.annotation,
             )
-            for attribute in source.attributes:
-                cloned_attribute = self.clone(attribute, parent=node)
-                if not copy_namespaces and cloned_attribute.namespace_uri is not None:
-                    cloned_attribute._prefix = (
-                        _prefix_for(
-                            cloned_attribute.namespace_uri,
-                            scope,
-                            is_attribute=True,
-                        )
-                        or ""
+            if copy_attributes:
+                for attribute in source.attributes:
+                    cloned_attribute = self.clone(
+                        attribute, parent=node, preserve_base=preserve_base
                     )
-                cloned_attribute._in_scope_namespaces = MappingProxyType(scope)
-                node._append_attribute(cloned_attribute)
+                    if not copy_namespaces and cloned_attribute.namespace_uri is not None:
+                        cloned_attribute._prefix = (
+                            _prefix_for(
+                                cloned_attribute.namespace_uri,
+                                scope,
+                                is_attribute=True,
+                            )
+                            or ""
+                        )
+                    cloned_attribute._in_scope_namespaces = MappingProxyType(scope)
+                    node._append_attribute(cloned_attribute)
             if copy_namespaces:
                 for namespace in source.namespace_nodes:
                     node._append_namespace_node(self.clone(namespace, parent=node))
@@ -872,6 +894,7 @@ class _NodeFactory:
                             parent=node,
                             deep=True,
                             copy_namespaces=copy_namespaces,
+                            preserve_base=preserve_base,
                         )
                     )
             return node
@@ -882,11 +905,17 @@ class _NodeFactory:
             name=source.name,
             value=value,
             target=source.target,
-            base_uri=source.base_uri,
+            base_uri=_copy_base(
+                source,
+                parent,
+                self.document.base_uri,
+                preserve=preserve_base,
+            ),
             in_scope_namespaces=source.in_scope_namespaces,
             prefix=source.prefix,
             namespace_uri=source.namespace_uri,
             annotations=source.annotation,
+            disable_output_escaping=source.disable_output_escaping,
         )
 
     def _clone_document(
@@ -895,6 +924,7 @@ class _NodeFactory:
         *,
         deep: bool,
         copy_namespaces: bool,
+        preserve_base: bool = False,
     ) -> XdmDocument:
         document = XdmDocument(
             source_name=_RESULT_SOURCE,
@@ -912,6 +942,7 @@ class _NodeFactory:
                     parent=document,
                     deep=True,
                     copy_namespaces=copy_namespaces,
+                    preserve_base=preserve_base,
                 )
                 document._append_child(clone)
                 if document._root_element is None and clone.kind is NodeKind.ELEMENT:
@@ -983,6 +1014,15 @@ class _NodeFactory:
             and self.document._root_element is None
         ):
             self.document._root_element = child
+
+    def attach_node(self, parent: XdmNode, node: XdmNode) -> None:
+        """Attach an already-copied node to *parent* without copying it again.
+
+        The copy instructions build their nodes with :meth:`clone`; a caller
+        that holds the finished copy (``snapshot()`` grafting one ancestor
+        chain) attaches it here so identity is the copy it keeps a reference to.
+        """
+        self._append(parent, node)
 
     def attach_attribute(self, parent: XdmNode, attribute: XdmNode) -> None:
         if parent.kind is NodeKind.DOCUMENT:
@@ -1098,7 +1138,7 @@ def _append_text(factory: _NodeFactory, parent: XdmNode, value: str) -> XdmNode 
     if not value:
         return None
     children = parent.children
-    if children and children[-1].kind is NodeKind.TEXT:
+    if children and children[-1].kind is NodeKind.TEXT and not children[-1].disable_output_escaping:
         children[-1]._append_text(value)
         return children[-1]
     text = factory.text(value, parent=parent, base_uri=parent.base_uri)
@@ -1169,6 +1209,40 @@ def _attach_element(
     factory._append(parent, element)
 
 
+def _copy_base(
+    source: XdmNode,
+    parent: XdmNode | None,
+    document_base: str | None,
+    *,
+    preserve: bool,
+) -> str | None:
+    """The base URI of one node copied into a new result tree.
+
+    XSLT 3.0 §11.8: an ``xsl:copy`` of an element takes the base URI of its
+    containing node in the result tree, while a deep copy preserves the
+    original node's base.  A preserved base is rebased onto the new containing
+    node when the source element declares an ``xml:base``; an absolute value
+    therefore stays absolute and a relative one resolves against the result
+    tree.
+    """
+    parent_base = (
+        document_base if parent is None or parent.kind is NodeKind.DOCUMENT else parent.base_uri
+    )
+    if not preserve or source.kind is not NodeKind.ELEMENT:
+        return parent_base if parent_base is not None else source.base_uri
+    own = next(
+        (
+            attribute.string_value
+            for attribute in source.attributes
+            if attribute.name == f"{{{XML_NS}}}base"
+        ),
+        None,
+    )
+    if own is not None:
+        return urljoin(parent_base, own) if parent_base is not None else own
+    return parent_base if parent_base is not None else source.base_uri
+
+
 def _clone_for_content(
     factory: _NodeFactory,
     item: XdmNode,
@@ -1181,6 +1255,7 @@ def _clone_for_content(
         parent=parent,
         deep=True,
         copy_namespaces=copy_namespaces,
+        preserve_base=True,
     )
 
 
@@ -1191,12 +1266,13 @@ def _append_complex_content(
     *,
     allow_attributes: bool,
     inherit_namespaces: bool = True,
+    preserve_disable_output_escaping: bool = True,
 ) -> None:
     """Apply XSLT complex-content construction to *sequence* under *parent*."""
     last_atomic = False
     for item in _flatten_arrays(sequence):
         if isinstance(item, XdmAtomic):
-            value = item.lexical
+            value = item.string_value
             if last_atomic:
                 value = " " + value
             _append_text(factory, parent, value)
@@ -1229,18 +1305,32 @@ def _append_complex_content(
                     "XTDE0410",
                 )
             if item.kind is NodeKind.ATTRIBUTE:
-                clone = factory.clone(item, parent=parent)
+                clone = factory.clone(item, parent=parent, preserve_base=True)
                 factory.attach_attribute(parent, clone)
             else:
-                clone = factory.clone(item, parent=parent)
+                clone = factory.clone(item, parent=parent, preserve_base=True)
                 factory.attach_namespace(parent, clone)
             last_atomic = False
             continue
         if item.kind is NodeKind.TEXT:
-            _append_text(factory, parent, item.string_value)
+            if item.disable_output_escaping and preserve_disable_output_escaping:
+                factory._append(
+                    parent,
+                    factory.text(
+                        item.string_value,
+                        parent=parent,
+                        base_uri=parent.base_uri,
+                        disable_output_escaping=True,
+                    ),
+                )
+            else:
+                _append_text(factory, parent, item.string_value)
             last_atomic = False
             continue
         clone = _clone_for_content(factory, item, parent)
+        if item._adopts_parent_base and clone.kind is NodeKind.ELEMENT:
+            clone._base_uri = parent.base_uri
+            clone._adopts_parent_base = False
         if clone.kind is NodeKind.ELEMENT:
             _attach_element(factory, parent, clone, inherit_namespaces=inherit_namespaces)
         else:
@@ -1585,6 +1675,7 @@ class ResultBuilder:
         sequence: Iterable[object],
         *,
         inherit_namespaces: bool = True,
+        preserve_disable_output_escaping: bool = True,
     ) -> None:
         """Attach one sequence as complex content of the current parent."""
         parent = self.current
@@ -1594,6 +1685,7 @@ class ResultBuilder:
             sequence,
             allow_attributes=parent.kind is not NodeKind.DOCUMENT,
             inherit_namespaces=inherit_namespaces,
+            preserve_disable_output_escaping=preserve_disable_output_escaping,
         )
 
     def clone(
@@ -1609,6 +1701,7 @@ class ResultBuilder:
             parent=None,
             deep=deep,
             copy_namespaces=copy_namespaces,
+            preserve_base=True,
         )
 
     def copy(
@@ -1840,13 +1933,19 @@ class ResultBuilder:
         )
         items = tuple(_flatten_arrays(sequence))
         if item_separator is None:
-            builder.append(items)
+            builder.append(items, preserve_disable_output_escaping=False)
         else:
             for index, item in enumerate(items):
                 if index:
                     builder.text(item_separator)
-                builder.append((item,))
-        return builder.to_tree()
+                builder.append((item,), preserve_disable_output_escaping=False)
+        tree = builder.to_tree()
+        # Sequence normalization constructs new text nodes; a marker copied
+        # from an element subtree does not survive into the new tree.
+        for node in (tree, *tree.descendants):
+            if node.kind is NodeKind.TEXT:
+                node._disable_output_escaping = False
+        return tree
 
 
 def build_result_tree(

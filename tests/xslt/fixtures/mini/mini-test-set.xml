@@ -30,6 +30,10 @@
     <output tree="no"/>
   </environment>
 
+  <environment name="context-env">
+    <source role="." file="../shared/source.xml" uri="../shared/source.xml"/>
+  </environment>
+
   <environment name="based-env" xml:base="../shared/">
     <source file="based.xml" uri="based.xml"/>
   </environment>
@@ -142,6 +146,20 @@
     </test>
     <result>
       <error code="XTDE0040"/>
+    </result>
+  </test-case>
+
+  <test-case name="context-override">
+    <description>A local source repeats the referenced environment's binding.</description>
+    <created by="Mini Author" on="2026-01-01"/>
+    <environment ref="context-env">
+      <source role="." file="local.xml"/>
+    </environment>
+    <test>
+      <stylesheet file="local-override.xsl"/>
+    </test>
+    <result>
+      <assert>true()</assert>
     </result>
   </test-case>
 

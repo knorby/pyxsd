@@ -43,8 +43,11 @@ from pyxsd.xdm import (
     type_tests,
 )
 from pyxsd.xdm.annotations import builtin_type_classes
+from pyxsd.xdm.legacy import ResultTreeFragment
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
+from pyxsd.xdm.values import _coerce_atomic as _function_conversion_atomic
+from pyxsd.xdm.values import is_xsd_subtype
 from pyxsd.xpath.continuation import (
     ContinuationMachine,
     HostFunction,
@@ -56,8 +59,16 @@ from pyxsd.xpath.engine import (
     XPathEngine,
     XPathParserCache,
     _XdmAdapterRegistry,
+    standalone_node_adapter,
 )
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, FocusKind, FunctionArity
+from pyxsd.xslt.compiler.attribute_values import (
+    require_boolean_value,
+    require_choice_value,
+    require_integer_sequence_value,
+    require_integer_value,
+    require_item_type,
+)
 from pyxsd.xslt.compiler.constructors import CONSTRUCTOR_INSTRUCTION_COMPILERS
 from pyxsd.xslt.compiler.context import (
     ProfileOptions,
@@ -95,9 +106,9 @@ from pyxsd.xslt.compiler.packages import (
     ModeKey,
     ModeRule,
     PackageResolver,
+    _decimal_lexical,
     compile_package_set,
 )
-from pyxsd.xslt.compiler.pattern_syntax import FunctionArgument
 from pyxsd.xslt.compiler.patterns import (
     CompiledPattern,
     PatternMatcher,
@@ -177,7 +188,7 @@ from pyxsd.xslt.errors import (
 from pyxsd.xslt.extensions import ExtensionInstruction, XsltExtensions
 from pyxsd.xslt.policy import OutputPolicy
 from pyxsd.xslt.precedence import compare_precedence
-from pyxsd.xslt.profiles import RecoveryPolicy
+from pyxsd.xslt.profiles import LanguageProfile, RecoveryPolicy
 from pyxsd.xslt.python_rules import (
     PYTHON_APPLICATION_NAME,
     PYTHON_LAYER_IDENTITY,
@@ -194,6 +205,7 @@ from pyxsd.xslt.results import (
     _build_result_tree,
     _NodeFactory,
     _result_node_count,
+    _with_default_method,
     serialization_parameters,
 )
 from pyxsd.xslt.runtime.accumulators import (
@@ -423,6 +435,43 @@ _XSLT30_ELEMENTS = frozenset(
 
 _PROCESSOR_VERSION = Decimal("3.0")
 
+#: XSLT-namespace elements that are top-level declarations, not instructions.
+#: ``xsl:param`` and ``xsl:variable`` are declarations too, but both are legal
+#: instructions and own dedicated compilers.
+_TOP_LEVEL_DECLARATIONS = frozenset(
+    {
+        "accept",
+        "accumulator",
+        "attribute-set",
+        "character-map",
+        "decimal-format",
+        "expose",
+        "function",
+        "global-context-item",
+        "import",
+        "import-schema",
+        "include",
+        "key",
+        "mode",
+        "namespace-alias",
+        "output",
+        "override",
+        "package",
+        "preserve-space",
+        "strip-space",
+        "stylesheet",
+        "template",
+        "transform",
+        "use-package",
+    }
+)
+
+#: The normative static code for a declaration element used as an instruction.
+_DECLARATION_PLACEMENT_CODES = {
+    "include": "XTSE0170",
+    "import": "XTSE0190",
+}
+
 #: The public processor identities this constructor builds and the XPath
 #: version each language profile normatively pairs with.  The 3.0 processor
 #: keeps XPath 3.1; the native 2.0 and 1.0 processors keep their own grammars.
@@ -453,9 +502,70 @@ class XsltInvocationError(ValueError):
 class _KeyDefinition:
     name: str
     match: CompiledPattern
-    use: CompiledExpression
+    use: CompiledExpression | None
     owner: str | None
     composite: bool = False
+    body: tuple[_Plan, ...] = ()
+    #: Whether the key declaration's effective version is 1.0, which selects
+    #: the backwards-compatible string comparison for key values.
+    compatibility: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _KeyIndex:
+    """One key's invocation-local index with XSLT value comparison.
+
+    XSLT 1.0 backwards-compatible keys compare the string values of the key
+    and lookup.  Later versions compare atomics with ``eq``: numeric promotion
+    applies, non-comparable types never match, and an ``xs:untypedAtomic``
+    value is cast to the other operand's type.  A key value is therefore
+    indexed by its typed value, grouped by its datatype so an untyped lookup
+    can cast once per datatype instead of once per key value; untyped key
+    values keep their lexical bucket for the untyped/untyped arm.
+    """
+
+    compatibility: bool
+    compatibility_index: Mapping[str, tuple[XdmNode, ...]]
+    grouped: Mapping[type[Any], Mapping[XdmAtomic, tuple[XdmNode, ...]]]
+    untyped: Mapping[str, tuple[XdmNode, ...]]
+    composites: tuple[tuple[tuple[XdmAtomic, ...], tuple[XdmNode, ...]], ...]
+
+    def nodes_for(self, atoms: tuple[XdmAtomic, ...], *, composite: bool) -> list[XdmNode]:
+        """Every indexed node whose key value matches the lookup atomics."""
+        if composite:
+            return self._composite_nodes(atoms)
+        found: list[XdmNode] = []
+        for item in atoms:
+            if self.compatibility:
+                found.extend(self.compatibility_index.get(_compat_key_text(item), ()))
+            elif _is_untyped_atomic(item):
+                found.extend(self.untyped.get(item.lexical, ()))
+                for bucket_datatype, bucket_values in self.grouped.items():
+                    cast_value = _cast_key_value(item.lexical, bucket_datatype)
+                    if cast_value is not None:
+                        found.extend(bucket_values.get(cast_value, ()))
+            else:
+                # Equality applies numeric promotion and string-family
+                # equality across declared types, so probe every datatype
+                # bucket rather than only the lookup's own datatype.
+                for values in self.grouped.values():
+                    found.extend(values.get(item, ()))
+                datatype = _key_datatype(item)
+                if datatype is not None:
+                    for lexical, nodes in self.untyped.items():
+                        cast_value = _cast_key_value(lexical, datatype)
+                        if cast_value is not None and _key_atomic_equal(cast_value, item):
+                            found.extend(nodes)
+        return found
+
+    def _composite_nodes(self, atoms: tuple[XdmAtomic, ...]) -> list[XdmNode]:
+        found: list[XdmNode] = []
+        for key, nodes in self.composites:
+            if len(key) != len(atoms):
+                continue
+            if all(_key_atomic_equal(a, b) for a, b in zip(key, atoms, strict=True)):
+                found.extend(nodes)
+        return found
 
 
 @dataclass(frozen=True, slots=True)
@@ -758,7 +868,12 @@ def _serialize_result_entry(
     """
     try:
         parameters = serialization_parameters(entry, None)
-        serialized = Serializer.serialize(entry.raw, parameters)
+        parameters = _with_default_method(parameters, entry, None)
+        serialized = Serializer.serialize(
+            entry.raw,
+            parameters,
+            result_tree=entry.tree is not None,
+        )
         if budget.limits.max_output_bytes is not None:
             encoded = Serializer.encode(serialized, parameters)
             if not budget.take_output_bytes(len(encoded)):
@@ -1097,11 +1212,23 @@ def _compile_stylesheet(
         for package_name, current_package in packages.items()
     }
     components: dict[tuple[str | None, str, str | None, int | None], _ComponentPlan] = {}
+    deferred_original_plans: list[
+        tuple[tuple[str | None, str, str | None, int | None], _ComponentPlan]
+    ] = []
     keys: dict[str | None, list[_KeyDefinition]] = {}
     accumulators: dict[AccumulatorKey, AccumulatorDefinition] = {}
     for package_name, current_package in packages.items():
-        for component in current_package.components.values():
-            if component.owner != package_name:
+        originals = tuple(current_package.originals.values())
+        original_ids = {id(component) for component in originals}
+        candidates = (*current_package.components.values(), *originals)
+        for component in candidates:
+            # Local declarations belong to this package's plan table.  An
+            # accepted copy keeps the used package's references and is
+            # compiled there.  A hidden ``xsl:original`` copy needs its own
+            # plan only when the used package itself was not in the composed
+            # map; otherwise the original package's plan is the authoritative
+            # one and keeps its private references in that package.
+            if component.owner != package_name and id(component) not in original_ids:
                 continue
             module = _component_module(component, modules, principal)
             owner_package = packages.get(component.owner, package)
@@ -1133,10 +1260,20 @@ def _compile_stylesheet(
                     location=component.location,
                 )
             if component.kind == "key":
-                for declaration in component.declarations:
-                    keys.setdefault(component.owner, []).append(
-                        _compile_key(declaration, component.owner, context, module)
+                definitions = tuple(
+                    _compile_key(declaration, component.owner, context, module)
+                    for declaration in component.declarations
+                )
+                # XSLT 3.0 §9.11: every declaration of one key in a package
+                # must agree on the effective value of @composite (XTSE1222).
+                if len({definition.composite for definition in definitions}) > 1:
+                    raise XsltStaticError(
+                        f"the key declarations for {component.name!r} disagree on @composite",
+                        code="XTSE1222",
+                        uri=module.identity,
+                        location=component.location,
                     )
+                keys.setdefault(component.owner, []).extend(definitions)
                 continue
             select = (
                 compile_xpath(select_source, context, location=component.location)
@@ -1166,23 +1303,29 @@ def _compile_stylesheet(
                 component,
                 owner_package,
             )
-            components[(component.owner, component.kind, component.name, component.arity)] = (
-                _ComponentPlan(
-                    component=component,
-                    context=context,
-                    select=select,
-                    body=body,
-                    has_as=as_source is not None,
-                    sequence_type=(
-                        compile_sequence_type(as_source, context, location=component.location)
-                        if as_source is not None and component.kind == "variable"
-                        else None
-                    ),
-                    attribute_set_parts=attribute_set_parts,
-                    original_functions=original_functions,
-                    original_variable=original_variable,
-                )
+            plan_entry = _ComponentPlan(
+                component=component,
+                context=context,
+                select=select,
+                body=body,
+                has_as=as_source is not None,
+                sequence_type=(
+                    compile_sequence_type(as_source, context, location=component.location)
+                    if as_source is not None and component.kind == "variable"
+                    else None
+                ),
+                attribute_set_parts=attribute_set_parts,
+                original_functions=original_functions,
+                original_variable=original_variable,
             )
+            key = (component.owner, component.kind, component.name, component.arity)
+            if component.owner == package_name:
+                components[key] = plan_entry
+            else:
+                deferred_original_plans.append((key, plan_entry))
+
+    for key, plan_entry in deferred_original_plans:
+        components.setdefault(key, plan_entry)
 
     _validate_accumulator_graph(accumulators, packages)
     package_modes: dict[str | None, dict[ModeKey, tuple[_ModeLayerPlan, ...]]] = {
@@ -1263,44 +1406,6 @@ def _compile_stylesheet(
     )
 
 
-_XSLT_STANDARD_ATTRIBUTES = frozenset(
-    {
-        "default-collation",
-        "default-mode",
-        "default-validation",
-        "exclude-result-prefixes",
-        "expand-text",
-        "extension-element-prefixes",
-        "use-when",
-        "version",
-        "xpath-default-namespace",
-    }
-)
-
-_ACCUMULATOR_ATTRIBUTES = frozenset({"as", "initial-value", "name", "streamable"})
-_ACCUMULATOR_RULE_ATTRIBUTES = frozenset({"match", "phase", "priority", "select"})
-
-
-def _validate_accumulator_attributes(
-    instruction: Instruction,
-    allowed: frozenset[str],
-    module: EffectiveModule,
-) -> None:
-    """Reject an unprefixed attribute not defined for an accumulator element."""
-    for attribute in instruction.attributes:
-        if attribute.namespace_uri is not None:
-            continue
-        local = attribute.local_name
-        if local in allowed or local in _XSLT_STANDARD_ATTRIBUTES:
-            continue
-        raise XsltStaticError(
-            f"the attribute {local!r} is not permitted on xsl:{instruction.local_name}",
-            code="XTSE0090",
-            uri=module.identity,
-            location=instruction.location,
-        )
-
-
 def _compile_accumulator(
     component: Component,
     context: StaticContext,
@@ -1308,7 +1413,6 @@ def _compile_accumulator(
 ) -> AccumulatorDefinition:
     """Compile one package-local ``xsl:accumulator`` declaration."""
     declaration = component.declaration
-    _validate_accumulator_attributes(declaration, _ACCUMULATOR_ATTRIBUTES, module)
     name = component.name
     if name is None:  # pragma: no cover - package composition requires a name
         raise XsltStaticError(
@@ -1383,7 +1487,6 @@ def _compile_accumulator_rule(
     as_source: str | None,
     order: int,
 ) -> AccumulatorRule:
-    _validate_accumulator_attributes(rule, _ACCUMULATOR_RULE_ATTRIBUTES, module)
     base_context = _instruction_context(context, rule)
     match = rule.attribute("match")
     if match is None:
@@ -1655,7 +1758,14 @@ def _resolve_mode_accumulators(
         namespaces,
         uri=mode.module,
         location=mode.location,
+        streamable_context=_mode_streamable(mode),
     )
+
+
+def _mode_streamable(mode: Mode) -> bool:
+    """Whether the mode is declared streamable, so accumulator names must be."""
+    value = (mode.properties.get("streamable") or "").strip()
+    return value in ("yes", "true", "1")
 
 
 def _declared_streamable(component: Component) -> bool:
@@ -1671,8 +1781,16 @@ def _compile_use_accumulators(
     value: str | None,
     context: StaticContext,
     instruction: Instruction,
+    *,
+    streamable_context: bool = False,
 ) -> frozenset[AccumulatorKey]:
-    """Resolve one instruction's ``use-accumulators`` attribute at compile time."""
+    """Resolve one instruction's ``use-accumulators`` attribute at compile time.
+
+    *streamable_context* is true only when the instruction itself streams the
+    document it restricts (``xsl:source-document`` or ``xsl:merge-source``
+    with ``streamable="yes"``); a non-streaming processor applies every
+    accumulator to a grounded tree and must not demand streamability there.
+    """
     if value is None:
         return frozenset()
     package = context.package
@@ -1689,6 +1807,7 @@ def _compile_use_accumulators(
         instruction.namespaces,
         uri=instruction.module,
         location=instruction.location,
+        streamable_context=streamable_context,
     )
 
 
@@ -1699,8 +1818,14 @@ def _resolve_use_accumulators(
     *,
     uri: str | None,
     location: IssueLocation | None,
+    streamable_context: bool = False,
 ) -> frozenset[AccumulatorKey]:
-    """Resolve and validate one ``use-accumulators`` token list."""
+    """Resolve and validate one ``use-accumulators`` token list.
+
+    A name that resolves to a non-streamable accumulator is an error only in a
+    streamable context (XTSE3300 via the declaration constraint); grounded
+    trees accept every accumulator, which is the normal non-streaming usage.
+    """
     try:
         tokens = parse_accumulator_names(value)
     except ValueError as exc:
@@ -1740,7 +1865,7 @@ def _resolve_use_accumulators(
                 uri=uri,
                 location=location,
             )
-        if not _declared_streamable(component):
+        if streamable_context and not _declared_streamable(component):
             raise XsltStaticError(
                 f"the accumulator {token!r} is not declared streamable",
                 code="XTSE3300",
@@ -1879,13 +2004,18 @@ def _compile_key(
     name = declaration.attribute("name")
     match = declaration.attribute("match")
     use = declaration.attribute("use")
-    assert name is not None and match is not None and use is not None
+    assert name is not None and match is not None
+    body = () if use is not None else _compile_sequence(declaration.children, context, module)
     return _KeyDefinition(
         name=_expanded_name(name, declaration.namespaces),
         match=compile_pattern(match, context, location=declaration.location),
-        use=compile_xpath(use, context, location=declaration.location),
+        use=(
+            compile_xpath(use, context, location=declaration.location) if use is not None else None
+        ),
         owner=owner,
         composite=(declaration.attribute("composite") or "").strip() in ("yes", "true", "1"),
+        body=body,
+        compatibility=context.version == "1.0",
     )
 
 
@@ -2194,14 +2324,25 @@ def _context_item_signature(
                     uri=context.uri,
                     location=child.location,
                 )
-            return ContextItemSignature(
-                use,
-                compile_sequence_type(
-                    as_source or "item()",
-                    context,
+            if declaration.attribute("name") is None and use != "required":
+                raise XsltStaticError(
+                    "a template rule's xsl:context-item must specify use='required'",
+                    code="XTSE0020",
+                    uri=context.uri,
                     location=child.location,
-                ),
+                )
+            sequence_type = compile_sequence_type(
+                as_source or "item()",
+                context,
+                location=child.location,
             )
+            require_item_type(
+                sequence_type,
+                label="xsl:context-item/@as",
+                uri=context.uri,
+                location=child.location,
+            )
+            return ContextItemSignature(use, sequence_type)
     return None
 
 
@@ -2335,6 +2476,43 @@ def _compile_parameter(
             else None
         ),
     )
+
+
+def _lexical_default_mode(instruction: Instruction) -> tuple[bool, str | None]:
+    """The innermost ``[xsl:]default-mode`` in one instruction's lexical scope.
+
+    Returns ``(found, mode)``.  A ``#unnamed`` value is a found ``None``; no
+    declaration at all is ``(False, None)``.  The source element and its
+    ancestors are the effective module view, so include/import boundaries are
+    already resolved.
+    """
+    node = instruction.raw
+    while node is not None:
+        if node.kind is NodeKind.ELEMENT:
+            if node.namespace_uri == XSLT_NS:
+                names = ("default-mode", f"{{{XSLT_NS}}}default-mode")
+            else:
+                names = (f"{{{XSLT_NS}}}default-mode", "default-mode")
+            for name in names:
+                attribute = next(
+                    (candidate for candidate in node.attributes if candidate.name == name),
+                    None,
+                )
+                if attribute is None:
+                    continue
+                value = attribute.string_value.strip()
+                if value == "#unnamed":
+                    return True, None
+                if value == "#default":
+                    raise XsltStaticError(
+                        "#default is not a valid default-mode value",
+                        code="XTSE0020",
+                        uri=instruction.module,
+                        location=instruction.location,
+                    )
+                return True, _expanded_name(value, node.in_scope_namespaces)
+        node = node.parent
+    return False, None
 
 
 def _instruction_mode(instruction: Instruction) -> str | None:
@@ -2633,6 +2811,32 @@ def _compile_sort_key(
             else None
         )
 
+    stable_source = instruction.attribute("stable")
+    if stable_source is not None:
+        require_boolean_value(
+            stable_source,
+            label="xsl:sort/@stable",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    order_source = instruction.attribute("order")
+    if order_source is not None:
+        require_choice_value(
+            order_source,
+            frozenset({"ascending", "descending"}),
+            label="xsl:sort/@order",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    case_order_source = instruction.attribute("case-order")
+    if case_order_source is not None:
+        require_choice_value(
+            case_order_source,
+            frozenset({"upper-first", "lower-first"}),
+            label="xsl:sort/@case-order",
+            uri=context.uri,
+            location=instruction.location,
+        )
     return SortKey(
         instruction=instruction,
         select=expression,
@@ -2954,6 +3158,7 @@ def _compile_merge_source(
             use_accumulators,
             context,
             instruction,
+            streamable_context=streamable,
         ),
     )
 
@@ -2970,13 +3175,6 @@ def _compile_merge_key(
         raise XsltStaticError(
             "xsl:merge-key with a select attribute must have empty content except for xsl:fallback",
             code="XTSE3200",
-            uri=context.uri,
-            location=instruction.location,
-        )
-    if instruction.attribute("stable") is not None:
-        raise XsltStaticError(
-            "xsl:merge-key does not have a stable attribute",
-            code="XTSE0010",
             uri=context.uri,
             location=instruction.location,
         )
@@ -3094,6 +3292,7 @@ def _compile_source_document(
             instruction.attribute("use-accumulators"),
             context,
             instruction,
+            streamable_context=streamable,
         ),
     )
 
@@ -3353,6 +3552,22 @@ def _compile_number(
         raise XsltStaticError(
             f"invalid xsl:number level {level!r}",
             code="XTSE0020",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    start_at_source = instruction.attribute("start-at")
+    if start_at_source is not None:
+        require_integer_sequence_value(
+            start_at_source,
+            label="xsl:number/@start-at",
+            uri=context.uri,
+            location=instruction.location,
+        )
+    grouping_size_source = instruction.attribute("grouping-size")
+    if grouping_size_source is not None:
+        require_integer_value(
+            grouping_size_source,
+            label="xsl:number/@grouping-size",
             uri=context.uri,
             location=instruction.location,
         )
@@ -3872,8 +4087,8 @@ def _compile_instruction(
     """
     context = _instruction_context(context, instruction)
     context = _original_context(context, instruction)
-    if _native_10_forwards_compatible(instruction, context):
-        return _compile_native_10_forwards_compatible(instruction, context, module)
+    if _native_forwards_compatible(instruction, context):
+        return _compile_native_forwards_compatible(instruction, context, module)
     if supports_instruction(instruction.name, context):
         return compile_instruction(instruction, context, module)
     if instruction.literal:
@@ -3883,36 +4098,44 @@ def _compile_instruction(
     return _compile_unhandled_instruction(instruction, context, module)
 
 
-def _native_10_forwards_compatible(instruction: Instruction, context: StaticContext) -> bool:
-    """Whether *instruction* is a later element the native 1.0 rules forward.
+def _native_forwards_compatible(instruction: Instruction, context: StaticContext) -> bool:
+    """Whether *instruction* is a later element the native profile forwards.
 
-    The profile owns the vocabulary decision (see
-    :func:`pyxsd.xslt.profile10.forwards_compatible_instruction`), and the
-    static context owns the §2.5 mode, which only a stylesheet root's
-    ``version`` and a literal result element's ``xsl:version`` move.  This hook
-    keeps the XSLT 2.0/3.0 instruction registry out of the way so the
-    forwards-compatible fallback can run instead of the later semantics.
+    The profile owns the vocabulary decision (:mod:`pyxsd.xslt.profile10` for
+    XSLT 1.0 §2.5, the bundled XSLT 2.0 schema for XSLT 2.0 §3.6), and the
+    static context owns the effective version.  This hook keeps the XSLT
+    3.0 instruction registry out of the way so the forwards-compatible
+    fallback can run instead of the later semantics.
     """
     if not instruction.is_xslt:
         return False
-    from pyxsd.xslt.profile10 import forwards_compatible_instruction
+    profile = LanguageProfile.from_options(context.profile)
+    if profile.processor_version == "1.0":
+        from pyxsd.xslt.profile10 import forwards_compatible_instruction
 
-    return forwards_compatible_instruction(
-        instruction.local_name,
-        context.profile,
-        context.forwards_compatible,
-    )
+        return forwards_compatible_instruction(
+            instruction.local_name,
+            context.profile,
+            context.forwards_compatible,
+        )
+    if profile.processor_version != "2.0":
+        return False
+    from pyxsd.xslt.compiler.native_profile import native_vocabulary_element
+
+    if native_vocabulary_element(instruction.local_name):
+        return False
+    return _forwards_compatible(context.version, context.profile)
 
 
-def _compile_native_10_forwards_compatible(
+def _compile_native_forwards_compatible(
     instruction: Instruction,
     context: StaticContext,
     module: EffectiveModule,
 ) -> _Plan:
-    """Compile one forwards-compatible instruction under XSLT 1.0 §2.5/§15.
+    """Compile one forwards-compatible instruction under XSLT §15 Fallback.
 
-    An element XSLT 1.0 does not allow in a template must not be an error
-    unless it is instantiated; when it is instantiated, §15 Fallback
+    An element the native language does not allow in a template must not be an
+    error unless it is instantiated; when it is instantiated, §15 Fallback
     instantiates every ``xsl:fallback`` child in sequence and signals an error
     only when none is present.  Compiling the fallback content eagerly is
     inert for an uninstantiated element because the whole plan lives in the
@@ -3925,6 +4148,22 @@ def _compile_native_10_forwards_compatible(
         return _ConcatPlan(
             instruction,
             tuple(_compile_sequence(fallback.children, context, module) for fallback in fallbacks),
+        )
+    profile = LanguageProfile.from_options(context.profile)
+    if profile.processor_version != "1.0":
+        # XSLT 2.0 §18.2.3: an unrecognized XSLT element in a sequence
+        # constructor is a static error unless forwards-compatible behavior is
+        # enabled *and* the instruction has an xsl:fallback child.  XSLT 1.0
+        # §2.5 defers its error until the element is instantiated and assigns
+        # it no code, so only the 2.0 profile reports it here.
+        raise XsltStaticError(
+            f"xsl:{instruction.local_name} is not defined by XSLT "
+            f"{profile.processor_version} and has no xsl:fallback; a native XSLT "
+            f"{profile.processor_version} processor performs fallback for it when it "
+            "is instantiated",
+            code="XTSE0010",
+            uri=context.uri,
+            location=instruction.location,
         )
     return _MissingFallbackPlan(instruction)
 
@@ -4204,6 +4443,7 @@ def _compile_value_of(
     separator_default = " " if select is not None else ""
     return _ValueOfPlan(
         instruction=instruction,
+        disable_output_escaping=_attribute_yes_no(instruction, "disable-output-escaping", context),
         expression=(
             compile_xpath(select, context, location=instruction.location)
             if select is not None
@@ -4231,11 +4471,13 @@ def _compile_text(
         if expand is None
         else _yes_no(expand, instruction, "expand-text", context)
     )
+    disable_output_escaping = _attribute_yes_no(instruction, "disable-output-escaping", context)
     if enabled:
         return _TvtPlan(
-            compile_tvt(text, context.with_expand_text(True), location=instruction.location)
+            compile_tvt(text, context.with_expand_text(True), location=instruction.location),
+            disable_output_escaping,
         )
-    return _TextPlan(text)
+    return _TextPlan(text, disable_output_escaping)
 
 
 def _compile_for_each(
@@ -4463,6 +4705,28 @@ def _compile_overriding(
     )
 
 
+def _check_constant_html_version(instruction: Instruction, context: StaticContext) -> None:
+    """Reject a constant ``html-version`` that is not an ``xs:decimal``.
+
+    XSLT 3.0 section 25.1 types the attribute as a decimal AVT.  A constant
+    value outside the lexical space is an invalid attribute value (XTSE0020);
+    a computed value is checked when the serialization parameters are built.
+    """
+    value = instruction.attribute("html-version")
+    if value is None or "{" in value:
+        return
+    try:
+        _decimal_lexical(value.strip())
+    except (InvalidOperation, ValueError) as error:
+        raise XsltStaticError(
+            f"the html-version attribute value {value!r} is not a decimal",
+            code="XTSE0020",
+            uri=context.uri,
+            location=instruction.location,
+            cause=error,
+        ) from error
+
+
 def _compile_result_document(
     instruction: Instruction,
     context: StaticContext,
@@ -4494,6 +4758,7 @@ def _compile_result_document(
         context,
         label="xsl:result-document",
     )
+    _check_constant_html_version(instruction, context)
     return _ResultDocumentPlan(
         instruction=instruction,
         href=(
@@ -4550,6 +4815,13 @@ def _compile_choose(
                 location=child.location,
             )
         if child.is_xslt and child.local_name == "when":
+            if otherwise is not None:
+                raise XsltStaticError(
+                    "xsl:when must precede xsl:otherwise",
+                    code="XTSE0010",
+                    uri=context.uri,
+                    location=child.location,
+                )
             test = child.attribute("test")
             if test is None:
                 raise XsltStaticError(
@@ -4558,10 +4830,11 @@ def _compile_choose(
                     uri=context.uri,
                     location=child.location,
                 )
+            branch_context = _instruction_context(context, child)
             branches.append(
                 (
-                    compile_xpath(test, context, location=child.location),
-                    _compile_sequence(child.children, context, module),
+                    compile_xpath(test, branch_context, location=child.location),
+                    _compile_sequence(child.children, branch_context, module),
                 )
             )
             continue
@@ -4573,7 +4846,9 @@ def _compile_choose(
                     uri=context.uri,
                     location=child.location,
                 )
-            otherwise = _compile_sequence(child.children, context, module)
+            otherwise = _compile_sequence(
+                child.children, _instruction_context(context, child), module
+            )
             continue
         raise XsltStaticError(
             "xsl:choose permits only xsl:when and xsl:otherwise children",
@@ -4631,13 +4906,6 @@ def _compile_map(
     context: StaticContext,
     module: EffectiveModule,
 ) -> _Plan:
-    if instruction.attribute("select") is not None:
-        raise XsltStaticError(
-            "xsl:map does not have a select attribute",
-            code="XTSE0010",
-            uri=context.uri,
-            location=instruction.location,
-        )
     return _MapPlan(
         instruction=instruction,
         children=_compile_sequence(instruction.children, context, module),
@@ -4683,34 +4951,15 @@ def _compile_message(
     context: StaticContext,
     module: EffectiveModule,
 ) -> _Plan:
-    allowed = {
-        "select",
-        "terminate",
-        "error-code",
-        "default-collation",
-        "default-mode",
-        "default-validation",
-        "exclude-result-prefixes",
-        "expand-text",
-        "extension-element-prefixes",
-        "use-when",
-        "version",
-        "xpath-default-namespace",
-    }
-    for attribute in instruction.attributes:
-        if (
-            attribute.namespace_uri is None
-            and attribute.name not in allowed
-            and Decimal(context.version) <= Decimal("3.0")
-        ):
-            raise XsltStaticError(
-                f"unknown xsl:message attribute {attribute.name!r}",
-                code="XTSE0090",
-                uri=context.uri,
-                location=instruction.location,
-            )
     select = instruction.attribute("select")
     terminate = instruction.attribute("terminate")
+    if terminate is not None:
+        require_boolean_value(
+            terminate,
+            label="xsl:message/@terminate",
+            uri=context.uri,
+            location=instruction.location,
+        )
     error_code = instruction.attribute("error-code")
     return _MessagePlan(
         instruction=instruction,
@@ -4769,13 +5018,6 @@ def _compile_where_populated(
     context: StaticContext,
     module: EffectiveModule,
 ) -> _Plan:
-    if instruction.attribute("select") is not None:
-        raise XsltStaticError(
-            "xsl:where-populated does not have a select attribute",
-            code="XTSE0010",
-            uri=context.uri,
-            location=instruction.location,
-        )
     return _WherePopulatedPlan(
         instruction=instruction,
         children=_compile_sequence(instruction.children, context, module),
@@ -4833,10 +5075,28 @@ def _compile_call_template(
             uri=context.uri,
             location=instruction.location,
         )
+    parameters = _compile_with_params(instruction, context, module)
+    # XSLT 1.0 §11.6 ignores a supplied parameter the called template does not
+    # declare; XSLT 2.0 made it a static error.  The native 1.0 rule belongs to
+    # the processor identity, not to an element's compatibility mode.
+    if not (
+        context.compatibility_mode
+        or LanguageProfile.from_options(context.profile, context.version).legacy
+    ):
+        declared = set(reference.parameter_names)
+        for parameter in parameters:
+            if parameter.tunnel or parameter.name in declared:
+                continue
+            raise XsltStaticError(
+                f"the parameter {parameter.name!r} is not declared by the called template",
+                code="XTSE0680",
+                uri=context.uri,
+                location=instruction.location,
+            )
     return _CallTemplatePlan(
         instruction=instruction,
         reference=reference,
-        parameters=_compile_with_params(instruction, context, module),
+        parameters=parameters,
     )
 
 
@@ -4852,10 +5112,18 @@ def _compile_apply_templates(
         else compile_xpath("child::node()", context, location=instruction.location)
     )
     _, remaining = _split_sort_children(instruction)
+    mode = _instruction_mode(instruction)
+    if instruction.attribute("mode") is None:
+        found, lexical = _lexical_default_mode(instruction)
+        if found:
+            # The innermost [xsl:]default-mode replaces the package default for
+            # this dispatch; ``#unnamed`` is the unnamed mode, not the package
+            # default.
+            mode = lexical
     return _ApplyTemplatesPlan(
         instruction=instruction,
         expression=expression,
-        mode=_instruction_mode(instruction),
+        mode=mode,
         parameters=_compile_with_params(
             instruction,
             context,
@@ -4893,6 +5161,17 @@ def _compile_unhandled_instruction(
     local = instruction.local_name
     if instruction.is_xslt and local not in _XSLT30_ELEMENTS:
         return _compile_forward_instruction(instruction, context, module)
+    if (
+        instruction.is_xslt
+        and local in _TOP_LEVEL_DECLARATIONS
+        and Decimal(context.version) <= _PROCESSOR_VERSION
+    ):
+        raise XsltStaticError(
+            f"xsl:{local} is a declaration and is not permitted in a sequence constructor",
+            code=_DECLARATION_PLACEMENT_CODES.get(local, "XTSE0010"),
+            uri=context.uri,
+            location=instruction.location,
+        )
     select = instruction.attribute("select")
     if select is not None:
         compile_xpath(select, context, location=instruction.location)
@@ -5018,6 +5297,13 @@ def _compile_evaluate(
     namespace_context = instruction.attribute("namespace-context")
     base_uri = instruction.attribute("base-uri")
     schema_aware = instruction.attribute("schema-aware")
+    if schema_aware is not None:
+        require_boolean_value(
+            schema_aware,
+            label="xsl:evaluate/@schema-aware",
+            uri=context.uri,
+            location=instruction.location,
+        )
     as_source = instruction.attribute("as")
     namespaces = {prefix: uri for prefix, uri in instruction.namespaces.items() if prefix}
     return _EvaluatePlan(
@@ -5119,11 +5405,20 @@ _INSTRUCTION_COMPILERS: Mapping[str, InstructionCompiler] = {
 register_instruction_compilers(_INSTRUCTION_COMPILERS)
 
 
-def _forwards_compatible(version: str) -> bool:
+def _forwards_compatible(version: str, profile: Any = None) -> bool:
+    """Whether *version* exceeds the active processor's language version.
+
+    XSLT 1.0 §2.5, 2.0 §3.9, and 3.0 §3.10 all key forwards-compatible
+    processing off the same comparison: the effective version is greater than
+    the version the processor implements.  ``profile`` is the compilation's
+    ``ProfileOptions`` (or ``None`` for the default 3.0 processor).
+    """
     try:
-        return Decimal(version) > _PROCESSOR_VERSION
+        declared = Decimal(version)
     except (InvalidOperation, ValueError):
         return False
+    processor = Decimal(LanguageProfile.from_options(profile).processor_version)
+    return declared > processor
 
 
 def _compile_forward_instruction(
@@ -5131,9 +5426,10 @@ def _compile_forward_instruction(
     context: StaticContext,
     module: EffectiveModule,
 ) -> _Plan:
-    if not _forwards_compatible(context.version):
+    if not _forwards_compatible(context.version, context.profile):
+        processor = LanguageProfile.from_options(context.profile).processor_version
         raise XsltStaticError(
-            f"xsl:{instruction.local_name} is not defined in XSLT 3.0",
+            f"xsl:{instruction.local_name} is not defined in XSLT {processor}",
             code="XTSE0010",
             uri=context.uri,
             location=instruction.location,
@@ -5142,8 +5438,10 @@ def _compile_forward_instruction(
         child for child in instruction.elements if child.is_xslt and child.local_name == "fallback"
     ]
     if not fallbacks:
+        processor = LanguageProfile.from_options(context.profile).processor_version
         raise XsltStaticError(
-            f"xsl:{instruction.local_name} is not defined in XSLT 3.0 and has no xsl:fallback",
+            f"xsl:{instruction.local_name} is not defined in XSLT {processor}"
+            " and has no xsl:fallback",
             code="XTSE0010",
             uri=context.uri,
             location=instruction.location,
@@ -5306,7 +5604,13 @@ def _prepare_invocation(
     if initial_function is not None and selection_supplied:
         raise XsltInvocationError("initial_match_selection is not valid with initial_function")
     if initial_template is not None and initial_mode is not None:
-        raise XsltInvocationError("initial_template and initial_mode are mutually exclusive")
+        # XSLT 2.0 section 2.3 assigns this exact conflict XTDE0047; the code
+        # travels with the host error so a caller or a conformance case can
+        # compare it instead of an uncoded invocation failure.
+        raise XsltInvocationError(
+            "initial_template and initial_mode are mutually exclusive",
+            code="XTDE0047",
+        )
     if initial_function is not None and initial_mode is not None:
         raise XsltInvocationError("initial_function and initial_mode are mutually exclusive")
 
@@ -5340,6 +5644,11 @@ def _prepare_invocation(
 
     global_item = explicit_global if global_supplied else default_global
     selection = explicit_selection if explicit_selection is not _ABSENT else default_selection
+    global_item = _apply_global_context_item(
+        package,
+        global_item,
+        schema_pool=stylesheet.schema_pool,
+    )
 
     template_params = _parameter_sequences(package, template_parameters)
     tunnel = _parameter_sequences(package, tunnel_parameters)
@@ -5378,8 +5687,8 @@ def _prepare_invocation(
     elif initial_mode is not None:
         entry = "mode"
         mode = _initial_mode(package, initial_mode)
-        if selection is _ABSENT and explicit_global is not None:
-            selection = (explicit_global,)
+        if selection is _ABSENT and explicit_global is not None and global_item is not None:
+            selection = (global_item,)
         if selection is _ABSENT:
             raise XsltInvocationError(
                 "an initial mode requires source or initial_match_selection",
@@ -5390,7 +5699,7 @@ def _prepare_invocation(
         mode = _default_mode(package)
     else:
         entry = "template"
-        template_component = package.named_template("xsl:initial-template")
+        template_component = package.named_template(f"Q{{{XSLT_NS}}}initial-template")
         if template_component is not None and template_component.visibility not in (
             "public",
             "final",
@@ -5596,12 +5905,89 @@ def _global_parameter_sequences(
     return MappingProxyType(result)
 
 
+def _apply_global_context_item(
+    package: CompiledPackage,
+    item: XdmItem | None,
+    *,
+    schema_pool: SchemaPool | None,
+) -> XdmItem | None:
+    """Apply the package's ``xsl:global-context-item`` declaration.
+
+    A required declaration in a used library package is an error on its own
+    (XSLT 3.0 section 6.6.6, XTTE0590); the principal package's declaration
+    instead checks presence (XTDE3086) and the declared item type (XTTE0590).
+    """
+    for dependency in _transitive_dependencies(package):
+        declaration = dependency.global_context_item
+        if declaration is not None and declaration.use == "required":
+            raise XsltError(
+                "a library package requires a global context item",
+                code="XTTE0590",
+            )
+    declaration = package.global_context_item
+    if declaration is None:
+        return item
+    if declaration.use == "absent":
+        return None
+    if item is None:
+        if declaration.use == "required":
+            raise XsltError(
+                "the stylesheet requires a global context item but none was supplied",
+                code="XTDE3086",
+            )
+        return None
+    if declaration.sequence_type is not None:
+        converted = _coerce_sequence(
+            (item,),
+            declaration.sequence_type,
+            code="XTTE0590",
+            label="global context item",
+            schema_pool=schema_pool,
+            atomize=False,
+            strict=True,
+        )
+        return converted[0]
+    return item
+
+
+def _transitive_dependencies(package: CompiledPackage) -> tuple[CompiledPackage, ...]:
+    result: list[CompiledPackage] = []
+
+    def visit(current: CompiledPackage) -> None:
+        for dependency in current.dependencies:
+            result.append(dependency)
+            visit(dependency)
+
+    visit(package)
+    return tuple(result)
+
+
 def _initial_mode(package: CompiledPackage, name: str) -> Mode:
+    if name == "#default":
+        # The top-level default mode is eligible even when it is private; the
+        # declaration itself is what makes it the initial mode.
+        mode = _default_mode(package)
+        if mode is None:
+            raise XsltError(
+                "the initial mode '#default' has no default mode in the stylesheet",
+                code="XTDE0045",
+            )
+        return mode
     wanted = None if name == "#unnamed" else name
     mode = package.mode(wanted)
     if mode is None:
         raise XsltError(
             f"the initial mode {name!r} is not a visible mode in the stylesheet",
+            code="XTDE0045",
+        )
+    if (
+        mode.name is not None
+        and mode.visibility == "private"
+        and (mode.declared or mode.exposed)
+        and mode.name != package.default_mode
+    ):
+        raise XsltError(
+            f"the initial mode {name!r} is private and is not the package default mode",
             code="XTDE0045",
         )
     return mode
@@ -5632,14 +6018,17 @@ def _coerce_sequence(
     code: str,
     label: str,
     schema_pool: SchemaPool | None = None,
+    atomize: bool = True,
+    strict: bool = False,
 ) -> XdmSequence:
     """Apply a narrow but normative function-conversion boundary.
 
-    The implementation atomizes for atomic required types, casts
-    untyped/atomic values to the required built-in or supplied atomic type, and
-    enforces cardinality.  It does not pretend to be the full F&O function
-    conversion algorithm; unsupported conversions raise the specification's
-    type error rather than passing an untyped value through.
+    The implementation atomizes for atomic required types when *atomize* is
+    true, converts untyped/atomic values with the F&O function conversion
+    rules, and enforces cardinality.  Context-item conversion passes
+    ``atomize=False`` and ``strict=True``: XSLT 3.0 section 10.1.1 applies the
+    function conversion rules without atomizing the supplied context item, so a
+    string does not become a boolean and an element does not become a string.
     """
     if sequence_type.item_type is None:
         if sequence:
@@ -5650,7 +6039,7 @@ def _coerce_sequence(
         return ()
     item_type = sequence_type.item_type
     items = (
-        _atomize_items(sequence, code=code, label=label)
+        (_atomize_items(sequence, code=code, label=label) if atomize else tuple(sequence))
         if item_type.kind == "atomic"
         else tuple(sequence)
     )
@@ -5658,9 +6047,20 @@ def _coerce_sequence(
     if item_type.kind == "atomic":
         converted: list[XdmItem] = []
         for item in items:
-            assert isinstance(item, XdmAtomic)
+            if not isinstance(item, XdmAtomic):
+                raise _type_error(
+                    code,
+                    f"{label} requires {sequence_type}, got {type(item).__name__}",
+                )
             converted.append(
-                _coerce_atomic(item, item_type, code=code, label=label, schema_pool=schema_pool)
+                _coerce_atomic(
+                    item,
+                    item_type,
+                    code=code,
+                    label=label,
+                    schema_pool=schema_pool,
+                    strict=strict,
+                )
             )
         return tuple(converted)
     for item in items:
@@ -5700,6 +6100,7 @@ def _coerce_atomic(
     code: str,
     label: str,
     schema_pool: SchemaPool | None = None,
+    strict: bool = False,
 ) -> XdmAtomic:
     required = item_type.name
     if required is None or required == f"{{{_XSD_NS}}}anyAtomicType":
@@ -5726,6 +6127,27 @@ def _coerce_atomic(
             raise _type_error(
                 code, f"{label} requires {item_type}, cannot convert {item.lexical!r}"
             ) from cast_exc
+    local = required.rpartition("}")[2].rpartition(":")[2]
+    item_local = item.type_name.rpartition("}")[2].rpartition(":")[2]
+    if schema_pool is not None and _is_user_derived_subtype(item, required, schema_pool, local):
+        # A schema type derived from the required type is used unchanged
+        # (subtype substitution), except for the F&O promotions: decimal to
+        # float/double and anyURI to string.
+        return item
+    if is_xsd_subtype(item_local, local):
+        # Function conversion (XPath 3.1 §3.1.5.2): a value whose type is the
+        # required type or one of its subtypes is used unchanged.  Casting an
+        # xs:integer to xs:decimal here would lose the subtype, so an
+        # ``as="xs:decimal"`` variable would no longer be an xs:integer.
+        return item
+    if strict:
+        try:
+            return _function_conversion_atomic(item, local)
+        except TypeError as exc:
+            raise _type_error(
+                code,
+                f"{label} requires {item_type}, cannot convert {item.lexical!r}",
+            ) from exc
     try:
         return item.cast(required)
     except (TypeError, ValueError) as exc:
@@ -5733,6 +6155,44 @@ def _coerce_atomic(
             code,
             f"{label} requires {item_type}, cannot convert {item.lexical!r}",
         ) from exc
+
+
+def _is_user_derived_subtype(
+    item: XdmAtomic,
+    required: str,
+    schema_pool: SchemaPool,
+    required_local: str,
+) -> bool:
+    """Whether *item*'s schema type is a restriction-derived subtype of *required*.
+
+    The built-in ``is_xsd_subtype`` table cannot name a user-defined type, so
+    the schema pool's adapter classes decide.  The function-conversion
+    promotions to xs:float/xs:double from a decimal type and to xs:string from
+    xs:anyURI are casts, not subtype substitution, and are excluded here.
+    """
+    item_adapter = schema_pool.get_type(item.type_name)
+    required_adapter = schema_pool.get_type(required)
+    if item_adapter is None or required_adapter is None:
+        return False
+    item_class = getattr(item_adapter, "_type_class", None)
+    required_class = getattr(required_adapter, "_type_class", None)
+    if not (isinstance(item_class, type) and isinstance(required_class, type)):
+        return False
+    item_root = item_adapter.root_type
+    root_local = (
+        (item_root.name or "").rpartition("}")[2].rpartition(":")[2]
+        if item_root is not None
+        else ""
+    )
+    if root_local == required_local:
+        return True
+    if required_local in ("float", "double") and (
+        root_local in ("decimal", "float") or (required_local == "float" and root_local == "double")
+    ):
+        return False
+    if required_local == "string" and root_local == "anyURI":
+        return False
+    return issubclass(item_class, required_class)
 
 
 def _is_instance_of_type(item: XdmAtomic, adapter: Any) -> bool:
@@ -5813,7 +6273,13 @@ def _matches_item_type(
             schema_pool,
         )
     if kind == "document-node":
-        return isinstance(item, XdmNode) and item.kind is NodeKind.DOCUMENT
+        if not isinstance(item, XdmNode) or item.kind is not NodeKind.DOCUMENT:
+            return False
+        child = item_type.child
+        if child is None:
+            return True
+        root = getattr(item, "root_element", None)
+        return root is not None and _matches_item_type(root, child, schema_pool)
     if kind == "function":
         return isinstance(item, (XdmFunction, XdmMap, XdmArray))
     if kind == "map":
@@ -5821,6 +6287,29 @@ def _matches_item_type(
     if kind == "array":
         return isinstance(item, XdmArray)
     return False  # pragma: no cover - every ItemType kind is handled above
+
+
+def _without_disable_output_escaping(sequence: XdmSequence) -> XdmSequence:
+    """Copy flagged top-level text nodes so a coercion cannot mutate a source.
+
+    XSLT 3.0 section 26.2 makes disable-output-escaping construction metadata
+    that a declared result type does not retain.  The value may contain nodes
+    shared with a source tree or another variable, so the unmarked value is a
+    fresh text node; unflagged items keep their identity.
+    """
+    result: list[XdmItem] = []
+    changed = False
+    for item in sequence:
+        if (
+            isinstance(item, XdmNode)
+            and item.kind is NodeKind.TEXT
+            and item.disable_output_escaping
+        ):
+            result.append(_NodeFactory().text(item.string_value, base_uri=item.base_uri))
+            changed = True
+        else:
+            result.append(item)
+    return tuple(result) if changed else sequence
 
 
 def _require_absolute(uri: str, label: str) -> str:
@@ -5847,14 +6336,23 @@ class _Invocation(Transformation):
         super().__init__(stylesheet, options, limits=limits, shared=shared)
         self._mode_dispatchers: dict[tuple[str | None, str | None], RuleDispatcher] = {}
         self._pattern_environments: dict[int, ExpressionEnvironment] = {}
+        #: The URI of the output destination currently being written.  It is
+        #: the base output URI for the principal result and the target URI while
+        #: an xsl:result-document instruction evaluates its content.
+        self._current_output_uri = options.output_uri
+        self._legacy_serialization = LanguageProfile.from_options(stylesheet.profile).legacy
         #: Key indexes currently under construction, keyed like the completed
         #: cache and holding the document beside its address (XSLT 3.0
         #: section 9.11 circularity guard).
-        self._key_builds: dict[tuple[int, str | None, str], XdmDocument] = {}
+        self._key_builds: dict[tuple[int, str | None, str], XdmNode] = {}
         self._numbering: NumberingCache | None = None
         self._numbering_counters: dict[object, tuple[_NumberPlan, NumberingCounter | None]] = {}
         self._xpath_cache = XPathParserCache()
         self._adapter_registry = _XdmAdapterRegistry()
+        #: ``cache="yes"`` stylesheet-function results, scoped to one
+        #: transformation invocation.  Arguments are the full XDM sequences,
+        #: so a node or atomic value keeps identity.
+        self._function_cache: dict[tuple[object, ...], XdmSequence] = {}
         self.dynamic_expressions = DynamicExpressionCache()
         self._active_iteration_frame: Frame | None = None
         self.current_merge_group: Mapping[str, XdmSequence] | None = None
@@ -5862,6 +6360,7 @@ class _Invocation(Transformation):
         self.current_merge_sources: tuple[str, ...] = ()
         self.current_regex_groups: tuple[str, ...] | None = None
         self.messages: list[Message] = []
+        self.warnings: list[str] = []
         validation_type = options.validation_type
         if validation_type is not None and stylesheet.schema_pool is not None:
             validation_type = _expanded_name(validation_type, self.package.namespaces)
@@ -5931,6 +6430,7 @@ class _Invocation(Transformation):
         tree = None
         if self.options.delivery == "document" or (
             self.options.delivery == "stylesheet"
+            and self._can_build_result_tree(sequence)
             and self._build_tree(
                 self.output_attributes.get("build-tree"),
                 self.output_attributes.get("method", "xml"),
@@ -5964,6 +6464,7 @@ class _Invocation(Transformation):
             tree=tree,
             serialization=self.output_attributes,
             character_maps=self.character_maps,
+            legacy=self._legacy_serialization,
         )
         secondary = self.secondary
         if self.options.delivery == "stylesheet":
@@ -5976,8 +6477,14 @@ class _Invocation(Transformation):
             entry,
             secondary=secondary,
             messages=tuple(self.messages),
+            warnings=tuple(self.warnings),
             _output_policy=policy,
         )
+
+    @staticmethod
+    def _can_build_result_tree(sequence: XdmSequence) -> bool:
+        """Whether sequence normalization can form a document without errors."""
+        return not any(isinstance(item, (XdmMap, XdmFunction)) for item in sequence)
 
     def _check_output_budget(self, sequence: XdmSequence) -> None:
         """Charge every delivered node when a node budget is configured."""
@@ -6058,6 +6565,32 @@ class _Invocation(Transformation):
             (component.owner, component.kind, component.name, component.arity)
         ]
 
+    def _node_to_native(self, node: XdmNode) -> object | None:
+        """Adapt one XDM node for a suspended continuation machine.
+
+        A stylesheet function may return text, element, comment, or
+        processing-instruction nodes mixed with atomics.  The machine resumes
+        with elementpath values, so the node must reuse the transformation's
+        one adapter tree; a host object or a fresh tree would lose identity
+        and document order.
+        """
+        registry = self._adapter_registry
+        adapter = registry.nodes.get(id(node))
+        if adapter is not None:
+            return adapter
+        if node.parent is None:
+            if node.kind in (NodeKind.ELEMENT, NodeKind.ATTRIBUTE):
+                return registry.rootless(node)
+            return standalone_node_adapter(node, registry)
+        registry.document(node.document)
+        adapter = registry.nodes.get(id(node))
+        if adapter is None and node.root.kind is NodeKind.ELEMENT:
+            registry.rootless(node.root)
+            adapter = registry.nodes.get(id(node))
+        if adapter is None:
+            adapter = standalone_node_adapter(node, registry)
+        return adapter
+
     def _execute_component(
         self,
         component: Component,
@@ -6069,6 +6602,18 @@ class _Invocation(Transformation):
         grouping_key: object = _INHERIT,
         plan: _ComponentPlan | None = None,
     ) -> XdmSequence:
+        cache_key: tuple[object, ...] | None = None
+        if component.kind == "function" and component.declaration.attribute("cache") == "yes":
+            cache_key = (
+                component.owner,
+                component.containing,
+                component.name,
+                component.arity,
+                tuple(tuple(sequence) for sequence in arguments),
+            )
+            cached = self._function_cache.get(cache_key)
+            if cached is not None:
+                return cached
         frame = self._component_frame(
             component,
             arguments=arguments,
@@ -6084,7 +6629,10 @@ class _Invocation(Transformation):
             else self._regex_scope(self.current_regex_groups)
         )
         with regex_scope, self._merge_scope(None, None, ()):
-            return cast(XdmSequence, self.execute_frame(frame))
+            result = cast(XdmSequence, self.execute_frame(frame))
+        if cache_key is not None:
+            self._function_cache[cache_key] = result
+        return result
 
     def _component_identity(self, component: Component) -> str:
         name = component.name or "<unnamed>"
@@ -6105,8 +6653,8 @@ class _Invocation(Transformation):
     ) -> Frame:
         if component.abstract:
             raise XsltDynamicError(
-                "the abstract component has no executable original implementation",
-                code="XTDE0040",
+                "an invocation of an abstract component is not permitted",
+                code="XTDE3052",
             )
         if plan is None:
             plan = context.original_plans.get((component.kind, component.name, component.arity))
@@ -6148,7 +6696,9 @@ class _Invocation(Transformation):
             and signature.return_type is not None
         ):
             conversion = lambda value: self._coerce_component_result(  # noqa: E731
-                component, cast(XdmSequence, value)
+                component,
+                cast(XdmSequence, value),
+                final_output=component_context.final_output,
             )
         effective_group, effective_grouping_key = self._inherited_group(
             group,
@@ -6611,24 +7161,48 @@ class _Invocation(Transformation):
         *,
         locals_: Mapping[str, XdmSequence] | None = None,
     ) -> ExpressionEnvironment:
+        # Only a doc() pattern needs the package-filtered variants, and only
+        # those patterns must bypass the environment cache: the variants grow
+        # as documents load.  Everything else keeps the cached environment.
+        uses_documents = "doc(" in pattern.source
+        documents = (
+            {
+                **self.documents,
+                **self.document_resources.document_variants(package_name),
+            }
+            if uses_documents
+            else None
+        )
         if locals_ is not None:
-            return self._environment(
-                EvaluationContext(locals=locals_, package_name=package_name),
-                referenced=_pattern_variable_names(pattern),
-                static_context=pattern.context,
-                regex_captures=None,
+            environment = replace(
+                self._environment(
+                    EvaluationContext(
+                        locals=locals_, package_name=package_name, final_output=False
+                    ),
+                    referenced=_pattern_variable_names(pattern),
+                    static_context=pattern.context,
+                    regex_captures=None,
+                ),
+                base_uri=pattern.context.base_uri,
             )
+            return environment if documents is None else replace(environment, documents=documents)
         key = id(pattern)
-        environment = self._pattern_environments.get(key)
-        if environment is None:
-            environment = self._environment(
-                EvaluationContext(package_name=package_name),
-                referenced=_pattern_variable_names(pattern),
-                static_context=pattern.context,
-                regex_captures=None,
+        cached = None if uses_documents else self._pattern_environments.get(key)
+        if cached is None:
+            cached = replace(
+                self._environment(
+                    EvaluationContext(package_name=package_name, final_output=False),
+                    referenced=_pattern_variable_names(pattern),
+                    static_context=pattern.context,
+                    regex_captures=None,
+                ),
+                base_uri=pattern.context.base_uri,
             )
-            self._pattern_environments[key] = environment
-        return environment
+            if documents is not None:
+                cached = replace(cached, documents=documents)
+            else:
+                self._pattern_environments[key] = cached
+        return cached
 
     def numbering_counter(
         self,
@@ -6730,6 +7304,8 @@ class _Invocation(Transformation):
             code="XTTE0590",
             label="context item",
             schema_pool=self._package_schema_pool(package_name),
+            atomize=False,
+            strict=True,
         )
         return Focus.singleton(
             sequence[0],
@@ -6745,17 +7321,21 @@ class _Invocation(Transformation):
         code: str,
         label: str,
         package_name: str | None = None,
+        clear_output_escaping: bool = False,
     ) -> XdmSequence:
         """Apply one compiled sequence type through the invocation's coercion."""
         if sequence_type is None:
             return value
-        return _coerce_sequence(
+        coerced = _coerce_sequence(
             value,
             sequence_type,
             code=code,
             label=label,
             schema_pool=self._package_schema_pool(package_name),
         )
+        if clear_output_escaping:
+            return _without_disable_output_escaping(coerced)
+        return coerced
 
     def _coerce_parameter(
         self,
@@ -6779,6 +7359,8 @@ class _Invocation(Transformation):
         self,
         component: Component,
         value: XdmSequence,
+        *,
+        final_output: bool,
     ) -> XdmSequence:
         declaration_as = component.declaration.attribute("as")
         signature = component.signature
@@ -6786,13 +7368,21 @@ class _Invocation(Transformation):
             return value
         code = "XTTE0780" if component.kind == "function" else "XTTE0505"
         label = "function result" if component.kind == "function" else "template result"
-        return _coerce_sequence(
+        coerced = _coerce_sequence(
             value,
             signature.return_type,
             code=code,
             label=label,
             schema_pool=self._package_schema_pool(component.owner),
         )
+        # A declared result type evaluated in temporary output state constructs
+        # a new value without the source constructor's disable-output-escaping
+        # annotation (XSLT 3.0 section 26.2).  A function body always runs in
+        # temporary output state.  Copy flagged text rather than mutating a
+        # node another value may still reach.
+        if component.kind == "function" or not final_output:
+            return _without_disable_output_escaping(coerced)
+        return coerced
 
     def _parameter_default(
         self,
@@ -6813,7 +7403,7 @@ class _Invocation(Transformation):
             if parameter.has_as:
                 return self._execute_plans(parameter.children, context=default_context)
             sequence = self._execute_plans(parameter.children, context=default_context)
-            return (_build_result_tree(sequence),)
+            return (_build_result_tree(sequence, base_uri=parameter.instruction.base_uri),)
         if parameter.required:
             raise XsltError(
                 f"the required parameter {parameter.name!r} was not supplied",
@@ -6929,7 +7519,12 @@ class _Invocation(Transformation):
                         value = self._execute_plans(plan.body, context=context)
                     else:
                         sequence = self._execute_plans(plan.body, context=context)
-                        value = (_build_result_tree(sequence),)
+                        value = (
+                            _build_result_tree(
+                                sequence,
+                                base_uri=component.declaration.base_uri,
+                            ),
+                        )
                 elif plan.has_as:
                     value = ()
                 else:
@@ -7005,7 +7600,12 @@ class _Invocation(Transformation):
         context: EvaluationContext,
     ) -> XdmSequence:
         if isinstance(plan, _TextPlan):
-            return (self._text_node(plan.value),)
+            return (
+                self._text_node(
+                    plan.value,
+                    disable_output_escaping=plan.disable_output_escaping,
+                ),
+            )
         if isinstance(plan, (_NextIterationPlan, _BreakPlan)):
             active = getattr(self, "_active_iteration_frame", None)
             if active is not None and isinstance(active.iteration, IterationState):
@@ -7027,7 +7627,12 @@ class _Invocation(Transformation):
         if isinstance(plan, _PerformSortPlan):
             return perform_sort(plan, self, context)
         if isinstance(plan, _TvtPlan):
-            return (self._text_node(self._value_template(plan.template, context)),)
+            return (
+                self._text_node(
+                    self._value_template(plan.template, context),
+                    disable_output_escaping=plan.disable_output_escaping,
+                ),
+            )
         if isinstance(plan, _AttributePlan):
             return attribute_value(plan, self, context)
         if isinstance(plan, _SequencePlan):
@@ -7090,10 +7695,11 @@ class _Invocation(Transformation):
                 code=None,
             )
         if isinstance(plan, _MissingFallbackPlan):
+            language = self.profile_for().processor_version
             raise XsltDynamicError(
-                f"xsl:{plan.instruction.local_name} is not defined by XSLT 1.0 and has no "
-                "xsl:fallback; a native XSLT 1.0 processor performs fallback for it when it "
-                "is instantiated (XSLT 1.0 §2.5 and §15)",
+                f"xsl:{plan.instruction.local_name} is not defined by XSLT {language} and has "
+                f"no xsl:fallback; a native XSLT {language} processor performs fallback for it "
+                "when it is instantiated (XSLT §2.5 and §15)",
                 code=None,
                 uri=plan.instruction.module,
                 location=plan.instruction.location,
@@ -7157,7 +7763,7 @@ class _Invocation(Transformation):
                                     locals={},
                                     final_output=False,
                                     package_name=component.owner,
-                                    mode=None,
+                                    mode=context.mode,
                                     tunnel_parameters={},
                                     rule_context=None,
                                     original_functions={},
@@ -7218,6 +7824,8 @@ class _Invocation(Transformation):
                 code="XTDE1490",
             )
         self.final_uris.add(uri)
+        previous_output_uri = self._current_output_uri
+        self._current_output_uri = uri
         try:
             sequence = self._execute_plans(
                 plan.children,
@@ -7230,7 +7838,9 @@ class _Invocation(Transformation):
             )
             tree = None
             pool = self._package_schema_pool(context.package_name)
-            if self._build_tree(build_tree, effective_method):
+            if self._build_tree(build_tree, effective_method) and self._can_build_result_tree(
+                sequence
+            ):
                 tree = _build_result_tree(sequence, output_uri=uri)
                 tree = validate_delivered(
                     tree,
@@ -7240,6 +7850,15 @@ class _Invocation(Transformation):
                 )
             serialization = dict(base_attributes)
             serialization.update(evaluated)
+            for name in ("cdata-section-elements", "suppress-indentation"):
+                if name in evaluated:
+                    # XSLT 3.0 section 25.1: the instruction's QName list adds
+                    # to the selected output declaration's list.
+                    merged = list(base_attributes.get(name, "").split())
+                    for token in evaluated[name].split():
+                        if token not in merged:
+                            merged.append(token)
+                    serialization[name] = " ".join(merged)
             if "use-character-maps" in evaluated:
                 # XSLT 3.0 section 25.1: instruction maps supplement the
                 # selected output definition and take precedence over it.
@@ -7247,7 +7866,13 @@ class _Invocation(Transformation):
                 serialization["use-character-maps"] = " ".join(
                     (*inherited, *evaluated["use-character-maps"].split())
                 )
-            serialization["method"] = effective_method
+            # ``#absent`` makes a serialization attribute absent even when the
+            # selected named output declaration supplies it.
+            for name, value in evaluated.items():
+                if value.strip() == "#absent":
+                    serialization.pop(name, None)
+            if method is not None or "method" in base_attributes:
+                serialization["method"] = effective_method
             if build_tree is not None:
                 serialization["build-tree"] = build_tree
             self.secondary[uri] = ResultEntry(
@@ -7258,11 +7883,14 @@ class _Invocation(Transformation):
                 character_maps=self.package.character_map_pairs(
                     serialization.get("use-character-maps")
                 ),
+                legacy=self._legacy_serialization,
             )
         except BaseException:
             self.final_uris.discard(uri)
             self.secondary.pop(uri, None)
             raise
+        finally:
+            self._current_output_uri = previous_output_uri
 
     def _secondary_uri(self, href: str) -> str:
         base = self.options.output_uri
@@ -7287,8 +7915,8 @@ class _Invocation(Transformation):
             )
         return _method_local(method) not in ("json", "adaptive")
 
-    def _text_node(self, value: str) -> XdmNode:
-        return _NodeFactory().text(value)
+    def _text_node(self, value: str, *, disable_output_escaping: bool = False) -> XdmNode:
+        return _NodeFactory().text(value, disable_output_escaping=disable_output_escaping)
 
     # -- modes and built-in templates -------------------------------------
 
@@ -7404,12 +8032,14 @@ class _Invocation(Transformation):
             static_context,
             regex_captures=regex_captures,
             decimal_formats=decimal_formats,
+            final_output=context.final_output,
         )
         overrides: dict[str, Any] = dict(bridge.function_overrides())
         return ExpressionEnvironment(
             variables=variables,
             functions=functions,
             function_overrides=overrides,
+            documents=self.documents,
             decimal_formats={
                 name: decimal_format_attributes(decimal_format)
                 for name, decimal_format in decimal_formats.items()
@@ -7420,6 +8050,8 @@ class _Invocation(Transformation):
             parser_cache=self._xpath_cache,
             adapter_registry=self._adapter_registry,
             key_lookup=self._key_override_for(package_name),
+            id_lookup=self._id_override,
+            idref_lookup=self._idref_override,
         )
 
     def _decimal_format_objects(
@@ -7450,6 +8082,7 @@ class _Invocation(Transformation):
         *,
         regex_captures: object | None = _INHERIT,
         decimal_formats: Mapping[str | None, DecimalFormat] | None = None,
+        final_output: bool = True,
     ) -> XsltContextBridge:
         package = self.stylesheet._packages.get(package_name) or self.package
         static = (
@@ -7483,6 +8116,7 @@ class _Invocation(Transformation):
             namespaces=package.namespaces if static is None else static.namespaces,
             default_namespace=None if static is None else static.default_namespace,
             base_uri=None if static is None else static.base_uri,
+            current_output_uri=(self._current_output_uri if final_output else None),
             xpath_version=(
                 expression.version
                 if expression is not None
@@ -7491,9 +8125,14 @@ class _Invocation(Transformation):
             xslt_version=(
                 None
                 if static is None
-                else getattr(static, "xslt_version", None) or getattr(static, "version", None)
+                else LanguageProfile.from_options(
+                    getattr(static, "profile", self.stylesheet.profile),
+                    getattr(static, "xslt_version", None) or getattr(static, "version", None),
+                ).language_version
             ),
             key_lookup=self._key_override_for(package_name),
+            id_lookup=self._id_override,
+            idref_lookup=self._idref_override,
             extension_functions=self.stylesheet.extensions.availability(),
         )
 
@@ -7513,9 +8152,18 @@ class _Invocation(Transformation):
         package_name: str | None,
     ) -> XdmSequence:
         name_sequence = arguments[0]
-        if not name_sequence or not isinstance(name_sequence[0], XdmAtomic):
+        if len(name_sequence) != 1:
+            raise XsltDynamicError(
+                "the key name must be a single atomic value",
+                code="XPTY0004",
+            )
+        name_item = name_sequence[0]
+        if isinstance(name_item, XdmNode):
+            lexical = name_item.string_value
+        elif isinstance(name_item, XdmAtomic):
+            lexical = name_item.lexical
+        else:
             raise XsltDynamicError("a key name must be a string", code="XPTY0004")
-        lexical = name_sequence[0].lexical
         package = self.stylesheet._packages.get(package_name) or self.package
         expanded = _expanded_name(lexical, package.namespaces)
         definitions = tuple(
@@ -7528,27 +8176,20 @@ class _Invocation(Transformation):
                 f"the key {lexical!r} is not declared in this package",
                 code="XTDE1260",
             )
-        document = self._key_document(context_item, arguments)
+        root = self._key_root(context_item, arguments)
         composite = any(definition.composite for definition in definitions)
-        index = self._key_index(definitions, document, package_name)
-        nodes: list[XdmNode] = []
+        index = self._key_index(definitions, root, package_name)
         atoms = _key_atomics(arguments[1])
-        if composite:
-            composite_key = tuple(_key_value(value) for value in atoms)
-            nodes.extend(index.get(composite_key, ()))
-        else:
-            for item in atoms:
-                nodes.extend(index.get(_key_value(item), ()))
-                nodes.extend(index.get(item.lexical, ()))
+        nodes = index.nodes_for(atoms, composite=composite)
         unique: dict[int, XdmNode] = {id(node): node for node in nodes}
         ordered = sorted(unique.values(), key=lambda node: node.document_order)
         return tuple(ordered)
 
-    def _key_document(
+    def _key_root(
         self,
         context_item: XdmItem | None,
         arguments: tuple[XdmSequence, ...] = (),
-    ) -> XdmDocument:
+    ) -> XdmNode:
         if len(arguments) > 2:
             top = arguments[2]
             if len(top) != 1 or not isinstance(top[0], XdmNode):
@@ -7556,72 +8197,276 @@ class _Invocation(Transformation):
                     "key() requires a single node as its third argument",
                     code="XPTY0004",
                 )
-            return top[0].document
+            # XSLT 3.0 §9.11 / XTDE1270: the third argument selects a subtree
+            # inside a document tree; an element-rooted tree is not eligible.
+            if top[0].root.kind is not NodeKind.DOCUMENT:
+                raise XsltDynamicError(
+                    "the key subtree root is not in a document tree",
+                    code="XTDE1270",
+                )
+            return top[0]
         if not isinstance(context_item, XdmNode):
             raise XsltDynamicError(
                 "key() with two arguments requires a context node",
                 code="XTDE1270",
             )
-        document = context_item.document
-        if not isinstance(document, XdmDocument):
+        # XSLT 3.0 §9.11 / XTDE1270: the context node's tree root must be a
+        # document node, not merely attached to a construction document.
+        root = context_item.root
+        if root.kind is not NodeKind.DOCUMENT:
             raise XsltDynamicError(
-                "the key context node must have a document root",
+                "the key context node is not in a document tree",
                 code="XTDE1270",
             )
-        return document
+        return root
 
     def _key_index(
         self,
         definitions: tuple[_KeyDefinition, ...],
-        document: XdmDocument,
+        root: XdmNode,
         package_name: str | None,
-    ) -> Mapping[Any, tuple[XdmNode, ...]]:
+    ) -> _KeyIndex:
         name = definitions[0].name
-        key = (id(document), package_name, name)
+        key = (id(root), package_name, name)
         cached = self.key_indexes.get(key)
-        if cached is not None and self.key_index_documents.get(id(document)) is document:
+        if cached is not None and self.key_index_documents.get(id(root)) is root:
             return cached
         # XSLT 3.0 section 9.11: a key defined in terms of itself is a
         # circularity, and executing the participating instructions makes it a
         # dynamic error (XTDE0640).  A completed index is cached above, so a
-        # re-entrant build for the same key and document can only be a cycle.
-        # The document itself is retained beside the address: Python reuses
-        # addresses, and the guard must not collide across documents.
-        if self._key_builds.get(key) is document:
+        # re-entrant build for the same key and subtree can only be a cycle.
+        # The root itself is retained beside the address: Python reuses
+        # addresses, and the guard must not collide across trees.
+        if self._key_builds.get(key) is root:
             raise XsltCircularityError(
                 f"the key {name!r} is defined in terms of itself",
             )
-        self._key_builds[key] = document
+        self._key_builds[key] = root
         try:
-            index: dict[Any, list[XdmNode]] = {}
+            compatibility = definitions[0].compatibility
+            compatibility_index: dict[str, list[XdmNode]] = {}
+            grouped: dict[type[Any], dict[XdmAtomic, list[XdmNode]]] = {}
+            untyped: dict[str, list[XdmNode]] = {}
+            composites: list[tuple[tuple[XdmAtomic, ...], list[XdmNode]]] = []
             for definition in definitions:
                 matcher = PatternMatcher(definition.match)
                 environment = self._pattern_environment_for(definition.match, definition.owner)
-                for node in _document_nodes(document):
+                for node in _document_nodes(root):
                     if not matcher.matches(node, environment):
                         continue
                     with self._group_scope(None, None), self._merge_scope(None, None, ()):
-                        values = self._evaluate(
-                            definition.use,
-                            EvaluationContext(
-                                focus=Focus.singleton(node),
-                                package_name=package_name,
-                            ),
+                        evaluation_context = EvaluationContext(
+                            focus=Focus.singleton(node),
+                            package_name=package_name,
+                            final_output=False,
+                        )
+                        values = (
+                            self._evaluate(definition.use, evaluation_context)
+                            if definition.use is not None
+                            else self._execute_plans(definition.body, context=evaluation_context)
                         )
                     atomics = _key_atomics(values)
                     if definition.composite:
-                        composite_key = tuple(_key_value(value) for value in atomics)
-                        index.setdefault(composite_key, []).append(node)
+                        composites.append((atomics, [node]))
                         continue
                     for value in atomics:
-                        index.setdefault(_key_value(value), []).append(node)
-                        index.setdefault(value.lexical, []).append(node)
-            frozen = MappingProxyType({value: tuple(nodes) for value, nodes in index.items()})
-            self.key_indexes[key] = frozen
-            self.key_index_documents[id(document)] = document
-            return frozen
+                        if compatibility:
+                            compatibility_index.setdefault(_compat_key_text(value), []).append(node)
+                        elif _is_untyped_atomic(value):
+                            untyped.setdefault(value.lexical, []).append(node)
+                        else:
+                            datatype = value.datatype
+                            if datatype is None:  # pragma: no cover - atomic invariant
+                                untyped.setdefault(value.lexical, []).append(node)
+                            else:
+                                grouped.setdefault(datatype, {}).setdefault(value, []).append(node)
+            index = _KeyIndex(
+                compatibility=compatibility,
+                compatibility_index={
+                    value: tuple(nodes) for value, nodes in compatibility_index.items()
+                },
+                grouped={
+                    datatype: {value: tuple(nodes) for value, nodes in values.items()}
+                    for datatype, values in grouped.items()
+                },
+                untyped={value: tuple(nodes) for value, nodes in untyped.items()},
+                composites=tuple((key, tuple(nodes)) for key, nodes in composites),
+            )
+            self.key_indexes[key] = index
+            self.key_index_documents[id(root)] = root
+            return index
         finally:
             del self._key_builds[key]
+
+    def _id_override(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+        element_with_id: bool,
+    ) -> XdmSequence:
+        """``fn:id``/``fn:element-with-id`` over grounded nodes.
+
+        The XDM parser marks DTD-declared ``ID`` attributes and ``xml:id``;
+        the lookup derives one invocation-local index per tree so repeated
+        calls in a template do not rescan the tree.  An attribute-borne ID
+        identifies its owner element for both functions.  An element whose
+        own typed value is an ID is identified by ``fn:id`` and contained by
+        its parent element for ``fn:element-with-id``.
+        """
+        tokens: set[str] = set()
+        for item in arguments[0]:
+            if isinstance(item, ResultTreeFragment):
+                raise XsltDynamicError(
+                    "fn:id() requires a node-set, but a result tree fragment was supplied; "
+                    "a native XSLT 1.0 processor does not convert a result tree fragment "
+                    "where a node-set is required",
+                    code="XPTY0004",
+                )
+            if isinstance(item, XdmNode):
+                values: Iterable[XdmItem] = item.typed_value
+            elif isinstance(item, XdmAtomic):
+                values = (item,)
+            else:
+                raise XsltDynamicError(
+                    "id() requires atomic values or nodes",
+                    code="XPTY0004",
+                )
+            for value in values:
+                if not isinstance(value, XdmAtomic):  # pragma: no cover - XDM invariant
+                    raise XsltDynamicError(
+                        "id() node atomization must yield atomic values",
+                        code="XPTY0004",
+                    )
+                tokens.update(value.lexical.split())
+        if not tokens:
+            return ()
+        if len(arguments) > 1:
+            argument = arguments[1]
+            if len(argument) != 1 or not isinstance(argument[0], XdmNode):
+                raise XsltDynamicError(
+                    "id() requires a single node as its second argument",
+                    code="XPTY0004",
+                )
+            node = argument[0]
+        elif isinstance(context_item, XdmNode):
+            node = context_item
+        else:
+            raise XsltDynamicError(
+                "id() requires a context node",
+                code="XPDY0002",
+            )
+        root = node.root
+        index = self._id_index(root)
+        found: dict[int, XdmNode] = {}
+        for token in tokens:
+            entry = index.get(token)
+            if entry is None:
+                continue
+            identified, element_borne = entry
+            if element_with_id and element_borne:
+                # F&O 3.1 §15.5: an element whose own typed value is an ID is
+                # returned by fn:id; fn:element-with-id returns the element
+                # that contains that ID, which is its parent element.  A
+                # document-element ID has no containing element, so the
+                # element itself remains the identified element.
+                parent = identified.parent
+                if parent is not None and parent.kind is NodeKind.ELEMENT:
+                    identified = parent
+            found[id(identified)] = identified
+        return tuple(sorted(found.values(), key=lambda element: element.document_order))
+
+    def _id_index(self, root: XdmNode) -> Mapping[str, tuple[XdmNode, bool]]:
+        """One ID token's identified element and whether the ID is element-borne."""
+        cached = self.id_indexes.get(id(root))
+        if cached is not None and cached[0] is root:
+            return cached[1]
+        index: dict[str, tuple[XdmNode, bool]] = {}
+        for node in (root, *root.descendants):
+            if node.kind is not NodeKind.ELEMENT:
+                continue
+            if getattr(node.annotation, "id_kind", None) in {"ID", "id"}:
+                index.setdefault(node.string_value, (node, True))
+            for attribute in node.attributes:
+                if getattr(attribute.annotation, "id_kind", None) in {"ID", "id"}:
+                    index.setdefault(attribute.string_value, (node, False))
+        frozen = MappingProxyType(index)
+        self.id_indexes[id(root)] = (root, frozen)
+        return frozen
+
+    def _idref_override(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """``fn:idref`` over the invocation's IDREF annotations.
+
+        F&O 3.1 §15.5 returns the node that carries a matching ``IDREF`` or
+        ``IDREFS`` value: the attribute node for an attribute-borne IDREF and
+        the element for element content.  The index is per tree and
+        invocation-local, mirroring the ``fn:id`` index.
+        """
+        tokens: set[str] = set()
+        for item in arguments[0]:
+            if isinstance(item, XdmNode):
+                values: Iterable[XdmItem] = item.typed_value
+            elif isinstance(item, XdmAtomic):
+                values = (item,)
+            else:
+                raise XsltDynamicError(
+                    "idref() requires atomic values or nodes",
+                    code="XPTY0004",
+                )
+            for value in values:
+                if not isinstance(value, XdmAtomic):  # pragma: no cover - XDM invariant
+                    raise XsltDynamicError(
+                        "idref() node atomization must yield atomic values",
+                        code="XPTY0004",
+                    )
+                # Unlike fn:id(), fn:idref() does not tokenize its argument:
+                # each supplied string is one IDREF value, so a string with
+                # whitespace is not a valid IDREF and matches nothing.
+                tokens.add(value.lexical)
+        if not tokens:
+            return ()
+        if len(arguments) > 1:
+            argument = arguments[1]
+            if len(argument) != 1 or not isinstance(argument[0], XdmNode):
+                raise XsltDynamicError(
+                    "idref() requires a single node as its second argument",
+                    code="XPTY0004",
+                )
+            node = argument[0]
+        elif isinstance(context_item, XdmNode):
+            node = context_item
+        else:
+            raise XsltDynamicError(
+                "idref() requires a context node",
+                code="XPDY0002",
+            )
+        index = self._idref_index(node.root)
+        found: dict[int, XdmNode] = {}
+        for token in tokens:
+            for identified in index.get(token, ()):
+                found[id(identified)] = identified
+        return tuple(sorted(found.values(), key=lambda element: element.document_order))
+
+    def _idref_index(self, root: XdmNode) -> Mapping[str, tuple[XdmNode, ...]]:
+        cached = self.idref_indexes.get(id(root))
+        if cached is not None and cached[0] is root:
+            return cached[1]
+        index: dict[str, list[XdmNode]] = {}
+        for node in (root, *root.descendants):
+            if node.kind is NodeKind.ELEMENT:
+                if getattr(node.annotation, "id_kind", None) in {"IDREF", "IDREFS"}:
+                    for token in node.string_value.split():
+                        index.setdefault(token, []).append(node)
+                for attribute in node.attributes:
+                    if getattr(attribute.annotation, "id_kind", None) in {"IDREF", "IDREFS"}:
+                        for token in attribute.string_value.split():
+                            index.setdefault(token, []).append(attribute)
+        frozen = MappingProxyType({token: tuple(nodes) for token, nodes in index.items()})
+        self.idref_indexes[id(root)] = (root, frozen)
+        return frozen
 
     def _invoke_component_callable(
         self,
@@ -7694,49 +8539,30 @@ def _unknown_variable_name(error: BaseException) -> str | None:
 
 
 def _pattern_variable_names(pattern: CompiledPattern) -> set[str]:
-    names: set[str] = set()
-
-    def visit(value: object) -> None:
-        if isinstance(value, CompiledExpression):
-            names.update(value.variable_names)
-            return
-        if isinstance(value, CompiledPattern):
-            for alternative in value.alternatives:
-                visit(alternative)
-            return
-        if isinstance(value, FunctionArgument) and value.kind == "variable":
-            # A rooted doc()/id()/key() pattern argument can only be a literal
-            # or a variable reference.  The pattern environment must bind the
-            # variable, or the rooted base is silently empty.
-            assert value.name is not None
-            names.add(value.name)
-            return
-        if is_dataclass(value) and not isinstance(value, type):
-            for item in fields(value):
-                visit(getattr(value, item.name))
-            return
-        if isinstance(value, (tuple, list)):
-            for item in value:
-                visit(item)
-
-    visit(pattern)
-    return names
+    """The variable names one pattern references (see CompiledPattern)."""
+    return set(pattern.variable_names)
 
 
-def _document_nodes(document: XdmDocument) -> Iterator[XdmNode]:
-    """Yield every node of *document* in document order.
+def _document_nodes(root: XdmNode) -> Iterator[XdmNode]:
+    """Yield every node of one document or subtree root in document order.
 
     The traversal includes element attributes and namespace nodes, which key
-    match patterns can select just like ordinary child nodes.
+    match patterns can select just like ordinary child nodes.  A subtree root
+    resulting from the third ``key()`` argument contributes only its own
+    subtree.
     """
-    yield document
-    root = document.root_element
-    if root is not None:
-        yield from _node_tree(root)
+    yield root
+    if root.kind is NodeKind.DOCUMENT:
+        element = cast(XdmDocument, root).root_element
+        if element is not None:
+            yield from _node_tree(element)
+    elif root.kind is NodeKind.ELEMENT:
+        yield from _node_tree(root, include_self=False)
 
 
-def _node_tree(node: XdmNode) -> Iterator[XdmNode]:
-    yield node
+def _node_tree(node: XdmNode, *, include_self: bool = True) -> Iterator[XdmNode]:
+    if include_self:
+        yield node
     if node.kind is NodeKind.ELEMENT:
         yield from node.attributes
         yield from node.namespace_nodes
@@ -7757,13 +8583,68 @@ def _key_atomics(sequence: XdmSequence) -> tuple[XdmAtomic, ...]:
     return tuple(atomics)
 
 
-def _key_value(item: XdmAtomic) -> object:
-    value = item.value
+def _is_untyped_atomic(item: XdmAtomic) -> bool:
+    """Whether one atomic value has the ``xs:untypedAtomic`` dynamic type."""
+    return item.type_name.endswith("}untypedAtomic") or item.type_name == "untypedAtomic"
+
+
+def _compat_key_text(item: XdmAtomic) -> str:
+    """The XSLT 1.0 backwards-compatible key comparison string."""
+    return item.string_value
+
+
+def _key_datatype(item: XdmAtomic) -> type[Any] | None:
+    """The XSD datatype that drives one key comparison.
+
+    An :class:`XdmAtomic` may be constructed with only its type name, leaving
+    ``datatype`` unset.  The type name is authoritative in that case, so a
+    built-in XSD type is resolved through the shared datatype registry instead
+    of losing the type for key equality.  A non-built-in name keeps no
+    datatype and cannot drive a cast.
+    """
+    if item.datatype is not None:
+        return item.datatype
+    return type_tests.builtin_class(item.type_name)
+
+
+def _cast_key_value(lexical: str, datatype: type[Any] | None) -> XdmAtomic | None:
+    """Cast one lexical value to *datatype* for a key comparison.
+
+    ``None`` means the lexical value is not in that type's value space, which
+    a key comparison treats as a non-match rather than an error.  A datatype
+    the XDM layer cannot construct as an atomic value also declines.
+    """
+    if datatype is None:  # pragma: no cover - typed atomics carry a datatype
+        return None
     try:
-        hash(value)
-    except TypeError:  # pragma: no cover - atomic values are hashable
-        return item.lexical
-    return value
+        # elementpath datatypes parse their lexical space with ``fromstring``;
+        # pyxsd datatypes validate it in the constructor.
+        parse = getattr(datatype, "fromstring", None)
+        value = parse(lexical) if callable(parse) else datatype(lexical)
+        return XdmAtomic.typed(value, datatype)
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+
+
+def _key_atomic_equal(left: XdmAtomic, right: XdmAtomic) -> bool:
+    """XSLT key-value equality after untypedAtomic conversion.
+
+    Storage-layer Python equality is deliberately not used: ``True == 1`` and
+    a date's lexical string would otherwise match across incomparable dynamic
+    types.  ``XdmAtomic.__eq__`` is the engine's ``eq`` semantics, which
+    promotes numerics and keeps non-comparable families apart.
+    """
+    left_untyped = _is_untyped_atomic(left)
+    right_untyped = _is_untyped_atomic(right)
+    if left_untyped and right_untyped:
+        return left.lexical == right.lexical
+    if left_untyped:
+        cast = _cast_key_value(left.lexical, _key_datatype(right))
+        return cast is not None and cast == right
+    if right_untyped:
+        cast = _cast_key_value(right.lexical, _key_datatype(left))
+        return cast is not None and cast == left
+    return left == right
 
 
 def _method_local(method: str) -> str:

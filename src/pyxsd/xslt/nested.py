@@ -138,7 +138,14 @@ def invoke_nested_transform(
         base_uri=base_uri,
         resolver=getattr(policy.processor, "resolver", None),
     )
-    compiled = _compiled_stylesheet(policy, request, caller=outer.stylesheet)
+    try:
+        compiled = _compiled_stylesheet(policy, request, caller=outer.stylesheet)
+    except XsltError as error:
+        if error.code == "XTSE0165":
+            raise _invalid_options(
+                f"cannot load the nested stylesheet: {error}", cause=error
+            ) from error
+        raise
     return _run(policy, request, compiled)
 
 
@@ -311,9 +318,13 @@ def _optional_string(options: XdmMap, name: str) -> str | None:
         return None
     value = _single_option(options, name)
     item = value[0]
-    if not isinstance(item, XdmAtomic):
-        raise _invalid_options(f"the {name!r} option must be a string value")
-    return item.lexical
+    if isinstance(item, XdmAtomic):
+        return item.lexical
+    if isinstance(item, XdmNode):
+        # Function conversion atomizes a node to its string value, which lets
+        # a stylesheet build an option map from content (F&O section 1.6).
+        return item.string_value
+    raise _invalid_options(f"the {name!r} option must be a string value")
 
 
 def _optional_root_node(options: XdmMap, name: str) -> XdmNode | None:

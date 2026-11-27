@@ -809,8 +809,8 @@ def _invoke_original(
     plan = bound.plan
     if bound.original_abstract or component is None or plan is None:
         raise XsltDynamicError(
-            "the overridden component is abstract and has no executable original",
-            code="XTDE0040",
+            "an invocation of an abstract component is not permitted",
+            code="XTDE3052",
         )
     assert component.signature is not None
     parameters = tuple(parameter.name for parameter in component.signature.parameters)

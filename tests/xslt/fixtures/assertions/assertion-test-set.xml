@@ -13,4 +13,39 @@
          </all-of>
       </result>
    </test-case>
+   <test-case name="message-001">
+      <description>A message's content is a document node an assertion can inspect.</description>
+      <test>
+         <stylesheet file="message-001.xsl"/>
+         <initial-template name="main"/>
+      </test>
+      <result>
+         <all-of>
+            <assert-xml><![CDATA[<out/>]]></assert-xml>
+            <assert-message>
+               <assert>/smart = 'Smart element'</assert>
+            </assert-message>
+            <assert-message>
+               <assert-xml><![CDATA[<smart>Smart element</smart>]]></assert-xml>
+            </assert-message>
+            <assert-message>
+               <assert>/comment() = 'Chicken legs'</assert>
+            </assert-message>
+            <assert-message>
+               <assert-string-value>plain text</assert-string-value>
+            </assert-message>
+         </all-of>
+      </result>
+   </test-case>
+   <test-case name="result-var-001">
+      <description>A raw multi-item result bound to a variable has no context item.</description>
+      <test>
+         <stylesheet file="result-var-001.xsl"/>
+         <initial-template name="main"/>
+         <output tree="no" result-var="result"/>
+      </test>
+      <result>
+         <assert>deep-equal($result, (1, 'a'))</assert>
+      </result>
+   </test-case>
 </test-set>

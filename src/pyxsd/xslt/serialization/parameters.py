@@ -22,6 +22,8 @@ __all__ = ["SerializationParameters", "expand_qname", "expand_qname_list", "meth
 _NORMALIZATION_FORMS = frozenset({"NFC", "NFD", "NFKC", "NFKD"})
 _TRUE_VALUES = frozenset({"yes", "true", "1"})
 _FALSE_VALUES = frozenset({"no", "false", "0"})
+_HTML_VERSIONS = frozenset({"1.0", "4.0", "4.01", "5.0"})
+_XHTML_VERSIONS = frozenset({"1.0", "1.1", "5.0"})
 
 #: XSLT-defined output attributes that do not feed the string serializer.
 #: They are legal on ``xsl:output`` and must not be rejected when a caller
@@ -29,7 +31,6 @@ _FALSE_VALUES = frozenset({"no", "false", "0"})
 _XSLT_OUTPUT_METADATA = frozenset(
     {
         "build-tree",
-        "html-version",
         "parameter-document",
         "use-character-maps",
     }
@@ -43,6 +44,7 @@ _ATTRIBUTE_FIELDS: dict[str, str] = {
     "doctype-system": "doctype_system",
     "encoding": "encoding",
     "escape-uri-attributes": "escape_uri_attributes",
+    "html-version": "html_version",
     "include-content-type": "include_content_type",
     "indent": "indent",
     "item-separator": "item_separator",
@@ -51,6 +53,7 @@ _ATTRIBUTE_FIELDS: dict[str, str] = {
     "method": "method",
     "normalization-form": "normalization_form",
     "omit-xml-declaration": "omit_xml_declaration",
+    "output-version": "version",
     "standalone": "standalone",
     "suppress-indentation": "suppress_indentation",
     "undeclare-prefixes": "undeclare_prefixes",
@@ -95,7 +98,7 @@ def _standalone(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
-        normalized = value.strip().lower()
+        normalized = value.strip()
         if normalized == "omit":
             return None
         if normalized in _TRUE_VALUES:
@@ -103,6 +106,23 @@ def _standalone(value: Any) -> bool | None:
         if normalized in _FALSE_VALUES:
             return False
     raise _invalid(f"standalone must be yes, no, omit, or None, got {value!r}")
+
+
+_PUBLIC_ID_CHARACTERS = frozenset(
+    " \r\nabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'()+,./:=?;!*#@$_%"
+)
+
+
+def _public_identifier(value: str | None) -> str | None:
+    """Reject a public identifier outside the XML ``PubidChar`` production."""
+    if value is None:
+        return None
+    invalid = next(
+        (character for character in value if character not in _PUBLIC_ID_CHARACTERS), None
+    )
+    if invalid is not None:
+        raise _invalid(f"doctype-public is not a valid public identifier: {value!r}")
+    return value
 
 
 def _optional_text(value: Any, label: str, *, empty_is_none: bool = False) -> str | None:
@@ -208,12 +228,12 @@ def _normalization_form(value: Any) -> str | None:
     if lowered == "none":
         return "none"
     if lowered == "fully-normalized":
-        # A fully normalized result is a superset of NFC; the serializer has no
-        # data model to prove the stricter claim, so it performs NFC.
-        return "NFC"
+        # The serializer performs NFC and then verifies the fully-normalized
+        # claim (no leading combining character) on the result.
+        return "fully-normalized"
     upper = normalized.upper()
     if upper not in _NORMALIZATION_FORMS:
-        raise _invalid(f"unsupported normalization-form {value!r}")
+        raise XsltSerializationError(f"unsupported normalization-form {value!r}", code="SESU0011")
     return upper
 
 
@@ -223,8 +243,34 @@ def _encoding(value: Any) -> str:
     try:
         codecs.lookup(value)
     except LookupError as error:
-        raise _invalid(f"unknown encoding {value!r}", cause=error) from error
+        raise XsltSerializationError(f"unsupported encoding {value!r}", code="SESU0007") from error
     return value
+
+
+def _html_version(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise _invalid(f"html-version must be a decimal number, got {value!r}")
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        number = float(text)
+    except ValueError as error:
+        raise _invalid(f"html-version must be a decimal number, got {value!r}") from error
+    if number < 0 or not isfinite(number):
+        raise _invalid(f"html-version must be a non-negative decimal, got {value!r}")
+    return text
+
+
+def _supported_version(version: str, allowed: frozenset[str], label: str) -> None:
+    try:
+        number = float(version)
+    except ValueError as error:  # pragma: no cover - _version already validated
+        raise _invalid(f"{label} must be a non-negative number, got {version!r}") from error
+    if number == 0.0 or not any(number == float(candidate) for candidate in allowed):
+        raise XsltSerializationError(f"unsupported {label} {version!r}", code="SESU0013")
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +281,7 @@ class SerializationParameters:
     version: str = "1.0"
     encoding: str = "UTF-8"
     indent: bool = False
+    html_version: str | None = None
     omit_xml_declaration: bool = False
     standalone: bool | None = None
     doctype_public: str | None = None
@@ -251,11 +298,12 @@ class SerializationParameters:
     allow_duplicate_names: bool = False
     json_node_output_method: str = "xml"
     character_maps: tuple[tuple[str, str], ...] = ()
+    legacy: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.method, str):
             raise _invalid(f"method must be a string, got {self.method!r}")
-        method = method_local_name(self.method)
+        method = method_local_name(self.method.strip())
         # The serializer owns which methods are implemented.  The import is
         # local because the serializer module depends on these parameters.
         from pyxsd.xslt.serialization.serializer import Serializer
@@ -265,6 +313,7 @@ class SerializationParameters:
         object.__setattr__(self, "method", method)
 
         object.__setattr__(self, "version", _version(self.version))
+        object.__setattr__(self, "html_version", _html_version(self.html_version))
         object.__setattr__(self, "encoding", _encoding(self.encoding))
         object.__setattr__(self, "indent", _boolean(self.indent, "indent"))
         object.__setattr__(
@@ -276,15 +325,15 @@ class SerializationParameters:
         object.__setattr__(
             self,
             "doctype_public",
-            _optional_text(self.doctype_public, "doctype-public", empty_is_none=True),
+            _public_identifier(
+                _optional_text(self.doctype_public, "doctype-public", empty_is_none=True)
+            ),
         )
         object.__setattr__(
             self,
             "doctype_system",
             _optional_text(self.doctype_system, "doctype-system", empty_is_none=True),
         )
-        if self.doctype_public is not None and self.doctype_system is None:
-            raise _invalid("doctype-public requires doctype-system")
         object.__setattr__(self, "media_type", _optional_text(self.media_type, "media-type"))
         object.__setattr__(
             self, "item_separator", _optional_text(self.item_separator, "item-separator")
@@ -331,6 +380,28 @@ class SerializationParameters:
             "character_maps",
             character_map_pairs(self.character_maps),
         )
+        if not isinstance(self.legacy, bool):
+            raise TypeError("legacy must be a boolean")
+        if (
+            not self.legacy
+            and method == "xml"
+            and self.omit_xml_declaration
+            and (
+                self.standalone is not None
+                or (self.doctype_system is not None and float(self.version) != 1.0)
+            )
+        ):
+            raise XsltSerializationError(
+                "omit-xml-declaration conflicts with standalone or a 1.0 doctype",
+                code="SEPM0009",
+            )
+        if method == "html":
+            if self.html_version is not None:
+                _supported_version(self.html_version, _HTML_VERSIONS, "html-version")
+            elif self.version != "1.0":
+                _supported_version(self.version, _HTML_VERSIONS, "HTML version")
+        elif method == "xhtml" and self.html_version is not None:
+            _supported_version(self.html_version, _XHTML_VERSIONS, "html-version")
 
     @staticmethod
     def _json_node_output_method(value: Any) -> str:
@@ -362,6 +433,7 @@ class SerializationParameters:
         *,
         base: SerializationParameters | None = None,
         namespaces: Mapping[str, str] | None = None,
+        legacy: bool = False,
     ) -> SerializationParameters:
         """Build parameters from effective ``xsl:output``-style attributes.
 
@@ -369,7 +441,7 @@ class SerializationParameters:
         ``cdata-section-elements`` are expanded to ``Q{uri}local`` using the
         stylesheet's in-scope bindings.
         """
-        values: dict[str, Any] = {}
+        values: dict[str, Any] = {"legacy": legacy}
         if base is not None:
             values.update({field.name: getattr(base, field.name) for field in fields(cls)})
         for name, value in attributes.items():

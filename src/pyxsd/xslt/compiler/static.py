@@ -28,13 +28,15 @@ from typing import Any, Literal, TypeAlias
 from elementpath.xpath2 import XPath2Parser
 from elementpath.xpath3 import XPath31Parser
 
+from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import local_name as _local_name
 from pyxsd.namespaces import namespace_of as _namespace_of
 from pyxsd.xdm import XdmAtomic, XdmSequence, as_xdm
-from pyxsd.xdm.nodes import NodeKind, XdmNode
+from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xpath.engine import XPathEngine
 from pyxsd.xpath.environment import ExpressionEnvironment, Focus, XPathStaticContext
+from pyxsd.xpath.functions import ContextFunction
 from pyxsd.xslt.compiler.modules import ModuleKind, SourceModule
 from pyxsd.xslt.errors import XsltStaticError, error_code_from_exception, is_budget_alarm
 from pyxsd.xslt.precedence import compare_precedence
@@ -704,6 +706,33 @@ def _arity_matches(
     return minimum <= arity and (maximum is None or arity <= maximum)
 
 
+def _static_parse_xml(element: XdmNode) -> ContextFunction:
+    """Parse a static ``fn:parse-xml`` argument with the grounded XDM parser.
+
+    elementpath's built-in parser builds an ElementTree that drops comments and
+    processing instructions.  A static variable such as ``parse-xml(...)//node()``
+    must see the same five node kinds the runtime parser preserves.
+    """
+
+    def parse(context_item: object, arguments: tuple[XdmSequence, ...]) -> XdmSequence:
+        del context_item
+        if not arguments or not arguments[0]:
+            return ()
+        item = arguments[0][0]
+        lexical = item.lexical if isinstance(item, XdmAtomic) else str(item)
+        try:
+            return (XdmDocument.parse(lexical.encode("utf-8"), base_uri=element.base_uri),)
+        except PyXSDError as exc:
+            raise XsltStaticError(
+                f"parse-xml() content is not a well-formed XML document: {exc}",
+                code="FODC0006",
+                uri=element.document.document_uri,
+                location=element.source_location(),
+            ) from exc
+
+    return ContextFunction(parse)
+
+
 class _StaticEvaluator:
     """Evaluate one restricted static expression for preprocessing."""
 
@@ -744,6 +773,7 @@ class _StaticEvaluator:
         environment = ExpressionEnvironment(
             variables=self._scope.visible(element),
             functions=functions,
+            function_overrides={"fn:parse-xml": _static_parse_xml(element)},
             base_uri=element.base_uri,
         )
         try:

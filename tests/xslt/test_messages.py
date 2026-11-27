@@ -51,7 +51,7 @@ def test_messages_are_not_shared_between_invocations() -> None:
 
 
 def test_message_terminate_empty_is_invalid() -> None:
-    with pytest.raises(XsltDynamicError) as exc:
+    with pytest.raises(XsltStaticError) as exc:
         transform(
             stylesheet(
                 '<xsl:template name="xsl:initial-template">'
@@ -59,7 +59,7 @@ def test_message_terminate_empty_is_invalid() -> None:
                 "</xsl:template>"
             )
         )
-    assert exc.value.code == "XTDE0030"
+    assert exc.value.code == "XTSE0020"
 
 
 def test_message_custom_error_code_is_reported() -> None:
@@ -72,6 +72,31 @@ def test_message_custom_error_code_is_reported() -> None:
         )
     )
     assert result.messages[0].code == "{urn:errors}notice"
+
+
+def test_message_no_namespace_error_code_keeps_its_eqname_form() -> None:
+    """An unprefixed EQName is in no namespace, not the standard ``err:`` one."""
+    result = transform(
+        stylesheet(
+            '<xsl:template name="xsl:initial-template">'
+            '<xsl:message error-code="UIOP9876">hello</xsl:message>'
+            "</xsl:template>"
+        )
+    )
+    assert result.messages[0].code == "Q{}UIOP9876"
+
+
+def test_message_custom_error_code_escapes_an_avt_brace() -> None:
+    """``error-code`` is an attribute value template: ``{{`` is one brace."""
+    with pytest.raises(XsltDynamicError) as exc:
+        transform(
+            stylesheet(
+                '<xsl:template name="xsl:initial-template">'
+                '<xsl:message terminate="yes" error-code="Q{{urn:errors}}notice">hello</xsl:message>'
+                "</xsl:template>"
+            )
+        )
+    assert exc.value.code == "{urn:errors}notice"
 
 
 @pytest.mark.parametrize("value", ["true", "1", " yes "])

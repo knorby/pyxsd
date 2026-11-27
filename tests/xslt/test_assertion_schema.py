@@ -304,6 +304,12 @@ def test_node_xml_serializes_an_element_and_defers_for_a_document() -> None:
     assert suite._node_xml(document) == suite._document_xml(document)
 
 
+def test_the_assertion_xml_view_serializes_top_level_comment_siblings() -> None:
+    document = XdmDocument.parse(b"<!-- XYZ --><out/>")
+
+    assert suite._document_xml(document) == "<!-- XYZ --><out/>"
+
+
 def test_the_assertion_xml_view_keeps_lexical_prefixes_and_declarations() -> None:
     """The comparison view is the engine's own markup, not ElementTree's.
 

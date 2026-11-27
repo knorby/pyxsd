@@ -282,8 +282,9 @@ def test_entry_point_conflicts_are_rejected() -> None:
 
     with pytest.raises(XsltInvocationError, match="initial_template and initial_function"):
         compiled.transform(initial_template="t", initial_function="my:f")
-    with pytest.raises(XsltInvocationError, match="initial_template and initial_mode"):
+    with pytest.raises(XsltInvocationError, match="initial_template and initial_mode") as conflict:
         compiled.transform(initial_template="t", initial_mode="m")
+    assert conflict.value.code == "XTDE0047"
     with pytest.raises(XsltInvocationError, match="initial_function and initial_mode"):
         compiled.transform(initial_function="my:f", initial_mode="m")
     with pytest.raises(XsltInvocationError, match="template_parameters"):
@@ -314,6 +315,93 @@ def test_initial_mode_dispatch_and_validation() -> None:
     with pytest.raises(XsltInvocationError) as error:
         compiled.transform(initial_mode="m")
     assert error.value.code == "XTDE0044"
+
+
+def test_lexical_default_mode_selects_the_implicit_dispatch_mode() -> None:
+    """The innermost [xsl:]default-mode overrides the package default."""
+    compiled = compile_bytes(
+        xsl(
+            '<xsl:template match="/"><out xsl:default-mode="a">'
+            '<xsl:apply-templates select="doc/a"/></out></xsl:template>'
+            '<xsl:template match="a" mode="a"><chosen/></xsl:template>'
+            '<xsl:template match="a"><unchosen/></xsl:template>',
+        )
+    )
+
+    result = compiled.transform(source=b"<doc><a/></doc>", delivery="document")
+
+    children = _element_children(result.principal_tree)[0].children
+    assert [child.local_name for child in children] == ["chosen"]
+
+
+def test_template_default_mode_assigns_the_rule_and_its_body_scope() -> None:
+    """A template's own default-mode governs its rule mode and body dispatch."""
+    compiled = compile_bytes(
+        xsl(
+            '<xsl:template match="/" default-mode="a"><out>'
+            '<xsl:apply-templates select="doc/a"/></out></xsl:template>'
+            '<xsl:template match="a" mode="a"><chosen/></xsl:template>',
+        )
+    )
+
+    result = compiled.transform(source=b"<doc><a/></doc>", initial_mode="a", delivery="document")
+
+    out = _element_children(result.principal_tree)[0]
+    assert [child.local_name for child in out.children] == ["chosen"]
+
+
+def test_included_module_default_mode_governs_its_own_rules(tmp_path: Path) -> None:
+    """A module's root default-mode scopes its template rules (XSLT §3.8.2)."""
+    included = tmp_path / "included.xsl"
+    included.write_text(
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0" default-mode="m">'
+        '<xsl:template match="a"><from-mode/></xsl:template>'
+        "</xsl:stylesheet>",
+        encoding="utf-8",
+    )
+    principal = tmp_path / "principal.xsl"
+    principal.write_text(
+        f'<xsl:stylesheet xmlns:xsl="{XSLT_NS}" version="3.0">'
+        '<xsl:include href="included.xsl"/>'
+        '<xsl:template match="/"><out><xsl:apply-templates select="a" mode="m"/></out>'
+        "</xsl:template>"
+        "</xsl:stylesheet>",
+        encoding="utf-8",
+    )
+    compiled = XsltProcessor().compile(principal)
+    result = compiled.transform(source=b"<a/>", delivery="document")
+    out = _element_children(result.principal_tree)[0]
+    assert [child.local_name for child in out.children] == ["from-mode"]
+
+
+def test_lexical_default_mode_rejects_the_default_pseudo_mode() -> None:
+    """``#default`` is not a valid [xsl:]default-mode value."""
+    with pytest.raises(XsltStaticError) as caught:
+        compile_bytes(
+            xsl(
+                '<xsl:template match="/"><out xsl:default-mode="#default">'
+                '<xsl:apply-templates select="doc/a"/></out></xsl:template>',
+            )
+        )
+    assert caught.value.code == "XTSE0020"
+
+
+def test_lexical_default_mode_can_select_the_unnamed_mode() -> None:
+    """``#unnamed`` is not the package default when one is declared."""
+    compiled = compile_bytes(
+        xsl(
+            '<xsl:template match="/"><out xsl:default-mode="#unnamed">'
+            '<xsl:apply-templates select="doc/a"/></out></xsl:template>'
+            '<xsl:template match="a" mode="a"><chosen/></xsl:template>'
+            '<xsl:template match="a" mode="#unnamed"><unnamed/></xsl:template>',
+            attributes='default-mode="a"',
+        )
+    )
+
+    result = compiled.transform(source=b"<doc><a/></doc>", delivery="document")
+
+    children = _element_children(result.principal_tree)[0].children
+    assert [child.local_name for child in children] == ["unnamed"]
 
 
 def test_default_mode_is_honoured_for_source_invocation() -> None:
@@ -832,7 +920,7 @@ def test_compiled_accessors_and_mode_rule_counts() -> None:
     [
         (
             '<xsl:template match="doc" select="1"><literal/></xsl:template>',
-            "XTSE0010",
+            "XTSE0090",
         ),
         (
             '<xsl:variable name="v" select="1"><content/></xsl:variable>'
@@ -1089,13 +1177,15 @@ def test_text_value_templates_and_nested_sequences() -> None:
     )
 
 
-def test_unsupported_instruction_with_select_attribute_is_compiled() -> None:
-    compiled = compile_bytes(
-        xsl('<xsl:template name="main"><xsl:when select="1 + 1"/></xsl:template>')
-    )
+def test_disallowed_select_on_when_is_xtse0090() -> None:
+    with pytest.raises(XsltStaticError) as error:
+        compile_bytes(
+            xsl(
+                '<xsl:template name="main"><xsl:choose><xsl:when select="1 + 1"/></xsl:choose></xsl:template>'
+            )
+        )
 
-    with pytest.raises(XsltError, match="not supported"):
-        compiled.transform(initial_template="main")
+    assert error.value.code == "XTSE0090"
 
 
 @pytest.mark.parametrize(
@@ -1495,7 +1585,7 @@ def test_named_template_select_is_rejected() -> None:
     with pytest.raises(XsltStaticError) as error:
         compile_bytes(xsl('<xsl:template name="named" select="1"><literal/></xsl:template>'))
 
-    assert error.value.code == "XTSE0010"
+    assert error.value.code == "XTSE0090"
 
 
 def test_declaration_expand_text_and_literal_metadata_attributes() -> None:

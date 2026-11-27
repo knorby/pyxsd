@@ -690,6 +690,14 @@ class _Parser:
             self._fail(
                 f"the rooted function {token.value!r} is not doc, id, element-with-id, key, or root"
             )
+        # XSLT 2.0's IdKeyPattern admits only id() and key(); doc(), root(),
+        # and element-with-id() became rooted pattern bases in 3.0.
+        if Decimal(self.context.version) < Decimal("3.0") and local in {
+            "doc",
+            "root",
+            "element-with-id",
+        }:
+            self._fail(f"{token.value} is not available in an XSLT {self.context.version} pattern")
         self._expect("(")
         arguments: list[FunctionArgument] = []
         if not self._is(")"):
@@ -700,6 +708,11 @@ class _Parser:
                     continue
                 break
         self._expect(")")
+        if local == "id" and Decimal(self.context.version) < Decimal("3.0") and len(arguments) != 1:
+            # Two-argument id() in a pattern also arrived with XSLT 3.0.
+            self._fail(
+                f"{token.value} takes one argument in an XSLT {self.context.version} pattern"
+            )
         _validate_function_arity(self, local, len(arguments), token.value)
         return FunctionBase(local, tuple(arguments))
 

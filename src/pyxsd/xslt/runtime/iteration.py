@@ -160,7 +160,13 @@ _NUMERIC_LOCALS = frozenset(
 )
 _QNAME_LOCALS = frozenset({"NOTATION", "QName"})
 _BOOLEAN_LOCALS = frozenset({"boolean"})
-_UNORDERED_LOCALS = frozenset({"boolean", "NOTATION", "QName", "base64Binary", "hexBinary"})
+_UNORDERED_LOCALS = frozenset(
+    {"boolean", "NOTATION", "QName", "base64Binary", "hexBinary", "duration"}
+)
+
+#: Date/time types whose order is defined by their timeline value rather than
+#: their lexical form.
+_DATETIME_LOCALS = frozenset({"date", "time", "dateTime", "dateTimeStamp"})
 
 
 def _local_name(item: XdmAtomic) -> str:
@@ -453,6 +459,7 @@ class ResolvedSortKey:
     collation: Collation = field(default_factory=lambda: Collation(CODEPOINT_COLLATION))
     data_type: str = "native"
     numeric_mode: str = "exact"
+    implicit_timezone: Any = None
 
     def __post_init__(self) -> None:
         if self.order not in ("ascending", "descending"):
@@ -637,6 +644,8 @@ def _compare_atomic(left: XdmAtomic, right: XdmAtomic, key: ResolvedSortKey) -> 
 
     left_family = _family(left)
     right_family = _family(right)
+    if _local_name(left) in _DATETIME_LOCALS or _local_name(right) in _DATETIME_LOCALS:
+        return _compare_datetime(left, right, key.implicit_timezone)
     if left_family == "string" and right_family == "string":
         return key.collation.compare(left.lexical, right.lexical)
     if left_family == "numeric" and right_family == "numeric":
@@ -665,6 +674,41 @@ def _compare_atomic(left: XdmAtomic, right: XdmAtomic, key: ResolvedSortKey) -> 
             f"sort keys {left.lexical!r} and {right.lexical!r} are not comparable",
             code="XTDE1030",
         ) from exc
+
+
+def _compare_datetime(left: XdmAtomic, right: XdmAtomic, implicit_timezone: Any) -> int:
+    """Compare two date/time values on their timeline.
+
+    pyxsd keeps these atomics in their XSD lexical form, so a direct string
+    comparison orders ``19:00:30+01:00`` before ``18:00:00``.  F&O compares the
+    timeline value and supplies the implicit timezone for an operand without
+    one.
+    """
+    from elementpath.datatypes import Date, DateTime, Time
+
+    local = _local_name(left)
+    if local != _local_name(right):
+        raise XsltDynamicError(
+            f"sort keys {left.lexical!r} and {right.lexical!r} are not comparable",
+            code="XTDE1030",
+        )
+    datatype = cast(Any, {"date": Date, "time": Time}.get(local, DateTime))
+    try:
+        first = datatype.fromstring(left.lexical)
+        second = datatype.fromstring(right.lexical)
+    except (TypeError, ValueError) as exc:
+        raise XsltDynamicError(
+            f"sort keys {left.lexical!r} and {right.lexical!r} are not comparable",
+            code="XTDE1030",
+        ) from exc
+    if implicit_timezone is not None:
+        if first.tzinfo is None:
+            first.tzinfo = implicit_timezone
+        if second.tzinfo is None:
+            second.tzinfo = implicit_timezone
+    if first == second:
+        return 0
+    return -1 if first < second else 1
 
 
 def _compare_key_sequences(
@@ -796,8 +840,12 @@ def _numeric_equal(left: XdmAtomic, right: XdmAtomic) -> bool:
         return left_nan and right_nan
     left_local = _local_name(left)
     right_local = _local_name(right)
-    if left_local in ("double", "float") or right_local in ("double", "float"):
+    if left_local == "double" or right_local == "double":
         return _as_float(left_value) == _as_float(right_value)
+    if left_local == "float" or right_local == "float":
+        # F&O numeric promotion prefers double, then float, then decimal: a
+        # float/decimal comparison happens in binary32, not binary64.
+        return _as_float32(left_value) == _as_float32(right_value)
     return bool(left_value == right_value)
 
 
@@ -1715,6 +1763,7 @@ def resolve_key_spec(
             order=order,
             collation=collation,
             data_type=data_type,
+            implicit_timezone=invocation.implicit_timezone,
         ),
         signature,
     )
@@ -1878,8 +1927,21 @@ def grouped_items(
         groups = group_adjacent(population, keys, collation)
     else:
         assert plan.pattern is not None
+        if invocation.profile_for().native and any(
+            not isinstance(item, XdmNode) for item in population
+        ):
+            # XSLT 2.0 §14.2: a positional grouping whose population contains
+            # an atomic value is a type error.  XSLT 3.0 permits it.
+            raise XsltDynamicError(
+                "a positional grouping requires a population of nodes",
+                code="XTTE1120",
+            )
         matcher = PatternMatcher(plan.pattern)
-        environment = invocation._pattern_environment_for(plan.pattern, context.package_name)
+        environment = invocation._pattern_environment_for(
+            plan.pattern,
+            context.package_name,
+            locals_=context.locals if plan.pattern.variable_names else None,
+        )
         with invocation._group_scope(None, None):
             matches = tuple(matcher.matches(item, environment) for item in population)
         if plan.algorithm == GROUP_STARTING_WITH:

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from decimal import Decimal
 from functools import cache
 from typing import Any, Literal, cast
@@ -214,6 +214,36 @@ class CompiledPattern:
     @property
     def default_priorities(self) -> tuple[Decimal, ...]:
         return tuple(alternative.priority for alternative in self.alternatives)
+
+    @property
+    def variable_names(self) -> frozenset[str]:
+        """Every variable an alternative's predicate or rooted base references.
+
+        A grouping pattern is evaluated in the caller's local scope, so a
+        reference such as ``*[@cont = $p]`` needs the invocation's variables;
+        a pattern without one keeps the shared cached environment.
+        """
+        names: set[str] = set()
+
+        def visit(value: object) -> None:
+            if isinstance(value, CompiledExpression):
+                names.update(value.variable_names)
+                return
+            if isinstance(value, FunctionArgument) and value.kind == "variable":
+                if value.name is not None:  # pragma: no branch - variable arguments are named
+                    names.add(value.name)
+                return
+            if is_dataclass(value) and not isinstance(value, type):
+                for item in fields(value):
+                    visit(getattr(value, item.name))
+                return
+            if isinstance(value, (tuple, list)):
+                for item in value:
+                    visit(item)
+
+        for alternative in self.alternatives:
+            visit(alternative)
+        return frozenset(names)
 
 
 # ---------------------------------------------------------------------------
@@ -778,10 +808,16 @@ def _evaluate_intersect_except(
     candidate: XdmNode,
     statistics: PatternStatistics,
     schema: SchemaPool | None,
+    *,
+    top: bool = True,
 ) -> tuple[XdmNode, ...]:
-    result = _evaluate_path(expr.first, context_node, environment, candidate, statistics, schema)
+    result = _evaluate_path(
+        expr.first, context_node, environment, candidate, statistics, schema, top=top
+    )
     for operator, path in expr.rest:
-        other = set(_evaluate_path(path, context_node, environment, candidate, statistics, schema))
+        other = set(
+            _evaluate_path(path, context_node, environment, candidate, statistics, schema, top=top)
+        )
         if operator == "intersect":
             result = tuple(node for node in result if node in other)
         else:
@@ -796,14 +832,21 @@ def _evaluate_union(
     candidate: XdmNode,
     statistics: PatternStatistics,
     schema: SchemaPool | None,
+    *,
+    top: bool,
 ) -> tuple[XdmNode, ...]:
     nodes: dict[XdmNode, None] = {}
     for alternative in union.alternatives:
         for node in _evaluate_intersect_except(
-            alternative, context_node, environment, candidate, statistics, schema
+            alternative, context_node, environment, candidate, statistics, schema, top=top
         ):
             nodes[node] = None
-    return tuple(sorted(nodes, key=lambda node: (id(node.root), node.document_order)))
+    return tuple(
+        sorted(
+            nodes,
+            key=lambda node: (getattr(node.root, "_tree_identity", 0), node.document_order),
+        )
+    )
 
 
 def _evaluate_path(
@@ -813,10 +856,12 @@ def _evaluate_path(
     candidate: XdmNode,
     statistics: PatternStatistics,
     schema: SchemaPool | None,
+    *,
+    top: bool = True,
 ) -> tuple[XdmNode, ...]:
     if isinstance(path, RelativePath):
         return _evaluate_steps(
-            path, (context_node,), environment, candidate, statistics, schema, top=True
+            path, (context_node,), environment, candidate, statistics, schema, top=top
         )
     if isinstance(path, AbsoluteOnly):
         root = context_node.root
@@ -939,7 +984,7 @@ def _evaluate_step(
 ) -> tuple[XdmNode, ...]:
     if isinstance(step, PostfixStep):
         nodes = _evaluate_union(
-            step.union, context_node, environment, candidate, statistics, schema
+            step.union, context_node, environment, candidate, statistics, schema, top=top
         )
         return _filter_sequence(nodes, step.predicates, environment, candidate, statistics)
     nodes = tuple(
@@ -1000,6 +1045,11 @@ def _rooted_base(
         document = _document_for_uri(uri, environment, focus)
         return () if document is None else (document,)
     if local in {"id", "element-with-id"}:
+        element_with_id = local == "element-with-id"
+        id_lookup = environment.id_lookup
+        if id_lookup is not None:
+            found = id_lookup(focus, tuple(arguments), element_with_id)
+            return tuple(item for item in found if isinstance(item, XdmNode))
         tokens = _id_tokens(arguments[0])
         root = focus.root
         if len(arguments) > 1:
@@ -1007,14 +1057,16 @@ def _rooted_base(
             if node is None:
                 return ()
             root = node.root
-        return _id_nodes(root, tokens)
-    lookup = environment.key_lookup
-    if lookup is not None:
+        return _id_nodes(root, tokens, element_with_id=element_with_id)
+    key_lookup = environment.key_lookup
+    if key_lookup is not None:
         # The invocation's lazy lookup owns index construction, the
         # two/three-argument rules, and the top-document filter; its result is
         # returned unchanged so a pattern key() orders and filters nodes
         # exactly like the same call in an expression.
-        return cast(tuple[XdmNode, ...], lookup(focus, tuple(arguments)))
+        return tuple(
+            item for item in key_lookup(focus, tuple(arguments)) if isinstance(item, XdmNode)
+        )
     nodes = _key_nodes(arguments, environment)
     if len(arguments) == 2:
         root = focus.root
@@ -1079,7 +1131,10 @@ def _document_for_uri(
     return None
 
 
-def _id_nodes(root: XdmNode, tokens: frozenset[str]) -> tuple[XdmNode, ...]:
+def _id_nodes(
+    root: XdmNode, tokens: frozenset[str], *, element_with_id: bool = False
+) -> tuple[XdmNode, ...]:
+    """The standalone ID lookup used when no invocation resource is supplied."""
     if not tokens:
         return ()
     found: dict[XdmNode, None] = {}
@@ -1090,7 +1145,12 @@ def _id_nodes(root: XdmNode, tokens: frozenset[str]) -> tuple[XdmNode, ...]:
             getattr(node.annotation, "id_kind", None) in {"ID", "id"}
             and node.string_value in tokens
         ):
-            found[node] = None
+            identified = node
+            if element_with_id:
+                parent = node.parent
+                if parent is not None and parent.kind is NodeKind.ELEMENT:
+                    identified = parent
+            found[identified] = None
         for attribute in node.attributes:
             if (
                 getattr(attribute.annotation, "id_kind", None) in {"ID", "id"}

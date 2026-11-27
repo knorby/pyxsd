@@ -32,7 +32,7 @@ from types import MappingProxyType
 from typing import Any, cast
 from urllib.parse import urljoin, urlsplit
 
-from elementpath.datatypes import QName
+from elementpath.datatypes import Date, DateTime, QName, Time
 from elementpath.helpers import is_ncname
 from elementpath.xpath1 import XPath1Parser
 from elementpath.xpath2 import XPath2Parser
@@ -40,13 +40,20 @@ from elementpath.xpath3 import XPath31Parser
 
 from pyxsd import __version__
 from pyxsd import xsd_data_types as _xsd
+from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import local_name as _local_name
 from pyxsd.namespaces import namespace_of as _namespace_of
 from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
 from pyxsd.xdm.annotations import builtin_type_classes
+from pyxsd.xdm.legacy import ResultTreeFragment
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xpath.environment import Focus, FunctionArity
-from pyxsd.xpath.functions import ContextFunction
+from pyxsd.xpath.functions import (
+    ContextFunction,
+    atomic_to_elementpath,
+    format_datetime_value,
+    format_integer_value,
+)
 from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltSerializationError
 from pyxsd.xslt.runtime.numbering import DecimalFormat, format_number
 from pyxsd.xslt.serialization import SerializationParameters, Serializer
@@ -64,6 +71,11 @@ XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 FN_NS = "http://www.w3.org/2005/xpath-functions"
+
+#: The required dynamic type of each ``format-date`` family argument.
+_DATETIME_ARGUMENT_TYPES: Mapping[str, type[Any]] = MappingProxyType(
+    {"date": Date, "time": Time, "dateTime": DateTime}
+)
 
 
 #: Marker for an absent dynamic component.  An absent component is never the
@@ -246,17 +258,24 @@ XSLT_FUNCTION_ARITIES: Mapping[str, FunctionArity] = MappingProxyType(
         "available-system-properties": 0,
         "accumulator-after": 1,
         "accumulator-before": 1,
+        "copy-of": (0, 1),
         "current": 0,
         "current-group": 0,
         "current-grouping-key": 0,
         "current-merge-group": (0, 1),
         "current-merge-key": 0,
+        "current-output-uri": 0,
         "document": (1, 2),
         "element-available": 1,
+        "format-date": (2, 5),
+        "format-dateTime": (2, 5),
+        "format-integer": 2,
         "format-number": (2, 3),
+        "format-time": (2, 5),
         "function-available": (1, 2),
         "key": (2, 3),
         "regex-group": 1,
+        "snapshot": (0, 1),
         "system-property": 1,
         "type-available": 1,
         "unparsed-entity-uri": (1, 2),
@@ -268,16 +287,23 @@ _FUNCTION_MINIMUM_VERSION: Mapping[str, str] = MappingProxyType(
         "available-system-properties": "3.0",
         "accumulator-after": "3.0",
         "accumulator-before": "3.0",
+        "copy-of": "3.0",
         "current": "1.0",
         "current-group": "2.0",
         "current-grouping-key": "2.0",
         "current-merge-group": "3.0",
         "current-merge-key": "3.0",
+        "current-output-uri": "2.0",
         "document": "1.0",
         "element-available": "1.0",
+        "format-date": "2.0",
+        "format-dateTime": "2.0",
+        "format-integer": "2.0",
         "format-number": "1.0",
+        "format-time": "2.0",
         "function-available": "1.0",
         "regex-group": "2.0",
+        "snapshot": "3.0",
         "system-property": "1.0",
         "type-available": "2.0",
         "unparsed-entity-uri": "1.0",
@@ -285,6 +311,10 @@ _FUNCTION_MINIMUM_VERSION: Mapping[str, str] = MappingProxyType(
 )
 
 _PROFILE_VERSIONS = frozenset({"1.0", "2.0", "3.0", "3.1"})
+
+#: Formatting functions the XPath 3.1 parser already provides.  A 3.0 profile
+#: keeps the native symbols; a native 2.0 profile declares and implements them.
+_NATIVE_FORMATTERS = frozenset({"format-date", "format-time", "format-dateTime", "format-integer"})
 
 #: Lexical names of functions that need the XSLT bridge rather than the
 #: continuation machine's static host-function table.
@@ -304,6 +334,8 @@ def _version_at_least(version: str, minimum: str) -> bool:
 def _declaration_arity(local: str, version: str) -> FunctionArity:
     if local == "document":
         return 1 if version == "1.0" else (1, 2)
+    if local == "format-integer":
+        return 2 if not _version_at_least(version, "3.0") else (2, 3)
     if local == "format-number":
         return 2 if version == "1.0" else (2, 3)
     if local == "function-available":
@@ -329,6 +361,11 @@ def xslt_function_declarations(version: str) -> Mapping[str, FunctionArity]:
     declarations: dict[str, FunctionArity] = {}
     for local, minimum in _FUNCTION_MINIMUM_VERSION.items():
         if not _version_at_least(effective, minimum):
+            continue
+        if local in _NATIVE_FORMATTERS and _version_at_least(effective, "3.0"):
+            # The XPath 3.1 parser owns these symbols natively.  Declaring them
+            # again would register a host proxy over the built-in token, so the
+            # 3.0 surface keeps the native functions.
             continue
         declarations[f"fn:{local}"] = _declaration_arity(local, effective)
     if not _version_at_least(effective, "3.0"):
@@ -486,9 +523,12 @@ class XsltContextBridge:
     namespaces: Mapping[str, str] = field(default_factory=dict)
     default_namespace: str | None = None
     base_uri: str | None = None
+    current_output_uri: str | None = None
     xpath_version: str = "3.1"
     xslt_version: str | None = None
     key_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence] | None = None
+    id_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...], bool], XdmSequence] | None = None
+    idref_lookup: Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence] | None = None
     extension_functions: frozenset[tuple[str, int]] = frozenset()
 
     def __post_init__(self) -> None:
@@ -552,10 +592,16 @@ class XsltContextBridge:
             )
         if self.base_uri is not None and not isinstance(self.base_uri, str):
             raise TypeError("base_uri must be a string or None")
+        if self.current_output_uri is not None and not isinstance(self.current_output_uri, str):
+            raise TypeError("current_output_uri must be a string or None")
         if self.package_name is not None and not isinstance(self.package_name, str):
             raise TypeError("package_name must be a string or None")
         if self.key_lookup is not None and not callable(self.key_lookup):
             raise TypeError("key_lookup must be callable or None")
+        if self.id_lookup is not None and not callable(self.id_lookup):
+            raise TypeError("id_lookup must be callable or None")
+        if self.idref_lookup is not None and not callable(self.idref_lookup):
+            raise TypeError("idref_lookup must be callable or None")
         declared = frozenset(self.extension_functions)
         for name, arity in declared:
             if not isinstance(name, str) or not name:
@@ -633,6 +679,14 @@ class XsltContextBridge:
         legal = {name.partition(":")[2] for name in xslt_function_declarations(self.version)}
         table: dict[str, ContextFunction] = {
             f"{{{FN_NS}}}current": ContextFunction(self._direct_current, self._dynamic_current),
+            f"{{{FN_NS}}}copy-of": ContextFunction(self._copy_of_function, self._copy_of_function),
+            f"{{{FN_NS}}}snapshot": ContextFunction(
+                self._snapshot_function, self._snapshot_function
+            ),
+            f"{{{FN_NS}}}root": ContextFunction(self._root_function, self._root_function),
+            f"{{{FN_NS}}}parse-xml": ContextFunction(
+                self._parse_xml_function, self._parse_xml_function
+            ),
             f"{{{FN_NS}}}document": ContextFunction(self._document_function),
             f"{{{FN_NS}}}doc": ContextFunction(self._doc_function),
             f"{{{FN_NS}}}in-scope-prefixes": ContextFunction(self._in_scope_prefixes_function),
@@ -661,12 +715,24 @@ class XsltContextBridge:
             f"{{{FN_NS}}}transform": ContextFunction(
                 self._transform_function, self._transform_function
             ),
+            f"{{{FN_NS}}}format-date": ContextFunction(self._format_date_function("date")),
+            f"{{{FN_NS}}}format-time": ContextFunction(self._format_date_function("time")),
+            f"{{{FN_NS}}}format-dateTime": ContextFunction(self._format_date_function("dateTime")),
         }
+        if self._native_pre_30():
+            # ``format-integer``'s language argument arrived with the 3.0
+            # library; the XPath 3.1 parser keeps its own implementation.
+            table[f"{{{FN_NS}}}format-integer"] = ContextFunction(self._format_integer_function)
         if "type-available" in legal:
             table[f"{{{FN_NS}}}type-available"] = ContextFunction(self._type_available_function)
         if "available-system-properties" in legal:
             table[f"{{{FN_NS}}}available-system-properties"] = ContextFunction(
                 self._available_system_properties_function
+            )
+        if "current-output-uri" in legal:
+            table[f"{{{FN_NS}}}current-output-uri"] = ContextFunction(
+                self._current_output_uri_function,
+                self._current_output_uri_function,
             )
         if "current-group" in legal:
             table[f"{{{FN_NS}}}current-group"] = ContextFunction(
@@ -696,6 +762,14 @@ class XsltContextBridge:
             table[f"{{{FN_NS}}}accumulator-after"] = ContextFunction(self._direct_accumulator_after)
         if self.key_lookup is not None:
             table[f"{{{FN_NS}}}key"] = ContextFunction(self._direct_key, self._dynamic_key)
+        if self.id_lookup is not None:
+            table[f"{{{FN_NS}}}id"] = ContextFunction(self._direct_id, self._dynamic_id)
+            if _version_at_least(self.version, "3.0"):
+                table[f"{{{FN_NS}}}element-with-id"] = ContextFunction(
+                    self._direct_element_with_id, self._dynamic_element_with_id
+                )
+        if self.idref_lookup is not None:
+            table[f"{{{FN_NS}}}idref"] = ContextFunction(self._direct_idref, self._dynamic_idref)
         return MappingProxyType(table)
 
     def _serialize_function(
@@ -801,6 +875,122 @@ class XsltContextBridge:
             value=value,
         )
 
+    def _copy_of_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """Deep-copy each item of the argument, or of the context item.
+
+        XSLT 3.0 section 18.3 defines the one-argument form as
+        ``$input ! internal:copy-item(.)`` and the zero-argument form as a copy
+        of the context item, so an absent context item is ``XPDY0002`` rather
+        than an empty result.  The copy rules themselves belong to the deep-copy
+        instruction (section 11.9.2); the import is deferred because the
+        instruction module reaches the runtime bridge this module owns.
+        """
+        from pyxsd.xslt.runtime.instructions import deep_copy_item
+
+        if arguments:
+            items = arguments[0]
+        elif context_item is None:
+            raise XsltDynamicError(
+                "copy-of() requires a context item",
+                code="XPDY0002",
+            )
+        else:
+            items = (context_item,)
+        return tuple(deep_copy_item(item, self.transformation) for item in items)
+
+    def _snapshot_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """Copy each item with the ancestor chain a snapshot retains.
+
+        XSLT 3.0 section 18.4 defines the zero-argument form as a snapshot of
+        the context item and the one-argument form as one snapshot per input
+        item, so an absent context item is ``XPDY0002``.  The copy rules are
+        shared with the deep-copy instruction and imported the same way as
+        ``copy-of``'s.
+        """
+        from pyxsd.xslt.runtime.instructions import snapshot_item
+
+        if arguments:
+            items = arguments[0]
+        elif context_item is None:
+            raise XsltDynamicError(
+                "snapshot() requires a context item",
+                code="XPDY0002",
+            )
+        else:
+            items = (context_item,)
+        return tuple(snapshot_item(item, self.transformation) for item in items)
+
+    def _root_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """The root of the tree containing the argument (F&O 3.1 section 13.5).
+
+        F&O defines ``root($arg)`` as ``($arg/ancestor-or-self::node())[1]``,
+        so the answer is the node's own tree root.  elementpath resolves the
+        root by searching the *evaluation's* focus tree, which returns empty
+        for a node another template, copy, or function produced; following the
+        parent chain is both the definition and the working answer.
+        """
+        if arguments:
+            argument = arguments[0]
+            if not argument:
+                return ()
+            if len(argument) > 1:
+                raise XsltDynamicError(
+                    "root() argument must be a single node",
+                    code="XPTY0004",
+                )
+            item = argument[0]
+        elif context_item is None:
+            raise XsltDynamicError(
+                "root() requires a context item",
+                code="XPDY0002",
+            )
+        else:
+            item = context_item
+        if not isinstance(item, XdmNode):
+            raise XsltDynamicError(
+                "root() requires a node",
+                code="XPTY0004",
+            )
+        return (item.root,)
+
+    def _parse_xml_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        """Parse one lexical XML document into a document node.
+
+        F&O 3.1 section 14.7.1: the argument is an optional string, the static
+        base URI is both the parser's base and the returned document node's
+        base URI, the document URI stays absent, and malformed content is
+        ``FODC0006``.  The substrate's own ``parse-xml`` builds an elementpath
+        tree that this bridge cannot convert, so the document is parsed into
+        the engine's XDM here.
+        """
+        del context_item
+        text = _optional_atomic_string(arguments, 0, "parse-xml() argument")
+        if text is None:
+            return ()
+        try:
+            return (XdmDocument.parse(text.encode("utf-8"), base_uri=self.base_uri),)
+        except PyXSDError as exc:
+            raise XsltDynamicError(
+                f"parse-xml() content is not a well-formed XML document: {exc}",
+                code="FODC0006",
+            ) from exc
+
     def current(self) -> XdmItem:
         """The instruction-level current item, never a predicate focus item."""
         if self.current_item is None:
@@ -812,6 +1002,10 @@ class XsltContextBridge:
 
     def current_group(self) -> XdmSequence:
         if isinstance(self.group, _Absent):
+            if self._native_pre_30():
+                # XSLT 2.0 §14.3: outside a grouping instruction current-group()
+                # is the empty sequence.  XSLT 3.0 makes that XTDE1061.
+                return ()
             raise XsltDynamicError(
                 "current-group() is not inside an xsl:for-each-group instruction",
                 code="XTDE1061",
@@ -820,6 +1014,10 @@ class XsltContextBridge:
 
     def current_grouping_key(self) -> XdmSequence:
         if isinstance(self.grouping_key, _Absent):
+            if self._native_pre_30():
+                # A positional grouping (group-starting-with/group-ending-with)
+                # has no grouping key; XSLT 2.0 returns empty and 3.0 raises.
+                return ()
             raise XsltDynamicError(
                 "current-grouping-key() is not inside a grouped xsl:for-each-group",
                 code="XTDE1071",
@@ -897,6 +1095,18 @@ class XsltContextBridge:
         if local == "supports-dynamic-evaluation":
             return "yes" if self._dynamic_evaluation_enabled() else "no"
         return SYSTEM_PROPERTIES.get(f"xsl:{local}", "")
+
+    def _native_pre_30(self) -> bool:
+        """Whether this bridge runs under a native pre-3.0 processor.
+
+        A bridge unit test may supply a placeholder transformation without the
+        profile service; the bridge's own language version is then the only
+        identity available.
+        """
+        profile_for = getattr(self.transformation, "profile_for", None)
+        if callable(profile_for):
+            return bool(profile_for().native)
+        return self.version in ("1.0", "2.0")
 
     def _dynamic_evaluation_enabled(self) -> bool:
         stylesheet = getattr(self.transformation, "stylesheet", None)
@@ -1021,7 +1231,7 @@ class XsltContextBridge:
                     "document() requires atomic values or nodes",
                     code="XPTY0004",
                 )
-            base = base_node_uri if node is not None else self.base_uri
+            base = self.base_uri if node is None else base_node_uri
             document = self._resolve_document_or_recover(_document_uri(item), base)
             if document is not None:
                 resolved[id(document)] = document
@@ -1458,12 +1668,71 @@ class XsltContextBridge:
                 code="XPTY0004",
             )
         value = value_sequence[0] if value_sequence else None
-        picture = _single_string(arguments, 1)
+        picture = _argument_string(arguments, 1, label="number picture")
         name: str | None = None
         if len(arguments) > 2 and arguments[2]:
-            name = _single_string(arguments, 2)
+            name = _argument_string(arguments, 2, label="decimal format name")
         formats = self.decimal_formats or {None: DecimalFormat()}
-        return (XdmAtomic.string(format_number(value, picture, name, formats, self.namespaces)),)
+        return (
+            XdmAtomic.string(
+                format_number(
+                    value,
+                    picture,
+                    name,
+                    formats,
+                    self.namespaces,
+                    compatibility=self.xslt_version == "1.0" or self.xpath_version == "1.0",
+                )
+            ),
+        )
+
+    def _format_date_function(
+        self, kind: str
+    ) -> Callable[[XdmItem | None, tuple[XdmSequence, ...]], XdmSequence]:
+        """One ``format-date``/``format-time``/``format-dateTime`` callback.
+
+        The implementation lives in the XPath formatting component so both the
+        native 2.0 profile and the 3.0 profile share one picture grammar; this
+        callback applies the XSLT function conversion rules and returns XDM.
+        """
+
+        def callback(
+            context_item: XdmItem | None,
+            arguments: tuple[XdmSequence, ...],
+        ) -> XdmSequence:
+            del context_item
+            value = _date_time_argument(arguments, kind)
+            picture = _argument_string(arguments, 1, label="date/time picture")
+            language = _optional_atomic_string(arguments, 2, "format language")
+            calendar = _optional_atomic_string(arguments, 3, "format calendar")
+            place = _optional_atomic_string(arguments, 4, "format place")
+            return (
+                XdmAtomic.string(
+                    format_datetime_value(
+                        kind,
+                        value,
+                        picture,
+                        language,
+                        calendar,
+                        place,
+                        round_fractional=self.transformation.profile_for().native,
+                    )
+                ),
+            )
+
+        return callback
+
+    def _format_integer_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        if not arguments[0]:
+            return (XdmAtomic.string(""),)
+        value = _single_integer(arguments, 0)
+        picture = _argument_string(arguments, 1, label="integer picture")
+        return (XdmAtomic.string(format_integer_value(value, picture)),)
 
     def _document_function(
         self,
@@ -1583,6 +1852,17 @@ class XsltContextBridge:
         value = _parse_json_document(text)
         return () if value is None else (value,)
 
+    def _current_output_uri_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item, arguments
+        if self.current_output_uri is None:
+            return ()
+        # XSLT 3.0 §25.1 types current-output-uri() as xs:anyURI?.
+        return (XdmAtomic.any_uri(self.current_output_uri),)
+
     def _system_property_function(
         self,
         context_item: XdmItem | None,
@@ -1695,6 +1975,57 @@ class XsltContextBridge:
         assert self.key_lookup is not None
         del context_item
         return self.key_lookup(None, arguments)
+
+    def _direct_id(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        assert self.id_lookup is not None
+        return self.id_lookup(context_item, arguments, False)
+
+    def _dynamic_id(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        assert self.id_lookup is not None
+        del context_item
+        return self.id_lookup(None, arguments, False)
+
+    def _direct_element_with_id(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        assert self.id_lookup is not None
+        return self.id_lookup(context_item, arguments, True)
+
+    def _dynamic_element_with_id(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        assert self.id_lookup is not None
+        del context_item
+        return self.id_lookup(None, arguments, True)
+
+    def _direct_idref(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        assert self.idref_lookup is not None
+        return self.idref_lookup(context_item, arguments)
+
+    def _dynamic_idref(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        assert self.idref_lookup is not None
+        del context_item
+        return self.idref_lookup(None, arguments)
 
 
 def _document_uri(item: XdmAtomic) -> str:
@@ -2125,6 +2456,60 @@ def _single_node(sequence: XdmSequence, label: str) -> XdmNode:
     return sequence[0]
 
 
+def _date_time_argument(
+    arguments: tuple[XdmSequence, ...],
+    kind: str,
+) -> Any:
+    """One ``xs:date``/``xs:time``/``xs:dateTime`` argument, atomized and cast.
+
+    Function conversion atomizes a node argument and casts an untyped value to
+    the declared type; the formatting component performs the cast so this
+    helper only has to enforce the cardinality rules and hand over an
+    elementpath atomic.
+    """
+    if not arguments or not arguments[0]:
+        return None
+    if len(arguments[0]) != 1:
+        raise XsltDynamicError(
+            f"format-{kind} requires at most one {kind} value",
+            code="XPTY0004",
+        )
+    item = arguments[0][0]
+    if isinstance(item, XdmNode):
+        typed = item.typed_value
+        if len(typed) != 1 or not isinstance(typed[0], XdmAtomic):
+            raise XsltDynamicError(
+                f"format-{kind} requires a single atomic value",
+                code="XPTY0004",
+            )
+        item = typed[0]
+    if not isinstance(item, XdmAtomic):
+        raise XsltDynamicError(
+            f"format-{kind} requires an atomic value",
+            code="XPTY0004",
+        )
+    target = _DATETIME_ARGUMENT_TYPES[kind]
+    local = item.type_name.rpartition("}")[2].rpartition(":")[2]
+    if local == "untypedAtomic":
+        try:
+            return target.fromstring(item.lexical)
+        except (TypeError, ValueError) as exc:
+            raise XsltDynamicError(
+                f"format-{kind} cannot cast {item.lexical!r} to xs:{kind}",
+                code="FORG0001",
+                cause=exc,
+            ) from None
+    value = atomic_to_elementpath(item)
+    if isinstance(value, target):
+        return value
+    # An actual xs:string (or any other non-date atomic) is not subject to a
+    # cast by the function conversion rules: only untypedAtomic is.
+    raise XsltDynamicError(
+        f"format-{kind} requires an xs:{kind} value, not {local}",
+        code="XPTY0004",
+    )
+
+
 def _single_string(arguments: tuple[XdmSequence, ...], index: int) -> str:
     if index >= len(arguments) or len(arguments[index]) != 1:
         raise XsltDynamicError(
@@ -2135,6 +2520,35 @@ def _single_string(arguments: tuple[XdmSequence, ...], index: int) -> str:
     if not isinstance(item, XdmAtomic):
         raise XsltDynamicError(
             "the function argument must be an atomic value",
+            code="XPTY0004",
+        )
+    return item.lexical
+
+
+def _argument_string(
+    arguments: tuple[XdmSequence, ...],
+    index: int,
+    *,
+    label: str,
+) -> str:
+    """One string-valued argument under the function conversion rules.
+
+    A single node atomizes to its string value, and a native 1.0 result tree
+    fragment converts to the string value of its root.  ``_single_string``
+    stays the strict atomic helper for the XSLT-defined functions that do not
+    accept a node argument here.
+    """
+    if index >= len(arguments) or len(arguments[index]) != 1:
+        raise XsltDynamicError(
+            f"the {label} must be a single value",
+            code="XPTY0004",
+        )
+    item = arguments[index][0]
+    if isinstance(item, (XdmNode, ResultTreeFragment)):
+        return item.string_value
+    if not isinstance(item, XdmAtomic):
+        raise XsltDynamicError(
+            f"the {label} must be a string",
             code="XPTY0004",
         )
     return item.lexical

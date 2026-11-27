@@ -96,4 +96,6 @@ def normalize_text(value: str, form: str | None) -> str:
     """Apply one resolved ``normalization-form`` to a character run."""
     if form is None or form == "none":
         return value
+    if form == "fully-normalized":
+        return unicodedata.normalize("NFC", value)
     return unicodedata.normalize(cast(_NormalizationForm, form), value)

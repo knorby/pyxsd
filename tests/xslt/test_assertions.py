@@ -49,6 +49,7 @@ from tests.xslt.assertions import (
     _deep_equal,
     _is_gap,
     _namespace_map,
+    _parser,
     _unexpected_error,
     _xml_mismatch,
     _xml_namespace_scopes,
@@ -60,6 +61,7 @@ from tests.xslt.catalog import load_catalog
 from tests.xslt.model import Environment, Invocation
 from tests.xslt.model import TestCase as XmlTestCase
 from tests.xslt.outcomes import Outcome
+from tests.xslt.suite import SUITE_PROFILES, run_case
 
 FIXTURES = Path(__file__).parent / "fixtures"
 XSD = "http://www.w3.org/2001/XMLSchema"
@@ -715,6 +717,41 @@ def test_assertions_recover_test_set_and_assertion_local_namespaces() -> None:
     assert ("local", XSD) in case.namespace_scopes[3]
 
     result = assert_case(case, ResultSnapshot(xml="<out/>"))
+
+    assert result.outcome is Outcome.PASS
+    assert result.coverage == frozenset({"xpath"})
+
+
+def test_a_message_assertion_inspects_the_message_document() -> None:
+    """A message's value is the document node its constructor builds.
+
+    XSLT 3.0 section 18.1 defines the message content as a document node, so
+    ``assert-message`` can read its nodes: an absolute path, markup that spans
+    several top-level nodes, and a comment-only message.  The case is a
+    synthetic catalog case that executes end to end; the message family in the
+    coverage proves the assertions ran instead of being skipped as a gap.
+    """
+    catalog = load_catalog(FIXTURES / "assertions" / "assertion-test-set.xml")
+    case = catalog.cases["assertion/message-001"]
+
+    result = run_case(case, SUITE_PROFILES["xslt30"])
+
+    assert result.outcome is Outcome.PASS
+    assert result.coverage == frozenset({"xpath", "string", "xml", "message"})
+
+
+def test_a_result_variable_assertion_needs_no_context_item() -> None:
+    """``<output tree="no" result-var="result"/>`` binds the raw sequence.
+
+    The catalog makes the assertion read that variable, so a multi-item result
+    is legal and no context item exists.  Before the driver supported it the
+    case was an adapter gap; the declared variable name is ``result``, the name
+    the runner always binds (``runner/assert.xsl``).
+    """
+    catalog = load_catalog(FIXTURES / "assertions" / "assertion-test-set.xml")
+    case = catalog.cases["assertion/result-var-001"]
+
+    result = run_case(case, SUITE_PROFILES["xslt30"])
 
     assert result.outcome is Outcome.PASS
     assert result.coverage == frozenset({"xpath"})
@@ -1555,6 +1592,17 @@ def test_assert_case_gaps_unreported_serialization_metadata() -> None:
     assert "encoding is unavailable" in encoding_result.message
 
 
+def test_an_absent_assertion_context_is_not_an_empty_string_item() -> None:
+    """A result-variable assertion must not acquire a dummy focus item."""
+    from tests.xslt.assertions import _evaluate
+
+    snapshot = ResultSnapshot(xml="<a/><b/>", assertion_context_absent=True)
+    with pytest.raises(AssertionGap):
+        _evaluate("string-length(.)", declarations=(), result=snapshot)
+    with pytest.raises(AssertionGap):
+        _evaluate("name()", declarations=(), result=snapshot)
+
+
 def test_context_root_for_document_element_text_and_attribute_nodes() -> None:
     document = build_node_tree(ET.ElementTree(ET.fromstring("<out a='1'>text</out>")))
     element = document.children[0]
@@ -1568,3 +1616,100 @@ def test_context_root_for_document_element_text_and_attribute_nodes() -> None:
     assert _context_root(TextNode("x", parent=document)) is document
     assert _context_root(TextNode("x")) is None
     assert _context_root(1) is None
+
+
+def test_xml_assertion_ignores_insignificant_whitespace() -> None:
+    """A pretty-printed expectation matches compact markup."""
+    assertion = AssertionXML(expected="<out>\n  <e>true</e>\n  <f>false</f>\n</out>")
+    result = ResultSnapshot(xml="<out><e>true</e><f>false</f></out>")
+    assert assertion.evaluate_verdict(AssertionContext(result)).passed
+
+
+def test_xpath_assertion_sees_result_comments_and_processing_instructions() -> None:
+    """The assertion tree keeps comments and PIs with their surrounding text."""
+    result = ResultSnapshot(xml="<out><e><!--note-->hello</e><f><?pi data?></f></out>")
+    for expression in (
+        "/out/e[comment()='note']='hello'",
+        "/out/f[processing-instruction('pi')='data']",
+    ):
+        assertion = AssertionXPath(expression=expression)
+        assert assertion.evaluate_verdict(AssertionContext(result)).passed
+
+
+def test_xml_assertion_keeps_whitespace_significant_for_compact_expectations() -> None:
+    """Whitespace normalization is scoped to a pretty-printed expectation."""
+    assertion = AssertionXML(expected="<out><e>true</e></out>")
+    result = ResultSnapshot(xml="<out>\n  <e>true</e>\n</out>")
+
+    verdict = assertion.evaluate_verdict(AssertionContext(result))
+    assert not verdict.passed
+
+
+def test_xml_assertion_keeps_significant_whitespace_in_pretty_mixed_content() -> None:
+    """A missing whitespace-only text node between inline content still differs."""
+    assertion = AssertionXML(expected="<out>\n  <p>a <b/> c</p>\n</out>")
+
+    missing = ResultSnapshot(xml="<out><p>a<b/> c</p></out>")
+    assert not assertion.evaluate_verdict(AssertionContext(missing)).passed
+
+    added = ResultSnapshot(xml="<out><p>a  <b/> c</p></out>")
+    assert not assertion.evaluate_verdict(AssertionContext(added)).passed
+
+    exact = ResultSnapshot(xml="<out><p>a <b/> c</p></out>")
+    assert assertion.evaluate_verdict(AssertionContext(exact)).passed
+
+
+def test_xml_assertion_still_ignores_indentation_inside_element_only_content() -> None:
+    """Element-only indentation remains layout even under mixed-content siblings."""
+    assertion = AssertionXML(
+        expected="<out>\n  <p>a <b/> c</p>\n  <list>\n    <item/>\n  </list>\n</out>"
+    )
+    result = ResultSnapshot(xml="<out><p>a <b/> c</p><list><item/></list></out>")
+
+    assert assertion.evaluate_verdict(AssertionContext(result)).passed
+
+
+def test_xml_assertion_does_not_hide_actual_indentation() -> None:
+    """A pretty expectation is normalized; actual extra text still differs."""
+    assertion = AssertionXML(expected="<out>\n  <e>true</e>\n</out>")
+    result = ResultSnapshot(xml="<out>\n  <e>true</e>\n  extra\n</out>")
+
+    verdict = assertion.evaluate_verdict(AssertionContext(result))
+    assert not verdict.passed
+
+
+def test_actual_error_codes_accept_clark_and_eqname_forms() -> None:
+    """The engine's ``{uri}local`` and the catalog's ``Q{uri}local`` name one code."""
+    from tests.xslt.assertions import (
+        _display_code,
+        _normalize_actual_code,
+        _normalize_expected_code,
+    )
+
+    assert _normalize_actual_code("{urn:errors}notice") == _normalize_expected_code(
+        "Q{urn:errors}notice", ()
+    )
+    assert _normalize_actual_code("Q{}UIOP9876") == _normalize_expected_code("Q{}UIOP9876", ())
+    assert _normalize_actual_code("XTMM9000") == ("http://www.w3.org/2005/xqt-errors", "XTMM9000")
+    assert _display_code(_normalize_actual_code("{urn:errors}notice")) == "Q{urn:errors}notice"
+
+
+def test_assertion_parser_accepts_an_eqname_kind_test() -> None:
+    # The JSON escape cases assert element(Q{fn}string); the assertion grammar
+    # must measure the result rather than report a harness gap.
+    function_namespace = "http://www.w3.org/2005/xpath-functions"
+    ast = _parser([("fn", function_namespace)]).parse(
+        f"* instance of element(Q{{{function_namespace}}}string)"
+    )
+    assert ast is not None
+
+
+def test_assertion_parser_leaves_eqnames_inside_string_literals_alone() -> None:
+    # An EQName inside a literal is data, and a doubled quote does not end the
+    # literal.  Rewriting it would change the value the assertion compares.
+    parser = _parser([])
+    ast = parser.parse(
+        "'Q{urn:example}name''Q{urn:example}other' = 'Q{urn:example}name''Q{urn:example}other'"
+    )
+    assert ast is not None
+    assert "urn:example" not in parser.namespaces.values()

@@ -735,8 +735,9 @@ def test_parser_key_lists_every_static_component() -> None:
     assert key[9] == "urn:collation"
     assert key[10] == "1.1"
     assert key[11] == "3.0"
-    assert key[12] == (((True, ""), (("decimal-separator", "."),)),)
-    assert key[13] == frozenset()
+    assert key[12] is False
+    assert key[13] == (((True, ""), (("decimal-separator", "."),)),)
+    assert key[14] == frozenset()
 
     tagged = _parser_key(
         "3.1",
@@ -749,7 +750,7 @@ def test_parser_key_lists_every_static_component() -> None:
             }
         ),
     )
-    assert tagged[12] == (
+    assert tagged[13] == (
         ((False, "None"), (("zero-digit", "0"),)),
         ((True, ""), (("decimal-separator", "."),)),
     )

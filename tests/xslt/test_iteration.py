@@ -749,6 +749,32 @@ def test_iteration_control_rejects_shared_state_outside_iterate() -> None:
     assert caught.value.code == "XTSE3120"
 
 
+def test_nested_iterate_break_only_ends_the_inner_iteration() -> None:
+    source = stylesheet(
+        """
+        <xsl:template name="main">
+          <xsl:iterate select="1 to 2">
+            <xsl:iterate select="1 to 3">
+              <xsl:sequence select="'inner' || ."/>
+              <xsl:if test=". = 2"><xsl:break select="'inner-break'"/></xsl:if>
+            </xsl:iterate>
+            <xsl:sequence select="'outer' || ."/>
+          </xsl:iterate>
+        </xsl:template>
+        """
+    )
+    assert transform(source, initial_template="main").principal == (
+        XdmAtomic.string("inner1"),
+        XdmAtomic.string("inner2"),
+        XdmAtomic.string("inner-break"),
+        XdmAtomic.string("outer1"),
+        XdmAtomic.string("inner1"),
+        XdmAtomic.string("inner2"),
+        XdmAtomic.string("inner-break"),
+        XdmAtomic.string("outer2"),
+    )
+
+
 def test_break_inside_conditional_content_executes() -> None:
     source = stylesheet(
         """

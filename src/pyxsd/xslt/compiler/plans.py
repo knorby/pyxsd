@@ -94,11 +94,13 @@ __all__ = [
 @dataclass(frozen=True, slots=True)
 class _TextPlan:
     value: str
+    disable_output_escaping: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class _TvtPlan:
     template: CompiledValueTemplate
+    disable_output_escaping: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +117,7 @@ class _ValueOfPlan:
     children: tuple[_Plan, ...]
     separator: str | CompiledValueTemplate
     explicit_separator: bool = False
+    disable_output_escaping: bool = False
 
 
 @dataclass(frozen=True, slots=True)

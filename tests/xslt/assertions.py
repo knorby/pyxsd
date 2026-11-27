@@ -189,6 +189,16 @@ class ResultSnapshot:
     #: ``ResultSnapshot`` equality; two runs of one artifact agree on the
     #: comparison view, not on object identity.
     result_items: tuple[Any, ...] = field(default=(), compare=False)
+    #: Whether ``result_items`` are engine nodes the elementpath view cannot
+    #: bind.  A message's value is a document node (XSLT 3.0 section 18.1)
+    #: whose ``raw`` stays its string value; an assertion that needs a node
+    #: context evaluates those items through the engine instead.
+    engine_node_context: bool = False
+    #: Whether the assertion has no context item by design.  A catalog result
+    #: that binds the raw result to a variable (``<output tree="no"
+    #: result-var="result"/>``) evaluates its assertion against ``$result``
+    #: only, so a multi-item sequence is legal and a path step stays a gap.
+    assertion_context_absent: bool = False
     serialized: str | None = None
     messages: tuple[ResultSnapshot, ...] | None = None
     secondary: Mapping[str, ResultSnapshot] | None = None
@@ -303,20 +313,53 @@ def _raw_items(result: ResultSnapshot) -> tuple[Any, ...]:
     return ()
 
 
+def _assertion_xml_parser() -> ET.XMLParser:
+    """A parser that keeps comments and processing instructions.
+
+    ``ET.fromstring`` defaults drop both node kinds, so an assertion such as
+    ``comment() = "..."`` or ``processing-instruction(x) = "..."`` could never
+    see a result's comments or PIs even though the transformation emitted them.
+    """
+    return ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True))
+
+
 def _parse_actual_xml(xml: str) -> ET.Element:
     try:
-        return ET.fromstring(xml)
+        return ET.fromstring(xml, parser=_assertion_xml_parser())
     except ET.ParseError:
         try:
-            return ET.fromstring(f"<{_WRAPPER}>{xml}</{_WRAPPER}>")
+            return ET.fromstring(f"<{_WRAPPER}>{xml}</{_WRAPPER}>", parser=_assertion_xml_parser())
         except ET.ParseError as exc:
             raise AssertionFailure(f"actual XML result is not well formed: {exc}") from exc
+
+
+def _flatten_comment_tails(element: ET.Element) -> None:
+    """Move text that follows a comment/PI into ordinary text content.
+
+    ``ET.TreeBuilder(insert_comments=True)`` stores text after a comment or PI
+    in that node's ``tail``.  elementpath's element string value walks only
+    element text and child tails, so without this the text disappeared from
+    ``string()`` even though the comment node was present.  Re-associating the
+    tail keeps both the comment and the text visible to assertions.
+    """
+    previous: ET.Element | None = None
+    for child in list(element):
+        _flatten_comment_tails(child)
+        if callable(child.tag) and child.tail:
+            if previous is None:
+                element.text = (element.text or "") + child.tail
+            else:
+                previous.tail = (previous.tail or "") + child.tail
+            child.tail = None
+        previous = child
 
 
 def _document_node(xml: str) -> Any:
     if not xml.strip():
         return build_node_tree(ET.ElementTree())
-    return build_node_tree(ET.ElementTree(_parse_actual_xml(xml)))
+    root = _parse_actual_xml(xml)
+    _flatten_comment_tails(root)
+    return build_node_tree(ET.ElementTree(root))
 
 
 def _xpath_value(value: Any, parser: XPath31Parser) -> Any:
@@ -465,6 +508,46 @@ def _context_node_path(ast: Any) -> bool:
     return walk(ast, local_focus=False)
 
 
+_CONTEXT_DEFAULT_FUNCTIONS = frozenset(
+    {
+        "base-uri",
+        "document-uri",
+        "has-children",
+        "last",
+        "local-name",
+        "name",
+        "namespace-uri",
+        "node-name",
+        "normalize-space",
+        "number",
+        "path",
+        "position",
+        "root",
+        "string",
+        "string-length",
+    }
+)
+
+
+def _references_context_item(ast: Any) -> bool:
+    """Whether an assertion expression can observe its context item.
+
+    A result-variable assertion genuinely has no focus.  The evaluator still
+    needs one context object, so the harness supplies a placeholder only after
+    proving the expression cannot read it.  This check is conservative: a
+    context-item expression, a context-dependent axis/name step, or a
+    zero-argument function whose default argument is the context item all
+    count as a reference and make the assertion a gap instead.
+    """
+    for token in ast.iter():
+        symbol = getattr(token, "symbol", None)
+        if symbol in (".", ".."):
+            return True
+        if symbol in _CONTEXT_DEFAULT_FUNCTIONS and len(token) == 0:
+            return True
+    return _context_node_path(ast)
+
+
 def _context_root(item: Any) -> Any | None:
     """The root node required for absolute paths in an XPath assertion."""
     if isinstance(item, DocumentNode):
@@ -496,8 +579,63 @@ def _context_item(items: tuple[Any, ...], parser: XPath31Parser) -> Any:
     raise AssertionGap("an XPath assertion context is absent for a multi-item result")
 
 
+_EQNAME = re.compile(r"Q\{([^}]*)\}([A-Za-z_][A-Za-z0-9_.-]*)")
+
+
+class _AssertionParser(XPath31Parser):
+    """An assertion parser that accepts EQNames in sequence-type tests.
+
+    elementpath's kind-test grammar takes a lexical QName or ``*``; XPath 3.1
+    also permits ``Q{uri}local``.  The JSON cases use that spelling inside
+    ``element(Q{...}name)``, which the substrate rejects with XPST0003.  Bind a
+    generated prefix for each EQName before parsing so the assertion measures
+    the result rather than the harness grammar.
+    """
+
+    def parse(self, source: str) -> Any:
+        counter = 0
+        rewritten: list[str] = []
+        index = 0
+        quote: str | None = None
+        while index < len(source):
+            character = source[index]
+            if quote is not None:
+                rewritten.append(character)
+                if character == quote:
+                    if index + 1 < len(source) and source[index + 1] == quote:
+                        # XPath doubles a quote to escape it inside a literal.
+                        rewritten.append(quote)
+                        index += 2
+                        continue
+                    quote = None
+                index += 1
+                continue
+            if character in ("'", '"'):
+                quote = character
+                rewritten.append(character)
+                index += 1
+                continue
+            match = _EQNAME.match(source, index)
+            if match is not None:
+                uri, local = match.groups()
+                prefix = next(
+                    (p for p, bound in self.namespaces.items() if bound == uri and p),
+                    None,
+                )
+                if prefix is None:
+                    counter += 1
+                    prefix = f"eq{counter}"
+                    self.namespaces[prefix] = uri
+                rewritten.append(f"{prefix}:{local}")
+                index = match.end()
+                continue
+            rewritten.append(character)
+            index += 1
+        return super().parse("".join(rewritten))
+
+
 def _parser(declarations: Sequence[tuple[str, str]]) -> XPath31Parser:
-    return XPath31Parser(namespaces=_namespace_map(declarations))
+    return _AssertionParser(namespaces=_namespace_map(declarations))
 
 
 def _is_gap(exc: BaseException) -> bool:
@@ -598,6 +736,21 @@ def _evaluate_schema_aware(
     ``(/) instance of ...`` answers.  An empty result keeps ``$result`` empty
     while focusing an empty document node, exactly as the reference does.
     """
+    return _evaluate_engine_items(expression, declarations, items, pool=pool)
+
+
+def _evaluate_engine_items(
+    expression: str,
+    declarations: Sequence[tuple[str, str]],
+    items: tuple[Any, ...],
+    *,
+    pool: SchemaPool | None = None,
+) -> Any:
+    """Evaluate one assertion over engine XDM items under the runner's rule.
+
+    Shared by the schema-aware route and by a snapshot whose delivered items
+    the elementpath view cannot bind (a message's content document).
+    """
     if len(items) > 1:
         raise AssertionGap("an XPath assertion context is absent for a multi-item result")
     context_item = _result_context_item(items)
@@ -605,7 +758,7 @@ def _evaluate_schema_aware(
     static = XPathStaticContext(
         namespaces=_namespace_map(declarations),
         schema=pool,
-        xsd_version=pool.xsd_version,
+        xsd_version=None if pool is None else pool.xsd_version,
     )
     engine = XPathEngine(ASSERTION_XPATH_VERSION)
     compiled = engine.compile(expression, static)
@@ -633,9 +786,10 @@ def _node_context(result: ResultSnapshot) -> Any | None:
     if len(_raw_items(result)) != 1 or result.xml is None:
         return None
     try:
-        parsed = ET.fromstring(result.xml)
+        parsed = ET.fromstring(result.xml, parser=_assertion_xml_parser())
     except ET.ParseError:
         return None
+    _flatten_comment_tails(parsed)
     return build_node_tree(ET.ElementTree(parsed))
 
 
@@ -669,7 +823,23 @@ def _evaluate(
             if pool is not None:
                 return _evaluate_schema_aware(expression, declarations, pool, result.result_items)
         items = _raw_items(result)
-        context_item = _context_item(items, parser)
+        if result.engine_node_context and _context_node_path(ast):
+            # The result's delivered items are engine nodes the elementpath
+            # view cannot bind (a message's content document).  Only a node
+            # context is affected: every other assertion keeps the exact path
+            # it had, so a decided verdict cannot move.
+            return _evaluate_engine_items(expression, declarations, result.result_items)
+        # A catalog result variable means the assertion reads ``$result`` and
+        # has no context item.  The evaluator requires some context object, so
+        # a focus-independent expression gets an unobservable placeholder after
+        # the structural check; anything that can read the focus is a gap, not
+        # a verdict decided against a dummy item.
+        if result.assertion_context_absent:
+            if _references_context_item(ast):
+                raise AssertionGap("a result-variable assertion has no context item to reference")
+            context_item = ""
+        else:
+            context_item = _context_item(items, parser)
         root = _context_root(context_item)
         if root is None and _context_node_path(ast):
             document = _node_context(result)
@@ -837,6 +1007,11 @@ def _split_attribute_name(name: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def _is_pretty_printed(xml: str) -> bool:
+    """Whether an expected document indents markup across lines."""
+    return re.search(r">\s*\n\s*<", xml) is not None
+
+
 def _canonicalize(text: str) -> _CanonicalNode:
     document = _strip_xml_declaration(text)
     payload = f"<{_WRAPPER}>{document}</{_WRAPPER}>"
@@ -899,6 +1074,36 @@ def _unwrap(node: _CanonicalNode) -> tuple[_CanonicalNode, ...]:
     return children
 
 
+def _strip_pretty_whitespace(node: _CanonicalNode) -> _CanonicalNode:
+    """Remove indentation text from proven element-only structures.
+
+    Indentation is only removable where the parent holds child markup and no
+    non-whitespace text: there, a whitespace-only text node is layout, not
+    content.  In mixed content every text node is significant, including one
+    that happens to be whitespace-only between inline elements, so it is kept.
+    The recursion applies the same rule at every level, and only a
+    pretty-printed expectation enables the normalization at all.
+    """
+    if not node.children:
+        return node
+    children = tuple(_strip_pretty_whitespace(child) for child in node.children)
+    has_markup = any(child.kind in ("element", "comment", "pi") for child in children)
+    has_text = any(child.kind == "text" and child.value.strip() for child in children)
+    if has_markup and not has_text:
+        children = tuple(
+            child for child in children if not (child.kind == "text" and not child.value.strip())
+        )
+    return _CanonicalNode(
+        node.kind,
+        namespace=node.namespace,
+        local=node.local,
+        prefix=node.prefix,
+        value=node.value,
+        attributes=node.attributes,
+        children=children,
+    )
+
+
 def _canonical_equal(left: _CanonicalNode, right: _CanonicalNode, ignore_prefixes: bool) -> bool:
     if left.kind != right.kind:
         return False
@@ -926,6 +1131,9 @@ def _xml_equal(expected: str, actual: str, ignore_prefixes: bool) -> bool:
         actual_node = _canonicalize(actual)
     except AssertionDispute as exc:
         raise AssertionFailure(f"actual XML result is not well formed: {exc}") from exc
+    if _is_pretty_printed(expected):
+        expected_node = _strip_pretty_whitespace(expected_node)
+        actual_node = _strip_pretty_whitespace(actual_node)
     expected_children = _unwrap(expected_node)
     actual_children = _unwrap(actual_node)
     if len(expected_children) != len(actual_children):
@@ -1038,8 +1246,13 @@ def _first_difference(
     expected: str, actual: str, ignore_prefixes: bool
 ) -> tuple[str, str, _CanonicalNode | None, _CanonicalNode | None] | None:
     """The first difference between two serialized XML documents."""
-    left = _CanonicalNode("element", children=_unwrap(_canonicalize(expected)))
-    right = _CanonicalNode("element", children=_unwrap(_canonicalize(actual)))
+    expected_node = _canonicalize(expected)
+    actual_node = _canonicalize(actual)
+    if _is_pretty_printed(expected):
+        expected_node = _strip_pretty_whitespace(expected_node)
+        actual_node = _strip_pretty_whitespace(actual_node)
+    left = _CanonicalNode("element", children=_unwrap(expected_node))
+    right = _CanonicalNode("element", children=_unwrap(actual_node))
     difference = _element_difference(left, right, "", ignore_prefixes)
     if difference is None:
         return None
@@ -1107,6 +1320,12 @@ def _normalize_actual_code(code: str) -> tuple[str | None, str]:
     value = code.strip()
     if value.startswith("Q{"):
         uri, local = value[2:].split("}", 1)
+        return (uri or None, local)
+    if value.startswith("{"):
+        # The engine reports a non-``err:`` dynamic error code in Clark
+        # notation (``{uri}local``); the catalog writes the same code as an
+        # EQName (``Q{uri}local``).  Both name one code.
+        uri, _, local = value[1:].partition("}")
         return (uri or None, local)
     if ":" in value:
         prefix, local = value.split(":", 1)

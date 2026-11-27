@@ -897,3 +897,134 @@ def test_atomic_equal_handles_comparison_failures_as_unequal() -> None:
     left = XdmAtomic(BadEquality(), "urn:bad")
     right = XdmAtomic(BadEquality(), "urn:bad")
     assert atomic_equal(left, right, collation) is False
+
+
+# ---------------------------------------------------------------------------
+# Pattern scope, node items, and profile-specific current-group state
+
+
+def test_grouping_pattern_sees_a_local_variable() -> None:
+    """A local variable in a grouping pattern is bound from the caller."""
+    body = """
+        <xsl:param name="marker" as="xs:string" select="'stop'"/>
+        <xsl:template name="main">
+          <out>
+            <xsl:for-each select="doc">
+              <xsl:variable name="p" select="'stop'"/>
+              <xsl:for-each-group select="n" group-ending-with="n[@kind = $p]">
+                <g><xsl:value-of select="current-group()" separator=","/></g>
+              </xsl:for-each-group>
+            </xsl:for-each>
+          </out>
+        </xsl:template>
+    """
+    result = transform(
+        stylesheet(body),
+        b'<doc><n kind="go">1</n><n kind="stop">2</n><n kind="go">3</n><n kind="stop">4</n></doc>',
+        initial_template="main",
+    )
+    groups = element_children(result.principal_tree.root_element)
+    assert [group.string_value for group in groups] == ["1,2", "3,4"]
+
+
+def test_grouping_key_promotes_float_before_decimal() -> None:
+    """A float/decimal key pair compares in binary32 (F&O numeric promotion)."""
+    body = """
+        <xsl:template name="main">
+          <out>
+            <xsl:for-each-group select="
+                  xs:decimal('1.0000000000100000000001'),
+                  xs:float('1.0'),
+                  xs:decimal('1.0000000000100000000001'),
+                  xs:double('1.00000000001')" group-by=".">
+              <g><xsl:value-of select="current-group()" separator=","/></g>
+            </xsl:for-each-group>
+          </out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main")
+    groups = element_children(result.principal_tree.root_element)
+    assert len(groups) == 1
+
+
+def test_current_group_outside_grouping_differs_by_profile() -> None:
+    """XSLT 2.0 returns empty; XSLT 3.0 raises XTDE1061."""
+    body = """
+        <xsl:template name="main">
+          <out><xsl:value-of select="empty(current-group())"/></out>
+        </xsl:template>
+    """
+    native = XsltProcessor(language="2.0", xpath="2.0").compile(
+        io.BytesIO(stylesheet(body, version="2.0"))
+    )
+    result = native.transform(source=b"<doc/>", initial_template="main", delivery="document")
+    assert result.principal_tree.root_element.string_value.strip() == "true"
+    with pytest.raises(XsltError) as caught:
+        transform(stylesheet(body), initial_template="main")
+    assert caught.value.code == "XTDE1061"
+
+
+def test_current_grouping_key_is_empty_for_a_positional_group_in_2_0() -> None:
+    body = """
+        <xsl:template name="main">
+          <out>
+            <xsl:for-each-group select="doc/n" group-starting-with="n[@start]">
+              <g key="{current-grouping-key()}"/>
+            </xsl:for-each-group>
+          </out>
+        </xsl:template>
+    """
+    native = XsltProcessor(language="2.0", xpath="2.0").compile(
+        io.BytesIO(stylesheet(body, version="2.0"))
+    )
+    result = native.transform(
+        source=b'<doc><n start="1">a</n><n>b</n></doc>',
+        initial_template="main",
+        delivery="document",
+    )
+    groups = element_children(result.principal_tree.root_element)
+    assert [group.attribute("key").string_value for group in groups] == [""]
+    with pytest.raises(XsltError) as caught:
+        transform(
+            stylesheet(body),
+            b'<doc><n start="1">a</n><n>b</n></doc>',
+            initial_template="main",
+        )
+    assert caught.value.code == "XTDE1071"
+
+
+def test_positional_grouping_rejects_atomic_population_in_2_0() -> None:
+    body = """
+        <xsl:template name="main">
+          <out>
+            <xsl:for-each-group select="1, 2, 3" group-starting-with="/">
+              <g/>
+            </xsl:for-each-group>
+          </out>
+        </xsl:template>
+    """
+    native = XsltProcessor(language="2.0", xpath="2.0")
+    with pytest.raises(XsltError) as caught:
+        native.compile(io.BytesIO(stylesheet(body, version="2.0"))).transform(
+            source=b"<doc/>", initial_template="main"
+        )
+    assert caught.value.code == "XTTE1120"
+
+
+def test_node_type_test_matches_a_document_from_a_variable() -> None:
+    """``node()`` matches a document node held in a variable or from document()."""
+    body = """
+        <xsl:variable name="tree"><a><b/></a></xsl:variable>
+        <xsl:template name="main">
+          <out>
+            <a><xsl:value-of select="$tree instance of node()"/></a>
+            <b><xsl:value-of select="count($tree/a/b/parent::node())"/></b>
+            <c><xsl:value-of select="count($tree/a/parent::node())"/></c>
+          </out>
+        </xsl:template>
+    """
+    result = transform(stylesheet(body), initial_template="main", delivery="document")
+    values = [
+        element.string_value for element in element_children(result.principal_tree.root_element)
+    ]
+    assert values == ["true", "1", "1"]

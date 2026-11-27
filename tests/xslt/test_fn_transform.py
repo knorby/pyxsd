@@ -1149,3 +1149,25 @@ def test_delivered_entries_guard_and_inheritance_validation() -> None:
         )
     with pytest.raises(TypeError, match="shared"):
         Transformation(shared=object())
+
+
+def test_node_valued_stylesheet_location_atomizes_to_a_string(tmp_path: Path) -> None:
+    location = tmp_path / "nested.xsl"
+    location.write_text(NESTED_SHEET, encoding="utf-8")
+    node = XdmDocument.parse(f"<path>{location}</path>".encode()).root_element
+
+    result = run_transform({"stylesheet-location": node})
+
+    assert map_get(result, "output")[0].root_element.local_name == "out"
+
+
+def test_missing_stylesheet_location_is_foxt0002(tmp_path: Path) -> None:
+    with pytest.raises(XsltDynamicError) as error:
+        run_transform({"stylesheet-location": str(tmp_path / "missing.xsl")})
+    assert error.value.code == "FOXT0002"
+
+
+def test_map_valued_stylesheet_location_is_foxt0002() -> None:
+    with pytest.raises(XsltDynamicError) as error:
+        run_transform({"stylesheet-location": XdmMap.from_mapping({"path": "x.xsl"})})
+    assert error.value.code == "FOXT0002"

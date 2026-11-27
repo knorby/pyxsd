@@ -22,7 +22,7 @@ from typing import TypeAlias
 from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import local_name as _local_name
 from pyxsd.namespaces import namespace_of as _namespace_of
-from pyxsd.xdm.nodes import NodeKind
+from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xslt.compiler.static import EffectiveElement, EffectiveNode, EffectiveText
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
@@ -81,6 +81,9 @@ class ComponentReference:
     marks the special ``xsl:original`` reference and is legal only inside a
     named-component override.  ``visibility`` records the target's visibility
     at binding time so a package copy can decide whether to rebind it.
+    ``parameter_names`` records the target template's non-tunnel parameter
+    names so ``xsl:call-template`` can reject a stray non-tunnel
+    ``xsl:with-param`` at compile time (XTSE0680).
     """
 
     kind: str
@@ -90,6 +93,7 @@ class ComponentReference:
     containing: str | None = None
     visibility: str | None = None
     original: bool = False
+    parameter_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +133,10 @@ class Instruction:
     prefix: str = ""
     reference: ComponentReference | None = None
     references: tuple[ComponentReference, ...] = ()
+    #: The source element this node was normalized from.  Compilation reads
+    #: lexical-scope attributes (``[xsl:]default-mode``) through its ancestor
+    #: chain; nothing mutable is retained and no decision is cached on it.
+    raw: XdmNode | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "namespaces", _freeze(self.namespaces))
@@ -262,6 +270,7 @@ def normalize_element(
         literal=namespace != XSLT_NS,
         expand_text=False,
         prefix=element.prefix,
+        raw=element.raw,
     )
 
 
