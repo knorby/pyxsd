@@ -940,15 +940,56 @@ def test_json_doc_accepts_an_empty_options_map() -> None:
     assert compiled.transform().principal_tree.string_value == "true"
 
 
-def test_json_doc_rejects_unsupported_options() -> None:
+def test_json_doc_rejects_invalid_options_before_reading() -> None:
     policy = _json_doc_policy(b'{"a":1}')
     compiled = XsltProcessor(resource_policy=policy).compile(
-        io.BytesIO(_json_expression("json-doc('urn:test:json', map{'liberal': true()})"))
+        io.BytesIO(_json_expression("json-doc('urn:test:json', map{'duplicates':'retain'})"))
     )
     with pytest.raises(XsltDynamicError) as caught:
         compiled.transform()
     assert caught.value.code == "FOJS0005"
     assert policy.reads == []
+
+
+def test_json_doc_options_share_text_resource_identity() -> None:
+    text = rb'{"a":1,"\u0061":2,"special":"\u0000"}'
+    policy = _json_doc_policy(text)
+    source = _json_expression(
+        r"""let $uri := 'urn:test:json' return string-join(("""
+        r"""json-doc($uri, map{'duplicates':'use-last'})?a,"""
+        r"""json-doc($uri, map{'escape':true()})?special,"""
+        r"""json-doc($uri, map{'fallback':function($s){'invalid:' || $s}})?special,"""
+        r"""contains(unparsed-text($uri), '\u0000')), '|')"""
+    )
+    compiled = XsltProcessor(resource_policy=policy).compile(io.BytesIO(source))
+    assert compiled.transform().principal_tree.string_value == r"2|\u0000|invalid:\u0000|true"
+    assert policy.reads == [("urn:test:json", None, "text")]
+
+
+@pytest.mark.parametrize(
+    ("options", "code"),
+    [
+        ("map{'duplicates':'reject'}", "FOJS0003"),
+        ("map{'escape':1}", "XPTY0004"),
+        ("map{'escape':true(), 'fallback':string#1}", "FOJS0005"),
+    ],
+)
+def test_json_doc_exact_option_errors(options: str, code: str) -> None:
+    compiled = XsltProcessor(resource_policy=_json_doc_policy(b'{"a":1,"a":2}')).compile(
+        io.BytesIO(_json_expression(f"json-doc('urn:test:json', {options})"))
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform()
+    assert caught.value.code == code
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
+def test_json_doc_detects_encoding_and_handles_non_xml_resource_characters(encoding: str) -> None:
+    policy = _json_doc_policy('"\uffff"'.encode(encoding))
+    compiled = XsltProcessor(resource_policy=policy).compile(
+        io.BytesIO(_json_expression("json-doc('urn:test:json', map{'fallback':function($s){$s}})"))
+    )
+    assert compiled.transform().principal_tree.string_value == r"\uFFFF"
 
 
 def test_json_doc_requires_an_options_map() -> None:
@@ -996,3 +1037,45 @@ def test_pure_json_functions_report_their_errors() -> None:
     )
     with pytest.raises(Exception, match="XPTY0004"):
         transform(serialize_error)
+
+
+@pytest.mark.parametrize(
+    ("encoding", "bom"),
+    [
+        ("utf-8", b"\xef\xbb\xbf"),
+        ("utf-16-le", b"\xff\xfe"),
+        ("utf-16-be", b"\xfe\xff"),
+        ("utf-32-le", b"\xff\xfe\x00\x00"),
+        ("utf-32-be", b"\x00\x00\xfe\xff"),
+    ],
+)
+def test_json_doc_accepts_a_byte_order_mark(encoding: str, bom: bytes) -> None:
+    policy = _json_doc_policy(bom + '{"a":1}'.encode(encoding))
+    compiled = XsltProcessor(resource_policy=policy).compile(
+        io.BytesIO(_json_expression("json-doc('urn:test:json')?a = 1"))
+    )
+    assert compiled.transform().principal_tree.string_value == "true"
+
+
+def test_json_doc_invalid_octets_are_a_dynamic_error() -> None:
+    policy = _json_doc_policy(b'"\xff"')
+    compiled = XsltProcessor(resource_policy=policy).compile(
+        io.BytesIO(_json_expression("json-doc('urn:test:json')"))
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform()
+    assert caught.value.code == "FOUT1170"
+    assert isinstance(caught.value.cause, UnicodeDecodeError)
+
+
+def test_text_resource_budget_alarm_is_not_converted() -> None:
+    class Policy:
+        def read(self, source, *, base, purpose):
+            stream = _stylesheet_stream(source)
+            if stream is not None:
+                return stream
+            raise TimeoutError("budget expired")
+
+    resources = DocumentResources({}, policy=Policy())
+    with pytest.raises(TimeoutError, match="budget expired"):
+        resources.read_text("urn:test:text", base=None)

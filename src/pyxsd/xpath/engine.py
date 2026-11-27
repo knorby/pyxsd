@@ -115,6 +115,7 @@ from pyxsd.xdm.legacy import (
 )
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
+from pyxsd.xdm.values import signature_from_sequence_types
 from pyxsd.xpath import continuation
 from pyxsd.xpath.continuation import ContinuationMachine, XPathClosure
 from pyxsd.xpath.environment import (
@@ -1602,11 +1603,49 @@ class _ValueBridge:
                 for argument in arguments
             )
             clone = clone_function_token(token)
+            _normalize_anytype_arguments(clone)
             return _with_holder_state(
                 holder, state, lambda: self.to_xdm_sequence(clone(*converted, context=context))
             )
 
-        return XdmFunction(implementation, arity=arity, name=name)
+        declared_types = signature_from_sequence_types(
+            tuple(getattr(token, "sequence_types", None) or ()),
+            arity,
+            namespaces=getattr(token.parser, "namespaces", None),
+        )
+        return XdmFunction(
+            implementation,
+            arity=arity,
+            name=name,
+            declared_types=declared_types,
+        )
+
+
+#: ``xs:anyType`` sequence types and their cardinality-preserving item types.
+_ANYTYPE_SEQUENCE_TYPES = {
+    "xs:anyType": "item()",
+    "xs:anyType?": "item()?",
+    "xs:anyType*": "item()*",
+    "xs:anyType+": "item()+",
+}
+
+
+def _normalize_anytype_arguments(token: Any) -> None:
+    """Replace a dynamic token's ``xs:anyType`` types with item types.
+
+    Elementpath's dynamic call path resolves parameter and result sequence
+    types through its XSD table and raises ``XPST0051`` for ``xs:anyType``,
+    which the same function type accepts in a direct call.  Every occurrence
+    maps to the equivalent item type with its cardinality preserved:
+    ``xs:anyType`` is exactly one item, not the zero-or-more ``item()*``.
+    """
+    sequence_types = getattr(token, "sequence_types", None)
+    if not sequence_types:
+        return
+    for index, value in enumerate(sequence_types):
+        normalized = _ANYTYPE_SEQUENCE_TYPES.get(value)
+        if normalized is not None:
+            sequence_types[index] = normalized
 
 
 def _with_holder_state(
@@ -2187,7 +2226,7 @@ def _build_parser(
 
     for name in static_context.functions:
         _register_declared_function(parser, name, static_context, holder)
-    if key and "key" not in parser.symbol_table:
+    if key and _override_symbol(parser, f"{{{_FN_NS}}}key") not in parser.symbol_table:
         _register_key_function(parser, holder)
     return parser
 
@@ -3356,13 +3395,46 @@ def _register_declared_function(
             )
         )
 
-    token_class = _external_function(
-        parser,
-        callback,
-        name=local,
-        prefix=prefix,
-        sequence_types=("item()*",),
-    )
+    namespaces = parser.namespaces
+    needs_proxy = False
+    if prefix is None:
+        if parser.version in ("1.0", "2.0"):
+            return  # No URI-qualified names in these XPath grammars.
+        bare = parser.symbol_table.get(local)
+        if bare is None:
+            needs_proxy = True
+        elif not issubclass(bare, ProxyToken) and bare.namespace is None:
+            # Grammar and multi-role tokens without a single namespace cannot
+            # be moved behind a function proxy. Preserve their existing use.
+            return
+        # An EQName needs no in-scope prefix. Elementpath's registration API
+        # needs one to select the namespace, so bind it only during registration.
+        prefix = "_pyxsd_function"
+        namespace = name[1:].partition("}")[0]
+        parser.namespaces = {**namespaces, prefix: namespace}
+    try:
+        token_class = _external_function(
+            parser,
+            callback,
+            name=local,
+            prefix=prefix,
+            sequence_types=("item()*",),
+        )
+    finally:
+        parser.namespaces = namespaces
+    if needs_proxy:
+        # With no existing bare token, elementpath installs the function there.
+        # Qualify it before exposing the parser so bare calls cannot reach it.
+        token_class.lookup_name = name
+        parser.symbol_table[name] = token_class
+        parser._register(
+            local,
+            f"{upper_camel_case(local)}FunctionProxy",
+            bases=(ProxyToken,),
+            label="function",
+            lbp=90,
+            rbp=90,
+        )
     token_class.label = "function"
     token_class.nargs = arity
 
@@ -3464,7 +3536,7 @@ def _split_function_name(
         expanded = name
         lexical = static_context.lexical_name(expanded)
         if lexical is None or ":" not in lexical:
-            raise ValueError(f"no namespace prefix is bound for {name!r}")
+            return None, name.partition("}")[2]
         prefix, _, local = lexical.partition(":")
         return prefix, local
     prefix, separator, local = name.partition(":")
@@ -4204,4 +4276,10 @@ def _xpath_closure_to_xdm(closure: XPathClosure, bridge: _ValueBridge) -> XdmFun
         native = tuple(bridge.sequence_to_elementpath(argument) for argument in arguments)
         return bridge.to_xdm_sequence(continuation.evaluate_closure(closure, native))
 
-    return XdmFunction(implementation, arity=closure.arity, closure=closure)
+    declared_types = closure.declared_types
+    return XdmFunction(
+        implementation,
+        arity=closure.arity,
+        closure=closure,
+        declared_types=declared_types,
+    )

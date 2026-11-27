@@ -1283,3 +1283,96 @@ def test_function_rejects_a_non_callable_implementation():
 def test_function_signature_must_be_the_expected_type():
     with pytest.raises(TypeError, match="signature"):
         XdmFunction(_empty, arity=0, signature=object())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("lexical", "type_name", "occurrence"),
+    [
+        ("xs:string", "xs:string", "one"),
+        ("xs:string?", "xs:string", "zero-or-one"),
+        ("item()*", "item()", "zero-or-more"),
+        ("xs:integer+", "xs:integer", "one-or-more"),
+        ("map(*)", "map(*)", "one"),
+    ],
+)
+def test_sequence_type_from_lexical(lexical: str, type_name: str, occurrence: str) -> None:
+    from pyxsd.xdm.values import sequence_type_from_lexical
+
+    assert sequence_type_from_lexical(lexical) == XdmSequenceType(type_name, occurrence)
+
+
+@pytest.mark.parametrize(
+    ("lexical", "type_name"),
+    [
+        ("my:string", "{urn:test}string"),
+        ("my:string?", "{urn:test}string"),
+        ("{urn:already}string", "{urn:already}string"),
+        ("other:string", "other:string"),
+        ("item()", "item()"),
+    ],
+)
+def test_sequence_type_from_lexical_expands_bound_prefixes(lexical: str, type_name: str) -> None:
+    from pyxsd.xdm.values import sequence_type_from_lexical
+
+    namespaces = {"my": "urn:test"}
+    assert sequence_type_from_lexical(lexical, namespaces=namespaces).type_name == type_name
+
+
+def test_sequence_type_from_lexical_rejects_an_empty_string() -> None:
+    from pyxsd.xdm.values import sequence_type_from_lexical
+
+    with pytest.raises(ValueError, match="empty"):
+        sequence_type_from_lexical(" ")
+
+
+def test_signature_from_sequence_types_matches_the_arity() -> None:
+    from pyxsd.xdm.values import signature_from_sequence_types
+
+    signature = signature_from_sequence_types(("xs:string", "xs:integer"), 1)
+    assert signature == XdmFunctionSignature(
+        (XdmSequenceType("xs:string", "one"),),
+        XdmSequenceType("xs:integer", "one"),
+    )
+    variadic = signature_from_sequence_types(("item()*", "xs:string"), (1, 3))
+    assert variadic is not None and variadic.parameters[0].type_name == "item()"
+    assert signature_from_sequence_types(("xs:string",), 1) is None
+    assert signature_from_sequence_types((), 0) is None
+
+
+def test_function_declared_types_are_optional_and_validated() -> None:
+    with pytest.raises(TypeError, match="declared_types"):
+        XdmFunction(_empty, arity=1, declared_types=object())  # type: ignore[arg-type]
+    signature = XdmFunctionSignature((XdmSequenceType("xs:string", "one"),))
+    function = XdmFunction(_empty, arity=1, declared_types=signature)
+    assert function.declared_types is signature
+
+
+def test_signature_coercion_accepts_a_schema_derived_string() -> None:
+    class DerivedString(xsd.String):
+        """A generated schema string type, as the schema factory builds one."""
+
+        name = "myString"
+
+    atom = XdmAtomic(DerivedString("x"), "{urn:test}myString", DerivedString)
+    seen: list[tuple[Any, ...]] = []
+
+    def implementation(arguments, environment, closure):
+        seen.append(arguments)
+        return arguments
+
+    function = XdmFunction(
+        implementation,
+        signature=XdmFunctionSignature((XdmSequenceType("xs:string", "one"),)),
+    )
+    assert function.invoke((atom,)) == (atom,)
+    assert seen == [((atom,),)]
+
+
+def test_signature_coercion_rejects_a_user_type_without_a_datatype_class() -> None:
+    atom = XdmAtomic("x", "{urn:test}myString", None)
+    function = XdmFunction(
+        _empty,
+        signature=XdmFunctionSignature((XdmSequenceType("xs:string", "one"),)),
+    )
+    with pytest.raises(TypeError, match="cannot coerce"):
+        function.invoke((atom,))

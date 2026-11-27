@@ -1945,3 +1945,53 @@ def test_function_items_receive_nodes_and_mixed_atomic_sequences() -> None:
     )
     result = transform(mixed, b'<doc a="1"><b>2</b></doc>', initial_template="main")
     assert result.principal == (XdmAtomic.string("1|x|2"),)
+
+
+def test_inline_function_items_keep_their_declared_types() -> None:
+    body = stylesheet(
+        '<xsl:template name="main"><xsl:sequence '
+        "select=\"function($m as map(*)){ '' }\"/></xsl:template>"
+    )
+    (function,) = transform(body, initial_template="main").principal
+    declared = function.declared_types
+    assert declared is not None
+    assert declared.parameters[0].type_name == "map(*)"
+    assert declared.return_type is not None
+    assert declared.return_type.type_name == "item()"
+
+
+def test_xpath_engine_preserves_inline_declared_types() -> None:
+    engine = XPathEngine("3.1")
+    compiled = engine.compile(
+        "function($s as xs:string) as xs:string { $s }",
+        XPathStaticContext(),
+    )
+    (function,) = engine.evaluate(compiled, ExpressionEnvironment())
+    declared = function.declared_types
+    assert declared is not None
+    assert declared.parameters[0].type_name == "{http://www.w3.org/2001/XMLSchema}string"
+    assert declared.return_type is not None
+    assert declared.return_type.type_name == "{http://www.w3.org/2001/XMLSchema}string"
+
+
+@pytest.mark.parametrize(
+    ("declared", "normalized"),
+    [
+        ("xs:anyType", "item()"),
+        ("xs:anyType?", "item()?"),
+        ("xs:anyType*", "item()*"),
+        ("xs:anyType+", "item()+"),
+    ],
+)
+def test_normalize_anytype_arguments_preserves_occurrence(declared: str, normalized: str) -> None:
+    from pyxsd.xpath.engine import _normalize_anytype_arguments
+
+    class Token:
+        sequence_types: list[str] | None = None
+
+    absent = Token()
+    _normalize_anytype_arguments(absent)
+    present = Token()
+    present.sequence_types = [declared, "xs:string"]
+    _normalize_anytype_arguments(present)
+    assert present.sequence_types == [normalized, "xs:string"]

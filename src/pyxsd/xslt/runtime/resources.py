@@ -14,6 +14,7 @@ between transformations.
 
 from __future__ import annotations
 
+import codecs
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -30,6 +31,7 @@ from pyxsd.xslt.runtime.whitespace import (
     apply_source_space_rules,
     apply_source_space_rules_to_members,
 )
+from pyxsd.xslt.serialization.json_lexical import preescape_non_xml_characters
 
 if TYPE_CHECKING:
     from pyxsd.xslt.compiler.static import SpaceRule
@@ -85,6 +87,38 @@ class _LocalFilePolicy:
 
 
 _LOCAL_FILE_POLICY = _LocalFilePolicy()
+
+#: Byte order marks that select one JSON octet encoding.
+_JSON_BOMS = (
+    (codecs.BOM_UTF32_BE, "utf-32-be"),
+    (codecs.BOM_UTF32_LE, "utf-32-le"),
+    (codecs.BOM_UTF8, "utf-8"),
+    (codecs.BOM_UTF16_BE, "utf-16-be"),
+    (codecs.BOM_UTF16_LE, "utf-16-le"),
+)
+
+
+def _json_encoding(content: bytes) -> str:
+    """Select UTF-8, UTF-16, or UTF-32 from one JSON resource's initial octets.
+
+    RFC 4627's BOM patterns take precedence; a UTF-32 little-endian mark starts
+    with the UTF-16 little-endian mark, so the four-octet forms are checked
+    first.  Without a mark the null-byte pattern of the first four octets
+    distinguishes the remaining forms.
+    """
+    for bom, encoding in _JSON_BOMS:
+        if content.startswith(bom):
+            return encoding
+    sample = content[:4]
+    if len(sample) >= 4 and sample[0] == 0 and sample[1] == 0:
+        return "utf-32-be"
+    if len(sample) >= 4 and sample[2] == 0 and sample[3] == 0:
+        return "utf-32-le"
+    if len(sample) >= 2 and sample[0] == 0:
+        return "utf-16-be"
+    if len(sample) >= 2 and sample[1] == 0:
+        return "utf-16-le"
+    return "utf-8"
 
 
 def resolve_document_uri(uri: str, base: str | None) -> str:
@@ -173,6 +207,7 @@ class DocumentResources:
             XdmDocument,
         ] = {}
         self._texts: dict[tuple[str, str | None], str] = {}
+        self._bytes: dict[str, bytes] = {}
         self._collections: dict[tuple[str | None, str | None], tuple[XdmNode, ...]] = {}
         #: The space-filtered copy of each collection member document, per
         #: package: one package's declarations produce one copy per source.
@@ -318,6 +353,68 @@ class DocumentResources:
         key = (target, encoding)
         if key in self._texts:
             return self._texts[key]
+        content = self.read_bytes(uri, base=base)
+        name = "utf-8" if encoding is None else encoding
+        try:
+            text = content.decode(name)
+        except LookupError as exc:
+            raise XsltDynamicError(
+                f"the text encoding {name!r} is not supported",
+                code="FOUT1190",
+                cause=exc,
+            ) from exc
+        except UnicodeDecodeError as exc:
+            raise XsltDynamicError(
+                f"the text resource {uri!r} could not be decoded as {name}",
+                code="FOUT1170",
+                cause=exc,
+            ) from exc
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        self._texts[key] = normalized
+        return normalized
+
+    def read_json_text(self, uri: str, *, base: str | None) -> str:
+        """Return one authorized JSON resource as parseable text.
+
+        RFC 7159 requires UTF-8, UTF-16, and UTF-32, distinguished by their
+        initial octets; a byte order mark selects the encoding and is otherwise
+        left for :func:`parse_json_text` to ignore.  Codepoints XML cannot hold
+        are expressed as JSON escapes so the grammar stays parseable; the
+        parser turns them back into the fallback-eligible characters.  The
+        octet read is shared with :meth:`read_text` through
+        :meth:`read_bytes`, so a later ``unparsed-text`` call for the same
+        canonical URI observes one policy read.
+        """
+        target = resolve_document_uri(uri, base)
+        content = self.read_bytes(uri, base=base)
+        encoding = _json_encoding(content)
+        try:
+            text = content.decode(encoding)
+        except UnicodeDecodeError as exc:
+            raise XsltDynamicError(
+                f"the text resource {uri!r} could not be decoded as {encoding}",
+                code="FOUT1170",
+                cause=exc,
+            ) from exc
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        if encoding == "utf-8":
+            # The same octets supply the plain text read; a UTF-16 or UTF-32
+            # resource must not be served to unparsed-text under another
+            # encoding's cache key.
+            self._texts[(target, None)] = text
+        return preescape_non_xml_characters(text)
+
+    def read_bytes(self, uri: str, *, base: str | None) -> bytes:
+        """Return the authorized octets of one text resource.
+
+        This is the one policy read behind both :meth:`read_text` and
+        :meth:`read_json_text`, so the canonical URI identity is preserved
+        across encodings and functions.
+        """
+        target = resolve_document_uri(uri, base)
+        cached = self._bytes.get(target)
+        if cached is not None:
+            return cached
         policy = self._policy_for(target, label="text")
         if policy is None:
             raise XsltDynamicError(
@@ -336,24 +433,9 @@ class DocumentResources:
             ) from exc
         if not isinstance(data, ResourceData):
             raise TypeError("a resource policy read must return ResourceData")
-        name = "utf-8" if encoding is None else encoding
-        try:
-            text = data.content.decode(name)
-        except LookupError as exc:
-            raise XsltDynamicError(
-                f"the text encoding {name!r} is not supported",
-                code="FOUT1190",
-                cause=exc,
-            ) from exc
-        except UnicodeDecodeError as exc:
-            raise XsltDynamicError(
-                f"the text resource {uri!r} could not be decoded as {name}",
-                code="FOUT1170",
-                cause=exc,
-            ) from exc
-        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-        self._texts[key] = normalized
-        return normalized
+        content = bytes(data.content)
+        self._bytes[target] = content
+        return content
 
     def read_text_lines(
         self,

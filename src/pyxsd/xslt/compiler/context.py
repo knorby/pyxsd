@@ -497,14 +497,6 @@ class StaticContext:
                 # XPath host declarations need a namespace; an unqualified
                 # stylesheet function name never compiles as an expression call.
                 continue
-            if name.startswith("{"):
-                namespace = name[1:].partition("}")[0]
-                if not any(
-                    prefix and bound == namespace for prefix, bound in self.namespaces.items()
-                ):
-                    # A Clark name with no in-scope prefix cannot be registered
-                    # on the elementpath parser; it is not callable lexically.
-                    continue
             if len(arities) == 1:
                 functions[name] = arities[0]
                 continue

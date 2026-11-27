@@ -1253,3 +1253,28 @@ profiles = ["xslt20"]
 cases = ["function/function-0701"]
 reason = "The 2.0-profile knight's-tour stylesheet recurses through XPath expression evaluation deeply enough to exceed CPython's per-interpreter recursion limit. It used to pass only because semantic execution raised the process-wide limit during a transformation, which raced with every other thread; that mutation is removed. The runtime reports PYXSD-XSLT-001 (a controlled resource failure), not a wrong result. Heap-scheduler recursion belongs to the operational task."
 links = ["https://www.w3.org/TR/xslt-30/#dynamic-errors", "https://docs.python.org/3/library/sys.html#sys.setrecursionlimit"]
+
+# F&O 3.1 §17.5.3 defines FOJS0004 for validate=true() when the processor
+# does not support schema validation or typed data. This profile implements the
+# F&O 3.1 json-to-xml parsing contract but not the §C.2 schema vocabulary and
+# its annotations, so the option is explicitly unavailable rather than
+# fabricated. validate=false() and every other option are fully implemented.
+[[dispositions]]
+id = "json-to-xml-typed-output-is-not-implemented"
+title = "json-to-xml validate=true() reports unavailable schema validation"
+category = "declared-non-goal"
+profiles = ["xslt30"]
+cases = [
+  "json-to-xml/json-to-xml-typed-001",
+  "json-to-xml/json-to-xml-typed-002",
+  "json-to-xml/json-to-xml-typed-003",
+  "json-to-xml/json-to-xml-typed-004",
+  "json-to-xml/json-to-xml-typed-005",
+  "json-to-xml/json-to-xml-typed-006",
+  "json-to-xml/json-to-xml-typed-007",
+]
+reason = "These cases ask json-to-xml for schema-typed output. F&O 3.1 §17.5.3 specifies FOJS0004 when the processor does not support schema validation or typed data, and this profile deliberately does not implement the §C.2 json vocabulary as a schema or attach annotations. The function raises FOJS0004 for validate=true() instead of fabricating type annotations; validate=false() produces the untyped §17.4.2 tree."
+links = [
+  "https://www.w3.org/TR/xpath-functions-31/#func-json-to-xml",
+  "https://www.w3.org/TR/xpath-functions-31/#schema-for-json",
+]
