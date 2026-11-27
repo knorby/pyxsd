@@ -3356,13 +3356,36 @@ def _register_declared_function(
             )
         )
 
-    token_class = _external_function(
-        parser,
-        callback,
-        name=local,
-        prefix=prefix,
-        sequence_types=("item()*",),
-    )
+    namespaces = parser.namespaces
+    if prefix is None:
+        if parser.version in ("1.0", "2.0"):
+            return  # No URI-qualified names in these XPath grammars.
+        if local not in parser.symbol_table:
+            # Without a proxy, elementpath puts the new function at the bare
+            # symbol and accepts unprefixed calls from the wrong namespace.
+            parser._register(
+                local,
+                f"{upper_camel_case(local)}FunctionProxy",
+                bases=(ProxyToken,),
+                label="function",
+                lbp=90,
+                rbp=90,
+            )
+        # An EQName needs no in-scope prefix. Elementpath's registration API
+        # needs one to select the namespace, so bind it only during registration.
+        prefix = "_pyxsd_function"
+        namespace = name[1:].partition("}")[0]
+        parser.namespaces = {**namespaces, prefix: namespace}
+    try:
+        token_class = _external_function(
+            parser,
+            callback,
+            name=local,
+            prefix=prefix,
+            sequence_types=("item()*",),
+        )
+    finally:
+        parser.namespaces = namespaces
     token_class.label = "function"
     token_class.nargs = arity
 
@@ -3464,7 +3487,7 @@ def _split_function_name(
         expanded = name
         lexical = static_context.lexical_name(expanded)
         if lexical is None or ":" not in lexical:
-            raise ValueError(f"no namespace prefix is bound for {name!r}")
+            return None, name.partition("}")[2]
         prefix, _, local = lexical.partition(":")
         return prefix, local
     prefix, separator, local = name.partition(":")

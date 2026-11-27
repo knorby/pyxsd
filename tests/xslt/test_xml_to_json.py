@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 from tests.xslt.support import stylesheet, transform
 
 from pyxsd.xdm import XdmAtomic, XdmSequence
 from pyxsd.xslt.errors import XsltError
+from pyxsd.xslt.processor import XsltProcessor
 
 FN_NS = "http://www.w3.org/2005/xpath-functions"
 XS_STRING = "{http://www.w3.org/2001/XMLSchema}string"
@@ -56,6 +60,80 @@ def test_nested_members_keep_document_order_and_ignore_non_data_nodes() -> None:
     assert _evaluate("fn:xml-to-json(.)", body) == (
         XdmAtomic.string('{"z":[null,{"flag":false,"n":-0.25}],"a":" with space "}'),
     )
+
+
+def test_temporary_tree_round_trips_through_json_output(tmp_path: Path) -> None:
+    source = stylesheet(
+        """
+        <xsl:output method="json" indent="yes"/>
+        <xsl:template name="main">
+            <xsl:variable name="tree">
+                <fn:map>
+                    <fn:string key="name">example</fn:string>
+                    <fn:array key="values">
+                        <fn:number>2.5</fn:number>
+                        <fn:boolean>true</fn:boolean>
+                        <fn:null/>
+                    </fn:array>
+                </fn:map>
+            </xsl:variable>
+            <xsl:sequence select="parse-json(xml-to-json($tree, map{'indent': true()}))"/>
+        </xsl:template>
+        """,
+        namespaces={"fn": FN_NS},
+    )
+    result = transform(source, initial_template="main", delivery="stylesheet")
+    serialized = result.principal_entry.serialized
+    assert serialized is not None
+    expected = {"name": "example", "values": [2.5, True, None]}
+    assert json.loads(serialized) == expected
+
+    (tmp_path / "result.json").write_text(serialized, encoding="utf-8")
+    reader = tmp_path / "read.xsl"
+    reader.write_bytes(
+        stylesheet(
+            '<xsl:output method="json"/>'
+            '<xsl:template name="main"><xsl:sequence select="json-doc(\'result.json\')"/>'
+            "</xsl:template>"
+        )
+    )
+    compiled = XsltProcessor().compile(reader)
+    reloaded = compiled.transform(initial_template="main", delivery="stylesheet")
+    assert json.loads(reloaded.principal_entry.serialized) == expected
+
+
+def test_unprefixed_function_reference_in_global_variable() -> None:
+    source = stylesheet(
+        """
+        <xsl:variable name="convert" select="xml-to-json#1"/>
+        <xsl:template name="main">
+            <xsl:variable name="value" as="element()"><j:boolean>true</j:boolean></xsl:variable>
+            <xsl:sequence select="$convert($value)"/>
+        </xsl:template>
+        """,
+        namespaces={"j": FN_NS},
+    )
+    result = transform(source, initial_template="main", delivery="raw")
+    assert result.principal == (XdmAtomic.string("true"),)
+
+
+def test_eqname_function_reference_without_a_bound_prefix() -> None:
+    source = stylesheet(
+        """
+        <xsl:function name="Q{urn:example}xml-to-json">
+            <xsl:param name="node" as="node()"/>
+            <xsl:sequence select="concat('library:', xml-to-json($node))"/>
+        </xsl:function>
+        <xsl:variable name="convert" select="Q{urn:example}xml-to-json#1"/>
+        <xsl:template name="main">
+            <xsl:variable name="value" as="element()"><fn:null/></xsl:variable>
+            <xsl:sequence select="$convert($value)"/>
+        </xsl:template>
+        """,
+        namespaces={"fn": FN_NS},
+    )
+    result = transform(source, initial_template="main", delivery="raw")
+    assert result.principal == (XdmAtomic.string("library:null"),)
 
 
 @pytest.mark.parametrize(

@@ -961,7 +961,7 @@ def test_context_for_element_module_path_and_cyclic_graph(tmp_path: Path) -> Non
     assert cyclic_context.variable("v") is not None
 
 
-def test_unprefixed_function_namespace_is_not_registered_lexically(tmp_path: Path) -> None:
+def test_function_namespace_without_a_prefix_is_callable_by_eqname(tmp_path: Path) -> None:
     from pyxsd.xslt.compiler.expressions import compile_xpath
 
     module = _module(
@@ -972,5 +972,7 @@ def test_unprefixed_function_namespace_is_not_registered_lexically(tmp_path: Pat
     )
     context = StaticContext.for_module(module)
     assert context.function("{urn:no-prefix}f", 0) is not None
-    assert "{urn:no-prefix}f" not in context.xpath_static_context().functions
-    assert compile_xpath("1 + 1", context).source == "1 + 1"
+    assert compile_xpath("Q{urn:no-prefix}f()", context).source == "Q{urn:no-prefix}f()"
+    with pytest.raises(XsltStaticError) as error:
+        compile_xpath("f()", context)
+    assert error.value.code == "XPST0017"

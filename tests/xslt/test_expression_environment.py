@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from elementpath import XPathContext
+from elementpath import ElementPathError, XPathContext
 from elementpath.datatypes import UntypedAtomic
 from elementpath.xpath3 import XPath31Parser
 from elementpath.xpath_tokens import XPathArray, XPathMap
@@ -1041,6 +1041,24 @@ def test_function_declaration_name_forms() -> None:
     assert engine.evaluate(compiled, environment) == (XdmAtomic.integer(3),)
 
 
+def test_eqname_host_function_registration_does_not_bind_a_prefix() -> None:
+    engine = XPathEngine()
+    static = XPathStaticContext(namespaces={"": "urn:test"}, functions={"{urn:test}inc": 1})
+    environment = ExpressionEnvironment(functions={"{urn:test}inc": increment})
+    compiled = engine.compile("(Q{urn:test}inc#1)(3)", static)
+    assert engine.evaluate(compiled, environment) == (XdmAtomic.integer(4),)
+    with pytest.raises(ElementPathError, match="XPST0081"):
+        engine.compile("_pyxsd_function:inc(3)", static)
+
+
+@pytest.mark.parametrize("version", ["1.0", "2.0", "3.0", "3.1"])
+def test_prefixless_host_namespace_does_not_define_a_bare_function(version: str) -> None:
+    engine = XPathEngine(version)
+    static = XPathStaticContext(functions={"{urn:test}inc": 1})
+    with pytest.raises(ElementPathError, match="XPST0017"):
+        engine.compile("inc(3)", static)
+
+
 def test_function_declaration_errors_and_unavailable_target() -> None:
     engine = XPathEngine()
     with pytest.raises(ValueError, match="namespace prefix"):
@@ -1049,10 +1067,6 @@ def test_function_declaration_errors_and_unavailable_target() -> None:
     compiled = engine.compile("m:inc($n)", static)
     with pytest.raises(RuntimeError, match="no environment implementation"):
         engine.evaluate(compiled, ExpressionEnvironment(variables={"n": 1}))
-    with pytest.raises(ValueError, match="prefix"):
-        from pyxsd.xpath.engine import _split_function_name
-
-        _split_function_name("{urn:test}inc", XPathStaticContext(), {})
     with pytest.raises(ValueError, match="requires a namespace prefix"):
         from pyxsd.xpath.engine import _split_function_name
 
