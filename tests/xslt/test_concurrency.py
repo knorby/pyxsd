@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import io
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, wait
-from threading import Barrier
+from concurrent.futures import Future, wait
+from threading import Barrier, Event, Thread
 from typing import TypeVar
 
 import pytest
@@ -25,28 +25,74 @@ _TIMEOUT = 60
 _T = TypeVar("_T")
 
 
-def _run_workers(barrier: Barrier, work: Callable[[int], _T]) -> list[_T]:
+def _run_workers(
+    barrier: Barrier, work: Callable[[int], _T], *, timeout: float = 2 * _TIMEOUT
+) -> list[_T]:
     errors: list[BaseException] = []
+    futures: list[Future[_T]] = [Future() for _ in range(barrier.parties)]
 
-    def guarded(index: int) -> _T:
+    def guarded(index: int) -> None:
         try:
-            return work(index)
+            result = work(index)
         except BaseException as error:
             errors.append(error)
             barrier.abort()
-            raise
+            futures[index].set_exception(error)
+        else:
+            futures[index].set_result(result)
 
-    with ThreadPoolExecutor(max_workers=barrier.parties) as pool:
-        futures = [pool.submit(guarded, index) for index in range(barrier.parties)]
-        wait(futures)
-        if errors:
-            # Report the original worker failure, rather than a peer's broken barrier.
-            raise errors[0]
-        return [future.result() for future in futures]
+    # ThreadPoolExecutor joins its workers at interpreter shutdown, even after
+    # shutdown(wait=False). Raw daemon threads let pytest exit after a deadlock.
+    for index in range(barrier.parties):
+        Thread(target=guarded, args=(index,), daemon=True).start()
+    _, pending = wait(futures, timeout=timeout)
+    if pending:
+        barrier.abort()
+        stuck = ", ".join(
+            f"worker {index}" for index, future in enumerate(futures) if future in pending
+        )
+        raise AssertionError(f"timed out waiting for {stuck}")
+    if errors:
+        # Report the original worker failure, rather than a peer's broken barrier.
+        raise errors[0]
+    return [future.result(timeout=0) for future in futures]
 
 
 def _sheet(body: str) -> io.BytesIO:
     return io.BytesIO(stylesheet(body, namespaces={"app": _APP}))
+
+
+def test_worker_timeout_names_stuck_worker():
+    release = Event()
+    finished = Event()
+    barrier = Barrier(2, timeout=_TIMEOUT)
+
+    def worker(index: int) -> None:
+        if index == 1:
+            release.wait()
+            finished.set()
+
+    try:
+        with pytest.raises(AssertionError, match=r"timed out waiting for worker 1$"):
+            _run_workers(barrier, worker, timeout=0.25)
+    finally:
+        release.set()
+    assert finished.wait(_TIMEOUT)
+
+
+def test_worker_exception_is_not_masked_by_peer_barrier_failure():
+    barrier = Barrier(2, timeout=_TIMEOUT)
+    peer_ready = Event()
+
+    def worker(index: int) -> None:
+        if index == 1:
+            assert peer_ready.wait(_TIMEOUT)
+            raise ValueError("original worker error")
+        peer_ready.set()
+        barrier.wait()
+
+    with pytest.raises(ValueError, match="original worker error"):
+        _run_workers(barrier, worker)
 
 
 @pytest.mark.parametrize("workers", [1, 3])
@@ -169,50 +215,52 @@ def test_one_compiled_xpath_uses_each_threads_focus_variables_and_functions():
 def test_closures_partial_applications_and_references_keep_their_invocation():
     barrier = Barrier(3, timeout=_TIMEOUT)
 
-    def pause() -> tuple[()]:
+    def pause(focus: XdmAtomic) -> int:
         barrier.wait()
-        return ()
+        return focus.value
 
     extensions = XsltExtensions().register_function(
-        f"{{{_APP}}}pause", 0, pause, ExtensionSignature((), "item()*")
+        f"{{{_APP}}}pause", 0, pause, ExtensionSignature((), "xs:integer"), contextual=True
     )
     compiled = XsltProcessor().compile(
         _sheet("""
         <xsl:param name="n" as="xs:integer"/>
-        <xsl:function name="app:add" as="xs:integer">
+        <xsl:function name="app:add" as="xs:string">
           <xsl:param name="a" as="xs:integer"/>
           <xsl:param name="b" as="xs:integer"/>
-          <xsl:sequence select="$n + $a + $b"/>
+          <xsl:sequence select="($n + $a + $b) ! concat(., ':', app:pause(), ':', .)"/>
         </xsl:function>
         <xsl:template name="xsl:initial-template">
           <xsl:variable name="local" select="$n * 10"/>
-          <xsl:variable name="f" select="function($a, $b){$local + $a + $b}"/>
+          <xsl:variable name="f" select="function($a, $b){
+            ($local + $a + $b) ! concat(., ':', app:pause(), ':', .)
+          }"/>
           <xsl:variable name="partial" select="app:add(?, 1)"/>
           <xsl:variable name="ref" select="app:add#2"/>
-          <xsl:sequence select="app:pause(), $f(2, 3), $partial(4), $ref(2, 3),
-                                $f, $partial, $ref"/>
+          <xsl:sequence select="$f, $partial, $ref"/>
         </xsl:template>
         """),
         extensions=extensions,
     )
 
-    def worker(index: int):
+    # All workers also call the same exported closure with different arguments.
+    shared_closure, _, _ = compiled.transform(delivery="raw", parameters={"n": 100}).principal
+
+    def worker(index: int) -> None:
         n = index + 1
         result = compiled.transform(delivery="raw", parameters={"n": n})
-        assert result.principal[:3] == (
-            XdmAtomic.integer(n * 10 + 5),
-            XdmAtomic.integer(n + 5),
-            XdmAtomic.integer(n + 5),
-        )
-        return result.principal[3:]
+        closure, partial, reference = result.principal
+        # Each call reaches one barrier generation inside the function body.
+        for function, args, value in (
+            (closure, (2, 3), n * 10 + 5),
+            (partial, (4,), n + 5),
+            (reference, (6, 7), n + 13),
+            (shared_closure, (index, 3), 1003 + index),
+        ):
+            assert isinstance(function, XdmFunction)
+            assert function.invoke(args) == (XdmAtomic.string(f"{value}:{value}:{value}"),)
 
-    for n, (closure, partial, reference) in enumerate(_run_workers(barrier, worker), start=1):
-        assert isinstance(closure, XdmFunction)
-        assert isinstance(partial, XdmFunction)
-        assert isinstance(reference, XdmFunction)
-        assert closure.invoke((2, 3)) == (XdmAtomic.integer(n * 10 + 5),)
-        assert partial.invoke((4,)) == (XdmAtomic.integer(n + 5),)
-        assert reference.invoke((2, 3)) == (XdmAtomic.integer(n + 5),)
+    _run_workers(barrier, worker)
 
 
 def test_deferred_functions_from_one_parser_keep_separate_callback_targets():
