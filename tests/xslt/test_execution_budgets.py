@@ -351,8 +351,8 @@ def test_node_and_byte_budgets_report_distinct_diagnostics() -> None:
         )
     node_text = str(node_error.value)
     byte_text = str(byte_error.value)
-    assert node_text.endswith("the transformation exceeded its output budget")
-    assert byte_text.endswith("the transformation exceeded its output byte budget")
+    assert "the transformation exceeded its output budget: max_output_nodes=1" in node_text
+    assert "the transformation exceeded its output byte budget: max_output_bytes=1" in byte_text
     assert node_text != byte_text
 
 
@@ -360,5 +360,5 @@ def test_unlimited_node_budget_does_not_walk_results(monkeypatch) -> None:
     def fail_if_called(*args: object, **kwargs: object) -> int:
         raise AssertionError("an unlimited node budget must not count result nodes")
 
-    monkeypatch.setattr("pyxsd.xslt.processor._result_node_count", fail_if_called)
+    monkeypatch.setattr("pyxsd.xslt.processor._new_result_nodes", fail_if_called)
     assert compile_text_only_stylesheet().transform().principal
