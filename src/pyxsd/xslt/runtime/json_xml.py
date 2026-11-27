@@ -18,7 +18,7 @@ from pyxsd.xdm import (
     XdmSequenceType,
 )
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
-from pyxsd.xdm.values import _coerce_sequence, canonical_float_string
+from pyxsd.xdm.values import _coerce_sequence, canonical_float_string, is_xsd_subtype
 from pyxsd.xslt.errors import XsltDynamicError
 from pyxsd.xslt.serialization.json_lexical import (
     JsonNumber,
@@ -503,22 +503,25 @@ def _fallback_option(value: XdmSequence) -> XdmFunction:
     return function
 
 
-#: Parameter types that accept every ``xs:string`` value.
-_STRING_ACCEPTING_TYPES = frozenset({"item()", "xs:anyAtomicType", "xs:anySimpleType", "xs:string"})
-
-
 def _fallback_accepts_string(function: XdmFunction) -> bool:
     """Whether the fallback's declared parameter accepts a single string.
 
-    Function parameter types are contravariant: ``item()``, an atomic
-    supertype, or ``xs:string`` itself accepts one string, while ``map(*)``,
-    a node type, a non-string atomic, or a string *subtype* does not.  When no
+    Function parameter types are contravariant: the parameter must be
+    ``item()`` or a supertype of ``xs:string`` (``xs:anyType``,
+    ``xs:anySimpleType``, ``xs:anyAtomicType``, or ``xs:string`` itself).
+    ``map(*)``, a node type, a non-string atomic, or a string *subtype* does
+    not accept every string.  The shared XSD subtype relation decides, so a
+    new supertype spelling does not need a hand-maintained list.  When no
     declaration is available the compatibility check stays at invocation.
     """
     declared = function.declared_types or function.signature
     if declared is None or not declared.parameters:
         return True
-    return declared.parameters[0].type_name in _STRING_ACCEPTING_TYPES
+    type_name = declared.parameters[0].type_name
+    if type_name == "item()":
+        return True
+    local = type_name.rpartition("}")[2].rpartition(":")[2]
+    return is_xsd_subtype("string", local)
 
 
 def _attribute_flag(node: XdmNode, name: str) -> bool:

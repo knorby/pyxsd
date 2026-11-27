@@ -3232,3 +3232,19 @@ def test_parse_json_accepts_a_fallback_without_a_declaration() -> None:
         f'<xsl:template name="main"><xsl:sequence select={quoteattr(expression)}/></xsl:template>'
     )
     assert transform(source, initial_template="main").principal == as_xdm("ok")
+
+
+def test_parse_json_accepts_an_anytype_fallback_parameter() -> None:
+    expression = r"""parse-json('"\u0000"', map{'fallback':function($s as xs:anyType){$s}})"""
+    source = stylesheet(
+        f'<xsl:template name="main"><xsl:sequence select={quoteattr(expression)}/></xsl:template>'
+    )
+    assert transform(source, initial_template="main").principal == as_xdm(r"\u0000")
+
+
+def test_parse_json_rejects_a_string_subtype_fallback_parameter() -> None:
+    expression = r"""parse-json('"ok"', map{'fallback':function($s as xs:normalizedString){$s}})"""
+    source = stylesheet(
+        f'<xsl:template name="main"><xsl:sequence select={quoteattr(expression)}/></xsl:template>'
+    )
+    assert error_code(lambda: transform(source, initial_template="main")) == "XPTY0004"

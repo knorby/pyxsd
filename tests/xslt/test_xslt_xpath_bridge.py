@@ -1972,3 +1972,17 @@ def test_xpath_engine_preserves_inline_declared_types() -> None:
     assert declared.parameters[0].type_name == "xs:string"
     assert declared.return_type is not None
     assert declared.return_type.type_name == "xs:string"
+
+
+def test_normalize_anytype_arguments_handles_absent_and_present_types() -> None:
+    from pyxsd.xpath.engine import _normalize_anytype_arguments
+
+    class Token:
+        sequence_types: list[str] | None = None
+
+    absent = Token()
+    _normalize_anytype_arguments(absent)
+    present = Token()
+    present.sequence_types = ["xs:anyType", "xs:string"]
+    _normalize_anytype_arguments(present)
+    assert present.sequence_types == ["item()*", "xs:string"]

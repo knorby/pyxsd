@@ -1603,6 +1603,7 @@ class _ValueBridge:
                 for argument in arguments
             )
             clone = clone_function_token(token)
+            _normalize_anytype_arguments(clone)
             return _with_holder_state(
                 holder, state, lambda: self.to_xdm_sequence(clone(*converted, context=context))
             )
@@ -1617,6 +1618,22 @@ class _ValueBridge:
             name=name,
             declared_types=declared_types,
         )
+
+
+def _normalize_anytype_arguments(token: Any) -> None:
+    """Replace a dynamic token's ``xs:anyType`` types with ``item()*``.
+
+    Elementpath's dynamic call path resolves parameter sequence types through
+    its XSD table and raises ``XPST0051`` for ``xs:anyType``, which the same
+    function type accepts in a direct call.  ``xs:anyType`` accepts every
+    item, so ``item()*`` is the equivalent type the call path can express.
+    """
+    sequence_types = getattr(token, "sequence_types", None)
+    if not sequence_types:
+        return
+    for index, value in enumerate(sequence_types):
+        if value == "xs:anyType":
+            sequence_types[index] = "item()*"
 
 
 def _with_holder_state(
