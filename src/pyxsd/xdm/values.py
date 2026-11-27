@@ -301,6 +301,32 @@ def is_xsd_subtype(item_local: str, expected_local: str) -> bool:
         current = parent
 
 
+def _is_schema_derived_subtype(item: XdmAtomic, expected_local: str) -> bool:
+    """Whether a schema-defined type's generated class derives from *expected_local*.
+
+    The built-in table above cannot name a user-defined type.  A schema-typed
+    atomic carries the generated datatype class, whose MRO names the built-in
+    primitive and every built-in step in the derivation.  Every such built-in
+    must be a subtype of the expected type; requiring all of them rejects a
+    restriction of ``xs:QName`` whose Python class happens to inherit from the
+    string payload class.
+    """
+    if item.type_name.startswith(f"{{{XSD_NS}}}"):
+        return False
+    datatype = item.datatype
+    if not isinstance(datatype, type):
+        return False
+    # Imported lazily: the annotation layer imports this value layer.
+    from pyxsd.xdm.annotations import builtin_type_classes
+
+    builtins = [
+        name
+        for name, datatype_class in builtin_type_classes().items()
+        if datatype_class in datatype.__mro__
+    ]
+    return bool(builtins) and all(is_xsd_subtype(name, expected_local) for name in builtins)
+
+
 #: Backward-compatible alias for the extension layer's earlier private import.
 _is_xsd_subtype = is_xsd_subtype
 
@@ -963,6 +989,44 @@ class XdmFunctionSignature:
         object.__setattr__(self, "parameters", parameters)
 
 
+def sequence_type_from_lexical(lexical: str) -> XdmSequenceType:
+    """Read one lexical sequence type such as ``xs:string?`` or ``map(*)``."""
+    text = lexical.strip()
+    if not text:
+        raise ValueError("a sequence type cannot be empty")
+    occurrence = "one"
+    for suffix, indicator in (
+        ("?", "zero-or-one"),
+        ("*", "zero-or-more"),
+        ("+", "one-or-more"),
+    ):
+        if text.endswith(suffix):
+            text = text[:-1].strip()
+            occurrence = indicator
+            break
+    return XdmSequenceType(text, occurrence)
+
+
+def signature_from_sequence_types(
+    sequence_types: tuple[str, ...],
+    arity: int | tuple[int, int | None],
+) -> XdmFunctionSignature | None:
+    """Build a declared signature from an inline/function token's type list.
+
+    Elementpath reports one entry per parameter followed by the result type.
+    A list whose length does not match *arity* is not a declaration this value
+    layer can interpret, so the item keeps no signature metadata.  A variadic
+    token's minimum arity is the only count its type list can describe.
+    """
+    arity_count = arity if isinstance(arity, int) else arity[0]
+    if len(sequence_types) != arity_count + 1:
+        return None
+    return XdmFunctionSignature(
+        parameters=tuple(sequence_type_from_lexical(item) for item in sequence_types[:-1]),
+        return_type=sequence_type_from_lexical(sequence_types[-1]),
+    )
+
+
 def _normalize_arity(arity: int | tuple[int, int | None]) -> tuple[int, int | None]:
     if isinstance(arity, bool):
         raise ValueError("function arity must be a non-negative integer")
@@ -1001,6 +1065,8 @@ def _coerce_atomic(item: XdmItem, local: str) -> XdmAtomic:
     if item_rank is not None and target_rank is not None and item_rank < target_rank:
         return item.cast(local)
     if is_xsd_subtype(item_local, local):
+        return item
+    if _is_schema_derived_subtype(item, local):
         return item
     if item_local == "untypedAtomic":
         return item.cast(local)
@@ -1050,6 +1116,10 @@ class XdmFunction(XdmItem):
     signature: XdmFunctionSignature | None
     closure: Any
     name: str | None
+    #: The declaration from which this item was created, kept separately from
+    #: ``signature`` so option conversion can inspect it without making every
+    #: dynamic invocation coerce structural parameter and result types.
+    declared_types: XdmFunctionSignature | None
 
     def __init__(
         self,
@@ -1059,11 +1129,14 @@ class XdmFunction(XdmItem):
         signature: XdmFunctionSignature | None = None,
         closure: Any = None,
         name: str | None = None,
+        declared_types: XdmFunctionSignature | None = None,
     ) -> None:
         if not callable(implementation):
             raise TypeError("an XDM function implementation must be callable")
         if signature is not None and not isinstance(signature, XdmFunctionSignature):
             raise TypeError("signature must be an XdmFunctionSignature")
+        if declared_types is not None and not isinstance(declared_types, XdmFunctionSignature):
+            raise TypeError("declared_types must be an XdmFunctionSignature")
         if arity is None:
             if signature is None:
                 raise TypeError("an XDM function requires arity or a signature")
@@ -1079,6 +1152,7 @@ class XdmFunction(XdmItem):
         object.__setattr__(self, "signature", signature)
         object.__setattr__(self, "closure", closure)
         object.__setattr__(self, "name", name)
+        object.__setattr__(self, "declared_types", declared_types)
 
     def invoke(self, arguments: Iterable[Any], environment: Any = None) -> XdmSequence:
         """Invoke with XDM argument sequences and one invocation environment."""

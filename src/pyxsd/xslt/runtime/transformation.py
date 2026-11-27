@@ -578,6 +578,7 @@ class Transformation:
             implementation,
             arity=closure.arity,
             closure=closure,
+            declared_types=closure.declared_types,
         )
 
     def stylesheet_functions(

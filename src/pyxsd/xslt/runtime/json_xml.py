@@ -495,7 +495,30 @@ def _fallback_option(value: XdmSequence) -> XdmFunction:
             "the fallback option function must have arity 1",
             code="XPTY0004",
         )
+    if not _fallback_accepts_string(function):
+        raise XsltDynamicError(
+            "the fallback option function must accept an xs:string argument",
+            code="XPTY0004",
+        )
     return function
+
+
+#: Parameter types that accept every ``xs:string`` value.
+_STRING_ACCEPTING_TYPES = frozenset({"item()", "xs:anyAtomicType", "xs:anySimpleType", "xs:string"})
+
+
+def _fallback_accepts_string(function: XdmFunction) -> bool:
+    """Whether the fallback's declared parameter accepts a single string.
+
+    Function parameter types are contravariant: ``item()``, an atomic
+    supertype, or ``xs:string`` itself accepts one string, while ``map(*)``,
+    a node type, a non-string atomic, or a string *subtype* does not.  When no
+    declaration is available the compatibility check stays at invocation.
+    """
+    declared = function.declared_types or function.signature
+    if declared is None or not declared.parameters:
+        return True
+    return declared.parameters[0].type_name in _STRING_ACCEPTING_TYPES
 
 
 def _attribute_flag(node: XdmNode, name: str) -> bool:

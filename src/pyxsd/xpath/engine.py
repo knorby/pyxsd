@@ -115,6 +115,7 @@ from pyxsd.xdm.legacy import (
 )
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.schema import SchemaPool
+from pyxsd.xdm.values import signature_from_sequence_types
 from pyxsd.xpath import continuation
 from pyxsd.xpath.continuation import ContinuationMachine, XPathClosure
 from pyxsd.xpath.environment import (
@@ -1606,7 +1607,16 @@ class _ValueBridge:
                 holder, state, lambda: self.to_xdm_sequence(clone(*converted, context=context))
             )
 
-        return XdmFunction(implementation, arity=arity, name=name)
+        declared_types = signature_from_sequence_types(
+            tuple(getattr(token, "sequence_types", None) or ()),
+            arity,
+        )
+        return XdmFunction(
+            implementation,
+            arity=arity,
+            name=name,
+            declared_types=declared_types,
+        )
 
 
 def _with_holder_state(
@@ -4237,4 +4247,10 @@ def _xpath_closure_to_xdm(closure: XPathClosure, bridge: _ValueBridge) -> XdmFun
         native = tuple(bridge.sequence_to_elementpath(argument) for argument in arguments)
         return bridge.to_xdm_sequence(continuation.evaluate_closure(closure, native))
 
-    return XdmFunction(implementation, arity=closure.arity, closure=closure)
+    declared_types = closure.declared_types
+    return XdmFunction(
+        implementation,
+        arity=closure.arity,
+        closure=closure,
+        declared_types=declared_types,
+    )

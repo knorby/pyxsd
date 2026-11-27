@@ -3056,3 +3056,179 @@ def test_parse_json_rejects_a_fallback_node_atomizing_to_several_values(
         )
         == "XPTY0004"
     )
+
+
+@pytest.mark.parametrize(
+    ("type_name", "text", "expression"),
+    [
+        ("normalizedString", '{"a":1}', "?a"),
+        ("token", "[1,2]", "?2"),
+        ("NCName", "null", ""),
+    ],
+)
+def test_parse_json_accepts_a_derived_string_text_argument(
+    type_name: str, text: str, expression: str
+) -> None:
+    xpath = f"parse-json(xs:{type_name}({quoteattr(text)})){expression}"
+    source = stylesheet(
+        f'<xsl:template name="main"><xsl:sequence select={quoteattr(xpath)}/></xsl:template>'
+    )
+    result = transform(source, initial_template="main").principal
+    expected = {"?a": 1.0, "?2": 2.0}.get(expression, ())
+    assert result == (() if expected == () else as_xdm(expected))
+
+
+def test_parse_json_accepts_a_schema_typed_string_node(tmp_path: Path) -> None:
+    document = _string_typed_document(tmp_path)
+    body = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="parse-json(/a)?a = 1"/></xsl:template>'
+    )
+    assert transform(
+        body, input_source=document, initial_template="main", validation="preserve"
+    ).principal == as_xdm(True)
+
+
+def test_json_to_xml_accepts_a_schema_typed_string_node(tmp_path: Path) -> None:
+    document = _string_typed_document(tmp_path)
+    body = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="json-to-xml(/a)"/></xsl:template>'
+    )
+    (result,) = transform(
+        body, input_source=document, initial_template="main", validation="preserve", delivery="raw"
+    ).principal
+    assert isinstance(result, XdmDocument)
+    (root,) = result.children
+    (member,) = root.children
+    assert member.attribute("key").string_value == "a"
+    assert member.string_value == "1"
+
+
+def test_parse_json_rejects_a_non_string_schema_type() -> None:
+    document = _int_typed_document()
+    body = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="parse-json(/a)"/></xsl:template>'
+    )
+    assert (
+        error_code(
+            lambda: transform(
+                body, input_source=document, initial_template="main", validation="preserve"
+            )
+        )
+        == "XPTY0004"
+    )
+
+
+def test_parse_json_rejects_a_qname_text_argument() -> None:
+    source = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="parse-json(xs:QName(\'null\'))"/>'
+        "</xsl:template>"
+    )
+    assert error_code(lambda: transform(source, initial_template="main")) == "XPTY0004"
+
+
+def test_parse_json_accepts_a_derived_string_fallback_result() -> None:
+    expression = (
+        r"""parse-json('"\u0000"', map{'fallback':"""
+        "function($s){xs:normalizedString('X')}})"
+    )
+    source = stylesheet(
+        f'<xsl:template name="main"><xsl:sequence select={quoteattr(expression)}/></xsl:template>'
+    )
+    assert transform(source, initial_template="main").principal == as_xdm("X")
+
+
+def test_parse_json_accepts_a_schema_typed_fallback_result(tmp_path: Path) -> None:
+    document = _string_typed_document(tmp_path)
+    body = stylesheet(
+        r"""<xsl:variable name="n" select="/a"/>
+        <xsl:template name="main"><xsl:sequence select=
+        "parse-json('&quot;\u0000&quot;', map{'fallback':function($s){$n}})"
+        /></xsl:template>"""
+    )
+    assert transform(
+        body, input_source=document, initial_template="main", validation="preserve"
+    ).principal == as_xdm('{"a":1}')
+
+
+def test_parse_json_rejects_a_fallback_with_an_incompatible_parameter_type() -> None:
+    source = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="'
+        "parse-json('&quot;ok&quot;', map{'fallback':"
+        "function($m as map(*)){''}})"
+        '"/></xsl:template>'
+    )
+    assert error_code(lambda: transform(source, initial_template="main")) == "XPTY0004"
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        (
+            r"""parse-json('{"%":"x","\u0025":"y"}',
+                map{'escape':true(), 'duplicates':'use-last'})?('%')""",
+            "y",
+        ),
+        (
+            r"""parse-json('{"/":"x","\/":"y"}',
+                map{'escape':true(), 'duplicates':'use-last'})?('/')""",
+            "y",
+        ),
+        (
+            r"""parse-json('{"\u000a\u0025":"x","\n%":"y"}',
+                map{'escape':true(), 'duplicates':'use-last'})?('\n%')""",
+            "y",
+        ),
+    ],
+)
+def test_parse_json_compares_escaped_duplicate_keys(expression: str, expected: str) -> None:
+    source = stylesheet(
+        f'<xsl:template name="main"><xsl:sequence select={quoteattr(expression)}/></xsl:template>'
+    )
+    assert transform(source, initial_template="main").principal == as_xdm(expected)
+
+
+def test_parse_json_keeps_escaped_keys_that_differ() -> None:
+    expression = r"""let $m := parse-json('{"%\u0010%":"x","%\n%":"y"}',
+        map{'escape':true(), 'duplicates':'reject'})
+        return string-join(($m('%\u0010%'), $m('%\n%')), '|')"""
+    source = stylesheet(
+        f'<xsl:template name="main"><xsl:sequence select={quoteattr(expression)}/></xsl:template>'
+    )
+    assert transform(source, initial_template="main").principal == as_xdm("x|y")
+
+
+def _string_typed_document(tmp_path: Path) -> XdmDocument:
+    schema = tmp_path / "string.xsd"
+    schema.write_text(
+        """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+             <xs:simpleType name="myString">
+               <xs:restriction base="xs:string"/>
+             </xs:simpleType>
+             <xs:element name="a" type="myString"/>
+           </xs:schema>""",
+        encoding="utf-8",
+    )
+    pool = SchemaPool.from_imports([schema], xsd_version="1.0")
+    return parse_typed_document(b'<a>{"a":1}</a>', schema_pool=pool, validation="strict")
+
+
+def _int_typed_document() -> XdmDocument:
+    schema_text = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+         <xs:simpleType name="myInt"><xs:restriction base="xs:int"/></xs:simpleType>
+         <xs:element name="a" type="myInt"/>
+       </xs:schema>"""
+    from tempfile import TemporaryDirectory
+
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "int.xsd"
+        path.write_text(schema_text, encoding="utf-8")
+        pool = SchemaPool.from_imports([path], xsd_version="1.0")
+        return parse_typed_document(b"<a>1</a>", schema_pool=pool, validation="strict")
+
+
+def test_parse_json_accepts_a_fallback_without_a_declaration() -> None:
+    expression = r"""parse-json('"ok"', map{'fallback': substring(?, 1)})"""
+    source = stylesheet(
+        f'<xsl:template name="main"><xsl:sequence select={quoteattr(expression)}/></xsl:template>'
+    )
+    assert transform(source, initial_template="main").principal == as_xdm("ok")

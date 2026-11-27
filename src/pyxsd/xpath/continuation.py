@@ -51,6 +51,7 @@ from elementpath.xpath3 import XPath31Parser
 from elementpath.xpath_tokens import XPathArray, XPathMap
 from elementpath.xpath_tokens.tokens import ValueToken
 
+from pyxsd.xdm.values import XdmFunctionSignature, signature_from_sequence_types
 from pyxsd.xpath.capabilities import CapabilityOutcome
 
 __all__ = [
@@ -292,6 +293,7 @@ class InlineFunctionPlan(Plan):
 
     parameters: tuple[str, ...]
     body: Plan
+    declared_types: XdmFunctionSignature | None = None
 
 
 @dataclass(frozen=True)
@@ -347,6 +349,9 @@ class XPathClosure:
     body: Plan
     environment: Mapping[str, object]
     origin: CompiledExpression
+    #: Declared parameter and result sequence types from the inline function
+    #: token, if elementpath reported a declaration.
+    declared_types: XdmFunctionSignature | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "environment", MappingProxyType(dict(self.environment)))
@@ -467,7 +472,14 @@ class _Compiler:
         parameters = tuple(token.varnames or (child.value for child in token))
         if not all(isinstance(name, str) for name in parameters):
             raise UnsupportedContinuationExpression("inline function parameters must be names")
-        return InlineFunctionPlan(parameters, self.compile(body))
+        return InlineFunctionPlan(
+            parameters,
+            self.compile(body),
+            signature_from_sequence_types(
+                tuple(getattr(token, "sequence_types", None) or ()),
+                len(parameters),
+            ),
+        )
 
     def _compile_parenthesized(self, token: Any) -> Plan:
         if len(token) == 0:
@@ -794,7 +806,15 @@ class ContinuationMachine:
             self._actions.append(_ResumeTarget(_LetFrame(plan.bindings, 0, environment, plan.body)))
             self._actions.append(_EvalAction(plan.bindings[0][1], environment))
         elif isinstance(plan, InlineFunctionPlan):
-            self._deliver(XPathClosure(plan.parameters, plan.body, environment, self._compiled))
+            self._deliver(
+                XPathClosure(
+                    plan.parameters,
+                    plan.body,
+                    environment,
+                    self._compiled,
+                    plan.declared_types,
+                )
+            )
         elif isinstance(plan, CallPlan):
             self._actions.append(_ResumeTarget(_CallCalleeFrame(plan.arguments, environment)))
             self._actions.append(_EvalAction(plan.callee, environment))

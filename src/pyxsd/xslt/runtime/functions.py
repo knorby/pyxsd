@@ -41,10 +41,11 @@ from pyxsd import xsd_data_types as _xsd
 from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import local_name as _local_name
 from pyxsd.namespaces import namespace_of as _namespace_of
-from pyxsd.xdm import XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
+from pyxsd.xdm import XdmAtomic, XdmItem, XdmMap, XdmSequence, XdmSequenceType, as_xdm
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.legacy import ResultTreeFragment
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
+from pyxsd.xdm.values import _coerce_sequence
 from pyxsd.xpath.environment import Focus, FunctionArity
 from pyxsd.xpath.functions import (
     ContextFunction,
@@ -2454,42 +2455,48 @@ def _json_options_map(arguments: tuple[XdmSequence, ...]) -> XdmMap | None:
     return options[0]
 
 
+_JSON_STRING_TYPE = XdmSequenceType("xs:string", "one")
+
+
+def _json_atoms(sequence: XdmSequence) -> XdmSequence:
+    """Atomize one JSON text or fallback-result sequence."""
+    atoms: list[XdmItem] = []
+    for item in sequence:
+        if isinstance(item, XdmNode):
+            atoms.extend(item.typed_value)
+        else:
+            atoms.append(item)
+    return tuple(atoms)
+
+
+def _json_string_value(sequence: XdmSequence, label: str) -> str:
+    """Convert one sequence to a single ``xs:string`` under function conversion.
+
+    A derived string type is accepted unchanged, ``xs:anyURI`` is promoted,
+    and ``xs:untypedAtomic`` is cast.  A function conversion failure is
+    ``XPTY0004``.
+    """
+    try:
+        (converted,) = _coerce_sequence(_json_atoms(sequence), _JSON_STRING_TYPE)
+    except TypeError as exc:
+        raise XsltDynamicError(
+            f"{label} must be convertible to xs:string",
+            code="XPTY0004",
+        ) from exc
+    return cast(XdmAtomic, converted).lexical
+
+
 def _json_text_argument(arguments: tuple[XdmSequence, ...]) -> str | None:
     """The ``xs:string?`` JSON text argument under function conversion.
 
-    A node atomizes to its typed value.  An ``xs:untypedAtomic`` value is cast
-    to ``xs:string``; an ``xs:anyURI`` promotes to ``xs:string``; other atomic
-    types are rejected because function conversion does not cast them.
+    A node atomizes to its typed value.  Derived string types are accepted
+    unchanged, ``xs:anyURI`` promotes to ``xs:string``, and
+    ``xs:untypedAtomic`` is cast; other atomic types are rejected because
+    function conversion does not cast them.
     """
     if not arguments[0]:
         return None
-    sequence = arguments[0]
-    if len(sequence) != 1:
-        raise XsltDynamicError(
-            "the JSON text argument must be a single value",
-            code="XPTY0004",
-        )
-    item: XdmItem = sequence[0]
-    if isinstance(item, XdmNode):
-        typed = item.typed_value
-        if len(typed) != 1 or not isinstance(typed[0], XdmAtomic):
-            raise XsltDynamicError(
-                "the JSON text argument must be a single atomic value",
-                code="XPTY0004",
-            )
-        item = typed[0]
-    if not isinstance(item, XdmAtomic):
-        raise XsltDynamicError(
-            "the JSON text argument must be an atomic value",
-            code="XPTY0004",
-        )
-    local = item.type_name.rpartition("}")[2].rpartition(":")[2]
-    if local in ("string", "anyURI", "untypedAtomic"):
-        return item.lexical
-    raise XsltDynamicError(
-        f"the JSON text argument must be xs:string, not xs:{local}",
-        code="XPTY0004",
-    )
+    return _json_string_value(arguments[0], "the JSON text argument")
 
 
 def _json_fallback(options: JsonParseOptions) -> Callable[[str], str] | None:
@@ -2506,32 +2513,7 @@ def _json_fallback(options: JsonParseOptions) -> Callable[[str], str] | None:
 
     def fallback(value: str) -> str:
         result = function.invoke((XdmAtomic.string(value),))
-        if len(result) != 1:
-            raise XsltDynamicError(
-                "the fallback function must return exactly one string",
-                code="XPTY0004",
-            )
-        item = result[0]
-        if isinstance(item, XdmNode):
-            typed = item.typed_value
-            if len(typed) != 1 or not isinstance(typed[0], XdmAtomic):
-                raise XsltDynamicError(
-                    "the fallback function must return a string",
-                    code="XPTY0004",
-                )
-            item = typed[0]
-        if not isinstance(item, XdmAtomic):
-            raise XsltDynamicError(
-                "the fallback function must return a string",
-                code="XPTY0004",
-            )
-        local = item.type_name.rpartition("}")[2].rpartition(":")[2]
-        if local not in ("string", "anyURI", "untypedAtomic"):
-            raise XsltDynamicError(
-                f"the fallback function returned xs:{local}, not xs:string",
-                code="XPTY0004",
-            )
-        return item.lexical
+        return _json_string_value(result, "the fallback result")
 
     return fallback
 
