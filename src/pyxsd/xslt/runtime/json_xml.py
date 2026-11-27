@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterator
+from typing import cast
 
 from pyxsd import xsd_data_types as _xsd
-from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence
+from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, XdmSequenceType
 from pyxsd.xdm.nodes import NodeKind, XdmNode
-from pyxsd.xdm.values import XSD_NS, canonical_float_string
+from pyxsd.xdm.values import _coerce_sequence, canonical_float_string
 from pyxsd.xslt.errors import XsltDynamicError
 from pyxsd.xslt.serialization.json_lexical import decode_json_escapes, escape_json_string
 
@@ -17,6 +18,7 @@ __all__ = ["xml_to_json"]
 _FN_NS = "http://www.w3.org/2005/xpath-functions"
 _XML_WHITESPACE = " \t\r\n"
 _INDENT = XdmAtomic.string("indent")
+_INDENT_TYPE = XdmSequenceType("xs:boolean", "one")
 
 
 def xml_to_json(input_node: XdmNode | None, options: XdmMap | None = None) -> str | None:
@@ -26,8 +28,9 @@ def xml_to_json(input_node: XdmNode | None, options: XdmMap | None = None) -> st
     element child and no text children. Invalid structure or scalar content
     raises :class:`~pyxsd.xslt.errors.XsltDynamicError` (``FOJS0006``);
     malformed pre-escaped strings and keys raise ``FOJS0007``.
-    The boolean ``indent`` option enables two-space indentation; an invalid
-    value raises ``FOJS0005``. Other options are ignored.
+    The boolean ``indent`` option enables two-space indentation. Failure to
+    convert its value to an ``xs:boolean`` raises ``XPTY0004``. Other options
+    are ignored.
     """
     if input_node is None:
         return None
@@ -62,16 +65,11 @@ def _indent_enabled(options: XdmMap | None) -> bool:
     if options is None or not options.contains(_INDENT):
         return False
 
-    values = tuple(_option_atoms(options.get(_INDENT)))
-    if len(values) == 1 and isinstance(item := values[0], XdmAtomic):
-        if item.type_name == f"{{{XSD_NS}}}boolean":
-            return bool(item.value)
-        if item.type_name == f"{{{XSD_NS}}}untypedAtomic":
-            try:
-                return bool(_xsd.Boolean(item.lexical))
-            except TypeError as exc:
-                raise XsltDynamicError("indent must be an xs:boolean", code="FOJS0005") from exc
-    raise XsltDynamicError("indent must be an xs:boolean", code="FOJS0005")
+    try:
+        (value,) = _coerce_sequence(tuple(_option_atoms(options.get(_INDENT))), _INDENT_TYPE)
+    except TypeError as exc:
+        raise XsltDynamicError("indent must be convertible to xs:boolean", code="XPTY0004") from exc
+    return bool(cast(XdmAtomic, value).value)
 
 
 def _attribute_flag(node: XdmNode, name: str) -> bool:

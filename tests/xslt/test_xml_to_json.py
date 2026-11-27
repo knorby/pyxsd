@@ -140,12 +140,21 @@ def test_arguments_must_match_function_signature(expression: str) -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["'true'", "1", "()", "(true(), false())", "map{}", "xs:untypedAtomic('maybe')", "/*"],
+    [
+        pytest.param("'yes'", id="C100"),
+        pytest.param("'true'", id="C101"),
+        pytest.param("()", id="C102"),
+        pytest.param("(true(), false())", id="C103"),
+        pytest.param("xs:untypedAtomic('2')", id="C104"),
+        pytest.param("1", id="numeric"),
+        pytest.param("map{}", id="map"),
+        pytest.param("/*", id="empty-element"),
+    ],
 )
-def test_invalid_indent_raises_fojs0005(value: str) -> None:
+def test_failed_indent_conversion_raises_xpty0004(value: str) -> None:
     with pytest.raises(XsltError) as caught:
-        _evaluate(f"xml-to-json(., map{{'indent': {value}}})", f'<array xmlns="{FN_NS}"/>')
-    assert caught.value.code == "FOJS0005"
+        _evaluate(f"xml-to-json(/*, map{{'indent': {value}}})", f'<null xmlns="{FN_NS}"/>')
+    assert caught.value.code == "XPTY0004"
 
 
 @pytest.mark.parametrize(
@@ -169,7 +178,11 @@ def test_indent_formats_nested_containers(key: str, value: str) -> None:
 
 @pytest.mark.parametrize(
     "options",
-    ["map{'indent':false()}", "map{'encoding':'ascii', 'method':'adaptive'}"],
+    [
+        "map{'indent':false()}",
+        "map{'indent':xs:untypedAtomic('0')}",
+        "map{'encoding':'ascii', 'method':'adaptive'}",
+    ],
 )
 def test_compact_output_is_independent_of_serialization_options(options: str) -> None:
     body = f'<array xmlns="{FN_NS}"><string>café/😀</string><null/></array>'
