@@ -989,8 +989,16 @@ class XdmFunctionSignature:
         object.__setattr__(self, "parameters", parameters)
 
 
-def sequence_type_from_lexical(lexical: str) -> XdmSequenceType:
-    """Read one lexical sequence type such as ``xs:string?`` or ``map(*)``."""
+def sequence_type_from_lexical(
+    lexical: str, *, namespaces: Mapping[str, str] | None = None
+) -> XdmSequenceType:
+    """Read one lexical sequence type such as ``xs:string?`` or ``map(*)``.
+
+    A prefixed atomic type name is expanded to its Clark name when *namespaces*
+    binds that prefix, so the resulting type identity keeps its namespace.
+    Structural types (``item()``, ``map(*)``, ``node()``, and their peers) and
+    unbound prefixes are preserved verbatim.
+    """
     text = lexical.strip()
     if not text:
         raise ValueError("a sequence type cannot be empty")
@@ -1004,12 +1012,24 @@ def sequence_type_from_lexical(lexical: str) -> XdmSequenceType:
             text = text[:-1].strip()
             occurrence = indicator
             break
-    return XdmSequenceType(text, occurrence)
+    return XdmSequenceType(_expand_type_name(text, namespaces), occurrence)
+
+
+def _expand_type_name(text: str, namespaces: Mapping[str, str] | None) -> str:
+    """Expand a bound prefixed type name, leaving other spellings unchanged."""
+    if namespaces is None or text.startswith("{"):
+        return text
+    prefix, separator, local = text.partition(":")
+    if not separator or prefix not in namespaces:
+        return text
+    return f"{{{namespaces[prefix]}}}{local}"
 
 
 def signature_from_sequence_types(
     sequence_types: tuple[str, ...],
     arity: int | tuple[int, int | None],
+    *,
+    namespaces: Mapping[str, str] | None = None,
 ) -> XdmFunctionSignature | None:
     """Build a declared signature from an inline/function token's type list.
 
@@ -1017,13 +1037,16 @@ def signature_from_sequence_types(
     A list whose length does not match *arity* is not a declaration this value
     layer can interpret, so the item keeps no signature metadata.  A variadic
     token's minimum arity is the only count its type list can describe.
+    *namespaces* expands prefixed atomic type names to Clark names.
     """
     arity_count = arity if isinstance(arity, int) else arity[0]
     if len(sequence_types) != arity_count + 1:
         return None
     return XdmFunctionSignature(
-        parameters=tuple(sequence_type_from_lexical(item) for item in sequence_types[:-1]),
-        return_type=sequence_type_from_lexical(sequence_types[-1]),
+        parameters=tuple(
+            sequence_type_from_lexical(item, namespaces=namespaces) for item in sequence_types[:-1]
+        ),
+        return_type=sequence_type_from_lexical(sequence_types[-1], namespaces=namespaces),
     )
 
 

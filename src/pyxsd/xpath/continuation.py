@@ -478,6 +478,7 @@ class _Compiler:
             signature_from_sequence_types(
                 tuple(getattr(token, "sequence_types", None) or ()),
                 len(parameters),
+                namespaces=self._parser.namespaces,
             ),
         )
 

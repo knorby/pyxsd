@@ -1969,9 +1969,9 @@ def test_xpath_engine_preserves_inline_declared_types() -> None:
     (function,) = engine.evaluate(compiled, ExpressionEnvironment())
     declared = function.declared_types
     assert declared is not None
-    assert declared.parameters[0].type_name == "xs:string"
+    assert declared.parameters[0].type_name == "{http://www.w3.org/2001/XMLSchema}string"
     assert declared.return_type is not None
-    assert declared.return_type.type_name == "xs:string"
+    assert declared.return_type.type_name == "{http://www.w3.org/2001/XMLSchema}string"
 
 
 @pytest.mark.parametrize(

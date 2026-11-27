@@ -22,7 +22,14 @@ from tests.xslt.support import (
 
 from pyxsd.schema import Schema
 from pyxsd.source_spans import SourceIndex
-from pyxsd.xdm import XdmAtomic, as_xdm
+from pyxsd.xdm import (
+    XdmAtomic,
+    XdmFunction,
+    XdmFunctionSignature,
+    XdmMap,
+    XdmSequenceType,
+    as_xdm,
+)
 from pyxsd.xdm.document import parse_typed_document
 from pyxsd.xdm.nodes import NodeKind, XdmDocument
 from pyxsd.xdm.schema import SchemaPool
@@ -32,6 +39,7 @@ from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.compiler.packages import PackageResolver
 from pyxsd.xslt.errors import ERROR_NAMESPACE, XsltDynamicError, XsltError, XsltStaticError
 from pyxsd.xslt.processor import _ABSENT, _document_nodes, _Invocation, _prepare_invocation
+from pyxsd.xslt.runtime.json_xml import parse_json_options
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
@@ -3254,3 +3262,74 @@ def test_parse_json_rejects_a_string_subtype_fallback_parameter() -> None:
         f'<xsl:template name="main"><xsl:sequence select={quoteattr(expression)}/></xsl:template>'
     )
     assert error_code(lambda: transform(source, initial_template="main")) == "XPTY0004"
+
+
+def _my_namespace_string_schema(tmp_path: Path, type_name: str) -> SchemaPool:
+    schema = tmp_path / f"{type_name}.xsd"
+    schema.write_text(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:my="{MY_NS}" targetNamespace="{MY_NS}">
+             <xs:simpleType name="{type_name}">
+               <xs:restriction base="xs:string"><xs:maxLength value="3"/></xs:restriction>
+             </xs:simpleType>
+           </xs:schema>""",
+        encoding="utf-8",
+    )
+    return SchemaPool.from_imports([schema], xsd_version="1.0")
+
+
+def _transform_with_schema(source: bytes, pool: SchemaPool) -> str:
+    compiled = XsltProcessor().compile(io.BytesIO(source), schema=pool)
+    return compiled.transform(delivery="raw", initial_template="main").principal_entry.serialized
+
+
+@pytest.mark.parametrize("type_name", ["string", "anyType"])
+@pytest.mark.parametrize("text", [r'"\u0000"', '"ok"'], ids=["used", "unused"])
+def test_parse_json_rejects_a_namespaced_schema_string_fallback_parameter(
+    tmp_path: Path, type_name: str, text: str
+) -> None:
+    pool = _my_namespace_string_schema(tmp_path, type_name)
+    expression = f"""parse-json('{text}', map{{'fallback':function($s as my:{type_name}){{$s}}}})"""
+    source = stylesheet(
+        f'<xsl:template name="main"><xsl:sequence select={quoteattr(expression)}/></xsl:template>'
+    )
+    assert error_code(lambda: _transform_with_schema(source, pool)) == "XPTY0004"
+
+
+@pytest.mark.parametrize(
+    "type_name",
+    [
+        "{urn:test}string",
+        "{urn:test}anyType",
+        "my:string",
+        "xs:normalizedString",
+    ],
+)
+def test_parse_json_options_reject_an_incompatible_fallback_parameter(type_name: str) -> None:
+    signature = XdmFunctionSignature(parameters=(XdmSequenceType(type_name, "one"),))
+    function = XdmFunction(lambda *arguments: (), arity=1, declared_types=signature)
+    options = XdmMap(((XdmAtomic.string("fallback"), (function,)),))
+
+    with pytest.raises(XsltDynamicError, match="xs:string") as caught:
+        parse_json_options(options, kind="parse-json")
+
+    assert caught.value.code == "XPTY0004"
+
+
+@pytest.mark.parametrize(
+    "type_name",
+    [
+        "item()",
+        "xs:string",
+        "xs:anyType",
+        "xs:anySimpleType",
+        "xs:anyAtomicType",
+        "{http://www.w3.org/2001/XMLSchema}string",
+        "{http://www.w3.org/2001/XMLSchema}anyType",
+    ],
+)
+def test_parse_json_options_accept_xsd_supertypes_of_string(type_name: str) -> None:
+    signature = XdmFunctionSignature(parameters=(XdmSequenceType(type_name, "one"),))
+    function = XdmFunction(lambda *arguments: (), arity=1, declared_types=signature)
+    options = XdmMap(((XdmAtomic.string("fallback"), (function,)),))
+
+    assert parse_json_options(options, kind="parse-json").fallback is function

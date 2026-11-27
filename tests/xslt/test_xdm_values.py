@@ -1301,6 +1301,23 @@ def test_sequence_type_from_lexical(lexical: str, type_name: str, occurrence: st
     assert sequence_type_from_lexical(lexical) == XdmSequenceType(type_name, occurrence)
 
 
+@pytest.mark.parametrize(
+    ("lexical", "type_name"),
+    [
+        ("my:string", "{urn:test}string"),
+        ("my:string?", "{urn:test}string"),
+        ("{urn:already}string", "{urn:already}string"),
+        ("other:string", "other:string"),
+        ("item()", "item()"),
+    ],
+)
+def test_sequence_type_from_lexical_expands_bound_prefixes(lexical: str, type_name: str) -> None:
+    from pyxsd.xdm.values import sequence_type_from_lexical
+
+    namespaces = {"my": "urn:test"}
+    assert sequence_type_from_lexical(lexical, namespaces=namespaces).type_name == type_name
+
+
 def test_sequence_type_from_lexical_rejects_an_empty_string() -> None:
     from pyxsd.xdm.values import sequence_type_from_lexical
 

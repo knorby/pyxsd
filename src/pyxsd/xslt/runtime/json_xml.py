@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from pyxsd import xsd_data_types as _xsd
+from pyxsd.namespaces import XSD_NS
 from pyxsd.xdm import (
     XdmArray,
     XdmAtomic,
@@ -148,9 +149,11 @@ def parse_json_xdm(
 ) -> XdmItem | None:
     """Parse JSON text into one XDM value under the F&O 3.1 mapping.
 
-    ``null`` and empty text produce the empty sequence.  Malformed JSON raises
-    ``FOJS0001``; duplicate keys under ``duplicates=reject`` raise
-    ``FOJS0003``.
+    ``null`` produces the empty sequence, both as the whole input and as a
+    member of an array or object.  Empty text is malformed JSON and raises
+    ``FOJS0001``; the calling bridge handles an empty XDM input sequence
+    before this function is reached.  Duplicate keys under
+    ``duplicates=reject`` raise ``FOJS0003``.
     """
     tree = _parse_json(text, liberal=liberal)
     return _json_tree_to_xdm(
@@ -510,7 +513,11 @@ def _fallback_accepts_string(function: XdmFunction) -> bool:
     ``item()`` or a supertype of ``xs:string`` (``xs:anyType``,
     ``xs:anySimpleType``, ``xs:anyAtomicType``, or ``xs:string`` itself).
     ``map(*)``, a node type, a non-string atomic, or a string *subtype* does
-    not accept every string.  The shared XSD subtype relation decides, so a
+    not accept every string.  Type identity keeps its namespace: a schema type
+    whose local name happens to be ``string`` or ``anyType`` is not the XSD
+    type.  Declarations built from a static context carry Clark names; the
+    conventional ``xs`` prefix is the XSD namespace for a signature assembled
+    without one.  The shared XSD subtype relation decides the hierarchy, so a
     new supertype spelling does not need a hand-maintained list.  When no
     declaration is available the compatibility check stays at invocation.
     """
@@ -520,8 +527,19 @@ def _fallback_accepts_string(function: XdmFunction) -> bool:
     type_name = declared.parameters[0].type_name
     if type_name == "item()":
         return True
-    local = type_name.rpartition("}")[2].rpartition(":")[2]
-    return is_xsd_subtype("string", local)
+    namespace, local = _type_identity(type_name)
+    return namespace == XSD_NS and is_xsd_subtype("string", local)
+
+
+def _type_identity(type_name: str) -> tuple[str | None, str]:
+    """Split one declared type name into its namespace and local name."""
+    if type_name.startswith("{"):
+        namespace, _, local = type_name[1:].partition("}")
+        return namespace, local
+    prefix, separator, local = type_name.partition(":")
+    if separator and prefix == "xs":
+        return XSD_NS, local
+    return None, type_name
 
 
 def _attribute_flag(node: XdmNode, name: str) -> bool:

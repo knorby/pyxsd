@@ -1611,6 +1611,7 @@ class _ValueBridge:
         declared_types = signature_from_sequence_types(
             tuple(getattr(token, "sequence_types", None) or ()),
             arity,
+            namespaces=getattr(token.parser, "namespaces", None),
         )
         return XdmFunction(
             implementation,
