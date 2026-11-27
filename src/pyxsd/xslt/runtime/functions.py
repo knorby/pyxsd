@@ -22,8 +22,6 @@ properties, and the names of XSLT elements for ``element-available``.
 
 from __future__ import annotations
 
-import json
-import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
@@ -43,7 +41,7 @@ from pyxsd import xsd_data_types as _xsd
 from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import local_name as _local_name
 from pyxsd.namespaces import namespace_of as _namespace_of
-from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
+from pyxsd.xdm import XdmAtomic, XdmItem, XdmMap, XdmSequence, as_xdm
 from pyxsd.xdm.annotations import builtin_type_classes
 from pyxsd.xdm.legacy import ResultTreeFragment
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
@@ -55,7 +53,13 @@ from pyxsd.xpath.functions import (
     format_integer_value,
 )
 from pyxsd.xslt.errors import XsltDynamicError, XsltError, XsltSerializationError
-from pyxsd.xslt.runtime.json_xml import xml_to_json
+from pyxsd.xslt.runtime.json_xml import (
+    JsonParseOptions,
+    json_to_xml,
+    parse_json_options,
+    parse_json_xdm,
+    xml_to_json,
+)
 from pyxsd.xslt.runtime.numbering import DecimalFormat, format_number
 from pyxsd.xslt.serialization import SerializationParameters, Serializer
 
@@ -701,6 +705,8 @@ class XsltContextBridge:
             f"{{{FN_NS}}}collection": ContextFunction(self._collection_function),
             f"{{{FN_NS}}}uri-collection": ContextFunction(self._uri_collection_function),
             f"{{{FN_NS}}}json-doc": ContextFunction(self._json_doc_function),
+            f"{{{FN_NS}}}parse-json": ContextFunction(self._parse_json_function),
+            f"{{{FN_NS}}}json-to-xml": ContextFunction(self._json_to_xml_function),
             f"{{{FN_NS}}}xml-to-json": ContextFunction(self._xml_to_json_function),
             f"{{{FN_NS}}}system-property": ContextFunction(self._system_property_function),
             f"{{{FN_NS}}}function-available": ContextFunction(self._function_available_function),
@@ -1861,14 +1867,60 @@ class XsltContextBridge:
         arguments: tuple[XdmSequence, ...],
     ) -> XdmSequence:
         del context_item
-        uri = _optional_string(arguments, 0)
+        options = parse_json_options(_json_options_map(arguments), kind="parse-json")
+        uri = _json_text_argument(arguments)
         if uri is None:
             return ()
-        _json_doc_options(arguments)
         resources = self._invocation_resources(uri, code="FOUT1170")
-        text = resources.read_text(uri, base=self.base_uri)
-        value = _parse_json_document(text)
+        text = resources.read_json_text(uri, base=self.base_uri)
+        value = parse_json_xdm(
+            text,
+            liberal=options.liberal,
+            duplicates=options.duplicates,
+            escape=options.escape,
+            fallback=_json_fallback(options),
+        )
         return () if value is None else (value,)
+
+    def _parse_json_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        options = parse_json_options(_json_options_map(arguments), kind="parse-json")
+        text = _json_text_argument(arguments)
+        if text is None:
+            return ()
+        value = parse_json_xdm(
+            text,
+            liberal=options.liberal,
+            duplicates=options.duplicates,
+            escape=options.escape,
+            fallback=_json_fallback(options),
+        )
+        return () if value is None else (value,)
+
+    def _json_to_xml_function(
+        self,
+        context_item: XdmItem | None,
+        arguments: tuple[XdmSequence, ...],
+    ) -> XdmSequence:
+        del context_item
+        options = parse_json_options(_json_options_map(arguments), kind="json-to-xml")
+        text = _json_text_argument(arguments)
+        if text is None:
+            return ()
+        document = json_to_xml(
+            text,
+            liberal=options.liberal,
+            validate=options.validate,
+            escape=options.escape,
+            fallback=_json_fallback(options),
+            duplicates=options.duplicates,
+            base_uri=self.base_uri,
+        )
+        return (document,)
 
     def _current_output_uri_function(
         self,
@@ -2392,77 +2444,96 @@ def _serialization_parameter_map(params: XdmSequence) -> dict[str, Any]:
     )
 
 
-def _json_doc_options(arguments: tuple[XdmSequence, ...]) -> None:
-    """Validate json-doc's optional options map without implementing entries."""
-    if len(arguments) < 2 or not arguments[1]:
-        return
+def _json_options_map(arguments: tuple[XdmSequence, ...]) -> XdmMap | None:
+    """Read the optional second argument as one options map."""
+    if len(arguments) < 2:
+        return None
     options = arguments[1]
     if len(options) != 1 or not isinstance(options[0], XdmMap):
-        raise XsltDynamicError("json-doc options must be a single map", code="XPTY0004")
-    if options[0].size:
-        raise XsltDynamicError(
-            "json-doc options are not supported by this processor",
-            code="FOJS0005",
-        )
+        raise XsltDynamicError("the JSON options must be a single map", code="XPTY0004")
+    return options[0]
 
 
-def _parse_json_document(text: str) -> XdmItem | None:
-    """Parse JSON text into one XDM value under the XPath 3.1 mapping rules."""
-    try:
-        value = json.loads(
-            text,
-            object_pairs_hook=_first_json_member,
-            parse_constant=_reject_json_constant,
-        )
-    except ValueError as exc:
-        raise XsltDynamicError(
-            "the JSON document is not valid JSON",
-            code="FOJS0001",
-            cause=exc,
-        ) from exc
-    return _json_value_to_xdm(value)
+def _json_text_argument(arguments: tuple[XdmSequence, ...]) -> str | None:
+    """The ``xs:string?`` JSON text argument under function conversion.
 
-
-def _first_json_member(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    """Apply the default ``use-first`` duplicate-member rule."""
-    members: dict[str, object] = {}
-    for key, value in pairs:
-        members.setdefault(key, value)
-    return members
-
-
-def _reject_json_constant(value: str) -> None:
-    """Reject NaN and the infinities outside JSON's number grammar."""
-    raise ValueError(f"non-finite JSON number {value!r}")
-
-
-def _json_member(value: object) -> XdmSequence:
-    """Convert one array member or object value into an XDM sequence."""
-    item = _json_value_to_xdm(value)
-    return () if item is None else (item,)
-
-
-def _json_value_to_xdm(value: object) -> XdmItem | None:
-    """Convert one decoded JSON value, mapping ``null`` to the empty sequence."""
-    if value is None:
+    A node atomizes to its typed value.  An ``xs:untypedAtomic`` value is cast
+    to ``xs:string``; an ``xs:anyURI`` promotes to ``xs:string``; other atomic
+    types are rejected because function conversion does not cast them.
+    """
+    if not arguments[0]:
         return None
-    if isinstance(value, bool):
-        return XdmAtomic.boolean(value)
-    if isinstance(value, (int, float)):
-        try:
-            number = float(value)
-        except OverflowError:
-            number = math.inf if value > 0 else -math.inf
-        return XdmAtomic.double(number)
-    if isinstance(value, str):
-        return XdmAtomic.string(value)
-    if isinstance(value, list):
-        return XdmArray(_json_member(member) for member in value)
-    if isinstance(value, dict):
-        return XdmMap(
-            (XdmAtomic.string(key), _json_member(member)) for key, member in value.items()
+    sequence = arguments[0]
+    if len(sequence) != 1:
+        raise XsltDynamicError(
+            "the JSON text argument must be a single value",
+            code="XPTY0004",
         )
-    raise TypeError(f"{type(value).__name__} is not a JSON value")  # pragma: no cover
+    item: XdmItem = sequence[0]
+    if isinstance(item, XdmNode):
+        typed = item.typed_value
+        if len(typed) != 1 or not isinstance(typed[0], XdmAtomic):
+            raise XsltDynamicError(
+                "the JSON text argument must be a single atomic value",
+                code="XPTY0004",
+            )
+        item = typed[0]
+    if not isinstance(item, XdmAtomic):
+        raise XsltDynamicError(
+            "the JSON text argument must be an atomic value",
+            code="XPTY0004",
+        )
+    local = item.type_name.rpartition("}")[2].rpartition(":")[2]
+    if local in ("string", "anyURI", "untypedAtomic"):
+        return item.lexical
+    raise XsltDynamicError(
+        f"the JSON text argument must be xs:string, not xs:{local}",
+        code="XPTY0004",
+    )
+
+
+def _json_fallback(options: JsonParseOptions) -> Callable[[str], str] | None:
+    """Adapt one validated ``fallback`` function item to a string callable.
+
+    The item is invoked with one ``xs:string`` argument, exactly as the
+    declared ``function(xs:string) as xs:string`` option requires.  Its errors
+    keep their own identity, and a result that is not one string is the
+    conversion failure ``XPTY0004``.
+    """
+    function = options.fallback
+    if function is None:
+        return None
+
+    def fallback(value: str) -> str:
+        result = function.invoke((XdmAtomic.string(value),))
+        if len(result) != 1:
+            raise XsltDynamicError(
+                "the fallback function must return exactly one string",
+                code="XPTY0004",
+            )
+        item = result[0]
+        if isinstance(item, XdmNode):
+            typed = item.typed_value
+            if len(typed) != 1 or not isinstance(typed[0], XdmAtomic):
+                raise XsltDynamicError(
+                    "the fallback function must return a string",
+                    code="XPTY0004",
+                )
+            item = typed[0]
+        if not isinstance(item, XdmAtomic):
+            raise XsltDynamicError(
+                "the fallback function must return a string",
+                code="XPTY0004",
+            )
+        local = item.type_name.rpartition("}")[2].rpartition(":")[2]
+        if local not in ("string", "anyURI", "untypedAtomic"):
+            raise XsltDynamicError(
+                f"the fallback function returned xs:{local}, not xs:string",
+                code="XPTY0004",
+            )
+        return item.lexical
+
+    return fallback
 
 
 def _single_node(sequence: XdmSequence, label: str) -> XdmNode:

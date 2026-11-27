@@ -1,24 +1,414 @@
-"""Read the XSLT 3.0 XML representation of JSON directly from XDM."""
+"""Read and write the XSLT 3.0 XML representation of JSON over XDM."""
 
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from typing import cast
 
 from pyxsd import xsd_data_types as _xsd
-from pyxsd.xdm import XdmAtomic, XdmItem, XdmMap, XdmSequence, XdmSequenceType
-from pyxsd.xdm.nodes import NodeKind, XdmNode
+from pyxsd.xdm import (
+    XdmArray,
+    XdmAtomic,
+    XdmFunction,
+    XdmItem,
+    XdmMap,
+    XdmSequence,
+    XdmSequenceType,
+)
+from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xdm.values import _coerce_sequence, canonical_float_string
 from pyxsd.xslt.errors import XsltDynamicError
-from pyxsd.xslt.serialization.json_lexical import decode_json_escapes, escape_json_string
+from pyxsd.xslt.serialization.json_lexical import (
+    JsonNumber,
+    JsonObject,
+    JsonValue,
+    decode_json_escapes,
+    escape_json_string,
+    parse_json_text,
+    render_json_string,
+)
 
-__all__ = ["xml_to_json"]
+__all__ = [
+    "JsonParseOptions",
+    "json_to_xml",
+    "parse_json_options",
+    "parse_json_xdm",
+    "xml_to_json",
+]
 
 _FN_NS = "http://www.w3.org/2005/xpath-functions"
 _XML_WHITESPACE = " \t\r\n"
 _INDENT = XdmAtomic.string("indent")
 _INDENT_TYPE = XdmSequenceType("xs:boolean", "one")
+_BOOLEAN_OPTION_TYPE = XdmSequenceType("xs:boolean", "one")
+_STRING_OPTION_TYPE = XdmSequenceType("xs:string", "one")
+
+_PARSE_JSON_OPTIONS = ("liberal", "duplicates", "escape", "fallback")
+_JSON_TO_XML_OPTIONS = (*_PARSE_JSON_OPTIONS, "validate")
+_PARSE_JSON_DUPLICATES = frozenset({"use-first", "use-last", "reject"})
+_JSON_TO_XML_DUPLICATES = frozenset({"retain", "use-first", "reject"})
+
+
+@dataclass(frozen=True, slots=True)
+class JsonParseOptions:
+    """The converted F&O 3.1 JSON parse options for one call."""
+
+    liberal: bool = False
+    duplicates: str = "use-first"
+    escape: bool = False
+    fallback: XdmFunction | None = None
+    validate: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _XmlKey:
+    """One rendered map key and whether it carries backslash escapes."""
+
+    text: str
+    escaped: bool
+
+
+def parse_json_options(options: XdmMap | None, *, kind: str) -> JsonParseOptions:
+    """Convert an F&O options map for ``parse-json`` or ``json-to-xml``.
+
+    Option names may be any atomic value that compares equal to the required
+    string.  Values use the function conversion rules: an ``xs:boolean`` or
+    ``xs:string`` option accepts an ``xs:untypedAtomic`` spelling but not a
+    different primitive type, and the ``fallback`` option must be a
+    single-argument function item.  Unknown entries are ignored.
+
+    Conversion failures raise ``XPTY0004``; a converted value outside the
+    permitted set raises ``FOJS0005``, as does ``fallback`` together with
+    ``escape=true()``.  ``json-to-xml`` additionally rejects
+    ``duplicates=retain`` with ``validate=true()``.
+
+    ``parse-json`` and ``json-doc`` default ``escape`` to false.  The F&O 3.1
+    option table says true, but its own examples and the pinned QT3 corpus
+    assume false; W3C bug 30287 records that internal conflict.  The corpus
+    behavior is the one this profile preserves.
+    """
+    names = _JSON_TO_XML_OPTIONS if kind == "json-to-xml" else _PARSE_JSON_OPTIONS
+    supplied: dict[str, XdmSequence] = {}
+    for key, value in () if options is None else options.entries:
+        for name in names:
+            if key.same_key(XdmAtomic.string(name)):
+                supplied[name] = value
+                break
+
+    liberal = _boolean_option(supplied.get("liberal"), "liberal")
+    escape = _boolean_option(supplied.get("escape"), "escape")
+    validate = (
+        _boolean_option(supplied.get("validate"), "validate") if kind == "json-to-xml" else False
+    )
+    duplicates: str | None = None
+    if "duplicates" in supplied:
+        duplicates = _string_option(supplied["duplicates"], "duplicates")
+
+    if duplicates is None:
+        duplicates = ("reject" if validate else "retain") if kind == "json-to-xml" else "use-first"
+    elif duplicates not in (
+        _JSON_TO_XML_DUPLICATES if kind == "json-to-xml" else _PARSE_JSON_DUPLICATES
+    ):
+        raise XsltDynamicError(
+            f"the duplicates option value {duplicates!r} is not permitted",
+            code="FOJS0005",
+        )
+
+    fallback: XdmFunction | None = None
+    if "fallback" in supplied:
+        fallback = _fallback_option(supplied["fallback"])
+    if fallback is not None and escape:
+        raise XsltDynamicError(
+            "the fallback option cannot be combined with escape=true()",
+            code="FOJS0005",
+        )
+    if kind == "json-to-xml" and validate and duplicates == "retain":
+        raise XsltDynamicError(
+            "duplicates=retain is incompatible with validate=true()",
+            code="FOJS0005",
+        )
+    return JsonParseOptions(
+        liberal=liberal,
+        duplicates=duplicates,
+        escape=escape,
+        fallback=fallback,
+        validate=validate,
+    )
+
+
+def parse_json_xdm(
+    text: str,
+    *,
+    liberal: bool = False,
+    duplicates: str = "use-first",
+    escape: bool = False,
+    fallback: Callable[[str], str] | None = None,
+) -> XdmItem | None:
+    """Parse JSON text into one XDM value under the F&O 3.1 mapping.
+
+    ``null`` and empty text produce the empty sequence.  Malformed JSON raises
+    ``FOJS0001``; duplicate keys under ``duplicates=reject`` raise
+    ``FOJS0003``.
+    """
+    tree = _parse_json(text, liberal=liberal)
+    return _json_tree_to_xdm(
+        tree,
+        duplicates=duplicates,
+        escape=escape,
+        fallback=fallback,
+    )
+
+
+def json_to_xml(
+    text: str,
+    *,
+    liberal: bool,
+    validate: bool,
+    escape: bool,
+    fallback: Callable[[str], str] | None,
+    duplicates: str,
+    base_uri: str | None,
+) -> XdmDocument:
+    """Return the F&O 3.1 XML representation of one JSON text.
+
+    The document node carries *base_uri* as the static base URI of the call.
+    ``validate=true()`` is explicitly unsupported and raises ``FOJS0004``
+    after the input has been shown to be valid JSON; no annotations are
+    fabricated.  Malformed JSON raises ``FOJS0001`` and duplicate keys under
+    ``duplicates=reject`` raise ``FOJS0003``.
+    """
+    tree = _parse_json(text, liberal=liberal)
+    if validate:
+        raise XsltDynamicError(
+            "schema-validated json-to-xml output is not supported",
+            code="FOJS0004",
+        )
+    body = _json_xml_element(
+        tree,
+        key=None,
+        escape=escape,
+        fallback=fallback,
+        duplicates=duplicates,
+        root=True,
+    )
+    document = XdmDocument.parse(
+        body.encode("utf-8"),
+        source_name="<json-to-xml>",
+        base_uri=base_uri,
+    )
+    return document
+
+
+def _parse_json(text: str, *, liberal: bool) -> JsonValue:
+    try:
+        return parse_json_text(text, liberal=liberal)
+    except ValueError as exc:
+        raise XsltDynamicError(
+            "the JSON document is not valid JSON",
+            code="FOJS0001",
+            cause=exc,
+        ) from exc
+
+
+def _json_xml_element(
+    value: JsonValue,
+    *,
+    key: _XmlKey | None,
+    escape: bool,
+    fallback: Callable[[str], str] | None,
+    duplicates: str,
+    root: bool = False,
+) -> str:
+    """Serialize one parsed JSON value as a §17.4.2 element."""
+    if isinstance(value, JsonObject):
+        children = "".join(
+            _json_xml_element(
+                member,
+                key=member_key,
+                escape=escape,
+                fallback=fallback,
+                duplicates=duplicates,
+            )
+            for member_key, member in _json_members(
+                value, escape=escape, fallback=fallback, duplicates=duplicates
+            )
+        )
+        return _json_xml_container("map", children, key=key, root=root)
+    if isinstance(value, list):
+        children = "".join(
+            _json_xml_element(
+                member,
+                key=None,
+                escape=escape,
+                fallback=fallback,
+                duplicates=duplicates,
+            )
+            for member in value
+        )
+        return _json_xml_container("array", children, key=key, root=root)
+    if isinstance(value, str):
+        rendered = render_json_string(value, escape=escape, fallback=fallback)
+        escaped = escape and "\\" in rendered
+        namespace = _root_namespace(root)
+        return (
+            f"<string{namespace}{_xml_attributes(key, escaped=escaped)}>"
+            f"{_xml_text(rendered)}</string>"
+        )
+    if isinstance(value, JsonNumber):
+        return (
+            f"<number{_root_namespace(root)}{_xml_attributes(key)}>"
+            f"{_xml_text(value.lexical)}</number>"
+        )
+    if isinstance(value, bool):
+        lexical = "true" if value else "false"
+        return f"<boolean{_root_namespace(root)}{_xml_attributes(key)}>{lexical}</boolean>"
+    if value is None:
+        return f"<null{_root_namespace(root)}{_xml_attributes(key)}/>"
+    raise TypeError(f"{type(value).__name__} is not a JSON value")  # pragma: no cover
+
+
+def _json_members(
+    value: JsonObject,
+    *,
+    escape: bool,
+    fallback: Callable[[str], str] | None,
+    duplicates: str,
+) -> Iterator[tuple[_XmlKey, JsonValue]]:
+    """Render object keys and apply the json-to-xml duplicate policy."""
+    kept: dict[str, tuple[_XmlKey, JsonValue]] = {}
+    for raw_key, member in value.members:
+        rendered = render_json_string(raw_key, escape=escape, fallback=fallback)
+        key = _XmlKey(rendered, escape and "\\" in rendered)
+        if duplicates == "retain":
+            yield key, member
+            continue
+        if rendered in kept:
+            if duplicates == "reject":
+                raise XsltDynamicError(
+                    f"duplicate map key {rendered!r}",
+                    code="FOJS0003",
+                )
+            continue
+        kept[rendered] = (key, member)
+    yield from kept.values()
+
+
+def _json_xml_container(
+    name: str,
+    children: str,
+    *,
+    key: _XmlKey | None,
+    root: bool,
+) -> str:
+    namespace = _root_namespace(root)
+    if not children:
+        return f"<{name}{namespace}{_xml_attributes(key)}/>"
+    return f"<{name}{namespace}{_xml_attributes(key)}>{children}</{name}>"
+
+
+def _root_namespace(root: bool) -> str:
+    """The default namespace declaration on the document's only child."""
+    return f' xmlns="{_FN_NS}"' if root else ""
+
+
+def _xml_attributes(key: _XmlKey | None, *, escaped: bool = False) -> str:
+    if key is None:
+        return "" if not escaped else ' escaped="true"'
+    pieces = [f' key="{_xml_attribute(key.text)}"']
+    if key.escaped:
+        pieces.append(' escaped-key="true"')
+    if escaped:
+        pieces.append(' escaped="true"')
+    return "".join(pieces)
+
+
+def _xml_text(value: str) -> str:
+    return (
+        value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\r", "&#xD;")
+    )
+
+
+def _xml_attribute(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("\t", "&#x9;")
+        .replace("\n", "&#xA;")
+        .replace("\r", "&#xD;")
+    )
+
+
+def _json_tree_to_xdm(
+    value: JsonValue,
+    *,
+    duplicates: str,
+    escape: bool,
+    fallback: Callable[[str], str] | None,
+) -> XdmItem | None:
+    """Convert one parsed JSON value into its parse-json XDM result."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return XdmAtomic.boolean(value)
+    if isinstance(value, JsonNumber):
+        return XdmAtomic.double(float(value.lexical))
+    if isinstance(value, str):
+        return XdmAtomic.string(render_json_string(value, escape=escape, fallback=fallback))
+    if isinstance(value, list):
+        return XdmArray(
+            _json_sequence_to_xdm(
+                member,
+                duplicates=duplicates,
+                escape=escape,
+                fallback=fallback,
+            )
+            for member in value
+        )
+    if isinstance(value, JsonObject):
+        entries: list[tuple[XdmAtomic, XdmSequence]] = []
+        positions: dict[str, int] = {}
+        for raw_key, member in value.members:
+            rendered = render_json_string(raw_key, escape=escape, fallback=fallback)
+            converted = _json_sequence_to_xdm(
+                member,
+                duplicates=duplicates,
+                escape=escape,
+                fallback=fallback,
+            )
+            if rendered in positions:
+                if duplicates == "reject":
+                    raise XsltDynamicError(
+                        f"duplicate map key {rendered!r}",
+                        code="FOJS0003",
+                    )
+                if duplicates == "use-first":
+                    continue
+                entries[positions[rendered]] = (XdmAtomic.string(rendered), converted)
+            else:
+                positions[rendered] = len(entries)
+                entries.append((XdmAtomic.string(rendered), converted))
+        return XdmMap(entries)
+    raise TypeError(f"{type(value).__name__} is not a JSON value")  # pragma: no cover
+
+
+def _json_sequence_to_xdm(
+    value: JsonValue,
+    *,
+    duplicates: str,
+    escape: bool,
+    fallback: Callable[[str], str] | None,
+) -> XdmSequence:
+    item = _json_tree_to_xdm(
+        value,
+        duplicates=duplicates,
+        escape=escape,
+        fallback=fallback,
+    )
+    return () if item is None else (item,)
 
 
 def xml_to_json(input_node: XdmNode | None, options: XdmMap | None = None) -> str | None:
@@ -67,6 +457,45 @@ def _indent_enabled(options: XdmMap | None) -> bool:
     except TypeError as exc:
         raise XsltDynamicError("indent must be convertible to xs:boolean", code="XPTY0004") from exc
     return bool(cast(XdmAtomic, value).value)
+
+
+def _boolean_option(value: XdmSequence | None, name: str) -> bool:
+    if value is None:
+        return False
+    try:
+        (converted,) = _coerce_sequence(tuple(_option_atoms(value)), _BOOLEAN_OPTION_TYPE)
+    except TypeError as exc:
+        raise XsltDynamicError(
+            f"the {name} option must be convertible to xs:boolean",
+            code="XPTY0004",
+        ) from exc
+    return bool(cast(XdmAtomic, converted).value)
+
+
+def _string_option(value: XdmSequence, name: str) -> str:
+    try:
+        (converted,) = _coerce_sequence(tuple(_option_atoms(value)), _STRING_OPTION_TYPE)
+    except TypeError as exc:
+        raise XsltDynamicError(
+            f"the {name} option must be convertible to xs:string",
+            code="XPTY0004",
+        ) from exc
+    return cast(XdmAtomic, converted).lexical
+
+
+def _fallback_option(value: XdmSequence) -> XdmFunction:
+    if len(value) != 1 or not isinstance(value[0], XdmFunction):
+        raise XsltDynamicError(
+            "the fallback option must be a function item",
+            code="XPTY0004",
+        )
+    function = value[0]
+    if function.arity != (1, 1):
+        raise XsltDynamicError(
+            "the fallback option function must have arity 1",
+            code="XPTY0004",
+        )
+    return function
 
 
 def _attribute_flag(node: XdmNode, name: str) -> bool:

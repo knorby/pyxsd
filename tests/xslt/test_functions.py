@@ -6,6 +6,7 @@ import io
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
+from xml.sax.saxutils import quoteattr
 
 import pytest
 from elementpath import XPathContext
@@ -21,7 +22,7 @@ from tests.xslt.support import (
 
 from pyxsd.schema import Schema
 from pyxsd.source_spans import SourceIndex
-from pyxsd.xdm import XdmAtomic
+from pyxsd.xdm import XdmAtomic, as_xdm
 from pyxsd.xdm.document import parse_typed_document
 from pyxsd.xdm.nodes import NodeKind, XdmDocument
 from pyxsd.xdm.schema import SchemaPool
@@ -44,6 +45,66 @@ def error_code(call: Callable[[], object]) -> str | None:
     with pytest.raises(XsltError) as caught:
         call()
     return caught.value.code
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        (r"""parse-json('﻿{"a":1,"\u0061":2}')?a""", 1.0),
+        (r"""parse-json('{"a":1,"\u0061":2}', map{'duplicates':'use-last'})?a""", 2.0),
+        (
+            r"""parse-json('{"\u0000":"\u007f\\\""}', map{'escape':true()})('\u0000')""",
+            r'\u007F\\"',
+        ),
+        (r"""parse-json('"\uDEAD\uD834\uDD1E\b"')""", "\ufffd\U0001d11e\ufffd"),
+        (
+            r"""let $prefix := 'invalid=' return
+                parse-json('"\b\u0000"', map{'fallback':function($s){$prefix || $s}})""",
+            r"invalid=\binvalid=\u0000",
+        ),
+        (
+            """parse-json('"a' || codepoints-to-string(9) || 'b"',
+                map{xs:anyURI('liberal'):xs:untypedAtomic('true'), 'ignored':()})""",
+            "a\tb",
+        ),
+        ("(parse-json#2)('null', map{})", None),
+        ("(parse-json#1)(())", None),
+    ],
+)
+def test_parse_json_options(expression: str, expected: float | str | None) -> None:
+    source = stylesheet(
+        f'<xsl:template name="main"><xsl:sequence select={quoteattr(expression)}/></xsl:template>'
+    )
+    assert transform(source, initial_template="main").principal == (
+        () if expected is None else as_xdm(expected)
+    )
+
+
+@pytest.mark.parametrize(
+    ("expression", "code"),
+    [
+        ("parse-json('NaN')", "FOJS0001"),
+        (r"""parse-json('{"a":1,"\u0061":2}', map{'duplicates':'reject'})""", "FOJS0003"),
+        ("parse-json('null', map{'duplicates':'retain'})", "FOJS0005"),
+        ("parse-json('null', map{'duplicates':()})", "XPTY0004"),
+        ("parse-json('null', map{'escape':'yes'})", "XPTY0004"),
+        ("parse-json('null', map{'fallback':concat#2})", "XPTY0004"),
+        ("parse-json('null', map{'escape':true(), 'fallback':string#1})", "FOJS0005"),
+        (
+            r"""parse-json('"\u0000"', map{'fallback':function($s){1}})""",
+            "XPTY0004",
+        ),
+        (
+            r"""parse-json('"\u0000"', map{'fallback':function($s){error(QName('', 'UH0001'))}})""",
+            "Q{}UH0001",
+        ),
+    ],
+)
+def test_parse_json_exact_errors(expression: str, code: str) -> None:
+    source = stylesheet(
+        f'<xsl:template name="main"><xsl:sequence select={quoteattr(expression)}/></xsl:template>'
+    )
+    assert error_code(lambda: transform(source, initial_template="main")) == code
 
 
 def test_function_argument_and_result_conversion() -> None:
@@ -2909,3 +2970,89 @@ def test_format_integer_keeps_its_compiled_argument() -> None:
     assert token.evaluate(XPathContext(item="", variables={"n": 1})) == "A"
     assert token.evaluate(XPathContext(item="", variables={"n": 2})) == "B"
     assert token._items[0] is operand
+
+
+@pytest.mark.parametrize(
+    ("expression", "code"),
+    [
+        ("parse-json(('a','b'))", "XPTY0004"),
+        ("parse-json(json-to-xml#1)", "XPTY0004"),
+        (r"""parse-json('"\u0000"', map{'fallback':function($s){('a','b')}})""", "XPTY0004"),
+        (r"""parse-json('"\u0000"', map{'fallback':function($s){map{}}})""", "XPTY0004"),
+        (r"""parse-json('"\u0000"', map{'fallback':1})""", "XPTY0004"),
+    ],
+)
+def test_parse_json_argument_and_fallback_conversion_errors(expression: str, code: str) -> None:
+    source = stylesheet(
+        f'<xsl:template name="main"><xsl:sequence select={quoteattr(expression)}/></xsl:template>'
+    )
+    assert error_code(lambda: transform(source, initial_template="main")) == code
+
+
+def test_parse_json_accepts_a_node_text_argument() -> None:
+    source = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="'
+        "parse-json(parse-xml('&lt;j&gt;&quot;X&quot;&lt;/j&gt;'))"
+        '"/></xsl:template>'
+    )
+    assert transform(source, initial_template="main").principal == as_xdm("X")
+
+
+def test_parse_json_ignores_an_unknown_validate_option() -> None:
+    source = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="'
+        "parse-json('{&quot;a&quot;:1}', map{'validate':true()})?a"
+        '"/></xsl:template>'
+    )
+    assert transform(source, initial_template="main").principal == as_xdm(1.0)
+
+
+def _list_typed_document(tmp_path: Path) -> XdmDocument:
+    schema = tmp_path / "list.xsd"
+    schema.write_text(
+        """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+             <xs:element name="a">
+               <xs:simpleType><xs:list itemType="xs:integer"/></xs:simpleType>
+             </xs:element>
+           </xs:schema>""",
+        encoding="utf-8",
+    )
+    pool = SchemaPool.from_imports([schema], xsd_version="1.0")
+    return parse_typed_document(b"<a>1 2</a>", schema_pool=pool, validation="strict")
+
+
+def test_parse_json_rejects_a_node_text_argument_atomizing_to_several_values(
+    tmp_path: Path,
+) -> None:
+    document = _list_typed_document(tmp_path)
+    body = stylesheet(
+        '<xsl:template name="main"><xsl:sequence select="parse-json((/a)[1])"/></xsl:template>'
+    )
+    assert (
+        error_code(
+            lambda: transform(
+                body, input_source=document, initial_template="main", validation="preserve"
+            )
+        )
+        == "XPTY0004"
+    )
+
+
+def test_parse_json_rejects_a_fallback_node_atomizing_to_several_values(
+    tmp_path: Path,
+) -> None:
+    document = _list_typed_document(tmp_path)
+    body = stylesheet(
+        r"""<xsl:variable name="n" select="/a"/>
+        <xsl:template name="main"><xsl:sequence select=
+        "parse-json('&quot;\u0000&quot;', map{'fallback':function($s){$n}})"
+        /></xsl:template>"""
+    )
+    assert (
+        error_code(
+            lambda: transform(
+                body, input_source=document, initial_template="main", validation="preserve"
+            )
+        )
+        == "XPTY0004"
+    )
