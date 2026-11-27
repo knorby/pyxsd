@@ -1620,20 +1620,31 @@ class _ValueBridge:
         )
 
 
-def _normalize_anytype_arguments(token: Any) -> None:
-    """Replace a dynamic token's ``xs:anyType`` types with ``item()*``.
+#: ``xs:anyType`` sequence types and their cardinality-preserving item types.
+_ANYTYPE_SEQUENCE_TYPES = {
+    "xs:anyType": "item()",
+    "xs:anyType?": "item()?",
+    "xs:anyType*": "item()*",
+    "xs:anyType+": "item()+",
+}
 
-    Elementpath's dynamic call path resolves parameter sequence types through
-    its XSD table and raises ``XPST0051`` for ``xs:anyType``, which the same
-    function type accepts in a direct call.  ``xs:anyType`` accepts every
-    item, so ``item()*`` is the equivalent type the call path can express.
+
+def _normalize_anytype_arguments(token: Any) -> None:
+    """Replace a dynamic token's ``xs:anyType`` types with item types.
+
+    Elementpath's dynamic call path resolves parameter and result sequence
+    types through its XSD table and raises ``XPST0051`` for ``xs:anyType``,
+    which the same function type accepts in a direct call.  Every occurrence
+    maps to the equivalent item type with its cardinality preserved:
+    ``xs:anyType`` is exactly one item, not the zero-or-more ``item()*``.
     """
     sequence_types = getattr(token, "sequence_types", None)
     if not sequence_types:
         return
     for index, value in enumerate(sequence_types):
-        if value == "xs:anyType":
-            sequence_types[index] = "item()*"
+        normalized = _ANYTYPE_SEQUENCE_TYPES.get(value)
+        if normalized is not None:
+            sequence_types[index] = normalized
 
 
 def _with_holder_state(

@@ -3234,8 +3234,14 @@ def test_parse_json_accepts_a_fallback_without_a_declaration() -> None:
     assert transform(source, initial_template="main").principal == as_xdm("ok")
 
 
-def test_parse_json_accepts_an_anytype_fallback_parameter() -> None:
-    expression = r"""parse-json('"\u0000"', map{'fallback':function($s as xs:anyType){$s}})"""
+@pytest.mark.parametrize(
+    "type_name",
+    ["xs:anyType", "xs:anyType?", "xs:anyType*", "xs:anyType+"],
+)
+def test_parse_json_accepts_anytype_fallback_parameter_forms(type_name: str) -> None:
+    expression = (
+        r"""parse-json('"\u0000"', map{'fallback':function($s as """ + type_name + r"""){$s}})"""
+    )
     source = stylesheet(
         f'<xsl:template name="main"><xsl:sequence select={quoteattr(expression)}/></xsl:template>'
     )
