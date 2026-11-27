@@ -22,6 +22,7 @@ in the interpreter.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from threading import Lock
@@ -132,8 +133,13 @@ ContinuationKind: TypeAlias = Literal["resume", "append", "convert"]
 class ExecutionLimits:
     """Explicit budgets for one transformation and its nested invocations.
 
-    ``max_frames`` defaults to 100,000 live explicit frames. The other
-    limits described here default to ``None`` unless stated otherwise.
+    ``max_frames`` defaults to 100,000 live explicit frames and bounds
+    heap-scheduled execution, including tail calls and non-tail arithmetic
+    recursion. Mixed XSLT/XPath calls, sequence construction and template
+    push can reach the Python recursion limit first. That raises an
+    uncatchable :class:`~pyxsd.xslt.errors.XsltDynamicError` with code
+    ``PYXSD-XSLT-001``. The other limits described here default to ``None``
+    unless stated otherwise.
     ``max_steps`` bounds scheduler dispatches and ``max_documents`` bounds
     loaded XML documents.
 
@@ -597,18 +603,14 @@ class Scheduler:
                 try:
                     outcome = step(frame)
                 except RecursionError as exc:
-                    raise self._resource_error(
-                        "the transformation exceeded the Python recursion limit"
-                    ) from exc
+                    raise self._python_stack_error() from exc
                 except BaseException as exc:
                     self._unwind(exc)
                     continue
                 try:
                     self._handle_outcome(frame, outcome)
                 except RecursionError as exc:
-                    raise self._resource_error(
-                        "the transformation exceeded the Python recursion limit"
-                    ) from exc
+                    raise self._python_stack_error() from exc
             return self._result
         finally:
             self._active = False
@@ -764,6 +766,15 @@ class Scheduler:
         commit = getattr(frame.extent, "commit", None)
         if callable(commit):
             commit()
+
+    def _python_stack_error(self) -> XsltDynamicError:
+        limit = self.limits.max_frames
+        configured = "None (no frame budget)" if limit is None else str(limit)
+        return self._resource_error(
+            "the transformation exceeded the Python recursion limit: "
+            f"Python recursion limit={sys.getrecursionlimit()}, "
+            f"max_frames={configured}, frame depth={self.budget.frames}"
+        )
 
     def _resource_error(self, message: str) -> XsltDynamicError:
         stack = tuple(frame.diagnostic() for frame in self._frames)

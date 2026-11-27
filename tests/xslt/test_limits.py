@@ -1,7 +1,11 @@
 """Cumulative limits at the public transformation and result boundaries."""
 
 import io
+import json
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Barrier
 
 import pytest
@@ -9,10 +13,18 @@ from tests.xslt.support import stylesheet
 
 from pyxsd.resource_policy import ResourceData
 from pyxsd.xdm import XdmAtomic, XdmMap
+from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltDynamicError, XsltSerializationError
 from pyxsd.xslt.results import delivered_entries
-from pyxsd.xslt.runtime.frames import ExecutionBudget, ExecutionLimits
+from pyxsd.xslt.runtime.frames import (
+    Continuation,
+    ExecutionBudget,
+    ExecutionLimits,
+    Frame,
+    Return,
+    Scheduler,
+)
 from pyxsd.xslt.serialization import Serializer
 
 
@@ -31,6 +43,169 @@ def _assert_exhausted(error, label, field, limit, amount):
     assert error.args[0] == (
         f"the transformation exceeded its {label} budget: {field}={limit}, "
         f"cumulative amount={amount}"
+    )
+
+
+_CORPUS = Path(__file__).with_name("corpus") / "catalog.xml"
+
+
+@pytest.mark.skipif(not _CORPUS.is_file(), reason="XSLT corpus not checked out")
+@pytest.mark.parametrize("name", ["catalog/catalog-003", "variable/variable-0108"])
+def test_pathological_corpus_case_has_a_controlled_verdict(name):
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import json
+import sys
+from tests.xslt.catalog import load_catalog
+from tests.xslt.suite import SUITE_PROFILES, run_parallel
+
+case = load_catalog(sys.argv[1]).cases[sys.argv[2]]
+(result,) = run_parallel((case,), SUITE_PROFILES["xslt30"], jobs=1, timeout=5)
+print(json.dumps([result.name, result.outcome.value, result.message]))
+""",
+            str(_CORPUS),
+            name,
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=40,
+        check=True,
+    )
+    assert "Traceback (most recent call last)" not in run.stderr
+    actual_name, verdict, detail = json.loads(run.stdout)
+    assert actual_name == name
+    if name == "catalog/catalog-003" and verdict == "pass":
+        return  # The corpus assertion already checked the result.
+    assert verdict == "timeout"
+    assert detail == "the case exceeded its 5 s budget"
+
+
+def _deep_stylesheet(shape):
+    function = """<xsl:function name="local:f">
+      <xsl:param name="n"/>
+      {body}
+    </xsl:function>
+    <xsl:template match="/"><xsl:sequence select="local:f(160)"/></xsl:template>"""
+    source = b"<n/>"
+    if shape == "push":
+        source = b"<n>" * 160 + b"</n>" * 160
+        body = """<xsl:template match="/"><xsl:apply-templates/></xsl:template>
+        <xsl:template match="n">
+          <out><xsl:apply-templates select="n"/></out>
+        </xsl:template>"""
+    elif shape == "sequence":
+        body = function.format(
+            body='<xsl:sequence select="if ($n eq 0) then () else ($n, local:f($n - 1))"/>'
+        )
+    elif shape == "function-constructor":
+        body = function.format(
+            body="""<xsl:if test="$n gt 0"><out>
+              <xsl:sequence select="local:f($n - 1)"/>
+            </out></xsl:if>"""
+        )
+    elif shape == "named-template":
+        body = """<xsl:template match="/">
+          <xsl:call-template name="nested"><xsl:with-param name="n" select="160"/></xsl:call-template>
+        </xsl:template>
+        <xsl:template name="nested">
+          <xsl:param name="n"/>
+          <xsl:if test="$n gt 0"><out><xsl:call-template name="nested">
+            <xsl:with-param name="n" select="$n - 1"/>
+          </xsl:call-template></out></xsl:if>
+        </xsl:template>"""
+    else:
+        select = "/".join(["."] * 550)
+        body = f'<xsl:template match="/"><xsl:sequence select="{select}"/></xsl:template>'
+    compiled = XsltProcessor().compile(
+        io.BytesIO(stylesheet(body, namespaces={"local": "urn:local"}))
+    )
+    return compiled, source
+
+
+@pytest.mark.parametrize(
+    ("shape", "cap"),
+    [
+        ("push", 8),
+        ("sequence", 8),
+        ("function-constructor", 8),
+        ("named-template", 8),
+        ("static-path", 1),
+    ],
+)
+def test_deep_non_tail_execution_reports_the_bound_that_fired(shape, cap):
+    compiled, source = _deep_stylesheet(shape)
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(source, delivery="raw")
+    error = caught.value
+    assert type(error) is XsltDynamicError
+    assert error.code == "PYXSD-XSLT-001"
+    assert error.catchable is False
+    prefix = (
+        f"the transformation exceeded the Python recursion limit: "
+        f"Python recursion limit={sys.getrecursionlimit()}, max_frames=100000, frame depth="
+    )
+    message = error.args[0]
+    assert message.startswith(prefix)
+    assert 0 < int(message.removeprefix(prefix)) < 100_000
+
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(source, delivery="raw", limits=ExecutionLimits(max_frames=cap))
+    _assert_exhausted(caught.value, "frame", "max_frames", cap, cap + 1)
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [ExecutionLimits(), ExecutionLimits(max_frames=200_000), ExecutionLimits(max_frames=None)],
+)
+def test_python_stack_diagnostic_names_the_configured_frame_budget(limits):
+    compiled, source = _deep_stylesheet("static-path")
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(source, delivery="raw", limits=limits)
+    error = caught.value
+    assert type(error) is XsltDynamicError
+    assert error.code == "PYXSD-XSLT-001"
+    assert error.catchable is False
+    budget = (
+        "max_frames=None (no frame budget)"
+        if limits.max_frames is None
+        else f"max_frames={limits.max_frames}"
+    )
+    assert error.args[0] == (
+        f"the transformation exceeded the Python recursion limit: "
+        f"Python recursion limit={sys.getrecursionlimit()}, {budget}, frame depth=2"
+    )
+
+
+def test_deep_result_serialization_reports_a_coded_error():
+    depth = sys.getrecursionlimit() + 50
+    document = XdmDocument.parse(b"<n>" * depth + b"</n>" * depth)
+    with pytest.raises(XsltSerializationError) as caught:
+        Serializer.serialize((document,))
+    assert caught.value.code == "PYXSD-XSLT-001"
+    assert caught.value.args[0] == (
+        f"serialization exceeded the Python recursion limit: "
+        f"Python recursion limit={sys.getrecursionlimit()}"
+    )
+    assert isinstance(caught.value.__cause__, RecursionError)
+
+
+def test_python_stack_diagnostic_when_a_return_continuation_overflows():
+    def overflow(value):
+        raise RecursionError("continuation overflow")
+
+    scheduler = Scheduler()
+    entry = Frame(kind="entry", continuation=Continuation("convert", target=overflow))
+    with pytest.raises(XsltDynamicError) as caught:
+        scheduler.run(entry, lambda frame: Return(None))
+    assert caught.value.code == "PYXSD-XSLT-001"
+    assert caught.value.catchable is False
+    assert caught.value.args[0] == (
+        f"the transformation exceeded the Python recursion limit: "
+        f"Python recursion limit={sys.getrecursionlimit()}, max_frames=100000, frame depth=0"
     )
 
 

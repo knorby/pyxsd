@@ -12,12 +12,13 @@ which methods exist.
 from __future__ import annotations
 
 import codecs
+import sys
 from collections.abc import Iterable, Iterator, Mapping
 from os import PathLike
 from typing import TYPE_CHECKING, Any
 
 from pyxsd.xdm import XdmItem
-from pyxsd.xslt.errors import XsltSerializationError
+from pyxsd.xslt.errors import IMPLEMENTATION_BUDGET_CODE, XsltSerializationError
 from pyxsd.xslt.serialization.json import serialize_adaptive, serialize_json
 from pyxsd.xslt.serialization.parameters import SerializationParameters, method_local_name
 from pyxsd.xslt.serialization.text import serialize_text
@@ -73,21 +74,33 @@ class Serializer:
         ``result_tree`` marks a sequence normalized from a delivered document
         node; the XML family then allows the several element children a final
         result tree may contain.
+
+        Exceeding the Python recursion limit during serialization raises
+        :class:`~pyxsd.xslt.errors.XsltSerializationError` with code
+        ``PYXSD-XSLT-001``.
         """
         resolved = cls._parameters(parameters)
         items = tuple(sequence)
-        if resolved.method == "json":
-            return serialize_json(items, resolved)
-        if resolved.method == "adaptive":
-            return serialize_adaptive(items, resolved)
-        if resolved.method == "text":
-            return serialize_text(items, resolved)
-        return serialize_markup(
-            normalize_sequence(items, resolved.item_separator),
-            resolved,
-            method=resolved.method,
-            result_tree=result_tree,
-        )
+        try:
+            if resolved.method == "json":
+                return serialize_json(items, resolved)
+            if resolved.method == "adaptive":
+                return serialize_adaptive(items, resolved)
+            if resolved.method == "text":
+                return serialize_text(items, resolved)
+            return serialize_markup(
+                normalize_sequence(items, resolved.item_separator),
+                resolved,
+                method=resolved.method,
+                result_tree=result_tree,
+            )
+        except RecursionError as error:
+            raise XsltSerializationError(
+                "serialization exceeded the Python recursion limit: "
+                f"Python recursion limit={sys.getrecursionlimit()}",
+                code=IMPLEMENTATION_BUDGET_CODE,
+                cause=error,
+            ) from error
 
     @classmethod
     def write(
