@@ -2187,7 +2187,7 @@ def _build_parser(
 
     for name in static_context.functions:
         _register_declared_function(parser, name, static_context, holder)
-    if key and "key" not in parser.symbol_table:
+    if key and _override_symbol(parser, f"{{{_FN_NS}}}key") not in parser.symbol_table:
         _register_key_function(parser, holder)
     return parser
 
@@ -3357,20 +3357,17 @@ def _register_declared_function(
         )
 
     namespaces = parser.namespaces
+    needs_proxy = False
     if prefix is None:
         if parser.version in ("1.0", "2.0"):
             return  # No URI-qualified names in these XPath grammars.
-        if local not in parser.symbol_table:
-            # Without a proxy, elementpath puts the new function at the bare
-            # symbol and accepts unprefixed calls from the wrong namespace.
-            parser._register(
-                local,
-                f"{upper_camel_case(local)}FunctionProxy",
-                bases=(ProxyToken,),
-                label="function",
-                lbp=90,
-                rbp=90,
-            )
+        bare = parser.symbol_table.get(local)
+        if bare is None:
+            needs_proxy = True
+        elif not issubclass(bare, ProxyToken) and bare.namespace is None:
+            # Grammar and multi-role tokens without a single namespace cannot
+            # be moved behind a function proxy. Preserve their existing use.
+            return
         # An EQName needs no in-scope prefix. Elementpath's registration API
         # needs one to select the namespace, so bind it only during registration.
         prefix = "_pyxsd_function"
@@ -3386,6 +3383,19 @@ def _register_declared_function(
         )
     finally:
         parser.namespaces = namespaces
+    if needs_proxy:
+        # With no existing bare token, elementpath installs the function there.
+        # Qualify it before exposing the parser so bare calls cannot reach it.
+        token_class.lookup_name = name
+        parser.symbol_table[name] = token_class
+        parser._register(
+            local,
+            f"{upper_camel_case(local)}FunctionProxy",
+            bases=(ProxyToken,),
+            label="function",
+            lbp=90,
+            rbp=90,
+        )
     token_class.label = "function"
     token_class.nargs = arity
 

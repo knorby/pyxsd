@@ -1059,6 +1059,39 @@ def test_prefixless_host_namespace_does_not_define_a_bare_function(version: str)
         engine.compile("inc(3)", static)
 
 
+def test_prefixless_registration_keeps_parser_state_local_on_success_and_error() -> None:
+    engine = XPathEngine()
+    name = "{urn:test}switch"
+    static = XPathStaticContext(namespaces={"_pyxsd_function": "urn:original"}, functions={name: 1})
+    parser = _build_parser("3.1", XPathStaticContext(namespaces=static.namespaces), key=False)
+    holder = parser._pyxsd_bridge_holder
+    namespaces = parser.namespaces
+    reserved = parser.RESERVED_FUNCTION_NAMES
+    original_symbols = dict(parser.symbol_table)
+
+    invalid = XPathStaticContext(functions={"{urn:test}bad name": 1})
+    with pytest.raises(ElementPathError, match="is not a name"):
+        engine_module._register_declared_function(parser, "{urn:test}bad name", invalid, holder)
+    assert parser.symbol_table == original_symbols
+    assert parser.namespaces is namespaces
+
+    engine_module._register_declared_function(parser, name, static, holder)
+    assert parser.namespaces is namespaces
+    assert parser.RESERVED_FUNCTION_NAMES is reserved
+    assert parser.namespaces["_pyxsd_function"] == "urn:original"
+    registered_symbols = dict(parser.symbol_table)
+    with pytest.raises(ElementPathError, match="already registered"):
+        engine_module._register_declared_function(parser, name, static, holder)
+    assert parser.symbol_table == registered_symbols
+    assert parser.namespaces is namespaces
+    assert parser.RESERVED_FUNCTION_NAMES is reserved
+    assert name not in engine.parser_class.symbol_table
+
+    compiled = engine.compile("Q{urn:test}switch(2)", static)
+    environment = ExpressionEnvironment(functions={name: increment})
+    assert engine.evaluate(compiled, environment) == (XdmAtomic.integer(3),)
+
+
 def test_function_declaration_errors_and_unavailable_target() -> None:
     engine = XPathEngine()
     with pytest.raises(ValueError, match="namespace prefix"):

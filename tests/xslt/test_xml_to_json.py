@@ -136,6 +136,52 @@ def test_eqname_function_reference_without_a_bound_prefix() -> None:
     assert result.principal == (XdmAtomic.string("library:null"),)
 
 
+def test_uri_qualified_key_can_coexist_with_xslt_key() -> None:
+    source = stylesheet(
+        """
+        <xsl:key name="by-id" match="item" use="@id"/>
+        <xsl:function name="Q{urn:test}key">
+            <xsl:sequence select="'custom'"/>
+        </xsl:function>
+        <xsl:template match="/">
+            <xsl:sequence select="(string(key('by-id', 'a')), Q{urn:test}key())"/>
+        </xsl:template>
+        """
+    )
+    result = transform(source, b'<doc><item id="a">found</item></doc>', delivery="raw")
+    assert result.principal == (XdmAtomic.string("found"), XdmAtomic.string("custom"))
+
+
+@pytest.mark.parametrize(
+    ("name", "expression", "expected", "unavailable_code"),
+    [
+        ("div", "string(6 div 2)", "3", "XPST0017"),
+        ("node", "name(/*[node()])", "doc", "XPST0003"),
+        ("QName", "local-name-from-QName(QName('urn:standard', 'value'))", "value", "XPST0017"),
+    ],
+)
+def test_prefixless_declaration_does_not_disturb_xpath_grammar(
+    name: str, expression: str, expected: str, unavailable_code: str
+) -> None:
+    declaration = (
+        f'<xsl:function name="Q{{urn:test}}{name}">'
+        "<xsl:sequence select=\"'custom'\"/></xsl:function>"
+    )
+
+    def with_select(select: str) -> bytes:
+        return stylesheet(
+            declaration
+            + f'<xsl:template match="/"><xsl:sequence select="{select}"/></xsl:template>'
+        )
+
+    source = with_select(expression)
+    result = transform(source, b"<doc>text</doc>", delivery="raw")
+    assert result.principal == (XdmAtomic.string(expected),)
+    with pytest.raises(XsltError) as caught:
+        transform(with_select(f"Q{{urn:test}}{name}()"), b"<doc/>", delivery="raw")
+    assert caught.value.code == unavailable_code
+
+
 @pytest.mark.parametrize(
     ("body", "expected"),
     [("<map/>", "{}"), ("<array/>", "[]"), ("<string/>", '""'), ("<null/>", "null")],
