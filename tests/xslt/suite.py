@@ -1394,8 +1394,10 @@ def run_parallel(
     """
     cases = tuple(cases)
     workers = default_jobs() if jobs is None else max(1, jobs)
-    if workers == 1 or len(cases) <= 1:
+    if not cases or (timeout is None and (workers == 1 or len(cases) == 1)):
         return run_suite(cases, profile, timeout=timeout)
+    if len(cases) == 1:
+        workers = 1
     unicode_version = profile.feature_profile.unicode_version
     method = _parallel_start_method(
         in_xdist_worker="PYTEST_XDIST_WORKER" in os.environ,

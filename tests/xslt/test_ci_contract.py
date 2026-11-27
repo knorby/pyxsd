@@ -12,11 +12,18 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import re
+import signal
+import subprocess
+import sys
 import time
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
+from threading import Barrier
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -777,6 +784,97 @@ def test_parallel_execution_preserves_catalog_order(tmp_path: Path) -> None:
         "gate/case-002": Outcome.PASS,
         "gate/case-003": Outcome.PASS,
     }
+
+
+def _deadline_case(case, profile):
+    if case.local_name == "case-001":
+        start = Barrier(2)
+
+        def backtrack():
+            try:
+                Path(os.environ["PYXSD_TEST_XSLT_WORKER_PID"]).write_text(
+                    str(os.getpid()), encoding="ascii"
+                )
+                start.wait()
+                # The C matcher holds the GIL here. Its signal checks cannot
+                # dispatch the Python alarm handler from this non-main thread.
+                re.fullmatch(r"(a+)+", "a" * 80 + "!")
+                raise AssertionError("the backtracking probe completed")
+            except BaseException:
+                start.abort()
+                raise
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            searching = executor.submit(backtrack)
+            start.wait()
+            return searching.result()
+    return execute_case(case, profile)
+
+
+def _deadline_worker(payload):
+    with patch.object(suite_module, "execute_case", _deadline_case):
+        return _run_payload(payload)
+
+
+@pytest.mark.parametrize(("jobs", "count"), [(1, 2), (2, 1), (2, 2)])
+def test_parallel_deadline_reaps_an_uninterruptible_worker(tmp_path, jobs, count):
+    names = ("case-001", "case-002")[:count]
+    root = _fixture_repo(tmp_path, names=names)
+    for name in names:
+        (root / "tests" / "xslt" / "corpus" / "gate" / f"{name}.xsl").write_text(
+            RIGHT_SHEET, encoding="utf-8"
+        )
+    pid_path = tmp_path / "worker.pid"
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            """
+import json
+import multiprocessing
+import os
+import sys
+from tests.xslt import suite
+from tests.xslt.catalog import load_catalog
+from tests.xslt.test_ci_contract import _deadline_case, _deadline_worker
+
+suite.execute_case = _deadline_case
+suite._run_payload = _deadline_worker
+cases = tuple(load_catalog(sys.argv[1]).cases.values())
+results = suite.run_parallel(cases, suite.SUITE_PROFILES["xslt30"], timeout=1, jobs=int(sys.argv[2]))
+print(json.dumps([
+    os.getpid(),
+    [proc.pid for proc in multiprocessing.active_children()],
+    [[result.name, result.outcome.value, result.message] for result in results],
+]))
+""",
+            str(root / "tests" / "xslt" / "corpus" / "catalog.xml"),
+            str(jobs),
+        ],
+        env={**os.environ, "PYXSD_TEST_XSLT_WORKER_PID": str(pid_path)},
+        cwd=REPO_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=os.name == "posix",
+    ) as run:
+        try:
+            stdout, stderr = run.communicate(timeout=22)
+        except subprocess.TimeoutExpired:
+            if os.name == "posix":
+                os.killpg(run.pid, signal.SIGKILL)
+            else:
+                run.kill()
+            run.communicate()
+            raise
+    assert run.returncode == 0, stderr
+    parent, children, results = json.loads(stdout)
+    assert int(pid_path.read_text(encoding="ascii")) != parent
+    assert children == []
+    expected = [["gate/case-001", "timeout", "the case exceeded its 1 s budget"]]
+    if count == 2:
+        expected.append(["gate/case-002", "pass", ""])
+    assert results == expected
 
 
 def test_parallel_workers_avoid_fork_in_xdist_or_multithreaded_parents() -> None:
