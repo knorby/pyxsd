@@ -25,11 +25,16 @@ XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 
 _NO_NAMESPACES: Mapping[str, str] = MappingProxyType({})
+_PROBE_CLEANUP_TIMEOUT = 5
 
 
 def _kill_probe_tree(pid: int) -> None:
     if os.name == "nt":
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            timeout=_PROBE_CLEANUP_TIMEOUT,
+        )
     else:
         with suppress(ProcessLookupError):
             os.killpg(pid, signal.SIGKILL)
@@ -42,8 +47,9 @@ def run_probe(
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a deadline-bounded probe and terminate its worker tree on timeout."""
-    with subprocess.Popen(
+    """Run a deadline-bounded probe and terminate its worker tree on any wait failure."""
+    # Popen.__exit__ would wait without a deadline after a cleanup failure.
+    process = subprocess.Popen(
         command,
         cwd=cwd,
         env=env,
@@ -51,16 +57,29 @@ def run_probe(
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=os.name != "nt",
-    ) as process:
-        try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except BaseException:
+        with suppress(BaseException):
             _kill_probe_tree(process.pid)
-            process.communicate()
-            raise
-        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-        result.check_returncode()
-        return result
+        try:
+            process.communicate(timeout=_PROBE_CLEANUP_TIMEOUT)
+        except BaseException:
+            # A stuck drain must not replace the original failure or leave
+            # this caller waiting for EOF from an inherited pipe.
+            with suppress(BaseException):
+                process.kill()
+            with suppress(BaseException):
+                process.stdout.close()
+            with suppress(BaseException):
+                process.stderr.close()
+            with suppress(BaseException):
+                process.wait(timeout=_PROBE_CLEANUP_TIMEOUT)
+        raise
+    result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    result.check_returncode()
+    return result
 
 
 def stylesheet(

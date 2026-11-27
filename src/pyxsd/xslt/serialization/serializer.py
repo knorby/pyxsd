@@ -75,9 +75,12 @@ class Serializer:
         node; the XML family then allows the several element children a final
         result tree may contain.
 
-        Exceeding the Python recursion limit during serialization raises
-        :class:`~pyxsd.xslt.errors.XsltSerializationError` with code
-        ``PYXSD-XSLT-001``.
+        The serializer converts ``RecursionError`` caught while rendering
+        into :class:`~pyxsd.xslt.errors.XsltSerializationError` with code
+        ``PYXSD-XSLT-001``. Close to the recursion limit, CPython can fail
+        inside its own machinery before a guard runs, and the uncoded
+        built-in exception then escapes. That condition was observed during
+        transformation on CPython 3.13 under a deeply nested host stack.
         """
         resolved = cls._parameters(parameters)
         items = tuple(sequence)

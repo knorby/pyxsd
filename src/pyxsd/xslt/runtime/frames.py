@@ -12,12 +12,13 @@ frame has no pending conversion, error handler, builder extent, or result
 continuation beyond returning to its own caller.  Otherwise the caller frame is
 kept as a heap continuation.
 
-Budget exhaustion raises :class:`~pyxsd.xslt.errors.XsltDynamicError` with the
-stable implementation code ``PYXSD-XSLT-001``.  A Python ``RecursionError`` is
-never presented as a raw failure: the scheduler converts it into that same
-resource diagnostic.  The scheduler never changes the process-wide recursion
-limit, because that limit is shared with every other thread and transformation
-in the interpreter.
+Budget exhaustion raises an uncatchable
+:class:`~pyxsd.xslt.errors.XsltDynamicError` with code ``PYXSD-XSLT-001``.
+The scheduler converts ``RecursionError`` caught at its guards into the
+same diagnostic. Close to the recursion limit, CPython can fail inside
+its own machinery before a guard runs and surface an uncoded built-in
+exception. This was observed on CPython 3.13 under a deeply nested host
+stack. The scheduler never changes the process-wide recursion limit.
 """
 
 from __future__ import annotations
@@ -138,9 +139,13 @@ class ExecutionLimits:
     calls, recursive sequence or node construction, and template push can
     also accumulate explicit frames, but can reach the Python recursion
     limit first. A deep XPath path can reach that limit within a single
-    dispatch. Reaching either recursion bound raises an uncatchable
+    dispatch. Frame-budget exhaustion and ``RecursionError`` caught at
+    scheduler guards raise an uncatchable
     :class:`~pyxsd.xslt.errors.XsltDynamicError` with code
-    ``PYXSD-XSLT-001``.
+    ``PYXSD-XSLT-001``. Close to the recursion limit, CPython can fail
+    inside its own machinery before a guard runs and surface an uncoded
+    built-in exception, as observed on CPython 3.13 under a deeply nested
+    host stack.
 
     A safe tail call replaces its frame in place. Use ``max_steps`` to
     bound the number of scheduler dispatches in a tail-call chain;
@@ -148,6 +153,10 @@ class ExecutionLimits:
     does not interrupt work within one dispatch. ``max_documents`` bounds
     loaded XML documents. These and other limits described here default
     to ``None`` unless stated otherwise.
+
+    With the default ``max_steps=None``, the processor does not stop an
+    unbounded safe tail recursion; callers bound such a chain by setting
+    ``max_steps``.
 
     ``max_resource_bytes`` bounds octets the transformation runtime acquires.
     Top-level stylesheet compilation reads and schema loads made by

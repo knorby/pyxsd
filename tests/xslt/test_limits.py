@@ -52,23 +52,33 @@ def _assert_exhausted(error, label, field, limit, amount):
 _CORPUS = Path(__file__).with_name("corpus") / "catalog.xml"
 
 
-def test_outer_deadline_kills_busy_descendants(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "failure_type", [subprocess.TimeoutExpired, RuntimeError, KeyboardInterrupt]
+)
+def test_probe_wait_failure_kills_busy_descendants(tmp_path, monkeypatch, failure_type):
     fcntl = pytest.importorskip("fcntl")
     lease = tmp_path / "worker.lock"
     self_exit = tmp_path / "worker-self-exit"
     original = subprocess.Popen.communicate
+    failure = (
+        subprocess.TimeoutExpired("probe", 40)
+        if failure_type is subprocess.TimeoutExpired
+        else failure_type("injected wait failure")
+    )
+    waits = []
 
     def after_worker_starts(process, *args, timeout=None, **kwargs):
-        if timeout is None:
-            return original(process, *args, **kwargs)
+        waits.append(timeout)
+        if len(waits) > 1:
+            return original(process, *args, timeout=timeout, **kwargs)
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
             assert selector.select(timeout=20), "worker did not start"
         assert process.stdout.readline().startswith("ready")
-        return original(process, *args, timeout=0, **kwargs)
+        raise failure
 
     monkeypatch.setattr(subprocess.Popen, "communicate", after_worker_starts)
-    with pytest.raises(subprocess.TimeoutExpired):
+    with pytest.raises(failure_type) as caught:
         run_probe(
             [
                 sys.executable,
@@ -102,11 +112,44 @@ worker.wait()
             ],
             timeout=40,
         )
+    assert caught.value is failure
+    assert waits == [40, support._PROBE_CLEANUP_TIMEOUT]
     # Neither process can hold the inherited output pipes or the lease
     # after run_probe has drained the pipes and reaped the direct child.
     with lease.open() as stream:
         fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
     assert not self_exit.exists(), "the worker exited on its own watchdog"
+
+
+def test_probe_closes_pipes_and_reaps_when_cleanup_drain_stalls(monkeypatch):
+    failure = RuntimeError("initial wait failed")
+    process = subprocess.Popen(
+        [sys.executable, "-c", "pass"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    monkeypatch.setattr(support.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(support, "_kill_probe_tree", lambda pid: process.kill())
+    waits = []
+
+    def communicate(*, timeout):
+        waits.append(timeout)
+        if len(waits) == 1:
+            raise failure
+        raise subprocess.TimeoutExpired("drain", timeout)
+
+    wait = process.wait
+
+    def reap(*, timeout):
+        assert process.stdout.closed and process.stderr.closed
+        waits.append(timeout)
+        return wait(timeout=timeout)
+
+    monkeypatch.setattr(process, "communicate", communicate)
+    monkeypatch.setattr(process, "wait", reap)
+    with pytest.raises(RuntimeError) as caught:
+        run_probe(["probe"], timeout=40)
+    assert caught.value is failure
+    assert waits == [40, support._PROBE_CLEANUP_TIMEOUT, support._PROBE_CLEANUP_TIMEOUT]
+    assert process.returncode is not None
 
 
 def test_catalog_boundary_accepts_a_completed_corpus_assertion(monkeypatch):
@@ -119,13 +162,20 @@ def test_catalog_boundary_accepts_a_completed_corpus_assertion(monkeypatch):
 
 
 def test_probe_uses_windows_process_tree_termination(monkeypatch):
-    commands = []
+    calls = []
+
+    def record(command, **kwargs):
+        calls.append((command, kwargs))
+
     monkeypatch.setattr(support, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setattr(
-        support.subprocess, "run", lambda command, **kwargs: commands.append(command)
-    )
+    monkeypatch.setattr(support.subprocess, "run", record)
     support._kill_probe_tree(12345)
-    assert commands == [["taskkill", "/F", "/T", "/PID", "12345"]]
+    assert calls == [
+        (
+            ["taskkill", "/F", "/T", "/PID", "12345"],
+            {"capture_output": True, "timeout": support._PROBE_CLEANUP_TIMEOUT},
+        )
+    ]
 
 
 @pytest.mark.skipif(not _CORPUS.is_file(), reason="XSLT corpus not checked out")
@@ -203,16 +253,16 @@ def _deep_stylesheet(shape):
 
 
 @pytest.mark.parametrize(
-    ("shape", "cap"),
+    ("shape", "cap", "depth"),
     [
-        ("push", 8),
-        ("sequence", 8),
-        ("function-constructor", 8),
-        ("named-template", 8),
-        ("static-path", 1),
+        ("push", 8, 152),
+        ("sequence", 8, 58),
+        ("function-constructor", 8, 53),
+        ("named-template", 8, 77),
+        ("static-path", 1, 2),
     ],
 )
-def test_deep_non_tail_execution_reports_the_bound_that_fired(shape, cap):
+def test_deep_non_tail_execution_reports_the_bound_that_fired(shape, cap, depth):
     # A fresh interpreter gives each XPath/XSLT shape the same host call stack,
     # independently of the pytest runner and its plugins.
     run = run_probe(
@@ -244,13 +294,10 @@ print(json.dumps([sys.getrecursionlimit(), results]))
     recursion_limit, (stack_error, frame_error) = json.loads(run.stdout)
     signature = ["XsltDynamicError", "PYXSD-XSLT-001", False]
     assert stack_error[:3] == frame_error[:3] == signature
-    prefix = (
+    assert stack_error[3] == (
         f"the transformation exceeded the Python recursion limit: "
-        f"Python recursion limit={recursion_limit}, max_frames=100000, frame depth="
+        f"Python recursion limit={recursion_limit}, max_frames=100000, frame depth={depth}"
     )
-    message = stack_error[3]
-    assert message.startswith(prefix)
-    assert 0 < int(message.removeprefix(prefix)) < 100_000
     assert frame_error[3] == (
         f"the transformation exceeded its frame budget: max_frames={cap}, "
         f"cumulative amount={cap + 1}"
