@@ -148,6 +148,7 @@ def test_arguments_must_match_function_signature(expression: str) -> None:
         pytest.param("xs:untypedAtomic('2')", id="C104"),
         pytest.param("1", id="numeric"),
         pytest.param("map{}", id="map"),
+        pytest.param("[(), [true()]]", id="nested-array"),
         pytest.param("/*", id="empty-element"),
     ],
 )
@@ -163,7 +164,6 @@ def test_failed_indent_conversion_raises_xpty0004(value: str) -> None:
         ("'indent'", "true()"),
         ("xs:anyURI('indent')", "xs:untypedAtomic(' 1 ')"),
         ("xs:untypedAtomic('indent')", "/*/@pretty"),
-        ("'indent'", "[(), [true()]]"),
     ],
 )
 def test_indent_formats_nested_containers(key: str, value: str) -> None:

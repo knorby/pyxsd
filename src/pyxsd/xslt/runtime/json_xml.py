@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from typing import cast
 
 from pyxsd import xsd_data_types as _xsd
-from pyxsd.xdm import XdmArray, XdmAtomic, XdmItem, XdmMap, XdmSequence, XdmSequenceType
+from pyxsd.xdm import XdmAtomic, XdmItem, XdmMap, XdmSequence, XdmSequenceType
 from pyxsd.xdm.nodes import NodeKind, XdmNode
 from pyxsd.xdm.values import _coerce_sequence, canonical_float_string
 from pyxsd.xslt.errors import XsltDynamicError
@@ -54,9 +54,6 @@ def _option_atoms(sequence: XdmSequence) -> Iterator[XdmItem]:
     for item in sequence:
         if isinstance(item, XdmNode):
             yield from item.typed_value
-        elif isinstance(item, XdmArray):
-            for member in item.members:
-                yield from _option_atoms(member)
         else:
             yield item
 
