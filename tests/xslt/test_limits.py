@@ -1403,6 +1403,54 @@ def test_built_in_templates_admit_text_nodes_during_application():
     _assert_exhausted(caught.value, "output", "max_output_nodes", 1, 2)
 
 
+def test_perform_sort_admits_nodes_at_the_cap_without_double_charging():
+    compiled = _compile("<xsl:perform-sort><xsl:sort select='name()'/><a/><b/></xsl:perform-sort>")
+    result = compiled.transform(delivery="raw", limits=ExecutionLimits(max_output_nodes=2))
+    assert [node.name for node in result.principal] == ["a", "b"]
+
+
+def test_perform_sort_admission_stops_before_a_later_instruction():
+    compiled = _compile(
+        "<xsl:perform-sort><xsl:sort select='name()'/><a/><b/></xsl:perform-sort>"
+        '<xsl:sequence select="error()"/>'
+    )
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(delivery="raw", limits=ExecutionLimits(max_output_nodes=1))
+    _assert_exhausted(caught.value, "output", "max_output_nodes", 1, 2)
+
+
+def _next_match_deep_copy(after=""):
+    return XsltProcessor().compile(
+        io.BytesIO(
+            stylesheet(
+                '<xsl:template match="/"><xsl:apply-templates select="a" mode="m"/>'
+                "</xsl:template>"
+                f'<xsl:template match="a" mode="m"><xsl:next-match/>{after}</xsl:template>'
+                '<xsl:mode name="m" on-no-match="deep-copy"/>'
+            )
+        )
+    )
+
+
+def test_no_match_next_match_admits_copied_nodes_at_the_cap():
+    compiled = _next_match_deep_copy()
+    result = compiled.transform(
+        b"<a><b/></a>", delivery="raw", limits=ExecutionLimits(max_output_nodes=2)
+    )
+    (copied,) = result.principal
+    assert copied.name == "a"
+    assert [child.name for child in copied.children] == ["b"]
+
+
+def test_no_match_next_match_admission_stops_before_a_later_instruction():
+    compiled = _next_match_deep_copy('<xsl:sequence select="error()"/>')
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(
+            b"<a><b/></a>", delivery="raw", limits=ExecutionLimits(max_output_nodes=1)
+        )
+    _assert_exhausted(caught.value, "output", "max_output_nodes", 1, 2)
+
+
 def test_output_walk_deduplicates_owned_attributes_and_excludes_namespaces():
     compiled = XsltProcessor().compile(
         io.BytesIO(

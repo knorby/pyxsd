@@ -1150,6 +1150,7 @@ def overriding_step(
             rule_context.package_name,
             rule_context.mode_package,
         )
+        invocation._admit_output(tuple(value), frame.context)
         return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
     child = rule_frame(
         invocation,

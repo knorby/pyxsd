@@ -7019,6 +7019,7 @@ class _Invocation(Transformation):
             return start_iteration_plan(self, plan, frame, cursor)
         if isinstance(plan, _PerformSortPlan):
             value = perform_sort(plan, self, frame.context)
+            self._admit_output(tuple(value), frame.context)
             return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
         if isinstance(plan, _ParamPlan):
             raise XsltError(
