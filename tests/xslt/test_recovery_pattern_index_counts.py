@@ -10,6 +10,7 @@ script exactly, so the assertion also runs in a clean checkout where
 from __future__ import annotations
 
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
+from pyxsd.xpath.engine import XPathParserCache
 from pyxsd.xpath.environment import ExpressionEnvironment
 from pyxsd.xslt.compiler.context import StaticContext
 from pyxsd.xslt.compiler.patterns import compile_pattern
@@ -54,7 +55,7 @@ def test_recovery_operation_counts() -> None:
         TemplateRule(compile_pattern("root/a[@name='a9']/b", context), declaration_order=2),
     )
     index = PatternIndex(rules, strategy="forward")
-    environment = ExpressionEnvironment()
+    environment = ExpressionEnvironment(parser_cache=XPathParserCache())
     elements = _all_elements(_pattern_input())
     matches = sum(1 for element in elements if index.select(element, environment=environment))
     statistics = index.statistics
