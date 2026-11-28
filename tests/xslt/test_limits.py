@@ -2,6 +2,7 @@
 
 import io
 import json
+import re
 import selectors
 import subprocess
 import sys
@@ -20,6 +21,7 @@ from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltDynamicError, XsltSerializationError
 from pyxsd.xslt.results import delivered_entries
+from pyxsd.xslt.runtime.builder import ResultBuilder
 from pyxsd.xslt.runtime.frames import (
     Continuation,
     ExecutionBudget,
@@ -296,6 +298,8 @@ def test_recursive_tvt_stops_at_the_frame_budget(instruction):
         ('<xsl:text expand-text="yes">a{1 + 2}b</xsl:text>', ("a3b",)),
         ('<xsl:sequence select="(1, 2)"/>', ("1", "2")),
         ('<xsl:sequence select="if (1 eq 1) then () else (1, 2)"/>', ()),
+        ('<out><xsl:sequence select="(1, 2)"/></out>', ("1 2",)),
+        ('<out><xsl:choose><xsl:when test="true()">a</xsl:when></xsl:choose></out>', ("a",)),
     ],
 )
 def test_no_additional_steps_without_component_calls(instruction, expected):
@@ -345,19 +349,115 @@ def test_tvt_preserves_legacy_evaluation_for_nonschedulable_calls():
     assert len(result.messages) == 1
 
 
+@pytest.mark.parametrize("shape", ["push", "named-template"])
+def test_recursive_literal_completes_without_frame_budget(shape):
+    compiled, source = _deep_stylesheet(shape)
+    result = compiled.transform(source, delivery="raw", limits=ExecutionLimits(max_frames=None))
+    (node,) = result.principal
+    for _ in range(159):
+        assert node.name == "out"
+        (node,) = node.children
+    assert node.name == "out"
+    assert not node.children
+
+
+@pytest.mark.parametrize("shape", ["push", "named-template"])
+def test_recursive_literal_output_matches_at_both_depths(shape):
+    if shape == "push":
+        entry = "<xsl:apply-templates/>"
+        component = """<xsl:template match="n">
+          <out><xsl:apply-templates select="n"/></out>
+        </xsl:template>"""
+    else:
+        entry = """<xsl:call-template name="nested">
+          <xsl:with-param name="n" select="$depth"/>
+        </xsl:call-template>"""
+        component = """<xsl:template name="nested">
+          <xsl:param name="n"/>
+          <out><xsl:if test="$n gt 1"><xsl:call-template name="nested">
+            <xsl:with-param name="n" select="$n - 1"/>
+          </xsl:call-template></xsl:if></out>
+        </xsl:template>"""
+    body = f"""<xsl:param name="depth"/>{component}
+    <xsl:template match="/">
+      <xsl:variable name="result" as="element()">{entry}</xsl:variable>
+      <xsl:sequence select="count($result/descendant-or-self::out) eq $depth"/>
+    </xsl:template>"""
+    compiled = XsltProcessor().compile(io.BytesIO(stylesheet(body)))
+    for depth in (10, 160):
+        result = compiled.transform(
+            b"<n>" * depth + b"</n>" * depth,
+            parameters={"depth": depth},
+            delivery="raw",
+            limits=ExecutionLimits(max_frames=None),
+        )
+        assert result.principal[0].string_value == "true"
+
+
+@pytest.mark.parametrize("shape", ["push", "named-template"])
+def test_recursive_literal_stops_at_the_frame_budget(shape):
+    compiled, source = _deep_stylesheet(shape)
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(source, delivery="raw", limits=ExecutionLimits(max_frames=8))
+    _assert_exhausted(caught.value, "frame", "max_frames", 8, 9)
+
+
+def test_literal_dispatch_preserves_order_and_lexical_scope():
+    body = """<xsl:function name="local:items"><xsl:sequence select="[1, 2]"/></xsl:function>
+    <xsl:template name="leaf"><xsl:text>leaf</xsl:text></xsl:template>
+    <xsl:template match="/">
+      <xsl:variable name="v" select="'outer'"/>
+      <out>
+        <xsl:choose>
+          <xsl:when test="false()">other</xsl:when>
+          <xsl:otherwise>
+            <nested><xsl:sequence>
+              <xsl:variable name="v" select="'inner'"/>
+              <xsl:text expand-text="yes">{$v}:</xsl:text>
+              <xsl:sequence select="$v"/>
+              <xsl:call-template name="leaf"/>
+              <xsl:sequence select="local:items()"/>
+            </xsl:sequence></nested>
+          </xsl:otherwise>
+        </xsl:choose>
+        <xsl:choose><xsl:when test="true()">:</xsl:when></xsl:choose>
+        <xsl:sequence select="$v"/>
+      </out>
+    </xsl:template>"""
+    compiled = XsltProcessor().compile(
+        io.BytesIO(stylesheet(body, namespaces={"local": "urn:local"}))
+    )
+    result = compiled.transform(b"<n/>", delivery="raw")
+    assert result.principal[0].string_value == "inner:innerleaf1 2:outer"
+    assert result.principal[0].children[0].name == "nested"
+
+
+def test_copy_preserves_a_subtree_deeper_than_the_python_stack():
+    depth = sys.getrecursionlimit() + 50
+    document = XdmDocument.parse(b'<n a="v">' * depth + b"end" + b"</n>" * depth)
+    source = document.root_element
+    copy = ResultBuilder.temporary().clone(source)
+    assert copy.document is not document
+    parent = None
+    for _ in range(depth):
+        assert copy is not source and copy.parent is parent and copy.name == source.name
+        assert copy.attributes[0].string_value == "v"
+        parent = copy
+        copy, source = copy.children[0], source.children[0]
+    assert copy.string_value == source.string_value == "end"
+
+
 @pytest.mark.parametrize(
-    ("shape", "cap", "depth"),
+    ("shape", "cap", "depth_pattern"),
     [
-        ("push", 8, 152),
-        ("sequence", 8, 58),
-        ("function-constructor", 8, 53),
-        ("named-template", 8, 77),
-        ("static-path", 1, 2),
+        ("sequence", 8, r"[1-9][0-9]*"),
+        ("function-constructor", 8, r"[1-9][0-9]*"),
+        ("static-path", 1, "2"),
     ],
 )
-def test_deep_non_tail_execution_reports_the_bound_that_fired(shape, cap, depth):
-    # A fresh interpreter gives each XPath/XSLT shape the same host call stack,
-    # independently of the pytest runner and its plugins.
+def test_deep_non_tail_execution_reports_the_bound_that_fired(shape, cap, depth_pattern):
+    # Run the probe away from the test runner's stack. Only the static path
+    # has structural frame depth: all its path steps run in one dispatch.
     run = run_probe(
         [
             sys.executable,
@@ -387,10 +487,11 @@ print(json.dumps([sys.getrecursionlimit(), results]))
     recursion_limit, (stack_error, frame_error) = json.loads(run.stdout)
     signature = ["XsltDynamicError", "PYXSD-XSLT-001", False]
     assert stack_error[:3] == frame_error[:3] == signature
-    assert stack_error[3] == (
-        f"the transformation exceeded the Python recursion limit: "
-        f"Python recursion limit={recursion_limit}, max_frames=100000, frame depth={depth}"
+    prefix = (
+        "the transformation exceeded the Python recursion limit: "
+        f"Python recursion limit={recursion_limit}, max_frames=100000, frame depth="
     )
+    assert re.fullmatch(re.escape(prefix) + depth_pattern, stack_error[3])
     assert frame_error[3] == (
         f"the transformation exceeded its frame budget: max_frames={cap}, "
         f"cumulative amount={cap + 1}"

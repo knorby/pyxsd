@@ -2,9 +2,12 @@
 
 A transformation uses explicit :class:`Frame` objects for component
 invocations, template-rule dispatches, and suspended XPath evaluations.
-Nested schedulers and work within a dispatch can still use the Python stack. A frame
-carries its instruction cursor, lexical variables, focus, return continuation,
-result-builder extent, error handler, component identity, package, and mode.
+Recursive template dispatch through supported literal constructors and terminal
+stylesheet calls in supported text value templates also suspend on this stack.
+Nested schedulers and work within a dispatch can still use the Python stack.
+A frame carries its instruction cursor, lexical variables, focus, return
+continuation, result-builder extent, error handler, component identity,
+package, and mode.
 
 Tail positions are marked by the compiler, not guessed by the scheduler.  A
 call is replaced in place only when the scheduler can prove that the calling
@@ -135,11 +138,15 @@ class ExecutionLimits:
     """Explicit budgets for one transformation and its nested invocations.
 
     ``max_frames`` defaults to 100,000 live explicit frames. Non-tail
-    arithmetic recursion keeps frames for its pending work. Mixed XSLT/XPath
-    calls, recursive sequence or node construction, and template push can
-    also accumulate explicit frames, but can reach the Python recursion
-    limit first. A deep XPath path can reach that limit within a single
-    dispatch. Frame-budget exhaustion and ``RecursionError`` caught at
+    arithmetic recursion keeps frames for its pending work, as do supported
+    terminal stylesheet calls in text value templates and recursive
+    ``xsl:apply-templates`` and ``xsl:call-template`` calls in literal result
+    content. XPath fallback, including recursive sequence and node
+    construction through a stylesheet function, can reach the Python
+    recursion limit first. Deep XPath paths and adapting deeply nested
+    XDM trees can reach that limit within a single dispatch. The depth at
+    which that happens depends on the interpreter and its version.
+    Frame-budget exhaustion and ``RecursionError`` caught at
     scheduler guards raise an uncatchable
     :class:`~pyxsd.xslt.errors.XsltDynamicError` with code
     ``PYXSD-XSLT-001``. In CPython 3.13.8 through 3.13.12, a specialized

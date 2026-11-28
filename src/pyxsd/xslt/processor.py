@@ -275,8 +275,10 @@ from pyxsd.xslt.runtime.instructions import (
     execute_try,
     execute_value_of,
     execute_where_populated,
+    finish_literal_element,
     literal_element,
     parameter_value,
+    prepare_literal_element,
     try_step,
     variable_value,
 )
@@ -602,6 +604,21 @@ def _tvt_scalar_binding(sequence: XdmSequence) -> bool:
         f"{{{_XSD_NS}}}integer",
         f"{{{_XSD_NS}}}string",
     }
+
+
+def _has_constructor_call(plans: tuple[_Plan, ...]) -> bool:
+    """Detect template dispatch reachable through ordinary sequence content."""
+    for plan in plans:
+        if isinstance(plan, (_CallTemplatePlan, _ApplyTemplatesPlan)):
+            return True
+        if isinstance(plan, _ChoosePlan):
+            if any(_has_constructor_call(branch) for _, branch in plan.branches):
+                return True
+            if _has_constructor_call(plan.otherwise or ()):
+                return True
+        if isinstance(plan, (_LiteralPlan, _SequencePlan)) and _has_constructor_call(plan.children):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -7016,22 +7033,30 @@ class _Invocation(Transformation):
                     ),
                 )
             )
-        if isinstance(plan, _TvtPlan):
+        if isinstance(plan, _TvtPlan) and frame.kind != "literal-content":
             return self._step_tvt(plan, frame, cursor)
+        if (
+            isinstance(plan, _LiteralPlan)
+            and not self.current_merge_sources
+            and _has_constructor_call(plan.children)
+        ):
+            return self._start_literal_content(plan, frame, cursor)
         if isinstance(plan, _SequencePlan):
             if plan.expression is not None:
-                return self._start_expression(plan.expression, frame, cursor)
-            return Continue(
-                replace(
-                    frame,
-                    program=(
-                        *plan.children,
-                        _RestoreVariablesPlan(frame.context.locals),
-                        *program[cursor + 1 :],
-                    ),
-                    cursor=0,
+                if frame.kind != "literal-content":
+                    return self._start_expression(plan.expression, frame, cursor)
+            else:
+                return Continue(
+                    replace(
+                        frame,
+                        program=(
+                            *plan.children,
+                            _RestoreVariablesPlan(frame.context.locals),
+                            *program[cursor + 1 :],
+                        ),
+                        cursor=0,
+                    )
                 )
-            )
         if isinstance(plan, _ChoosePlan):
             branch = choose_branch(self, plan, frame.context)
             if branch is None:
@@ -7052,7 +7077,9 @@ class _Invocation(Transformation):
         if isinstance(plan, _CallTemplatePlan):
             return call_template_step(self, plan, frame, cursor)
         if isinstance(plan, _ApplyTemplatesPlan):
-            return apply_templates_step(self, plan, frame, cursor)
+            return apply_templates_step(
+                self, plan, frame, cursor, constructor=frame.kind == "literal-content"
+            )
         if isinstance(plan, _OverridingPlan):
             return overriding_step(self, plan, frame, cursor)
         try:
@@ -7069,6 +7096,29 @@ class _Invocation(Transformation):
             )
             return iteration_control(self, signal.plan, control_frame)
         return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
+
+    def _start_literal_content(self, plan: _LiteralPlan, frame: Frame, cursor: int) -> Call:
+        context = replace(frame.context, count_output=False)
+        factory, element = prepare_literal_element(plan, self, context)
+
+        def finish(content: object) -> XdmSequence:
+            return (
+                finish_literal_element(
+                    plan, self, context, factory, element, cast(XdmSequence, content)
+                ),
+            )
+
+        child = Frame(
+            kind="literal-content",
+            identity=plan.instruction.name,
+            program=plan.children,
+            context=context,
+            conversion=finish,
+            location=plan.instruction.location,
+            group=frame.group,
+            grouping_key=frame.grouping_key,
+        )
+        return Call(child, resume=replace(frame, cursor=cursor + 1))
 
     def _step_tvt(
         self,

@@ -1316,6 +1316,16 @@ def literal_element(
     invocation: _Invocation,
     context: EvaluationContext,
 ) -> XdmNode:
+    factory, element = prepare_literal_element(plan, invocation, context)
+    content = invocation._execute_plans(plan.children, context=context)
+    return finish_literal_element(plan, invocation, context, factory, element, content)
+
+
+def prepare_literal_element(
+    plan: _LiteralPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> tuple[_NodeFactory, XdmNode]:
     factory = _NodeFactory()
     attribute_set_attributes: list[tuple[AttributeName, str]] = []
     for reference in plan.attribute_sets:
@@ -1341,7 +1351,17 @@ def literal_element(
         excluded_namespaces=plan.excluded_namespaces,
         namespace_alias_rules=plan.namespace_aliases,
     )
-    content = invocation._execute_plans(plan.children, context=context)
+    return factory, element
+
+
+def finish_literal_element(
+    plan: _LiteralPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+    factory: _NodeFactory,
+    element: XdmNode,
+    content: XdmSequence,
+) -> XdmNode:
     _append_complex_content(factory, element, content, allow_attributes=True)
     validate_constructed(
         element,

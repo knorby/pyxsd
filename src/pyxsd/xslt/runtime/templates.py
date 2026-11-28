@@ -1089,15 +1089,18 @@ def apply_templates_step(
     plan: _ApplyTemplatesPlan,
     frame: Frame,
     cursor: int,
+    *,
+    constructor: bool = False,
 ) -> FrameResult:
     context = frame.context
     items = invocation._evaluate(
         plan.expression,
-        replace(context, original_functions={}),
+        context if constructor else replace(context, original_functions={}),
     )
-    invocation.profile_for(plan.expression.static_context.xslt_version).check_legacy_node_set(
-        items, "the select attribute of xsl:apply-templates"
-    )
+    if not constructor:
+        invocation.profile_for(plan.expression.static_context.xslt_version).check_legacy_node_set(
+            items, "the select attribute of xsl:apply-templates"
+        )
     items = sorted_items(invocation, items, plan.sorts, context)
     resolved_mode = resolve_mode(invocation, plan.mode, context.mode, context.package_name)
     mode_package = resolve_mode_package(invocation, plan.mode, frame)
@@ -1114,6 +1117,7 @@ def apply_templates_step(
         mode_package=mode_package,
         group=frame.group,
         grouping_key=frame.grouping_key,
+        final_output=context.final_output if constructor else True,
         count_output=context.count_output,
     )
     return Call(
