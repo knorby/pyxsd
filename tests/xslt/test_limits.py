@@ -252,6 +252,99 @@ def _deep_stylesheet(shape):
     return compiled, source
 
 
+def _tvt_stylesheet(instruction, depth):
+    body = f"""<xsl:function name="local:f" as="item()+">
+      <xsl:param name="n" as="xs:integer"/>
+      <xsl:{instruction} expand-text="yes">{{if ($n = 0) then 'end' else local:f($n - 1)}}</xsl:{instruction}>
+    </xsl:function>
+    <xsl:template match="/"><xsl:sequence select="local:f({depth})"/></xsl:template>"""
+    return XsltProcessor().compile(io.BytesIO(stylesheet(body, namespaces={"local": "urn:local"})))
+
+
+@pytest.mark.parametrize("instruction", ["text", "sequence"])
+def test_recursive_tvt_completes_without_frame_budget(instruction):
+    result = _tvt_stylesheet(instruction, 160).transform(
+        b"<n/>", delivery="raw", limits=ExecutionLimits(max_frames=None)
+    )
+    assert tuple(node.string_value for node in result.principal) == ("end",)
+
+
+@pytest.mark.parametrize("instruction", ["text", "sequence"])
+def test_recursive_tvt_output_matches_at_both_depths(instruction):
+    limits = ExecutionLimits(max_frames=None)
+    shallow = _tvt_stylesheet(instruction, 10).transform(b"<n/>", limits=limits, delivery="raw")
+    deep = _tvt_stylesheet(instruction, 160).transform(b"<n/>", limits=limits, delivery="raw")
+    assert (
+        tuple(node.string_value for node in deep.principal)
+        == tuple(node.string_value for node in shallow.principal)
+        == ("end",)
+    )
+
+
+@pytest.mark.parametrize("instruction", ["text", "sequence"])
+def test_recursive_tvt_stops_at_the_frame_budget(instruction):
+    with pytest.raises(XsltDynamicError) as caught:
+        _tvt_stylesheet(instruction, 160).transform(
+            b"<n/>", delivery="raw", limits=ExecutionLimits(max_frames=8)
+        )
+    _assert_exhausted(caught.value, "frame", "max_frames", 8, 9)
+
+
+@pytest.mark.parametrize(
+    ("instruction", "expected"),
+    [
+        ('<xsl:text expand-text="yes">a{1 + 2}b</xsl:text>', ("a3b",)),
+        ('<xsl:sequence select="(1, 2)"/>', ("1", "2")),
+        ('<xsl:sequence select="if (1 eq 1) then () else (1, 2)"/>', ()),
+    ],
+)
+def test_no_additional_steps_without_component_calls(instruction, expected):
+    compiled = XsltProcessor().compile(
+        io.BytesIO(stylesheet(f'<xsl:template match="/">{instruction}</xsl:template>'))
+    )
+    result = compiled.transform(b"<n/>", delivery="raw")
+    assert tuple(item.string_value for item in result.principal) == expected
+    assert result._budget.steps == 4
+
+
+def test_scheduled_tvt_atomizes_arrays_and_resumes_later_parts():
+    body = """<xsl:function name="local:f"><xsl:sequence select="[1, 2]"/></xsl:function>
+    <xsl:template match="/">
+      <xsl:text expand-text="yes">a{local:f()}b{3 + 4}c{local:f()}d</xsl:text>
+    </xsl:template>"""
+    compiled = XsltProcessor().compile(
+        io.BytesIO(stylesheet(body, namespaces={"local": "urn:local"}))
+    )
+    result = compiled.transform(b"<n/>", delivery="raw")
+    assert result.principal[0].string_value == "a1 2b7c1 2d"
+
+
+def test_tvt_preserves_legacy_evaluation_for_nonschedulable_calls():
+    body = """<xsl:variable name="global" select="'g'"/>
+    <xsl:function name="local:f">
+      <xsl:param name="item"/>
+      <xsl:sequence select="$item"/>
+    </xsl:function>
+    <xsl:function name="local:cached" cache="yes">
+      <xsl:message>run</xsl:message>
+      <xsl:sequence select="'c'"/>
+    </xsl:function>
+    <xsl:template match="/">
+      <xsl:variable name="node" as="element()"><n>n</n></xsl:variable>
+      <xsl:variable name="empty" select="()"/>
+      <xsl:text expand-text="yes">{if (true()) then local:f('t') else 'x'}{
+        if (local:f(true())) then local:f('s') else 'x'}{
+        local:f(count((1, 2)))}{local:f($global)}{local:f($node)}{
+        if ($empty) then local:f('x') else 'e'}{local:cached()}{local:cached()}</xsl:text>
+    </xsl:template>"""
+    compiled = XsltProcessor().compile(
+        io.BytesIO(stylesheet(body, namespaces={"local": "urn:local"}))
+    )
+    result = compiled.transform(b"<n/>", delivery="raw")
+    assert result.principal[0].string_value == "ts2gnecc"
+    assert len(result.messages) == 1
+
+
 @pytest.mark.parametrize(
     ("shape", "cap", "depth"),
     [

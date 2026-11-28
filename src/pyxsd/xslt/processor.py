@@ -50,9 +50,14 @@ from pyxsd.xdm.values import _coerce_atomic as _function_conversion_atomic
 from pyxsd.xdm.values import is_xsd_subtype
 from pyxsd.xpath.continuation import (
     ContinuationMachine,
+    FunctionCallPlan,
     HostFunction,
+    IfPlan,
     Suspension,
     XPathEvaluationError,
+)
+from pyxsd.xpath.continuation import (
+    Plan as XPathPlan,
 )
 from pyxsd.xpath.engine import (
     CompiledExpression,
@@ -572,6 +577,31 @@ class _KeyIndex:
 @dataclass(frozen=True, slots=True)
 class _XPathState:
     machine: ContinuationMachine
+
+
+@dataclass(frozen=True, slots=True)
+class _TvtResume:
+    cursor: int
+    next_part: int
+    text: str
+
+
+def _has_terminal_function(plan: XPathPlan) -> bool:
+    if isinstance(plan, IfPlan):
+        return _has_terminal_function(plan.then) or _has_terminal_function(plan.otherwise)
+    return isinstance(plan, FunctionCallPlan)
+
+
+def _tvt_scalar_binding(sequence: XdmSequence) -> bool:
+    if len(sequence) != 1 or not isinstance(sequence[0], XdmAtomic):
+        return False
+    return sequence[0].type_name in {
+        f"{{{_XSD_NS}}}boolean",
+        f"{{{_XSD_NS}}}decimal",
+        f"{{{_XSD_NS}}}double",
+        f"{{{_XSD_NS}}}integer",
+        f"{{{_XSD_NS}}}string",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -6931,8 +6961,18 @@ class _Invocation(Transformation):
         return Return(value)
 
     def _step_instruction(self, frame: Frame) -> FrameResult:
-        frame = self._consume_input(frame)
         program = cast(tuple[_Plan, ...], frame.program or ())
+        if isinstance(frame.cursor, _TvtResume):
+            resumed = frame.cursor
+            text = resumed.text + self._tvt_part_string(cast(XdmSequence, frame.input))
+            return self._step_tvt(
+                cast(_TvtPlan, program[resumed.cursor]),
+                replace(frame, input=NO_INPUT),
+                resumed.cursor,
+                resumed.next_part,
+                text,
+            )
+        frame = self._consume_input(frame)
         cursor = cast(int, frame.cursor)
         if cursor >= len(program):
             return self._return_frame(frame)
@@ -6976,6 +7016,8 @@ class _Invocation(Transformation):
                     ),
                 )
             )
+        if isinstance(plan, _TvtPlan):
+            return self._step_tvt(plan, frame, cursor)
         if isinstance(plan, _SequencePlan):
             if plan.expression is not None:
                 return self._start_expression(plan.expression, frame, cursor)
@@ -7027,6 +7069,85 @@ class _Invocation(Transformation):
             )
             return iteration_control(self, signal.plan, control_frame)
         return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
+
+    def _step_tvt(
+        self,
+        plan: _TvtPlan,
+        frame: Frame,
+        cursor: int,
+        start: int = 0,
+        text: str = "",
+    ) -> FrameResult:
+        context = replace(frame.context, original_functions={})
+        for index, part in enumerate(plan.template.parts[start:], start):
+            if part.kind == "text":
+                text += part.text
+                continue
+            assert part.expression is not None
+            child = self._tvt_function_frame(part.expression, context)
+            if child is not None:
+                resume = replace(frame, cursor=_TvtResume(cursor, index + 1, text))
+                return Call(child, resume=resume)
+            text += self._tvt_part_string(self._evaluate(part.expression, context))
+        value = (self._text_node(text, disable_output_escaping=plan.disable_output_escaping),)
+        self._admit_output(value, frame.context)
+        return Continue(replace(frame, cursor=cursor + 1, values=frame.values + value))
+
+    def _tvt_part_string(self, value: XdmSequence) -> str:
+        return " ".join(self._string_value(item) for item in value)
+
+    def _tvt_function_frame(
+        self,
+        expression: CompiledExpression,
+        context: EvaluationContext,
+    ) -> Frame | None:
+        # The synchronous component entry clears these scopes and resolves
+        # overrides. Keep that entry in use when such state is present.
+        if (
+            expression.static_context.compatibility_mode
+            or self.stylesheet.extensions.functions
+            or context.original_components
+            or self.current_regex_groups is not None
+            or self.current_merge_sources
+            or self._expression_references_global(expression, context.package_name)
+        ):
+            return None
+        functions = self.stylesheet_functions(context.package_name)
+        if not functions:
+            return None
+        compiled = self.xpath_plan(expression)
+        if compiled is None or not _has_terminal_function(compiled.plan):
+            return None
+        variables = self._environment(context).variables
+        # An empty or multi-item binding needs full XPath sequence semantics.
+        # Schema-defined atomics also need the full evaluator's annotations.
+        if any(
+            not _tvt_scalar_binding(sequence)
+            for name, sequence in variables.items()
+            if name in compiled.variable_names
+        ):
+            return None
+        machine = self.xpath_machine(expression, variables, functions)
+        assert machine is not None
+        outcome = machine.run_until_suspension()
+        if not isinstance(outcome, Suspension) or not outcome.request.tail:
+            # No host callback has executed. A nonterminal call still needs
+            # the full evaluator to handle its result and remaining operands.
+            return None
+        target = outcome.request.target
+        assert isinstance(target, ComponentCall)
+        component = cast(Component, target.component)
+        if component.declaration.attribute("cache") == "yes":
+            return None
+        self.note_machine(machine)
+        # The expression is complete when the function returns. Its XDM
+        # sequence is the text instruction's own input for atomization, not
+        # an XPath operand to translate through the generic resume bridge.
+        return self._component_frame(
+            component,
+            arguments=self.component_arguments(outcome.request.arguments),
+            context=EvaluationContext(final_output=False),
+        )
 
     # -- try/catch ---------------------------------------------------------
 

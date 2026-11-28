@@ -1237,8 +1237,6 @@ cases = [
   "function/function-0701",
   "function/function-1031",
   "higher-order-functions/higher-order-functions-068",
-  "seqtor/seqtor-027",
-  "seqtor/seqtor-028",
   "seqtor/seqtor-032",
   "seqtor/seqtor-033",
 ]
