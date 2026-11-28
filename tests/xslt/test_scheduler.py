@@ -11,21 +11,25 @@ resets, and result order keep their semantics across explicit frames.
 from __future__ import annotations
 
 import dataclasses
-import io
 import sys
-from collections.abc import Mapping
-from functools import partial
 from pathlib import Path
 from typing import Any
 
 import pytest
 from elementpath.exceptions import MissingContextError
-from tests.xslt.support import stylesheet as _shared_stylesheet
+from tests.xslt.scheduler_support import (
+    HIGHER_ORDER,
+    MY_NS,
+    compile_stylesheet,
+    my_stylesheet,
+    run_stylesheet,
+    text,
+)
 
 from pyxsd import xsd_data_types as xsd
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.xdm import XdmAtomic, XdmFunction, as_xdm
-from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
+from pyxsd.xdm.nodes import NodeKind, XdmDocument
 from pyxsd.xpath import continuation
 from pyxsd.xpath.continuation import (
     ContinuationError,
@@ -43,7 +47,6 @@ from pyxsd.xpath.continuation import (
 from pyxsd.xpath.engine import XPathEngine
 from pyxsd.xpath.environment import XPathStaticContext
 from pyxsd.xslt import (
-    CompiledStylesheet,
     ExecutionLimits,
     XsltDynamicError,
     XsltProcessor,
@@ -76,7 +79,6 @@ from pyxsd.xslt.runtime.transformation import ComponentCall, Transformation
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
-MY_NS = "urn:my"
 
 
 class _CustomString(xsd.String):
@@ -122,240 +124,7 @@ _IntegerNamedString.__name__ = "string"
 _BooleanNamedString.__name__ = "string"
 
 
-_stylesheet = partial(_shared_stylesheet, namespaces={"my": MY_NS})
-
-
-NAMED_TAIL = _stylesheet(
-    """
-    <xsl:template name="count">
-      <xsl:param name="n" select="0"/>
-      <xsl:choose>
-        <xsl:when test="$n = 0"><xsl:text>done</xsl:text></xsl:when>
-        <xsl:otherwise>
-          <xsl:call-template name="count">
-            <xsl:with-param name="n" select="$n - 1"/>
-          </xsl:call-template>
-        </xsl:otherwise>
-      </xsl:choose>
-    </xsl:template>
-    <xsl:template name="xsl:initial-template">
-      <xsl:call-template name="count">
-        <xsl:with-param name="n" select="10000"/>
-      </xsl:call-template>
-    </xsl:template>
-    """
-)
-
-APPLY_TAIL = _stylesheet(
-    """
-    <xsl:template name="xsl:initial-template">
-      <xsl:apply-templates select="/*/a" mode="m">
-        <xsl:with-param name="depth" select="10000" tunnel="yes"/>
-      </xsl:apply-templates>
-    </xsl:template>
-    <xsl:template match="a" mode="m">
-      <xsl:param name="depth" tunnel="yes" select="0"/>
-      <xsl:choose>
-        <xsl:when test="$depth = 0"><xsl:text>done</xsl:text></xsl:when>
-        <xsl:otherwise>
-          <xsl:apply-templates select="." mode="m">
-            <xsl:with-param name="depth" select="$depth - 1" tunnel="yes"/>
-          </xsl:apply-templates>
-        </xsl:otherwise>
-      </xsl:choose>
-    </xsl:template>
-    """
-)
-
-FUNCTION_TAIL = _stylesheet(
-    """
-    <xsl:function name="my:count" as="xs:string">
-      <xsl:param name="n" as="xs:integer"/>
-      <xsl:sequence select="if ($n = 0) then 'done' else my:count($n - 1)"/>
-    </xsl:function>
-    <xsl:template name="xsl:initial-template">
-      <xsl:sequence select="my:count(10000)"/>
-    </xsl:template>
-    """
-)
-
-HIGHER_ORDER = _stylesheet(
-    """
-    <xsl:function name="my:next" as="xs:integer">
-      <xsl:param name="n" as="xs:integer"/>
-      <xsl:sequence select="$n + 1"/>
-    </xsl:function>
-    <xsl:function name="my:apply" as="xs:integer">
-      <xsl:param name="f" as="function(*)"/>
-      <xsl:param name="x" as="xs:integer"/>
-      <xsl:sequence select="$f($x) + 1"/>
-    </xsl:function>
-    <xsl:template name="xsl:initial-template">
-      <xsl:sequence
-        select="(function($x) { my:next($x) })(40) + 1 + my:apply(function($v) { $v * 2 }, 20)"/>
-    </xsl:template>
-    """
-)
-
-NON_TAIL = _stylesheet(
-    """
-    <xsl:function name="my:count" as="xs:integer">
-      <xsl:param name="n" as="xs:integer"/>
-      <xsl:sequence select="if ($n = 0) then 0 else my:count($n - 1) + 1"/>
-    </xsl:function>
-    <xsl:template name="xsl:initial-template">
-      <xsl:sequence select="my:count(10000)"/>
-    </xsl:template>
-    """
-)
-
-MUTUAL = _stylesheet(
-    """
-    <xsl:template name="even">
-      <xsl:param name="n" select="0"/>
-      <xsl:choose>
-        <xsl:when test="$n = 0"><xsl:text>even</xsl:text></xsl:when>
-        <xsl:otherwise>
-          <xsl:call-template name="odd"><xsl:with-param name="n" select="$n - 1"/></xsl:call-template>
-        </xsl:otherwise>
-      </xsl:choose>
-    </xsl:template>
-    <xsl:template name="odd">
-      <xsl:param name="n" select="0"/>
-      <xsl:choose>
-        <xsl:when test="$n = 0"><xsl:text>odd</xsl:text></xsl:when>
-        <xsl:otherwise>
-          <xsl:call-template name="even"><xsl:with-param name="n" select="$n - 1"/></xsl:call-template>
-        </xsl:otherwise>
-      </xsl:choose>
-    </xsl:template>
-    <xsl:template name="xsl:initial-template">
-      <xsl:call-template name="even"><xsl:with-param name="n" select="10000"/></xsl:call-template>
-    </xsl:template>
-    """
-)
-
-RESULT_ORDER = _stylesheet(
-    """
-    <xsl:template name="xsl:initial-template">
-      <xsl:apply-templates select="/*/a">
-        <xsl:with-param name="prefix" select="'item-'" tunnel="yes"/>
-      </xsl:apply-templates>
-    </xsl:template>
-    <xsl:template match="a">
-      <xsl:param name="prefix" tunnel="yes" select="''"/>
-      <xsl:value-of select="concat($prefix, @n)"/>
-    </xsl:template>
-    """
-)
-
-TYPE_CONVERSION = _stylesheet(
-    """
-    <xsl:function name="my:add" as="xs:integer">
-      <xsl:param name="left" as="xs:integer"/>
-      <xsl:param name="right" as="xs:integer"/>
-      <xsl:sequence select="$left + $right"/>
-    </xsl:function>
-    <xsl:template name="xsl:initial-template">
-      <xsl:sequence select="my:add('40', '1')"/>
-    </xsl:template>
-    """
-)
-
-CONTEXT_RESET = _stylesheet(
-    """
-    <xsl:function name="my:context-name" as="xs:string">
-      <xsl:sequence select="name(.)"/>
-    </xsl:function>
-    <xsl:template match="doc">
-      <xsl:sequence select="my:context-name()"/>
-    </xsl:template>
-    """
-)
-
-TUNNEL = _stylesheet(
-    """
-    <xsl:template name="outer">
-      <xsl:param name="value" select="'outer'"/>
-      <xsl:call-template name="inner">
-        <xsl:with-param name="value" select="$value"/>
-        <xsl:with-param name="tunnel-value" select="'tunnel'" tunnel="yes"/>
-      </xsl:call-template>
-    </xsl:template>
-    <xsl:template name="inner">
-      <xsl:param name="value" select="'missing'"/>
-      <xsl:param name="tunnel-value" tunnel="yes" select="'no-tunnel'"/>
-      <xsl:value-of select="concat($value, '-', $tunnel-value)"/>
-    </xsl:template>
-    <xsl:template name="xsl:initial-template">
-      <xsl:call-template name="outer"/>
-    </xsl:template>
-    """
-)
-
-STYLESHEETS: Mapping[str, bytes] = {
-    "named-tail-10000.xsl": NAMED_TAIL,
-    "apply-tail-10000.xsl": APPLY_TAIL,
-    "xpath-function-tail-10000.xsl": FUNCTION_TAIL,
-    "xpath-higher-order-roundtrip.xsl": HIGHER_ORDER,
-    "non-tail-exhaustion.xsl": NON_TAIL,
-    "mutual-tail-10000.xsl": MUTUAL,
-    "result-order.xsl": RESULT_ORDER,
-    "type-conversion.xsl": TYPE_CONVERSION,
-    "context-reset.xsl": CONTEXT_RESET,
-    "tunnel-parameters.xsl": TUNNEL,
-}
-
-
-def compile_stylesheet(source: bytes) -> CompiledStylesheet:
-    return XsltProcessor().compile(io.BytesIO(source))
-
-
-def _text(tree: XdmNode) -> str:
-    return "".join(
-        child.string_value
-        for child in tree.children
-        if child.kind in (NodeKind.TEXT, NodeKind.ELEMENT)
-    ).strip()
-
-
-def run_stylesheet(
-    name: str,
-    *,
-    source: Any = None,
-    limits: ExecutionLimits | None = None,
-    initial_template: str | None = "xsl:initial-template",
-) -> str:
-    compiled = compile_stylesheet(STYLESHEETS[name])
-    if source is None and name == "apply-tail-10000.xsl":
-        source = b"<r><a/></r>"
-    if source is None and name == "result-order.xsl":
-        source = b"<r><a n='1'/><a n='2'/><a n='3'/></r>"
-    if source is None and name == "context-reset.xsl":
-        source = XdmDocument.parse(b"<doc/>")
-    options: dict[str, Any] = {}
-    if source is not None:
-        options["source"] = source
-    result = compiled.transform(
-        **options,
-        initial_template=initial_template,
-        delivery="document",
-        limits=limits,
-    )
-    return _text(result.principal_tree)
-
-
 ### Deep mixed recursion
-
-
-def test_deep_mixed_recursion() -> None:
-    recursion_limit = sys.getrecursionlimit()
-
-    assert run_stylesheet("named-tail-10000.xsl") == "done"
-    assert run_stylesheet("apply-tail-10000.xsl") == "done"
-    assert run_stylesheet("xpath-function-tail-10000.xsl") == "done"
-    assert run_stylesheet("xpath-higher-order-roundtrip.xsl") == "83"
-    assert sys.getrecursionlimit() == recursion_limit
 
 
 def test_non_tail_budget_is_not_recursion_error() -> None:
@@ -395,7 +164,7 @@ def test_type_conversion_across_scheduled_function_calls() -> None:
 
 def test_typed_tail_callee_conversion_does_not_consume_caller_output() -> None:
     named = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="inner" as="xs:integer">
               <xsl:sequence select="1"/>
@@ -410,10 +179,10 @@ def test_typed_tail_callee_conversion_does_not_consume_caller_output() -> None:
             """
         )
     )
-    assert _text(named.transform(delivery="document").principal_tree) == "prefix1"
+    assert text(named.transform(delivery="document").principal_tree) == "prefix1"
 
     trailing = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="inner" as="xs:integer">
               <xsl:sequence select="1"/>
@@ -429,10 +198,10 @@ def test_typed_tail_callee_conversion_does_not_consume_caller_output() -> None:
             """
         )
     )
-    assert _text(trailing.transform(delivery="document").principal_tree) == "prefix1suffix"
+    assert text(trailing.transform(delivery="document").principal_tree) == "prefix1suffix"
 
     applied = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="xsl:initial-template">
               <xsl:text>prefix</xsl:text>
@@ -449,12 +218,12 @@ def test_typed_tail_callee_conversion_does_not_consume_caller_output() -> None:
         initial_template="xsl:initial-template",
         delivery="document",
     )
-    assert _text(result.principal_tree) == "prefix1"
+    assert text(result.principal_tree) == "prefix1"
 
 
 def test_tunnel_parameters_inherit_through_named_templates_and_apply_templates() -> None:
     named = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="outer">
               <xsl:call-template name="middle">
@@ -474,10 +243,10 @@ def test_tunnel_parameters_inherit_through_named_templates_and_apply_templates()
             """
         )
     )
-    assert _text(named.transform(delivery="document").principal_tree) == "T"
+    assert text(named.transform(delivery="document").principal_tree) == "T"
 
     applied = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="xsl:initial-template">
               <xsl:apply-templates select="/*/*" mode="m">
@@ -499,12 +268,12 @@ def test_tunnel_parameters_inherit_through_named_templates_and_apply_templates()
         initial_template="xsl:initial-template",
         delivery="document",
     )
-    assert _text(result.principal_tree) == "T"
+    assert text(result.principal_tree) == "T"
 
 
 def test_with_param_as_conversion_is_applied_before_target_binding() -> None:
     compiled = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="inner">
               <xsl:param name="x"/>
@@ -528,7 +297,7 @@ def test_with_param_as_conversion_is_applied_before_target_binding() -> None:
 def test_effective_boolean_strings_and_multi_item_atomic_sequences() -> None:
     for value in ("'false'", "'0'", "'text'"):
         compiled = compile_stylesheet(
-            _stylesheet(
+            my_stylesheet(
                 f"""
                 <xsl:template name="xsl:initial-template">
                   <xsl:choose>
@@ -540,10 +309,10 @@ def test_effective_boolean_strings_and_multi_item_atomic_sequences() -> None:
             )
         )
         result = compiled.transform(delivery="document")
-        assert _text(result.principal_tree) == "true-branch"
+        assert text(result.principal_tree) == "true-branch"
 
     empty = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="xsl:initial-template">
               <xsl:choose>
@@ -554,10 +323,10 @@ def test_effective_boolean_strings_and_multi_item_atomic_sequences() -> None:
             """
         )
     )
-    assert _text(empty.transform(delivery="document").principal_tree) == "false-branch"
+    assert text(empty.transform(delivery="document").principal_tree) == "false-branch"
 
     multi = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="xsl:initial-template">
               <xsl:choose>
@@ -575,7 +344,7 @@ def test_effective_boolean_strings_and_multi_item_atomic_sequences() -> None:
 
 def test_current_mode_survives_named_templates_and_literal_construction() -> None:
     literal = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template match="/" mode="m">
               <out><xsl:apply-templates select="/*/a" mode="#current"/></out>
@@ -586,10 +355,10 @@ def test_current_mode_survives_named_templates_and_literal_construction() -> Non
         )
     )
     result = literal.transform(source=b"<doc><a/></doc>", initial_mode="m", delivery="document")
-    assert _text(result.principal_tree) == "M"
+    assert text(result.principal_tree) == "M"
 
     named = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template match="/" mode="m">
               <xsl:call-template name="wrap"/>
@@ -603,12 +372,12 @@ def test_current_mode_survives_named_templates_and_literal_construction() -> Non
         )
     )
     result = named.transform(source=b"<doc><a/></doc>", initial_mode="m", delivery="document")
-    assert _text(result.principal_tree) == "M"
+    assert text(result.principal_tree) == "M"
 
 
 def test_unicode_variable_names_reach_the_scheduled_machine() -> None:
     literal = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:variable name="é" select="1"/>
             <xsl:template name="xsl:initial-template">
@@ -620,7 +389,7 @@ def test_unicode_variable_names_reach_the_scheduled_machine() -> None:
     assert literal.transform(delivery="raw").principal == (XdmAtomic.integer(2),)
 
     prefixed = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:variable name="my:é" select="2"/>
             <xsl:template name="xsl:initial-template">
@@ -632,7 +401,7 @@ def test_unicode_variable_names_reach_the_scheduled_machine() -> None:
     assert prefixed.transform(delivery="raw").principal == (XdmAtomic.integer(3),)
 
     eqname = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:variable name="my:é" select="3"/>
             <xsl:template name="xsl:initial-template">
@@ -644,7 +413,7 @@ def test_unicode_variable_names_reach_the_scheduled_machine() -> None:
     assert eqname.transform(delivery="raw").principal == (XdmAtomic.integer(4),)
 
     middle_dot = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:variable name="a·b" select="4"/>
             <xsl:template name="xsl:initial-template">
@@ -658,7 +427,7 @@ def test_unicode_variable_names_reach_the_scheduled_machine() -> None:
 
 def test_fallback_function_dispatch_selects_the_declared_arity() -> None:
     one_then_zero = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:variable name="doc" select="/*"/>
             <xsl:function name="my:f" as="xs:string">
@@ -679,10 +448,10 @@ def test_fallback_function_dispatch_selects_the_declared_arity() -> None:
         initial_template="xsl:initial-template",
         delivery="document",
     )
-    assert _text(result.principal_tree) == "6"
+    assert text(result.principal_tree) == "6"
 
     zero_then_one = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:variable name="doc" select="/*"/>
             <xsl:function name="my:f" as="xs:string">
@@ -703,12 +472,12 @@ def test_fallback_function_dispatch_selects_the_declared_arity() -> None:
         initial_template="xsl:initial-template",
         delivery="document",
     )
-    assert _text(result.principal_tree) == "5"
+    assert text(result.principal_tree) == "5"
 
 
 def test_effective_boolean_uses_primitive_bases_for_custom_atomic_types() -> None:
     compiled = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="xsl:initial-template">
               <xsl:param name="x"/>
@@ -727,7 +496,7 @@ def test_effective_boolean_uses_primitive_bases_for_custom_atomic_types() -> Non
             template_parameters={"x": value},
             delivery="document",
         )
-        return _text(result.principal_tree)
+        return text(result.principal_tree)
 
     custom_string = _CustomString("value")
     custom_empty = _CustomString("")
@@ -756,7 +525,7 @@ def test_effective_boolean_uses_primitive_bases_for_custom_atomic_types() -> Non
 
 def test_unused_node_variables_do_not_disable_scheduler_and_fallback_functions_work() -> None:
     unused = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:variable name="doc" select="/*"/>
             <xsl:function name="my:done" as="xs:string">
@@ -773,10 +542,10 @@ def test_unused_node_variables_do_not_disable_scheduler_and_fallback_functions_w
         initial_template="xsl:initial-template",
         delivery="document",
     )
-    assert _text(result.principal_tree) == "done"
+    assert text(result.principal_tree) == "done"
 
     fallback = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:variable name="doc" select="/*"/>
             <xsl:function name="my:one" as="xs:integer">
@@ -793,12 +562,12 @@ def test_unused_node_variables_do_not_disable_scheduler_and_fallback_functions_w
         initial_template="xsl:initial-template",
         delivery="document",
     )
-    assert _text(result.principal_tree) == "3"
+    assert text(result.principal_tree) == "3"
 
 
 def test_nested_schedulers_share_the_configured_frame_budget() -> None:
     compiled = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="loop">
               <x><xsl:call-template name="loop"/></x>
@@ -819,7 +588,7 @@ def test_nested_schedulers_share_the_configured_frame_budget() -> None:
 
 def test_production_typed_frame_rolls_back_secondary_output_and_records_error() -> None:
     compiled = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template match="/" mode="m" as="xs:integer">
               <xsl:result-document href="http://example.com/secondary"><one/></xsl:result-document>
@@ -860,7 +629,7 @@ def test_production_typed_frame_rolls_back_secondary_output_and_records_error() 
 
 def test_choose_effective_boolean_edges_and_builtin_empty_elements() -> None:
     choose = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="xsl:initial-template">
               <xsl:choose>
@@ -875,7 +644,7 @@ def test_choose_effective_boolean_edges_and_builtin_empty_elements() -> None:
     assert [item.string_value for item in choose.transform(delivery="raw").principal] == ["text"]
 
     no_branch = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="xsl:initial-template">
               <xsl:choose><xsl:when test="false()"/></xsl:choose>
@@ -886,7 +655,7 @@ def test_choose_effective_boolean_edges_and_builtin_empty_elements() -> None:
     assert no_branch.transform(delivery="raw").principal == ()
 
     builtin = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="xsl:initial-template">
               <xsl:apply-templates select="/*/*"/>
@@ -934,7 +703,7 @@ def test_choose_effective_boolean_edges_and_builtin_empty_elements() -> None:
 
 def test_literal_construction_uses_synchronous_nested_component_branches() -> None:
     compiled = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="inner"><xsl:text>inner</xsl:text></xsl:template>
             <xsl:template name="outer">
@@ -946,10 +715,10 @@ def test_literal_construction_uses_synchronous_nested_component_branches() -> No
             """
         )
     )
-    assert _text(compiled.transform(delivery="document").principal_tree) == "inner"
+    assert text(compiled.transform(delivery="document").principal_tree) == "inner"
 
     choose = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="xsl:initial-template">
               <out>
@@ -962,10 +731,10 @@ def test_literal_construction_uses_synchronous_nested_component_branches() -> No
             """
         )
     )
-    assert _text(choose.transform(delivery="document").principal_tree) == "chosen"
+    assert text(choose.transform(delivery="document").principal_tree) == "chosen"
 
     empty_choose = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="xsl:initial-template">
               <out><xsl:choose><xsl:when test="false()"/></xsl:choose></out>
@@ -973,10 +742,10 @@ def test_literal_construction_uses_synchronous_nested_component_branches() -> No
             """
         )
     )
-    assert _text(empty_choose.transform(delivery="document").principal_tree) == ""
+    assert text(empty_choose.transform(delivery="document").principal_tree) == ""
 
     apply = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template match="/" mode="m">
               <out><xsl:apply-templates select="/*/*"/></out>
@@ -986,12 +755,12 @@ def test_literal_construction_uses_synchronous_nested_component_branches() -> No
         )
     )
     result = apply.transform(source=b"<doc><a/></doc>", initial_mode="m", delivery="document")
-    assert _text(result.principal_tree) == "a"
+    assert text(result.principal_tree) == "a"
 
 
 def test_with_param_content_and_empty_sequence_forms() -> None:
     compiled = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="inner">
               <xsl:param name="x" select="'default'"/>
@@ -1006,12 +775,12 @@ def test_with_param_content_and_empty_sequence_forms() -> None:
             """
         )
     )
-    assert _text(compiled.transform(delivery="document").principal_tree) == "content"
+    assert text(compiled.transform(delivery="document").principal_tree) == "content"
 
 
 def test_apply_templates_mode_resolution_helpers() -> None:
     compiled = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:template name="xsl:initial-template">
               <xsl:apply-templates select="/*/*" mode="#current"/>
@@ -1021,7 +790,7 @@ def test_apply_templates_mode_resolution_helpers() -> None:
         )
     )
     result = compiled.transform(source=b"<r><a/></r>", delivery="document")
-    assert _text(result.principal_tree) == "a"
+    assert text(result.principal_tree) == "a"
 
 
 def test_static_validation_for_call_apply_choose_and_with_param() -> None:
@@ -1072,11 +841,11 @@ def test_static_validation_for_call_apply_choose_and_with_param() -> None:
     ]
     for body, code in cases:
         with pytest.raises(XsltError) as caught:
-            compile_stylesheet(_stylesheet(body))
+            compile_stylesheet(my_stylesheet(body))
         assert caught.value.code == code
 
     whitespace = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             '<xsl:template name="m">'
             '<xsl:call-template name="m"><xsl:with-param name="x" tunnel="yes"/></xsl:call-template>'
             "</xsl:template>"
@@ -1155,7 +924,7 @@ def test_stylesheet_function_returning_a_node_resumes_the_machine() -> None:
     # must reuse the invocation's grounded adapter rather than escaping as a
     # host object; the W3C seqtor-024..026/030 rows exercise the same seam.
     compiled = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             """
             <xsl:function name="my:produce" as="element()"><a/></xsl:function>
             <xsl:template name="xsl:initial-template">
@@ -1967,7 +1736,7 @@ def test_transformation_scheduled_xpath_and_fallbacks() -> None:
 
 def test_transformation_reads_output_attributes_and_output_uri() -> None:
     compiled = compile_stylesheet(
-        _stylesheet(
+        my_stylesheet(
             '<xsl:output method="text"/>'
             '<xsl:template name="xsl:initial-template"><xsl:text>done</xsl:text></xsl:template>'
         )

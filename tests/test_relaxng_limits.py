@@ -15,9 +15,19 @@ import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 import pytest
+from tests.relaxng_limits_support import (
+    INVALID_XML,
+    NS,
+    SIMPLE_SCHEMA,
+    VALID_XML,
+    compile_schema,
+    derivation_context,
+    nested_instance,
+    parse,
+    recursive_schema,
+)
 
 import pyxsd.relaxng.validator as validator
 from pyxsd.exceptions import PyXSDError
@@ -27,7 +37,6 @@ from pyxsd.relaxng import (
     RelaxNGLimits,
     RelaxNGSchema,
 )
-from pyxsd.relaxng.datatypes import DatatypeContext
 from pyxsd.relaxng.limits import BudgetCounter
 from pyxsd.relaxng.names import Name
 from pyxsd.relaxng.patterns import (
@@ -38,100 +47,9 @@ from pyxsd.relaxng.patterns import (
     Group,
     List,
     NotAllowed,
-    PatternPool,
     Ref,
     Text,
 )
-
-NS = "http://relaxng.org/ns/structure/1.0"
-
-SIMPLE_SCHEMA = f"""<grammar xmlns="{NS}">
-  <start>
-    <element name="record">
-      <optional><element name="count"><text/></element></optional>
-    </element>
-  </start>
-</grammar>"""
-
-INVALID_XML = "<record><other/></record>"
-VALID_XML = "<record/>"
-
-#: Deep enough that the former recursive derivative path exceeded Python's
-#: default recursion limit, but small enough to compile in a normal test run.
-DEEP_DEPTH = 1200
-#: An integrated event parse keeps one event per authored child; a moderate
-#: depth pins the full traversal without quadratic test cost.
-INTEGRATED_EVENT_DEPTH = 80
-#: Text derivatives nest through their first operand, so a depth just past the
-#: old recursion failure proves the iterative path at low test cost.
-DEEP_TEXT_DEPTH = 500
-#: A direct deep event derivative pins the iterative treatment past Python's
-#: recursion limit without replaying that depth for every child occurrence.
-ADVERSARIAL_DEPTH = 1200
-#: A recursive element tree exercises the iterative document walk, not the
-#: pattern derivative depth.
-DEEP_DOCUMENT_DEPTH = 1500
-
-
-def compile_schema(source: str = SIMPLE_SCHEMA, **options) -> RelaxNGSchema:
-    return RelaxNGSchema.compile(io.StringIO(source), **options)
-
-
-def parse(schema: RelaxNGSchema, xml: str, **options) -> RelaxNGDocument:
-    return schema.parse(io.StringIO(xml), typed=False, **options)
-
-
-def deep_text_schema(depth: int = DEEP_TEXT_DEPTH) -> RelaxNGSchema:
-    inner = "<text/>"
-    for _ in range(depth):
-        inner = f"<group>{inner}<text/></group>"
-    source = f'<grammar xmlns="{NS}"><start><element name="r">{inner}</element></start></grammar>'
-    return compile_schema(source)
-
-
-def deep_first_operand(tag: str, depth: int = DEEP_DEPTH) -> tuple[RelaxNGSchema, str]:
-    inner = '<element name="a0"><empty/></element>'
-    for index in range(1, depth + 1):
-        inner = f'<{tag}>{inner}<element name="a{index}"><empty/></element></{tag}>'
-    source = f'<grammar xmlns="{NS}"><start><element name="r">{inner}</element></start></grammar>'
-    children = "".join(f"<a{index}/>" for index in range(depth + 1))
-    return compile_schema(source), f"<r>{children}</r>"
-
-
-def root_content(schema: RelaxNGSchema):
-    node = schema.grammar.start
-    while isinstance(node, Ref):
-        node = node.target
-    assert isinstance(node, Element)
-    return node.pattern
-
-
-def derivation_context(limits: RelaxNGLimits | None = None) -> validator.DerivationContext:
-    return validator.DerivationContext(DatatypeContext(None, {}), PatternPool(), limits)
-
-
-def deep_attribute_schema(depth: int = DEEP_DEPTH) -> RelaxNGSchema:
-    inner = '<attribute name="a0"><text/></attribute>'
-    for index in range(1, depth):
-        inner = f'<group>{inner}<attribute name="a{index}"><text/></attribute></group>'
-    source = f'<grammar xmlns="{NS}"><start><element name="r">{inner}</element></start></grammar>'
-    return compile_schema(source)
-
-
-def recursive_schema() -> RelaxNGSchema:
-    source = f"""<grammar xmlns="{NS}">
-      <start><ref name="node"/></start>
-      <define name="node">
-        <element name="n">
-          <zeroOrMore><ref name="node"/></zeroOrMore>
-        </element>
-      </define>
-    </grammar>"""
-    return compile_schema(source)
-
-
-def nested_instance(name: str, depth: int) -> str:
-    return f"<{name}>" * depth + f"</{name}>" * depth
 
 
 class UnreadableStream:
@@ -385,6 +303,16 @@ def test_guard_is_released_after_a_batch_input_failure(tmp_path: Path, policy: s
     assert parse(schema, VALID_XML).is_valid
 
 
+def test_empty_instance_limit_stream_is_never_read_when_a_schema_is_invalid() -> None:
+    broken = compile_schema(f'<grammar xmlns="{NS}"/>')
+    stream = UnreadableStream()
+
+    with pytest.raises(PyXSDError):
+        broken.parse(stream, typed=False, limits=RelaxNGLimits(max_derivative_states=0))
+
+    assert stream.reads == 0
+
+
 def test_reentrant_parse_on_the_same_schema_is_rejected_during_input_read() -> None:
     schema = compile_schema()
 
@@ -501,131 +429,6 @@ def test_separate_schemas_compile_and_parse_concurrently(
         return document.report.issues
 
     run_threaded(worker)
-
-
-def test_deep_text_derivatives_do_not_escape_as_recursion_errors() -> None:
-    schema = deep_text_schema()
-
-    document = parse(schema, "<r>text</r>")
-
-    assert document.is_valid
-    assert document.root._name_ == "r"
-
-
-@pytest.mark.parametrize("budget", ["max_derivative_states", "max_memo_entries"])
-def test_finite_budget_trips_before_the_python_recursion_limit(budget: str) -> None:
-    schema = deep_text_schema()
-
-    with pytest.raises(RelaxNGLimitError) as caught:
-        parse(schema, "<r>text</r>", limits=RelaxNGLimits(**{budget: 64}))
-
-    assert caught.value.budget == budget
-    assert caught.value.configured == 64
-    assert caught.value.observed > 64
-
-
-def test_deep_group_open_derivatives_are_iterative() -> None:
-    schema, _instance = deep_first_operand("group", ADVERSARIAL_DEPTH)
-    content = root_content(schema)
-
-    residual = validator.start_tag_open_derivative(content, "a0", derivation_context())
-
-    assert type(residual).__name__ == "_After"
-    with pytest.raises(RelaxNGLimitError) as caught:
-        validator.start_tag_open_derivative(
-            content,
-            "a0",
-            derivation_context(RelaxNGLimits(max_derivative_states=64)),
-        )
-    assert caught.value.budget == "max_derivative_states"
-
-
-def test_deep_interleaved_open_derivatives_are_iterative() -> None:
-    schema, _instance = deep_first_operand("interleave", ADVERSARIAL_DEPTH)
-    content = root_content(schema)
-
-    residual = validator.start_tag_open_derivative(content, "a0", derivation_context())
-
-    assert type(residual).__name__ == "_After"
-    with pytest.raises(RelaxNGLimitError) as caught:
-        validator.start_tag_open_derivative(
-            content,
-            "a0",
-            derivation_context(RelaxNGLimits(max_derivative_states=100_000, max_memo_entries=64)),
-        )
-    assert caught.value.budget == "max_memo_entries"
-
-
-def test_deep_event_parse_is_iterative() -> None:
-    schema, instance = deep_first_operand("group", INTEGRATED_EVENT_DEPTH)
-
-    document = parse(schema, instance)
-
-    assert document.is_valid
-    assert len(document.root.children) == INTEGRATED_EVENT_DEPTH + 1
-
-
-def test_deep_recovery_projection_is_iterative() -> None:
-    schema = deep_attribute_schema()
-
-    document = parse(schema, "<r/>")
-
-    assert document.is_valid is False
-    assert document.report.has_errors
-    assert document.root._name_ == "r"
-
-
-def test_deep_recursive_element_documents_are_iterative() -> None:
-    schema = recursive_schema()
-
-    document = parse(schema, nested_instance("n", DEEP_DOCUMENT_DEPTH))
-
-    assert document.is_valid
-    depth = 0
-    node = document.root
-    while node.children:
-        node = node.children[0]
-        depth += 1
-    assert depth == DEEP_DOCUMENT_DEPTH - 1
-
-
-def test_empty_instance_limit_stream_is_never_read_when_a_schema_is_invalid() -> None:
-    broken = compile_schema(f'<grammar xmlns="{NS}"/>')
-    stream = UnreadableStream()
-
-    with pytest.raises(PyXSDError):
-        broken.parse(stream, typed=False, limits=RelaxNGLimits(max_derivative_states=0))
-
-    assert stream.reads == 0
-
-
-def test_deep_patterns_are_not_mistaken_for_invalid_documents() -> None:
-    schema = deep_text_schema()
-    instance = "<r><unexpected/></r>"
-
-    unlimited = parse(schema, instance)
-    bounded = parse(
-        schema,
-        instance,
-        limits=RelaxNGLimits(max_derivative_states=10_000, max_memo_entries=10_000),
-    )
-
-    assert unlimited.is_valid is False
-    assert bounded.is_valid is False
-    assert [issue.code for issue in unlimited.report.issues] == [
-        issue.code for issue in bounded.report.issues
-    ]
-    assert bounded.root.to_etree().tag == "r"
-
-
-def test_deep_events_match_regular_validation_for_a_plain_tree() -> None:
-    schema = recursive_schema()
-    instance = ET.fromstring("<n><n/></n>")
-
-    document = schema.parse(instance, typed=False)
-
-    assert document.is_valid
-    assert document.root._name_ == "n"
 
 
 def test_cyclic_derivatives_are_rejected_instead_of_recursing() -> None:
