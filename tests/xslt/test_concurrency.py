@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import io
 from collections.abc import Callable
-from concurrent.futures import Future, wait
-from threading import Barrier, Event, Thread
-from typing import TypeVar
+from threading import Barrier, Event
 
 import pytest
-from tests.xslt.support import stylesheet
+from tests.xslt.support import run_workers, stylesheet
 
 from pyxsd.schema import Schema
 from pyxsd.xdm import XdmAtomic, XdmFunction
@@ -22,40 +20,6 @@ from pyxsd.xslt.runtime.evaluate import DynamicExpressionCache
 
 _APP = "urn:concurrency"
 _TIMEOUT = 60
-_T = TypeVar("_T")
-
-
-def _run_workers(
-    barrier: Barrier, work: Callable[[int], _T], *, timeout: float = 2 * _TIMEOUT
-) -> list[_T]:
-    errors: list[BaseException] = []
-    futures: list[Future[_T]] = [Future() for _ in range(barrier.parties)]
-
-    def guarded(index: int) -> None:
-        try:
-            result = work(index)
-        except BaseException as error:
-            errors.append(error)
-            barrier.abort()
-            futures[index].set_exception(error)
-        else:
-            futures[index].set_result(result)
-
-    # ThreadPoolExecutor joins its workers at interpreter shutdown, even after
-    # shutdown(wait=False). Raw daemon threads let pytest exit after a deadlock.
-    for index in range(barrier.parties):
-        Thread(target=guarded, args=(index,), daemon=True).start()
-    _, pending = wait(futures, timeout=timeout)
-    if pending:
-        barrier.abort()
-        stuck = ", ".join(
-            f"worker {index}" for index, future in enumerate(futures) if future in pending
-        )
-        raise AssertionError(f"timed out waiting for {stuck}")
-    if errors:
-        # Report the original worker failure, rather than a peer's broken barrier.
-        raise errors[0]
-    return [future.result(timeout=0) for future in futures]
 
 
 def _sheet(body: str) -> io.BytesIO:
@@ -74,7 +38,7 @@ def test_worker_timeout_names_stuck_worker():
 
     try:
         with pytest.raises(AssertionError, match=r"timed out waiting for worker 1$"):
-            _run_workers(barrier, worker, timeout=0.25)
+            run_workers(barrier, worker, timeout=0.25)
     finally:
         release.set()
     assert finished.wait(_TIMEOUT)
@@ -92,7 +56,7 @@ def test_worker_exception_is_not_masked_by_peer_barrier_failure():
         barrier.wait()
 
     with pytest.raises(ValueError, match="original worker error"):
-        _run_workers(barrier, worker)
+        run_workers(barrier, worker)
 
 
 @pytest.mark.parametrize("workers", [1, 3])
@@ -174,7 +138,7 @@ def test_callback_reenters_same_stylesheet_with_independent_dynamic_state(worker
         assert list(outer.secondary) == [uri]
         assert outer.secondary[uri].tree.string_value == f"{label}:{first}"
 
-    _run_workers(barrier, worker)
+    run_workers(barrier, worker)
 
 
 def test_one_compiled_xpath_uses_each_threads_focus_variables_and_functions():
@@ -209,7 +173,7 @@ def test_one_compiled_xpath_uses_each_threads_focus_variables_and_functions():
             XdmAtomic.integer(index),
         )
 
-    _run_workers(barrier, worker)
+    run_workers(barrier, worker)
 
 
 def test_closures_partial_applications_and_references_keep_their_invocation():
@@ -260,7 +224,7 @@ def test_closures_partial_applications_and_references_keep_their_invocation():
             assert isinstance(function, XdmFunction)
             assert function.invoke(args) == (XdmAtomic.string(f"{value}:{value}:{value}"),)
 
-    _run_workers(barrier, worker)
+    run_workers(barrier, worker)
 
 
 def test_deferred_functions_from_one_parser_keep_separate_callback_targets():
@@ -312,7 +276,7 @@ def test_deferred_functions_from_one_parser_keep_separate_callback_targets():
         if index == 0:
             barrier.wait()
 
-    _run_workers(barrier, worker)
+    run_workers(barrier, worker)
 
 
 def test_dynamic_expression_cache_reuses_plans_only_within_each_invocation(monkeypatch):
@@ -343,7 +307,7 @@ def test_dynamic_expression_cache_reuses_plans_only_within_each_invocation(monke
         result = compiled.transform(source, parameters={"n": index}, delivery="raw")
         assert result.principal == (XdmAtomic.integer(index + 1), XdmAtomic.integer(index + 2))
 
-    _run_workers(barrier, worker)
+    run_workers(barrier, worker)
     assert len(plans) == 3
     for first, second in plans.values():
         assert first is second
@@ -389,4 +353,4 @@ def test_stale_bound_source_is_rejected_but_captured_and_returned_xdm_stay_usabl
         barrier.wait()
         checks[index]()
 
-    _run_workers(barrier, worker)
+    run_workers(barrier, worker)

@@ -6,9 +6,8 @@ import re
 import selectors
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 from types import SimpleNamespace
 
 import pytest
@@ -1272,25 +1271,33 @@ def test_parallel_writes_spend_only_one_remaining_budget():
     result = _compile("<xsl:text>abc</xsl:text>", output=TEXT).transform(
         delivery="raw", output_uri=URI, limits=ExecutionLimits(max_output_bytes=3)
     )
-    barrier = Barrier(2)
+    barrier = Barrier(2, timeout=30)
 
-    def write():
+    def write(index):
+        destination = io.BytesIO()
+        barrier.wait()
         try:
-            destination = io.BytesIO()
-            barrier.wait()
-            try:
-                result.write(destination)
-            except XsltDynamicError as error:
-                _assert_exhausted(error, "output byte", "max_output_bytes", 3, 6)
-        except BaseException:
-            barrier.abort()
-            raise
+            result.write(destination)
+        except XsltDynamicError as error:
+            _assert_exhausted(error, "output byte", "max_output_bytes", 3, 6)
         return destination.getvalue()
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(write)
-        second = pool.submit(write)
-        assert sorted((first.result(), second.result())) == [b"", b"abc"]
+    assert sorted(support.run_workers(barrier, write, timeout=30)) == [b"", b"abc"]
+
+
+def test_parallel_write_synchronization_is_bounded():
+    barrier = Barrier(2)
+    release = Event()
+
+    def stalled(index):
+        barrier.wait()
+        release.wait()
+
+    try:
+        with pytest.raises(AssertionError, match=r"timed out waiting for worker 0, worker 1"):
+            support.run_workers(barrier, stalled, timeout=0.25)
+    finally:
+        release.set()
 
 
 def test_byte_budget_does_not_replace_an_encoding_error_that_occurs_first():

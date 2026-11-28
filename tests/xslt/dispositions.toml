@@ -1240,7 +1240,7 @@ cases = [
   "seqtor/seqtor-032",
   "seqtor/seqtor-033",
 ]
-reason = "These cases recurse through XPath expression evaluation and closure calls deeply enough to exceed CPython's per-interpreter recursion limit. They used to pass only because semantic execution raised the process-wide limit for the duration of a transformation; that global mutation raced with every other thread and is removed. The runtime now reports the stable implementation resource code PYXSD-XSLT-001 instead of a raw RecursionError. Moving this recursion onto the heap scheduler is operational work tracked outside this branch, so these rows are controlled resource failures, not wrong results."
+reason = "These cases recurse through synchronous XPath expression evaluation and closure calls deeply enough to exceed CPython's per-interpreter recursion limit. The runtime reports the stable implementation resource code PYXSD-XSLT-001 instead of a raw RecursionError, so these rows are controlled resource failures rather than wrong results. Tail calls and simple self-recursion in arithmetic, template application, and subtree copying run on the heap scheduler. The remaining recursion here stays inside synchronous comma sequences, short-circuit Boolean operands, count() over paths, and full-focus variable selects. A recorded follow-up pull request moves those expression shapes onto the heap scheduler."
 links = ["https://www.w3.org/TR/xslt-30/#dynamic-errors", "https://docs.python.org/3/library/sys.html#sys.setrecursionlimit"]
 
 [[dispositions]]
@@ -1249,7 +1249,7 @@ title = "the knight's-tour recursion reaches the Python stack budget in the 2.0 
 category = "platform-limit"
 profiles = ["xslt20"]
 cases = ["function/function-0701"]
-reason = "The 2.0-profile knight's-tour stylesheet recurses through XPath expression evaluation deeply enough to exceed CPython's per-interpreter recursion limit. It used to pass only because semantic execution raised the process-wide limit during a transformation, which raced with every other thread; that mutation is removed. The runtime reports PYXSD-XSLT-001 (a controlled resource failure), not a wrong result. Heap-scheduler recursion belongs to the operational task."
+reason = "function/function-0701 recurses through the knight's-tour stylesheet's synchronous variable select and xsl:sequence calls deeply enough to exceed CPython's per-interpreter recursion limit. Template application and subtree copying run on the heap scheduler; this recurrence keeps synchronous full-focus variable selects and predicates. The runtime reports PYXSD-XSLT-001, a controlled resource failure rather than a wrong result. A recorded follow-up pull request covers the remaining variable-select and focus seams."
 links = ["https://www.w3.org/TR/xslt-30/#dynamic-errors", "https://docs.python.org/3/library/sys.html#sys.setrecursionlimit"]
 
 # F&O 3.1 §17.5.3 defines FOJS0004 for validate=true() when the processor

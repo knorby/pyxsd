@@ -878,6 +878,99 @@ print(json.dumps([
     assert results == expected
 
 
+def _unpicklable_payload(payload):
+    """One case returns an unpicklable result; its sibling hangs in the C matcher."""
+    _profile_name, _unicode_version, case, _timeout = payload
+    marker = Path(os.environ["PYXSD_TEST_STUCK_MARKER"])
+    if case.local_name == "case-002":
+        marker.write_text("stuck", encoding="ascii")
+        # The C matcher holds the GIL here; the Python alarm cannot run.
+        re.fullmatch(r"(a+)+", "a" * 80 + "!")
+        raise AssertionError("the backtracking probe completed")
+    while not marker.exists():
+        time.sleep(0.01)
+    return case.name, lambda: None
+
+
+def test_parallel_unexpected_parent_failure_terminates_a_stuck_worker(tmp_path):
+    names = ("case-001", "case-002")
+    root = _fixture_repo(tmp_path, names=names)
+    for name in names:
+        (root / "tests" / "xslt" / "corpus" / "gate" / f"{name}.xsl").write_text(
+            RIGHT_SHEET, encoding="utf-8"
+        )
+    marker = tmp_path / "stuck.marker"
+    run = run_probe(
+        [
+            sys.executable,
+            "-c",
+            """
+import json
+import multiprocessing
+import sys
+from tests.xslt import suite
+from tests.xslt.catalog import load_catalog
+from tests.xslt.test_ci_contract import _unpicklable_payload
+
+suite._run_payload = _unpicklable_payload
+cases = tuple(load_catalog(sys.argv[1]).cases.values())
+try:
+    suite.run_parallel(cases, suite.SUITE_PROFILES["xslt30"], timeout=20, jobs=2)
+except BaseException as error:
+    print(json.dumps([
+        type(error).__name__,
+        [child.pid for child in multiprocessing.active_children()],
+    ]))
+else:
+    raise SystemExit("run_parallel did not fail")
+""",
+            str(root / "tests" / "xslt" / "corpus" / "catalog.xml"),
+        ],
+        env={**os.environ, "PYXSD_TEST_STUCK_MARKER": str(marker)},
+        cwd=REPO_ROOT,
+        timeout=60,
+    )
+    error_name, children = json.loads(run.stdout)
+    assert error_name == "MaybeEncodingError"
+    assert marker.exists()
+    assert children == []
+
+
+def test_run_parallel_terminates_instead_of_closing_on_an_unexpected_get_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingHandle:
+        def get(self, timeout: float | None) -> tuple[str, CaseResult]:
+            raise RuntimeError("result unmarshalling failed")
+
+    class FakePool:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def apply_async(self, *args: object, **kwargs: object) -> FailingHandle:
+            return FailingHandle()
+
+        def terminate(self) -> None:
+            self.calls.append("terminate")
+
+        def join(self) -> None:
+            self.calls.append("join")
+
+        def close(self) -> None:
+            self.calls.append("close")
+
+    pool = FakePool()
+    monkeypatch.setattr(
+        suite_module.multiprocessing,
+        "get_context",
+        lambda method: SimpleNamespace(Pool=lambda processes: pool),
+    )
+    cases = (SimpleNamespace(name="gate/case-001"), SimpleNamespace(name="gate/case-002"))
+    with pytest.raises(RuntimeError, match="result unmarshalling failed"):
+        suite_module.run_parallel(cases, SUITE_PROFILES["xslt30"], timeout=1, jobs=2)
+    assert pool.calls == ["terminate", "join"]
+
+
 def test_parallel_workers_avoid_fork_in_xdist_or_multithreaded_parents() -> None:
     assert _parallel_start_method(in_xdist_worker=True, active_threads=1) == "spawn"
     assert _parallel_start_method(in_xdist_worker=False, active_threads=2) == "spawn"
