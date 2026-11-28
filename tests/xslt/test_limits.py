@@ -20,6 +20,7 @@ from pyxsd.xdm import XdmAtomic, XdmMap
 from pyxsd.xdm.nodes import XdmDocument
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltDynamicError, XsltSerializationError
+from pyxsd.xslt.processor import _Invocation
 from pyxsd.xslt.results import delivered_entries
 from pyxsd.xslt.runtime.builder import ResultBuilder
 from pyxsd.xslt.runtime.frames import (
@@ -445,6 +446,335 @@ def test_copy_preserves_a_subtree_deeper_than_the_python_stack():
         parent = copy
         copy, source = copy.children[0], source.children[0]
     assert copy.string_value == source.string_value == "end"
+
+
+@pytest.mark.parametrize(
+    ("wrapper", "expected"),
+    [
+        ('<xsl:if test="true()">{call}</xsl:if>', "leaf"),
+        (
+            '<xsl:for-each select="2"><xsl:if test=". eq 2 and position() eq last()">'
+            "{call}</xsl:if></xsl:for-each>",
+            "leaf",
+        ),
+        (
+            '<xsl:for-each-group select="2" group-by=".">'
+            '<xsl:if test="current-grouping-key() eq 2 and current-group() eq 2">'
+            "{call}</xsl:if></xsl:for-each-group>",
+            "leaf",
+        ),
+        (
+            '<xsl:iterate select="2"><xsl:param name="p" select="3"/>'
+            '<xsl:if test=". + $p eq 5">{call}</xsl:if></xsl:iterate>',
+            "leaf",
+        ),
+        ('<xsl:try>{call}<xsl:catch errors="*">unexpected</xsl:catch></xsl:try>', "leaf"),
+        (
+            '<xsl:try><xsl:sequence select="error()"/>'
+            '<xsl:catch errors="err:FOER0000">{call}</xsl:catch></xsl:try>',
+            "leaf",
+        ),
+        ("<xsl:fork><xsl:sequence>{call}</xsl:sequence></xsl:fork>", "leaf"),
+        ("<ext:unavailable><xsl:fallback>{call}</xsl:fallback></ext:unavailable>", "leaf"),
+    ],
+    ids=["if", "for-each", "group", "iterate", "try", "catch", "fork", "fallback"],
+)
+def test_literal_wrappers_resume_deep_calls(wrapper, expected):
+    call = """<xsl:call-template name="loop">
+      <xsl:with-param name="n" select="$n - 1"/>
+    </xsl:call-template>"""
+    body = f"""<xsl:param name="depth"/>
+    <xsl:template match="/">
+      <xsl:call-template name="loop"><xsl:with-param name="n" select="$depth"/></xsl:call-template>
+    </xsl:template>
+    <xsl:template name="loop">
+      <xsl:param name="n"/>
+      <xsl:choose>
+        <xsl:when test="$n gt 0"><out>{wrapper.format(call=call)}</out></xsl:when>
+        <xsl:otherwise><xsl:text>leaf</xsl:text></xsl:otherwise>
+      </xsl:choose>
+    </xsl:template>"""
+    compiled = XsltProcessor().compile(
+        io.BytesIO(
+            stylesheet(
+                body,
+                namespaces={"err": "http://www.w3.org/2005/xqt-errors", "ext": "urn:ext"},
+                attributes=' extension-element-prefixes="ext"',
+            )
+        )
+    )
+    for depth in (10, 160):
+        result = compiled.transform(
+            b"<n/>",
+            parameters={"depth": depth},
+            delivery="raw",
+            limits=ExecutionLimits(max_frames=None),
+        )
+        (node,) = result.principal
+        for _ in range(depth - 1):
+            assert node.name == "out"
+            (node,) = node.children
+        assert node.name == "out"
+        assert node.string_value == expected
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(
+            b"<n/>",
+            parameters={"depth": 160},
+            delivery="raw",
+            limits=ExecutionLimits(max_frames=8),
+        )
+    _assert_exhausted(caught.value, "frame", "max_frames", 8, 9)
+
+
+def test_literal_try_catches_the_same_error_at_depth():
+    body = """<xsl:param name="depth"/>
+    <xsl:template match="/">
+      <xsl:call-template name="loop"><xsl:with-param name="n" select="$depth"/></xsl:call-template>
+    </xsl:template>
+    <xsl:template name="loop">
+      <xsl:param name="n"/>
+      <out><xsl:try>
+        <xsl:choose>
+          <xsl:when test="$n eq 1">
+            <xsl:message terminate="yes">stop</xsl:message>
+          </xsl:when>
+          <xsl:otherwise>
+            <xsl:call-template name="loop">
+              <xsl:with-param name="n" select="$n - 1"/>
+            </xsl:call-template>
+          </xsl:otherwise>
+        </xsl:choose>
+        <xsl:catch errors="err:XTMM9000">
+          <xsl:sequence select="($err:code, $err:module,
+            count($err:line-number), count($err:column-number))"/>
+        </xsl:catch>
+      </xsl:try></out>
+    </xsl:template>"""
+    source = stylesheet(body, namespaces={"err": "http://www.w3.org/2005/xqt-errors"})
+    compiled = XsltProcessor().compile(io.BytesIO(source))
+    for depth in (1, 160):
+        result = compiled.transform(
+            b"<n/>",
+            parameters={"depth": depth},
+            delivery="raw",
+            limits=ExecutionLimits(max_frames=None),
+        )
+        assert result.principal[0].string_value == "XTMM9000 <memory> 0 0"
+        assert len(result.messages) == 1
+
+
+def test_literal_next_match_resumes_at_depth():
+    body = """<xsl:template match="/">
+      <xsl:apply-templates/>
+    </xsl:template>
+    <xsl:template match="n" priority="1">
+      <out><xsl:next-match/></out>
+    </xsl:template>
+    <xsl:template match="n">
+      <xsl:choose>
+        <xsl:when test="n"><xsl:apply-templates select="n"/></xsl:when>
+        <xsl:otherwise>leaf</xsl:otherwise>
+      </xsl:choose>
+    </xsl:template>"""
+    compiled = XsltProcessor().compile(io.BytesIO(stylesheet(body)))
+    for depth in (10, 160):
+        source = b"<n>" * depth + b"</n>" * depth
+        result = compiled.transform(source, delivery="raw", limits=ExecutionLimits(max_frames=None))
+        (node,) = result.principal
+        for _ in range(depth - 1):
+            assert node.name == "out"
+            (node,) = node.children
+        assert node.name == "out"
+        assert node.string_value == "leaf"
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(source, delivery="raw", limits=ExecutionLimits(max_frames=8))
+    _assert_exhausted(caught.value, "frame", "max_frames", 8, 9)
+
+
+@pytest.mark.parametrize(
+    ("wrapper", "attributes"),
+    [
+        ("<xsl:element name='part'>{call}</xsl:element>", ""),
+        ("<xsl:document>{call}</xsl:document>", ""),
+        ("<xsl:copy select='/*'>{call}</xsl:copy>", ""),
+        ("<xsl:value-of>{call}</xsl:value-of>", ""),
+        ("<xsl:attribute name='a'>{call}</xsl:attribute>", ""),
+        ("<xsl:comment>{call}</xsl:comment>", ""),
+        ("<xsl:processing-instruction name='p'>{call}</xsl:processing-instruction>", ""),
+        ("<xsl:namespace name='p'>{call}</xsl:namespace>", ""),
+        ("<xsl:variable name='v'>{call}</xsl:variable><xsl:sequence select='$v'/>", ""),
+        ("<xsl:message>{call}</xsl:message>", ""),
+        ("<xsl:where-populated>{call}</xsl:where-populated>", ""),
+        ("<xsl:on-empty><xsl:sequence>{call}</xsl:sequence></xsl:on-empty>", ""),
+        ("<xsl:on-non-empty><xsl:sequence>{call}</xsl:sequence></xsl:on-non-empty>text", ""),
+        (
+            "<xsl:analyze-string select=\"'a'\" regex='a'>"
+            "<xsl:matching-substring>{call}</xsl:matching-substring>"
+            "</xsl:analyze-string>",
+            "",
+        ),
+        ("<xsl:perform-sort><xsl:sort select='1'/>{call}</xsl:perform-sort>", ""),
+        ("<xsl:iterate select='1'><xsl:on-completion>{call}</xsl:on-completion></xsl:iterate>", ""),
+        ("<xsl:iterate select='1'><xsl:break>{call}</xsl:break></xsl:iterate>", ""),
+        ("<xsl:map><xsl:map-entry key='1'>{call}</xsl:map-entry></xsl:map>", ""),
+        ("<xsl:map>{call}</xsl:map>", ""),
+        ("<xsl:result-document href='{{concat(\"out-\", $n)}}'>{call}</xsl:result-document>", ""),
+        ("<xsl:assert test='false()'>{call}</xsl:assert>", ""),
+        ("<xsl:source-document href='{uri}'>{call}</xsl:source-document>", ""),
+        (
+            "<xsl:call-template name='sink'><xsl:with-param name='p'>{call}</xsl:with-param>"
+            "</xsl:call-template>",
+            "",
+        ),
+        (
+            "<xsl:iterate select='1'><xsl:param name='p'>{call}</xsl:param>"
+            "<xsl:sequence select='$p'/></xsl:iterate>",
+            "",
+        ),
+        (
+            "<xsl:iterate select='1'><xsl:param name='p' select='0'/>"
+            "<xsl:next-iteration><xsl:with-param name='p'>{call}</xsl:with-param>"
+            "</xsl:next-iteration></xsl:iterate>",
+            "",
+        ),
+        (
+            "<xsl:for-each select='(1, 2)'><xsl:sort>{call}</xsl:sort>"
+            "<xsl:sequence select='.'/></xsl:for-each>",
+            "",
+        ),
+        (
+            "<xsl:merge><xsl:merge-source select='1'><xsl:merge-key>{call}</xsl:merge-key>"
+            "</xsl:merge-source><xsl:merge-action/></xsl:merge>",
+            "",
+        ),
+        (
+            "<xsl:evaluate xpath=\"'$p'\"><xsl:with-param name='p'>{call}</xsl:with-param>"
+            "</xsl:evaluate>",
+            "",
+        ),
+        (
+            "<xsl:merge><xsl:merge-source select='1'><xsl:merge-key select='.'/></xsl:merge-source>"
+            "<xsl:merge-action><xsl:for-each select='1'><part>{call}</part></xsl:for-each>"
+            "</xsl:merge-action></xsl:merge>",
+            "",
+        ),
+    ],
+    ids=[
+        "element",
+        "document",
+        "copy",
+        "value-of",
+        "attribute",
+        "comment",
+        "processing-instruction",
+        "namespace",
+        "variable",
+        "message",
+        "where-populated",
+        "on-empty",
+        "on-non-empty",
+        "analyze-string",
+        "perform-sort",
+        "on-completion",
+        "break",
+        "map-entry",
+        "map",
+        "result-document",
+        "assert",
+        "source-document",
+        "with-param",
+        "iterate-param",
+        "next-iteration",
+        "sort-key",
+        "merge-key",
+        "evaluate-param",
+        "live-merge",
+    ],
+)
+def test_literal_excluded_wrappers_report_python_stack(wrapper, attributes, tmp_path):
+    document = tmp_path / "source.xml"
+    document.write_bytes(b"<n/>")
+    call = """<xsl:call-template name="loop">
+      <xsl:with-param name="n" select="$n - 1"/>
+    </xsl:call-template>"""
+    body = f"""<xsl:template match="/">
+      <xsl:call-template name="loop"><xsl:with-param name="n" select="160"/></xsl:call-template>
+    </xsl:template>
+    <xsl:template name="sink"><xsl:param name="p"/><xsl:sequence select="$p"/></xsl:template>
+    <xsl:template name="loop">
+      <xsl:param name="n"/>
+      <xsl:if test="$n gt 0"><out>{wrapper.format(call=call, uri=document.as_uri())}</out></xsl:if>
+    </xsl:template>"""
+    _assert_literal_python_stack(stylesheet(body, attributes=attributes))
+
+
+def _assert_literal_python_stack(source):
+    run = run_probe(
+        [
+            sys.executable,
+            "-c",
+            """
+import io
+import json
+import sys
+from pyxsd.xslt import XsltProcessor
+from pyxsd.xslt.errors import XsltDynamicError
+from pyxsd.xslt.runtime.frames import ExecutionLimits
+
+compiled = XsltProcessor(static_options={"assertions": True}).compile(io.BytesIO(sys.argv[1].encode()))
+try:
+    compiled.transform(b"<n/>", delivery="raw", limits=ExecutionLimits(max_frames=None),
+                       output_uri="file:///unused/primary.xml")
+except XsltDynamicError as error:
+    print(json.dumps([type(error).__name__, error.code, error.catchable, error.args[0]]))
+""",
+            source.decode(),
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        timeout=40,
+    )
+    name, code, catchable, message = json.loads(run.stdout)
+    assert (name, code, catchable) == ("XsltDynamicError", "PYXSD-XSLT-001", False)
+    _assert_python_stack_message(message)
+
+
+def _assert_python_stack_message(message):
+    assert re.fullmatch(
+        r"the transformation exceeded the Python recursion limit: Python recursion limit=[1-9][0-9]*, "
+        r"max_frames=None \(no frame budget\), frame depth=[1-9][0-9]*",
+        message,
+    )
+
+
+def test_assertion_content_propagates_stack_exhaustion(monkeypatch):
+    def overflow(self, plans, *, context):
+        raise RecursionError("stack exhausted during assertion content")
+
+    source = stylesheet(
+        '<xsl:template match="/"><xsl:assert test="false()">msg</xsl:assert></xsl:template>'
+    )
+    compiled = XsltProcessor(static_options={"assertions": True}).compile(io.BytesIO(source))
+    monkeypatch.setattr(_Invocation, "_execute_plans", overflow)
+    with pytest.raises(XsltDynamicError) as caught:
+        compiled.transform(b"<n/>", delivery="raw", limits=ExecutionLimits(max_frames=None))
+    assert type(caught.value) is XsltDynamicError
+    assert caught.value.code == "PYXSD-XSLT-001"
+    assert not caught.value.catchable
+    _assert_python_stack_message(caught.value.args[0])
+
+
+def test_value_template_in_scheduled_literal_content_reports_python_stack():
+    body = """<xsl:template name="empty"/>
+    <xsl:function name="local:f">
+      <xsl:param name="n"/>
+      <xsl:if test="$n gt 0">
+        <out><xsl:call-template name="empty"/>
+          <xsl:text expand-text="yes">{local:f($n - 1)}</xsl:text>
+        </out>
+      </xsl:if>
+    </xsl:function>
+    <xsl:template match="/"><xsl:sequence select="local:f(160)"/></xsl:template>"""
+    _assert_literal_python_stack(stylesheet(body, namespaces={"local": "urn:local"}))
 
 
 @pytest.mark.parametrize(

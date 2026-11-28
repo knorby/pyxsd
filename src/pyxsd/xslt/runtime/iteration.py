@@ -511,6 +511,7 @@ class IterationState:
     index: int = 0
     control: str | None = None
     pending_parameters: dict[str, XdmSequence] | None = None
+    body_kind: str = "instruction"
 
     def __post_init__(self) -> None:
         if self.kind not in ("for-each", "iterate", "for-each-group"):
@@ -1282,6 +1283,8 @@ def start_iteration_plan(
             ),
             base_variables=dict(variables),
         )
+    if frame.kind == "literal-content":
+        state.body_kind = frame.kind
     child = Frame(
         kind="iteration",
         component=frame.component,
@@ -1321,7 +1324,7 @@ def step_iterate(invocation: _Invocation, frame: Frame) -> FrameResult:
     else:
         grouping_key = NO_GROUP if entry.grouping_key is None else entry.grouping_key
     child = Frame(
-        kind="instruction",
+        kind=state.body_kind,
         component=frame.component,
         identity=f"iteration body {state.index + 1}",
         program=state.body,

@@ -254,7 +254,9 @@ from pyxsd.xslt.runtime.frames import (
 )
 from pyxsd.xslt.runtime.functions import ABSENT, XsltContextBridge
 from pyxsd.xslt.runtime.instructions import (
+    _finish_literal_element,
     _item_string,
+    _prepare_literal_element,
     attribute_value,
     choose_branch,
     copy_of_value,
@@ -275,10 +277,8 @@ from pyxsd.xslt.runtime.instructions import (
     execute_try,
     execute_value_of,
     execute_where_populated,
-    finish_literal_element,
     literal_element,
     parameter_value,
-    prepare_literal_element,
     try_step,
     variable_value,
 )
@@ -607,16 +607,31 @@ def _tvt_scalar_binding(sequence: XdmSequence) -> bool:
 
 
 def _has_constructor_call(plans: tuple[_Plan, ...]) -> bool:
-    """Detect template dispatch reachable through ordinary sequence content."""
+    """Detect dispatch reachable through scheduler-owned constructor bodies."""
     for plan in plans:
-        if isinstance(plan, (_CallTemplatePlan, _ApplyTemplatesPlan)):
+        if isinstance(plan, (_CallTemplatePlan, _ApplyTemplatesPlan, _OverridingPlan)):
             return True
         if isinstance(plan, _ChoosePlan):
             if any(_has_constructor_call(branch) for _, branch in plan.branches):
                 return True
             if _has_constructor_call(plan.otherwise or ()):
                 return True
-        if isinstance(plan, (_LiteralPlan, _SequencePlan)) and _has_constructor_call(plan.children):
+        if isinstance(plan, _TryPlan) and any(
+            _has_constructor_call(body)
+            for body in (plan.children, *(catch.children for catch in plan.catches))
+        ):
+            return True
+        if isinstance(
+            plan, (_LiteralPlan, _SequencePlan, _ForEachPlan, _ForEachGroupPlan, _IteratePlan)
+        ) and _has_constructor_call(plan.children):
+            return True
+        if isinstance(plan, _ConcatPlan) and any(
+            _has_constructor_call(part) for part in plan.parts
+        ):
+            return True
+        if isinstance(plan, _ForkPlan) and any(
+            _has_constructor_call(part) for part in plan.branches
+        ):
             return True
     return False
 
@@ -7072,6 +7087,11 @@ class _Invocation(Transformation):
                     cursor=0,
                 )
             )
+        if isinstance(plan, (_ConcatPlan, _ForkPlan)) and frame.kind == "literal-content":
+            restore = _RestoreVariablesPlan(frame.context.locals)
+            parts = plan.parts if isinstance(plan, _ConcatPlan) else plan.branches
+            content = tuple(item for part in parts for item in (*part, restore))
+            return Continue(replace(frame, program=(*content, *program[cursor + 1 :]), cursor=0))
         if isinstance(plan, _TryPlan):
             return try_step(self, plan, frame, cursor)
         if isinstance(plan, _CallTemplatePlan):
@@ -7099,11 +7119,11 @@ class _Invocation(Transformation):
 
     def _start_literal_content(self, plan: _LiteralPlan, frame: Frame, cursor: int) -> Call:
         context = replace(frame.context, count_output=False)
-        factory, element = prepare_literal_element(plan, self, context)
+        factory, element = _prepare_literal_element(plan, self, context)
 
         def finish(content: object) -> XdmSequence:
             return (
-                finish_literal_element(
+                _finish_literal_element(
                     plan, self, context, factory, element, cast(XdmSequence, content)
                 ),
             )

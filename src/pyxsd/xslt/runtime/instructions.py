@@ -1316,12 +1316,12 @@ def literal_element(
     invocation: _Invocation,
     context: EvaluationContext,
 ) -> XdmNode:
-    factory, element = prepare_literal_element(plan, invocation, context)
+    factory, element = _prepare_literal_element(plan, invocation, context)
     content = invocation._execute_plans(plan.children, context=context)
-    return finish_literal_element(plan, invocation, context, factory, element, content)
+    return _finish_literal_element(plan, invocation, context, factory, element, content)
 
 
-def prepare_literal_element(
+def _prepare_literal_element(
     plan: _LiteralPlan,
     invocation: _Invocation,
     context: EvaluationContext,
@@ -1354,7 +1354,7 @@ def prepare_literal_element(
     return factory, element
 
 
-def finish_literal_element(
+def _finish_literal_element(
     plan: _LiteralPlan,
     invocation: _Invocation,
     context: EvaluationContext,
@@ -2082,6 +2082,10 @@ def execute_assert(
             document = _build_result_tree(message_values)
             detail = document.string_value.strip()
             value = (document,)
+    except RecursionError:
+        # Let the scheduler diagnose stack exhaustion before formatting it
+        # as an assertion failure.
+        raise
     except Exception as exc:
         if is_budget_alarm(exc):
             raise
@@ -2253,7 +2257,7 @@ def try_step(invocation: _Invocation, plan: _TryPlan, frame: Frame, cursor: int)
     )
     base_values = frame.values if replace_caller else ()
     child = Frame(
-        kind="instruction",
+        kind="literal-content" if frame.kind == "literal-content" else "instruction",
         component=frame.component,
         identity="xsl:try",
         program=try_body_program(plan),
@@ -2317,7 +2321,7 @@ def try_handler(
         variables: dict[str, XdmSequence] = dict(frame.context.locals)
         variables.update(catch_variables(caught))
         catch_frame = Frame(
-            kind="instruction",
+            kind="literal-content" if frame.kind == "literal-content" else "instruction",
             component=frame.component,
             identity="xsl:catch",
             program=catch_program(catch),

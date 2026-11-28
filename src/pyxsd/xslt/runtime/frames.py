@@ -139,13 +139,31 @@ class ExecutionLimits:
 
     ``max_frames`` defaults to 100,000 live explicit frames. Non-tail
     arithmetic recursion keeps frames for its pending work, as do supported
-    terminal stylesheet calls in text value templates and recursive
-    ``xsl:apply-templates`` and ``xsl:call-template`` calls in literal result
-    content. XPath fallback, including recursive sequence and node
-    construction through a stylesheet function, can reach the Python
-    recursion limit first. Deep XPath paths and adapting deeply nested
-    XDM trees can reach that limit within a single dispatch. The depth at
-    which that happens depends on the interpreter and its version.
+    terminal stylesheet calls in text value templates and template dispatch
+    in literal result content. The scheduled content includes nested
+    literals, ``xsl:sequence`` bodies, ``xsl:if`` and ``xsl:choose``,
+    ``xsl:try`` and ``xsl:catch``, ``xsl:for-each``,
+    ``xsl:for-each-group`` and ``xsl:iterate`` bodies, ``xsl:fork`` branches,
+    and selected ``xsl:fallback`` bodies.
+
+    Python can stop recursion first in literal construction under a live
+    merge scope and in text value templates inside scheduled literal
+    content. Other synchronous content includes ``xsl:value-of``,
+    ``xsl:attribute``, ``xsl:comment``, ``xsl:processing-instruction``,
+    ``xsl:namespace``, ``xsl:element``, ``xsl:document``, ``xsl:copy``,
+    ``xsl:map``, ``xsl:map-entry``, ``xsl:variable``, ``xsl:param``,
+    ``xsl:with-param`` (including in ``xsl:evaluate``), ``xsl:break``,
+    ``xsl:next-iteration`` parameters,
+    ``xsl:on-completion``, ``xsl:perform-sort``, ``xsl:sort`` and
+    ``xsl:merge-key`` constructors, ``xsl:merge-action``,
+    ``xsl:source-document``, ``xsl:result-document``,
+    ``xsl:analyze-string`` substring bodies, ``xsl:assert``, ``xsl:message``,
+    ``xsl:where-populated``, ``xsl:on-empty`` and ``xsl:on-non-empty``.
+    The same limit can stop fallback XPath, such as ``($n, f($n - 1))``,
+    a stylesheet function building nested elements (including adaptation
+    of a deep result tree on XPath resume), or a long static XPath path.
+    The depth depends on the interpreter and its version.
+
     Frame-budget exhaustion and ``RecursionError`` caught at
     scheduler guards raise an uncatchable
     :class:`~pyxsd.xslt.errors.XsltDynamicError` with code
