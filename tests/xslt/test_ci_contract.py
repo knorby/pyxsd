@@ -830,8 +830,10 @@ def test_deadline_worker_aborts_barrier_when_setup_fails(monkeypatch, tmp_path):
     assert barrier.broken
 
 
-@pytest.mark.parametrize(("jobs", "count"), [(1, 2), (2, 1), (2, 2)])
-def test_parallel_deadline_reaps_an_uninterruptible_worker(tmp_path, jobs, count):
+@pytest.mark.parametrize(("jobs", "count", "grace"), [(1, 2, 0.5), (2, 1, 0.5), (2, 2, 5.0)])
+def test_parallel_deadline_reaps_an_uninterruptible_worker(tmp_path, jobs, count, grace):
+    # The (2, 2) mode keeps the harness's own 5 s grace. The serial and
+    # single-case modes exercise the same termination path with a short one.
     names = ("case-001", "case-002")[:count]
     root = _fixture_repo(tmp_path, names=names)
     for name in names:
@@ -854,6 +856,7 @@ from tests.xslt.test_ci_contract import _deadline_case, _deadline_worker
 
 suite.execute_case = _deadline_case
 suite._run_payload = _deadline_worker
+suite._PARENT_GRACE = float(sys.argv[3])
 cases = tuple(load_catalog(sys.argv[1]).cases.values())
 results = suite.run_parallel(cases, suite.SUITE_PROFILES["xslt30"], timeout=1, jobs=int(sys.argv[2]))
 print(json.dumps([

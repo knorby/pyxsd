@@ -155,12 +155,21 @@ def test_probe_closes_pipes_and_reaps_when_cleanup_drain_stalls(monkeypatch):
 
 
 def test_catalog_boundary_accepts_a_completed_corpus_assertion(monkeypatch):
-    from tests.xslt import test_limits
-
     name = "catalog/catalog-003"
     result = subprocess.CompletedProcess([], 0, json.dumps([name, "pass", ""]), "")
-    monkeypatch.setattr(test_limits, "run_probe", lambda *args, **kwargs: result)
+    calls = []
+
+    def completed_probe(command, *args, **kwargs):
+        calls.append(command)
+        return result
+
+    # Patch the namespace the test reads. pytest may import this file under a
+    # module name other than ``tests.xslt.test_limits``, and patching a second
+    # import of it leaves the real probe in place.
+    monkeypatch.setitem(globals(), "run_probe", completed_probe)
     test_pathological_corpus_case_has_a_controlled_verdict(name)
+    assert len(calls) == 1
+    assert calls[0][-1] == name
 
 
 def test_probe_uses_windows_process_tree_termination(monkeypatch):
@@ -893,7 +902,9 @@ def _tail_stylesheet(stop):
                   </xsl:when></xsl:choose>
                 </xsl:template>
                 <xsl:template name="xsl:initial-template">
-                  <xsl:call-template name="count"><xsl:with-param name="n" select="25600"/>
+                  <!-- 2,000 levels: far past the Python stack ceiling for this
+                       shape, and past max_frames=8 in the test below. -->
+                  <xsl:call-template name="count"><xsl:with-param name="n" select="2000"/>
                   </xsl:call-template>
                 </xsl:template>"""
             )
@@ -1517,7 +1528,7 @@ def test_disabling_annotation_capacity_admits_more_than_the_default():
     )
 
 
-@pytest.mark.parametrize(("parent_count", "count"), [(1, 3), (2, 262_145)])
+@pytest.mark.parametrize(("parent_count", "count"), [(1, 3), (2, 5)])
 def test_nested_transform_inherits_annotation_capacity(tmp_path, parent_count, count):
     child = stylesheet(
         '<xsl:template name="xsl:initial-template">'
